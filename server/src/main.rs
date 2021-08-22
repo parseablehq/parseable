@@ -1,6 +1,8 @@
 use actix_web::{put, get, App, HttpRequest, HttpResponse, HttpServer};
 mod stream;
 mod file;
+mod object;
+
 
 
 #[put("/{stream}")]
@@ -26,9 +28,9 @@ async fn list_stream() -> HttpResponse {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-
-    let cf = file::read_toml("Config.toml");
-    println!("{:?}",cf);
+    file::export_env();
+    let err = object::aws_s3();
+    println!("{:?}",err);
     HttpServer::new(|| App::new().service(put_stream).service(list_stream))
     .bind("127.0.0.1:8080")?
     .run()
