@@ -1,3 +1,5 @@
 [s3]
-aws_access_key_id="1234567"
-aws_secret_key=""
+aws_access_key_id="admin"
+aws_secret_key="password"
+aws_default_region="us-east-1"
+aws_endpoint_url="http://localhost:9000"
