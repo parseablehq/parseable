@@ -1,7 +1,6 @@
 use actix_web::{put, get, App, HttpRequest, HttpResponse, HttpServer};
 mod stream;
-mod file;
-mod object;
+mod s3;
 
 
 
@@ -28,9 +27,10 @@ async fn list_stream() -> HttpResponse {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    file::export_env();
-    let err = object::aws_s3();
-    println!("{:?}",err);
+    let read_config = s3::read_config("Config.toml");
+    let init_s3client = s3::init_s3client(read_config);
+    let create_stream = s3::create_stream(init_s3client.0,init_s3client.1, "stream_name");
+    println!("{:?}", create_stream);
     HttpServer::new(|| App::new().service(put_stream).service(list_stream))
     .bind("127.0.0.1:8080")?
     .run()
