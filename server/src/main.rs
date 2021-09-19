@@ -1,21 +1,20 @@
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
+#[macro_use]
+extern crate serde_derive;
 
-mod s3;
+mod configs;
+mod handler;                                             
 
-fn read_config() -> s3::ConfigToml {
-    s3::read_config("Config.toml")
-}
+extern crate config;
 
 async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
     let stream_name_clone = stream_name.clone();
-    let s3_bucket = read_config().s3.aws_bucket_name;
-    let s3_client = s3::init_s3client(read_config());
-
-    match s3::create_stream(Some(s3_client), s3_bucket, stream_name) {
+    let s3_client = configs::ConfigToml::s3client();
+    match handler::create_stream(Some(s3_client), stream_name) {
         Ok(_) => HttpResponse::Ok().body(format!("Created Stream {}", stream_name_clone)),
         Err(_) => {
-            HttpResponse::Ok().body(format!("Failed to create Stream {}", stream_name_clone))
+            HttpResponse::Ok().body(format!("Failed to create Stream"))
         }
     }
 }

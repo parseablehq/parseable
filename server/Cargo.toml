@@ -10,8 +10,10 @@ edition = "2018"
 actix-web = "3"
 arrow = "4.4.0"
 lazy_static = "1.4.0"
+config = "0.11.0"
 toml = "0.5.8"
-serde = "1.0.127"
+serde_derive = "^1.0.8"
+serde = "^1.0.8"
 http = "0.2.4"
 aws-sdk-s3 = { git = "https://github.com/awslabs/aws-sdk-rust", tag = "v0.0.16-alpha", package = "aws-sdk-s3" }
 tokio = { version = "1", features = ["full"] }
