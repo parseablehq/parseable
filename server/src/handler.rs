@@ -15,8 +15,8 @@ pub async fn create_stream(s3_client: Option<aws_sdk_s3::Client>,stream_name: St
             println!("Upload success. Version: {:?}", resp.version_id);
             Ok(())     
         },
-        Error => {
-            println!("{:?}",Error)
+        _ => {
+           Ok(())
         },
     }
 }
