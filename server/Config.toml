@@ -1,0 +1,6 @@
+[s3]
+aws_access_key_id="Q3AM3UQ867SPQQA43P2F"
+aws_secret_key="zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG"
+aws_default_region="us-east-1"
+aws_endpoint_url="https://play.minio.io/"
+aws_bucket_name="67111b0f870e443ca59200b51221243b"
