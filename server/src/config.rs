@@ -1,9 +1,8 @@
 use std::env;
-use config::{ConfigError, Config, File};
+use config_rs::{ConfigError, Config, File};
 use aws_sdk_s3::{Client,Endpoint};
 use aws_sdk_s3::Config as s3_config;
 use http::{Uri};
-
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigToml {
@@ -22,7 +21,7 @@ struct S3 {
 impl ConfigToml {
     fn new() -> Result<Self, ConfigError> {
         let mut s = Config::default();
-        s.merge(File::with_name("Configs"))?;
+        s.merge(File::with_name("Config"))?;
         s.try_into()
     }
 

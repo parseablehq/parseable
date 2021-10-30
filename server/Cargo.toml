@@ -10,7 +10,7 @@ edition = "2018"
 actix-web = "3"
 arrow = "4.4.0"
 lazy_static = "1.4.0"
-config = "0.11.0"
+config-rs = { version = "0.11.0", package = "config" }
 toml = "0.5.8"
 serde_derive = "^1.0.8"
 serde = "^1.0.8"
