@@ -6,6 +6,12 @@ extern crate serde_derive;
 mod handler;                                             
 mod config;
 
+// Init
+// Read S3
+// Fetch all schemas
+// Local cache for schemas/stream
+// config file validation
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {

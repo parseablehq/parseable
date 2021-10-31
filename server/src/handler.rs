@@ -5,12 +5,12 @@ use actix_web::{web, HttpRequest, HttpResponse, Result};
 use serde_json;
 use arrow::json::reader::infer_json_schema;
 use std::io::BufReader;
+use bytes::Bytes;
 
 use crate::config;
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
-    //let s3_client = config::s3client(config::ConfigToml::new().s3);
     let s3_client = config::Aws::s3client(&config::ConfigToml::new().s3);
     match stream_exists(&s3_client, &stream_name) {
         Ok(_) => HttpResponse::Ok().body(format!("Stream {} already exists, please create a Stream with unique name", stream_name)),
@@ -27,10 +27,10 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
     let s3_client = config::Aws::s3client(&config::ConfigToml::new().s3);
     match stream_exists(&s3_client, &stream_name) {
-        Ok(size) => {
+        Ok(schema) => {
             // If the schema is empty, this is the first event in this stream. 
             // Parse the arrow schema, upload it to <bucket>/<stream_prefix>/.schema file
-            if size == 0 {
+            if schema.len() == 0 {
                 let str_body = format!("{}", body);
                 let reader = str_body.as_bytes();
                 let mut buf_reader = BufReader::new(reader);
@@ -45,18 +45,18 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
             // The schema is not empty here, so this stream already has events. 
             // Proceed with validating against current schema and adding event to record batch. 
             else {
+                // TODO
+                // 1. Check if this is the first event in the stream ==> Done
+                //  a. If yes, create a schema and upload the schema file to <bucket>/<stream_prefix>/.schema. ==> Done
+                //  b. If no, validate if the schema of new event matches existing schema. Fail with invalid schema, if no match.
+                // 2. Add the event to existing Arrow RecordBatch. 
+                // 3. Check if event count threshold is reached, convert record batch to parquet and push to S3.
+                // 4. Init new RecordBatch if previos record batch was pushed to S3.
                 HttpResponse::Ok().body(format!("Schema already present for Stream {} ", stream_name))
             }
         },
         Err(_) => HttpResponse::Ok().body(format!("Stream {} doesn't exist", stream_name))
     }
-    // TODO
-    // 1. Check if this is the first event in the stream
-    //  a. If yes, create a schema and upload the schema file to <bucket>/<stream_prefix>/.schema.
-    //  b. If no, validate if the schema of new event matches existing schema. Fail with invalid schema, if no match.
-    // 2. Add the event to existing Arrow RecordBatch. 
-    // 3. Check if event count threshold is reached, convert record batch to parquet and push to S3.
-    // 4. Init new RecordBatch if previos record batch was pushed to S3.
 }
 
 #[tokio::main]
@@ -83,7 +83,7 @@ pub async fn create_stream(s3_client: &aws_sdk_s3::Client, stream_name: &String)
 }
 
 #[tokio::main]
-pub async fn stream_exists(s3_client: &aws_sdk_s3::Client, stream_name: &String) -> Result<usize, Error> {
+pub async fn stream_exists(s3_client: &aws_sdk_s3::Client, stream_name: &String) -> Result<Bytes, Error> {
     let resp = s3_client
         .get_object()
         .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
@@ -92,5 +92,5 @@ pub async fn stream_exists(s3_client: &aws_sdk_s3::Client, stream_name: &String)
         .await?;
     let body = resp.body.collect().await;
     let body_bytes = body.unwrap().into_bytes();
-    Ok(body_bytes.len())
+    Ok(body_bytes)
 }
