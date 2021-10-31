@@ -10,7 +10,8 @@ use crate::config;
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
-    let s3_client = config::ConfigToml::s3client();
+    //let s3_client = config::s3client(config::ConfigToml::new().s3);
+    let s3_client = config::Aws::s3client(&config::ConfigToml::new().s3);
     match stream_exists(&s3_client, &stream_name) {
         Ok(_) => HttpResponse::Ok().body(format!("Stream {} already exists, please create a Stream with unique name", stream_name)),
         Err(_) => {
@@ -24,7 +25,7 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
 
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
-    let s3_client = config::ConfigToml::s3client();
+    let s3_client = config::Aws::s3client(&config::ConfigToml::new().s3);
     match stream_exists(&s3_client, &stream_name) {
         Ok(size) => {
             // If the schema is empty, this is the first event in this stream. 
