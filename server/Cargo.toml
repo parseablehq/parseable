@@ -19,3 +19,4 @@ http = "0.2.4"
 aws-sdk-s3 = { git = "https://github.com/awslabs/aws-sdk-rust", tag = "v0.0.16-alpha", package = "aws-sdk-s3" }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+bytes = "1"
