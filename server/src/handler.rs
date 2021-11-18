@@ -2,20 +2,20 @@
 use std::env;
 use aws_sdk_s3::Error;
 use actix_web::{web, HttpRequest, HttpResponse, Result};
-use serde_json;
+
 use arrow::json::reader::infer_json_schema;
 use std::io::BufReader;
 use bytes::Bytes;
 
-use crate::config;
+use crate::storage;
+use crate::option;
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
-    let s3_client = config::Aws::s3client(&config::ConfigToml::new().s3);
-    match stream_exists(&s3_client, &stream_name) {
+    match stream_exists(&stream_name) {
         Ok(_) => HttpResponse::Ok().body(format!("Stream {} already exists, please create a Stream with unique name", stream_name)),
         Err(_) => {
-            match create_stream(&s3_client, &stream_name) {
+            match create_stream(&stream_name) {
                 Ok(_) => HttpResponse::Ok().body(format!("Created Stream {}", stream_name)),
                 Err(_) => HttpResponse::Ok().body(format!("Failed to create Stream {}", stream_name))
             }
@@ -25,14 +25,13 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
 
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
-    let s3_client = config::Aws::s3client(&config::ConfigToml::new().s3);
-    match stream_exists(&s3_client, &stream_name) {
+    match stream_exists(&stream_name) {
         Ok(schema) => {
             // If the schema is empty, this is the first event in this stream. 
             // Parse the arrow schema, upload it to <bucket>/<stream_prefix>/.schema file
-            if schema.len() == 0 {
+            if schema.is_empty() {
                let str_inferred_schema = infer_schema(body);
-                match put_schema(&s3_client, &stream_name, str_inferred_schema) {
+                match put_schema(&stream_name, str_inferred_schema) {
                     Ok(_) => HttpResponse::Ok().body(format!("Uploading event to Stream {} ", stream_name)),
                     Err(_) => HttpResponse::Ok().body(format!("Stream {} doesn't exist", stream_name))
                 }
@@ -59,31 +58,37 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
 }
 
 #[tokio::main]
-pub async fn put_schema(s3_client: &aws_sdk_s3::Client, stream_name: &String, schema: String) -> Result<(), Error> {
-    let _resp = s3_client
+pub async fn put_schema(stream_name: &String, schema: String) -> Result<(), Error> {
+    let opt = option::get_opts();
+    let client = storage::setup_storage(&opt).client;
+    let _resp = client
         .put_object()
         .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
         .key(format!("{}{}", stream_name, "/.schema"))
         .body(schema.into_bytes().into())
         .send()
         .await?;
-    Ok(())     
+    Ok(())
 }
 
 #[tokio::main]
-pub async fn create_stream(s3_client: &aws_sdk_s3::Client, stream_name: &String) -> Result<(), Error> {
-    let _resp = s3_client
+pub async fn create_stream(stream_name: &String) -> Result<(), Error> {
+    let opt = option::get_opts();
+    let client = storage::setup_storage(&opt).client;
+    let _resp = client
         .put_object()
         .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
         .key(format!("{}{}", stream_name, "/.schema"))
         .send()
         .await?;
-    Ok(())     
+    Ok(())
 }
 
 #[tokio::main]
-pub async fn stream_exists(s3_client: &aws_sdk_s3::Client, stream_name: &String) -> Result<Bytes, Error> {
-    let resp = s3_client
+pub async fn stream_exists(stream_name: &String) -> Result<Bytes, Error> {
+    let opt = option::get_opts();
+    let client = storage::setup_storage(&opt).client;
+    let resp = client
         .get_object()
         .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
         .key(format!("{}{}", stream_name, "/.schema"))
