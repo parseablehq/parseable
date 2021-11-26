@@ -17,9 +17,9 @@ mod banner;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+
     banner::print();
     env_logger::init();
-
     let opt = option::get_opts();
     HttpServer::new(|| {
         let auth = HttpAuthentication::basic(validator);
