@@ -12,7 +12,7 @@ use lazy_static::lazy_static;
 use std::collections::HashMap;
 use arrow::record_batch::RecordBatch;
 use std::sync::Arc;
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{Cursor, Seek, SeekFrom, Write};
 
 use crate::storage;
 use crate::option;
@@ -108,7 +108,6 @@ impl Event {
 
 }
 
-
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
     match stream_exists(&stream_name) {
@@ -127,15 +126,15 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
             // The schema is not empty here, so this stream already has events. 
             // Proceed with validating against current schema and adding event to record batch. 
             else {
-               let mut map = HASHMAP.lock().unwrap();
-               let b2 = map.get(&stream_name).unwrap();
-               let e2 = e.next_event();
-               let vec = vec![e2.0,b2.clone()];
-               let new_batch = RecordBatch::concat(&Arc::new(e2.1.clone()), &vec).unwrap();
-               map.insert(stream_name, new_batch);
-               println!("{:?}", map);
-               drop(map);
-            HttpResponse::Ok().body(format!("Schema already present for Stream"))
+                let mut map = HASHMAP.lock().unwrap();
+                let b2 = map.get(&stream_name).unwrap();
+                let e2 = e.next_event();
+                let vec = vec![e2.0,b2.clone()];
+                let new_batch = RecordBatch::concat(&Arc::new(e2.1.clone()), &vec).unwrap();
+                map.insert(stream_name, new_batch);
+                println!("{:?}", map);
+                drop(map);
+                HttpResponse::Ok().body(format!("Schema already present for Stream"))
             }
         },
         Err(_) => HttpResponse::Ok().body(format!("Stream {} doesn't exist", stream_name))
