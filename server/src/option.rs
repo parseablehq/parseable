@@ -1,6 +1,6 @@
 use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clone, StructOpt)]
 #[structopt(name = "example", about = "An example of StructOpt usage.")]
 pub struct Opt {
     /// The address on which the http server will listen.
