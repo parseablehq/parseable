@@ -1,5 +1,7 @@
 
 use std::env;
+use std::fs::File;
+use std::fs;
 use aws_sdk_s3::Error;
 use actix_web::{web, HttpRequest, HttpResponse, Result};
 
@@ -17,6 +19,8 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 use crate::storage;
 use crate::option;
 use std::sync::Mutex;
+use parquet::file::properties::WriterProperties;
+use parquet::arrow::arrow_writer::ArrowWriter;
 
 lazy_static! {
     pub static ref HASHMAP: Mutex<HashMap<String, RecordBatch>>= {
@@ -42,6 +46,7 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
 struct Event {
     body: web::Json<serde_json::Value>,
     stream_name: String,
+    path: String,
     schema: Bytes
 }
 
@@ -75,6 +80,8 @@ impl Event {
     }
 
     fn next_event(&self) -> (RecordBatch, arrow::datatypes::Schema, HttpResponse) {
+        // The schema is not empty here, so this stream already has events. 
+        // Proceed with validating against current schema and adding event to record batch. 
         let str_inferred_schema = self.return_schema();
         if self.schema != str_inferred_schema.1 {
             // TODO: return nil, nil and invalid HTTP response
@@ -106,6 +113,20 @@ impl Event {
         return (inferred_schema, str_inferred_schema)
     }
 
+    fn create_parquet_file(&self) -> std::fs::File {
+        let dir_name = format!("{}{}{}", &self.path,"/", &self.stream_name);
+        let _res = fs::create_dir_all(dir_name.clone());
+        let file_name = format!("{}{}{}", dir_name,"/", "data.parquet");
+        let parquet_file = File::create(file_name).unwrap();
+        parquet_file
+    }
+
+    fn convert_arrow_parquet(&self, rb: RecordBatch) {
+        let props = WriterProperties::builder().build();
+        let mut writer = ArrowWriter::try_new(self.create_parquet_file(), Arc::new(self.return_schema().0), Some(props)).unwrap();
+        writer.write(&rb).expect("Writing batch");
+        writer.close().unwrap();
+    }
 }
 
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
@@ -114,6 +135,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
         Ok(schema) => {
             let e = Event{
                 body: body, 
+                path: option::get_opts().local_disk_path,
                 stream_name: stream_name.clone(),
                 schema: schema
             };
@@ -123,16 +145,15 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
             if e.schema.is_empty() {
                  e.initial_event()
             } 
-            // The schema is not empty here, so this stream already has events. 
-            // Proceed with validating against current schema and adding event to record batch. 
             else {
                 let mut map = HASHMAP.lock().unwrap();
                 let b2 = map.get(&stream_name).unwrap();
                 let e2 = e.next_event();
                 let vec = vec![e2.0,b2.clone()];
                 let new_batch = RecordBatch::concat(&Arc::new(e2.1.clone()), &vec).unwrap();
-                map.insert(stream_name, new_batch);
+                map.insert(stream_name.clone(), new_batch.clone());
                 println!("{:?}", map);
+                e.convert_arrow_parquet(new_batch);
                 drop(map);
                 HttpResponse::Ok().body(format!("Schema already present for Stream"))
             }
