@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 actix-web = "3"
 arrow = "6.0.0"
+parquet = "6.0.0"
 lazy_static = "1.4.0"
 config-rs = { version = "0.11.0", package = "config" }
 toml = "0.5.8"
