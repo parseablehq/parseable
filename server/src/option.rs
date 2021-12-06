@@ -1,7 +1,10 @@
 use structopt::StructOpt;
 
 #[derive(Debug, Clone, StructOpt)]
-#[structopt(name = "Parseable config", about = "the config setup for Parseable server")]
+#[structopt(
+    name = "Parseable config",
+    about = "the config setup for Parseable server"
+)]
 pub struct Opt {
     /// The address on which the http server will listen.
     #[structopt(long, env = "P_ADDR", default_value = "127.0.0.1:5678")]
@@ -32,9 +35,13 @@ pub struct Opt {
     /// The region for AWS S3 or compatible object storage platform
     #[structopt(long, env = "P_S3_REGION", default_value = "us-east-1")]
     pub s3_default_region: String,
-    
+
     /// The AWS S3 or compatible object storage bucket to be used for storage
-    #[structopt(long, env = "P_S3_BUCKET", default_value = "67111b0f870e443ca59200b51221243b")]
+    #[structopt(
+        long,
+        env = "P_S3_BUCKET",
+        default_value = "67111b0f870e443ca59200b51221243b"
+    )]
     pub s3_bucket_name: String,
 }
 

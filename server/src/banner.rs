@@ -30,7 +30,7 @@ Memory: {} GiB total",
         os_info::get(),
         num_cpus::get(),
         num_cpus::get_physical(),
-        system.total_memory()/(1024*1024)
+        system.total_memory() / (1024 * 1024)
     )
 }
 
@@ -41,14 +41,13 @@ fn print_storage_info(opt: &option::Opt) {
 Local disk cache: {}
 Backend S3 endpoint: {}
 Backend S3 bucket: {}",
-        opt.local_disk_path,
-        opt.s3_endpoint_url,
-        opt.s3_bucket_name
+        opt.local_disk_path, opt.s3_endpoint_url, opt.s3_bucket_name
     )
 }
 
 fn print_curl_example(opt: &option::Opt) {
-    let curl_create_str: String = "curl --location --request PUT '".to_owned() + &opt.http_addr + &"/test_str'".to_owned();
+    let curl_create_str: String =
+        "curl --location --request PUT '".to_owned() + &opt.http_addr + &"/test_str'".to_owned();
     eprintln!(
         "
 ============ ACCESS =============

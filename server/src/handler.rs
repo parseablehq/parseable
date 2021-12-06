@@ -1,10 +1,8 @@
 use std::env;
+use std::sync::Arc;
 use aws_sdk_s3::Error;
 use actix_web::{web, HttpRequest, HttpResponse, Result};
-
 use arrow::record_batch::RecordBatch;
-use std::sync::Arc;
-
 use bytes::Bytes;
 
 use crate::storage;
@@ -15,7 +13,7 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
     match stream_exists(&stream_name) {
         Ok(_) => HttpResponse::Ok().body(format!("Stream {} already exists, please create a Stream with unique name", stream_name)),
-        Err(e) => {
+        Err(_) => {
             match create_stream(&stream_name) {
                 Ok(_) => HttpResponse::Ok().body(format!("Created Stream {}", stream_name)),
                 Err(e) => HttpResponse::Ok().body(format!("Failed to create Stream {}", e))
@@ -38,9 +36,8 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
             // If the schema is empty, this is the first event in this stream. 
             // Parse the arrow schema, upload it to <bucket>/<stream_prefix>/.schema file
             if e.schema.is_empty() {
-                 e.initial_event()
-            } 
-            else {
+                e.initial_event()
+            } else {
                 let mut map = event::HASHMAP.lock().unwrap();
                 let b2 = map.get(&stream_name).unwrap();
                 let e2 = e.next_event();
