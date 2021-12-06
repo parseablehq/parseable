@@ -3,7 +3,6 @@ use actix_web::dev::ServiceRequest;
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use env_logger;
 
-
 mod handler;                                             
 mod option;
 mod storage;

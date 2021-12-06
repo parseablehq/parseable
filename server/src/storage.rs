@@ -1,6 +1,6 @@
-use aws_sdk_s3::{Client,Endpoint};
+use aws_sdk_s3::{Client, Endpoint};
+use http::Uri;
 use std::env;
-use http::{Uri};
 
 use crate::option;
 
@@ -13,14 +13,22 @@ pub trait ObjectStorage {
 }
 
 impl ObjectStorage for S3 {
-    fn new (opt: &option::Opt) -> S3 {
-        S3 { client: s3_client(&opt) }
+    fn new(opt: &option::Opt) -> S3 {
+        S3 {
+            client: s3_client(&opt),
+        }
     }
 }
 
 fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
-    let ( secret_key, access_key, region, endpoint_url, bucket_name ) = ("AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_DEFAULT_REGION", "AWS_ENDPOINT_URL", "AWS_BUCKET_NAME");
-    let  data = vec![secret_key, access_key, region, endpoint_url, bucket_name];
+    let (secret_key, access_key, region, endpoint_url, bucket_name) = (
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_DEFAULT_REGION",
+        "AWS_ENDPOINT_URL",
+        "AWS_BUCKET_NAME",
+    );
+    let data = vec![secret_key, access_key, region, endpoint_url, bucket_name];
 
     for data in data.iter() {
         match data {
@@ -30,12 +38,14 @@ fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
             &"AWS_ENDPOINT_URL" => env::set_var(endpoint_url, &opt.s3_endpoint_url),
             &"AWS_BUCKET_NAME" => env::set_var(bucket_name, &opt.s3_bucket_name),
             _ => println!(""),
-        }     
+        }
     }
     let ep = env::var("AWS_ENDPOINT_URL").unwrap_or("none".to_string());
     let uri = ep.parse::<Uri>().unwrap();
     let endpoint = Endpoint::immutable(uri);
-    let config = aws_sdk_s3::Config::builder().endpoint_resolver(endpoint).build();
+    let config = aws_sdk_s3::Config::builder()
+        .endpoint_resolver(endpoint)
+        .build();
     Client::from_conf(config)
 }
 
