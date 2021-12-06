@@ -8,6 +8,7 @@ mod handler;
 mod option;
 mod storage;
 mod banner;
+mod event;
 
 // Init
 // Read S3
