@@ -18,15 +18,15 @@ pub struct Opt {
     pub local_disk_path: String,
 
     /// The endpoint to AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_URL", default_value = "https://play.minio.io/")]
+    #[structopt(long, env = "P_S3_URL", default_value = "http://127.0.0.1:9000")]
     pub s3_endpoint_url: String,
 
     /// The access key for AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_ACCESS_KEY", default_value = "Q3AM3UQ867SPQQA43P2F")]
+    #[structopt(long, env = "P_S3_ACCESS_KEY", default_value = "minioadmin")]
     pub s3_access_key_id: String,
 
     /// The secret key for AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_SECRET_KEY", default_value = "zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG")]
+    #[structopt(long, env = "P_S3_SECRET_KEY", default_value = "minioadmin")]
     pub s3_secret_key: String,
 
     /// The region for AWS S3 or compatible object storage platform

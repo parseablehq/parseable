@@ -1,131 +1,26 @@
-
 use std::env;
-use std::fs::File;
-use std::fs;
 use aws_sdk_s3::Error;
 use actix_web::{web, HttpRequest, HttpResponse, Result};
 
-use arrow::json::reader::infer_json_schema;
-use std::io::BufReader;
-use bytes::Bytes;
-use arrow::json;
-
-use lazy_static::lazy_static;
-use std::collections::HashMap;
 use arrow::record_batch::RecordBatch;
 use std::sync::Arc;
-use std::io::{Cursor, Seek, SeekFrom, Write};
+
+use bytes::Bytes;
 
 use crate::storage;
 use crate::option;
-use std::sync::Mutex;
-use parquet::file::properties::WriterProperties;
-use parquet::arrow::arrow_writer::ArrowWriter;
-
-lazy_static! {
-    pub static ref HASHMAP: Mutex<HashMap<String, RecordBatch>>= {
-        let m = HashMap::new();
-        Mutex::new(m)
-    };    
-}
+use crate::event;
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
     match stream_exists(&stream_name) {
         Ok(_) => HttpResponse::Ok().body(format!("Stream {} already exists, please create a Stream with unique name", stream_name)),
-        Err(_) => {
+        Err(e) => {
             match create_stream(&stream_name) {
                 Ok(_) => HttpResponse::Ok().body(format!("Created Stream {}", stream_name)),
-                Err(_) => HttpResponse::Ok().body(format!("Failed to create Stream {}", stream_name))
+                Err(e) => HttpResponse::Ok().body(format!("Failed to create Stream {}", e))
             }
         }
-    }
-}
-
-// Event holds all values for server to process into record batch.
-struct Event {
-    body: web::Json<serde_json::Value>,
-    stream_name: String,
-    path: String,
-    schema: Bytes
-}
-
-impl Event {
-    fn initial_event(&self) -> HttpResponse {
-        let mut map = HASHMAP.lock().unwrap();
-
-        let mut c = Cursor::new(Vec::new());
-    
-        let str_body = format!("{}", &self.body);
-        let reader = str_body.as_bytes();
-        
-        c.write_all(reader).unwrap();
-        c.seek(SeekFrom::Start(0)).unwrap();
-
-        let mut buf_reader = BufReader::new(c);
-        let buf_reader1 = BufReader::new(reader);
-        
-        let inferred_schema = infer_json_schema(&mut buf_reader, None).unwrap(); 
-        let str_inferred_schema = format!("{}", serde_json::to_string(&inferred_schema).unwrap());
-        
-        let mut event = json::Reader::new(buf_reader1, Arc::new(inferred_schema), 1024, None);
-        let b1 = event.next().unwrap().unwrap();
-        map.insert(self.stream_name.to_string(), b1);
-        drop(map);
-
-        match put_schema(&self.stream_name, str_inferred_schema) {
-            Ok(_) => HttpResponse::Ok().body(format!("Uploading event to Stream {} ", self.stream_name)),
-            Err(_) => HttpResponse::Ok().body(format!("Stream {} doesn't exist", self.stream_name))
-        }
-    }
-
-    fn next_event(&self) -> (RecordBatch, arrow::datatypes::Schema, HttpResponse) {
-        // The schema is not empty here, so this stream already has events. 
-        // Proceed with validating against current schema and adding event to record batch. 
-        let str_inferred_schema = self.return_schema();
-        if self.schema != str_inferred_schema.1 {
-            // TODO: return nil, nil and invalid HTTP response
-        }
-
-        let mut c = Cursor::new(Vec::new());
-
-        let str_body = format!("{}", self.body);
-        let reader = str_body.as_bytes();
-    
-        c.write_all(reader).unwrap();
-        c.seek(SeekFrom::Start(0)).unwrap();
-        let buf_reader1 = BufReader::new(reader);
-        
-        let schema = self.return_schema();
-        let schema_clone = schema.clone();
-
-        let mut event = json::Reader::new(buf_reader1, Arc::new(schema.0), 1024, None);
-        let b1 = event.next().unwrap().unwrap();
-        return (b1, schema_clone.0,HttpResponse::Ok().body(format!("Schema already present for Stream"))    )
-    }
-
-    fn return_schema(&self) -> (arrow::datatypes::Schema ,std::string::String ){
-        let str_body = format!("{}",self.body);
-        let reader = str_body.as_bytes();
-        let mut buf_reader = BufReader::new(reader);
-        let inferred_schema = infer_json_schema(&mut buf_reader, None).unwrap();
-        let  str_inferred_schema = format!("{}", serde_json::to_string(&inferred_schema).unwrap());
-        return (inferred_schema, str_inferred_schema)
-    }
-
-    fn create_parquet_file(&self) -> std::fs::File {
-        let dir_name = format!("{}{}{}", &self.path,"/", &self.stream_name);
-        let _res = fs::create_dir_all(dir_name.clone());
-        let file_name = format!("{}{}{}", dir_name,"/", "data.parquet");
-        let parquet_file = File::create(file_name).unwrap();
-        parquet_file
-    }
-
-    fn convert_arrow_parquet(&self, rb: RecordBatch) {
-        let props = WriterProperties::builder().build();
-        let mut writer = ArrowWriter::try_new(self.create_parquet_file(), Arc::new(self.return_schema().0), Some(props)).unwrap();
-        writer.write(&rb).expect("Writing batch");
-        writer.close().unwrap();
     }
 }
 
@@ -133,7 +28,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
     match stream_exists(&stream_name) {
         Ok(schema) => {
-            let e = Event{
+            let e = event::Event{
                 body: body, 
                 path: option::get_opts().local_disk_path,
                 stream_name: stream_name.clone(),
@@ -146,7 +41,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                  e.initial_event()
             } 
             else {
-                let mut map = HASHMAP.lock().unwrap();
+                let mut map = event::HASHMAP.lock().unwrap();
                 let b2 = map.get(&stream_name).unwrap();
                 let e2 = e.next_event();
                 let vec = vec![e2.0,b2.clone()];
