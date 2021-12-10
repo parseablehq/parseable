@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
-
+use crate::response;
 use crate::handler;
 use lazy_static::lazy_static;
 
@@ -53,9 +53,19 @@ impl Event {
 
         match handler::put_schema(&self.stream_name, str_inferred_schema) {
             Ok(_) => {
-                HttpResponse::Ok().body(format!("Uploading event to Stream {} ", self.stream_name))
+                let r = response::ServerResponse{
+                        http_response: HttpResponse::Ok(),
+                        msg: format!("Intial Event recieved for Stream {}, schema uploaded successfully", self.stream_name)
+                };
+                r.success_server_response()
             }
-            Err(_) => HttpResponse::Ok().body(format!("Stream {} doesn't exist", self.stream_name)),
+            Err(e) => {
+                    let r = response::ServerResponse{
+                        http_response: HttpResponse::Ok(),
+                        msg: format!("Stream {} does not exist, Err: {}", &self.stream_name, e)
+                    };
+                    r.error_server_response()
+            }
         }
     }
 
@@ -81,10 +91,15 @@ impl Event {
 
         let mut event = json::Reader::new(buf_reader1, Arc::new(schema.0), 1024, None);
         let b1 = event.next().unwrap().unwrap();
+
+        let r = response::ServerResponse{
+            http_response: HttpResponse::Ok(),
+            msg: format!("Event recieved for Stream {}", &self.stream_name)
+        };
         return (
             b1,
             schema_clone.0,
-            HttpResponse::Ok().body(format!("Schema already present for Stream")),
+            r.success_server_response()
         );
     }
 
@@ -102,7 +117,7 @@ impl Event {
         let _res = fs::create_dir_all(dir_name.clone());
         let file_name = format!("{}{}{}", dir_name, "/", "data.parquet");
         let parquet_file = fs::File::create(file_name).unwrap();
-        parquet_file
+        return parquet_file
     }
 
     pub fn convert_arrow_parquet(&self, rb: RecordBatch) {

@@ -1,13 +1,14 @@
 use actix_web::{middleware, web, App, HttpServer, Error};
 use actix_web::dev::ServiceRequest;
 use actix_web_httpauth::extractors::basic::BasicAuth;
-use env_logger;
+
 
 mod handler;                                             
 mod option;
 mod storage;
 mod banner;
 mod event;
+mod response;
 
 // Init
 // Read S3
@@ -17,6 +18,7 @@ mod event;
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
+    env_logger::init();
     banner::print();
     let opt = option::get_opts();
     run_http(opt).await?;
@@ -26,7 +28,6 @@ async fn main() -> anyhow::Result<()> {
 async fn run_http(
     opt: option::Opt,
 ) -> anyhow::Result<()> {
-    env_logger::init();
     let opt_clone = opt.clone();
     let http_server = HttpServer::new(move || create_app!(opt_clone)).disable_signals();
     http_server.bind(&opt.http_addr)?.run().await?;
