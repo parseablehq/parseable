@@ -1,22 +1,41 @@
 use std::env;
 use std::sync::Arc;
 use aws_sdk_s3::Error;
-use actix_web::{web, HttpRequest, HttpResponse, Result};
+use actix_web::{web, HttpRequest, HttpResponse,  Result};
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
 
 use crate::storage;
 use crate::option;
 use crate::event;
+use crate::response;
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
     match stream_exists(&stream_name) {
-        Ok(_) => HttpResponse::Ok().body(format!("Stream {} already exists, please create a Stream with unique name", stream_name)),
+        Ok(_) => {
+            let r = response::ServerResponse{
+                http_response: HttpResponse::Ok(),
+                msg: format!("Stream {} already exists, please create a Stream with unique name", stream_name).to_string()
+            };
+            r.error_server_response()
+        }
         Err(_) => {
             match create_stream(&stream_name) {
-                Ok(_) => HttpResponse::Ok().body(format!("Created Stream {}", stream_name)),
-                Err(e) => HttpResponse::Ok().body(format!("Failed to create Stream {}", e))
+                Ok(_) => {
+                    let r = response::ServerResponse{
+                        http_response: HttpResponse::Ok(),
+                        msg: format!("Created Stream {}", stream_name)
+                    };
+                    r.success_server_response()
+                }
+                Err(e) => {
+                    let r = response::ServerResponse{
+                        http_response: HttpResponse::Ok(),
+                        msg: format!("Failed to create Stream due to err: {}", e)
+                    };
+                    r.error_server_response()
+                }
             }
         }
     }
@@ -47,10 +66,20 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                 println!("{:?}", map);
                 e.convert_arrow_parquet(new_batch);
                 drop(map);
-                HttpResponse::Ok().body(format!("Schema already present for Stream"))
+                let r = response::ServerResponse{
+                    http_response: HttpResponse::Ok(),
+                    msg: format!("Event appended to Record Batch successfully for stream {}", &stream_name)
+                };
+                r.success_server_response()
             }
         },
-        Err(_) => HttpResponse::Ok().body(format!("Stream {} doesn't exist", stream_name))
+        Err(e) => {
+            let r = response::ServerResponse{
+                http_response: HttpResponse::Ok(),
+                msg: format!("Stream {} Does not Exist, Error: {}", &stream_name, e)
+            };
+            r.error_server_response()
+        }
     }
 }
 
