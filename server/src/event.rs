@@ -114,7 +114,6 @@ impl Event {
 
     fn create_parquet_file(&self) -> std::fs::File {
         let dir_name = format!("{}{}{}", &self.path, "/", &self.stream_name);
-        let _res = fs::create_dir_all(dir_name.clone());
         let file_name = format!("{}{}{}", dir_name, "/", "data.parquet");
         let parquet_file = fs::File::create(file_name).unwrap();
         return parquet_file

@@ -4,6 +4,9 @@ use aws_sdk_s3::Error;
 use actix_web::{web, HttpRequest, HttpResponse,  Result};
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
+use std::fs;
+use std::io::prelude::*;
+
 
 use crate::storage;
 use crate::option;
@@ -87,6 +90,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
 pub async fn put_schema(stream_name: &String, schema: String) -> Result<(), Error> {
     let opt = option::get_opts();
     let client = storage::setup_storage(&opt).client;
+    let s = schema.clone();
     let _resp = client
         .put_object()
         .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
@@ -94,6 +98,11 @@ pub async fn put_schema(stream_name: &String, schema: String) -> Result<(), Erro
         .body(schema.into_bytes().into())
         .send()
         .await?;
+    let dir_name = format!("{}{}{}", opt.local_disk_path, "/", stream_name);
+    let _res = fs::create_dir_all(dir_name.clone());
+    let file_name = format!("{}{}{}", dir_name, "/", "/.schema");
+    let mut schema_file = fs::File::create(file_name).unwrap();
+    schema_file.write_all(s.as_bytes()).expect("Unable to write data");
     Ok(())
 }
 
