@@ -61,9 +61,9 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                 e.initial_event()
             } else {
                 let mut map = event::HASHMAP.lock().unwrap();
-                let b2 = map.get(&stream_name).unwrap();
+                let init_event = map.get(&stream_name).unwrap();
                 let e2 = e.next_event();
-                let vec = vec![e2.0,b2.clone()];
+                let vec = vec![e2.0,init_event.clone()];
                 let new_batch = RecordBatch::concat(&Arc::new(e2.1.clone()), &vec).unwrap();
                 map.insert(stream_name.clone(), new_batch.clone());
                 println!("{:?}", map);

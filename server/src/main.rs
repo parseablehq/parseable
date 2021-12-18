@@ -1,7 +1,8 @@
 use actix_web::{middleware, web, App, HttpServer, Error};
 use actix_web::dev::ServiceRequest;
 use actix_web_httpauth::extractors::basic::BasicAuth;
-
+use std::{fs, io};
+use std::path::Path;
 
 mod handler;                                             
 mod option;
@@ -9,6 +10,7 @@ mod storage;
 mod banner;
 mod event;
 mod response;
+mod utils;
 
 // Init
 // Read S3
@@ -21,6 +23,29 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     banner::print();
     let opt = option::get_opts();
+    if Path::new(&opt.local_disk_path).exists() {
+        let entries = fs::read_dir(&opt.local_disk_path)?
+        .map(|res| res.map(|e| e.path()))
+        .collect::<Result<Vec<_>, io::Error>>()?;
+        for entry in entries {
+            let path = format!("{:?}",entry);
+            let new_path = utils::rem_first_and_last(&path);
+            let new_patch_exists = format!("{}/{}",&new_path, "data.parquet");
+            if Path::new(&new_patch_exists).exists() {
+                let file = fs::File::open(new_patch_exists).unwrap();
+                let rb_reader = utils::convert_parquet_rb_reader(file);
+                let tokens:Vec<&str>= new_path.split("/").collect();
+                for rb in rb_reader {
+                    let record_batch = rb.unwrap();
+                    let mut map = event::HASHMAP.lock().unwrap();
+                    let s: String = tokens[2].to_string();
+                    map.insert(s, record_batch);
+                    drop(map);
+                }
+            }
+        }
+    }
+
     run_http(opt).await?;
     Ok(())
 }
