@@ -7,11 +7,11 @@ use bytes::Bytes;
 use std::fs;
 use std::io::prelude::*;
 
-
 use crate::storage;
 use crate::option;
 use crate::event;
 use crate::response;
+use crate::utils;
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
@@ -46,10 +46,11 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
 
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
+   
     match stream_exists(&stream_name) {
         Ok(schema) => {
             let e = event::Event{
-                body: body, 
+                body: utils::flatten_json_body(body), 
                 path: option::get_opts().local_disk_path,
                 stream_name: stream_name.clone(),
                 schema: schema
@@ -60,7 +61,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
             if e.schema.is_empty() {
                 e.initial_event()
             } else {
-                let mut map = event::HASHMAP.lock().unwrap();
+                let mut map = event::STREAM_RB_MAP.lock().unwrap();
                 let init_event = map.get(&stream_name).unwrap();
                 let e2 = e.next_event();
                 let vec = vec![e2.0,init_event.clone()];
