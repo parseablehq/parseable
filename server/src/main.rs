@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
                 let tokens:Vec<&str>= new_path.split("/").collect();
                 for rb in rb_reader {
                     let record_batch = rb.unwrap();
-                    let mut map = event::HASHMAP.lock().unwrap();
+                    let mut map = event::STREAM_RB_MAP.lock().unwrap();
                     let s: String = tokens[2].to_string();
                     map.insert(s, record_batch);
                     drop(map);
@@ -45,7 +45,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-
     run_http(opt).await?;
     Ok(())
 }
