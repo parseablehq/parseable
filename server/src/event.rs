@@ -1,5 +1,5 @@
 use crate::response;
-use actix_web::{web, HttpResponse};
+use actix_web::HttpResponse;
 use arrow::json;
 use arrow::json::reader::infer_json_schema;
 use arrow::record_batch::RecordBatch;
@@ -30,7 +30,7 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn initial_event(&self) -> HttpResponse {
+    pub fn initial_event(&self) -> response::ServerResponse {
         let mut map = STREAM_RB_MAP.lock().unwrap();
 
         let mut c = Cursor::new(Vec::new());
@@ -44,7 +44,7 @@ impl Event {
 
         let mut event = json::Reader::new(buf_reader, Arc::new(inferred_schema), 1024, None);
         let b1 = event.next().unwrap().unwrap();
-        map.insert(self.stream_name.to_string(), b1);
+        map.insert(self.stream_name.to_string(), b1.clone());
         drop(map);
 
         match handler::put_schema(&self.stream_name, str_inferred_schema) {
@@ -55,20 +55,24 @@ impl Event {
                         "Intial Event recieved for Stream {}, schema uploaded successfully",
                         self.stream_name
                     ),
+                    rb: Some(b1),
+                    schema: None,
                 };
-                r.success_server_response()
+                return r;
             }
             Err(e) => {
                 let r = response::ServerResponse {
                     http_response: HttpResponse::Ok(),
                     msg: format!("Stream {} does not exist, Err: {}", &self.stream_name, e),
+                    rb: None,
+                    schema: None,
                 };
-                r.error_server_response()
+                return r;
             }
         }
     }
 
-    pub fn next_event(&self) -> (RecordBatch, arrow::datatypes::Schema, HttpResponse) {
+    pub fn next_event(&self) -> response::ServerResponse {
         // The schema is not empty here, so this stream already has events.
         // Proceed with validating against current schema and adding event to record batch.
         let str_inferred_schema = self.return_schema();
@@ -90,8 +94,10 @@ impl Event {
         let r = response::ServerResponse {
             http_response: HttpResponse::Ok(),
             msg: format!("Event recieved for Stream {}", &self.stream_name),
+            rb: Some(b1),
+            schema: Some(schema_clone.0),
         };
-        return (b1, schema_clone.0, r.success_server_response());
+        return r;
     }
 
     fn return_schema(&self) -> (arrow::datatypes::Schema, std::string::String) {
