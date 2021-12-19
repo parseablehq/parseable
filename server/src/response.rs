@@ -1,9 +1,12 @@
 use actix_web::dev::HttpResponseBuilder;
 use actix_web::HttpResponse;
+use arrow::record_batch::RecordBatch;
 
 pub struct ServerResponse {
     pub http_response: HttpResponseBuilder,
     pub msg: String,
+    pub rb: Option<RecordBatch>,
+    pub schema: Option<arrow::datatypes::Schema>,
 }
 
 impl ServerResponse {
