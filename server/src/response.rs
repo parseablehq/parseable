@@ -15,23 +15,32 @@
  */
 
 use actix_web::dev::HttpResponseBuilder;
-use actix_web::HttpResponse;
+use actix_web::http::StatusCode;
+use actix_web::{error, HttpResponse};
 use arrow::record_batch::RecordBatch;
+use derive_more::{Display, Error};
 
 pub struct ServerResponse {
-    pub http_response: HttpResponseBuilder,
-    pub msg: String,
+    pub code: StatusCode,
+    pub msg: &'static str,
+}
+
+impl ServerResponse {
+    pub fn server_response(&self) -> HttpResponse {
+        log::info!("{}", self.msg);
+        HttpResponseBuilder::new(self.code).body(format!("{}", self.msg))
+    }
+}
+
+pub struct EventResponse {
+    pub msg: &'static str,
     pub rb: Option<RecordBatch>,
     pub schema: Option<arrow::datatypes::Schema>,
 }
 
-impl ServerResponse {
-    pub fn success_server_response(&self) -> HttpResponse {
-        log::info!("{}", self.msg);
-        HttpResponse::Ok().body(format!("{}", self.msg))
-    }
-    pub fn error_server_response(&self) -> HttpResponse {
-        log::error!("{}", self.msg);
-        HttpResponse::Ok().body(format!("{}", self.msg))
-    }
+#[derive(Debug, Display, Error)]
+pub struct EventError {
+    pub msg: &'static str,
 }
+
+impl error::ResponseError for EventError {}

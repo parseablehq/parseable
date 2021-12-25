@@ -34,3 +34,4 @@ anyhow = { version = "1.0.43", features = ["backtrace"] }
 config = "0.10.1"
 rust-flatten-json = "0.2.0"
 pipe = "0.4.0"
+derive_more = "0.99.17"

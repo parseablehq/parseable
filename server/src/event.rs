@@ -14,12 +14,11 @@
  * limitations under the License.
  */
 
-use crate::response;
-use actix_web::HttpResponse;
 use arrow::json;
 use arrow::json::reader::infer_json_schema;
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
+use lazy_static::lazy_static;
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
@@ -27,8 +26,8 @@ use std::fs;
 use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 
-use crate::handler;
-use lazy_static::lazy_static;
+use crate::response;
+use crate::storage;
 
 lazy_static! {
     pub static ref STREAM_RB_MAP: Mutex<HashMap<String, RecordBatch>> = {
@@ -46,7 +45,7 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn initial_event(&self) -> response::ServerResponse {
+    pub fn initial_event(&self) -> Result<response::EventResponse, response::EventError> {
         let mut map = STREAM_RB_MAP.lock().unwrap();
 
         let mut c = Cursor::new(Vec::new());
@@ -63,37 +62,35 @@ impl Event {
         map.insert(self.stream_name.to_string(), b1.clone());
         drop(map);
 
-        match handler::put_schema(&self.stream_name, str_inferred_schema) {
-            Ok(_) => {
-                let r = response::ServerResponse {
-                    http_response: HttpResponse::Ok(),
-                    msg: format!(
-                        "Intial Event recieved for Stream {}, schema uploaded successfully",
-                        self.stream_name
-                    ),
-                    rb: Some(b1),
-                    schema: None,
-                };
-                return r;
-            }
-            Err(e) => {
-                let r = response::ServerResponse {
-                    http_response: HttpResponse::Ok(),
-                    msg: format!("Stream {} does not exist, Err: {}", &self.stream_name, e),
-                    rb: None,
-                    schema: None,
-                };
-                return r;
-            }
+        match storage::put_schema(&self.stream_name, str_inferred_schema) {
+            Ok(_) => Ok(response::EventResponse {
+                msg: format!(
+                    "Intial Event recieved for Stream {}, schema uploaded successfully",
+                    self.stream_name
+                ),
+                rb: Some(b1),
+                schema: None,
+            }),
+            Err(e) => Err(response::EventError {
+                msg: format!(
+                    "Failed to upload schema for Stream {} due to err: {}",
+                    self.stream_name, e
+                ),
+            }),
         }
     }
 
-    pub fn next_event(&self) -> response::ServerResponse {
+    pub fn next_event(&self) -> Result<response::EventResponse, response::EventError> {
         // The schema is not empty here, so this stream already has events.
         // Proceed with validating against current schema and adding event to record batch.
         let str_inferred_schema = self.return_schema();
         if self.schema != str_inferred_schema.1 {
-            // TODO: return nil, nil and invalid HTTP response
+            Err(response::EventError {
+                msg: format!(
+                    "Event schema doesn't match schema for Stream {}",
+                    self.stream_name
+                ),
+            });
         }
 
         let mut c = Cursor::new(Vec::new());
@@ -107,13 +104,11 @@ impl Event {
         let mut event = json::Reader::new(self.body.as_bytes(), Arc::new(schema.0), 1024, None);
         let b1 = event.next().unwrap().unwrap();
 
-        let r = response::ServerResponse {
-            http_response: HttpResponse::Ok(),
+        Ok(response::EventResponse {
             msg: format!("Event recieved for Stream {}", &self.stream_name),
             rb: Some(b1),
             schema: Some(schema_clone.0),
-        };
-        return r;
+        })
     }
 
     fn return_schema(&self) -> (arrow::datatypes::Schema, std::string::String) {
