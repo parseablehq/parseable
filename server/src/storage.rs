@@ -17,6 +17,10 @@
 use aws_sdk_s3::{Client, Endpoint};
 use http::Uri;
 use std::env;
+use aws_sdk_s3::Error;
+use bytes::Bytes;
+use std::fs;
+use std::io::prelude::*;
 
 use crate::option;
 
@@ -67,4 +71,54 @@ fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
 
 pub fn setup_storage(opt: &option::Opt) -> S3 {
     S3::new(&opt)
+}
+
+#[tokio::main]
+pub async fn put_schema(stream_name: &String, schema: String) -> Result<(), Error> {
+    let opt = option::get_opts();
+    let client = setup_storage(&opt).client;
+    let s = schema.clone();
+    let _resp = client
+        .put_object()
+        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
+        .key(format!("{}{}", stream_name, "/.schema"))
+        .body(schema.into_bytes().into())
+        .send()
+        .await?;
+    let dir_name = format!("{}{}{}", opt.local_disk_path, "/", stream_name);
+    let _res = fs::create_dir_all(dir_name.clone());
+    let file_name = format!("{}{}{}", dir_name, "/", "/.schema");
+    let mut schema_file = fs::File::create(file_name).unwrap();
+    schema_file
+        .write_all(s.as_bytes())
+        .expect("Unable to write data");
+    Ok(())
+}
+
+#[tokio::main]
+pub async fn create_stream(stream_name: &String) -> Result<(), Error> {
+    let opt = option::get_opts();
+    let client = setup_storage(&opt).client;
+    let _resp = client
+        .put_object()
+        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
+        .key(format!("{}{}", stream_name, "/.schema"))
+        .send()
+        .await?;
+    Ok(())
+}
+
+#[tokio::main]
+pub async fn stream_exists(stream_name: &String) -> Result<Bytes, Error> {
+    let opt = option::get_opts();
+    let client = setup_storage(&opt).client;
+    let resp = client
+        .get_object()
+        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
+        .key(format!("{}{}", stream_name, "/.schema"))
+        .send()
+        .await?;
+    let body = resp.body.collect().await;
+    let body_bytes = body.unwrap().into_bytes();
+    Ok(body_bytes)
 }
