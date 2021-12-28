@@ -22,7 +22,7 @@ use derive_more::{Display, Error};
 
 pub struct ServerResponse {
     pub code: StatusCode,
-    pub msg: &'static str,
+    pub msg: String,
 }
 
 impl ServerResponse {
@@ -33,14 +33,14 @@ impl ServerResponse {
 }
 
 pub struct EventResponse {
-    pub msg: &'static str,
+    pub msg: String,
     pub rb: Option<RecordBatch>,
     pub schema: Option<arrow::datatypes::Schema>,
 }
 
 #[derive(Debug, Display, Error)]
 pub struct EventError {
-    pub msg: &'static str,
+    pub msg: String,
 }
 
 impl error::ResponseError for EventError {}

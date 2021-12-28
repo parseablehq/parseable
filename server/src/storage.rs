@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
+use aws_sdk_s3::Error;
 use aws_sdk_s3::{Client, Endpoint};
+use bytes::Bytes;
 use http::Uri;
 use std::env;
-use aws_sdk_s3::Error;
-use bytes::Bytes;
 use std::fs;
 use std::io::prelude::*;
 
