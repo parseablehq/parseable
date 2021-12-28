@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
+use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
 use arrow::record_batch::RecordBatch;
 use std::sync::Arc;
-use actix_web::http::StatusCode;
 
 use crate::event;
 use crate::option;
@@ -28,25 +28,25 @@ use crate::utils;
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
     match storage::stream_exists(&stream_name) {
-        Ok(_) => {
-            response::ServerResponse {
-                msg: format!("Stream {} already exists, please create a Stream with unique name",stream_name),
-                code: StatusCode::BAD_REQUEST,
-            }.server_response()
+        Ok(_) => response::ServerResponse {
+            msg: format!(
+                "Stream {} already exists, please create a Stream with unique name",
+                stream_name
+            ),
+            code: StatusCode::BAD_REQUEST,
         }
+        .server_response(),
         Err(_) => match storage::create_stream(&stream_name) {
-            Ok(_) => {
-                response::ServerResponse {
-                    msg: format!("Created Stream {}", stream_name),
-                    code: StatusCode::OK,
-                }.server_response()
+            Ok(_) => response::ServerResponse {
+                msg: format!("Created Stream {}", stream_name),
+                code: StatusCode::OK,
             }
-            Err(e) => {
-                response::ServerResponse {
-                    msg: format!("Failed to create Stream due to err: {}", e.to_string()),
-                    code: StatusCode::INTERNAL_SERVER_ERROR,
-                }.server_response()
+            .server_response(),
+            Err(e) => response::ServerResponse {
+                msg: format!("Failed to create Stream due to err: {}", e.to_string()),
+                code: StatusCode::INTERNAL_SERVER_ERROR,
             }
+            .server_response(),
         },
     }
 }
@@ -72,14 +72,14 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                         response::ServerResponse {
                             msg: res.msg,
                             code: StatusCode::OK,
-                        }.server_response()
-                    },
-                    Err(res) => {
-                        response::ServerResponse {
-                            msg: res.msg,
-                            code: StatusCode::INTERNAL_SERVER_ERROR,
-                        }.server_response()
+                        }
+                        .server_response()
                     }
+                    Err(res) => response::ServerResponse {
+                        msg: res.msg,
+                        code: StatusCode::INTERNAL_SERVER_ERROR,
+                    }
+                    .server_response(),
                 }
             } else {
                 let mut map = event::STREAM_RB_MAP.lock().unwrap();
@@ -87,7 +87,9 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                 match e.next_event() {
                     Ok(res) => {
                         let vec = vec![res.rb.unwrap(), init_event.clone()];
-                        let new_batch = RecordBatch::concat(&Arc::new(res.schema.unwrap().clone()), &vec).unwrap();
+                        let new_batch =
+                            RecordBatch::concat(&Arc::new(res.schema.unwrap().clone()), &vec)
+                                .unwrap();
                         map.insert(stream_name.clone(), new_batch.clone());
                         println!("{:?}", map);
                         e.convert_arrow_parquet(new_batch);
@@ -95,22 +97,21 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                         response::ServerResponse {
                             msg: res.msg,
                             code: StatusCode::OK,
-                        }.server_response()
-                    },
-                    Err(res) => {
-                        response::ServerResponse {
-                            msg: res.msg,
-                            code: StatusCode::INTERNAL_SERVER_ERROR,
-                        }.server_response()
+                        }
+                        .server_response()
                     }
+                    Err(res) => response::ServerResponse {
+                        msg: res.msg,
+                        code: StatusCode::BAD_REQUEST,
+                    }
+                    .server_response(),
                 }
             }
         }
-        Err(e) => {
-            response::ServerResponse {
-                msg: format!("Stream {} Does not Exist, Error: {}", &stream_name, e),
-                code: StatusCode::NOT_FOUND,
-            }.server_response()
+        Err(e) => response::ServerResponse {
+            msg: format!("Stream {} Does not Exist, Error: {}", &stream_name, e),
+            code: StatusCode::NOT_FOUND,
         }
+        .server_response(),
     }
 }

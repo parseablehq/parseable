@@ -85,7 +85,7 @@ impl Event {
         // Proceed with validating against current schema and adding event to record batch.
         let str_inferred_schema = self.return_schema();
         if self.schema != str_inferred_schema.1 {
-            Err(response::EventError {
+            return Err(response::EventError {
                 msg: format!(
                     "Event schema doesn't match schema for Stream {}",
                     self.stream_name
