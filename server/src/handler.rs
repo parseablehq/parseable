@@ -20,6 +20,7 @@ use arrow::record_batch::RecordBatch;
 use std::sync::Arc;
 
 use crate::event;
+use crate::mem_store;
 use crate::option;
 use crate::response;
 use crate::storage;
@@ -82,18 +83,23 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                     .server_response(),
                 }
             } else {
-                let mut map = event::STREAM_RB_MAP.lock().unwrap();
-                let init_event = map.get(&stream_name).unwrap();
+                let rb = mem_store::MEM_STREAMS::get_rb(stream_name.clone());
                 match e.next_event() {
                     Ok(res) => {
-                        let vec = vec![res.rb.unwrap(), init_event.clone()];
+                        let vec = vec![res.rb.unwrap(), rb];
                         let new_batch =
                             RecordBatch::concat(&Arc::new(res.schema.unwrap().clone()), &vec)
                                 .unwrap();
-                        map.insert(stream_name.clone(), new_batch.clone());
-                        println!("{:?}", map);
+                        mem_store::MEM_STREAMS::put(
+                            stream_name.clone(),
+                            mem_store::Stream {
+                                stream_schema: Some(mem_store::MEM_STREAMS::get_schema(
+                                    stream_name,
+                                )),
+                                rb: Some(new_batch.clone()),
+                            },
+                        );
                         e.convert_arrow_parquet(new_batch);
-                        drop(map);
                         response::ServerResponse {
                             msg: res.msg,
                             code: StatusCode::OK,

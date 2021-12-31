@@ -18,23 +18,15 @@ use arrow::json;
 use arrow::json::reader::infer_json_schema;
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
-use lazy_static::lazy_static;
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::file::properties::WriterProperties;
-use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use crate::mem_store;
 use crate::response;
 use crate::storage;
-
-lazy_static! {
-    pub static ref STREAM_RB_MAP: Mutex<HashMap<String, RecordBatch>> = {
-        let m = HashMap::new();
-        Mutex::new(m)
-    };
-}
 
 // Event holds all values for server to process into record batch.
 pub struct Event {
@@ -46,8 +38,6 @@ pub struct Event {
 
 impl Event {
     pub fn initial_event(&self) -> Result<response::EventResponse, response::EventError> {
-        let mut map = STREAM_RB_MAP.lock().unwrap();
-
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
 
@@ -59,9 +49,13 @@ impl Event {
 
         let mut event = json::Reader::new(buf_reader, Arc::new(inferred_schema), 1024, None);
         let b1 = event.next().unwrap().unwrap();
-        map.insert(self.stream_name.to_string(), b1.clone());
-        drop(map);
-
+        mem_store::MEM_STREAMS::put(
+            self.stream_name.to_string(),
+            mem_store::Stream {
+                stream_schema: Some(str_inferred_schema.clone()),
+                rb: Some(b1.clone()),
+            },
+        );
         match storage::put_schema(&self.stream_name, str_inferred_schema) {
             Ok(_) => Ok(response::EventResponse {
                 msg: format!(

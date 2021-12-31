@@ -23,6 +23,7 @@ use std::{fs, io};
 mod banner;
 mod event;
 mod handler;
+mod mem_store;
 mod option;
 mod response;
 mod storage;
@@ -46,17 +47,21 @@ async fn main() -> anyhow::Result<()> {
         for entry in entries {
             let path = format!("{:?}", entry);
             let new_path = utils::rem_first_and_last(&path);
-            let new_patch_exists = format!("{}/{}", &new_path, "data.parquet");
-            if Path::new(&new_patch_exists).exists() {
-                let file = fs::File::open(new_patch_exists).unwrap();
-                let rb_reader = utils::convert_parquet_rb_reader(file);
+            let new_parquet_path = format!("{}/{}", &new_path, "data.parquet");
+            let new_schema_path = format!("{}/{}", &new_path, ".schema");
+            if Path::new(&new_parquet_path).exists() {
+                let parquet_file = fs::File::open(new_parquet_path).unwrap();
+                let rb_reader = utils::convert_parquet_rb_reader(parquet_file);
                 let tokens: Vec<&str> = new_path.split("/").collect();
                 for rb in rb_reader {
-                    let record_batch = rb.unwrap();
-                    let mut map = event::STREAM_RB_MAP.lock().unwrap();
-                    let s: String = tokens[2].to_string();
-                    map.insert(s, record_batch);
-                    drop(map);
+                    let stream_name: String = tokens[2].to_string();
+                    mem_store::MEM_STREAMS::put(
+                        stream_name,
+                        mem_store::Stream {
+                            stream_schema: Some(fs::read_to_string(&new_schema_path)?.parse()?),
+                            rb: Some(rb.unwrap()),
+                        },
+                    );
                 }
             }
         }
