@@ -22,6 +22,7 @@ use std::env;
 use std::fs;
 use std::io::prelude::*;
 
+use crate::mem_store;
 use crate::option;
 
 pub struct S3 {
@@ -121,4 +122,9 @@ pub async fn stream_exists(stream_name: &String) -> Result<Bytes, Error> {
     let body = resp.body.collect().await;
     let body_bytes = body.unwrap().into_bytes();
     Ok(body_bytes)
+}
+
+pub fn stream_exists_local(stream_name: String) -> Bytes {
+    let schema = mem_store::MEM_STREAMS::get_schema(stream_name);
+    Bytes::from(schema)
 }
