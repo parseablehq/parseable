@@ -77,8 +77,8 @@ impl Event {
     pub fn next_event(&self) -> Result<response::EventResponse, response::EventError> {
         // The schema is not empty here, so this stream already has events.
         // Proceed with validating against current schema and adding event to record batch.
-        let str_inferred_schema = self.return_schema();
-        if self.schema != str_inferred_schema.1 {
+        let str_inferred_schema = storage::stream_exists_local(self.stream_name.clone());
+        if self.schema != str_inferred_schema {
             return Err(response::EventError {
                 msg: format!(
                     "Event schema doesn't match schema for Stream {}",

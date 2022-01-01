@@ -115,7 +115,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
             }
         }
         Err(e) => response::ServerResponse {
-            msg: format!("Stream {} Does not Exist, Error: {}", &stream_name, e),
+            msg: format!("Stream {} Does not Exist, Error: {}", stream_name, e),
             code: StatusCode::NOT_FOUND,
         }
         .server_response(),
