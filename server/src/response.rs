@@ -26,7 +26,7 @@ pub struct ServerResponse {
 }
 
 impl ServerResponse {
-    pub fn server_response(&self) -> HttpResponse {
+    pub fn to_http(&self) -> HttpResponse {
         log::info!("{}", self.msg);
         HttpResponseBuilder::new(self.code).body(format!("{}", self.msg))
     }

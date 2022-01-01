@@ -29,25 +29,22 @@ use crate::utils;
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
     match storage::stream_exists(&stream_name) {
+        // Error if the stream already exists
         Ok(_) => response::ServerResponse {
-            msg: format!(
-                "Stream {} already exists, please create a Stream with unique name",
-                stream_name
-            ),
+            msg: format!("Stream {} already exists, please create a new Stream with unique name",stream_name),
             code: StatusCode::BAD_REQUEST,
-        }
-        .server_response(),
+        }.to_http(),
+        // Proceed to create stream if it doesn't exist
         Err(_) => match storage::create_stream(&stream_name) {
             Ok(_) => response::ServerResponse {
                 msg: format!("Created Stream {}", stream_name),
                 code: StatusCode::OK,
-            }
-            .server_response(),
+            }.to_http(),
+            // Fail if unable to create stream on object store backend
             Err(e) => response::ServerResponse {
                 msg: format!("Failed to create Stream due to err: {}", e.to_string()),
                 code: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-            .server_response(),
+            }.to_http(),
         },
     }
 }
@@ -56,6 +53,9 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
 
     match storage::stream_exists(&stream_name) {
+        // empty schema file is created in object store at the time of Put Stream. 
+        // If that file is successfully received, we assume that to be indicating that
+        // stream already exists.
         Ok(schema) => {
             let e = event::Event {
                 body: utils::flatten_json_body(body),
@@ -63,9 +63,10 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                 stream_name: stream_name.clone(),
                 schema: schema,
             };
-            // If the schema is empty, this is the first event in this stream.
-            // Parse the arrow schema, upload it to <bucket>/<stream_prefix>/.schema file
+            // If the .schema file is still empty, this is the first event in this stream.
             if e.schema.is_empty() {
+                // 1. Parse the arrow schema, upload it to <bucket>/<stream_prefix>/.schema file
+                // 2. Also store the event on local cache
                 match e.initial_event() {
                     Ok(res) => {
                         // Store record batch to Parquet file on local cache
@@ -73,14 +74,12 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                         response::ServerResponse {
                             msg: res.msg,
                             code: StatusCode::OK,
-                        }
-                        .server_response()
+                        }.to_http()
                     }
                     Err(res) => response::ServerResponse {
                         msg: res.msg,
                         code: StatusCode::INTERNAL_SERVER_ERROR,
-                    }
-                    .server_response(),
+                    }.to_http(),
                 }
             } else {
                 let rb = mem_store::MEM_STREAMS::get_rb(stream_name.clone());
@@ -93,7 +92,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                         mem_store::MEM_STREAMS::put(
                             stream_name.clone(),
                             mem_store::Stream {
-                                stream_schema: Some(mem_store::MEM_STREAMS::get_schema(
+                                    schema: Some(mem_store::MEM_STREAMS::get_schema(
                                     stream_name,
                                 )),
                                 rb: Some(new_batch.clone()),
@@ -104,13 +103,13 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                             msg: res.msg,
                             code: StatusCode::OK,
                         }
-                        .server_response()
+                        .to_http()
                     }
                     Err(res) => response::ServerResponse {
                         msg: res.msg,
                         code: StatusCode::BAD_REQUEST,
                     }
-                    .server_response(),
+                    .to_http(),
                 }
             }
         }
@@ -118,6 +117,6 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
             msg: format!("Stream {} Does not Exist, Error: {}", stream_name, e),
             code: StatusCode::NOT_FOUND,
         }
-        .server_response(),
+        .to_http(),
     }
 }
