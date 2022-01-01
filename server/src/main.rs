@@ -40,6 +40,8 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     banner::print();
     let opt = option::get_opts();
+    // Check local data path and load streams and corresponding schema to 
+    // internal in-memory store
     if Path::new(&opt.local_disk_path).exists() {
         let entries = fs::read_dir(&opt.local_disk_path)?
             .map(|res| res.map(|e| e.path()))
@@ -58,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
                     mem_store::MEM_STREAMS::put(
                         stream_name,
                         mem_store::Stream {
-                            stream_schema: Some(fs::read_to_string(&new_schema_path)?.parse()?),
+                            schema: Some(fs::read_to_string(&new_schema_path)?.parse()?),
                             rb: Some(rb.unwrap()),
                         },
                     );

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 #[derive(Debug)]
 pub struct Stream {
     pub rb: Option<RecordBatch>,
-    pub stream_schema: Option<String>,
+    pub schema: Option<String>,
 }
 
 lazy_static! {
@@ -20,16 +20,16 @@ lazy_static! {
 impl MEM_STREAMS {
     pub fn get_rb(stream_name: String) -> RecordBatch {
         let map = MEM_STREAMS.lock().unwrap();
-        let init_event = map.get(&stream_name).unwrap();
+        let events = map.get(&stream_name).unwrap();
         drop(&map);
-        return init_event.rb.as_ref().unwrap().clone();
+        return events.rb.as_ref().unwrap().clone();
     }
 
     pub fn get_schema(stream_name: String) -> String {
         let map = MEM_STREAMS.lock().unwrap();
-        let init_event = map.get(&stream_name).unwrap();
+        let events = map.get(&stream_name).unwrap();
         drop(&map);
-        return init_event.stream_schema.as_ref().unwrap().clone();
+        return events.schema.as_ref().unwrap().clone();
     }
 
     pub fn put(stream_name: String, stream: Stream) {
@@ -37,7 +37,7 @@ impl MEM_STREAMS {
         map.insert(
             stream_name.to_string(),
             Box::new(Stream {
-                stream_schema: Some(stream.stream_schema.unwrap()),
+                schema: Some(stream.schema.unwrap()),
                 rb: Some(stream.rb.unwrap()),
             }),
         );

@@ -28,7 +28,7 @@ use crate::mem_store;
 use crate::response;
 use crate::storage;
 
-// Event holds all values for server to process into record batch.
+// Event holds all values relevant to a single event
 pub struct Event {
     pub body: String,
     pub stream_name: String,
@@ -37,6 +37,9 @@ pub struct Event {
 }
 
 impl Event {
+    // This is called when the first event of a Stream is received. The first event is
+    // special because we parse this event to generate the schema for the stream. This
+    // schema is then enforced on rest of the events sent to this stream.
     pub fn initial_event(&self) -> Result<response::EventResponse, response::EventError> {
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
@@ -45,17 +48,21 @@ impl Event {
         c.seek(SeekFrom::Start(0)).unwrap();
         let buf_reader = BufReader::new(reader);
 
-        let (inferred_schema, str_inferred_schema) = self.return_schema();
+        let (inferred_schema, str_inferred_schema) = self.infer_schema();
 
         let mut event = json::Reader::new(buf_reader, Arc::new(inferred_schema), 1024, None);
         let b1 = event.next().unwrap().unwrap();
+
+        // Put the event into in memory store
         mem_store::MEM_STREAMS::put(
             self.stream_name.to_string(),
             mem_store::Stream {
-                stream_schema: Some(str_inferred_schema.clone()),
+                schema: Some(str_inferred_schema.clone()),
                 rb: Some(b1.clone()),
             },
         );
+
+        // Put the inferred schema to object store
         match storage::put_schema(&self.stream_name, str_inferred_schema) {
             Ok(_) => Ok(response::EventResponse {
                 msg: format!(
@@ -92,7 +99,7 @@ impl Event {
         c.write_all(reader).unwrap();
         c.seek(SeekFrom::Start(0)).unwrap();
 
-        let schema = self.return_schema();
+        let schema = self.infer_schema();
         let schema_clone = schema.clone();
 
         let mut event = json::Reader::new(self.body.as_bytes(), Arc::new(schema.0), 1024, None);
@@ -105,7 +112,7 @@ impl Event {
         })
     }
 
-    fn return_schema(&self) -> (arrow::datatypes::Schema, std::string::String) {
+    fn infer_schema(&self) -> (arrow::datatypes::Schema, std::string::String) {
         let reader = self.body.as_bytes();
         let mut buf_reader = BufReader::new(reader);
         let inferred_schema = infer_json_schema(&mut buf_reader, None).unwrap();
@@ -124,7 +131,7 @@ impl Event {
         let props = WriterProperties::builder().build();
         let mut writer = ArrowWriter::try_new(
             self.create_parquet_file(),
-            Arc::new(self.return_schema().0),
+            Arc::new(self.infer_schema().0),
             Some(props),
         )
         .unwrap();
