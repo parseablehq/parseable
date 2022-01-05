@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     banner::print();
     let opt = option::get_opts();
-    // Check local data path and load streams and corresponding schema to 
+    // Check local data path and load streams and corresponding schema to
     // internal in-memory store
     if Path::new(&opt.local_disk_path).exists() {
         let entries = fs::read_dir(&opt.local_disk_path)?

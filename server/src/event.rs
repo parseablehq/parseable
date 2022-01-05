@@ -28,12 +28,18 @@ use crate::mem_store;
 use crate::response;
 use crate::storage;
 
-// Event holds all values relevant to a single event
+// Event holds all values relevant to a single event for a single stream
 pub struct Event {
     pub body: String,
     pub stream_name: String,
     pub path: String,
     pub schema: Bytes,
+}
+
+// Events holds the schema related to a each event for a single stream
+pub struct Schema {
+    pub arrow_schema: arrow::datatypes::Schema,
+    pub string_schema: String,
 }
 
 impl Event {
@@ -48,29 +54,33 @@ impl Event {
         c.seek(SeekFrom::Start(0)).unwrap();
         let buf_reader = BufReader::new(reader);
 
-        let (inferred_schema, str_inferred_schema) = self.infer_schema();
-
-        let mut event = json::Reader::new(buf_reader, Arc::new(inferred_schema), 1024, None);
+        let mut event = json::Reader::new(
+            buf_reader,
+            Arc::new(unbox(self.infer_schema()).arrow_schema),
+            1024,
+            None,
+        );
         let b1 = event.next().unwrap().unwrap();
 
         // Put the event into in memory store
         mem_store::MEM_STREAMS::put(
             self.stream_name.to_string(),
             mem_store::Stream {
-                schema: Some(str_inferred_schema.clone()),
+                schema: Some(unbox(self.infer_schema()).string_schema),
                 rb: Some(b1.clone()),
             },
         );
 
+        // Store record batch to Parquet file on local cache
+        self.convert_arrow_parquet(b1);
+
         // Put the inferred schema to object store
-        match storage::put_schema(&self.stream_name, str_inferred_schema) {
+        match storage::put_schema(&self.stream_name, unbox(self.infer_schema()).string_schema) {
             Ok(_) => Ok(response::EventResponse {
                 msg: format!(
                     "Intial Event recieved for Stream {}, schema uploaded successfully",
                     self.stream_name
                 ),
-                rb: Some(b1),
-                schema: None,
             }),
             Err(e) => Err(response::EventError {
                 msg: format!(
@@ -81,61 +91,83 @@ impl Event {
         }
     }
 
+    // next_event process all events after the 1st event. Concatenates record batches
+    // and puts them in memory store for each event.
     pub fn next_event(&self) -> Result<response::EventResponse, response::EventError> {
-        // The schema is not empty here, so this stream already has events.
-        // Proceed with validating against current schema and adding event to record batch.
-        let str_inferred_schema = storage::stream_exists_local(self.stream_name.clone());
-        if self.schema != str_inferred_schema {
-            return Err(response::EventError {
-                msg: format!(
-                    "Event schema doesn't match schema for Stream {}",
-                    self.stream_name
-                ),
-            });
-        }
-
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
         c.write_all(reader).unwrap();
         c.seek(SeekFrom::Start(0)).unwrap();
 
-        let schema = self.infer_schema();
-        let schema_clone = schema.clone();
+        let mut event = json::Reader::new(
+            self.body.as_bytes(),
+            Arc::new(unbox(self.infer_schema()).arrow_schema),
+            1024,
+            None,
+        );
+        let next_event_rb = event.next().unwrap().unwrap();
 
-        let mut event = json::Reader::new(self.body.as_bytes(), Arc::new(schema.0), 1024, None);
-        let b1 = event.next().unwrap().unwrap();
+        let rb = mem_store::MEM_STREAMS::get_rb(self.stream_name.clone());
 
-        Ok(response::EventResponse {
-            msg: format!("Event recieved for Stream {}", &self.stream_name),
-            rb: Some(b1),
-            schema: Some(schema_clone.0),
-        })
+        let vec = vec![next_event_rb.clone(), rb];
+        let new_batch = RecordBatch::concat(&next_event_rb.schema().clone(), &vec);
+
+        match new_batch {
+            Ok(r) => {
+                mem_store::MEM_STREAMS::put(
+                    self.stream_name.clone(),
+                    mem_store::Stream {
+                        schema: Some(mem_store::MEM_STREAMS::get_schema(self.stream_name.clone())),
+                        rb: Some(r.clone()),
+                    },
+                );
+                self.convert_arrow_parquet(r);
+
+                return Ok(response::EventResponse {
+                    msg: format!("Event recieved for Stream {}", &self.stream_name),
+                });
+            }
+            Err(e) => {
+                return Err(response::EventError {
+                    msg: format!("Error recieved for Stream {}, {}", &self.stream_name, e),
+                })
+            }
+        }
     }
 
-    fn infer_schema(&self) -> (arrow::datatypes::Schema, std::string::String) {
+    // inferSchema is a constructor to Schema
+    // returns raw arrow schema type and arrow schema to string type.
+    fn infer_schema(&self) -> Box<Schema> {
         let reader = self.body.as_bytes();
         let mut buf_reader = BufReader::new(reader);
         let inferred_schema = infer_json_schema(&mut buf_reader, None).unwrap();
         let str_inferred_schema = format!("{}", serde_json::to_string(&inferred_schema).unwrap());
-        return (inferred_schema, str_inferred_schema);
+        return Box::new(Schema {
+            arrow_schema: inferred_schema,
+            string_schema: str_inferred_schema,
+        });
     }
 
-    fn create_parquet_file(&self) -> std::fs::File {
+    // convert arrow record batch to parquet
+    // and write it to local cache path as a data.parquet file.
+    pub fn convert_arrow_parquet(&self, rb: RecordBatch) {
         let dir_name = format!("{}{}{}", &self.path, "/", &self.stream_name);
         let file_name = format!("{}{}{}", dir_name, "/", "data.parquet");
-        let parquet_file = fs::File::create(file_name).unwrap();
-        return parquet_file;
-    }
-
-    pub fn convert_arrow_parquet(&self, rb: RecordBatch) {
+        fs::create_dir_all(dir_name).unwrap();
+        let parquet_file = fs::File::create(file_name);
         let props = WriterProperties::builder().build();
         let mut writer = ArrowWriter::try_new(
-            self.create_parquet_file(),
-            Arc::new(self.infer_schema().0),
+            parquet_file.unwrap(),
+            Arc::new(unbox(self.infer_schema()).arrow_schema),
             Some(props),
         )
         .unwrap();
         writer.write(&rb).expect("Writing batch");
         writer.close().unwrap();
     }
+}
+
+// Derefrence Pointer for Type T
+fn unbox<T>(value: Box<T>) -> T {
+    *value
 }

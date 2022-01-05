@@ -16,11 +16,8 @@
 
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
-use arrow::record_batch::RecordBatch;
-use std::sync::Arc;
 
 use crate::event;
-use crate::mem_store;
 use crate::option;
 use crate::response;
 use crate::storage;
@@ -31,20 +28,26 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     match storage::stream_exists(&stream_name) {
         // Error if the stream already exists
         Ok(_) => response::ServerResponse {
-            msg: format!("Stream {} already exists, please create a new Stream with unique name",stream_name),
+            msg: format!(
+                "Stream {} already exists, please create a new Stream with unique name",
+                stream_name
+            ),
             code: StatusCode::BAD_REQUEST,
-        }.to_http(),
+        }
+        .to_http(),
         // Proceed to create stream if it doesn't exist
         Err(_) => match storage::create_stream(&stream_name) {
             Ok(_) => response::ServerResponse {
                 msg: format!("Created Stream {}", stream_name),
                 code: StatusCode::OK,
-            }.to_http(),
+            }
+            .to_http(),
             // Fail if unable to create stream on object store backend
             Err(e) => response::ServerResponse {
                 msg: format!("Failed to create Stream due to err: {}", e.to_string()),
                 code: StatusCode::INTERNAL_SERVER_ERROR,
-            }.to_http(),
+            }
+            .to_http(),
         },
     }
 }
@@ -53,7 +56,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
 
     match storage::stream_exists(&stream_name) {
-        // empty schema file is created in object store at the time of Put Stream. 
+        // empty schema file is created in object store at the time of Put Stream.
         // If that file is successfully received, we assume that to be indicating that
         // stream already exists.
         Ok(schema) => {
@@ -68,43 +71,24 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                 // 1. Parse the arrow schema, upload it to <bucket>/<stream_prefix>/.schema file
                 // 2. Also store the event on local cache
                 match e.initial_event() {
-                    Ok(res) => {
-                        // Store record batch to Parquet file on local cache
-                        e.convert_arrow_parquet(res.rb.unwrap());
-                        response::ServerResponse {
-                            msg: res.msg,
-                            code: StatusCode::OK,
-                        }.to_http()
+                    Ok(res) => response::ServerResponse {
+                        msg: res.msg,
+                        code: StatusCode::OK,
                     }
+                    .to_http(),
                     Err(res) => response::ServerResponse {
                         msg: res.msg,
                         code: StatusCode::INTERNAL_SERVER_ERROR,
-                    }.to_http(),
+                    }
+                    .to_http(),
                 }
             } else {
-                let rb = mem_store::MEM_STREAMS::get_rb(stream_name.clone());
                 match e.next_event() {
-                    Ok(res) => {
-                        let vec = vec![res.rb.unwrap(), rb];
-                        let new_batch =
-                            RecordBatch::concat(&Arc::new(res.schema.unwrap().clone()), &vec)
-                                .unwrap();
-                        mem_store::MEM_STREAMS::put(
-                            stream_name.clone(),
-                            mem_store::Stream {
-                                    schema: Some(mem_store::MEM_STREAMS::get_schema(
-                                    stream_name,
-                                )),
-                                rb: Some(new_batch.clone()),
-                            },
-                        );
-                        e.convert_arrow_parquet(new_batch);
-                        response::ServerResponse {
-                            msg: res.msg,
-                            code: StatusCode::OK,
-                        }
-                        .to_http()
+                    Ok(res) => response::ServerResponse {
+                        msg: res.msg,
+                        code: StatusCode::OK,
                     }
+                    .to_http(),
                     Err(res) => response::ServerResponse {
                         msg: res.msg,
                         code: StatusCode::BAD_REQUEST,
