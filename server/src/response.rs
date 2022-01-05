@@ -17,7 +17,6 @@
 use actix_web::dev::HttpResponseBuilder;
 use actix_web::http::StatusCode;
 use actix_web::{error, HttpResponse};
-use arrow::record_batch::RecordBatch;
 use derive_more::{Display, Error};
 
 pub struct ServerResponse {
@@ -34,8 +33,6 @@ impl ServerResponse {
 
 pub struct EventResponse {
     pub msg: String,
-    pub rb: Option<RecordBatch>,
-    pub schema: Option<arrow::datatypes::Schema>,
 }
 
 #[derive(Debug, Display, Error)]
