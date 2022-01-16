@@ -27,6 +27,7 @@ use std::sync::Arc;
 use crate::mem_store;
 use crate::response;
 use crate::storage;
+use crate::utils;
 
 // Event holds all values relevant to a single event for a single stream
 pub struct Event {
@@ -56,7 +57,7 @@ impl Event {
 
         let mut event = json::Reader::new(
             buf_reader,
-            Arc::new(unbox(self.infer_schema()).arrow_schema),
+            Arc::new(utils::unbox(self.infer_schema()).arrow_schema),
             1024,
             None,
         );
@@ -66,7 +67,7 @@ impl Event {
         mem_store::MEM_STREAMS::put(
             self.stream_name.to_string(),
             mem_store::Stream {
-                schema: Some(unbox(self.infer_schema()).string_schema),
+                schema: Some(utils::unbox(self.infer_schema()).string_schema),
                 rb: Some(b1.clone()),
             },
         );
@@ -75,7 +76,10 @@ impl Event {
         self.convert_arrow_parquet(b1);
 
         // Put the inferred schema to object store
-        match storage::put_schema(&self.stream_name, unbox(self.infer_schema()).string_schema) {
+        match storage::put_schema(
+            &self.stream_name,
+            utils::unbox(self.infer_schema()).string_schema,
+        ) {
             Ok(_) => Ok(response::EventResponse {
                 msg: format!(
                     "Intial Event recieved for Stream {}, schema uploaded successfully",
@@ -101,7 +105,7 @@ impl Event {
 
         let mut event = json::Reader::new(
             self.body.as_bytes(),
-            Arc::new(unbox(self.infer_schema()).arrow_schema),
+            Arc::new(utils::unbox(self.infer_schema()).arrow_schema),
             1024,
             None,
         );
@@ -158,16 +162,11 @@ impl Event {
         let props = WriterProperties::builder().build();
         let mut writer = ArrowWriter::try_new(
             parquet_file.unwrap(),
-            Arc::new(unbox(self.infer_schema()).arrow_schema),
+            Arc::new(utils::unbox(self.infer_schema()).arrow_schema),
             Some(props),
         )
         .unwrap();
         writer.write(&rb).expect("Writing batch");
         writer.close().unwrap();
     }
-}
-
-// Derefrence Pointer for Type T
-fn unbox<T>(value: Box<T>) -> T {
-    *value
 }
