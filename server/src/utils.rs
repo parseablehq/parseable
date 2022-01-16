@@ -21,6 +21,8 @@ use parquet::file::reader::SerializedFileReader;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+use crate::option;
+
 pub fn rem_first_and_last(value: &str) -> &str {
     let mut chars = value.chars();
     chars.next();
@@ -43,7 +45,23 @@ pub fn flatten_json_body(body: web::Json<serde_json::Value>) -> String {
     format!("{:}", serde_json::to_string(&flat_value).unwrap())
 }
 
-// Derefrence Pointer for Type T
+// validate_stream_name validates the stream name and returns an error if the
+// stream contains a sql keyword
+pub fn validate_stream_name(str_name: &str) -> Result<(), String> {
+    // add more sql keywords here in lower case
+    let denied_names = [
+        "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
+    ];
+    if denied_names.contains(&str_name.to_lowercase().as_str()) {
+        return Err(String::from("stream name cannot be a sql keyword"));
+    }
+    Ok(())
+}
+
+pub fn get_cache_path(stream_name: &str) -> String {
+    format!("{}/{}", option::get_opts().local_disk_path, stream_name)
+}
+
 pub fn unbox<T>(value: Box<T>) -> T {
     *value
 }

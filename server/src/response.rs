@@ -17,6 +17,8 @@
 use actix_web::dev::HttpResponseBuilder;
 use actix_web::http::StatusCode;
 use actix_web::{error, HttpResponse};
+use arrow::json;
+use arrow::record_batch::RecordBatch;
 use derive_more::{Display, Error};
 
 pub struct ServerResponse {
@@ -27,7 +29,27 @@ pub struct ServerResponse {
 impl ServerResponse {
     pub fn to_http(&self) -> HttpResponse {
         log::info!("{}", self.msg);
-        HttpResponseBuilder::new(self.code).body(format!("{}", self.msg))
+        HttpResponseBuilder::new(self.code)
+            .content_type("text")
+            .body(format!("{}", self.msg))
+    }
+}
+
+pub struct QueryResponse {
+    pub code: StatusCode,
+    pub body: Vec<RecordBatch>,
+}
+
+impl QueryResponse {
+    pub fn to_http(&self) -> HttpResponse {
+        log::info!("{}", "Returning query results");
+        let buf = Vec::new();
+        let mut writer = json::ArrayWriter::new(buf);
+        writer.write_batches(&self.body).unwrap();
+        writer.finish().unwrap();
+        HttpResponseBuilder::new(self.code)
+            .content_type("json")
+            .body(writer.into_inner())
     }
 }
 
