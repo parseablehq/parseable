@@ -22,33 +22,75 @@ use crate::option;
 use crate::response;
 use crate::storage;
 use crate::utils;
+use crate::query;
+
+pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> HttpResponse {
+     match query.parse() {
+         Ok(stream_name) => {
+            match storage::stream_exists(&stream_name) {
+                Ok(_) => {
+                    let results = query.execute(&stream_name);
+                    response::QueryResponse {
+                        body: results,
+                        code: StatusCode::OK,
+                    }
+                    .to_http()
+                }
+                Err(_) => {
+                    response::ServerResponse {
+                        msg: format!("Stream {} does not exist", stream_name.to_string()),
+                        code: StatusCode::BAD_REQUEST,
+                    }
+                    .to_http()
+                 }
+            }
+         },
+         Err(e) => {
+            response::ServerResponse {
+                msg: format!("Failed to execute query due to err: {}", e.to_string()),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http()
+         }
+     }
+}
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
-    match storage::stream_exists(&stream_name) {
-        // Error if the stream already exists
-        Ok(_) => response::ServerResponse {
-            msg: format!(
-                "Stream {} already exists, please create a new Stream with unique name",
-                stream_name
-            ),
+    match utils::validate_stream_name(&stream_name) {
+        Ok(_) => {
+            match storage::stream_exists(&stream_name) {
+                // Error if the stream already exists
+                Ok(_) => response::ServerResponse {
+                    msg: format!(
+                        "Stream {} already exists, please create a new Stream with unique name",
+                        stream_name
+                    ),
+                    code: StatusCode::BAD_REQUEST,
+                }
+                .to_http(),
+                // Proceed to create stream if it doesn't exist
+                Err(_) => match storage::create_stream(&stream_name) {
+                    Ok(_) => response::ServerResponse {
+                        msg: format!("Created Stream {}", stream_name),
+                        code: StatusCode::OK,
+                    }
+                    .to_http(),
+                    // Fail if unable to create stream on object store backend
+                    Err(e) => response::ServerResponse {
+                        msg: format!("Failed to create Stream due to err: {}", e.to_string()),
+                        code: StatusCode::INTERNAL_SERVER_ERROR,
+                    }
+                    .to_http(),
+                },
+            }
+        }
+        // fail to proceed if there is an error in stream name validation
+        Err(e) => response::ServerResponse {
+            msg: format!("Failed to create Stream due to err: {}", e.to_string()),
             code: StatusCode::BAD_REQUEST,
         }
         .to_http(),
-        // Proceed to create stream if it doesn't exist
-        Err(_) => match storage::create_stream(&stream_name) {
-            Ok(_) => response::ServerResponse {
-                msg: format!("Created Stream {}", stream_name),
-                code: StatusCode::OK,
-            }
-            .to_http(),
-            // Fail if unable to create stream on object store backend
-            Err(e) => response::ServerResponse {
-                msg: format!("Failed to create Stream due to err: {}", e.to_string()),
-                code: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-            .to_http(),
-        },
     }
 }
 

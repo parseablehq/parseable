@@ -35,6 +35,7 @@ mod response;
 mod storage;
 mod sync_s3;
 mod utils;
+mod query;
 
 // Init
 // Read S3
@@ -76,11 +77,17 @@ async fn validator(req: ServiceRequest, _credentials: BasicAuth) -> Result<Servi
 }
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
+    let base_path = "/api";
+    let version = "/v1";
+    let stream_path = format!("{}{}{}{}",base_path,version,"/stream","/{stream}");
+    let query_path = format!("{}{}{}",base_path,version,"/query");
     cfg.service(
-        web::resource("/v1/{stream}")
+        web::resource(stream_path)
             .route(web::put().to(handler::put_stream))
             .route(web::post().to(handler::post_event)),
-    );
+    ).service(
+        web::resource(query_path)
+            .route(web::get().to(handler::cache_query)));
 }
 
 pub fn configure_auth(cfg: &mut web::ServiceConfig, opts: &option::Opt) {
