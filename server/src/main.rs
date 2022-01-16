@@ -17,8 +17,14 @@
 use actix_web::dev::ServiceRequest;
 use actix_web::{middleware, web, App, Error, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
+use arrow::record_batch::RecordBatch;
 use std::path::Path;
+use walkdir::WalkDir;
+
+use std::thread;
+use std::time::Duration;
 use std::{fs, io};
+extern crate ticker;
 
 mod banner;
 mod event;
@@ -27,6 +33,7 @@ mod mem_store;
 mod option;
 mod response;
 mod storage;
+mod sync_s3;
 mod utils;
 
 // Init
@@ -40,38 +47,22 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     banner::print();
     let opt = option::get_opts();
-    // Check local data path and load streams and corresponding schema to
-    // internal in-memory store
-    if Path::new(&opt.local_disk_path).exists() {
-        let entries = fs::read_dir(&opt.local_disk_path)?
-            .map(|res| res.map(|e| e.path()))
-            .collect::<Result<Vec<_>, io::Error>>()?;
-        for entry in entries {
-            let path = format!("{:?}", entry);
-            let new_path = utils::rem_first_and_last(&path);
-            let new_parquet_path = format!("{}/{}", &new_path, "data.parquet");
-            let new_schema_path = format!("{}/{}", &new_path, ".schema");
-            if Path::new(&new_parquet_path).exists() {
-                let parquet_file = fs::File::open(new_parquet_path).unwrap();
-                let rb_reader = utils::convert_parquet_rb_reader(parquet_file);
-                let tokens: Vec<&str> = new_path.split("/").collect();
-                for rb in rb_reader {
-                    let stream_name: String = tokens[2].to_string();
-                    mem_store::MEM_STREAMS::put(
-                        stream_name,
-                        mem_store::Stream {
-                            schema: Some(fs::read_to_string(&new_schema_path)?.parse()?),
-                            rb: Some(rb.unwrap()),
-                        },
-                    );
-                }
-            }
-        }
-    }
+    load_memstore();
+    wrap(opt.clone()).await?;
     run_http(opt).await?;
+
     Ok(())
 }
 
+async fn wrap(opt: option::Opt) -> anyhow::Result<()> {
+    thread::spawn(move || {
+        let ticker = ticker::Ticker::new(0.., Duration::from_secs(1));
+        for _ in ticker {
+            sync_s3::syncer(opt.clone());
+        }
+    });
+    Ok(())
+}
 async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
     let opt_clone = opt.clone();
     let http_server = HttpServer::new(move || create_app!(opt_clone)).disable_signals();
@@ -109,4 +100,65 @@ macro_rules! create_app {
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
     };
+}
+
+fn load_memstore() -> anyhow::Result<()> {
+    let opt = option::get_opts();
+    // Check local data path and load streams and corresponding schema to
+    // internal in-memory store
+    if Path::new(&opt.local_disk_path).exists() {
+        let entries = fs::read_dir(&opt.local_disk_path)?
+            .map(|res| res.map(|e| e.path()))
+            .collect::<Result<Vec<_>, io::Error>>()?;
+        for entry in entries {
+            let path = format!("{:?}", entry);
+            let new_path = utils::rem_first_and_last(&path);
+            let new_parquet_path = format!("{}/{}", &new_path, "data.parquet");
+            let new_schema_path = format!("{}/{}", &new_path, ".schema");
+            let tokens: Vec<&str> = new_path.split("/").collect();
+            if Path::new(&new_parquet_path).exists() {
+                let parquet_file = fs::File::open(new_parquet_path).unwrap();
+                let rb_reader = utils::convert_parquet_rb_reader(parquet_file);
+                for rb in rb_reader {
+                    let stream_name: String = tokens[2].to_string();
+                    mem_store::MEM_STREAMS::put(
+                        stream_name,
+                        mem_store::Stream {
+                            schema: Some(fs::read_to_string(&new_schema_path)?.parse()?),
+                            rb: Some(rb.unwrap()),
+                        },
+                    );
+                }
+            } else {
+                for a in WalkDir::new(format!("{}/{}", opt.local_disk_path, tokens[2].to_string()))
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    let f_name = a.file_name().to_string_lossy();
+
+                    if f_name.ends_with(".parquet") {
+                        let parquet_file = fs::File::open(a.path()).unwrap();
+                        let rb_reader = utils::convert_parquet_rb_reader(parquet_file);
+
+                        for rb in rb_reader {
+                            let stream_name: String = tokens[2].to_string();
+                            let sc = rb.unwrap();
+                            mem_store::MEM_STREAMS::put(
+                                stream_name,
+                                mem_store::Stream {
+                                    schema: Some(
+                                        fs::read_to_string(new_schema_path.clone())?.parse()?,
+                                    ),
+                                    rb: Some(RecordBatch::new_empty(sc.schema())),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

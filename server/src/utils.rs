@@ -42,3 +42,8 @@ pub fn flatten_json_body(body: web::Json<serde_json::Value>) -> String {
     flatten_json::flatten(&body, &mut flat_value, None, true, Some("_")).unwrap();
     format!("{:}", serde_json::to_string(&flat_value).unwrap())
 }
+
+// Derefrence Pointer for Type T
+pub fn unbox<T>(value: Box<T>) -> T {
+    *value
+}
