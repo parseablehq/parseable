@@ -19,40 +19,38 @@ use actix_web::{web, HttpRequest, HttpResponse};
 
 use crate::event;
 use crate::option;
+use crate::query;
 use crate::response;
 use crate::storage;
 use crate::utils;
-use crate::query;
 
 pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> HttpResponse {
-     match query.parse() {
-         Ok(stream_name) => {
-            match storage::stream_exists(&stream_name) {
-                Ok(_) => {
-                    let results = query.execute(&stream_name);
-                    response::QueryResponse {
-                        body: results,
-                        code: StatusCode::OK,
-                    }
-                    .to_http()
+    match query.parse() {
+        Ok(stream_name) => match storage::stream_exists(&stream_name) {
+            Ok(_) => match query.execute(&stream_name) {
+                Ok(results) => response::QueryResponse {
+                    body: results,
+                    code: StatusCode::OK,
                 }
-                Err(_) => {
-                    response::ServerResponse {
-                        msg: format!("Stream {} does not exist", stream_name.to_string()),
-                        code: StatusCode::BAD_REQUEST,
-                    }
-                    .to_http()
-                 }
-            }
-         },
-         Err(e) => {
-            response::ServerResponse {
-                msg: format!("Failed to execute query due to err: {}", e.to_string()),
+                .to_http(),
+                Err(e) => response::ServerResponse {
+                    msg: e,
+                    code: StatusCode::INTERNAL_SERVER_ERROR,
+                }
+                .to_http(),
+            },
+            Err(_) => response::ServerResponse {
+                msg: format!("Stream {} does not exist", stream_name),
                 code: StatusCode::BAD_REQUEST,
             }
-            .to_http()
-         }
-     }
+            .to_http(),
+        },
+        Err(e) => response::ServerResponse {
+            msg: format!("Failed to execute query due to err: {}", e),
+            code: StatusCode::BAD_REQUEST,
+        }
+        .to_http(),
+    }
 }
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
@@ -78,7 +76,7 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
                     .to_http(),
                     // Fail if unable to create stream on object store backend
                     Err(e) => response::ServerResponse {
-                        msg: format!("Failed to create Stream due to err: {}", e.to_string()),
+                        msg: format!("Failed to create Stream due to err: {}", e),
                         code: StatusCode::INTERNAL_SERVER_ERROR,
                     }
                     .to_http(),
@@ -87,7 +85,7 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
         }
         // fail to proceed if there is an error in stream name validation
         Err(e) => response::ServerResponse {
-            msg: format!("Failed to create Stream due to err: {}", e.to_string()),
+            msg: format!("Failed to create Stream due to err: {}", e),
             code: StatusCode::BAD_REQUEST,
         }
         .to_http(),
@@ -106,7 +104,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                 body: utils::flatten_json_body(body),
                 path: option::get_opts().local_disk_path,
                 stream_name: stream_name.clone(),
-                schema: schema,
+                schema,
             };
             // If the .schema file is still empty, this is the first event in this stream.
             if e.schema.is_empty() {

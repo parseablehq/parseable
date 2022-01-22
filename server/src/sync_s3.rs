@@ -18,20 +18,19 @@ pub fn syncer(opt: option::Opt) -> Result<bool, Error> {
             let path = format!("{:?}", entry);
             let init_s3_sync = S3Sync {
                 opt: opt.clone(),
-                path: path,
+                path,
                 time: Utc::now(),
             };
             let dir = init_s3_sync.get_dir_name();
             if init_s3_sync.parquet_path_exists() {
                 let metadata = fs::metadata(&dir.parquet_path)?;
                 if let Ok(time) = metadata.created() {
-                    let ten_min = Duration::new(20, 0);
+                    let ten_min = Duration::new(600, 0);
                     if time.elapsed().unwrap() > ten_min {
                         let local_ops = dir.local_ops();
-                        match local_ops {
-                            Some(x) => x.log_syncer_error(),
-                            None => {}
-                        };
+                        if let Some(x) = local_ops {
+                            x.log_syncer_error()
+                        }
                         new_rb(dir.stream_name);
                     }
                 }
@@ -49,7 +48,7 @@ struct S3Sync {
 
 #[derive(Debug)]
 struct DirName {
-    dir_name_s3: String,
+    //dir_name_s3: String,
     dir_name_cache: String,
     parquet_path: String,
     parquet_file: String,
@@ -86,7 +85,7 @@ impl DirName {
             Ok(_) => {}
             Err(error) => return Some(error),
         };
-        return None;
+        None
     }
 
     fn copy_parquet_to_cache(&self) -> Result<bool, SyncerError> {
@@ -137,7 +136,7 @@ impl DirName {
 
 impl S3Sync {
     fn parquet_path_exists(&self) -> bool {
-        let path = format!("{}", &self.path);
+        let path = (&self.path).to_string();
         let new_path = utils::rem_first_and_last(&path);
         let new_parquet_path = format!("{}/{}", &new_path, "data.parquet");
         return Path::new(&new_parquet_path).exists();
@@ -145,7 +144,7 @@ impl S3Sync {
     fn get_dir_name(&self) -> DirName {
         let new_path = utils::rem_first_and_last(&self.path);
         let cache_path = format!("{}/", &self.opt.local_disk_path);
-        let s3_path = format!("{}/", &self.opt.s3_bucket_name);
+        //let s3_path = format!("{}/", &self.opt.s3_bucket_name);
         let stream_names = str::replace(new_path, &cache_path, "");
         let new_parquet_path = format!("{}/{}", &new_path, "data.parquet");
         let dir_name_cache = format!(
@@ -155,25 +154,25 @@ impl S3Sync {
             chrono::offset::Utc::now().date(),
             self.time.hour()
         );
-        let dir_name_s3 = format!(
-            "{}{}/date={}/hour={:02}",
-            s3_path,
-            stream_names,
-            chrono::offset::Utc::now().date(),
-            self.time.hour(),
-        );
+        // let dir_name_s3 = format!(
+        //     "{}{}/date={}/hour={:02}",
+        //     s3_path,
+        //     stream_names,
+        //     chrono::offset::Utc::now().date(),
+        //     self.time.hour(),
+        // );
         let parquet = format!(
             "data.{:02}.{:02}.parquet",
             self.time.hour(),
             self.time.minute()
         );
-        return DirName {
-            dir_name_s3: dir_name_s3,
-            dir_name_cache: dir_name_cache,
+        DirName {
+            //dir_name_s3,
+            dir_name_cache,
             parquet_path: new_parquet_path,
             parquet_file: parquet,
             stream_name: stream_names,
-        };
+        }
     }
 }
 

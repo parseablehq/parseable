@@ -114,7 +114,7 @@ impl Event {
         let rb = mem_store::MEM_STREAMS::get_rb(self.stream_name.clone());
 
         let vec = vec![next_event_rb.clone(), rb];
-        let new_batch = RecordBatch::concat(&next_event_rb.schema().clone(), &vec);
+        let new_batch = RecordBatch::concat(&next_event_rb.schema(), &vec);
 
         match new_batch {
             Ok(r) => {
@@ -145,11 +145,11 @@ impl Event {
         let reader = self.body.as_bytes();
         let mut buf_reader = BufReader::new(reader);
         let inferred_schema = infer_json_schema(&mut buf_reader, None).unwrap();
-        let str_inferred_schema = format!("{}", serde_json::to_string(&inferred_schema).unwrap());
-        return Box::new(Schema {
+        let str_inferred_schema = serde_json::to_string(&inferred_schema).unwrap();
+        Box::new(Schema {
             arrow_schema: inferred_schema,
             string_schema: str_inferred_schema,
-        });
+        })
     }
 
     // convert arrow record batch to parquet

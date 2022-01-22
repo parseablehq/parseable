@@ -33,6 +33,7 @@ lazy_static! {
     };
 }
 
+#[allow(clippy::all)]
 impl MEM_STREAMS {
     pub fn get_rb(stream_name: String) -> RecordBatch {
         let map = MEM_STREAMS.lock().unwrap();
@@ -51,13 +52,13 @@ impl MEM_STREAMS {
     pub fn put(stream_name: String, stream: Stream) {
         let mut map = MEM_STREAMS.lock().unwrap();
         map.insert(
-            stream_name.to_string(),
+            stream_name,
             Box::new(Stream {
                 schema: Some(stream.schema.unwrap()),
                 rb: Some(stream.rb.unwrap()),
             }),
         );
-        println!("{:?}", map);
+        //println!("{:?}", map);
         drop(map);
     }
 }

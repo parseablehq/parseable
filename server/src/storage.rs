@@ -35,9 +35,13 @@ pub trait ObjectStorage {
 impl ObjectStorage for S3 {
     fn new(opt: &option::Opt) -> S3 {
         S3 {
-            client: s3_client(&opt),
+            client: s3_client(opt),
         }
     }
+}
+
+fn local_path_for_stream(opt: &option::Opt, stream_name: &str) -> String {
+    format!("{}{}{}", opt.local_disk_path, "/", stream_name)
 }
 
 fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
@@ -51,16 +55,16 @@ fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
     let data = vec![secret_key, access_key, region, endpoint_url, bucket_name];
 
     for data in data.iter() {
-        match data {
-            &"AWS_SECRET_ACCESS_KEY" => env::set_var(secret_key, &opt.s3_secret_key),
-            &"AWS_ACCESS_KEY_ID" => env::set_var(access_key, &opt.s3_access_key_id),
-            &"AWS_DEFAULT_REGION" => env::set_var(region, &opt.s3_default_region),
-            &"AWS_ENDPOINT_URL" => env::set_var(endpoint_url, &opt.s3_endpoint_url),
-            &"AWS_BUCKET_NAME" => env::set_var(bucket_name, &opt.s3_bucket_name),
-            _ => println!(""),
+        match *data {
+            "AWS_SECRET_ACCESS_KEY" => env::set_var(secret_key, &opt.s3_secret_key),
+            "AWS_ACCESS_KEY_ID" => env::set_var(access_key, &opt.s3_access_key_id),
+            "AWS_DEFAULT_REGION" => env::set_var(region, &opt.s3_default_region),
+            "AWS_ENDPOINT_URL" => env::set_var(endpoint_url, &opt.s3_endpoint_url),
+            "AWS_BUCKET_NAME" => env::set_var(bucket_name, &opt.s3_bucket_name),
+            _ => println!(),
         }
     }
-    let ep = env::var("AWS_ENDPOINT_URL").unwrap_or("none".to_string());
+    let ep = env::var("AWS_ENDPOINT_URL").unwrap_or_else(|_| "none".to_string());
     let uri = ep.parse::<Uri>().unwrap();
     let endpoint = Endpoint::immutable(uri);
     let config = aws_sdk_s3::Config::builder()
@@ -70,11 +74,11 @@ fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
 }
 
 pub fn setup_storage(opt: &option::Opt) -> S3 {
-    S3::new(&opt)
+    S3::new(opt)
 }
 
 #[tokio::main]
-pub async fn put_schema(stream_name: &String, schema: String) -> Result<(), Error> {
+pub async fn put_schema(stream_name: &str, schema: String) -> Result<(), Error> {
     let opt = option::get_opts();
     let client = setup_storage(&opt).client;
     let s = schema.clone();
@@ -85,11 +89,13 @@ pub async fn put_schema(stream_name: &String, schema: String) -> Result<(), Erro
         .body(schema.into_bytes().into())
         .send()
         .await?;
-    let dir_name = format!("{}{}{}", opt.local_disk_path, "/", stream_name);
-    let _res = fs::create_dir_all(dir_name.clone());
-
-    let file_name = format!("{}{}{}", dir_name, "/", "/.schema");
-    let mut schema_file = fs::File::create(file_name).unwrap();
+    let mut schema_file = fs::File::create(format!(
+        "{}{}{}",
+        local_path_for_stream(&opt, stream_name),
+        "/",
+        ".schema"
+    ))
+    .unwrap();
     schema_file
         .write_all(s.as_bytes())
         .expect("Unable to write data");
@@ -98,7 +104,7 @@ pub async fn put_schema(stream_name: &String, schema: String) -> Result<(), Erro
 }
 
 #[tokio::main]
-pub async fn create_stream(stream_name: &String) -> Result<(), Error> {
+pub async fn create_stream(stream_name: &str) -> Result<(), Error> {
     let opt = option::get_opts();
     let client = setup_storage(&opt).client;
     let _resp = client
@@ -107,11 +113,18 @@ pub async fn create_stream(stream_name: &String) -> Result<(), Error> {
         .key(format!("{}{}", stream_name, "/.schema"))
         .send()
         .await?;
+    // Prefix created on S3, now create the directory in
+    // the local storage as well
+    let dir_name = local_path_for_stream(&opt, stream_name);
+    let _res = fs::create_dir_all(dir_name.clone());
+
+    let file_name = format!("{}{}{}", dir_name, "/", ".schema");
+    fs::File::create(file_name).unwrap();
     Ok(())
 }
 
 #[tokio::main]
-pub async fn stream_exists(stream_name: &String) -> Result<Bytes, Error> {
+pub async fn stream_exists(stream_name: &str) -> Result<Bytes, Error> {
     let opt = option::get_opts();
     let client = setup_storage(&opt).client;
     let resp = client
