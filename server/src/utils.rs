@@ -15,7 +15,7 @@
  */
 
 use actix_web::web;
-use flatten_json;
+
 use parquet::arrow::{ArrowReader, ParquetFileArrowReader};
 use parquet::file::reader::SerializedFileReader;
 use serde_json::{json, Value};
@@ -35,14 +35,14 @@ pub fn convert_parquet_rb_reader(
 ) -> parquet::arrow::arrow_reader::ParquetRecordBatchReader {
     let file_reader = SerializedFileReader::new(file).unwrap();
     let mut arrow_reader = ParquetFileArrowReader::new(Arc::new(file_reader));
-    let record_batch_reader = arrow_reader.get_record_reader(2048).unwrap();
-    record_batch_reader
+
+    arrow_reader.get_record_reader(2048).unwrap()
 }
 
 pub fn flatten_json_body(body: web::Json<serde_json::Value>) -> String {
     let mut flat_value: Value = json!({});
     flatten_json::flatten(&body, &mut flat_value, None, true, Some("_")).unwrap();
-    format!("{:}", serde_json::to_string(&flat_value).unwrap())
+    serde_json::to_string(&flat_value).unwrap()
 }
 
 // validate_stream_name validates the stream name and returns an error if the
@@ -62,6 +62,7 @@ pub fn get_cache_path(stream_name: &str) -> String {
     format!("{}/{}", option::get_opts().local_disk_path, stream_name)
 }
 
+#[allow(clippy::all)]
 pub fn unbox<T>(value: Box<T>) -> T {
     *value
 }

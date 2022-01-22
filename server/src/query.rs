@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-use serde::Deserialize;
-use datafusion::prelude::*;
-use datafusion::datasource::listing::ListingOptions;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use std::sync::Arc;
 use arrow::record_batch::RecordBatch;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::listing::ListingOptions;
+use datafusion::prelude::*;
+use serde::Deserialize;
+use std::sync::Arc;
 
 use crate::utils;
 
@@ -30,33 +30,33 @@ pub struct Query {
 }
 
 impl Query {
-    // parse_query parses the SQL query and returns the stream name on which 
+    // parse_query parses the SQL query and returns the stream name on which
     // this query is supposed to be executed
     pub fn parse(&self) -> Result<String, String> {
         // convert to lowercase before parsing
         let query_lower = self.query.to_lowercase();
-        let tokens = query_lower.split(" ").collect::<Vec<&str>>();
+        let tokens = query_lower.split(' ').collect::<Vec<&str>>();
         match Self::validate(&tokens) {
             Ok(_) => {
                 // stream name is located after the `from` keyword
                 let stream_name_index = tokens.iter().position(|&x| x == "from").unwrap() + 1;
                 // we currently don't support queries like "select name, address from stream1 and stream2"
                 // so if there is an `and` after the first stream name, we return an error.
-                if tokens.len() > stream_name_index + 1 {
-                    if tokens[stream_name_index + 1].to_string() == "and" {
-                        return Err(String::from("queries across multiple streams are not supported currently"));
-                    }
+                if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
+                    return Err(String::from(
+                        "queries across multiple streams are not supported currently",
+                    ));
                 }
                 Ok(tokens[stream_name_index].to_string())
-            },
+            }
             Err(e) => Err(e),
-        } 
+        }
     }
 
-    fn validate(tokens: &Vec<&str>) -> Result<(), String> {
+    fn validate(tokens: &[&str]) -> Result<(), String> {
         if tokens.contains(&"") {
             return Err(String::from("query cannot be empty"));
-        } 
+        }
         if tokens.contains(&"join") {
             return Err(String::from("joins are not supported currently"));
         }
@@ -64,10 +64,10 @@ impl Query {
     }
 
     #[tokio::main]
-    pub async fn execute(&self, stream: &str) -> Vec<RecordBatch> {
+    pub async fn execute(&self, stream: &str) -> Result<Vec<RecordBatch>, String> {
         let mut ctx = ExecutionContext::new();
         let file_format = ParquetFormat::default().with_enable_pruning(true);
-    
+
         let listing_options = ListingOptions {
             file_extension: ".parquet".to_owned(),
             format: Arc::new(file_format),
@@ -75,16 +75,27 @@ impl Query {
             collect_stat: true,
             target_partitions: 1,
         };
-    
-        ctx.register_listing_table(
-            stream,
-            utils::get_cache_path(&stream).as_str(),
-            listing_options,
-            None,
-        ).await.unwrap();
 
-        // execute the query
-        let df = ctx.sql(self.query.as_str()).await.unwrap();
-        df.collect().await.unwrap()
+        match ctx
+            .register_listing_table(
+                stream,
+                utils::get_cache_path(stream).as_str(),
+                listing_options,
+                None,
+            )
+            .await
+        {
+            Ok(_) => {
+                // execute the query
+                match ctx.sql(self.query.as_str()).await {
+                    Ok(df) => match df.collect().await {
+                        Ok(results) => Ok(results),
+                        Err(e) => Err(e.to_string()),
+                    },
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 }

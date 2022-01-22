@@ -31,7 +31,7 @@ impl ServerResponse {
         log::info!("{}", self.msg);
         HttpResponseBuilder::new(self.code)
             .content_type("text")
-            .body(format!("{}", self.msg))
+            .body(self.msg.to_string())
     }
 }
 
