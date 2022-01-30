@@ -16,6 +16,7 @@
 
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
+use bytes::Bytes;
 
 use crate::event;
 use crate::option;
@@ -100,38 +101,55 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
         // If that file is successfully received, we assume that to be indicating that
         // stream already exists.
         Ok(schema) => {
-            let e = event::Event {
-                body: utils::flatten_json_body(body),
-                path: option::get_opts().local_disk_path,
-                stream_name: stream_name.clone(),
-                schema,
-            };
-            // If the .schema file is still empty, this is the first event in this stream.
-            if e.schema.is_empty() {
-                // 1. Parse the arrow schema, upload it to <bucket>/<stream_prefix>/.schema file
-                // 2. Also store the event on local cache
-                match e.initial_event() {
-                    Ok(res) => response::ServerResponse {
-                        msg: res.msg,
-                        code: StatusCode::OK,
+            if body.is_array() {
+                let mut i = 0;
+                loop {
+                    if body[i].is_object() {
+                        let e = event::Event {
+                            body: utils::flatten_json_body(web::Json(body[i].clone())),
+                            path: option::get_opts().local_disk_path,
+                            stream_name: stream_name.clone(),
+                            schema: Bytes::from(utils::read_schema_from_file(&stream_name)),
+                        };
+                        match e.process() {
+                            Ok(_) => (),
+                            Err(e) => {
+                                return response::ServerResponse {
+                                    msg: format!(
+                                        "Failed to process event at index {} due to err: {}",
+                                        i, e
+                                    ),
+                                    code: StatusCode::INTERNAL_SERVER_ERROR,
+                                }
+                                .to_http()
+                            }
+                        }
+                        i += 1;
+                    } else {
+                        break;
                     }
-                    .to_http(),
-                    Err(res) => response::ServerResponse {
-                        msg: res.msg,
-                        code: StatusCode::INTERNAL_SERVER_ERROR,
-                    }
-                    .to_http(),
                 }
+                response::ServerResponse {
+                    msg: format!("Successfully posted {} events", i),
+                    code: StatusCode::OK,
+                }
+                .to_http()
             } else {
-                match e.next_event() {
-                    Ok(res) => response::ServerResponse {
-                        msg: res.msg,
+                let e = event::Event {
+                    body: utils::flatten_json_body(body),
+                    path: option::get_opts().local_disk_path,
+                    stream_name: stream_name.clone(),
+                    schema,
+                };
+                match e.process() {
+                    Ok(_) => response::ServerResponse {
+                        msg: "Successfully posted event".to_string(),
                         code: StatusCode::OK,
                     }
                     .to_http(),
-                    Err(res) => response::ServerResponse {
-                        msg: res.msg,
-                        code: StatusCode::BAD_REQUEST,
+                    Err(e) => response::ServerResponse {
+                        msg: format!("Failed to process event due to err: {}", e),
+                        code: StatusCode::INTERNAL_SERVER_ERROR,
                     }
                     .to_http(),
                 }

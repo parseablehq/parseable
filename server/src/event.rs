@@ -44,10 +44,19 @@ pub struct Schema {
 }
 
 impl Event {
+    pub fn process(&self) -> Result<response::EventResponse, response::EventError> {
+        // If the .schema file is still empty, this is the first event in this stream.
+        if self.schema.is_empty() {
+            self.initial_event()
+        } else {
+            self.next_event()
+        }
+    }
+
     // This is called when the first event of a Stream is received. The first event is
     // special because we parse this event to generate the schema for the stream. This
     // schema is then enforced on rest of the events sent to this stream.
-    pub fn initial_event(&self) -> Result<response::EventResponse, response::EventError> {
+    fn initial_event(&self) -> Result<response::EventResponse, response::EventError> {
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
 
@@ -97,7 +106,7 @@ impl Event {
 
     // next_event process all events after the 1st event. Concatenates record batches
     // and puts them in memory store for each event.
-    pub fn next_event(&self) -> Result<response::EventResponse, response::EventError> {
+    fn next_event(&self) -> Result<response::EventResponse, response::EventError> {
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
         c.write_all(reader).unwrap();
@@ -154,7 +163,7 @@ impl Event {
 
     // convert arrow record batch to parquet
     // and write it to local cache path as a data.parquet file.
-    pub fn convert_arrow_parquet(&self, rb: RecordBatch) {
+    fn convert_arrow_parquet(&self, rb: RecordBatch) {
         let dir_name = format!("{}{}{}", &self.path, "/", &self.stream_name);
         let file_name = format!("{}{}{}", dir_name, "/", "data.parquet");
         fs::create_dir_all(dir_name).unwrap();
