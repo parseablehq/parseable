@@ -19,6 +19,7 @@ use actix_web::web;
 use parquet::arrow::{ArrowReader, ParquetFileArrowReader};
 use parquet::file::reader::SerializedFileReader;
 use serde_json::{json, Value};
+use std::fs;
 use std::sync::Arc;
 
 use crate::option;
@@ -65,4 +66,8 @@ pub fn get_cache_path(stream_name: &str) -> String {
 #[allow(clippy::all)]
 pub fn unbox<T>(value: Box<T>) -> T {
     *value
+}
+
+pub fn read_schema_from_file(stream_name: &str) -> String {
+    fs::read_to_string(format!("{}{}", get_cache_path(stream_name), "/.schema")).unwrap()
 }
