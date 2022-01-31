@@ -17,6 +17,7 @@
 use sysinfo::{System, SystemExt};
 
 use crate::option;
+use crate::utils;
 
 pub fn print() {
     let opt = option::get_opts();
@@ -62,8 +63,10 @@ Backend S3 bucket: {}",
 }
 
 fn print_curl_example(opt: &option::Opt) {
-    let curl_create_str: String =
-        "curl --location --request PUT '".to_owned() + &opt.http_addr + &"/test_str'".to_owned();
+    let curl_create_str: String = "curl --location --request PUT '".to_owned()
+        + &opt.http_addr
+        + utils::stream_path().as_str()
+        + "'";
     eprintln!(
         "
 ============ ACCESS =============

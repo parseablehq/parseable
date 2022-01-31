@@ -24,6 +24,20 @@ use std::sync::Arc;
 
 use crate::option;
 
+const API_BASE_PATH: &str = "/api";
+const API_VERSION: &str = "/v1";
+
+pub fn stream_path() -> String {
+    format!(
+        "{}{}{}{}",
+        API_BASE_PATH, API_VERSION, "/stream", "/{stream}"
+    )
+}
+
+pub fn query_path() -> String {
+    format!("{}{}{}", API_BASE_PATH, API_VERSION, "/query")
+}
+
 pub fn rem_first_and_last(value: &str) -> &str {
     let mut chars = value.chars();
     chars.next();
@@ -46,14 +60,28 @@ pub fn flatten_json_body(body: web::Json<serde_json::Value>) -> String {
     serde_json::to_string(&flat_value).unwrap()
 }
 
-// validate_stream_name validates the stream name and returns an error if the
-// stream contains a sql keyword
 pub fn validate_stream_name(str_name: &str) -> Result<(), String> {
+    if str_name.is_empty() {
+        return Err(String::from("stream name cannot be empty"));
+    }
+    if str_name.contains(' ') {
+        return Err(String::from("stream name cannot contain spaces"));
+    }
+    if !str_name.chars().all(char::is_alphanumeric) {
+        return Err(String::from(
+            "stream name cannot contain special characters",
+        ));
+    }
+    if str_name.chars().any(|c| c.is_ascii_uppercase()) {
+        return Err(String::from(
+            "stream name cannot contain uppercase characters",
+        ));
+    }
     // add more sql keywords here in lower case
     let denied_names = [
         "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
     ];
-    if denied_names.contains(&str_name.to_lowercase().as_str()) {
+    if denied_names.contains(&str_name) {
         return Err(String::from("stream name cannot be a sql keyword"));
     }
     Ok(())
