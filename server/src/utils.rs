@@ -27,10 +27,10 @@ use crate::option;
 const API_BASE_PATH: &str = "/api";
 const API_VERSION: &str = "/v1";
 
-pub fn stream_path() -> String {
+pub fn stream_path(stream_name: &str) -> String {
     format!(
         "{}{}{}{}",
-        API_BASE_PATH, API_VERSION, "/stream", "/{stream}"
+        API_BASE_PATH, API_VERSION, "/stream", stream_name
     )
 }
 

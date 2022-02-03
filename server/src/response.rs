@@ -16,10 +16,12 @@
 
 use actix_web::dev::HttpResponseBuilder;
 use actix_web::http::StatusCode;
-use actix_web::{error, HttpResponse};
+use actix_web::{error, web, HttpResponse, Responder};
 use arrow::json;
 use arrow::record_batch::RecordBatch;
 use derive_more::{Display, Error};
+
+use crate::storage;
 
 pub struct ServerResponse {
     pub code: StatusCode,
@@ -33,6 +35,11 @@ impl ServerResponse {
             .content_type("text")
             .body(self.msg.to_string())
     }
+}
+
+pub fn list_response(body: Vec<storage::Stream>) -> impl Responder {
+    log::info!("{}", "Returning list stream results");
+    web::Json(body)
 }
 
 pub struct QueryResponse {
