@@ -15,7 +15,7 @@
  */
 
 use actix_web::http::StatusCode;
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
 
 use crate::event;
@@ -52,6 +52,10 @@ pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> H
         }
         .to_http(),
     }
+}
+
+pub async fn list_streams(_: HttpRequest) -> impl Responder {
+    response::list_response(storage::list_streams().unwrap())
 }
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {

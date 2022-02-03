@@ -65,7 +65,7 @@ Backend S3 bucket: {}",
 fn print_curl_example(opt: &option::Opt) {
     let curl_create_str: String = "curl --location --request PUT '".to_owned()
         + &opt.http_addr
-        + utils::stream_path().as_str()
+        + utils::stream_path("/teststream").as_str()
         + "'";
     eprintln!(
         "

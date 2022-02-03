@@ -78,10 +78,11 @@ async fn validator(req: ServiceRequest, _credentials: BasicAuth) -> Result<Servi
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
-        web::resource(utils::stream_path())
+        web::resource(utils::stream_path("/{stream}"))
             .route(web::put().to(handler::put_stream))
             .route(web::post().to(handler::post_event)),
     )
+    .service(web::resource(utils::stream_path("")).route(web::get().to(handler::list_streams)))
     .service(web::resource(utils::query_path()).route(web::get().to(handler::cache_query)));
 }
 

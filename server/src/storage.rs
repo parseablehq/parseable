@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-use aws_sdk_s3::Error;
-use aws_sdk_s3::{Client, Endpoint};
+use aws_sdk_s3::{Client, Credentials, Endpoint, Error, Region};
 use bytes::Bytes;
 use http::Uri;
+use serde::Serialize;
 use std::env;
 use std::fs;
 use std::io::prelude::*;
@@ -67,8 +67,19 @@ fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
     let ep = env::var("AWS_ENDPOINT_URL").unwrap_or_else(|_| "none".to_string());
     let uri = ep.parse::<Uri>().unwrap();
     let endpoint = Endpoint::immutable(uri);
+    let region =
+        Region::new(env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| "us-east-1".to_string()));
+    let creds = Credentials::new(
+        env::var("AWS_ACCESS_KEY_ID").unwrap(),
+        env::var("AWS_SECRET_ACCESS_KEY").unwrap(),
+        None,
+        None,
+        "",
+    );
     let config = aws_sdk_s3::Config::builder()
+        .region(region)
         .endpoint_resolver(endpoint)
+        .credentials_provider(creds)
         .build();
     Client::from_conf(config)
 }
@@ -136,4 +147,30 @@ pub async fn stream_exists(stream_name: &str) -> Result<Bytes, Error> {
     let body = resp.body.collect().await;
     let body_bytes = body.unwrap().into_bytes();
     Ok(body_bytes)
+}
+
+#[tokio::main]
+pub async fn list_streams() -> Result<Vec<Stream>, Error> {
+    let opt = option::get_opts();
+    let client = setup_storage(&opt).client;
+    let resp = client
+        .list_objects_v2()
+        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
+        .send()
+        .await?;
+    let body = resp.contents().unwrap_or_default();
+    let mut streams = Vec::new();
+    for stream in body {
+        let name = stream.key().unwrap_or_default().to_string();
+        let tokens = name.split('/').collect::<Vec<&str>>();
+        streams.push(Stream {
+            name: tokens[0].to_string(),
+        });
+    }
+    Ok(streams)
+}
+
+#[derive(Serialize)]
+pub struct Stream {
+    name: String,
 }
