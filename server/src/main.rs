@@ -64,6 +64,7 @@ async fn wrap(opt: option::Opt) -> anyhow::Result<()> {
     });
     Ok(())
 }
+
 async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
     let opt_clone = opt.clone();
     let http_server = HttpServer::new(move || create_app!(opt_clone)).disable_signals();
@@ -83,6 +84,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             .route(web::post().to(handler::post_event)),
     )
     .service(web::resource(utils::stream_path("")).route(web::get().to(handler::list_streams)))
+    .service(
+        web::resource(utils::stream_path("/{stream}/schema"))
+            .route(web::get().to(handler::get_schema)),
+    )
     .service(web::resource(utils::query_path()).route(web::get().to(handler::cache_query)));
 }
 
