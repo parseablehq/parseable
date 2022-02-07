@@ -34,11 +34,8 @@ mod storage;
 mod sync_s3;
 mod utils;
 
-// Init
-// Read S3
-// Fetch all schemas
-// Local cache for schemas/stream
-// config file validation
+// Global configurations
+const MAX_EVENT_PAYLOAD_SIZE: usize = 102400;
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
@@ -81,7 +78,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::resource(utils::stream_path("/{stream}"))
             .route(web::put().to(handler::put_stream))
-            .route(web::post().to(handler::post_event)),
+            .route(web::post().to(handler::post_event))
+            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
     )
     .service(web::resource(utils::stream_path("")).route(web::get().to(handler::list_streams)))
     .service(
