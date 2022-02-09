@@ -12,6 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 extern crate fs_extra;
 use crate::storage;
+use aws_sdk_s3::ByteStream;
 use fs_extra::dir;
 
 pub fn syncer(opt: option::Opt) -> Result<bool, Error> {
@@ -176,7 +177,7 @@ impl DirName {
         let from_paths = vec![&self.parquet_path];
         let _result = fs_extra::move_items(&from_paths, &self.dir_name_cache_tmp, &options);
         let _put_parquet_file = put_parquet(
-            format!("{}/{}", &self.dir_name_s3, "data.parquet"),
+            format!("{}/{}", &self.dir_name_cache_tmp, "data.parquet"),
             format!("{}/{}", &self.dir_name_s3, &self.parquet_file),
         );
         file.unlock()?;
@@ -250,11 +251,12 @@ fn new_rb(stream_name: String) {
 pub async fn put_parquet(key: String, path: String) -> Result<(), Error> {
     let opt = option::get_opts();
     let client = storage::setup_storage(&opt).client;
+    let body = ByteStream::from_path(key).await;
     let _resp = client
         .put_object()
         .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
         .key(&path)
-        .body(key.into_bytes().into())
+        .body(body.unwrap())
         .send()
         .await;
     println!("{:?}", _resp);
