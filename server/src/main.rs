@@ -15,8 +15,9 @@
  */
 
 use actix_web::dev::ServiceRequest;
-use actix_web::{middleware, web, App, Error, HttpServer};
+use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
+use actix_web_httpauth::middleware::HttpAuthentication;
 
 use std::thread;
 use std::time::Duration;
@@ -62,16 +63,32 @@ async fn wrap(opt: option::Opt) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
-    let opt_clone = opt.clone();
-    let http_server = HttpServer::new(move || create_app!(opt_clone)).disable_signals();
-    http_server.bind(&opt.http_addr)?.run().await?;
-    Ok(())
+async fn validator(
+    req: ServiceRequest,
+    credentials: BasicAuth,
+) -> Result<ServiceRequest, actix_web::Error> {
+    let opt = option::get_opts();
+    match opt.username {
+        Some(username) => match opt.password {
+            Some(password) => {
+                if credentials.user_id().trim() == username
+                    && credentials.password().unwrap().trim() == password
+                {
+                    Ok(req)
+                } else {
+                    Err(actix_web::error::ErrorUnauthorized("Unauthorized"))
+                }
+            }
+            None => Ok(req),
+        },
+        None => Ok(req),
+    }
 }
 
-async fn validator(req: ServiceRequest, _credentials: BasicAuth) -> Result<ServiceRequest, Error> {
-    // pass through for now
-    Ok(req)
+async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
+    let http_server = HttpServer::new(move || create_app!());
+    http_server.bind(&opt.http_addr)?.run().await?;
+    Ok(())
 }
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
@@ -89,20 +106,12 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     .service(web::resource(utils::query_path()).route(web::get().to(handler::cache_query)));
 }
 
-pub fn configure_auth(cfg: &mut web::ServiceConfig, _opts: &option::Opt) {
-    //if opts.master_key.is_none() {
-    cfg.app_data(validator);
-    // } else {
-    //     cfg.app_data(validator);
-    // }
-}
-
 #[macro_export]
 macro_rules! create_app {
-    ($opt:expr) => {
+    () => {
         App::new()
             .configure(|cfg| configure_routes(cfg))
-            .configure(|cfg| configure_auth(cfg, &$opt))
+            .wrap(HttpAuthentication::basic(validator))
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
     };
