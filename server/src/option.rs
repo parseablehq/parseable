@@ -59,6 +59,10 @@ pub struct Opt {
         default_value = "67111b0f870e443ca59200b51221243b"
     )]
     pub s3_bucket_name: String,
+    #[structopt(long, env = "P_USERNAME")]
+    pub username: Option<String>,
+    #[structopt(long, env = "P_PASSWORD")]
+    pub password: Option<String>,
 }
 
 pub fn get_opts() -> Opt {
