@@ -18,6 +18,7 @@ use aws_sdk_s3::{Client, Credentials, Endpoint, Error, Region};
 use bytes::Bytes;
 use http::Uri;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::prelude::*;
@@ -159,13 +160,17 @@ pub async fn list_streams() -> Result<Vec<Stream>, Error> {
         .send()
         .await?;
     let body = resp.contents().unwrap_or_default();
-    let mut streams = Vec::new();
+    // make a set of unique prefixes at the root level
+    let mut hs = HashSet::<String>::new();
     for stream in body {
         let name = stream.key().unwrap_or_default().to_string();
         let tokens = name.split('/').collect::<Vec<&str>>();
-        streams.push(Stream {
-            name: tokens[0].to_string(),
-        });
+        hs.insert(tokens[0].to_string());
+    }
+    // transform that hashset to a vector before returning
+    let mut streams = Vec::new();
+    for v in hs {
+        streams.push(Stream { name: v });
     }
     Ok(streams)
 }
