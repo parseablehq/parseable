@@ -68,27 +68,39 @@ async fn validator(
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, actix_web::Error> {
     let opt = option::get_opts();
-    match opt.username {
-        Some(username) => match opt.password {
-            Some(password) => {
-                if credentials.user_id().trim() == username
-                    && credentials.password().unwrap().trim() == password
-                {
-                    Ok(req)
-                } else {
-                    Err(actix_web::error::ErrorUnauthorized("Unauthorized"))
-                }
+
+    match req.headers().get("AUTHORIZATION") {
+        Some(_auth) => {
+            if credentials.user_id().trim() == opt.username.unwrap()
+                && credentials.password().unwrap().trim() == opt.password.unwrap()
+            {
+                Ok(req)
+            } else {
+                Err(actix_web::error::ErrorUnauthorized("Unauthorized"))
             }
-            None => Ok(req),
-        },
+        }
         None => Ok(req),
     }
 }
 
 async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
-    let http_server = HttpServer::new(move || create_app!());
-    http_server.bind(&opt.http_addr)?.run().await?;
-    Ok(())
+    match opt.username {
+        Some(_username) => match opt.password {
+            Some(_password) => {
+                let http_server = HttpServer::new(move || {
+                    create_app!().wrap(HttpAuthentication::basic(validator))
+                });
+                http_server.bind(&opt.http_addr)?.run().await?;
+                Ok(())
+            }
+            None => Ok(()),
+        },
+        None => {
+            let http_server = HttpServer::new(move || create_app!());
+            http_server.bind(&opt.http_addr)?.run().await?;
+            Ok(())
+        }
+    }
 }
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
@@ -111,7 +123,6 @@ macro_rules! create_app {
     () => {
         App::new()
             .configure(|cfg| configure_routes(cfg))
-            .wrap(HttpAuthentication::basic(validator))
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
     };
