@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+use std::path::PathBuf;
 use structopt::StructOpt;
 
 #[derive(Debug, Clone, StructOpt)]
@@ -22,13 +23,17 @@ use structopt::StructOpt;
     about = "the config setup for Parseable server"
 )]
 pub struct Opt {
-    /// The address on which the http server will listen.
-    #[structopt(long, env = "P_ADDR", default_value = "127.0.0.1:5678")]
-    pub http_addr: String,
+    /// The location of TLS Cert file
+    #[structopt(long, env = "P_TLS_CERT_PATH")]
+    pub tls_cert_path: Option<PathBuf>,
 
-    /// The master key allowing you to do everything on the server.
-    #[structopt(long, env = "P_MASTER_KEY")]
-    pub master_key: Option<String>,
+    /// The location of TLS Private Key file
+    #[structopt(long, env = "P_TLS_KEY_PATH")]
+    pub tls_key_path: Option<PathBuf>,
+
+    /// The address on which the http server will listen.
+    #[structopt(long, env = "P_ADDR", default_value = "0.0.0.0:5678")]
+    pub address: String,
 
     /// The local storage path is used as temporary landing point
     /// for incoming events and local cache while querying data pulled
@@ -59,8 +64,12 @@ pub struct Opt {
         default_value = "67111b0f870e443ca59200b51221243b"
     )]
     pub s3_bucket_name: String,
+
+    /// Optional username to enable basic auth on the server
     #[structopt(long, env = "P_USERNAME")]
     pub username: Option<String>,
+
+    /// Optional password to enable basic auth on the server
     #[structopt(long, env = "P_PASSWORD")]
     pub password: Option<String>,
 }

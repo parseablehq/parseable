@@ -18,6 +18,7 @@ use actix_web::dev::ServiceRequest;
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
+use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 
 use std::thread;
 use std::time::Duration;
@@ -68,39 +69,49 @@ async fn validator(
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, actix_web::Error> {
     let opt = option::get_opts();
-
-    match req.headers().get("AUTHORIZATION") {
-        Some(_auth) => {
-            if credentials.user_id().trim() == opt.username.unwrap()
-                && credentials.password().unwrap().trim() == opt.password.unwrap()
-            {
-                Ok(req)
-            } else {
-                Err(actix_web::error::ErrorUnauthorized("Unauthorized"))
-            }
-        }
-        None => Ok(req),
+    if credentials.user_id().trim() == opt.username.unwrap()
+        && credentials.password().unwrap().trim() == opt.password.unwrap()
+    {
+        Ok(req)
+    } else {
+        Err(actix_web::error::ErrorUnauthorized("Unauthorized"))
     }
 }
 
 async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
-    match opt.username {
-        Some(_username) => match opt.password {
-            Some(_password) => {
-                let http_server = HttpServer::new(move || {
-                    create_app!().wrap(HttpAuthentication::basic(validator))
-                });
-                http_server.bind(&opt.http_addr)?.run().await?;
-                Ok(())
-            }
-            None => Ok(()),
-        },
-        None => {
-            let http_server = HttpServer::new(move || create_app!());
-            http_server.bind(&opt.http_addr)?.run().await?;
-            Ok(())
+    let opt_clone = opt.clone();
+
+    if let (Some(_), Some(_)) = (opt.username, opt.password) {
+        let http_server =
+            HttpServer::new(move || create_app!().wrap(HttpAuthentication::basic(validator)));
+
+        if let (Some(cert), Some(key)) = (opt_clone.tls_cert_path, opt_clone.tls_key_path) {
+            let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
+            builder.set_private_key_file(key, SslFiletype::PEM)?;
+            builder.set_certificate_chain_file(cert)?;
+            http_server
+                .bind_openssl(opt_clone.address, builder)?
+                .run()
+                .await?;
+        } else {
+            http_server.bind(opt_clone.address)?.run().await?;
+        }
+    } else {
+        let http_server = HttpServer::new(move || create_app!());
+        if let (Some(cert), Some(key)) = (opt_clone.tls_cert_path, opt_clone.tls_key_path) {
+            let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
+            builder.set_private_key_file(key, SslFiletype::PEM)?;
+            builder.set_certificate_chain_file(cert)?;
+            http_server
+                .bind_openssl(opt_clone.address, builder)?
+                .run()
+                .await?;
+        } else {
+            http_server.bind(opt_clone.address)?.run().await?;
         }
     }
+
+    Ok(())
 }
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {

@@ -99,3 +99,13 @@ pub fn unbox<T>(value: Box<T>) -> T {
 pub fn read_schema_from_file(stream_name: &str) -> String {
     fs::read_to_string(format!("{}{}", get_cache_path(stream_name), "/.schema")).unwrap()
 }
+
+pub fn get_scheme() -> String {
+    let opt = option::get_opts();
+    let mut scheme = "http";
+    if let (Some(_), Some(_)) = (opt.tls_cert_path, opt.tls_key_path) {
+        scheme = "https";
+    }
+
+    scheme.to_string()
+}

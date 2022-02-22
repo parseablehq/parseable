@@ -1,13 +1,16 @@
 [package]
 name = "parseable"
 version = "0.0.1"
-authors = ["dev870 <developershmail@gmail.com>,AdheipSingh <adheip@parseable.io>"]
+authors = [
+    "NitishTiwari <nitish@parseable.io>", 
+    "AdheipSingh <adheip@parseable.io>",
+]
 edition = "2021"
+categories = ["olap", "analytics-store"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix-web = "3"
 arrow = "6.0.0"
 parquet = "6.0.0"
 lazy_static = "1.4.0"
@@ -17,7 +20,6 @@ serde_derive = "^1.0.8"
 serde = "^1.0.8"
 serde_json = "^1.0.8"
 http = "0.2.4"
-# aws-sdk-s3 = { git = "https://github.com/awslabs/aws-sdk-rust", tag = "v0.0.16-alpha", package = "aws-sdk-s3" }
 aws-sdk-s3 = "0.6.0"
 aws-config = "0.6.0"
 tokio = { version = "1", features = ["full"] }
@@ -30,7 +32,6 @@ os_info = "3.0.7"
 log = "0.4.14"
 log4rs = "1.0"
 colour = "0.6.0"
-actix-web-httpauth = "0.5.1"
 env_logger = "0.9.0"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
 config = "0.10.1"
@@ -43,3 +44,6 @@ ticker="0.1.1"
 walkdir = "2.3.2"
 fslock = "0.2.1"
 fs_extra = "1.2.0"
+actix-web-httpauth = "0.5.1"
+actix-web = { version = "3.3.3", features = ["openssl"] }
+openssl = { version = "0.10" }
