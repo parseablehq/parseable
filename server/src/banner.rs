@@ -21,18 +21,19 @@ use crate::utils;
 
 pub fn print() {
     let opt = option::get_opts();
-    print_access_info(&opt);
+    let scheme = utils::get_scheme();
+    print_access_info(&scheme, &opt);
     print_sysinfo();
     print_storage_info(&opt);
-    print_curl_example(&opt);
+    print_curl_example(&scheme, &opt);
     println!();
 }
 
-fn print_access_info(opt: &option::Opt) {
+fn print_access_info(scheme: &str, opt: &option::Opt) {
     eprintln!(
         "\n
-Parseable server running on: http://{}",
-        opt.http_addr
+Parseable server running on: {}://{}",
+        scheme, opt.address
     );
 }
 
@@ -62,11 +63,14 @@ Backend S3 bucket: {}",
     )
 }
 
-fn print_curl_example(opt: &option::Opt) {
+fn print_curl_example(scheme: &str, opt: &option::Opt) {
     let curl_create_str: String = "curl --location --request PUT '".to_owned()
-        + &opt.http_addr
+        + scheme
+        + "://"
+        + &opt.address
         + utils::stream_path("/teststream").as_str()
         + "'";
+
     eprintln!(
         "
 ============ ACCESS =============

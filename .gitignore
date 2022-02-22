@@ -2,3 +2,5 @@ target
 data
 examples
 Cargo.lock
+cert.pem
+key.pem
