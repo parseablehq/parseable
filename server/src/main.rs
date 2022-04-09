@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+use actix_cors::Cors;
 use actix_web::dev::ServiceRequest;
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
@@ -136,5 +137,11 @@ macro_rules! create_app {
             .configure(|cfg| configure_routes(cfg))
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
+            .wrap(
+                Cors::default()
+                    .allow_any_header()
+                    .allow_any_method()
+                    .allow_any_origin(),
+            )
     };
 }
