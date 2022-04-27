@@ -19,6 +19,7 @@ use actix_web::web;
 use parquet::arrow::{ArrowReader, ParquetFileArrowReader};
 use parquet::file::reader::SerializedFileReader;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 
@@ -54,10 +55,28 @@ pub fn convert_parquet_rb_reader(
     arrow_reader.get_record_reader(2048).unwrap()
 }
 
-pub fn flatten_json_body(body: web::Json<serde_json::Value>) -> String {
+pub fn flatten_json_body(body: web::Json<serde_json::Value>, labels: Option<String>) -> String {
+    let mut collector_labels = HashMap::new();
+
+    collector_labels.insert("labels".to_string(), labels.unwrap());
+
     let mut flat_value: Value = json!({});
-    flatten_json::flatten(&body, &mut flat_value, None, true, Some("_")).unwrap();
+    let new_body = merge(&body, &collector_labels);
+    flatten_json::flatten(&new_body, &mut flat_value, None, true, Some("_")).unwrap();
     serde_json::to_string(&flat_value).unwrap()
+}
+
+fn merge(v: &Value, fields: &HashMap<String, String>) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut m = m.clone();
+            for (k, v) in fields {
+                m.insert(k.clone(), Value::String(v.clone()));
+            }
+            Value::Object(m)
+        }
+        v => v.clone(),
+    }
 }
 
 pub fn validate_stream_name(str_name: &str) -> Result<(), String> {
