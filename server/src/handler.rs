@@ -25,6 +25,8 @@ use crate::response;
 use crate::storage;
 use crate::utils;
 
+const META_LABEL: &str = "x-p-meta";
+
 pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> HttpResponse {
     match query.parse() {
         Ok(stream_name) => match storage::stream_exists(&stream_name) {
@@ -135,6 +137,8 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
 
+    let labels = collect_labels(&req);
+
     match storage::stream_exists(&stream_name) {
         // empty schema file is created in object store at the time of Put Stream.
         // If that file is successfully received, we assume that to be indicating that
@@ -145,7 +149,10 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                 loop {
                     if body[i].is_object() {
                         let e = event::Event {
-                            body: utils::flatten_json_body(web::Json(body[i].clone())),
+                            body: utils::flatten_json_body(
+                                web::Json(body[i].clone()),
+                                labels.clone(),
+                            ),
                             path: option::get_opts().local_disk_path,
                             stream_name: stream_name.clone(),
                             schema: Bytes::from(utils::read_schema_from_file(&stream_name)),
@@ -175,7 +182,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                 .to_http()
             } else {
                 let e = event::Event {
-                    body: utils::flatten_json_body(body),
+                    body: utils::flatten_json_body(body, labels),
                     path: option::get_opts().local_disk_path,
                     stream_name: stream_name.clone(),
                     schema,
@@ -200,4 +207,22 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
         }
         .to_http(),
     }
+}
+
+/// collect labels passed from http headers
+/// format: labels = "app=k8s, cloud=gcp"
+fn collect_labels(req: &HttpRequest) -> Option<String> {
+    let keys = req.headers().keys().cloned().collect::<Vec<_>>();
+
+    let mut labels_vec = Vec::with_capacity(100);
+    for key in keys {
+        if key.to_string().to_lowercase().starts_with(META_LABEL) {
+            let value = req.headers().get(&key)?.to_str().ok();
+            let remove_meta_char = format!("{}-", META_LABEL);
+            let kv = format! {"{}={}", key.to_string().replace(&remove_meta_char.to_string(), ""), value.unwrap()};
+            labels_vec.push(kv);
+        }
+    }
+
+    Some(labels_vec.join(","))
 }
