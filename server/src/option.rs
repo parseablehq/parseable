@@ -57,6 +57,11 @@ pub struct Opt {
     #[structopt(long, env = "P_S3_REGION", default_value = "us-east-1")]
     pub s3_default_region: String,
 
+    /// Optional duration after which server would send uncommited data to remote object
+    /// storage platform. Defaults to 10s.
+    #[structopt(long, env = "P_STORAGE_SYNC_DURATION", default_value = "600")]
+    pub sync_duration: u64,
+
     /// The AWS S3 or compatible object storage bucket to be used for storage
     #[structopt(
         long,

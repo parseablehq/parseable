@@ -31,8 +31,8 @@ pub fn syncer(opt: option::Opt) -> Result<bool, Error> {
             if init_s3_sync.parquet_path_exists() {
                 let metadata = fs::metadata(&dir.parquet_path)?;
                 if let Ok(time) = metadata.created() {
-                    let ten_min = Duration::new(600, 0);
-                    if time.elapsed().unwrap() > ten_min {
+                    let sync_duration = Duration::from_secs(opt.sync_duration);
+                    if time.elapsed().unwrap() > sync_duration {
                         let local_ops = dir.local_ops();
                         if let Some(x) = local_ops {
                             x.log_syncer_error()
