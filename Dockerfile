@@ -20,11 +20,6 @@ RUN     apk add -q --update-cache --no-cache build-base openssl-dev
 
 WORKDIR /parseable
 
-ARG     COMMIT_SHA
-ARG     COMMIT_DATE
-ENV     COMMIT_SHA=${COMMIT_SHA} COMMIT_DATE=${COMMIT_DATE}
-ENV     RUSTFLAGS="-C target-feature=-crt-static"
-
 COPY    . .
 RUN     set -eux; \
         apkArch="$(apk --print-arch)"; \
@@ -37,7 +32,7 @@ RUN     set -eux; \
 FROM    alpine:3.14
 
 RUN     apk update --quiet \
-        && apk add -q --no-cache libgcc tini curl
+        && apk add -q --no-cache libgcc curl
 
 # add parseable to the `/bin` so you can run it from anywhere and it's easy
 # to find.
@@ -47,7 +42,6 @@ COPY    --from=compiler /parseable/target/release/parseable /bin/parseable
 # to move our PWD in there.
 WORKDIR /parseable/data
 
-EXPOSE  7700/tcp
+EXPOSE  5678/tcp
 
-ENTRYPOINT ["tini", "--"]
 CMD    ["/bin/parseable"]
