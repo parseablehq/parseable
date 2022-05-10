@@ -13,7 +13,8 @@
  *
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- * 
+ *
+ *
  */
 
 use sysinfo::{System, SystemExt};
@@ -27,14 +28,13 @@ pub fn print() {
     print_access_info(&scheme, &opt);
     print_sysinfo();
     print_storage_info(&opt);
-    print_curl_example(&scheme, &opt);
     println!();
 }
 
 fn print_access_info(scheme: &str, opt: &option::Opt) {
     eprintln!(
         "\n
-Parseable server running on: {}://{}",
+Parseable running on: {}://{}",
         scheme, opt.address
     );
 }
@@ -58,25 +58,8 @@ fn print_storage_info(opt: &option::Opt) {
     eprintln!(
         "
 ============ STORAGE ============
-Local disk cache: {}
-Backend S3 endpoint: {}
-Backend S3 bucket: {}",
+Local Data Path: {}
+Object Storage: {}/{}",
         opt.local_disk_path, opt.s3_endpoint_url, opt.s3_bucket_name
-    )
-}
-
-fn print_curl_example(scheme: &str, opt: &option::Opt) {
-    let curl_create_str: String = "curl --location --request PUT '".to_owned()
-        + scheme
-        + "://"
-        + &opt.address
-        + utils::stream_path("/teststream").as_str()
-        + "'";
-
-    eprintln!(
-        "
-============ ACCESS =============
-Create a Data Stream: {}",
-        curl_create_str
     )
 }
