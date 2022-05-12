@@ -32,7 +32,7 @@ use crate::response;
 use crate::storage;
 use crate::utils;
 
-// Event holds all values relevant to a single event for a single stream
+// Event holds all values relevant to a single event for a single logstream
 pub struct Event {
     pub body: String,
     pub stream_name: String,
@@ -40,7 +40,7 @@ pub struct Event {
     pub schema: Bytes,
 }
 
-// Events holds the schema related to a each event for a single stream
+// Events holds the schema related to a each event for a single logstream
 pub struct Schema {
     pub arrow_schema: arrow::datatypes::Schema,
     pub string_schema: String,
@@ -48,7 +48,7 @@ pub struct Schema {
 
 impl Event {
     pub fn process(&self) -> Result<response::EventResponse, response::EventError> {
-        // If the .schema file is still empty, this is the first event in this stream.
+        // If the .schema file is still empty, this is the first event in this logstream.
         if self.schema.is_empty() {
             self.initial_event()
         } else {
@@ -56,9 +56,9 @@ impl Event {
         }
     }
 
-    // This is called when the first event of a Stream is received. The first event is
-    // special because we parse this event to generate the schema for the stream. This
-    // schema is then enforced on rest of the events sent to this stream.
+    // This is called when the first event of a LogStream is received. The first event is
+    // special because we parse this event to generate the schema for the logstream. This
+    // schema is then enforced on rest of the events sent to this logstream.
     fn initial_event(&self) -> Result<response::EventResponse, response::EventError> {
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
@@ -78,7 +78,7 @@ impl Event {
         // Put the event into in memory store
         mem_store::MEM_STREAMS::put(
             self.stream_name.to_string(),
-            mem_store::Stream {
+            mem_store::LogStream {
                 schema: Some(utils::unbox(self.infer_schema()).string_schema),
                 rb: Some(b1.clone()),
             },
@@ -94,13 +94,13 @@ impl Event {
         ) {
             Ok(_) => Ok(response::EventResponse {
                 msg: format!(
-                    "Intial Event recieved for Stream {}, schema uploaded successfully",
+                    "Intial Event recieved for LogStream {}, schema uploaded successfully",
                     self.stream_name
                 ),
             }),
             Err(e) => Err(response::EventError {
                 msg: format!(
-                    "Failed to upload schema for Stream {} due to err: {}",
+                    "Failed to upload schema for LogStream {} due to err: {}",
                     self.stream_name, e
                 ),
             }),
@@ -132,7 +132,7 @@ impl Event {
             Ok(r) => {
                 mem_store::MEM_STREAMS::put(
                     self.stream_name.clone(),
-                    mem_store::Stream {
+                    mem_store::LogStream {
                         schema: Some(mem_store::MEM_STREAMS::get_schema(self.stream_name.clone())),
                         rb: Some(r.clone()),
                     },
@@ -140,12 +140,12 @@ impl Event {
                 self.convert_arrow_parquet(r);
 
                 return Ok(response::EventResponse {
-                    msg: format!("Event recieved for Stream {}", &self.stream_name),
+                    msg: format!("Event recieved for LogStream {}", &self.stream_name),
                 });
             }
             Err(e) => {
                 return Err(response::EventError {
-                    msg: format!("Error recieved for Stream {}, {}", &self.stream_name, e),
+                    msg: format!("Error recieved for LogStream {}, {}", &self.stream_name, e),
                 })
             }
         }

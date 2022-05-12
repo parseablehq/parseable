@@ -25,14 +25,14 @@ use std::sync::Arc;
 
 use crate::utils;
 
-// Query holds all values relevant to a query for a single stream
+// Query holds all values relevant to a query for a single logstream
 #[derive(Deserialize)]
 pub struct Query {
     pub query: String,
 }
 
 impl Query {
-    // parse_query parses the SQL query and returns the stream name on which
+    // parse_query parses the SQL query and returns the logstream name on which
     // this query is supposed to be executed
     pub fn parse(&self) -> Result<String, String> {
         // convert to lowercase before parsing
@@ -40,10 +40,10 @@ impl Query {
         let tokens = query_lower.split(' ').collect::<Vec<&str>>();
         match Self::validate(&tokens) {
             Ok(_) => {
-                // stream name is located after the `from` keyword
+                // logstream name is located after the `from` keyword
                 let stream_name_index = tokens.iter().position(|&x| x == "from").unwrap() + 1;
                 // we currently don't support queries like "select name, address from stream1 and stream2"
-                // so if there is an `and` after the first stream name, we return an error.
+                // so if there is an `and` after the first logstream name, we return an error.
                 if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
                     return Err(String::from(
                         "queries across multiple streams are not supported currently",
@@ -66,7 +66,7 @@ impl Query {
     }
 
     #[tokio::main]
-    pub async fn execute(&self, stream: &str) -> Result<Vec<RecordBatch>, String> {
+    pub async fn execute(&self, logstream: &str) -> Result<Vec<RecordBatch>, String> {
         let mut ctx = ExecutionContext::new();
         let file_format = ParquetFormat::default().with_enable_pruning(true);
 
@@ -80,8 +80,8 @@ impl Query {
 
         match ctx
             .register_listing_table(
-                stream,
-                utils::get_cache_path(stream).as_str(),
+                logstream,
+                utils::get_cache_path(logstream).as_str(),
                 listing_options,
                 None,
             )

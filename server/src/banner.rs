@@ -17,6 +17,7 @@
  *
  */
 
+use crossterm::style::Stylize;
 use sysinfo::{System, SystemExt};
 
 use crate::option;
@@ -32,21 +33,31 @@ pub fn print() {
 }
 
 fn print_access_info(scheme: &str, opt: &option::Opt) {
+    let url = format!("{}://{}", scheme, opt.address).underlined();
     eprintln!(
         "\n
-Parseable running on: {}://{}",
-        scheme, opt.address
-    );
+    {}
+        {}",
+        "========================== INFO ==========================="
+            .to_string()
+            .green()
+            .bold(),
+        format!("Parseable server started at {}", url).bold(),
+    )
 }
 
 fn print_sysinfo() {
     let system = System::new_all();
     eprintln!(
         "
-============ SYSTEM =============
-OS: {}
-Processor: {} logical, {} physical
-Memory: {} GiB total",
+    {}
+        OS: {}
+        Processor: {} logical, {} physical
+        Memory: {} GiB total",
+        "========================== SYSTEM ========================="
+            .to_string()
+            .green()
+            .bold(),
         os_info::get(),
         num_cpus::get(),
         num_cpus::get_physical(),
@@ -57,9 +68,15 @@ Memory: {} GiB total",
 fn print_storage_info(opt: &option::Opt) {
     eprintln!(
         "
-============ STORAGE ============
-Local Data Path: {}
-Object Storage: {}/{}",
-        opt.local_disk_path, opt.s3_endpoint_url, opt.s3_bucket_name
+    {}
+        Local Data Path: {}
+        Object Storage: {}/{}",
+        "========================== STORAGE ========================"
+            .to_string()
+            .green()
+            .bold(),
+        opt.local_disk_path,
+        opt.s3_endpoint_url,
+        opt.s3_bucket_name
     )
 }

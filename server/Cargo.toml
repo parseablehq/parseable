@@ -48,3 +48,4 @@ actix-web-httpauth = "0.5.1"
 actix-web = { version = "3.3.3", features = ["openssl"] }
 openssl = { version = "0.10" }
 actix-cors = "0.5.0"
+crossterm = "0.23.2"

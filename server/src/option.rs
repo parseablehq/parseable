@@ -34,7 +34,7 @@ pub struct Opt {
     pub tls_key_path: Option<PathBuf>,
 
     /// The address on which the http server will listen.
-    #[structopt(long, env = "P_ADDR", default_value = "0.0.0.0:5678")]
+    #[structopt(long, env = "P_ADDR", default_value = "127.0.0.1:5678")]
     pub address: String,
 
     /// The local storage path is used as temporary landing point
@@ -65,11 +65,7 @@ pub struct Opt {
     pub sync_duration: u64,
 
     /// The AWS S3 or compatible object storage bucket to be used for storage
-    #[structopt(
-        long,
-        env = "P_S3_BUCKET",
-        default_value = "67111b0f870e443ca59200b51221243b"
-    )]
+    #[structopt(long, env = "P_S3_BUCKET", default_value = "logstorage")]
     pub s3_bucket_name: String,
 
     /// Optional username to enable basic auth on the server

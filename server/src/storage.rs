@@ -153,7 +153,7 @@ pub async fn stream_exists(stream_name: &str) -> Result<Bytes, Error> {
 }
 
 #[tokio::main]
-pub async fn list_streams() -> Result<Vec<Stream>, Error> {
+pub async fn list_streams() -> Result<Vec<LogStream>, Error> {
     let opt = option::get_opts();
     let client = setup_storage(&opt).client;
     let resp = client
@@ -164,20 +164,20 @@ pub async fn list_streams() -> Result<Vec<Stream>, Error> {
     let body = resp.contents().unwrap_or_default();
     // make a set of unique prefixes at the root level
     let mut hs = HashSet::<String>::new();
-    for stream in body {
-        let name = stream.key().unwrap_or_default().to_string();
+    for logstream in body {
+        let name = logstream.key().unwrap_or_default().to_string();
         let tokens = name.split('/').collect::<Vec<&str>>();
         hs.insert(tokens[0].to_string());
     }
     // transform that hashset to a vector before returning
     let mut streams = Vec::new();
     for v in hs {
-        streams.push(Stream { name: v });
+        streams.push(LogStream { name: v });
     }
     Ok(streams)
 }
 
 #[derive(Serialize)]
-pub struct Stream {
+pub struct LogStream {
     name: String,
 }

@@ -258,7 +258,7 @@ fn new_rb(stream_name: String) {
     let new_rb = arrow::record_batch::RecordBatch::new_empty(sc);
     mem_store::MEM_STREAMS::put(
         stream_name.clone(),
-        mem_store::Stream {
+        mem_store::LogStream {
             schema: Some(mem_store::MEM_STREAMS::get_schema(stream_name)),
             rb: Some(new_rb),
         },
