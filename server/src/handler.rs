@@ -45,7 +45,7 @@ pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> H
                 .to_http(),
             },
             Err(_) => response::ServerResponse {
-                msg: format!("Stream {} does not exist", stream_name),
+                msg: format!("LogStream {} does not exist", stream_name),
                 code: StatusCode::BAD_REQUEST,
             }
             .to_http(),
@@ -63,13 +63,13 @@ pub async fn list_streams(_: HttpRequest) -> impl Responder {
 }
 
 pub async fn get_schema(req: HttpRequest) -> HttpResponse {
-    let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     match utils::validate_stream_name(&stream_name) {
         Ok(_) => match storage::stream_exists(&stream_name) {
             Ok(schema) => {
                 if schema.is_empty() {
                     response::ServerResponse {
-                            msg: "Failed to get Stream schema, because Stream is not initialized yet. Please post an event before fetching schema".to_string(),
+                            msg: "Failed to get LogStream schema, because LogStream is not initialized yet. Please post an event before fetching schema".to_string(),
                             code: StatusCode::BAD_REQUEST,
                         }
                         .to_http()
@@ -83,14 +83,14 @@ pub async fn get_schema(req: HttpRequest) -> HttpResponse {
                 }
             }
             Err(_) => response::ServerResponse {
-                msg: "Failed to get Stream schema, because Stream doesn't exist".to_string(),
+                msg: "Failed to get LogStream schema, because LogStream doesn't exist".to_string(),
                 code: StatusCode::BAD_REQUEST,
             }
             .to_http(),
         },
-        // fail to proceed if there is an error in stream name validation
+        // fail to proceed if there is an error in logstream name validation
         Err(e) => response::ServerResponse {
-            msg: format!("Failed to get Stream schema due to err: {}", e),
+            msg: format!("Failed to get LogStream schema due to err: {}", e),
             code: StatusCode::BAD_REQUEST,
         }
         .to_http(),
@@ -98,38 +98,38 @@ pub async fn get_schema(req: HttpRequest) -> HttpResponse {
 }
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
-    let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     match utils::validate_stream_name(&stream_name) {
         Ok(_) => {
             match storage::stream_exists(&stream_name) {
-                // Error if the stream already exists
+                // Error if the logstream already exists
                 Ok(_) => response::ServerResponse {
                     msg: format!(
-                        "Stream {} already exists, please create a new Stream with unique name",
+                        "LogStream {} already exists, please create a new LogStream with unique name",
                         stream_name
                     ),
                     code: StatusCode::BAD_REQUEST,
                 }
                 .to_http(),
-                // Proceed to create stream if it doesn't exist
+                // Proceed to create logstream if it doesn't exist
                 Err(_) => match storage::create_stream(&stream_name) {
                     Ok(_) => response::ServerResponse {
-                        msg: format!("Created Stream {}", stream_name),
+                        msg: format!("Created LogStream {}", stream_name),
                         code: StatusCode::OK,
                     }
                     .to_http(),
-                    // Fail if unable to create stream on object store backend
+                    // Fail if unable to create logstream on object store backend
                     Err(e) => response::ServerResponse {
-                        msg: format!("Failed to create Stream due to err: {}", e),
+                        msg: format!("Failed to create LogStream due to err: {}", e),
                         code: StatusCode::INTERNAL_SERVER_ERROR,
                     }
                     .to_http(),
                 },
             }
         }
-        // fail to proceed if there is an error in stream name validation
+        // fail to proceed if there is an error in logstream name validation
         Err(e) => response::ServerResponse {
-            msg: format!("Failed to create Stream due to err: {}", e),
+            msg: format!("Failed to create LogStream due to err: {}", e),
             code: StatusCode::BAD_REQUEST,
         }
         .to_http(),
@@ -137,14 +137,14 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
 }
 
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
-    let stream_name: String = req.match_info().get("stream").unwrap().parse().unwrap();
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     let labels = collect_labels(&req);
 
     match storage::stream_exists(&stream_name) {
-        // empty schema file is created in object store at the time of Put Stream.
+        // empty schema file is created in object store at the time of Put LogStream.
         // If that file is successfully received, we assume that to be indicating that
-        // stream already exists.
+        // logstream already exists.
         Ok(schema) => {
             if body.is_array() {
                 let mut i = 0;
@@ -204,7 +204,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
             }
         }
         Err(e) => response::ServerResponse {
-            msg: format!("Stream {} Does not Exist, Error: {}", stream_name, e),
+            msg: format!("LogStream {} Does not Exist, Error: {}", stream_name, e),
             code: StatusCode::NOT_FOUND,
         }
         .to_http(),

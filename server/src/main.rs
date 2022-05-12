@@ -41,6 +41,8 @@ mod utils;
 
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 102400;
+const API_BASE_PATH: &str = "/api";
+const API_VERSION: &str = "/v1";
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
@@ -119,17 +121,17 @@ async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
-        web::resource(utils::stream_path("/{stream}"))
+        web::resource(log_stream_url_path("{logstream}"))
             .route(web::put().to(handler::put_stream))
             .route(web::post().to(handler::post_event))
             .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
     )
-    .service(web::resource(utils::stream_path("")).route(web::get().to(handler::list_streams)))
+    .service(web::resource(log_stream_url_path("")).route(web::get().to(handler::list_streams)))
     .service(
-        web::resource(utils::stream_path("/{stream}/schema"))
+        web::resource(log_stream_url_path("/{logstream}/schema"))
             .route(web::get().to(handler::get_schema)),
     )
-    .service(web::resource(utils::query_path()).route(web::get().to(handler::cache_query)));
+    .service(web::resource(query_url_path()).route(web::get().to(handler::cache_query)));
 }
 
 #[macro_export]
@@ -146,4 +148,15 @@ macro_rules! create_app {
                     .allow_any_origin(),
             )
     };
+}
+
+pub fn log_stream_url_path(stream_name: &str) -> String {
+    format!(
+        "{}{}{}{}",
+        API_BASE_PATH, API_VERSION, "/logstream/", stream_name
+    )
+}
+
+pub fn query_url_path() -> String {
+    format!("{}{}{}", API_BASE_PATH, API_VERSION, "/query")
 }

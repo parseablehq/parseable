@@ -38,7 +38,7 @@ pub fn load_memstore(opt: option::Opt) -> anyhow::Result<()> {
                 for rb in rb_reader {
                     mem_store::MEM_STREAMS::put(
                         paths.stream_name.clone(),
-                        mem_store::Stream {
+                        mem_store::LogStream {
                             schema: Some(fs::read_to_string(&paths.schema_path)?.parse()?),
                             rb: Some(rb.unwrap()),
                         },
@@ -60,7 +60,7 @@ pub fn load_memstore(opt: option::Opt) -> anyhow::Result<()> {
                             let sc = rb.unwrap();
                             mem_store::MEM_STREAMS::put(
                                 paths.stream_name.clone(),
-                                mem_store::Stream {
+                                mem_store::LogStream {
                                     schema: Some(
                                         fs::read_to_string(&paths.schema_path.clone())?.parse()?,
                                     ),

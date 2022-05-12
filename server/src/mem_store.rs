@@ -22,14 +22,14 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 #[derive(Debug)]
-pub struct Stream {
+pub struct LogStream {
     pub rb: Option<RecordBatch>,
     pub schema: Option<String>,
 }
 
 lazy_static! {
     #[derive(Debug)]
-    pub static ref MEM_STREAMS: Mutex<HashMap<String, Box<Stream>>> = {
+    pub static ref MEM_STREAMS: Mutex<HashMap<String, Box<LogStream>>> = {
         let m = HashMap::new();
         Mutex::new(m)
     };
@@ -51,13 +51,13 @@ impl MEM_STREAMS {
         return events.schema.as_ref().unwrap().clone();
     }
 
-    pub fn put(stream_name: String, stream: Stream) {
+    pub fn put(stream_name: String, logstream: LogStream) {
         let mut map = MEM_STREAMS.lock().unwrap();
         map.insert(
             stream_name,
-            Box::new(Stream {
-                schema: Some(stream.schema.unwrap()),
-                rb: Some(stream.rb.unwrap()),
+            Box::new(LogStream {
+                schema: Some(logstream.schema.unwrap()),
+                rb: Some(logstream.rb.unwrap()),
             }),
         );
         //println!("{:?}", map);
