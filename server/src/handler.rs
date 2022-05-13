@@ -64,33 +64,33 @@ pub async fn list_streams(_: HttpRequest) -> impl Responder {
 
 pub async fn get_schema(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    match utils::validate_stream_name(&stream_name) {
-        Ok(_) => match storage::stream_exists(&stream_name) {
-            Ok(schema) => {
-                if schema.is_empty() {
-                    response::ServerResponse {
-                            msg: "Failed to get LogStream schema, because LogStream is not initialized yet. Please post an event before fetching schema".to_string(),
-                            code: StatusCode::BAD_REQUEST,
-                        }
-                        .to_http()
-                } else {
-                    let buf = schema.as_ref();
-                    response::ServerResponse {
-                        msg: String::from_utf8(buf.to_vec()).unwrap(),
-                        code: StatusCode::OK,
+    if let Err(e) = utils::validate_stream_name(&stream_name) {
+        // fail to proceed if there is an error in logstream name validation
+        return response::ServerResponse {
+            msg: format!("Failed to get LogStream schema due to err: {}", e),
+            code: StatusCode::BAD_REQUEST,
+        }
+        .to_http();
+    }
+
+    match storage::stream_exists(&stream_name) {
+        Ok(schema)
+            if schema.is_empty() => {
+                response::ServerResponse {
+                        msg: "Failed to get LogStream schema, because LogStream is not initialized yet. Please post an event before fetching schema".to_string(),
+                        code: StatusCode::BAD_REQUEST,
                     }
                     .to_http()
+            } Ok(schema) => {
+                let buf = schema.as_ref();
+                response::ServerResponse {
+                    msg: String::from_utf8(buf.to_vec()).unwrap(),
+                    code: StatusCode::OK,
                 }
+                .to_http()
             }
-            Err(_) => response::ServerResponse {
-                msg: "Failed to get LogStream schema, because LogStream doesn't exist".to_string(),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http(),
-        },
-        // fail to proceed if there is an error in logstream name validation
-        Err(e) => response::ServerResponse {
-            msg: format!("Failed to get LogStream schema due to err: {}", e),
+        Err(_) => response::ServerResponse {
+            msg: "Failed to get LogStream schema, because LogStream doesn't exist".to_string(),
             code: StatusCode::BAD_REQUEST,
         }
         .to_http(),
