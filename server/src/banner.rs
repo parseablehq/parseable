@@ -26,27 +26,22 @@ use crate::utils;
 pub fn print() {
     let opt = option::get_opts();
     let scheme = utils::get_scheme();
-    print_access_info(&scheme, &opt);
-    print_sysinfo();
+    print_status_info(&scheme, &opt);
     print_storage_info(&opt);
+    print_system_info();
     println!();
 }
 
-fn print_access_info(scheme: &str, opt: &option::Opt) {
+fn print_status_info(scheme: &str, opt: &option::Opt) {
     let url = format!("{}://{}", scheme, opt.address).underlined();
     eprintln!(
-        "\n
-    {}
-        {}",
-        "========================== INFO ==========================="
-            .to_string()
-            .green()
-            .bold(),
+        "
+    {}",
         format!("Parseable server started at {}", url).bold(),
     )
 }
 
-fn print_sysinfo() {
+fn print_system_info() {
     let system = System::new_all();
     eprintln!(
         "
@@ -54,10 +49,7 @@ fn print_sysinfo() {
         OS: {}
         Processor: {} logical, {} physical
         Memory: {} GiB total",
-        "========================== SYSTEM ========================="
-            .to_string()
-            .green()
-            .bold(),
+        "System:".to_string().blue().bold(),
         os_info::get(),
         num_cpus::get(),
         num_cpus::get_physical(),
@@ -71,10 +63,7 @@ fn print_storage_info(opt: &option::Opt) {
     {}
         Local Data Path: {}
         Object Storage: {}/{}",
-        "========================== STORAGE ========================"
-            .to_string()
-            .green()
-            .bold(),
+        "Storage:".to_string().blue().bold(),
         opt.local_disk_path,
         opt.s3_endpoint_url,
         opt.s3_bucket_name
