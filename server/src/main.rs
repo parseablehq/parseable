@@ -38,6 +38,7 @@ mod response;
 mod storage;
 mod sync_s3;
 mod utils;
+mod validator;
 
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 102400;
@@ -126,6 +127,17 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             .route(web::post().to(handler::post_event))
             .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
     )
+    .service(web::resource(utils::stream_path("")).route(web::get().to(handler::list_streams)))
+    .service(
+        web::resource(utils::stream_path("/{stream}/schema"))
+            .route(web::get().to(handler::get_schema)),
+    )
+    .service(web::resource(utils::query_path()).route(web::get().to(handler::cache_query)))
+    .service(
+        web::resource(log_stream_alert_url_path("{logstream}"))
+            .route(web::put().to(handler::put_alert))
+            .route(web::get().to(handler::get_alert)),
+    )
     .service(web::resource(log_stream_url_path("")).route(web::get().to(handler::list_streams)))
     .service(
         web::resource(log_stream_url_path("/{logstream}/schema"))
@@ -150,13 +162,20 @@ macro_rules! create_app {
     };
 }
 
-pub fn log_stream_url_path(stream_name: &str) -> String {
+fn log_stream_url_path(stream_name: &str) -> String {
     format!(
         "{}{}{}{}",
         API_BASE_PATH, API_VERSION, "/logstream/", stream_name
     )
 }
 
-pub fn query_url_path() -> String {
+fn log_stream_alert_url_path(stream_name: &str) -> String {
+    format!(
+        "{}{}{}{}{}",
+        API_BASE_PATH, API_VERSION, "/logstream/", stream_name, "/alert"
+    )
+}
+
+fn query_url_path() -> String {
     format!("{}{}{}", API_BASE_PATH, API_VERSION, "/query")
 }
