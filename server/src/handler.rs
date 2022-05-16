@@ -26,6 +26,7 @@ use crate::query;
 use crate::response;
 use crate::storage;
 use crate::utils;
+use crate::validator;
 
 const META_LABEL: &str = "x-p-meta";
 
@@ -74,23 +75,74 @@ pub async fn get_schema(req: HttpRequest) -> HttpResponse {
     }
 
     match storage::stream_exists(&stream_name) {
-        Ok(schema)
-            if schema.is_empty() => {
-                response::ServerResponse {
+        Ok(schema) if schema.is_empty() => {
+            if let Err(e) = utils::validate_stream_name(&stream_name) {
+                // fail to proceed if there is an error in logstream name validation
+                return response::ServerResponse {
+                    msg: format!("Failed to get LogStream schema due to err: {}", e),
+                    code: StatusCode::BAD_REQUEST,
+                }
+                .to_http();
+            }
+            response::ServerResponse {
                         msg: "Failed to get LogStream schema, because LogStream is not initialized yet. Please post an event before fetching schema".to_string(),
                         code: StatusCode::BAD_REQUEST,
                     }
                     .to_http()
-            } Ok(schema) => {
-                let buf = schema.as_ref();
-                response::ServerResponse {
-                    msg: String::from_utf8(buf.to_vec()).unwrap(),
-                    code: StatusCode::OK,
-                }
-                .to_http()
+        }
+        Ok(schema) => {
+            let buf = schema.as_ref();
+            response::ServerResponse {
+                msg: String::from_utf8(buf.to_vec()).unwrap(),
+                code: StatusCode::OK,
             }
+            .to_http()
+        }
         Err(_) => response::ServerResponse {
             msg: "Failed to get LogStream schema, because LogStream doesn't exist".to_string(),
+            code: StatusCode::BAD_REQUEST,
+        }
+        .to_http(),
+    }
+}
+
+pub async fn get_alert(req: HttpRequest) -> HttpResponse {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    if let Err(e) = utils::validate_stream_name(&stream_name) {
+        // fail to proceed if there is an error in logstream name validation
+        return response::ServerResponse {
+            msg: format!("Failed to get LogStream schema due to err: {}", e),
+            code: StatusCode::BAD_REQUEST,
+        }
+        .to_http();
+    }
+
+    match storage::alert_exists(&stream_name) {
+        Ok(alert) if alert.is_empty() => {
+            if let Err(e) = utils::validate_stream_name(&stream_name) {
+                // fail to proceed if there is an error in logstream name validation
+                return response::ServerResponse {
+                    msg: format!("Failed to get Alert due to err: {}", e),
+                    code: StatusCode::BAD_REQUEST,
+                }
+                .to_http();
+            }
+            response::ServerResponse {
+                msg: "Failed to get Alert".to_string(),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http()
+        }
+        Ok(schema) => {
+            let buf = schema.as_ref();
+            response::ServerResponse {
+                msg: String::from_utf8(buf.to_vec()).unwrap(),
+                code: StatusCode::OK,
+            }
+            .to_http()
+        }
+        Err(_) => response::ServerResponse {
+            msg: "Failed to get Alert, because Alert doesn't exist".to_string(),
             code: StatusCode::BAD_REQUEST,
         }
         .to_http(),
@@ -131,6 +183,24 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
         Err(e) => response::ServerResponse {
             msg: format!("Failed to create LogStream due to err: {}", e),
             code: StatusCode::BAD_REQUEST,
+        }
+        .to_http(),
+    }
+}
+
+pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    validator::alert_validator(serde_json::to_string(&body.as_object()).unwrap());
+    match storage::create_alert(&stream_name, body) {
+        Ok(_) => response::ServerResponse {
+            msg: format!("Created Alert {}", stream_name),
+            code: StatusCode::OK,
+        }
+        .to_http(),
+        // Fail if unable to create stream on object store backend
+        Err(e) => response::ServerResponse {
+            msg: format!("Failed to create Alert due to err: {}", e),
+            code: StatusCode::INTERNAL_SERVER_ERROR,
         }
         .to_http(),
     }

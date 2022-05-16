@@ -16,6 +16,7 @@
  *
  */
 
+use actix_web::web;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Error, Region};
 use bytes::Bytes;
 use http::Uri;
@@ -138,6 +139,24 @@ pub async fn create_stream(stream_name: &str) -> Result<(), Error> {
 }
 
 #[tokio::main]
+pub async fn create_alert(
+    stream_name: &str,
+    body: web::Json<serde_json::Value>,
+) -> Result<(), Error> {
+    let opt = option::get_opts();
+    let s = serde_json::to_string(&body.as_object()).unwrap();
+    let client = setup_storage(&opt).client;
+    let _resp = client
+        .put_object()
+        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
+        .key(format!("{}{}", stream_name, "/.alert.json"))
+        .body(s.into_bytes().into())
+        .send()
+        .await?;
+    Ok(())
+}
+
+#[tokio::main]
 pub async fn stream_exists(stream_name: &str) -> Result<Bytes, Error> {
     let opt = option::get_opts();
     let client = setup_storage(&opt).client;
@@ -145,6 +164,21 @@ pub async fn stream_exists(stream_name: &str) -> Result<Bytes, Error> {
         .get_object()
         .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
         .key(format!("{}{}", stream_name, "/.schema"))
+        .send()
+        .await?;
+    let body = resp.body.collect().await;
+    let body_bytes = body.unwrap().into_bytes();
+    Ok(body_bytes)
+}
+
+#[tokio::main]
+pub async fn alert_exists(stream_name: &str) -> Result<Bytes, Error> {
+    let opt = option::get_opts();
+    let client = setup_storage(&opt).client;
+    let resp = client
+        .get_object()
+        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
+        .key(format!("{}{}", stream_name, "/.alert.json"))
         .send()
         .await?;
     let body = resp.body.collect().await;
