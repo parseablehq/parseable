@@ -1,0 +1,502 @@
+[
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    },
+    {
+        "time": "2022-04-15T13:22:53.554642253Z",
+        "log": "I0415 13:22:53.551504 1 shared_informer.go:247] Caches are synced for service config",
+        "labels": "app=minio,type=storage"
+    }    
+]
