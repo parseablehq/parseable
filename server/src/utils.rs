@@ -27,20 +27,6 @@ use std::sync::Arc;
 
 use crate::option;
 
-const API_BASE_PATH: &str = "/api";
-const API_VERSION: &str = "/v1";
-
-pub fn stream_path(stream_name: &str) -> String {
-    format!(
-        "{}{}{}{}",
-        API_BASE_PATH, API_VERSION, "/stream", stream_name
-    )
-}
-
-pub fn query_path() -> String {
-    format!("{}{}{}", API_BASE_PATH, API_VERSION, "/query")
-}
-
 pub fn rem_first_and_last(value: &str) -> &str {
     let mut chars = value.chars();
     chars.next();

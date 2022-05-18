@@ -121,29 +121,30 @@ async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
 }
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
+    // Base path "{url}/api/v1"
     cfg.service(
-        web::resource(log_stream_url_path("{logstream}"))
+        // PUT "/logstream/{logstream}" ==> Create Log Stream
+        // POST "/logstream/{logstream}" ==> Post logs to given Log Stream
+        web::resource(logstream_path("{logstream}"))
             .route(web::put().to(handler::put_stream))
             .route(web::post().to(handler::post_event))
             .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
     )
-    .service(web::resource(utils::stream_path("")).route(web::get().to(handler::list_streams)))
     .service(
-        web::resource(utils::stream_path("/{stream}/schema"))
-            .route(web::get().to(handler::get_schema)),
-    )
-    .service(web::resource(utils::query_path()).route(web::get().to(handler::cache_query)))
-    .service(
-        web::resource(log_stream_alert_url_path("{logstream}"))
+        // PUT "/logstream/{logstream}/alert" ==> Set alert for given Log Stream
+        // GET "/logstream/{logstream}/alert" ==> Get alert for given Log Stream
+        web::resource(alert_path("{logstream}"))
             .route(web::put().to(handler::put_alert))
             .route(web::get().to(handler::get_alert)),
     )
-    .service(web::resource(log_stream_url_path("")).route(web::get().to(handler::list_streams)))
+    // GET "/logstream" ==> Get list of all Log Streams on the server
+    .service(web::resource(logstream_path("")).route(web::get().to(handler::list_streams)))
     .service(
-        web::resource(log_stream_url_path("/{logstream}/schema"))
-            .route(web::get().to(handler::get_schema)),
+        // GET "/logstream/{logstream}/schema" ==> Get schema for given Log Stream
+        web::resource(schema_path("{logstream}")).route(web::get().to(handler::get_schema)),
     )
-    .service(web::resource(query_url_path()).route(web::get().to(handler::cache_query)));
+    // GET "/query" ==> Get results of the SQL query passed in request body
+    .service(web::resource(query_path()).route(web::get().to(handler::cache_query)));
 }
 
 #[macro_export]
@@ -162,20 +163,24 @@ macro_rules! create_app {
     };
 }
 
-fn log_stream_url_path(stream_name: &str) -> String {
+fn logstream_path(stream_name: &str) -> String {
+    if stream_name.is_empty() {
+        return format!("{}{}{}", API_BASE_PATH, API_VERSION, "/logstream");
+    }
     format!(
         "{}{}{}{}",
         API_BASE_PATH, API_VERSION, "/logstream/", stream_name
     )
 }
 
-fn log_stream_alert_url_path(stream_name: &str) -> String {
-    format!(
-        "{}{}{}{}{}",
-        API_BASE_PATH, API_VERSION, "/logstream/", stream_name, "/alert"
-    )
+fn alert_path(stream_name: &str) -> String {
+    format!("{}{}", logstream_path(stream_name), "/alert")
 }
 
-fn query_url_path() -> String {
+fn schema_path(stream_name: &str) -> String {
+    format!("{}{}", logstream_path(stream_name), "/schema")
+}
+
+fn query_path() -> String {
     format!("{}{}{}", API_BASE_PATH, API_VERSION, "/query")
 }
