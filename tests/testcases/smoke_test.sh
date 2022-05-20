@@ -95,7 +95,9 @@ list_log_streams () {
 # Query the log stream and verify if count of events is equal to the number of events posted
 query_log_stream() {
   echo "Querying the stream: $stream_name"
-  response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/query --data-raw '{"query": "select count(*) from '"$stream_name"'"}')
+  response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/query --data-raw '{
+    "query": "select count(*) from '$stream_name'"
+  }')
   if [ $? -ne 0 ]; then
     echo "Failed to query log data from $stream_name with exit code: $?"
     exit 1
