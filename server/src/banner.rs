@@ -26,13 +26,14 @@ use crate::utils;
 pub fn print() {
     let opt = option::get_opts();
     let scheme = utils::get_scheme();
-    print_status_info(&scheme, &opt);
-    print_storage_info(&opt);
-    print_system_info();
+    status_info(&scheme, &opt);
+    warning(&opt);
+    storage_info(&opt);
+    system_info();
     println!();
 }
 
-fn print_status_info(scheme: &str, opt: &option::Opt) {
+fn status_info(scheme: &str, opt: &option::Opt) {
     let url = format!("{}://{}", scheme, opt.address).underlined();
     eprintln!(
         "
@@ -41,7 +42,7 @@ fn print_status_info(scheme: &str, opt: &option::Opt) {
     )
 }
 
-fn print_system_info() {
+fn system_info() {
     let system = System::new_all();
     eprintln!(
         "
@@ -57,7 +58,7 @@ fn print_system_info() {
     )
 }
 
-fn print_storage_info(opt: &option::Opt) {
+fn storage_info(opt: &option::Opt) {
     eprintln!(
         "
     {}
@@ -68,4 +69,24 @@ fn print_storage_info(opt: &option::Opt) {
         opt.s3_endpoint_url,
         opt.s3_bucket_name
     )
+}
+
+fn warning(opt: &option::Opt) {
+    if opt.s3_endpoint_url == option::DEFAULT_S3_URL {
+        eprintln!(
+            "
+    {}
+        {}
+        {}",
+            "Warning:".to_string().red().bold(),
+            "Parseable server is using default object storage backend with public access."
+                .to_string()
+                .red(),
+            format!(
+                "Setup your object storage backend with {} before storing production logs.",
+                option::S3_URL_ENV_VAR
+            )
+            .red()
+        )
+    }
 }
