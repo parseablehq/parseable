@@ -19,10 +19,13 @@
 use std::path::PathBuf;
 use structopt::StructOpt;
 
+pub const DEFAULT_S3_URL: &str = "http://127.0.0.1:9000";
+pub const S3_URL_ENV_VAR: &str = "P_S3_URL";
+
 #[derive(Debug, Clone, StructOpt)]
 #[structopt(
     name = "Parseable config",
-    about = "the config setup for Parseable server"
+    about = "configuration for Parseable server"
 )]
 pub struct Opt {
     /// The location of TLS Cert file
@@ -44,7 +47,7 @@ pub struct Opt {
     pub local_disk_path: String,
 
     /// The endpoint to AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_URL", default_value = "http://127.0.0.1:9000")]
+    #[structopt(long, env = S3_URL_ENV_VAR, default_value = DEFAULT_S3_URL )]
     pub s3_endpoint_url: String,
 
     /// The access key for AWS S3 or compatible object storage platform
