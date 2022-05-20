@@ -16,5 +16,17 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-echo "Executing smoke test for Parseable"
-./smoke_test.sh "$1" "$2"
+mode=$1
+endpoint=$2
+
+run_smoke_test () {
+  echo "Executing smoke test"
+  stream_name=$(echo $RANDOM | md5sum | head -c 20)
+  ./testcases/smoke_test.sh "$endpoint" "$stream_name"
+  return $?
+}
+
+case "$mode" in
+   "smoke") run_smoke_test 
+   ;;
+esac
