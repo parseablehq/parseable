@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "parseable.fullname" . }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: 5678
+      protocol: TCP
+      name: 5678
+  selector:
+    {{- include "parseable.selectorLabels" . | nindent 4 }}
