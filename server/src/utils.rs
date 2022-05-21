@@ -76,8 +76,11 @@ pub fn validate_stream_name(str_name: &str) -> Result<(), String> {
     }
     if !str_name.chars().all(char::is_alphanumeric) {
         return Err(String::from(
-            "logstream name cannot contain special characters",
+            "logstream name cannot contain any special characters",
         ));
+    }
+    if str_name.chars().all(char::is_numeric) {
+        return Err(String::from("logstream name cannot be numberic"));
     }
     if str_name.chars().any(|c| c.is_ascii_uppercase()) {
         return Err(String::from(
