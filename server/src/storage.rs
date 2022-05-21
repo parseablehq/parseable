@@ -17,6 +17,7 @@
  */
 
 use actix_web::web;
+use aws_sdk_s3::model::{Delete, ObjectIdentifier};
 use aws_sdk_s3::{Client, Credentials, Endpoint, Error, Region};
 use bytes::Bytes;
 use http::Uri;
@@ -25,6 +26,8 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::prelude::*;
+use std::iter::Iterator;
+use tokio_stream::StreamExt;
 
 use crate::option;
 
@@ -135,6 +138,39 @@ pub async fn create_stream(stream_name: &str) -> Result<(), Error> {
 
     let file_name = format!("{}{}{}", dir_name, "/", ".schema");
     fs::File::create(file_name).unwrap();
+    Ok(())
+}
+
+#[tokio::main]
+pub async fn delete_stream(stream_name: &str) -> Result<(), Error> {
+    let opt = option::get_opts();
+    let client = setup_storage(&opt).client;
+    let bucket = env::var("AWS_BUCKET_NAME").unwrap();
+
+    let mut pages = client
+        .list_objects_v2()
+        .bucket(bucket.clone())
+        .prefix(stream_name)
+        .into_paginator()
+        .send();
+
+    let mut delete_objects: Vec<ObjectIdentifier> = vec![];
+    while let Some(page) = pages.next().await {
+        for obj in page.unwrap().contents.unwrap() {
+            let obj_id = ObjectIdentifier::builder().set_key(obj.key).build();
+            delete_objects.push(obj_id);
+        }
+    }
+
+    let delete = Delete::builder().set_objects(Some(delete_objects)).build();
+    println!("{:?}", delete);
+    client
+        .delete_objects()
+        .bucket(bucket)
+        .delete(delete)
+        .send()
+        .await?;
+
     Ok(())
 }
 

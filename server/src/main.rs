@@ -123,18 +123,21 @@ async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     // Base path "{url}/api/v1"
     cfg.service(
-        // PUT "/logstream/{logstream}" ==> Create Log Stream
-        // POST "/logstream/{logstream}" ==> Post logs to given Log Stream
+        // Log Stream API
         web::resource(logstream_path("{logstream}"))
+            // PUT "/logstream/{logstream}" ==> Create Log Stream
             .route(web::put().to(handler::put_stream))
+            // POST "/logstream/{logstream}" ==> Post logs to given Log Stream
             .route(web::post().to(handler::post_event))
+            // DELETE "/logstream/{logstream}" ==> Delete Log Stream
+            .route(web::delete().to(handler::delete_stream))
             .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
     )
     .service(
-        // PUT "/logstream/{logstream}/alert" ==> Set alert for given Log Stream
-        // GET "/logstream/{logstream}/alert" ==> Get alert for given Log Stream
         web::resource(alert_path("{logstream}"))
+            // PUT "/logstream/{logstream}/alert" ==> Set alert for given Log Stream
             .route(web::put().to(handler::put_alert))
+            // GET "/logstream/{logstream}/alert" ==> Get alert for given Log Stream
             .route(web::get().to(handler::get_alert)),
     )
     // GET "/logstream" ==> Get list of all Log Streams on the server

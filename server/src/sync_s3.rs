@@ -30,7 +30,7 @@ use std::path::Path;
 use std::time::Duration;
 extern crate fs_extra;
 use crate::storage;
-use aws_sdk_s3::ByteStream;
+use aws_smithy_http::byte_stream::ByteStream;
 use fs_extra::dir;
 
 pub fn syncer(opt: option::Opt) -> Result<bool, Error> {
