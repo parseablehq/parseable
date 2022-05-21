@@ -59,6 +59,40 @@ pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> H
     }
 }
 
+pub async fn delete_stream(req: HttpRequest) -> HttpResponse {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    if let Err(e) = utils::validate_stream_name(&stream_name) {
+        // fail to proceed if there is an error in logstream name validation
+        return response::ServerResponse {
+            msg: format!("Failed to get LogStream schema due to err: {}", e),
+            code: StatusCode::BAD_REQUEST,
+        }
+        .to_http();
+    }
+    match storage::stream_exists(&stream_name) {
+        Ok(_) => match storage::delete_stream(&stream_name) {
+            Ok(_) => response::ServerResponse {
+                msg: format!("LogStream {} deleted", stream_name),
+                code: StatusCode::OK,
+            }
+            .to_http(),
+            Err(e) => response::ServerResponse {
+                msg: format!(
+                    "Failed to delete LogStream {} due to err: {}",
+                    stream_name, e
+                ),
+                code: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+            .to_http(),
+        },
+        Err(_) => response::ServerResponse {
+            msg: format!("LogStream {} does not exist", stream_name),
+            code: StatusCode::BAD_REQUEST,
+        }
+        .to_http(),
+    }
+}
+
 pub async fn list_streams(_: HttpRequest) -> impl Responder {
     response::list_response(storage::list_streams().unwrap())
 }
