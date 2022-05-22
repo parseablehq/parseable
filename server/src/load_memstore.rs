@@ -19,28 +19,32 @@
 use crate::mem_store;
 use crate::option;
 use crate::utils;
-use actix_web::Error;
+use crate::Error;
 use arrow::record_batch::RecordBatch;
 use std::path::Path;
+use std::path::PathBuf;
 use std::{fs, io};
 use walkdir::WalkDir;
 
-pub fn load_memstore(opt: option::Opt) -> anyhow::Result<()> {
+pub type DataDirPaths = Vec<PathBuf>;
+
+pub fn load_memstore(opt: option::Opt) -> Result<(), Error> {
     // Check local data path and load streams and corresponding schema to
     // internal in-memory store
     if Path::new(&opt.local_disk_path).exists() {
-        let entries = new_data_dir_paths(opt.clone());
-        for entry in entries.unwrap().entries {
-            let paths = new_dir_paths(entry, opt.clone());
+        let entries = new_data_dir_paths(opt.clone())?;
+        for entry in entries {
+            let paths = new_dir_paths(entry, opt.clone()).ok_or(Error::MissingPath)?;
+            let schema = fs::read_to_string(&paths.schema_path)?;
             if Path::new(&paths.parquet_path).exists() {
-                let parquet_file = fs::File::open(&paths.parquet_path).unwrap();
-                let rb_reader = utils::convert_parquet_rb_reader(parquet_file);
+                let parquet_file = fs::File::open(&paths.parquet_path)?;
+                let rb_reader = utils::convert_parquet_rb_reader(parquet_file)?;
                 for rb in rb_reader {
                     mem_store::MEM_STREAMS::put(
                         paths.stream_name.clone(),
                         mem_store::LogStream {
-                            schema: Some(fs::read_to_string(&paths.schema_path)?.parse()?),
-                            rb: Some(rb.unwrap()),
+                            schema: Some(schema.clone()),
+                            rb: Some(rb?),
                         },
                     );
                 }
@@ -54,17 +58,14 @@ pub fn load_memstore(opt: option::Opt) -> anyhow::Result<()> {
 
                     if f_name.ends_with(".parquet") {
                         let parquet_file = fs::File::open(a.path()).unwrap();
-                        let rb_reader = utils::convert_parquet_rb_reader(parquet_file);
+                        let rb_reader = utils::convert_parquet_rb_reader(parquet_file)?;
 
                         for rb in rb_reader {
-                            let sc = rb.unwrap();
                             mem_store::MEM_STREAMS::put(
                                 paths.stream_name.clone(),
                                 mem_store::LogStream {
-                                    schema: Some(
-                                        fs::read_to_string(&paths.schema_path.clone())?.parse()?,
-                                    ),
-                                    rb: Some(RecordBatch::new_empty(sc.schema())),
+                                    schema: Some(schema.clone()),
+                                    rb: Some(RecordBatch::new_empty(rb?.schema())),
                                 },
                             );
                         }
@@ -77,16 +78,12 @@ pub fn load_memstore(opt: option::Opt) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
-pub struct DataDirPaths {
-    pub entries: std::vec::Vec<std::path::PathBuf>,
-}
-
-pub fn new_data_dir_paths(opt: option::Opt) -> Result<DataDirPaths, Error> {
+pub fn new_data_dir_paths(opt: option::Opt) -> Result<DataDirPaths, io::Error> {
     let entries = fs::read_dir(&opt.local_disk_path)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
-    Ok(DataDirPaths { entries })
+
+    Ok(entries)
 }
 
 #[derive(Debug)]
@@ -97,14 +94,14 @@ pub struct DirPaths {
     pub path_cache_dir: String,
 }
 
-pub fn new_dir_paths(paths: std::path::PathBuf, opt: option::Opt) -> DirPaths {
-    let path = format!("{:?}", paths);
-    let new_path = utils::rem_first_and_last(&path);
+pub fn new_dir_paths(path: std::path::PathBuf, opt: option::Opt) -> Option<DirPaths> {
+    let new_path = utils::rem_first_and_last(path.to_str()?);
     let stream_vec: Vec<&str> = new_path.split('/').collect();
-    return DirPaths {
-        parquet_path: format!("{}/{}", &new_path, "data.parquet"),
+
+    Some(DirPaths {
+        parquet_path: format!("{}/data.parquet", &new_path),
         stream_name: stream_vec[2].to_string(),
-        schema_path: format!("{}/{}", &new_path, ".schema"),
+        schema_path: format!("{}/.schema", &new_path),
         path_cache_dir: format!("{}/{}", opt.local_disk_path, stream_vec[2]),
-    };
+    })
 }

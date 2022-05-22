@@ -24,6 +24,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::utils;
+use crate::Error;
 
 // Query holds all values relevant to a query for a single logstream
 #[derive(Deserialize)]
@@ -34,39 +35,29 @@ pub struct Query {
 impl Query {
     // parse_query parses the SQL query and returns the logstream name on which
     // this query is supposed to be executed
-    pub fn parse(&self) -> Result<String, String> {
-        // convert to lowercase before parsing
-        let query_lower = self.query.to_lowercase();
-        let tokens = query_lower.split(' ').collect::<Vec<&str>>();
-        match Self::validate(&tokens) {
-            Ok(_) => {
-                // logstream name is located after the `from` keyword
-                let stream_name_index = tokens.iter().position(|&x| x == "from").unwrap() + 1;
-                // we currently don't support queries like "select name, address from stream1 and stream2"
-                // so if there is an `and` after the first logstream name, we return an error.
-                if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
-                    return Err(String::from(
-                        "queries across multiple streams are not supported currently",
-                    ));
-                }
-                Ok(tokens[stream_name_index].to_string())
-            }
-            Err(e) => Err(e),
+    pub fn parse(&self) -> Result<String, Error> {
+        // convert query to lowercase, and then tokenize
+        let query = self.query.to_lowercase();
+        let tokens = query.split(' ').collect::<Vec<&str>>();
+        // validate query
+        if tokens.is_empty() {
+            return Err(Error::Empty);
+        } else if tokens.contains(&"join") {
+            return Err(Error::Join(self.query.to_owned()));
         }
-    }
+        // logstream name is located after the `from` keyword
+        let stream_name_index = tokens.iter().position(|&x| x == "from").unwrap() + 1;
+        // we currently don't support queries like "select name, address from stream1 and stream2"
+        // so if there is an `and` after the first logstream name, we return an error.
+        if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
+            return Err(Error::MultipleStreams(self.query.to_owned()));
+        }
 
-    fn validate(tokens: &[&str]) -> Result<(), String> {
-        if tokens.contains(&"") {
-            return Err(String::from("query cannot be empty"));
-        }
-        if tokens.contains(&"join") {
-            return Err(String::from("joins are not supported currently"));
-        }
-        Ok(())
+        Ok(tokens[stream_name_index].to_string())
     }
 
     #[tokio::main]
-    pub async fn execute(&self, logstream: &str) -> Result<Vec<RecordBatch>, String> {
+    pub async fn execute(&self, logstream: &str) -> Result<Vec<RecordBatch>, Error> {
         let mut ctx = ExecutionContext::new();
         let file_format = ParquetFormat::default().with_enable_pruning(true);
 
@@ -78,26 +69,23 @@ impl Query {
             target_partitions: 1,
         };
 
-        match ctx
-            .register_listing_table(
-                logstream,
-                utils::get_cache_path(logstream).as_str(),
-                listing_options,
-                None,
-            )
+        ctx.register_listing_table(
+            logstream,
+            utils::get_cache_path(logstream).as_str(),
+            listing_options,
+            None,
+        )
+        .await
+        .map_err(Error::DataFusion)?;
+
+        // execute the query
+        let df = ctx
+            .sql(self.query.as_str())
             .await
-        {
-            Ok(_) => {
-                // execute the query
-                match ctx.sql(self.query.as_str()).await {
-                    Ok(df) => match df.collect().await {
-                        Ok(results) => Ok(results),
-                        Err(e) => Err(e.to_string()),
-                    },
-                    Err(e) => Err(e.to_string()),
-                }
-            }
-            Err(e) => Err(e.to_string()),
-        }
+            .map_err(Error::DataFusion)?;
+
+        let results = df.collect().await.map_err(Error::DataFusion)?;
+
+        Ok(results)
     }
 }

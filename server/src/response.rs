@@ -33,6 +33,7 @@ pub struct ServerResponse {
 impl ServerResponse {
     pub fn to_http(&self) -> HttpResponse {
         log::info!("{}", self.msg);
+
         HttpResponseBuilder::new(self.code)
             .content_type("text")
             .body(self.msg.to_string())
@@ -41,6 +42,7 @@ impl ServerResponse {
 
 pub fn list_response(body: Vec<storage::LogStream>) -> impl Responder {
     log::info!("{}", "Returning list logstream results");
+
     web::Json(body)
 }
 
@@ -56,6 +58,7 @@ impl QueryResponse {
         let mut writer = json::ArrayWriter::new(buf);
         writer.write_batches(&self.body).unwrap();
         writer.finish().unwrap();
+
         HttpResponseBuilder::new(self.code)
             .content_type("json")
             .body(writer.into_inner())

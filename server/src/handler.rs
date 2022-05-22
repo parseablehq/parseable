@@ -31,29 +31,34 @@ use crate::validator;
 const META_LABEL: &str = "x-p-meta";
 
 pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> HttpResponse {
-    match query.parse() {
-        Ok(stream_name) => match storage::stream_exists(&stream_name) {
-            Ok(_) => match query.execute(&stream_name) {
-                Ok(results) => response::QueryResponse {
-                    body: results,
-                    code: StatusCode::OK,
-                }
-                .to_http(),
-                Err(e) => response::ServerResponse {
-                    msg: e,
-                    code: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-                .to_http(),
-            },
-            Err(_) => response::ServerResponse {
-                msg: format!("LogStream {} does not exist", stream_name),
+    let stream_name = match query.parse() {
+        Ok(stream_name) => stream_name,
+        Err(e) => {
+            return response::ServerResponse {
+                msg: format!("Failed to execute query due to err: {}", e),
                 code: StatusCode::BAD_REQUEST,
             }
-            .to_http(),
-        },
-        Err(e) => response::ServerResponse {
-            msg: format!("Failed to execute query due to err: {}", e),
+            .to_http()
+        }
+    };
+
+    if storage::stream_exists(&stream_name).is_err() {
+        return response::ServerResponse {
+            msg: format!("LogStream {} does not exist", stream_name),
             code: StatusCode::BAD_REQUEST,
+        }
+        .to_http();
+    }
+
+    match query.execute(&stream_name) {
+        Ok(results) => response::QueryResponse {
+            body: results,
+            code: StatusCode::OK,
+        }
+        .to_http(),
+        Err(e) => response::ServerResponse {
+            msg: e.to_string(),
+            code: StatusCode::INTERNAL_SERVER_ERROR,
         }
         .to_http(),
     }
@@ -69,28 +74,31 @@ pub async fn delete_stream(req: HttpRequest) -> HttpResponse {
         }
         .to_http();
     }
-    match storage::stream_exists(&stream_name) {
-        Ok(_) => match storage::delete_stream(&stream_name) {
-            Ok(_) => response::ServerResponse {
-                msg: format!("LogStream {} deleted", stream_name),
-                code: StatusCode::OK,
-            }
-            .to_http(),
-            Err(e) => response::ServerResponse {
-                msg: format!(
-                    "Failed to delete LogStream {} due to err: {}",
-                    stream_name, e
-                ),
-                code: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-            .to_http(),
-        },
-        Err(_) => response::ServerResponse {
+
+    if storage::stream_exists(&stream_name).is_err() {
+        return response::ServerResponse {
             msg: format!("LogStream {} does not exist", stream_name),
             code: StatusCode::BAD_REQUEST,
         }
-        .to_http(),
+        .to_http();
     }
+
+    if let Err(e) = storage::delete_stream(&stream_name) {
+        return response::ServerResponse {
+            msg: format!(
+                "Failed to delete LogStream {} due to err: {}",
+                stream_name, e
+            ),
+            code: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+        .to_http();
+    }
+
+    response::ServerResponse {
+        msg: format!("LogStream {} deleted", stream_name),
+        code: StatusCode::OK,
+    }
+    .to_http()
 }
 
 pub async fn list_streams(_: HttpRequest) -> impl Responder {
@@ -99,8 +107,8 @@ pub async fn list_streams(_: HttpRequest) -> impl Responder {
 
 pub async fn get_schema(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    // fail to proceed if there is an error in logstream name validation
     if let Err(e) = utils::validate_stream_name(&stream_name) {
-        // fail to proceed if there is an error in logstream name validation
         return response::ServerResponse {
             msg: format!("Failed to get LogStream schema due to err: {}", e),
             code: StatusCode::BAD_REQUEST,
@@ -110,19 +118,20 @@ pub async fn get_schema(req: HttpRequest) -> HttpResponse {
 
     match storage::stream_exists(&stream_name) {
         Ok(schema) if schema.is_empty() => {
+            // fail to proceed if there is an error in logstream name validation
             if let Err(e) = utils::validate_stream_name(&stream_name) {
-                // fail to proceed if there is an error in logstream name validation
                 return response::ServerResponse {
                     msg: format!("Failed to get LogStream schema due to err: {}", e),
                     code: StatusCode::BAD_REQUEST,
                 }
                 .to_http();
             }
+
             response::ServerResponse {
-                        msg: "Failed to get LogStream schema, because LogStream is not initialized yet. Please post an event before fetching schema".to_string(),
-                        code: StatusCode::BAD_REQUEST,
-                    }
-                    .to_http()
+                msg: "Failed to get LogStream schema, because LogStream is not initialized yet. Please post an event before fetching schema".to_string(),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http()
         }
         Ok(schema) => {
             let buf = schema.as_ref();
@@ -185,41 +194,43 @@ pub async fn get_alert(req: HttpRequest) -> HttpResponse {
 
 pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    match utils::validate_stream_name(&stream_name) {
-        Ok(_) => {
-            match storage::stream_exists(&stream_name) {
-                // Error if the logstream already exists
-                Ok(_) => response::ServerResponse {
-                    msg: format!(
-                        "LogStream {} already exists, please create a new LogStream with unique name",
-                        stream_name
-                    ),
-                    code: StatusCode::BAD_REQUEST,
-                }
-                .to_http(),
-                // Proceed to create logstream if it doesn't exist
-                Err(_) => match storage::create_stream(&stream_name) {
-                    Ok(_) => response::ServerResponse {
-                        msg: format!("Created LogStream {}", stream_name),
-                        code: StatusCode::OK,
-                    }
-                    .to_http(),
-                    // Fail if unable to create logstream on object store backend
-                    Err(e) => response::ServerResponse {
-                        msg: format!("Failed to create LogStream due to err: {}", e),
-                        code: StatusCode::INTERNAL_SERVER_ERROR,
-                    }
-                    .to_http(),
-                },
-            }
-        }
-        // fail to proceed if there is an error in logstream name validation
-        Err(e) => response::ServerResponse {
+
+    // fail to proceed if there is an error in logstream name validation
+    if let Err(e) = utils::validate_stream_name(&stream_name) {
+        return response::ServerResponse {
             msg: format!("Failed to create LogStream due to err: {}", e),
             code: StatusCode::BAD_REQUEST,
         }
-        .to_http(),
+        .to_http();
     }
+
+    // Proceed to create logstream if it doesn't exist
+    if storage::stream_exists(&stream_name).is_err() {
+        // Fail if unable to create logstream on object store backend
+        if let Err(e) = storage::create_stream(&stream_name) {
+            return response::ServerResponse {
+                msg: format!("Failed to create LogStream due to err: {}", e),
+                code: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+            .to_http();
+        }
+
+        return response::ServerResponse {
+            msg: format!("Created LogStream {}", stream_name),
+            code: StatusCode::OK,
+        }
+        .to_http();
+    }
+
+    // Error if the logstream already exists
+    response::ServerResponse {
+        msg: format!(
+            "LogStream {} already exists, please create a new LogStream with unique name",
+            stream_name
+        ),
+        code: StatusCode::BAD_REQUEST,
+    }
+    .to_http()
 }
 
 pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
@@ -245,73 +256,72 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
 
     let labels = collect_labels(&req);
 
-    match storage::stream_exists(&stream_name) {
+    let schema = match storage::stream_exists(&stream_name) {
         // empty schema file is created in object store at the time of Put LogStream.
         // If that file is successfully received, we assume that to be indicating that
         // logstream already exists.
-        Ok(schema) => {
-            if body.is_array() {
-                let mut i = 0;
-                loop {
-                    if body[i].is_object() {
-                        let e = event::Event {
-                            body: utils::flatten_json_body(
-                                web::Json(body[i].clone()),
-                                labels.clone(),
-                            ),
-                            path: option::get_opts().local_disk_path,
-                            stream_name: stream_name.clone(),
-                            schema: Bytes::from(utils::read_schema_from_file(&stream_name)),
-                        };
-                        match e.process() {
-                            Ok(_) => (),
-                            Err(e) => {
-                                return response::ServerResponse {
-                                    msg: format!(
-                                        "Failed to process event at index {} due to err: {}",
-                                        i, e
-                                    ),
-                                    code: StatusCode::INTERNAL_SERVER_ERROR,
-                                }
-                                .to_http()
-                            }
-                        }
-                        i += 1;
-                    } else {
-                        break;
-                    }
-                }
-                response::ServerResponse {
-                    msg: format!("Successfully posted {} events", i),
-                    code: StatusCode::OK,
-                }
-                .to_http()
-            } else {
+        Ok(schema) => schema,
+        Err(e) => {
+            return response::ServerResponse {
+                msg: format!("LogStream {} Does not Exist, Error: {}", stream_name, e),
+                code: StatusCode::NOT_FOUND,
+            }
+            .to_http()
+        }
+    };
+
+    if body.is_array() {
+        let mut i = 0;
+        loop {
+            if body.get(i).unwrap().is_object() {
+                let body =
+                    utils::flatten_json_body(web::Json(body[i].clone()), labels.clone()).unwrap();
+                let schema = utils::read_schema_from_file(&stream_name).unwrap();
                 let e = event::Event {
-                    body: utils::flatten_json_body(body, labels),
+                    body,
                     path: option::get_opts().local_disk_path,
                     stream_name: stream_name.clone(),
-                    schema,
+                    schema: Bytes::from(schema),
                 };
-                match e.process() {
-                    Ok(_) => response::ServerResponse {
-                        msg: "Successfully posted event".to_string(),
-                        code: StatusCode::OK,
-                    }
-                    .to_http(),
-                    Err(e) => response::ServerResponse {
-                        msg: format!("Failed to process event due to err: {}", e),
+
+                if let Err(e) = e.process() {
+                    return response::ServerResponse {
+                        msg: format!("Failed to process event at index {} due to err: {}", i, e),
                         code: StatusCode::INTERNAL_SERVER_ERROR,
                     }
-                    .to_http(),
+                    .to_http();
                 }
+                i += 1;
+            } else {
+                break;
             }
         }
-        Err(e) => response::ServerResponse {
-            msg: format!("LogStream {} Does not Exist, Error: {}", stream_name, e),
-            code: StatusCode::NOT_FOUND,
+
+        response::ServerResponse {
+            msg: format!("Successfully posted {} events", i),
+            code: StatusCode::OK,
         }
-        .to_http(),
+        .to_http()
+    } else {
+        let e = event::Event {
+            body: utils::flatten_json_body(body, labels).unwrap(),
+            path: option::get_opts().local_disk_path,
+            stream_name,
+            schema,
+        };
+        if let Err(e) = e.process() {
+            return response::ServerResponse {
+                msg: format!("Failed to process event due to err: {}", e),
+                code: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+            .to_http();
+        }
+
+        response::ServerResponse {
+            msg: "Successfully posted event".to_string(),
+            code: StatusCode::OK,
+        }
+        .to_http()
     }
 }
 

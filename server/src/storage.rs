@@ -88,6 +88,7 @@ fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
         .endpoint_resolver(endpoint)
         .credentials_provider(creds)
         .build();
+
     Client::from_conf(config)
 }
 
@@ -135,9 +136,9 @@ pub async fn create_stream(stream_name: &str) -> Result<(), Error> {
     // the local storage as well
     let dir_name = local_path_for_stream(&opt, stream_name);
     let _res = fs::create_dir_all(dir_name.clone());
-
     let file_name = format!("{}{}{}", dir_name, "/", ".schema");
     fs::File::create(file_name).unwrap();
+
     Ok(())
 }
 
@@ -204,6 +205,7 @@ pub async fn stream_exists(stream_name: &str) -> Result<Bytes, Error> {
         .await?;
     let body = resp.body.collect().await;
     let body_bytes = body.unwrap().into_bytes();
+
     Ok(body_bytes)
 }
 
@@ -244,6 +246,7 @@ pub async fn list_streams() -> Result<Vec<LogStream>, Error> {
     for v in hs {
         streams.push(LogStream { name: v });
     }
+
     Ok(streams)
 }
 
