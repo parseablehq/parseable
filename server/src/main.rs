@@ -152,7 +152,11 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::resource(schema_path("{logstream}")).route(web::get().to(handler::get_schema)),
     )
     // GET "/query" ==> Get results of the SQL query passed in request body
-    .service(web::resource(query_path()).route(web::get().to(handler::cache_query)));
+    .service(web::resource(query_path()).route(web::get().to(handler::cache_query)))
+    // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
+    .service(web::resource(liveness_path()).route(web::get().to(handler::liveness)))
+    // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
+    .service(web::resource(readiness_path()).route(web::get().to(handler::readiness)));
 }
 
 #[macro_export]
@@ -171,11 +175,27 @@ macro_rules! create_app {
     };
 }
 
+fn base_path() -> String {
+    format!("{}{}", API_BASE_PATH, API_VERSION)
+}
+
 fn logstream_path(stream_name: &str) -> String {
     if stream_name.is_empty() {
-        return format!("{}{}/logstream", API_BASE_PATH, API_VERSION);
+        return format!("{}/logstream", base_path());
     }
-    format!("{}{}/logstream/{}", API_BASE_PATH, API_VERSION, stream_name)
+    format!("{}/logstream/{}", base_path(), stream_name)
+}
+
+fn readiness_path() -> String {
+    format!("{}/readiness", base_path())
+}
+
+fn liveness_path() -> String {
+    format!("{}/liveness", base_path())
+}
+
+fn query_path() -> String {
+    format!("{}/query", base_path())
 }
 
 fn alert_path(stream_name: &str) -> String {
@@ -184,8 +204,4 @@ fn alert_path(stream_name: &str) -> String {
 
 fn schema_path(stream_name: &str) -> String {
     format!("{}/schema", logstream_path(stream_name))
-}
-
-fn query_path() -> String {
-    format!("{}{}/query", API_BASE_PATH, API_VERSION)
 }

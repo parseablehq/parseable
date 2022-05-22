@@ -19,6 +19,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
+use sysinfo::{System, SystemExt};
 
 use crate::event;
 use crate::option;
@@ -29,6 +30,22 @@ use crate::utils;
 use crate::validator;
 
 const META_LABEL: &str = "x-p-meta";
+
+pub async fn liveness() -> HttpResponse {
+    // If the available memroy is less than 100MiB, return a 503 error.
+    // As liveness check fails, Kubelet will restart the server.
+    if System::new_all().available_memory() < 100 * 1024 * 1024 {
+        return HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    HttpResponse::new(StatusCode::OK)
+}
+
+pub async fn readiness() -> HttpResponse {
+    match storage::is_available() {
+        Ok(_) => HttpResponse::new(StatusCode::OK),
+        Err(_) => HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
 
 pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> HttpResponse {
     let stream_name = match query.parse() {

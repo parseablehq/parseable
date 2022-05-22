@@ -97,6 +97,18 @@ pub fn setup_storage(opt: &option::Opt) -> S3 {
 }
 
 #[tokio::main]
+pub async fn is_available() -> Result<(), Error> {
+    let opt = option::get_opts();
+    let client = setup_storage(&opt).client;
+    let _resp = client
+        .head_bucket()
+        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
+        .send()
+        .await?;
+    Ok(())
+}
+
+#[tokio::main]
 pub async fn put_schema(stream_name: &str, schema: String) -> Result<(), Error> {
     let opt = option::get_opts();
     let client = setup_storage(&opt).client;
@@ -164,7 +176,7 @@ pub async fn delete_stream(stream_name: &str) -> Result<(), Error> {
     }
 
     let delete = Delete::builder().set_objects(Some(delete_objects)).build();
-    println!("{:?}", delete);
+
     client
         .delete_objects()
         .bucket(bucket)
