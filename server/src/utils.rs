@@ -26,24 +26,30 @@ use std::fs;
 use std::sync::Arc;
 
 use crate::option;
+use crate::Error;
 
 pub fn rem_first_and_last(value: &str) -> &str {
     let mut chars = value.chars();
     chars.next();
     chars.next_back();
+
     chars.as_str()
 }
 
 pub fn convert_parquet_rb_reader(
     file: std::fs::File,
-) -> parquet::arrow::arrow_reader::ParquetRecordBatchReader {
-    let file_reader = SerializedFileReader::new(file).unwrap();
+) -> Result<parquet::arrow::arrow_reader::ParquetRecordBatchReader, Error> {
+    let file_reader = SerializedFileReader::new(file)?;
     let mut arrow_reader = ParquetFileArrowReader::new(Arc::new(file_reader));
+    let record_reader = arrow_reader.get_record_reader(2048)?;
 
-    arrow_reader.get_record_reader(2048).unwrap()
+    Ok(record_reader)
 }
 
-pub fn flatten_json_body(body: web::Json<serde_json::Value>, labels: Option<String>) -> String {
+pub fn flatten_json_body(
+    body: web::Json<serde_json::Value>,
+    labels: Option<String>,
+) -> Result<String, Error> {
     let mut collector_labels = HashMap::new();
 
     collector_labels.insert("labels".to_string(), labels.unwrap());
@@ -51,7 +57,9 @@ pub fn flatten_json_body(body: web::Json<serde_json::Value>, labels: Option<Stri
     let mut flat_value: Value = json!({});
     let new_body = merge(&body, &collector_labels);
     flatten_json::flatten(&new_body, &mut flat_value, None, true, Some("_")).unwrap();
-    serde_json::to_string(&flat_value).unwrap()
+    let flattened = serde_json::to_string(&flat_value)?;
+
+    Ok(flattened)
 }
 
 fn merge(v: &Value, fields: &HashMap<String, String>) -> Value {
@@ -61,39 +69,40 @@ fn merge(v: &Value, fields: &HashMap<String, String>) -> Value {
             for (k, v) in fields {
                 m.insert(k.clone(), Value::String(v.clone()));
             }
+
             Value::Object(m)
         }
         v => v.clone(),
     }
 }
 
-pub fn validate_stream_name(str_name: &str) -> Result<(), String> {
+// TODO: add more sql keywords here in lower case
+const DENIED_NAMES: &[&str] = &[
+    "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
+];
+
+pub fn validate_stream_name(str_name: &str) -> Result<(), Error> {
     if str_name.is_empty() {
-        return Err(String::from("logstream name cannot be empty"));
+        return Err(Error::EmptyName);
     }
-    if str_name.contains(' ') {
-        return Err(String::from("logstream name cannot contain spaces"));
-    }
-    if !str_name.chars().all(char::is_alphanumeric) {
-        return Err(String::from(
-            "logstream name cannot contain any special characters",
-        ));
-    }
+
     if str_name.chars().all(char::is_numeric) {
-        return Err(String::from("logstream name cannot be numberic"));
+        return Err(Error::NameNumericOnly(str_name.to_owned()));
     }
-    if str_name.chars().any(|c| c.is_ascii_uppercase()) {
-        return Err(String::from(
-            "logstream name cannot contain uppercase characters",
-        ));
+
+    for c in str_name.chars() {
+        match c {
+            ' ' => return Err(Error::NameWhiteSpace(str_name.to_owned())),
+            c if !c.is_alphanumeric() => return Err(Error::NameSpecialChar(str_name.to_owned())),
+            c if c.is_ascii_uppercase() => return Err(Error::NameUpperCase(str_name.to_owned())),
+            _ => {}
+        }
     }
-    // add more sql keywords here in lower case
-    let denied_names = [
-        "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
-    ];
-    if denied_names.contains(&str_name) {
-        return Err(String::from("logstream name cannot be a sql keyword"));
+
+    if DENIED_NAMES.contains(&str_name) {
+        return Err(Error::SQLKeyword(str_name.to_owned()));
     }
+
     Ok(())
 }
 
@@ -101,13 +110,10 @@ pub fn get_cache_path(stream_name: &str) -> String {
     format!("{}/{}", option::get_opts().local_disk_path, stream_name)
 }
 
-#[allow(clippy::all)]
-pub fn unbox<T>(value: Box<T>) -> T {
-    *value
-}
+pub fn read_schema_from_file(stream_name: &str) -> Result<String, Error> {
+    let schema = fs::read_to_string(format!("{}{}", get_cache_path(stream_name), "/.schema"))?;
 
-pub fn read_schema_from_file(stream_name: &str) -> String {
-    fs::read_to_string(format!("{}{}", get_cache_path(stream_name), "/.schema")).unwrap()
+    Ok(schema)
 }
 
 pub fn get_scheme() -> String {

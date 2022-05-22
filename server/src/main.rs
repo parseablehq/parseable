@@ -28,6 +28,7 @@ use std::time::Duration;
 extern crate ticker;
 
 mod banner;
+mod error;
 mod event;
 mod handler;
 mod load_memstore;
@@ -39,6 +40,8 @@ mod storage;
 mod sync_s3;
 mod utils;
 mod validator;
+
+use error::Error;
 
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 102400;
@@ -61,12 +64,12 @@ async fn wrap(opt: option::Opt) -> anyhow::Result<()> {
     thread::spawn(move || {
         let ticker = ticker::Ticker::new(0.., Duration::from_secs(1));
         for _ in ticker {
-            match sync_s3::syncer(opt.clone()) {
-                Ok(_) => {}
-                Err(e) => println!("{}", e),
+            if let Err(e) = sync_s3::syncer(opt.clone()) {
+                println!("{}", e)
             }
         }
     });
+
     Ok(())
 }
 
@@ -78,23 +81,28 @@ async fn validator(
     if credentials.user_id().trim() == opt.username.unwrap()
         && credentials.password().unwrap().trim() == opt.password.unwrap()
     {
-        Ok(req)
-    } else {
-        Err(actix_web::error::ErrorUnauthorized("Unauthorized"))
+        return Ok(req);
     }
+
+    Err(actix_web::error::ErrorUnauthorized("Unauthorized"))
 }
 
 async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
     let opt_clone = opt.clone();
-
-    if let (Some(_), Some(_)) = (opt.username, opt.password) {
-        let http_server =
-            HttpServer::new(move || create_app!().wrap(HttpAuthentication::basic(validator)));
-
-        if let (Some(cert), Some(key)) = (opt_clone.tls_cert_path, opt_clone.tls_key_path) {
+    let ssl_acceptor = match (opt_clone.tls_cert_path, opt_clone.tls_key_path) {
+        (Some(cert), Some(key)) => {
             let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
             builder.set_private_key_file(key, SslFiletype::PEM)?;
             builder.set_certificate_chain_file(cert)?;
+            Some(builder)
+        }
+        (_, _) => None,
+    };
+
+    if opt.username.is_some() && opt.password.is_some() {
+        let http_server =
+            HttpServer::new(move || create_app!().wrap(HttpAuthentication::basic(validator)));
+        if let Some(builder) = ssl_acceptor {
             http_server
                 .bind_openssl(opt_clone.address, builder)?
                 .run()
@@ -104,10 +112,7 @@ async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
         }
     } else {
         let http_server = HttpServer::new(move || create_app!());
-        if let (Some(cert), Some(key)) = (opt_clone.tls_cert_path, opt_clone.tls_key_path) {
-            let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
-            builder.set_private_key_file(key, SslFiletype::PEM)?;
-            builder.set_certificate_chain_file(cert)?;
+        if let Some(builder) = ssl_acceptor {
             http_server
                 .bind_openssl(opt_clone.address, builder)?
                 .run()
@@ -168,22 +173,19 @@ macro_rules! create_app {
 
 fn logstream_path(stream_name: &str) -> String {
     if stream_name.is_empty() {
-        return format!("{}{}{}", API_BASE_PATH, API_VERSION, "/logstream");
+        return format!("{}{}/logstream", API_BASE_PATH, API_VERSION);
     }
-    format!(
-        "{}{}{}{}",
-        API_BASE_PATH, API_VERSION, "/logstream/", stream_name
-    )
+    format!("{}{}/logstream/{}", API_BASE_PATH, API_VERSION, stream_name)
 }
 
 fn alert_path(stream_name: &str) -> String {
-    format!("{}{}", logstream_path(stream_name), "/alert")
+    format!("{}/alert", logstream_path(stream_name))
 }
 
 fn schema_path(stream_name: &str) -> String {
-    format!("{}{}", logstream_path(stream_name), "/schema")
+    format!("{}/schema", logstream_path(stream_name))
 }
 
 fn query_path() -> String {
-    format!("{}{}{}", API_BASE_PATH, API_VERSION, "/query")
+    format!("{}{}/query", API_BASE_PATH, API_VERSION)
 }

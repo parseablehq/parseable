@@ -21,6 +21,8 @@ use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use crate::error::Error;
+
 #[derive(Debug)]
 pub struct LogStream {
     pub rb: Option<RecordBatch>,
@@ -29,26 +31,28 @@ pub struct LogStream {
 
 lazy_static! {
     #[derive(Debug)]
-    pub static ref MEM_STREAMS: Mutex<HashMap<String, Box<LogStream>>> = {
-        let m = HashMap::new();
-        Mutex::new(m)
-    };
+    pub static ref MEM_STREAMS: Mutex<HashMap<String, Box<LogStream>>> =
+        Mutex::new(HashMap::new());
 }
 
 #[allow(clippy::all)]
 impl MEM_STREAMS {
-    pub fn get_rb(stream_name: String) -> RecordBatch {
-        let map = MEM_STREAMS.lock().unwrap();
+    pub fn get_rb(stream_name: String) -> Result<RecordBatch, Error> {
+        let map = MEM_STREAMS.lock().map_err(|_| Error::StreamLock)?;
         let events = map.get(&stream_name).unwrap();
         drop(&map);
-        return events.rb.as_ref().unwrap().clone();
+
+        let record = events.rb.as_ref().unwrap().clone();
+
+        Ok(record)
     }
 
     pub fn get_schema(stream_name: String) -> String {
         let map = MEM_STREAMS.lock().unwrap();
         let events = map.get(&stream_name).unwrap();
         drop(&map);
-        return events.schema.as_ref().unwrap().clone();
+
+        events.schema.as_ref().unwrap().clone()
     }
 
     pub fn put(stream_name: String, logstream: LogStream) {
