@@ -11,7 +11,7 @@ docker build . -t parseable/test:edge
 ### Running tests
 
 ```
-docker run parseable/test:edge
+docker run parseable/test:edge smoke http://api.parseable.io
 ```
 
 You should get an output like this

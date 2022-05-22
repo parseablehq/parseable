@@ -29,4 +29,4 @@ RUN wget https://github.com/mingrammer/flog/releases/download/v0.4.3/flog_0.4.3_
   && tar -xvf flog_0.4.3_linux_amd64.tar.gz \
   && cp flog /usr/local/bin
 
-ENTRYPOINT ./main.sh smoke http://api.parseable.io
+ENTRYPOINT ["./main.sh"]
