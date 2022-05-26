@@ -287,59 +287,55 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
         }
     };
 
-    if body.is_array() {
+    if let Some(array) = body.as_array() {
         let mut i = 0;
-        loop {
-            if body.get(i).unwrap().is_object() {
-                let body =
-                    utils::flatten_json_body(web::Json(body[i].clone()), labels.clone()).unwrap();
-                let schema = utils::read_schema_from_file(&stream_name).unwrap();
-                let e = event::Event {
-                    body,
-                    path: option::get_opts().local_disk_path,
-                    stream_name: stream_name.clone(),
-                    schema: Bytes::from(schema),
-                };
 
-                if let Err(e) = e.process() {
-                    return response::ServerResponse {
-                        msg: format!("Failed to process event at index {} due to err: {}", i, e),
-                        code: StatusCode::INTERNAL_SERVER_ERROR,
-                    }
-                    .to_http();
+        for body in array {
+            let body = utils::flatten_json_body(web::Json(body.clone()), labels.clone()).unwrap();
+            let schema = utils::read_schema_from_file(&stream_name).unwrap();
+            let e = event::Event {
+                body,
+                path: option::get_opts().local_disk_path,
+                stream_name: stream_name.clone(),
+                schema: Bytes::from(schema),
+            };
+
+            if let Err(e) = e.process() {
+                return response::ServerResponse {
+                    msg: format!("Failed to process event at index {} due to err: {}", i, e),
+                    code: StatusCode::INTERNAL_SERVER_ERROR,
                 }
-                i += 1;
-            } else {
-                break;
+                .to_http();
             }
+
+            i += 1;
         }
 
-        response::ServerResponse {
+        return response::ServerResponse {
             msg: format!("Successfully posted {} events", i),
             code: StatusCode::OK,
         }
-        .to_http()
-    } else {
-        let e = event::Event {
-            body: utils::flatten_json_body(body, labels).unwrap(),
-            path: option::get_opts().local_disk_path,
-            stream_name,
-            schema,
-        };
-        if let Err(e) = e.process() {
-            return response::ServerResponse {
-                msg: format!("Failed to process event due to err: {}", e),
-                code: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-            .to_http();
-        }
-
-        response::ServerResponse {
-            msg: "Successfully posted event".to_string(),
-            code: StatusCode::OK,
-        }
-        .to_http()
+        .to_http();
     }
+    let e = event::Event {
+        body: utils::flatten_json_body(body, labels).unwrap(),
+        path: option::get_opts().local_disk_path,
+        stream_name,
+        schema,
+    };
+    if let Err(e) = e.process() {
+        return response::ServerResponse {
+            msg: format!("Failed to process event due to err: {}", e),
+            code: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+        .to_http();
+    }
+
+    response::ServerResponse {
+        msg: "Successfully posted event".to_string(),
+        code: StatusCode::OK,
+    }
+    .to_http()
 }
 
 /// collect labels passed from http headers
