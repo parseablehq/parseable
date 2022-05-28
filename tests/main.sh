@@ -21,8 +21,9 @@ endpoint=$2
 
 run_smoke_test () {
   echo "Executing smoke test"
-  stream_name=$(echo $RANDOM | md5sum | head -c 20)
-  ./testcases/smoke_test.sh "$endpoint" "$stream_name"
+  #stream_name=$(echo $RANDOM | md5sum | head -c 20)
+  #./testcases/smoke_test.sh "$endpoint" "$stream_name"
+  ./testcases/smoke_test.sh "$endpoint" "testapistream02"
   return $?
 }
 
