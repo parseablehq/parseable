@@ -92,6 +92,17 @@ list_log_streams () {
   return 0
 }
 
+# Get Stream's schema and [TODO] validate its schema
+get_streams_schema () {
+  echo "Getting stream's schema"
+  response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/logstream/"$stream_name"/schema)
+  if [ $? -ne 0 ]; then
+    echo "Failed to fetch stream's schema with exit code: $?"
+    exit 1
+  fi
+  return 0
+}
+
 # Query the log stream and verify if count of events is equal to the number of events posted
 query_log_stream() {
   echo "Querying the stream: $stream_name"
@@ -116,6 +127,34 @@ query_log_stream() {
   return 0
 }
 
+# Delete stream
+delete_stream () {
+  echo Deleting Stream: "$stream_name"
+  response=$(curl "${curl_std_opts[@]}" --request DELETE "$parseable_url"/api/v1/logstream/"$stream_name")
+
+  if [ $? -ne 0 ]; then
+    echo "Failed to delete log stream $stream_name with exit code: $?"
+    exit 1
+  fi
+
+  http_code=$(tail -n1 <<< "$response")
+  content=$(sed '$ d' <<< "$response")
+  if [ "$http_code" -ne 200 ]; then
+    echo "Failed to delete log stream $stream_name with http code: $http_code and response: $content"
+    exit 1
+  fi
+  
+  if [ "$content" != "LogStream $stream_name deleted" ]; then
+    echo "Failed to delete log stream $stream_name with response: $content"
+    exit 1
+  fi
+
+  if [ "$content" = "LogStream $stream_name deleted" ]; then
+    echo "$stream_name successfully deleted"
+  fi
+  return 0
+}
+
 cleanup () {
   echo "Deleting the $input_file file"
   rm -rf "$input_file"
@@ -126,5 +165,7 @@ create_stream
 create_input_file
 post_event_data
 list_log_streams
+get_streams_schema
 query_log_stream
+delete_stream
 cleanup
