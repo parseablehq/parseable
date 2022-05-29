@@ -16,7 +16,6 @@
  *
  */
 
-use actix_web::web;
 use aws_sdk_s3::model::{Delete, ObjectIdentifier};
 use aws_sdk_s3::{Client, Credentials, Endpoint, Error, Region};
 use bytes::Bytes;
@@ -25,7 +24,6 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io::prelude::*;
 use std::iter::Iterator;
 use tokio_stream::StreamExt;
 
@@ -109,27 +107,16 @@ pub async fn is_available() -> Result<(), Error> {
 }
 
 #[tokio::main]
-pub async fn put_schema(stream_name: &str, schema: String) -> Result<(), Error> {
+pub async fn put_schema(stream_name: String, body: String) -> Result<(), Error> {
     let opt = option::get_opts();
     let client = setup_storage(&opt).client;
-    let s = schema.clone();
     let _resp = client
         .put_object()
         .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
         .key(format!("{}{}", stream_name, "/.schema"))
-        .body(schema.into_bytes().into())
+        .body(body.into_bytes().into())
         .send()
         .await?;
-    let mut schema_file = fs::File::create(format!(
-        "{}{}{}",
-        local_path_for_stream(&opt, stream_name),
-        "/",
-        ".schema"
-    ))
-    .unwrap();
-    schema_file
-        .write_all(s.as_bytes())
-        .expect("Unable to write data");
 
     Ok(())
 }
@@ -188,20 +175,17 @@ pub async fn delete_stream(stream_name: &str) -> Result<(), Error> {
 }
 
 #[tokio::main]
-pub async fn create_alert(
-    stream_name: &str,
-    body: web::Json<serde_json::Value>,
-) -> Result<(), Error> {
+pub async fn create_alert(stream_name: &str, body: String) -> Result<(), Error> {
     let opt = option::get_opts();
-    let s = serde_json::to_string(&body.as_object()).unwrap();
     let client = setup_storage(&opt).client;
     let _resp = client
         .put_object()
         .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
         .key(format!("{}{}", stream_name, "/.alert.json"))
-        .body(s.into_bytes().into())
+        .body(body.into_bytes().into())
         .send()
         .await?;
+
     Ok(())
 }
 
@@ -264,5 +248,5 @@ pub async fn list_streams() -> Result<Vec<LogStream>, Error> {
 
 #[derive(Serialize)]
 pub struct LogStream {
-    name: String,
+    pub name: String,
 }

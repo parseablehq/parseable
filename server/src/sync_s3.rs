@@ -17,7 +17,6 @@
  */
 
 use crate::error::Error;
-use crate::mem_store;
 use crate::option;
 use crate::utils;
 use chrono::{Timelike, Utc};
@@ -41,6 +40,7 @@ pub fn syncer(opt: option::Opt) -> Result<(), Error> {
     let entries = fs::read_dir(&opt.local_disk_path)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
+
     for entry in entries {
         let path = format!("{:?}", entry);
         let init_s3_sync = S3Sync {
@@ -58,7 +58,7 @@ pub fn syncer(opt: option::Opt) -> Result<(), Error> {
                     if let Some(x) = local_ops {
                         x.log_syncer_error()
                     }
-                    new_rb(dir.stream_name)?;
+                    //new_rb(dir.stream_name)?;
                 }
             }
         }
@@ -80,7 +80,6 @@ struct DirName {
     dir_name_cache_tmp: String,
     parquet_path: String,
     parquet_file: String,
-    stream_name: String,
 }
 
 #[derive(Debug, Display, derive_more::Error, PartialEq)]
@@ -105,9 +104,6 @@ impl DirName {
         }
 
         let _copy_parquet_to_cache = self.file_lock();
-        // if let Err(error) = copy_parquet_to_cache {
-        //     return Some(error)
-        // }
 
         if let Err(error) = self.copy_parquet_to_cache() {
             return Some(error);
@@ -234,24 +230,8 @@ impl S3Sync {
             dir_name_cache_tmp,
             parquet_path: new_parquet_path,
             parquet_file: parquet,
-            stream_name: stream_names,
         }
     }
-}
-
-fn new_rb(stream_name: String) -> Result<(), crate::error::Error> {
-    let rb = mem_store::MEM_STREAMS::get_rb(stream_name.clone())?;
-    let sc = rb.schema();
-    let new_rb = arrow::record_batch::RecordBatch::new_empty(sc);
-    mem_store::MEM_STREAMS::put(
-        stream_name.clone(),
-        mem_store::LogStream {
-            schema: Some(mem_store::MEM_STREAMS::get_schema(stream_name)),
-            rb: Some(new_rb),
-        },
-    );
-
-    Ok(())
 }
 
 #[tokio::main]

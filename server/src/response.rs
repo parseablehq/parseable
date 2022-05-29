@@ -41,8 +41,6 @@ impl ServerResponse {
 }
 
 pub fn list_response(body: Vec<storage::LogStream>) -> impl Responder {
-    log::info!("{}", "Returning list logstream results");
-
     web::Json(body)
 }
 
