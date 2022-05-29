@@ -18,9 +18,23 @@ FROM    rust:alpine3.14 AS compiler
 
 RUN     apk add -q --update-cache --no-cache build-base openssl-dev
 
+# Create appuser
+ENV USER=parseable
+ENV UID=10001
+
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid "${UID}" \
+    "${USER}"
+
 WORKDIR /parseable
 
-COPY    . .
+COPY . .
+
 RUN     set -eux; \
         apkArch="$(apk --print-arch)"; \
         if [ "$apkArch" = "aarch64" ]; then \
@@ -36,11 +50,16 @@ RUN     apk update --quiet \
 
 # add parseable to the `/bin` so you can run it from anywhere and it's easy
 # to find.
-COPY    --from=compiler /parseable/target/release/parseable /bin/parseable
+COPY    --from=compiler /etc/passwd /etc/passwd
+COPY    --from=compiler /etc/group /etc/group
 
 # This directory should hold all the data related to parseable so we're going
 # to move our PWD in there.
-WORKDIR /parseable/data
+WORKDIR /parseable
+
+COPY    --from=compiler /parseable/target/release/parseable /bin/parseable
+
+USER parseable:parseable
 
 EXPOSE  5678/tcp
 

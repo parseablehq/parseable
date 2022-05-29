@@ -1,5 +1,3 @@
-
-
 replicaCount: 1
 
 image:
@@ -14,11 +12,11 @@ parseable:
   P_S3_URL: ""
   P_S3_ACCESS_KEY: ""
   P_S3_SECRET_KEY: ""
-  P_S3_REGION: ""
-  P_STORAGE_SYNC_DURATION: ""
+  P_S3_REGION: "us-east-1"
+  P_STORAGE_SYNC_DURATION: "600"
   P_S3_BUCKET: ""
-  P_USERNAME: ""
-  P_PASSWORD: ""
+#  P_USERNAME: ""
+#  P_PASSWORD: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -39,7 +37,7 @@ securityContext: {}
 
 service:
   type: ClusterIP
-  port: 5678
+  port: "5678"
 
 resources: {}
   #   cpu: 100m
