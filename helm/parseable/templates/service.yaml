@@ -10,6 +10,6 @@ spec:
     - port: {{ .Values.service.port }}
       targetPort: 5678
       protocol: TCP
-      name: 5678
+      name: parseable
   selector:
     {{- include "parseable.selectorLabels" . | nindent 4 }}
