@@ -17,13 +17,9 @@
  */
 
 use actix_web::web;
-
-use parquet::arrow::{ArrowReader, ParquetFileArrowReader};
-use parquet::file::reader::SerializedFileReader;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::sync::Arc;
 
 use crate::option;
 use crate::Error;
@@ -34,16 +30,6 @@ pub fn rem_first_and_last(value: &str) -> &str {
     chars.next_back();
 
     chars.as_str()
-}
-
-pub fn convert_parquet_rb_reader(
-    file: std::fs::File,
-) -> Result<parquet::arrow::arrow_reader::ParquetRecordBatchReader, Error> {
-    let file_reader = SerializedFileReader::new(file)?;
-    let mut arrow_reader = ParquetFileArrowReader::new(Arc::new(file_reader));
-    let record_reader = arrow_reader.get_record_reader(2048)?;
-
-    Ok(record_reader)
 }
 
 pub fn flatten_json_body(
@@ -74,36 +60,6 @@ fn merge(v: &Value, fields: &HashMap<String, String>) -> Value {
         }
         v => v.clone(),
     }
-}
-
-// TODO: add more sql keywords here in lower case
-const DENIED_NAMES: &[&str] = &[
-    "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
-];
-
-pub fn validate_stream_name(str_name: &str) -> Result<(), Error> {
-    if str_name.is_empty() {
-        return Err(Error::EmptyName);
-    }
-
-    if str_name.chars().all(char::is_numeric) {
-        return Err(Error::NameNumericOnly(str_name.to_owned()));
-    }
-
-    for c in str_name.chars() {
-        match c {
-            ' ' => return Err(Error::NameWhiteSpace(str_name.to_owned())),
-            c if !c.is_alphanumeric() => return Err(Error::NameSpecialChar(str_name.to_owned())),
-            c if c.is_ascii_uppercase() => return Err(Error::NameUpperCase(str_name.to_owned())),
-            _ => {}
-        }
-    }
-
-    if DENIED_NAMES.contains(&str_name) {
-        return Err(Error::SQLKeyword(str_name.to_owned()));
-    }
-
-    Ok(())
 }
 
 pub fn get_cache_path(stream_name: &str) -> String {

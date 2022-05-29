@@ -39,7 +39,7 @@ create_stream () {
     exit 1
   fi
   
-  if [ "$content" != "Created LogStream $stream_name" ]; then
+  if [ "$content" != "Created log stream $stream_name" ]; then
     echo "Failed to create log stream $stream_name with response: $content"
     exit 1
   fi

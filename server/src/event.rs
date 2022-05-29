@@ -27,12 +27,12 @@ use std::fs;
 use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
-use crate::mem_store;
+use crate::metadata;
 use crate::response;
 use crate::storage;
 use crate::Error;
 
-// Event holds all values relevant to a single event for a single logstream
+// Event holds all values relevant to a single event for a single log stream
 pub struct Event {
     pub body: String,
     pub stream_name: String,
@@ -40,7 +40,7 @@ pub struct Event {
     pub schema: Bytes,
 }
 
-// Events holds the schema related to a each event for a single logstream
+// Events holds the schema related to a each event for a single log stream
 pub struct Schema {
     pub arrow_schema: arrow::datatypes::Schema,
     pub string_schema: String,
@@ -48,18 +48,18 @@ pub struct Schema {
 
 impl Event {
     pub fn process(&self) -> Result<response::EventResponse, Error> {
-        // If the .schema file is still empty, this is the first event in this logstream.
+        // If the .schema file is still empty, this is the first event in this log stream.
         if self.schema.is_empty() {
-            self.initial_event()
+            self.first_event()
         } else {
-            self.next_event()
+            self.event()
         }
     }
 
-    // This is called when the first event of a LogStream is received. The first event is
-    // special because we parse this event to generate the schema for the logstream. This
-    // schema is then enforced on rest of the events sent to this logstream.
-    fn initial_event(&self) -> Result<response::EventResponse, Error> {
+    // This is called when the first event of a log stream is received. The first event is
+    // special because we parse this event to generate the schema for the log stream. This
+    // schema is then enforced on rest of the events sent to this log stream.
+    fn first_event(&self) -> Result<response::EventResponse, Error> {
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
 
@@ -75,39 +75,41 @@ impl Event {
         );
         let b1 = event.next()?.ok_or(Error::MissingRecord)?;
 
-        // Put the event into in memory store
-        mem_store::MEM_STREAMS::put(
-            self.stream_name.to_string(),
-            mem_store::LogStream {
-                schema: Some(self.infer_schema().string_schema),
-                rb: Some(b1.clone()),
-            },
-        );
-
         // Store record batch to Parquet file on local cache
         self.convert_arrow_parquet(b1);
 
         // Put the inferred schema to object store
-        storage::put_schema(&self.stream_name, self.infer_schema().string_schema).map_err(|e| {
+        let schema = self.infer_schema().string_schema;
+        let stream_name = &self.stream_name;
+        storage::put_schema(stream_name.clone(), schema.clone()).map_err(|e| {
             Error::Event(response::EventError {
                 msg: format!(
-                    "Failed to upload schema for LogStream {} due to err: {}",
+                    "Failed to upload schema for log stream {} due to err: {}",
                     self.stream_name, e
                 ),
             })
         })?;
 
+        if let Err(e) = metadata::STREAM_INFO.set_schema(stream_name.to_string(), schema) {
+            return Err(Error::Event(response::EventError {
+                msg: format!(
+                    "Failed to set schema for log stream {} due to err: {}",
+                    stream_name, e
+                ),
+            }));
+        }
+
         Ok(response::EventResponse {
             msg: format!(
-                "Intial Event recieved for LogStream {}, schema uploaded successfully",
+                "Intial Event recieved for log stream {}, schema uploaded successfully",
                 self.stream_name
             ),
         })
     }
 
-    // next_event process all events after the 1st event. Concatenates record batches
+    // event process all events after the 1st event. Concatenates record batches
     // and puts them in memory store for each event.
-    fn next_event(&self) -> Result<response::EventResponse, Error> {
+    fn event(&self) -> Result<response::EventResponse, Error> {
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
         c.write_all(reader).unwrap();
@@ -119,31 +121,22 @@ impl Event {
             1024,
             None,
         );
-        let next_event_rb = event.next().unwrap().unwrap();
+        let _next_event_rb = event.next().unwrap().unwrap();
 
-        let rb = mem_store::MEM_STREAMS::get_rb(self.stream_name.clone())?;
+        // TODO -- Read existing data file and append the record and write it back
+        // let vec = vec![next_event_rb.clone(), rb];
+        // let new_batch = RecordBatch::concat(&next_event_rb.schema(), &vec);
 
-        let vec = vec![next_event_rb.clone(), rb];
-        let new_batch = RecordBatch::concat(&next_event_rb.schema(), &vec);
+        // let rb = new_batch.map_err(|e| {
+        //     Error::Event(response::EventError {
+        //         msg: format!("Error recieved for log stream {}, {}", &self.stream_name, e),
+        //     })
+        // })?;
 
-        let rb = new_batch.map_err(|e| {
-            Error::Event(response::EventError {
-                msg: format!("Error recieved for LogStream {}, {}", &self.stream_name, e),
-            })
-        })?;
-
-        mem_store::MEM_STREAMS::put(
-            self.stream_name.clone(),
-            mem_store::LogStream {
-                schema: Some(mem_store::MEM_STREAMS::get_schema(self.stream_name.clone())),
-                rb: Some(rb.clone()),
-            },
-        );
-
-        self.convert_arrow_parquet(rb);
+        // self.convert_arrow_parquet(rb);
 
         Ok(response::EventResponse {
-            msg: format!("Event recieved for LogStream {}", &self.stream_name),
+            msg: format!("Event recieved for log stream {}", &self.stream_name),
         })
     }
 

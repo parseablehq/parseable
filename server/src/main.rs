@@ -31,8 +31,7 @@ mod banner;
 mod error;
 mod event;
 mod handler;
-mod load_memstore;
-mod mem_store;
+mod metadata;
 mod option;
 mod query;
 mod response;
@@ -52,8 +51,10 @@ const API_VERSION: &str = "/v1";
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
     banner::print();
+    if let Err(e) = metadata::STREAM_INFO.load() {
+        println!("{}", e);
+    }
     let opt = option::get_opts();
-    let _result = load_memstore::load_memstore(opt.clone());
     wrap(opt.clone()).await?;
     run_http(opt).await?;
 
@@ -128,27 +129,27 @@ async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     // Base path "{url}/api/v1"
     cfg.service(
-        // Log Stream API
+        // logstream API
         web::resource(logstream_path("{logstream}"))
-            // PUT "/logstream/{logstream}" ==> Create Log Stream
+            // PUT "/logstream/{logstream}" ==> Create log stream
             .route(web::put().to(handler::put_stream))
-            // POST "/logstream/{logstream}" ==> Post logs to given Log Stream
+            // POST "/logstream/{logstream}" ==> Post logs to given log stream
             .route(web::post().to(handler::post_event))
-            // DELETE "/logstream/{logstream}" ==> Delete Log Stream
+            // DELETE "/logstream/{logstream}" ==> Delete log stream
             .route(web::delete().to(handler::delete_stream))
             .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
     )
     .service(
         web::resource(alert_path("{logstream}"))
-            // PUT "/logstream/{logstream}/alert" ==> Set alert for given Log Stream
+            // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
             .route(web::put().to(handler::put_alert))
-            // GET "/logstream/{logstream}/alert" ==> Get alert for given Log Stream
+            // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
             .route(web::get().to(handler::get_alert)),
     )
     // GET "/logstream" ==> Get list of all Log Streams on the server
     .service(web::resource(logstream_path("")).route(web::get().to(handler::list_streams)))
     .service(
-        // GET "/logstream/{logstream}/schema" ==> Get schema for given Log Stream
+        // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
         web::resource(schema_path("{logstream}")).route(web::get().to(handler::get_schema)),
     )
     // GET "/query" ==> Get results of the SQL query passed in request body

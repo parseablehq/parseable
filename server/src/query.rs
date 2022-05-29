@@ -26,14 +26,14 @@ use std::sync::Arc;
 use crate::utils;
 use crate::Error;
 
-// Query holds all values relevant to a query for a single logstream
+// Query holds all values relevant to a query for a single log stream
 #[derive(Deserialize)]
 pub struct Query {
     pub query: String,
 }
 
 impl Query {
-    // parse_query parses the SQL query and returns the logstream name on which
+    // parse_query parses the SQL query and returns the log stream name on which
     // this query is supposed to be executed
     pub fn parse(&self) -> Result<String, Error> {
         // convert query to lowercase, and then tokenize
@@ -45,10 +45,10 @@ impl Query {
         } else if tokens.contains(&"join") {
             return Err(Error::Join(self.query.to_owned()));
         }
-        // logstream name is located after the `from` keyword
+        // log stream name is located after the `from` keyword
         let stream_name_index = tokens.iter().position(|&x| x == "from").unwrap() + 1;
         // we currently don't support queries like "select name, address from stream1 and stream2"
-        // so if there is an `and` after the first logstream name, we return an error.
+        // so if there is an `and` after the first log stream name, we return an error.
         if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
             return Err(Error::MultipleStreams(self.query.to_owned()));
         }

@@ -1,5 +1,30 @@
+/*
+ * Parseable Server (C) 2022 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
+
+use crate::Error;
+
+// TODO: add more sql keywords here in lower case
+const DENIED_NAMES: &[&str] = &[
+    "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
+];
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +60,59 @@ pub struct Target {
     pub api_key: String,
 }
 
-/// TODO: unwrap result
-pub fn alert_validator(body: String) {
-    let _p: Alerts = serde_json::from_str(&body).unwrap();
+pub fn alert(body: String) -> Result<(), Error> {
+    let alerts: Alerts = serde_json::from_str(body.as_str())?;
+    for alert in alerts.alerts {
+        if alert.name.is_empty() {
+            return Err(Error::InvalidAlert(
+                "alert name cannot be empty".to_string(),
+            ));
+        }
+        if alert.message.is_empty() {
+            return Err(Error::InvalidAlert(
+                "alert message cannot be empty".to_string(),
+            ));
+        }
+        if alert.rule.contains.is_empty() {
+            return Err(Error::InvalidAlert("Rule contains must be set".to_string()));
+        }
+        if alert.rule.field.is_empty() {
+            return Err(Error::InvalidAlert("Rule field must be set".to_string()));
+        }
+        if alert.target.is_empty() {
+            return Err(Error::InvalidAlert(
+                "Alert must have at least one target".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn stream_name(str_name: &str) -> Result<(), Error> {
+    if str_name.is_empty() {
+        return Err(Error::EmptyName);
+    }
+
+    if str_name.chars().all(char::is_numeric) {
+        return Err(Error::NameNumericOnly(str_name.to_owned()));
+    }
+
+    if str_name.chars().next().unwrap().is_numeric() {
+        return Err(Error::NameCantStartWithNumber(str_name.to_owned()));
+    }
+
+    for c in str_name.chars() {
+        match c {
+            ' ' => return Err(Error::NameWhiteSpace(str_name.to_owned())),
+            c if !c.is_alphanumeric() => return Err(Error::NameSpecialChar(str_name.to_owned())),
+            c if c.is_ascii_uppercase() => return Err(Error::NameUpperCase(str_name.to_owned())),
+            _ => {}
+        }
+    }
+
+    if DENIED_NAMES.contains(&str_name) {
+        return Err(Error::SQLKeyword(str_name.to_owned()));
+    }
+
+    Ok(())
 }
