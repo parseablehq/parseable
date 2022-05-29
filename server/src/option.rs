@@ -21,6 +21,10 @@ use structopt::StructOpt;
 
 pub const DEFAULT_S3_URL: &str = "http://127.0.0.1:9000";
 pub const S3_URL_ENV_VAR: &str = "P_S3_URL";
+pub const USERNAME_ENV: &str = "P_USERNAME";
+pub const PASSOWRD_ENV: &str = "P_PASSWORD";
+pub const DEFAULT_USERNAME: &str = "parseable";
+pub const DEFAULT_PASSWORD: &str = "parseable";
 
 #[derive(Debug, Clone, StructOpt)]
 #[structopt(
@@ -72,12 +76,12 @@ pub struct Opt {
     pub s3_bucket_name: String,
 
     /// Optional username to enable basic auth on the server
-    #[structopt(long, env = "P_USERNAME")]
-    pub username: Option<String>,
+    #[structopt(long, env = USERNAME_ENV, default_value = DEFAULT_USERNAME)]
+    pub username: String,
 
     /// Optional password to enable basic auth on the server
-    #[structopt(long, env = "P_PASSWORD")]
-    pub password: Option<String>,
+    #[structopt(long, env = PASSOWRD_ENV, default_value = DEFAULT_PASSWORD)]
+    pub password: String,
 }
 
 pub fn get_opts() -> Opt {

@@ -65,10 +65,6 @@ pub enum Error {
     StreamLock,
     #[error("Metadata not found for log stream: {0}")]
     StreamMetaNotFound(String),
-    #[error("Schema not found for log stream: {0}")]
-    SchemaNotFound(String),
-    #[error("Alert config not found for log stream: {0}")]
-    AlertConfigNotFound(String),
     #[error("Invalid alert config: {0}")]
     InvalidAlert(String),
 }

@@ -49,13 +49,7 @@ impl STREAM_INFO {
         drop(&map);
 
         match meta {
-            Some(meta) => {
-                if meta.schema.clone() != "" {
-                    Ok(meta.schema.clone())
-                } else {
-                    Err(Error::SchemaNotFound(stream_name))
-                }
-            }
+            Some(meta) => Ok(meta.schema.clone()),
             None => Err(Error::StreamMetaNotFound(stream_name)),
         }
     }
@@ -66,13 +60,7 @@ impl STREAM_INFO {
         drop(&map);
 
         match meta {
-            Some(meta) => {
-                if meta.alert.clone() != "" {
-                    Ok(meta.alert.clone())
-                } else {
-                    Err(Error::AlertConfigNotFound(stream_name))
-                }
-            }
+            Some(meta) => Ok(meta.alert.clone()),
             None => Err(Error::StreamMetaNotFound(stream_name)),
         }
     }
@@ -139,7 +127,11 @@ impl STREAM_INFO {
                                 alert_config = format!("{:?}", x);
                             }
                         }
-                        Err(e) => Err(Error::S3(e))?,
+                        Err(_) => {
+                            // Ignore S3 errors here, because
+                            // we are just trying to load the
+                            // stream metadata based on whatever is available
+                        }
                     };
                     match storage::stream_exists(&stream_name) {
                         Ok(x) => {
@@ -149,7 +141,11 @@ impl STREAM_INFO {
                                 schema = format!("{:?}", x);
                             }
                         }
-                        Err(e) => Err(Error::S3(e))?,
+                        Err(_) => {
+                            // Ignore S3 errors here, because
+                            // we are just trying to load the
+                            // stream metadata based on whatever is available
+                        }
                     };
                     let metadata = LogStreamMetadata {
                         schema: schema,
