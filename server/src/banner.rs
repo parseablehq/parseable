@@ -37,8 +37,12 @@ fn status_info(scheme: &str, opt: &option::Opt) {
     let url = format!("{}://{}", scheme, opt.address).underlined();
     eprintln!(
         "
+    {}
+    {}
     {}",
-        format!("Parseable server started at {}", url).bold(),
+        format!("Parseable server started at: {}", url).bold(),
+        format!("Username: {}", opt.username).bold(),
+        format!("Password: {}", opt.password).bold(),
     )
 }
 
@@ -72,13 +76,55 @@ fn storage_info(opt: &option::Opt) {
 }
 
 fn warning(opt: &option::Opt) {
+    if opt.s3_endpoint_url == option::DEFAULT_S3_URL
+        && opt.username == option::DEFAULT_USERNAME
+        && opt.password == option::DEFAULT_PASSWORD
+    {
+        warning_line();
+        cred_warning(opt);
+        s3_warning(opt);
+    } else if opt.s3_endpoint_url == option::DEFAULT_S3_URL {
+        warning_line();
+        s3_warning(opt);
+    } else if opt.username == option::DEFAULT_USERNAME && opt.password == option::DEFAULT_PASSWORD {
+        warning_line();
+        cred_warning(opt);
+    }
+}
+
+fn warning_line() {
+    eprintln!(
+        "
+    {}",
+        "Warning:".to_string().red().bold(),
+    );
+}
+
+fn cred_warning(opt: &option::Opt) {
+    if opt.username == option::DEFAULT_USERNAME && opt.password == option::DEFAULT_PASSWORD {
+        eprintln!(
+            "
+        {}
+        {}",
+            "Parseable server is using default credentials."
+                .to_string()
+                .red(),
+            format!(
+                "Setup your credentials with {} and {} before storing production logs.",
+                option::USERNAME_ENV,
+                option::PASSOWRD_ENV
+            )
+            .red()
+        )
+    }
+}
+
+fn s3_warning(opt: &option::Opt) {
     if opt.s3_endpoint_url == option::DEFAULT_S3_URL {
         eprintln!(
             "
-    {}
         {}
         {}",
-            "Warning:".to_string().red().bold(),
             "Parseable server is using default object storage backend with public access."
                 .to_string()
                 .red(),

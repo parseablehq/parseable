@@ -85,6 +85,9 @@ pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> H
     }
 }
 
+//
+// **** Stream related handlers ****
+//
 pub async fn delete_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if let Err(e) = validator::stream_name(&stream_name) {
@@ -137,6 +140,10 @@ pub async fn list_streams(_: HttpRequest) -> impl Responder {
     response::list_response(storage::list_streams().unwrap())
 }
 
+//
+// **** Steam metadata related handlers ****
+//
+// Get log stream schema
 pub async fn get_schema(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     // fail to proceed if there is an error in log stream name validation
@@ -246,22 +253,24 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
             .to_http();
         }
 
+        if let Err(e) = metadata::STREAM_INFO.add_stream(
+            stream_name.to_string(),
+            "".to_string(),
+            "".to_string(),
+        ) {
+            return response::ServerResponse {
+                msg: format!(
+                    "Failed to add log stream {} to metadata due to err: {}",
+                    stream_name, e
+                ),
+                code: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+            .to_http();
+        }
+
         return response::ServerResponse {
             msg: format!("Created log stream {}", stream_name),
             code: StatusCode::OK,
-        }
-        .to_http();
-    }
-
-    if let Err(e) =
-        metadata::STREAM_INFO.add_stream(stream_name.to_string(), "".to_string(), "".to_string())
-    {
-        return response::ServerResponse {
-            msg: format!(
-                "Failed to add log stream {} to metadata due to err: {}",
-                stream_name, e
-            ),
-            code: StatusCode::INTERNAL_SERVER_ERROR,
         }
         .to_http();
     }
@@ -324,7 +333,7 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
 }
 
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
-    let stream_name: String = req.match_info().get("log stream").unwrap().parse().unwrap();
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     let labels = collect_labels(&req);
 

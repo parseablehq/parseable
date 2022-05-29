@@ -79,8 +79,8 @@ async fn validator(
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, actix_web::Error> {
     let opt = option::get_opts();
-    if credentials.user_id().trim() == opt.username.unwrap()
-        && credentials.password().unwrap().trim() == opt.password.unwrap()
+    if credentials.user_id().trim() == opt.username
+        && credentials.password().unwrap().trim() == opt.password
     {
         return Ok(req);
     }
@@ -100,27 +100,15 @@ async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
         (_, _) => None,
     };
 
-    if opt.username.is_some() && opt.password.is_some() {
-        let http_server =
-            HttpServer::new(move || create_app!().wrap(HttpAuthentication::basic(validator)));
-        if let Some(builder) = ssl_acceptor {
-            http_server
-                .bind_openssl(opt_clone.address, builder)?
-                .run()
-                .await?;
-        } else {
-            http_server.bind(opt_clone.address)?.run().await?;
-        }
+    let http_server =
+        HttpServer::new(move || create_app!().wrap(HttpAuthentication::basic(validator)));
+    if let Some(builder) = ssl_acceptor {
+        http_server
+            .bind_openssl(opt_clone.address, builder)?
+            .run()
+            .await?;
     } else {
-        let http_server = HttpServer::new(move || create_app!());
-        if let Some(builder) = ssl_acceptor {
-            http_server
-                .bind_openssl(opt_clone.address, builder)?
-                .run()
-                .await?;
-        } else {
-            http_server.bind(opt_clone.address)?.run().await?;
-        }
+        http_server.bind(opt_clone.address)?.run().await?;
     }
 
     Ok(())
