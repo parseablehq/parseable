@@ -18,12 +18,10 @@
 
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
-use bytes::Bytes;
 use sysinfo::{System, SystemExt};
 
 use crate::event;
 use crate::metadata;
-use crate::option;
 use crate::query;
 use crate::response;
 use crate::storage;
@@ -157,15 +155,6 @@ pub async fn get_schema(req: HttpRequest) -> HttpResponse {
 
     match storage::stream_exists(&stream_name) {
         Ok(schema) if schema.is_empty() => {
-            // fail to proceed if there is an error in log stream name validation
-            if let Err(e) = validator::stream_name(&stream_name) {
-                return response::ServerResponse {
-                    msg: format!("Failed to get log stream schema due to err: {}", e),
-                    code: StatusCode::BAD_REQUEST,
-                }
-                .to_http();
-            }
-
             response::ServerResponse {
                 msg: "Failed to get log stream schema, because log stream is not initialized yet. Please post an event before fetching schema".to_string(),
                 code: StatusCode::BAD_REQUEST,
@@ -337,18 +326,16 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
 
     let labels = collect_labels(&req);
 
-    let schema = match storage::stream_exists(&stream_name) {
-        // empty schema file is created in object store at the time of Put log stream.
-        // If that file is successfully received, we assume that to be indicating that
-        // log stream already exists.
-        Ok(schema) => schema,
-        Err(e) => {
-            return response::ServerResponse {
-                msg: format!("log stream {} Does not Exist, Error: {}", stream_name, e),
-                code: StatusCode::NOT_FOUND,
-            }
-            .to_http()
+    if let Err(e) = metadata::STREAM_INFO.schema(stream_name.clone()) {
+        // if stream doesn't exist, fail to post data
+        return response::ServerResponse {
+            msg: format!(
+                "Failed to post event. Log stream {} does not exist. Error: {}",
+                stream_name, e
+            ),
+            code: StatusCode::NOT_FOUND,
         }
+        .to_http();
     };
 
     if let Some(array) = body.as_array() {
@@ -356,12 +343,9 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
 
         for body in array {
             let body = utils::flatten_json_body(web::Json(body.clone()), labels.clone()).unwrap();
-            let schema = utils::read_schema_from_file(&stream_name).unwrap();
             let e = event::Event {
                 body,
-                path: option::get_opts().local_disk_path,
                 stream_name: stream_name.clone(),
-                schema: Bytes::from(schema),
             };
 
             if let Err(e) = e.process() {
@@ -383,9 +367,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
     }
     let e = event::Event {
         body: utils::flatten_json_body(body, labels).unwrap(),
-        path: option::get_opts().local_disk_path,
         stream_name,
-        schema,
     };
     if let Err(e) = e.process() {
         return response::ServerResponse {

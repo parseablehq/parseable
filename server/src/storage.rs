@@ -28,6 +28,7 @@ use std::iter::Iterator;
 use tokio_stream::StreamExt;
 
 use crate::option;
+use crate::utils;
 
 pub struct S3 {
     pub client: aws_sdk_s3::Client,
@@ -43,10 +44,6 @@ impl ObjectStorage for S3 {
             client: s3_client(opt),
         }
     }
-}
-
-fn local_path_for_stream(opt: &option::Opt, stream_name: &str) -> String {
-    format!("{}{}{}", opt.local_disk_path, "/", stream_name)
 }
 
 fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
@@ -133,11 +130,7 @@ pub async fn create_stream(stream_name: &str) -> Result<(), Error> {
         .await?;
     // Prefix created on S3, now create the directory in
     // the local storage as well
-    let dir_name = local_path_for_stream(&opt, stream_name);
-    let _res = fs::create_dir_all(dir_name.clone());
-    let file_name = format!("{}{}{}", dir_name, "/", ".schema");
-    fs::File::create(file_name).unwrap();
-
+    let _res = fs::create_dir_all(utils::local_stream_data_path(&opt, stream_name));
     Ok(())
 }
 
