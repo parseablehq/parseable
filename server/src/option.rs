@@ -67,7 +67,7 @@ pub struct Opt {
     pub s3_default_region: String,
 
     /// Optional duration after which server would send uncommited data to remote object
-    /// storage platform. Defaults to 10s.
+    /// storage platform. Defaults to 10min.
     #[structopt(long, env = "P_STORAGE_SYNC_DURATION", default_value = "600")]
     pub sync_duration: u64,
 

@@ -20,24 +20,24 @@
 use arrow::json;
 use arrow::json::reader::infer_json_schema;
 use arrow::record_batch::RecordBatch;
-use bytes::Bytes;
 use parquet::arrow::arrow_writer::ArrowWriter;
+use parquet::arrow::{ArrowReader, ParquetFileArrowReader};
 use parquet::file::properties::WriterProperties;
+use parquet::file::reader::SerializedFileReader;
 use std::fs;
 use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use crate::metadata;
+use crate::option;
 use crate::response;
 use crate::storage;
+use crate::utils;
 use crate::Error;
 
-// Event holds all values relevant to a single event for a single log stream
 pub struct Event {
     pub body: String,
     pub stream_name: String,
-    pub path: String,
-    pub schema: Bytes,
 }
 
 // Events holds the schema related to a each event for a single log stream
@@ -47,12 +47,20 @@ pub struct Schema {
 }
 
 impl Event {
+    fn data_file_path(&self) -> String {
+        let opt = option::get_opts();
+        format!(
+            "{}/{}",
+            utils::local_stream_data_path(&opt, self.stream_name.as_str()),
+            "data.parquet"
+        )
+    }
+
     pub fn process(&self) -> Result<response::EventResponse, Error> {
-        // If the .schema file is still empty, this is the first event in this log stream.
-        if self.schema.is_empty() {
-            self.first_event()
-        } else {
-            self.event()
+        match metadata::STREAM_INFO.schema(self.stream_name.clone()) {
+            Ok(schema) if schema.is_empty() => self.first_event(),
+            Ok(_) => self.event(),
+            Err(e) => Err(e),
         }
     }
 
@@ -121,19 +129,19 @@ impl Event {
             1024,
             None,
         );
-        let _next_event_rb = event.next().unwrap().unwrap();
+        let next_event_rb = event.next().unwrap().unwrap();
 
-        // TODO -- Read existing data file and append the record and write it back
-        // let vec = vec![next_event_rb.clone(), rb];
-        // let new_batch = RecordBatch::concat(&next_event_rb.schema(), &vec);
-
-        // let rb = new_batch.map_err(|e| {
-        //     Error::Event(response::EventError {
-        //         msg: format!("Error recieved for log stream {}, {}", &self.stream_name, e),
-        //     })
-        // })?;
-
-        // self.convert_arrow_parquet(rb);
+        match self.convert_parquet_rb_reader() {
+            Ok(rb) => {
+                for prev_rb in rb {
+                    let r = prev_rb.unwrap();
+                    let vec = vec![next_event_rb.clone(), r];
+                    let new_batch = RecordBatch::concat(&next_event_rb.schema(), &vec);
+                    self.convert_arrow_parquet(new_batch.unwrap());
+                }
+            }
+            Err(_) => self.convert_arrow_parquet(next_event_rb),
+        };
 
         Ok(response::EventResponse {
             msg: format!("Event recieved for log stream {}", &self.stream_name),
@@ -157,10 +165,7 @@ impl Event {
     // convert arrow record batch to parquet
     // and write it to local cache path as a data.parquet file.
     fn convert_arrow_parquet(&self, rb: RecordBatch) {
-        let dir_name = format!("{}{}{}", &self.path, "/", &self.stream_name);
-        let file_name = format!("{}{}{}", dir_name, "/", "data.parquet");
-        fs::create_dir_all(dir_name).unwrap();
-        let parquet_file = fs::File::create(file_name);
+        let parquet_file = fs::File::create(self.data_file_path());
         let props = WriterProperties::builder().build();
         let mut writer = ArrowWriter::try_new(
             parquet_file.unwrap(),
@@ -170,5 +175,21 @@ impl Event {
         .unwrap();
         writer.write(&rb).expect("Writing batch");
         writer.close().unwrap();
+    }
+
+    pub fn convert_parquet_rb_reader(
+        &self,
+    ) -> Result<parquet::arrow::arrow_reader::ParquetRecordBatchReader, Error> {
+        match fs::File::open(&self.data_file_path()) {
+            Err(e) => Err(Error::Io(e)),
+            Ok(file) => {
+                let file_reader = SerializedFileReader::new(file).unwrap();
+                let mut arrow_reader = ParquetFileArrowReader::new(Arc::new(file_reader));
+                match arrow_reader.get_record_reader(2048) {
+                    Ok(rb) => Ok(rb),
+                    Err(e) => Err(Error::Parquet(e)),
+                }
+            }
+        }
     }
 }

@@ -19,7 +19,6 @@
 use actix_web::web;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs;
 
 use crate::option;
 use crate::Error;
@@ -66,10 +65,8 @@ pub fn get_cache_path(stream_name: &str) -> String {
     format!("{}/{}", option::get_opts().local_disk_path, stream_name)
 }
 
-pub fn read_schema_from_file(stream_name: &str) -> Result<String, Error> {
-    let schema = fs::read_to_string(format!("{}{}", get_cache_path(stream_name), "/.schema"))?;
-
-    Ok(schema)
+pub fn local_stream_data_path(opt: &option::Opt, stream_name: &str) -> String {
+    format!("{}/{}", opt.local_disk_path, stream_name)
 }
 
 pub fn get_scheme() -> String {

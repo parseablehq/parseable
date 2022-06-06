@@ -199,11 +199,12 @@ impl S3Sync {
         let stream_names = str::replace(new_path, &cache_path, "");
         let new_parquet_path = format!("{}/{}", &new_path, "data.parquet");
         let dir_name_cache = format!(
-            "{}{}/cache/date={}/hour={:02}",
+            "{}{}/cache/date={}/hour={:02}/minute={:02}",
             cache_path,
             stream_names,
             chrono::offset::Utc::now().date(),
-            self.time.hour()
+            self.time.hour(),
+            self.time.minute()
         );
         let dir_name_s3 = format!(
             "{}/date={}/hour={:02}",
