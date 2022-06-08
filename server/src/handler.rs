@@ -31,7 +31,7 @@ use crate::validator;
 const META_LABEL: &str = "x-p-meta";
 
 pub async fn liveness() -> HttpResponse {
-    // If the available memroy is less than 100MiB, return a 503 error.
+    // If the available memory is less than 100MiB, return a 503 error.
     // As liveness check fails, Kubelet will restart the server.
     if System::new_all().available_memory() < 100 * 1024 * 1024 {
         return HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE);
