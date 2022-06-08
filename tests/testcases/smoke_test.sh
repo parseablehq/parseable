@@ -20,7 +20,7 @@ parseable_url=$1
 stream_name=$2
 events=50
 input_file=$PWD/input.json
-curl_std_opts=( -sS --header 'Content-Type: application/json' -w '\n\n%{http_code}' )
+curl_std_opts=( -sS --header 'Content-Type: application/json' --header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' -w '\n\n%{http_code}' )
 
 # Create stream
 create_stream () {
@@ -39,7 +39,7 @@ create_stream () {
     exit 1
   fi
   
-  if [ "$content" != "Created log stream $stream_name" ]; then
+  if [ "$content" != "Created LogStream $stream_name" ]; then
     echo "Failed to create log stream $stream_name with response: $content"
     exit 1
   fi
@@ -130,8 +130,7 @@ query_log_stream() {
 # Set Alert
 set_alert () {
   echo "Setting Alert for $stream_name"
-  request_body=$(jq --null-input \
-  '{"alerts": [{"name": "server-fail-alert1","message": "server reported error status","rule": {"field": "http_status","contains": "500","repeats": "5","within": "10m"},"target": [{"name": "slack-target","server_url": "http://mailgun.com","api_key": "xxxx"}]}]}')
+  request_body='{"alerts": [{"name": "server-fail-alert1","message": "server reported error status","rule": {"field": "http_status","contains": "500","repeats": "5","within": "10m"},"target": [{"name": "slack-target","server_url": "http://mailgun.com","api_key": "xxxx"}]}]}'
   response=$(curl "${curl_std_opts[@]}" --request PUT "$parseable_url"/api/v1/logstream/"$stream_name"/alert --data-raw "$request_body")
   if [ $? -ne 0 ]; then
     echo "Failed to set alert for $stream_name with exit code: $?"
@@ -148,13 +147,37 @@ set_alert () {
   if [ "$content" != "Created Alert $stream_name" ]; then
     echo "Failed to create log stream $stream_name with response: $content"
     exit 1
-    else
+  else
     echo "Setting Alert for $stream_name is successful"
-    exit 1
   fi
   return 0
 }
 
+# Get Alert
+get_alert () {
+  echo "Getting Alert for $stream_name"
+  alert_body='{"alerts":[{"name":"server-fail-alert1","message":"server reported error status","rule":{"field":"http_status","contains":"500","repeats":"5","within":"10m"},"target":[{"name":"slack-target","server_url":"http://mailgun.com","api_key":"xxxx"}]}]}'
+  response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/logstream/"$stream_name"/alert)
+  if [ $? -ne 0 ]; then
+    echo "Failed to get alert for $stream_name with exit code: $?"
+    exit 1
+  fi
+  http_code=$(tail -n1 <<< "$response")
+  content=$(sed '$ d' <<< "$response")
+  if [ "$http_code" -ne 200 ]; then
+    echo "Failed to get alert for $stream_name with http code: $http_code and response: $content"
+    exit 1
+  fi
+  if [ "$content" != "$alert_body" ]; then
+    echo "FAILURE: Alert set doesn't match with Alert returned."
+    echo "Alert set: $alert_body"
+    echo "Alert returned: $content"
+    exit 1
+  else
+    echo "SUCCESS: Alert set matches with Alert returned."
+  fi
+  return 0
+}
 
 # Delete stream
 delete_stream () {
@@ -191,13 +214,13 @@ cleanup () {
 }
 
 
-#create_stream
-#create_input_file
-#post_event_data
-#list_log_streams
-#get_streams_schema
-#query_log_stream
+create_stream
+create_input_file
+post_event_data
+list_log_streams
+get_streams_schema
+query_log_stream
 set_alert
 get_alert
-#delete_stream
-#cleanup
+delete_stream
+cleanup
