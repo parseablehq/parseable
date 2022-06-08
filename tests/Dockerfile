@@ -24,6 +24,7 @@ COPY main.sh .
 COPY testcases/smoke_test.sh ./testcases/
 
 RUN yum -y install wget
+RUN yum -y install jq
 
 RUN wget https://github.com/mingrammer/flog/releases/download/v0.4.3/flog_0.4.3_linux_amd64.tar.gz \
   && tar -xvf flog_0.4.3_linux_amd64.tar.gz \

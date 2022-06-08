@@ -127,6 +127,35 @@ query_log_stream() {
   return 0
 }
 
+# Set Alert
+set_alert () {
+  echo "Setting Alert for $stream_name"
+  request_body=$(jq --null-input \
+  '{"alerts": [{"name": "server-fail-alert1","message": "server reported error status","rule": {"field": "http_status","contains": "500","repeats": "5","within": "10m"},"target": [{"name": "slack-target","server_url": "http://mailgun.com","api_key": "xxxx"}]}]}')
+  response=$(curl "${curl_std_opts[@]}" --request PUT "$parseable_url"/api/v1/logstream/"$stream_name"/alert --data-raw "$request_body")
+  if [ $? -ne 0 ]; then
+    echo "Failed to set alert for $stream_name with exit code: $?"
+    exit 1
+  fi
+
+  http_code=$(tail -n1 <<< "$response")
+  content=$(sed '$ d' <<< "$response")
+  if [ "$http_code" -ne 200 ]; then
+    echo "Failed to set alert for $stream_name with http code: $http_code and response: $content"
+    exit 1
+  fi
+  
+  if [ "$content" != "Created Alert $stream_name" ]; then
+    echo "Failed to create log stream $stream_name with response: $content"
+    exit 1
+    else
+    echo "Setting Alert for $stream_name is successful"
+    exit 1
+  fi
+  return 0
+}
+
+
 # Delete stream
 delete_stream () {
   echo Deleting Stream: "$stream_name"
@@ -161,11 +190,14 @@ cleanup () {
   return $?
 }
 
-create_stream
-create_input_file
-post_event_data
-list_log_streams
-get_streams_schema
-query_log_stream
-delete_stream
-cleanup
+
+#create_stream
+#create_input_file
+#post_event_data
+#list_log_streams
+#get_streams_schema
+#query_log_stream
+set_alert
+get_alert
+#delete_stream
+#cleanup
