@@ -21,7 +21,6 @@ use crate::option;
 use crate::utils;
 use chrono::{Timelike, Utc};
 use derive_more::Display;
-use fslock::LockFile;
 use std::env;
 use std::fs;
 use std::io;
@@ -30,7 +29,6 @@ use std::time::Duration;
 extern crate fs_extra;
 use crate::storage;
 use aws_smithy_http::byte_stream::ByteStream;
-use fs_extra::dir;
 
 pub fn syncer(opt: option::Opt) -> Result<(), Error> {
     if !Path::new(&opt.local_disk_path).exists() {
@@ -58,7 +56,6 @@ pub fn syncer(opt: option::Opt) -> Result<(), Error> {
                     if let Some(x) = local_ops {
                         x.log_syncer_error()
                     }
-                    //new_rb(dir.stream_name)?;
                 }
             }
         }
@@ -76,8 +73,8 @@ struct S3Sync {
 #[derive(Debug)]
 struct DirName {
     dir_name_s3: String,
-    dir_name_cache: String,
-    dir_name_cache_tmp: String,
+    dir_name_tmp: String,
+    dir_name_local: String,
     parquet_path: String,
     parquet_file: String,
 }
@@ -95,17 +92,11 @@ impl SyncerError {
 
 impl DirName {
     fn local_ops(&self) -> Option<SyncerError> {
-        if let Err(error) = self.create_dir_name_cache() {
+        if let Err(error) = self.create_dir_name_tmp() {
             return Some(error);
         }
 
-        if let Err(error) = self.create_dir_name_cache_tmp() {
-            return Some(error);
-        }
-
-        let _copy_parquet_to_cache = self.file_lock();
-
-        if let Err(error) = self.copy_parquet_to_cache() {
+        if let Err(error) = self.copy_parquet_to_tmp() {
             return Some(error);
         }
 
@@ -116,13 +107,16 @@ impl DirName {
         None
     }
 
-    fn copy_parquet_to_cache(&self) -> Result<(), SyncerError> {
-        // println!("{}", format!("{}/{}", &self.dir_name_cache_tmp, &self.parquet_file));
-        // println!("{}",format!("{}/{}", &self.dir_name_cache, &self.parquet_file));
+    fn copy_parquet_to_tmp(&self) -> Result<(), SyncerError> {
+        // TODO: retries to s3
+        let _put_parquet_file = put_parquet(
+            format!("{}/{}", &self.dir_name_local, "data.parquet"),
+            format!("{}/{}", &self.dir_name_s3, &self.parquet_file),
+        );
 
         fs::copy(
-            format!("{}/{}", &self.dir_name_cache_tmp, "data.parquet"),
-            format!("{}/{}", &self.dir_name_cache, &self.parquet_file),
+            format!("{}/{}", &self.dir_name_local, "data.parquet"),
+            format!("{}/{}", &self.dir_name_tmp, &self.parquet_file),
         )
         .map_err(|e| SyncerError {
             msg: format! {
@@ -133,20 +127,10 @@ impl DirName {
         Ok(())
     }
 
-    fn create_dir_name_cache(&self) -> Result<(), SyncerError> {
-        fs::create_dir_all(&self.dir_name_cache).map_err(|e| SyncerError {
+    fn create_dir_name_tmp(&self) -> Result<(), SyncerError> {
+        fs::create_dir_all(&self.dir_name_tmp).map_err(|e| SyncerError {
             msg: format! {
-                "Error creating dir cache in path {} due to error [{}]", self.dir_name_cache, e
-            },
-        })?;
-
-        Ok(())
-    }
-
-    fn create_dir_name_cache_tmp(&self) -> Result<(), SyncerError> {
-        fs::create_dir_all(&self.dir_name_cache_tmp).map_err(|e| SyncerError {
-            msg: format! {
-                "Error creating dir cache in path {} due to error [{}]", self.dir_name_cache_tmp, e
+                "Error creating dir tmp in path {} due to error [{}]", self.dir_name_local, e
             },
         })?;
 
@@ -154,30 +138,13 @@ impl DirName {
     }
 
     fn delete_parquet_file(&self) -> Result<(), SyncerError> {
-        fs::remove_file(format!("{}/data.parquet", &self.dir_name_cache_tmp)).map_err(|e| {
+        fs::remove_file(format!("{}/data.parquet", &self.dir_name_local)).map_err(|e| {
             SyncerError {
                 msg: format! {
                     "Error deleting parquet file in path {} due to error [{}]", self.parquet_path, e
                 },
             }
         })?;
-
-        Ok(())
-    }
-
-    fn file_lock(&self) -> Result<(), std::io::Error> {
-        let mut file = LockFile::open(&self.parquet_path)?;
-        file.lock()?;
-        let options = dir::CopyOptions::new(); //Initialize default values for CopyOptions
-
-        // move dir1 and file1.txt to target/dir1 and target/file1.txt
-        let from_paths = vec![&self.parquet_path];
-        let _result = fs_extra::move_items(&from_paths, &self.dir_name_cache_tmp, &options);
-        let _put_parquet_file = put_parquet(
-            format!("{}/{}", &self.dir_name_cache_tmp, "data.parquet"),
-            format!("{}/{}", &self.dir_name_s3, &self.parquet_file),
-        );
-        file.unlock()?;
 
         Ok(())
     }
@@ -194,41 +161,35 @@ impl S3Sync {
 
     fn get_dir_name(&self) -> DirName {
         let new_path = utils::rem_first_and_last(&self.path);
-        let cache_path = format!("{}/", &self.opt.local_disk_path);
+        let local_path = format!("{}/", &self.opt.local_disk_path);
         let _s3_path = format!("{}/", &self.opt.s3_bucket_name);
-        let stream_names = str::replace(new_path, &cache_path, "");
+        let stream_names = str::replace(new_path, &local_path, "");
         let new_parquet_path = format!("{}/{}", &new_path, "data.parquet");
-        let dir_name_cache = format!(
-            "{}{}/cache/date={}/hour={:02}/minute={:02}",
-            cache_path,
+
+        let dir_name_tmp = format!(
+            "{}{}/tmp/date={}/hour={:02}/minute={}",
+            local_path,
             stream_names,
             chrono::offset::Utc::now().date(),
             self.time.hour(),
-            self.time.minute()
+            time_slot(),
         );
+
         let dir_name_s3 = format!(
-            "{}/date={}/hour={:02}",
+            "{}/date={}/hour={:02}/minute={}",
             stream_names,
             chrono::offset::Utc::now().date(),
             self.time.hour(),
+            time_slot()
         );
-        let parquet = format!(
-            "data.{:02}.{:02}.parquet",
-            self.time.hour(),
-            self.time.minute()
-        );
-        let dir_name_cache_tmp = format!(
-            "{}{}/cache/date={}/hour={:02}/tmp",
-            cache_path,
-            stream_names,
-            chrono::offset::Utc::now().date(),
-            self.time.hour()
-        );
+
+        let parquet = format!("{}.parquet", utils::random_string());
+        let dir_name_local = format!("{}{}", local_path, stream_names,);
 
         DirName {
             dir_name_s3,
-            dir_name_cache,
-            dir_name_cache_tmp,
+            dir_name_tmp,
+            dir_name_local,
             parquet_path: new_parquet_path,
             parquet_file: parquet,
         }
@@ -250,4 +211,22 @@ pub async fn put_parquet(key: String, path: String) -> Result<(), Error> {
     println!("{:?}", _resp);
 
     Ok(())
+}
+
+pub fn time_slot() -> String {
+    let t = chrono::offset::Utc::now().minute();
+    if t > 00 && t < 10 {
+        return "00-09".to_string();
+    } else if t > 9 && t < 19 {
+        return "10-19".to_string();
+    } else if t > 19 && t < 29 {
+        return "20-29".to_string();
+    } else if t > 29 && t < 39 {
+        return "30-39".to_string();
+    } else if t > 39 && t < 49 {
+        return "40-49".to_string();
+    } else if t > 49 && t < 59 {
+        return "49-59".to_string();
+    };
+    "".to_string()
 }

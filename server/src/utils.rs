@@ -17,6 +17,7 @@
  */
 
 use actix_web::web;
+use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -77,4 +78,12 @@ pub fn get_scheme() -> String {
     }
 
     scheme.to_string()
+}
+
+pub fn random_string() -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(7)
+        .map(char::from)
+        .collect()
 }
