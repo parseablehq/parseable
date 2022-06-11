@@ -34,25 +34,24 @@ create_input_file () {
 
 # Create stream
 create_stream () {
-  printf "Test create_stream: running\n"
   response=$(curl "${curl_std_opts[@]}" --request PUT "$parseable_url"/api/v1/logstream/"$stream_name")
   
   if [ $? -ne 0 ]; then
-    echo "Failed to create log stream $stream_name with exit code: $?"
+    printf "Failed to create log stream %s with exit code: %s\n" "$stream_name" "$?"
     printf "Test create_stream: failed\n"
     exit 1
   fi
   
   http_code=$(tail -n1 <<< "$response")
   if [ "$http_code" -ne 200 ]; then
-    echo "Failed to create log stream $stream_name with http code: $http_code and response: $content"
+    printf "Failed to create log stream %s with http code: %s and response: %s\n" "$stream_name" "$http_code" "$content"
     printf "Test create_stream: failed\n"
     exit 1
   fi
 
   content=$(sed '$ d' <<< "$response")
   if [ "$content" != "Created log stream $stream_name" ]; then
-    echo "Failed to create log stream $stream_name with response: $content"
+    printf "Failed to create log stream $stream_name with response: %s\n" "$content"
     printf "Test create_stream: failed\n"
     exit 1
   fi
@@ -63,33 +62,31 @@ create_stream () {
 
 # Post log data to the stream
 post_event_data () {
-  printf "Test post_event_data: running\n"
   create_input_file
   if [ $? -ne 0 ]; then
-    echo "Failed to create log data to be posed to $stream_name with exit code: $?"
+    printf "Failed to create log data to be posted to %s with exit code: %s\n" "$stream_name" "$?"
     printf "Test post_event_data: failed\n"
     exit 1
   fi
 
   content=$(cat "$input_file")
-  
   response=$(curl "${curl_std_opts[@]}" --request POST "$parseable_url"/api/v1/logstream/"$stream_name" --data-raw "$content")
   if [ $? -ne 0 ]; then
-    echo "Failed to post log data to $stream_name with exit code: $?"
+    printf "Failed to post log data to %s with exit code: %s\n" "$stream_name" "$?"
     printf "Test post_event_data: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
   if [ "$http_code" -ne 200 ]; then
-    echo "Failed to create log stream $stream_name with http code: $http_code and response: $content"
+    printf "Failed to create log stream %s with http code: %s and response: %s\n" "$stream_name" "$http_code" "$content"
     printf "Test post_event_data: failed\n"
     exit 1
   fi
   
   content=$(sed '$ d' <<< "$response")
   if [ "$content" != "Successfully posted $events events" ]; then
-    echo "Failed to post log data to $stream_name with response: $content"
+    printf "Failed to post log data to %s with response: %s\n" "$stream_name" "$content"
     printf "Test post_event_data: failed\n"
     exit 1
   fi
@@ -100,25 +97,26 @@ post_event_data () {
 
 # List all log stream and [TODO] verify if the stream is created
 list_log_streams () {
-  printf "Test list_log_streams: running\n"
-
-  #List Streams
   response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/logstream)
   if [ $? -ne 0 ]; then
-    echo "Failed to list log streams with exit code: $?"
+    printf "Failed to list log streams with exit code: %s\n" "$?"
     printf "Test list_log_streams: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
   if [ "$http_code" -ne 200 ]; then
-    echo "Failed to list all log streams with http code: $http_code and response: $content"
-   printf "Test list_log_streams: failed\n"
+    printf "Failed to list all log streams with http code: %s and response: %s" "$http_code" "$content"
+    printf "Test list_log_streams: failed\n"
     exit 1
   fi
 
-  content=$(sed '$ d' <<< "$response")
-  echo "$content"
+  # content=$(sed '$ d' <<< "$response")
+  # if [ $(jq < "$content" 'any(.name == "$stream_name")') == "false" ]; then
+  #   printf "Failed to find new log stream %s in list stream result: %s\n" "$stream_name" "$content"
+  #   printf "Test list_log_streams: failed\n"
+  #   exit 1
+  # fi
 
   printf "Test list_log_streams: successful\n"
   return 0
@@ -126,26 +124,25 @@ list_log_streams () {
 
 # Get Stream's schema and [TODO] validate its schema
 get_streams_schema () {
-  printf "Test get_streams_schema: running\n"
   response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/logstream/"$stream_name"/schema)
   if [ $? -ne 0 ]; then
-    echo "Failed to fetch stream's schema with exit code: $?"
+    printf "Failed to fetch stream schema with exit code: %s\n" "$?"
     printf "Test get_streams_schema: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
   if [ "$http_code" -ne 200 ]; then
-    echo "Failed to get schema for stream $stream_name with http code: $http_code and response: $content"
+    printf "Failed to get schema for stream %s with http code: %s and response: %s" "$stream_name" "$http_code" "$content"
     printf "Test get_streams_schema: failed\n"
     exit 1
   fi
 
   content=$(sed '$ d' <<< "$response")
   if [ "$content" != "$schema_body" ]; then
-    echo "Get schema response doesn't match with expected schema."
-    echo "Schema expected: $schema_body"
-    echo "Schema returned: $content"
+    printf "Get schema response doesn't match with expected schema.\n"
+    printf "Schema expected: %s\n" "$schema_body"
+    printf "Schema returned: %s\n" "$content"
     printf "Test get_streams_schema: failed\n"
     exit 1
   fi
@@ -156,19 +153,18 @@ get_streams_schema () {
 
 # Query the log stream and verify if count of events is equal to the number of events posted
 query_log_stream() {
-  printf "Test query_log_stream: running\n"
   response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/query --data-raw '{
     "query": "select count(*) from '$stream_name'"
   }')
   if [ $? -ne 0 ]; then
-    echo "Failed to query log data from $stream_name with exit code: $?"
+    printf "Failed to query log data from %s with exit code: %s\n" "$stream_name" "$?"
     printf "Test query_log_stream: successful\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
   if [ "$http_code" -ne 200 ]; then
-    echo "Failed to query stream $stream_name with http code: $http_code and response: $content"
+    printf "Failed to query stream %s with http code: %s and response: %s" "$stream_name" "$http_code" "$content"
     printf "Test query_log_stream: successful\n"
     exit 1
   fi
@@ -176,7 +172,7 @@ query_log_stream() {
   content=$(sed '$ d' <<< "$response")
   queryResult=$(echo "$content" | cut -d ':' -f2 | cut -d '}' -f1)
   if [ "$queryResult" != $events ]; then
-    echo "Validation failed. Count of events returned from query does not match with the ones posted."
+    printf "Validation failed. Count of events returned from query does not match with the ones posted.\n"
     printf "Test query_log_stream: failed\n"
     exit 1
   fi
@@ -186,25 +182,23 @@ query_log_stream() {
 
 # Set Alert
 set_alert () {
-  printf "Test set_alert: running\n"
-
   response=$(curl "${curl_std_opts[@]}" --request PUT "$parseable_url"/api/v1/logstream/"$stream_name"/alert --data-raw "$alert_body")
   if [ $? -ne 0 ]; then
-    echo "Failed to set alert for $stream_name with exit code: $?"
+    printf "Failed to set alert for %s with exit code: %s\n" "$stream_name" "$?"
     printf "Test set_alert: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
   if [ "$http_code" -ne 200 ]; then
-    echo "Failed to set alert for $stream_name with http code: $http_code and response: $content"
+    printf "Failed to set alert for %s with http code: %s and response: %s\n" "$stream_name" "$http_code" "$content"
     printf "Test set_alert: failed\n"
     exit 1
   fi
 
   content=$(sed '$ d' <<< "$response")
   if [ "$content" != "Set alert configuration for log stream $stream_name" ]; then
-    echo "Failed to set alert on log stream $stream_name with response: $content"
+    printf "Failed to set alert on log stream %s with response: %s\n" "$stream_name" "$content"
     printf "Test set_alert: failed\n"
     exit 1
   fi
@@ -215,56 +209,53 @@ set_alert () {
 
 # Get Alert
 get_alert () {
-  printf "Test get_alert: running\n"
-
   response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/logstream/"$stream_name"/alert)
   if [ $? -ne 0 ]; then
-    echo "Failed to get alert for $stream_name with exit code: $?"
+    printf "Failed to get alert for %s with exit code: %s\n" "$stream_name" "$?"
     printf "Test get_alert: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
   if [ "$http_code" -ne 200 ]; then
-    echo "Failed to get alert for $stream_name with http code: $http_code and response: $content"
+    printf "Failed to get alert for %s with http code: %s and response: %s" "$stream_name" "$http_code" "$content"
     printf "Test get_alert: failed\n"
     exit 1
   fi
   
   content=$(sed '$ d' <<< "$response")
   if [ "$content" != "$alert_body" ]; then
-    echo "Get alert response doesn't match with Alert config returned."
-    echo "Alert set: $alert_body"
-    echo "Alert returned: $content"
+    printf "Get alert response doesn't match with Alert config returned.\n"
+    printf "Alert set: %s\n" "$alert_body"
+    printf "Alert returned: %s\n" "$content"
     printf "Test get_alert: failed\n"
     exit 1
   fi
+
   printf "Test get_alert: successful\n"
   return 0
 }
 
 # Delete stream
 delete_stream () {
-  printf "Test delete_stream: running\n"
-
   response=$(curl "${curl_std_opts[@]}" --request DELETE "$parseable_url"/api/v1/logstream/"$stream_name")
 
   if [ $? -ne 0 ]; then
-    echo "Failed to delete log stream $stream_name with exit code: $?"
+    printf "Failed to delete stream for %s with exit code: %s\n" "$stream_name" "$?"
     printf "Test delete_stream: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
   if [ "$http_code" -ne 200 ]; then
-    echo "Failed to delete log stream $stream_name with http code: $http_code and response: $content"
+    printf "Failed to delete log stream %s with http code: %s and response: %s\n" "$stream_name" "$http_code" "$content"
     printf "Test delete_stream: failed\n"
     exit 1
   fi
 
   content=$(sed '$ d' <<< "$response")
   if [ "$content" != "log stream $stream_name deleted" ]; then
-    echo "Failed to delete log stream $stream_name with response: $content"
+    printf "Failed to delete log stream %s with response: %s" "$stream_name" "$content"
     printf "Test delete_stream: failed\n"
     exit 1
   fi
@@ -278,9 +269,10 @@ cleanup () {
   return $?
 }
 
-printf "=======Starting smoke tests=======\n"
-printf "** Randomised log stream name: %s\n" "$stream_name"
-printf "** Total events being stored: %s\n" "$events"
+printf "======= Starting smoke tests =======\n"
+printf "** Log stream name: %s **\n" "$stream_name"
+printf "** Event count: %s **\n" "$events"
+printf "====================================\n"
 create_stream
 post_event_data
 list_log_streams
@@ -290,3 +282,4 @@ set_alert
 get_alert
 delete_stream
 cleanup
+printf "======= Smoke tests completed ======\n"
