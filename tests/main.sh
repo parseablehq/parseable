@@ -20,7 +20,6 @@ mode=$1
 endpoint=$2
 
 run_smoke_test () {
-  echo "Executing smoke test"
   stream_name=$(head /dev/urandom | tr -dc a-z | head -c10)
   ./testcases/smoke_test.sh "$endpoint" "$stream_name"
   return $?

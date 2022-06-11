@@ -21,201 +21,267 @@ stream_name=$2
 events=50
 input_file=$PWD/input.json
 curl_std_opts=( -sS --header 'Content-Type: application/json' --header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' -w '\n\n%{http_code}' )
-
-# Create stream
-create_stream () {
-  echo Creating Stream: "$stream_name"
-  response=$(curl "${curl_std_opts[@]}" --request PUT "$parseable_url"/api/v1/logstream/"$stream_name")
-  
-  if [ $? -ne 0 ]; then
-    echo "Failed to create log stream $stream_name with exit code: $?"
-    exit 1
-  fi
-  
-  http_code=$(tail -n1 <<< "$response")
-  content=$(sed '$ d' <<< "$response")
-  if [ "$http_code" -ne 200 ]; then
-    echo "Failed to create log stream $stream_name with http code: $http_code and response: $content"
-    exit 1
-  fi
-  
-  if [ "$content" != "Created LogStream $stream_name" ]; then
-    echo "Failed to create log stream $stream_name with response: $content"
-    exit 1
-  fi
-  return 0
-}
+alert_body='{"alerts":[{"name":"server-fail-alert1","message":"server reported error status","rule":{"field":"http_status","contains":"500","repeats":"5","within":"10m"},"target":[{"name":"slack-target","server_url":"http://mailgun.com","api_key":"xxxx"}]}]}'
+schema_body='{"fields":[{"name":"host","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"user-identifier","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"datetime","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"method","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"request","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"protocol","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"status","data_type":"Int64","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"bytes","data_type":"Int64","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"referer","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"labels","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false}]}'
 
 # Generate events using flog (https://github.com/mingrammer/flog) and store it in input.json file
 create_input_file () {
-  printf "Creating input.json file with %s events\n" $events 
   flog -f json -n "$events" -t log -o "$input_file"
   sleep 2
-  printf "Preparing input.json file to be used as raw data for POST\n"
   sed -i '1s/^/[/;$!s/$/,/;$s/$/]/' "$input_file"
   return $?
 }
 
+# Create stream
+create_stream () {
+  printf "Test create_stream: running\n"
+  response=$(curl "${curl_std_opts[@]}" --request PUT "$parseable_url"/api/v1/logstream/"$stream_name")
+  
+  if [ $? -ne 0 ]; then
+    echo "Failed to create log stream $stream_name with exit code: $?"
+    printf "Test create_stream: failed\n"
+    exit 1
+  fi
+  
+  http_code=$(tail -n1 <<< "$response")
+  if [ "$http_code" -ne 200 ]; then
+    echo "Failed to create log stream $stream_name with http code: $http_code and response: $content"
+    printf "Test create_stream: failed\n"
+    exit 1
+  fi
+
+  content=$(sed '$ d' <<< "$response")
+  if [ "$content" != "Created log stream $stream_name" ]; then
+    echo "Failed to create log stream $stream_name with response: $content"
+    printf "Test create_stream: failed\n"
+    exit 1
+  fi
+
+  printf "Test create_stream: successful\n"
+  return 0
+}
+
 # Post log data to the stream
 post_event_data () {
+  printf "Test post_event_data: running\n"
+  create_input_file
+  if [ $? -ne 0 ]; then
+    echo "Failed to create log data to be posed to $stream_name with exit code: $?"
+    printf "Test post_event_data: failed\n"
+    exit 1
+  fi
+
   content=$(cat "$input_file")
-  printf "Posting $events events into %s\n" "$stream_name"
+  
   response=$(curl "${curl_std_opts[@]}" --request POST "$parseable_url"/api/v1/logstream/"$stream_name" --data-raw "$content")
   if [ $? -ne 0 ]; then
     echo "Failed to post log data to $stream_name with exit code: $?"
+    printf "Test post_event_data: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
-  content=$(sed '$ d' <<< "$response")
   if [ "$http_code" -ne 200 ]; then
     echo "Failed to create log stream $stream_name with http code: $http_code and response: $content"
+    printf "Test post_event_data: failed\n"
+    exit 1
+  fi
+  
+  content=$(sed '$ d' <<< "$response")
+  if [ "$content" != "Successfully posted $events events" ]; then
+    echo "Failed to post log data to $stream_name with response: $content"
+    printf "Test post_event_data: failed\n"
     exit 1
   fi
 
-  if [ "$content" != "Successfully posted $events events" ]; then
-    echo "Failed to post log data to $stream_name with response: $content"
-    exit 1
-  fi
+  printf "Test post_event_data: successful\n"
   return 0
 }
 
 # List all log stream and [TODO] verify if the stream is created
 list_log_streams () {
-  echo "Getting the list of streams"
+  printf "Test list_log_streams: running\n"
+
   #List Streams
   response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/logstream)
   if [ $? -ne 0 ]; then
     echo "Failed to list log streams with exit code: $?"
+    printf "Test list_log_streams: failed\n"
     exit 1
   fi
+
+  http_code=$(tail -n1 <<< "$response")
+  if [ "$http_code" -ne 200 ]; then
+    echo "Failed to list all log streams with http code: $http_code and response: $content"
+   printf "Test list_log_streams: failed\n"
+    exit 1
+  fi
+
+  content=$(sed '$ d' <<< "$response")
+  echo "$content"
+
+  printf "Test list_log_streams: successful\n"
   return 0
 }
 
 # Get Stream's schema and [TODO] validate its schema
 get_streams_schema () {
-  echo "Getting stream's schema"
+  printf "Test get_streams_schema: running\n"
   response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/logstream/"$stream_name"/schema)
   if [ $? -ne 0 ]; then
     echo "Failed to fetch stream's schema with exit code: $?"
+    printf "Test get_streams_schema: failed\n"
     exit 1
   fi
+
+  http_code=$(tail -n1 <<< "$response")
+  if [ "$http_code" -ne 200 ]; then
+    echo "Failed to get schema for stream $stream_name with http code: $http_code and response: $content"
+    printf "Test get_streams_schema: failed\n"
+    exit 1
+  fi
+
+  content=$(sed '$ d' <<< "$response")
+  if [ "$content" != "$schema_body" ]; then
+    echo "Get schema response doesn't match with expected schema."
+    echo "Schema expected: $schema_body"
+    echo "Schema returned: $content"
+    printf "Test get_streams_schema: failed\n"
+    exit 1
+  fi
+
+  printf "Test get_streams_schema: successful\n"
   return 0
 }
 
 # Query the log stream and verify if count of events is equal to the number of events posted
 query_log_stream() {
-  echo "Querying the stream: $stream_name"
+  printf "Test query_log_stream: running\n"
   response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/query --data-raw '{
     "query": "select count(*) from '$stream_name'"
   }')
   if [ $? -ne 0 ]; then
     echo "Failed to query log data from $stream_name with exit code: $?"
+    printf "Test query_log_stream: successful\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
-  content=$(sed '$ d' <<< "$response")
-  queryResult=$(echo "$content" | cut -d ':' -f2 | cut -d '}' -f1)
-  echo Number of events stored in "$stream_name": "$queryResult"
-  if [ "$queryResult" = $events ]; then
-    echo "Validation successful. Count of events returned from query is same as the ones posted."
-  else
-    echo "Validation failed. Count of events returned from query does not match with the ones posted."
+  if [ "$http_code" -ne 200 ]; then
+    echo "Failed to query stream $stream_name with http code: $http_code and response: $content"
+    printf "Test query_log_stream: successful\n"
     exit 1
   fi
+
+  content=$(sed '$ d' <<< "$response")
+  queryResult=$(echo "$content" | cut -d ':' -f2 | cut -d '}' -f1)
+  if [ "$queryResult" != $events ]; then
+    echo "Validation failed. Count of events returned from query does not match with the ones posted."
+    printf "Test query_log_stream: failed\n"
+    exit 1
+  fi
+  printf "Test query_log_stream: successful\n"
   return 0
 }
 
 # Set Alert
 set_alert () {
-  echo "Setting Alert for $stream_name"
-  request_body='{"alerts": [{"name": "server-fail-alert1","message": "server reported error status","rule": {"field": "http_status","contains": "500","repeats": "5","within": "10m"},"target": [{"name": "slack-target","server_url": "http://mailgun.com","api_key": "xxxx"}]}]}'
-  response=$(curl "${curl_std_opts[@]}" --request PUT "$parseable_url"/api/v1/logstream/"$stream_name"/alert --data-raw "$request_body")
+  printf "Test set_alert: running\n"
+
+  response=$(curl "${curl_std_opts[@]}" --request PUT "$parseable_url"/api/v1/logstream/"$stream_name"/alert --data-raw "$alert_body")
   if [ $? -ne 0 ]; then
     echo "Failed to set alert for $stream_name with exit code: $?"
+    printf "Test set_alert: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
-  content=$(sed '$ d' <<< "$response")
   if [ "$http_code" -ne 200 ]; then
     echo "Failed to set alert for $stream_name with http code: $http_code and response: $content"
+    printf "Test set_alert: failed\n"
     exit 1
   fi
-  
-  if [ "$content" != "Created Alert $stream_name" ]; then
-    echo "Failed to create log stream $stream_name with response: $content"
+
+  content=$(sed '$ d' <<< "$response")
+  if [ "$content" != "Set alert configuration for log stream $stream_name" ]; then
+    echo "Failed to set alert on log stream $stream_name with response: $content"
+    printf "Test set_alert: failed\n"
     exit 1
-  else
-    echo "Setting Alert for $stream_name is successful"
   fi
+
+  printf "Test set_alert: successful\n"
   return 0
 }
 
 # Get Alert
 get_alert () {
-  echo "Getting Alert for $stream_name"
-  alert_body='{"alerts":[{"name":"server-fail-alert1","message":"server reported error status","rule":{"field":"http_status","contains":"500","repeats":"5","within":"10m"},"target":[{"name":"slack-target","server_url":"http://mailgun.com","api_key":"xxxx"}]}]}'
+  printf "Test get_alert: running\n"
+
   response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/logstream/"$stream_name"/alert)
   if [ $? -ne 0 ]; then
     echo "Failed to get alert for $stream_name with exit code: $?"
+    printf "Test get_alert: failed\n"
     exit 1
   fi
+
   http_code=$(tail -n1 <<< "$response")
-  content=$(sed '$ d' <<< "$response")
   if [ "$http_code" -ne 200 ]; then
     echo "Failed to get alert for $stream_name with http code: $http_code and response: $content"
+    printf "Test get_alert: failed\n"
     exit 1
   fi
+  
+  content=$(sed '$ d' <<< "$response")
   if [ "$content" != "$alert_body" ]; then
-    echo "FAILURE: Alert set doesn't match with Alert returned."
+    echo "Get alert response doesn't match with Alert config returned."
     echo "Alert set: $alert_body"
     echo "Alert returned: $content"
+    printf "Test get_alert: failed\n"
     exit 1
-  else
-    echo "SUCCESS: Alert set matches with Alert returned."
   fi
+  printf "Test get_alert: successful\n"
   return 0
 }
 
 # Delete stream
 delete_stream () {
-  echo Deleting Stream: "$stream_name"
+  printf "Test delete_stream: running\n"
+
   response=$(curl "${curl_std_opts[@]}" --request DELETE "$parseable_url"/api/v1/logstream/"$stream_name")
 
   if [ $? -ne 0 ]; then
     echo "Failed to delete log stream $stream_name with exit code: $?"
+    printf "Test delete_stream: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
-  content=$(sed '$ d' <<< "$response")
   if [ "$http_code" -ne 200 ]; then
     echo "Failed to delete log stream $stream_name with http code: $http_code and response: $content"
-    exit 1
-  fi
-  
-  if [ "$content" != "LogStream $stream_name deleted" ]; then
-    echo "Failed to delete log stream $stream_name with response: $content"
+    printf "Test delete_stream: failed\n"
     exit 1
   fi
 
-  if [ "$content" = "LogStream $stream_name deleted" ]; then
-    echo "$stream_name successfully deleted"
+  content=$(sed '$ d' <<< "$response")
+  if [ "$content" != "log stream $stream_name deleted" ]; then
+    echo "Failed to delete log stream $stream_name with response: $content"
+    printf "Test delete_stream: failed\n"
+    exit 1
   fi
+
+  printf "Test delete_stream: successful\n"
   return 0
 }
 
 cleanup () {
-  echo "Deleting the $input_file file"
   rm -rf "$input_file"
   return $?
 }
 
-
+printf "=======Starting smoke tests=======\n"
+printf "** Randomised log stream name: %s\n" "$stream_name"
+printf "** Total events being stored: %s\n" "$events"
 create_stream
-create_input_file
 post_event_data
 list_log_streams
 get_streams_schema
