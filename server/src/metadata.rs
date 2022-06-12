@@ -18,7 +18,7 @@
 
 use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 use crate::error::Error;
 use crate::storage;
@@ -26,67 +26,50 @@ use crate::storage;
 #[derive(Debug)]
 pub struct LogStreamMetadata {
     pub schema: String,
-    pub alert: String,
+    pub alert_config: String,
 }
 
 lazy_static! {
     #[derive(Debug)]
-    pub static ref STREAM_INFO: Mutex<HashMap<String, Box<LogStreamMetadata>>> =
-        Mutex::new(HashMap::new());
+    // A read-write lock to allow multiple reads while and isolated write
+    pub static ref STREAM_INFO: RwLock<HashMap<String, LogStreamMetadata>> =
+        RwLock::new(HashMap::new());
 }
 
-// This will be updated
+// STREAM_INFO should be updated
 // 1. During server start up
 // 2. When a new stream is created (make a new entry in the map)
 // 3. When a stream is deleted (remove the entry from the map)
 // 4. When first event is sent to stream (update the schema)
-// 5. In set_alert API (update the alert)
+// 5. When set alert API is called (update the alert)
 #[allow(clippy::all)]
 impl STREAM_INFO {
     pub fn schema(&self, stream_name: String) -> Result<String, Error> {
-        let map = self.lock().map_err(|_| Error::StreamLock)?;
-        let meta = map.get(&stream_name);
-        drop(&map);
+        let map = self.read().unwrap();
+        let meta = map
+            .get(&stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name))?;
 
-        match meta {
-            Some(meta) => Ok(meta.schema.clone()),
-            None => Err(Error::StreamMetaNotFound(stream_name)),
-        }
+        Ok(meta.schema.clone())
     }
 
     pub fn alert(&self, stream_name: String) -> Result<String, Error> {
-        let map = self.lock().map_err(|_| Error::StreamLock)?;
-        let meta = map.get(&stream_name);
-        drop(&map);
+        let map = self.read().unwrap();
+        let meta = map
+            .get(&stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name))?;
 
-        match meta {
-            Some(meta) => Ok(meta.alert.clone()),
-            None => Err(Error::StreamMetaNotFound(stream_name)),
-        }
+        Ok(meta.alert_config.clone())
     }
 
     pub fn set_alert(&self, stream_name: String, alert_config: String) -> Result<(), Error> {
         let schema = self.schema(stream_name.clone())?;
-        let mut map = self.lock().map_err(|_| Error::StreamLock)?;
-        let metadata = LogStreamMetadata {
-            schema: schema,
-            alert: alert_config,
-        };
-        map.insert(stream_name, Box::new(metadata));
-        drop(&map);
-        Ok(())
+        self.add_stream(stream_name, schema, alert_config)
     }
 
     pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
         let alert_config = self.alert(stream_name.clone())?;
-        let mut map = self.lock().map_err(|_| Error::StreamLock)?;
-        let metadata = LogStreamMetadata {
-            schema: schema,
-            alert: alert_config,
-        };
-        map.insert(stream_name, Box::new(metadata));
-        drop(&map);
-        Ok(())
+        self.add_stream(stream_name, schema, alert_config)
     }
 
     pub fn add_stream(
@@ -95,69 +78,53 @@ impl STREAM_INFO {
         schema: String,
         alert_config: String,
     ) -> Result<(), Error> {
-        let mut map = self.lock().map_err(|_| Error::StreamLock)?;
+        let mut map = self.write().unwrap();
         let metadata = LogStreamMetadata {
-            schema: schema,
-            alert: alert_config,
+            schema,
+            alert_config,
         };
-        map.insert(stream_name, Box::new(metadata));
-        drop(&map);
+        // TODO: Add check to confirm data insertion
+        map.insert(stream_name, metadata);
+
         Ok(())
     }
 
     pub fn delete_stream(&self, stream_name: String) -> Result<(), Error> {
-        let mut map = self.lock().map_err(|_| Error::StreamLock)?;
+        let mut map = self.write().unwrap();
+        // TODO: Add check to confirm data deletion
         map.remove(&stream_name);
-        drop(&map);
+
         Ok(())
     }
 
     pub fn load(&self) -> Result<(), Error> {
-        match storage::list_streams() {
-            Ok(streams) => {
-                for stream in streams {
-                    let stream_name = stream.name;
-                    let mut alert_config = String::new();
-                    let mut schema = String::new();
-                    match storage::alert_exists(&stream_name.clone()) {
-                        Ok(x) => {
-                            if x.is_empty() {
-                                alert_config = "".to_string();
-                            } else {
-                                alert_config = format!("{:?}", x);
-                            }
-                        }
-                        Err(_) => {
-                            // Ignore S3 errors here, because
-                            // we are just trying to load the
-                            // stream metadata based on whatever is available
-                        }
-                    };
-                    match storage::stream_exists(&stream_name) {
-                        Ok(x) => {
-                            if x.is_empty() {
-                                schema = "".to_string();
-                            } else {
-                                schema = format!("{:?}", x);
-                            }
-                        }
-                        Err(_) => {
-                            // Ignore S3 errors here, because
-                            // we are just trying to load the
-                            // stream metadata based on whatever is available
-                        }
-                    };
-                    let metadata = LogStreamMetadata {
-                        schema: schema,
-                        alert: alert_config,
-                    };
-                    let mut map = self.lock().map_err(|_| Error::StreamLock)?;
-                    map.insert(stream_name, Box::new(metadata));
-                    drop(&map);
+        let streams = storage::list_streams()?;
+
+        for stream in streams {
+            // Ignore S3 errors here, because we are just trying
+            // to load the stream metadata based on whatever is available.
+            //
+            // TODO: ignore failure(s) if any and skip to next stream
+            let mut alert_config = String::new();
+            if let Ok(x) = storage::alert_exists(&stream.name) {
+                if !x.is_empty() {
+                    alert_config = format!("{:?}", x);
                 }
-                Ok(())
             }
-            Err(e) => Err(Error::S3(e)),
+            let mut schema = String::new();
+            if let Ok(x) = storage::stream_exists(&stream.name) {
+                if !x.is_empty() {
+                    schema = format!("{:?}", x);
+                }
+            }
+            let metadata = LogStreamMetadata {
+                schema,
+                alert_config,
+            };
+            let mut map = self.write().unwrap();
+            map.insert(stream.name.to_owned(), metadata);
         }
+
+        Ok(())
     }
 }

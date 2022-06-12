@@ -61,8 +61,6 @@ pub enum Error {
     Join(String),
     #[error("Missing record batch")]
     MissingRecord,
-    #[error("Couldn't get lock on STREAM_INFO")]
-    StreamLock,
     #[error("Metadata not found for log stream: {0}")]
     StreamMetaNotFound(String),
     #[error("Invalid alert config: {0}")]
