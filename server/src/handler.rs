@@ -24,7 +24,8 @@ use crate::event;
 use crate::metadata;
 use crate::query;
 use crate::response;
-use crate::storage;
+use crate::s3::S3;
+use crate::storage::ObjectStorage;
 use crate::utils;
 use crate::validator;
 
@@ -36,14 +37,16 @@ pub async fn liveness() -> HttpResponse {
     if System::new_all().available_memory() < 100 * 1024 * 1024 {
         return HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE);
     }
+
     HttpResponse::new(StatusCode::OK)
 }
 
 pub async fn readiness() -> HttpResponse {
-    match storage::is_available() {
-        Ok(_) => HttpResponse::new(StatusCode::OK),
-        Err(_) => HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE),
+    if S3::new().is_available().await {
+        return HttpResponse::new(StatusCode::OK);
     }
+
+    HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE)
 }
 
 //
@@ -61,7 +64,7 @@ pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> H
         }
     };
 
-    if storage::stream_exists(&stream_name).is_err() {
+    if S3::new().stream_exists(&stream_name).await.is_err() {
         return response::ServerResponse {
             msg: format!("log stream {} does not exist", stream_name),
             code: StatusCode::BAD_REQUEST,
@@ -69,7 +72,7 @@ pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> H
         .to_http();
     }
 
-    match query.execute(&stream_name) {
+    match query.execute(&stream_name).await {
         Ok(results) => response::QueryResponse {
             body: results,
             code: StatusCode::OK,
@@ -97,7 +100,9 @@ pub async fn delete_stream(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    if storage::stream_exists(&stream_name).is_err() {
+    let s3 = S3::new();
+
+    if s3.stream_exists(&stream_name).await.is_err() {
         return response::ServerResponse {
             msg: format!("log stream {} does not exist", stream_name),
             code: StatusCode::BAD_REQUEST,
@@ -105,7 +110,7 @@ pub async fn delete_stream(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    if let Err(e) = storage::delete_stream(&stream_name) {
+    if let Err(e) = s3.delete_stream(&stream_name).await {
         return response::ServerResponse {
             msg: format!(
                 "Failed to delete log stream {} from Object Storage due to err: {}",
@@ -135,7 +140,7 @@ pub async fn delete_stream(req: HttpRequest) -> HttpResponse {
 }
 
 pub async fn list_streams(_: HttpRequest) -> impl Responder {
-    response::list_response(storage::list_streams().unwrap())
+    response::list_response(S3::new().list_streams().await.unwrap())
 }
 
 //
@@ -153,7 +158,7 @@ pub async fn get_schema(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    match storage::stream_exists(&stream_name) {
+    match S3::new().stream_exists(&stream_name).await {
         Ok(schema) if schema.is_empty() => {
             response::ServerResponse {
                 msg: "Failed to get log stream schema, because log stream is not initialized yet. Please post an event before fetching schema".to_string(),
@@ -188,7 +193,7 @@ pub async fn get_alert(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    match storage::alert_exists(&stream_name) {
+    match S3::new().alert_exists(&stream_name).await {
         Ok(alert) if alert.is_empty() => {
             if let Err(e) = validator::stream_name(&stream_name) {
                 return response::ServerResponse {
@@ -231,10 +236,12 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
+    let s3 = S3::new();
+
     // Proceed to create log stream if it doesn't exist
-    if storage::stream_exists(&stream_name).is_err() {
+    if s3.stream_exists(&stream_name).await.is_err() {
         // Fail if unable to create log stream on object store backend
-        if let Err(e) = storage::create_stream(&stream_name) {
+        if let Err(e) = s3.create_stream(&stream_name).await {
             return response::ServerResponse {
                 msg: format!("Failed to create log stream due to err: {}", e),
                 code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -279,7 +286,10 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let alert_config = body.clone();
     match validator::alert(serde_json::to_string(&body.as_object()).unwrap()) {
-        Ok(_) => match storage::create_alert(&stream_name, alert_config.to_string()) {
+        Ok(_) => match S3::new()
+            .create_alert(&stream_name, alert_config.to_string())
+            .await
+        {
             Ok(_) => {
                 if let Err(e) = metadata::STREAM_INFO
                     .set_alert(stream_name.to_string(), alert_config.to_string())
@@ -323,7 +333,6 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
 
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
     let labels = collect_labels(&req);
 
     if let Err(e) = metadata::STREAM_INFO.schema(stream_name.clone()) {
@@ -338,6 +347,8 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
         .to_http();
     };
 
+    let s3 = S3::new();
+
     if let Some(array) = body.as_array() {
         let mut i = 0;
 
@@ -348,7 +359,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
                 stream_name: stream_name.clone(),
             };
 
-            if let Err(e) = e.process() {
+            if let Err(e) = e.process(&s3).await {
                 return response::ServerResponse {
                     msg: format!("Failed to process event at index {} due to err: {}", i, e),
                     code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -369,7 +380,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
         body: utils::flatten_json_body(body, labels).unwrap(),
         stream_name,
     };
-    if let Err(e) = e.process() {
+    if let Err(e) = e.process(&s3).await {
         return response::ServerResponse {
             msg: format!("Failed to process event due to err: {}", e),
             code: StatusCode::INTERNAL_SERVER_ERROR,

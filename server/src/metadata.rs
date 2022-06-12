@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use crate::error::Error;
-use crate::storage;
+use crate::storage::ObjectStorage;
 
 #[derive(Debug)]
 pub struct LogStreamMetadata {
@@ -97,22 +97,20 @@ impl STREAM_INFO {
         Ok(())
     }
 
-    pub fn load(&self) -> Result<(), Error> {
-        let streams = storage::list_streams()?;
-
-        for stream in streams {
+    pub async fn load(&self, storage: &impl ObjectStorage) -> Result<(), Error> {
+        for stream in storage.list_streams().await? {
             // Ignore S3 errors here, because we are just trying
             // to load the stream metadata based on whatever is available.
             //
             // TODO: ignore failure(s) if any and skip to next stream
             let mut alert_config = String::new();
-            if let Ok(x) = storage::alert_exists(&stream.name) {
+            if let Ok(x) = storage.alert_exists(&stream.name).await {
                 if !x.is_empty() {
                     alert_config = format!("{:?}", x);
                 }
             }
             let mut schema = String::new();
-            if let Ok(x) = storage::stream_exists(&stream.name) {
+            if let Ok(x) = storage.stream_exists(&stream.name).await {
                 if !x.is_empty() {
                     schema = format!("{:?}", x);
                 }

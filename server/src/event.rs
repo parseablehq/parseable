@@ -29,9 +29,8 @@ use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use crate::metadata;
-use crate::option;
 use crate::response;
-use crate::storage;
+use crate::storage::ObjectStorage;
 use crate::utils;
 use crate::Error;
 
@@ -48,17 +47,19 @@ pub struct Schema {
 
 impl Event {
     fn data_file_path(&self) -> String {
-        let opt = option::get_opts();
         format!(
             "{}/{}",
-            utils::local_stream_data_path(&opt, self.stream_name.as_str()),
+            utils::local_stream_data_path(self.stream_name.as_str()),
             "data.parquet"
         )
     }
 
-    pub fn process(&self) -> Result<response::EventResponse, Error> {
+    pub async fn process(
+        &self,
+        storage: &impl ObjectStorage,
+    ) -> Result<response::EventResponse, Error> {
         match metadata::STREAM_INFO.schema(self.stream_name.clone()) {
-            Ok(schema) if schema.is_empty() => self.first_event(),
+            Ok(schema) if schema.is_empty() => self.first_event(storage).await,
             Ok(_) => self.event(),
             Err(e) => Err(e),
         }
@@ -67,7 +68,10 @@ impl Event {
     // This is called when the first event of a log stream is received. The first event is
     // special because we parse this event to generate the schema for the log stream. This
     // schema is then enforced on rest of the events sent to this log stream.
-    fn first_event(&self) -> Result<response::EventResponse, Error> {
+    async fn first_event(
+        &self,
+        storage: &impl ObjectStorage,
+    ) -> Result<response::EventResponse, Error> {
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
 
@@ -89,14 +93,17 @@ impl Event {
         // Put the inferred schema to object store
         let schema = self.infer_schema().string_schema;
         let stream_name = &self.stream_name;
-        storage::put_schema(stream_name.clone(), schema.clone()).map_err(|e| {
-            Error::Event(response::EventError {
-                msg: format!(
-                    "Failed to upload schema for log stream {} due to err: {}",
-                    self.stream_name, e
-                ),
-            })
-        })?;
+        storage
+            .put_schema(stream_name.clone(), schema.clone())
+            .await
+            .map_err(|e| {
+                Error::Event(response::EventError {
+                    msg: format!(
+                        "Failed to upload schema for log stream {} due to err: {}",
+                        self.stream_name, e
+                    ),
+                })
+            })?;
 
         if let Err(e) = metadata::STREAM_INFO.set_schema(stream_name.to_string(), schema) {
             return Err(Error::Event(response::EventError {

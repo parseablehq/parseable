@@ -21,7 +21,7 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::option;
+use crate::option::CONFIG;
 use crate::Error;
 
 pub fn rem_first_and_last(value: &str) -> &str {
@@ -63,21 +63,19 @@ fn merge(v: &Value, fields: &HashMap<String, String>) -> Value {
 }
 
 pub fn get_cache_path(stream_name: &str) -> String {
-    format!("{}/{}", option::get_opts().local_disk_path, stream_name)
+    format!("{}/{}", CONFIG.local_disk_path, stream_name)
 }
 
-pub fn local_stream_data_path(opt: &option::Opt, stream_name: &str) -> String {
-    format!("{}/{}", opt.local_disk_path, stream_name)
+pub fn local_stream_data_path(stream_name: &str) -> String {
+    format!("{}/{}", CONFIG.local_disk_path, stream_name)
 }
 
 pub fn get_scheme() -> String {
-    let opt = option::get_opts();
-    let mut scheme = "http";
-    if let (Some(_), Some(_)) = (opt.tls_cert_path, opt.tls_key_path) {
-        scheme = "https";
+    if CONFIG.tls_cert_path.is_some() && CONFIG.tls_key_path.is_some() {
+        return "https".to_string();
     }
 
-    scheme.to_string()
+    "http".to_string()
 }
 
 pub fn random_string() -> String {
