@@ -17,28 +17,27 @@
  */
 
 use arrow::error::ArrowError;
-use aws_sdk_s3::Error as AWSS3Error;
 use datafusion::error::DataFusionError;
 use parquet::errors::ParquetError;
 
-use crate::response::EventError;
+use crate::{response::EventError, storage::ObjectStorageError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("io error: {0}")]
-    Io(std::io::Error),
+    Io(#[from] std::io::Error),
     #[error("serde_json error: {0}")]
-    Serde(serde_json::Error),
-    #[error("S3 error: {0}")]
-    S3(AWSS3Error),
+    Serde(#[from] serde_json::Error),
+    #[error("Storage error: {0}")]
+    Storage(Box<dyn ObjectStorageError>),
     #[error("Event error: {0}")]
-    Event(EventError),
+    Event(#[from] EventError),
     #[error("Parquet error: {0}")]
-    Parquet(ParquetError),
+    Parquet(#[from] ParquetError),
     #[error("Arrow error: {0}")]
-    Arrow(ArrowError),
+    Arrow(#[from] ArrowError),
     #[error("Data Fusion error: {0}")]
-    DataFusion(DataFusionError),
+    DataFusion(#[from] DataFusionError),
     #[error("log stream name cannot be empty")]
     EmptyName,
     #[error("log stream name cannot contain spaces: {0}")]
@@ -65,40 +64,4 @@ pub enum Error {
     StreamMetaNotFound(String),
     #[error("Invalid alert config: {0}")]
     InvalidAlert(String),
-}
-
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Error {
-        Error::Io(e)
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Error {
-        Error::Serde(e)
-    }
-}
-
-impl From<EventError> for Error {
-    fn from(e: EventError) -> Error {
-        Error::Event(e)
-    }
-}
-
-impl From<ParquetError> for Error {
-    fn from(e: ParquetError) -> Error {
-        Error::Parquet(e)
-    }
-}
-
-impl From<ArrowError> for Error {
-    fn from(e: ArrowError) -> Error {
-        Error::Arrow(e)
-    }
-}
-
-impl From<AWSS3Error> for Error {
-    fn from(e: AWSS3Error) -> Error {
-        Error::S3(e)
-    }
 }

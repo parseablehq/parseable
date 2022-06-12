@@ -16,230 +16,196 @@
  *
  */
 
-use aws_sdk_s3::model::{Delete, ObjectIdentifier};
-use aws_sdk_s3::{Client, Credentials, Endpoint, Error, Region};
-use bytes::Bytes;
-use http::Uri;
-use serde::Serialize;
-use std::collections::HashSet;
-use std::env;
-use std::fs;
-use std::iter::Iterator;
-use tokio_stream::StreamExt;
-
-use crate::option;
+use crate::error::Error;
+use crate::option::CONFIG;
 use crate::utils;
 
-pub struct S3 {
-    pub client: aws_sdk_s3::Client,
-}
+use async_trait::async_trait;
+use bytes::Bytes;
+use chrono::{Timelike, Utc};
+use serde::Serialize;
 
+use std::fmt::{Debug, Display};
+use std::fs;
+use std::io;
+use std::iter::Iterator;
+use std::path::Path;
+use std::time::Duration;
+
+pub trait ObjectStorageError: Display + Debug {}
+
+#[async_trait]
 pub trait ObjectStorage {
-    fn new(opt: &option::Opt) -> Self;
-}
-
-impl ObjectStorage for S3 {
-    fn new(opt: &option::Opt) -> S3 {
-        S3 {
-            client: s3_client(opt),
+    fn new() -> Self;
+    async fn is_available(&self) -> bool;
+    async fn put_schema(&self, stream_name: String, body: String) -> Result<(), Error>;
+    async fn create_stream(&self, stream_name: &str) -> Result<(), Error>;
+    async fn delete_stream(&self, stream_name: &str) -> Result<(), Error>;
+    async fn create_alert(&self, stream_name: &str, body: String) -> Result<(), Error>;
+    async fn stream_exists(&self, stream_name: &str) -> Result<Bytes, Error>;
+    async fn alert_exists(&self, stream_name: &str) -> Result<Bytes, Error>;
+    async fn list_streams(&self) -> Result<Vec<LogStream>, Error>;
+    async fn put_parquet(&self, key: &str, path: &str) -> Result<(), Error>;
+    async fn sync(&self) -> Result<(), Error> {
+        if !Path::new(&CONFIG.local_disk_path).exists() {
+            return Ok(());
         }
-    }
-}
 
-fn s3_client(opt: &option::Opt) -> aws_sdk_s3::Client {
-    let (secret_key, access_key, region, endpoint_url, bucket_name) = (
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_DEFAULT_REGION",
-        "AWS_ENDPOINT_URL",
-        "AWS_BUCKET_NAME",
-    );
-    let data = vec![secret_key, access_key, region, endpoint_url, bucket_name];
+        let entries = fs::read_dir(&CONFIG.local_disk_path)?
+            .map(|res| res.map(|e| e.path()))
+            .collect::<Result<Vec<_>, io::Error>>()?;
+        let sync_duration = Duration::from_secs(CONFIG.sync_duration);
 
-    for data in data.iter() {
-        match *data {
-            "AWS_SECRET_ACCESS_KEY" => env::set_var(secret_key, &opt.s3_secret_key),
-            "AWS_ACCESS_KEY_ID" => env::set_var(access_key, &opt.s3_access_key_id),
-            "AWS_DEFAULT_REGION" => env::set_var(region, &opt.s3_default_region),
-            "AWS_ENDPOINT_URL" => env::set_var(endpoint_url, &opt.s3_endpoint_url),
-            "AWS_BUCKET_NAME" => env::set_var(bucket_name, &opt.s3_bucket_name),
-            _ => println!(),
+        for entry in entries {
+            let path = entry.into_os_string().into_string().unwrap();
+            let init_sync = StorageSync {
+                path,
+                time: Utc::now(),
+            };
+
+            let dir = init_sync.get_dir_name();
+            if !init_sync.parquet_path_exists() {
+                continue;
+            }
+
+            let metadata = fs::metadata(&dir.parquet_path)?;
+            let time = match metadata.created() {
+                Ok(time) => time,
+                _ => continue,
+            };
+
+            if time.elapsed().unwrap() <= sync_duration {
+                continue;
+            }
+
+            if let Err(e) = dir.create_dir_name_tmp() {
+                log::error!(
+                    "Error copying parquet file {} due to error [{}]",
+                    dir.parquet_path,
+                    e
+                );
+                continue;
+            }
+            // TODO: retries to storage
+            let _put_parquet_file = self
+                .put_parquet(
+                    &format!("{}/data.parquet", dir.dir_name_local),
+                    &format!("{}/{}", dir.storage_dir_name, dir.parquet_file),
+                )
+                .await;
+            if let Err(e) = dir.copy_parquet_to_tmp() {
+                log::error!(
+                    "Error creating dir tmp in path {} due to error [{}]",
+                    dir.dir_name_local,
+                    e
+                );
+                continue;
+            }
+            if let Err(e) = dir.delete_parquet_file() {
+                log::error!(
+                    "Error deleting parquet file in path {} due to error [{}]",
+                    dir.parquet_path,
+                    e
+                );
+                continue;
+            }
         }
+
+        Ok(())
     }
-    let ep = env::var("AWS_ENDPOINT_URL").unwrap_or_else(|_| "none".to_string());
-    let uri = ep.parse::<Uri>().unwrap();
-    let endpoint = Endpoint::immutable(uri);
-    let region =
-        Region::new(env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| "us-east-1".to_string()));
-    let creds = Credentials::new(
-        env::var("AWS_ACCESS_KEY_ID").unwrap(),
-        env::var("AWS_SECRET_ACCESS_KEY").unwrap(),
-        None,
-        None,
-        "",
-    );
-    let config = aws_sdk_s3::Config::builder()
-        .region(region)
-        .endpoint_resolver(endpoint)
-        .credentials_provider(creds)
-        .build();
-
-    Client::from_conf(config)
-}
-
-pub fn setup_storage(opt: &option::Opt) -> S3 {
-    S3::new(opt)
-}
-
-#[tokio::main]
-pub async fn is_available() -> Result<(), Error> {
-    let opt = option::get_opts();
-    let client = setup_storage(&opt).client;
-    let _resp = client
-        .head_bucket()
-        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
-        .send()
-        .await?;
-    Ok(())
-}
-
-#[tokio::main]
-pub async fn put_schema(stream_name: String, body: String) -> Result<(), Error> {
-    let opt = option::get_opts();
-    let client = setup_storage(&opt).client;
-    let _resp = client
-        .put_object()
-        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
-        .key(format!("{}{}", stream_name, "/.schema"))
-        .body(body.into_bytes().into())
-        .send()
-        .await?;
-
-    Ok(())
-}
-
-#[tokio::main]
-pub async fn create_stream(stream_name: &str) -> Result<(), Error> {
-    let opt = option::get_opts();
-    let client = setup_storage(&opt).client;
-    let _resp = client
-        .put_object()
-        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
-        .key(format!("{}{}", stream_name, "/.schema"))
-        .send()
-        .await?;
-    // Prefix created on S3, now create the directory in
-    // the local storage as well
-    let _res = fs::create_dir_all(utils::local_stream_data_path(&opt, stream_name));
-    Ok(())
-}
-
-#[tokio::main]
-pub async fn delete_stream(stream_name: &str) -> Result<(), Error> {
-    let opt = option::get_opts();
-    let client = setup_storage(&opt).client;
-    let bucket = env::var("AWS_BUCKET_NAME").unwrap();
-
-    let mut pages = client
-        .list_objects_v2()
-        .bucket(bucket.clone())
-        .prefix(stream_name)
-        .into_paginator()
-        .send();
-
-    let mut delete_objects: Vec<ObjectIdentifier> = vec![];
-    while let Some(page) = pages.next().await {
-        for obj in page.unwrap().contents.unwrap() {
-            let obj_id = ObjectIdentifier::builder().set_key(obj.key).build();
-            delete_objects.push(obj_id);
-        }
-    }
-
-    let delete = Delete::builder().set_objects(Some(delete_objects)).build();
-
-    client
-        .delete_objects()
-        .bucket(bucket)
-        .delete(delete)
-        .send()
-        .await?;
-
-    Ok(())
-}
-
-#[tokio::main]
-pub async fn create_alert(stream_name: &str, body: String) -> Result<(), Error> {
-    let opt = option::get_opts();
-    let client = setup_storage(&opt).client;
-    let _resp = client
-        .put_object()
-        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
-        .key(format!("{}{}", stream_name, "/.alert.json"))
-        .body(body.into_bytes().into())
-        .send()
-        .await?;
-
-    Ok(())
-}
-
-#[tokio::main]
-pub async fn stream_exists(stream_name: &str) -> Result<Bytes, Error> {
-    let opt = option::get_opts();
-    let client = setup_storage(&opt).client;
-    let resp = client
-        .get_object()
-        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
-        .key(format!("{}{}", stream_name, "/.schema"))
-        .send()
-        .await?;
-    let body = resp.body.collect().await;
-    let body_bytes = body.unwrap().into_bytes();
-
-    Ok(body_bytes)
-}
-
-#[tokio::main]
-pub async fn alert_exists(stream_name: &str) -> Result<Bytes, Error> {
-    let opt = option::get_opts();
-    let client = setup_storage(&opt).client;
-    let resp = client
-        .get_object()
-        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
-        .key(format!("{}{}", stream_name, "/.alert.json"))
-        .send()
-        .await?;
-    let body = resp.body.collect().await;
-    let body_bytes = body.unwrap().into_bytes();
-    Ok(body_bytes)
-}
-
-#[tokio::main]
-pub async fn list_streams() -> Result<Vec<LogStream>, Error> {
-    let opt = option::get_opts();
-    let client = setup_storage(&opt).client;
-    let resp = client
-        .list_objects_v2()
-        .bucket(env::var("AWS_BUCKET_NAME").unwrap().to_string())
-        .send()
-        .await?;
-    let body = resp.contents().unwrap_or_default();
-    // make a set of unique prefixes at the root level
-    let mut hs = HashSet::<String>::new();
-    for logstream in body {
-        let name = logstream.key().unwrap_or_default().to_string();
-        let tokens = name.split('/').collect::<Vec<&str>>();
-        hs.insert(tokens[0].to_string());
-    }
-    // transform that hashset to a vector before returning
-    let mut streams = Vec::new();
-    for v in hs {
-        streams.push(LogStream { name: v });
-    }
-
-    Ok(streams)
 }
 
 #[derive(Serialize)]
 pub struct LogStream {
     pub name: String,
+}
+
+#[derive(Debug)]
+struct DirName {
+    storage_dir_name: String,
+    dir_name_tmp: String,
+    dir_name_local: String,
+    parquet_path: String,
+    parquet_file: String,
+}
+
+impl DirName {
+    fn copy_parquet_to_tmp(&self) -> io::Result<()> {
+        fs::copy(
+            format!("{}/data.parquet", self.dir_name_local),
+            format!("{}/{}", self.dir_name_tmp, self.parquet_file),
+        )?;
+
+        Ok(())
+    }
+
+    fn create_dir_name_tmp(&self) -> io::Result<()> {
+        fs::create_dir_all(&self.dir_name_tmp)
+    }
+
+    fn delete_parquet_file(&self) -> io::Result<()> {
+        fs::remove_file(format!("{}/data.parquet", self.dir_name_local))
+    }
+}
+
+struct StorageSync {
+    path: String,
+    time: chrono::DateTime<Utc>,
+}
+
+impl StorageSync {
+    fn parquet_path_exists(&self) -> bool {
+        let new_path = utils::rem_first_and_last(&self.path);
+        let new_parquet_path = format!("{}/data.parquet", new_path);
+
+        Path::new(&new_parquet_path).exists()
+    }
+
+    fn get_dir_name(&self) -> DirName {
+        let new_path = utils::rem_first_and_last(&self.path);
+        let local_path = format!("{}/", CONFIG.local_disk_path);
+        let _storage_path = format!("{}/", CONFIG.s3_bucket_name);
+        let stream_names = new_path.replace(&local_path, "");
+        let new_parquet_path = format!("{}/data.parquet", new_path);
+
+        let dir_name_tmp = format!(
+            "{}{}/tmp/date={}/hour={:02}/minute={}",
+            local_path,
+            stream_names,
+            chrono::offset::Utc::now().date(),
+            self.time.hour(),
+            time_slot(),
+        );
+
+        let storage_dir_name = format!(
+            "{}/date={}/hour={:02}/minute={}",
+            stream_names,
+            chrono::offset::Utc::now().date(),
+            self.time.hour(),
+            time_slot()
+        );
+
+        let parquet = format!("{}.parquet", utils::random_string());
+        let dir_name_local = local_path + &stream_names;
+
+        DirName {
+            storage_dir_name,
+            dir_name_tmp,
+            dir_name_local,
+            parquet_path: new_parquet_path,
+            parquet_file: parquet,
+        }
+    }
+}
+
+pub fn time_slot() -> &'static str {
+    match chrono::offset::Utc::now().minute() {
+        0..=9 => "00-09",
+        10..=19 => "10-19",
+        20..=29 => "20-29",
+        30..=39 => "30-39",
+        40..=49 => "40-49",
+        50..=59 => "49-59",
+        _ => "",
+    }
 }

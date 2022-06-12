@@ -21,28 +21,28 @@ use crossterm::style::Stylize;
 use sysinfo::{System, SystemExt};
 
 use crate::option;
+use crate::option::CONFIG;
 use crate::utils;
 
 pub fn print() {
-    let opt = option::get_opts();
     let scheme = utils::get_scheme();
-    status_info(&scheme, &opt);
-    warning(&opt);
-    storage_info(&opt);
+    status_info(&scheme);
+    warning();
+    storage_info();
     system_info();
     println!();
 }
 
-fn status_info(scheme: &str, opt: &option::Opt) {
-    let url = format!("{}://{}", scheme, opt.address).underlined();
+fn status_info(scheme: &str) {
+    let url = format!("{}://{}", scheme, CONFIG.address).underlined();
     eprintln!(
         "
     {}
     {}
     {}",
         format!("Parseable server started at: {}", url).bold(),
-        format!("Username: {}", opt.username).bold(),
-        format!("Password: {}", opt.password).bold(),
+        format!("Username: {}", CONFIG.username).bold(),
+        format!("Password: {}", CONFIG.password).bold(),
     )
 }
 
@@ -62,33 +62,35 @@ fn system_info() {
     )
 }
 
-fn storage_info(opt: &option::Opt) {
+fn storage_info() {
     eprintln!(
         "
     {}
         Local Data Path: {}
         Object Storage: {}/{}",
         "Storage:".to_string().blue().bold(),
-        opt.local_disk_path,
-        opt.s3_endpoint_url,
-        opt.s3_bucket_name
+        CONFIG.local_disk_path,
+        CONFIG.s3_endpoint_url,
+        CONFIG.s3_bucket_name
     )
 }
 
-fn warning(opt: &option::Opt) {
-    if opt.s3_endpoint_url == option::DEFAULT_S3_URL
-        && opt.username == option::DEFAULT_USERNAME
-        && opt.password == option::DEFAULT_PASSWORD
+fn warning() {
+    if CONFIG.s3_endpoint_url == option::DEFAULT_S3_URL
+        && CONFIG.username == option::DEFAULT_USERNAME
+        && CONFIG.password == option::DEFAULT_PASSWORD
     {
         warning_line();
-        cred_warning(opt);
-        s3_warning(opt);
-    } else if opt.s3_endpoint_url == option::DEFAULT_S3_URL {
+        cred_warning();
+        s3_warning();
+    } else if CONFIG.s3_endpoint_url == option::DEFAULT_S3_URL {
         warning_line();
-        s3_warning(opt);
-    } else if opt.username == option::DEFAULT_USERNAME && opt.password == option::DEFAULT_PASSWORD {
+        s3_warning();
+    } else if CONFIG.username == option::DEFAULT_USERNAME
+        && CONFIG.password == option::DEFAULT_PASSWORD
+    {
         warning_line();
-        cred_warning(opt);
+        cred_warning();
     }
 }
 
@@ -100,8 +102,8 @@ fn warning_line() {
     );
 }
 
-fn cred_warning(opt: &option::Opt) {
-    if opt.username == option::DEFAULT_USERNAME && opt.password == option::DEFAULT_PASSWORD {
+fn cred_warning() {
+    if CONFIG.username == option::DEFAULT_USERNAME && CONFIG.password == option::DEFAULT_PASSWORD {
         eprintln!(
             "
         {}
@@ -119,8 +121,8 @@ fn cred_warning(opt: &option::Opt) {
     }
 }
 
-fn s3_warning(opt: &option::Opt) {
-    if opt.s3_endpoint_url == option::DEFAULT_S3_URL {
+fn s3_warning() {
+    if CONFIG.s3_endpoint_url == option::DEFAULT_S3_URL {
         eprintln!(
             "
         {}

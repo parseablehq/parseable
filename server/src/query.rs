@@ -56,7 +56,6 @@ impl Query {
         Ok(tokens[stream_name_index].to_string())
     }
 
-    #[tokio::main]
     pub async fn execute(&self, logstream: &str) -> Result<Vec<RecordBatch>, Error> {
         let mut ctx = ExecutionContext::new();
         let file_format = ParquetFormat::default().with_enable_pruning(true);

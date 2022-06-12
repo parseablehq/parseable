@@ -17,7 +17,13 @@
  */
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use structopt::StructOpt;
+
+lazy_static::lazy_static! {
+    #[derive(Debug)]
+    pub static ref CONFIG: Arc<Opt> = Arc::new(Opt::from_args());
+}
 
 pub const DEFAULT_S3_URL: &str = "http://127.0.0.1:9000";
 pub const S3_URL_ENV_VAR: &str = "P_S3_URL";
@@ -82,8 +88,4 @@ pub struct Opt {
     /// Optional password to enable basic auth on the server
     #[structopt(long, env = PASSOWRD_ENV, default_value = DEFAULT_PASSWORD)]
     pub password: String,
-}
-
-pub fn get_opts() -> Opt {
-    Opt::from_args()
 }

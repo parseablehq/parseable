@@ -35,12 +35,15 @@ mod metadata;
 mod option;
 mod query;
 mod response;
+mod s3;
 mod storage;
-mod sync_s3;
 mod utils;
 mod validator;
 
 use error::Error;
+use option::CONFIG;
+use s3::S3;
+use storage::ObjectStorage;
 
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 102400;
@@ -51,24 +54,30 @@ const API_VERSION: &str = "/v1";
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
     banner::print();
-    if let Err(e) = metadata::STREAM_INFO.load() {
+    let storage = S3::new();
+    if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
         println!("{}", e);
     }
-    let opt = option::get_opts();
-    wrap(opt.clone()).await?;
-    run_http(opt).await?;
+    wrap()?;
+    run_http().await?;
 
     Ok(())
 }
 
-async fn wrap(opt: option::Opt) -> anyhow::Result<()> {
+fn wrap() -> anyhow::Result<()> {
     thread::spawn(move || {
-        let ticker = ticker::Ticker::new(0.., Duration::from_secs(1));
-        for _ in ticker {
-            if let Err(e) = sync_s3::syncer(opt.clone()) {
-                println!("{}", e)
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let storage = S3::new();
+            let ticker = ticker::Ticker::new(0.., Duration::from_secs(1));
+            for _ in ticker {
+                if let Err(e) = storage.sync().await {
+                    println!("{}", e)
+                }
             }
-        }
+        });
     });
 
     Ok(())
@@ -78,9 +87,8 @@ async fn validator(
     req: ServiceRequest,
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, actix_web::Error> {
-    let opt = option::get_opts();
-    if credentials.user_id().trim() == opt.username
-        && credentials.password().unwrap().trim() == opt.password
+    if credentials.user_id().trim() == CONFIG.username
+        && credentials.password().unwrap().trim() == CONFIG.password
     {
         return Ok(req);
     }
@@ -88,9 +96,8 @@ async fn validator(
     Err(actix_web::error::ErrorUnauthorized("Unauthorized"))
 }
 
-async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
-    let opt_clone = opt.clone();
-    let ssl_acceptor = match (opt_clone.tls_cert_path, opt_clone.tls_key_path) {
+async fn run_http() -> anyhow::Result<()> {
+    let ssl_acceptor = match (&CONFIG.tls_cert_path, &CONFIG.tls_key_path) {
         (Some(cert), Some(key)) => {
             let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
             builder.set_private_key_file(key, SslFiletype::PEM)?;
@@ -104,11 +111,11 @@ async fn run_http(opt: option::Opt) -> anyhow::Result<()> {
         HttpServer::new(move || create_app!().wrap(HttpAuthentication::basic(validator)));
     if let Some(builder) = ssl_acceptor {
         http_server
-            .bind_openssl(opt_clone.address, builder)?
+            .bind_openssl(&CONFIG.address, builder)?
             .run()
             .await?;
     } else {
-        http_server.bind(opt_clone.address)?.run().await?;
+        http_server.bind(&CONFIG.address)?.run().await?;
     }
 
     Ok(())
