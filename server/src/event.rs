@@ -79,11 +79,11 @@ impl Event {
         c.seek(SeekFrom::Start(0))?;
         let buf_reader = BufReader::new(reader);
 
+        let options = json::reader::DecoderOptions::new().with_batch_size(1024);
         let mut event = json::Reader::new(
             buf_reader,
             Arc::new(self.infer_schema().arrow_schema),
-            1024,
-            None,
+            options,
         );
         let b1 = event.next()?.ok_or(Error::MissingRecord)?;
 
@@ -130,11 +130,11 @@ impl Event {
         c.write_all(reader).unwrap();
         c.seek(SeekFrom::Start(0)).unwrap();
 
+        let options = json::reader::DecoderOptions::new().with_batch_size(1024);
         let mut event = json::Reader::new(
             self.body.as_bytes(),
             Arc::new(self.infer_schema().arrow_schema),
-            1024,
-            None,
+            options,
         );
         let next_event_rb = event.next().unwrap().unwrap();
 

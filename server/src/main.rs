@@ -58,29 +58,20 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
         println!("{}", e);
     }
-    wrap()?;
+    thread::spawn(move || wrap(storage));
     run_http().await?;
 
     Ok(())
 }
 
-fn wrap() -> anyhow::Result<()> {
-    thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        rt.block_on(async move {
-            let storage = S3::new();
-            let ticker = ticker::Ticker::new(0.., Duration::from_secs(1));
-            for _ in ticker {
-                if let Err(e) = storage.sync().await {
-                    println!("{}", e)
-                }
-            }
-        });
-    });
-
-    Ok(())
+#[actix_web::main]
+async fn wrap(storage: impl ObjectStorage) {
+    let ticker = ticker::Ticker::new(0.., Duration::from_secs(1));
+    for _ in ticker {
+        if let Err(e) = storage.sync().await {
+            println!("{}", e)
+        }
+    }
 }
 
 async fn validator(

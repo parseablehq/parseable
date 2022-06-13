@@ -8,50 +8,47 @@ authors = [
 edition = "2021"
 categories = ["olap", "analytics-store"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-arrow = "6.0.0"
-parquet = "6.0.0"
-lazy_static = "1.4.0"
-config-rs = { version = "0.11.0", package = "config" }
-toml = "0.5.8"
-serde_derive = "^1.0.8"
-serde = "^1.0.8"
-serde_json = "^1.0.8"
-http = "0.2.4"
+actix-web-httpauth = "0.6"
+actix-web = { version = "4.1", features = ["openssl"] }
+actix-cors = "0.6"
+anyhow = { version = "1.0.43", features = ["backtrace"] }
+arrow = "15.0"
+async-trait = "0.1"
 aws-sdk-s3 = "0.12.0"
 aws-config = "0.6.0"
-async-trait = "0.1"
-tokio = { version = "1", features = ["full"] }
-futures = "0.3"
+aws-smithy-http = "0.42.0"
 bytes = "1"
-structopt = { version = "0.3.25" }
-sysinfo = "0.20.5"
-num_cpus = "1.0.0"
-os_info = "3.0.7"
-log = "0.4.14"
-log4rs = "1.0"
-colour = "0.6.0"
-env_logger = "0.9.0"
-anyhow = { version = "1.0.43", features = ["backtrace"] }
-config = "0.10.1"
-rust-flatten-json = "0.2.0"
-pipe = "0.4.0"
-derive_more = "0.99.17"
-datafusion = "6.0.0"
 chrono = "0.4.19"
-ticker="0.1.1"
-walkdir = "2.3.2"
+colour = "0.6.0"
+config = "0.10.1"
+config-rs = { version = "0.11.0", package = "config" }
+crossterm = "0.23.2"
+datafusion = "8.0"
+derive_more = "0.99.17"
+env_logger = "0.9.0"
 fslock = "0.2.1"
 fs_extra = "1.2.0"
-actix-web-httpauth = "0.5.1"
-actix-web = { version = "3.3.3", features = ["openssl"] }
-openssl = { version = "0.10" }
-actix-cors = "0.5.0"
-crossterm = "0.23.2"
-aws-smithy-http = "0.42.0"
-tokio-stream = "0.1.8"
-thiserror = "1"
+futures = "0.3"
+http = "0.2.4"
+lazy_static = "1.4.0"
 libmath = "0.2.1"
+log = "0.4.14"
+log4rs = "1.0"
+num_cpus = "1.0.0"
+openssl = { version = "0.10" }
+os_info = "3.0.7"
+parquet = "15.0"
+pipe = "0.4.0"
 rand = "0.8.4"
+rust-flatten-json = "0.2.0"
+serde = "^1.0.8"
+serde_derive = "^1.0.8"
+serde_json = "^1.0.8"
+structopt = { version = "0.3.25" }
+sysinfo = "0.20.5"
+thiserror = "1"
+tokio-stream = "0.1.8"
+toml = "0.5.8"
+ticker="0.1.1"
+walkdir = "2.3.2"

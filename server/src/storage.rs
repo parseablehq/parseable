@@ -35,7 +35,7 @@ use std::time::Duration;
 pub trait ObjectStorageError: Display + Debug {}
 
 #[async_trait]
-pub trait ObjectStorage {
+pub trait ObjectStorage: Sync + 'static {
     fn new() -> Self;
     async fn is_available(&self) -> bool;
     async fn put_schema(&self, stream_name: String, body: String) -> Result<(), Error>;

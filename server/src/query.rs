@@ -16,7 +16,7 @@
  *
  */
 
-use arrow::record_batch::RecordBatch;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::ListingOptions;
 use datafusion::prelude::*;
@@ -57,7 +57,7 @@ impl Query {
     }
 
     pub async fn execute(&self, logstream: &str) -> Result<Vec<RecordBatch>, Error> {
-        let mut ctx = ExecutionContext::new();
+        let ctx = SessionContext::new();
         let file_format = ParquetFormat::default().with_enable_pruning(true);
 
         let listing_options = ListingOptions {

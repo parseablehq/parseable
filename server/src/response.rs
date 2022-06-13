@@ -16,11 +16,10 @@
  *
  */
 
-use actix_web::dev::HttpResponseBuilder;
 use actix_web::http::StatusCode;
-use actix_web::{error, web, HttpResponse, Responder};
-use arrow::json;
-use arrow::record_batch::RecordBatch;
+use actix_web::{error, web, HttpResponse, HttpResponseBuilder, Responder};
+use datafusion::arrow::json;
+use datafusion::arrow::record_batch::RecordBatch;
 use derive_more::{Display, Error};
 
 use crate::storage;
