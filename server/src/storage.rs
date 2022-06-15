@@ -86,21 +86,23 @@ pub trait ObjectStorage: Sync + 'static {
                 );
                 continue;
             }
-            // TODO: retries to storage
-            let _put_parquet_file = self
-                .put_parquet(
-                    &format!("{}/data.parquet", dir.dir_name_local),
-                    &format!("{}/{}", dir.storage_dir_name, dir.parquet_file),
-                )
-                .await;
+
             if let Err(e) = dir.copy_parquet_to_tmp() {
                 log::error!(
-                    "Error creating dir tmp in path {} due to error [{}]",
+                    "Error copying parquet from stream dir to tmp in path {} due to error [{}]",
                     dir.dir_name_local,
                     e
                 );
                 continue;
             }
+            // TODO: retries to storage
+            let _put_parquet_file = self
+                .put_parquet(
+                    &format!("{}/{}", dir.storage_dir_name, dir.parquet_file),
+                    &format!("{}/{}", dir.dir_name_tmp, dir.parquet_file),
+                )
+                .await;
+
             if let Err(e) = dir.delete_parquet_file() {
                 log::error!(
                     "Error deleting parquet file in path {} due to error [{}]",
@@ -132,7 +134,7 @@ struct DirName {
 impl DirName {
     fn copy_parquet_to_tmp(&self) -> io::Result<()> {
         fs::copy(
-            format!("{}/data.parquet", self.dir_name_local),
+            &self.parquet_path,
             format!("{}/{}", self.dir_name_tmp, self.parquet_file),
         )?;
 
@@ -155,18 +157,16 @@ struct StorageSync {
 
 impl StorageSync {
     fn parquet_path_exists(&self) -> bool {
-        let new_path = utils::rem_first_and_last(&self.path);
-        let new_parquet_path = format!("{}/data.parquet", new_path);
+        let new_parquet_path = format!("{}/data.parquet", &self.path);
 
         Path::new(&new_parquet_path).exists()
     }
 
     fn get_dir_name(&self) -> DirName {
-        let new_path = utils::rem_first_and_last(&self.path);
         let local_path = format!("{}/", CONFIG.local_disk_path);
         let _storage_path = format!("{}/", CONFIG.s3_bucket_name);
-        let stream_names = new_path.replace(&local_path, "");
-        let new_parquet_path = format!("{}/data.parquet", new_path);
+        let stream_names = self.path.replace(&local_path, "");
+        let new_parquet_path = format!("{}/data.parquet", self.path);
 
         let dir_name_tmp = format!(
             "{}{}/tmp/date={}/hour={:02}/minute={}",
