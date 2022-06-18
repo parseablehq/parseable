@@ -21,7 +21,6 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::option::CONFIG;
 use crate::Error;
 
 pub fn flatten_json_body(
@@ -52,22 +51,6 @@ fn merge(v: &Value, fields: &HashMap<String, String>) -> Value {
         }
         v => v.clone(),
     }
-}
-
-pub fn get_cache_path(stream_name: &str) -> String {
-    format!("{}/{}", CONFIG.local_disk_path, stream_name)
-}
-
-pub fn local_stream_data_path(stream_name: &str) -> String {
-    format!("{}/{}", CONFIG.local_disk_path, stream_name)
-}
-
-pub fn get_scheme() -> String {
-    if CONFIG.tls_cert_path.is_some() && CONFIG.tls_key_path.is_some() {
-        return "https".to_string();
-    }
-
-    "http".to_string()
 }
 
 pub fn random_string() -> String {

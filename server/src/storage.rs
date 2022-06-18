@@ -47,14 +47,14 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_streams(&self) -> Result<Vec<LogStream>, Error>;
     async fn put_parquet(&self, key: &str, path: &str) -> Result<(), Error>;
     async fn sync(&self) -> Result<(), Error> {
-        if !Path::new(&CONFIG.local_disk_path).exists() {
+        if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
             return Ok(());
         }
 
-        let entries = fs::read_dir(&CONFIG.local_disk_path)?
+        let entries = fs::read_dir(&CONFIG.parseable.local_disk_path)?
             .map(|res| res.map(|e| e.path()))
             .collect::<Result<Vec<_>, io::Error>>()?;
-        let sync_duration = Duration::from_secs(CONFIG.sync_duration);
+        let sync_duration = Duration::from_secs(CONFIG.parseable.sync_duration);
 
         for entry in entries {
             let path = entry.into_os_string().into_string().unwrap();
@@ -163,8 +163,8 @@ impl StorageSync {
     }
 
     fn get_dir_name(&self) -> DirName {
-        let local_path = format!("{}/", CONFIG.local_disk_path);
-        let _storage_path = format!("{}/", CONFIG.s3_bucket_name);
+        let local_path = format!("{}/", CONFIG.parseable.local_disk_path);
+        let _storage_path = format!("{}/", CONFIG.storage.bucket_name());
         let stream_names = self.path.replace(&local_path, "");
         let new_parquet_path = format!("{}/data.parquet", self.path);
 

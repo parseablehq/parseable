@@ -29,9 +29,9 @@ use std::io::{BufReader, Cursor, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use crate::metadata;
+use crate::option::CONFIG;
 use crate::response;
 use crate::storage::ObjectStorage;
-use crate::utils;
 use crate::Error;
 
 pub struct Event {
@@ -49,7 +49,7 @@ impl Event {
     fn data_file_path(&self) -> String {
         format!(
             "{}/{}",
-            utils::local_stream_data_path(self.stream_name.as_str()),
+            CONFIG.parseable.local_stream_data_path(&self.stream_name),
             "data.parquet"
         )
     }

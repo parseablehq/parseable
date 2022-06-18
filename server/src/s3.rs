@@ -1,20 +1,85 @@
 use async_trait::async_trait;
 use aws_sdk_s3::model::{Delete, ObjectIdentifier};
 use aws_sdk_s3::types::ByteStream;
+use aws_sdk_s3::Error as AwsSdkError;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use bytes::Bytes;
+use crossterm::style::Stylize;
 use http::Uri;
 use std::collections::HashSet;
 use std::fs;
 use std::iter::Iterator;
+use std::sync::Arc;
+use structopt::StructOpt;
 use tokio_stream::StreamExt;
 
 use crate::error::Error;
-use crate::option::CONFIG;
+use crate::option::{StorageOpt, CONFIG};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
-use crate::utils;
 
-use aws_sdk_s3::Error as AwsSdkError;
+pub const DEFAULT_S3_URL: &str = "http://127.0.0.1:9000";
+pub const S3_URL_ENV_VAR: &str = "P_S3_URL";
+
+lazy_static::lazy_static! {
+    #[derive(Debug)]
+    pub static ref S3_CONFIG: Arc<S3Config> = Arc::new(S3Config::from_args());
+}
+
+#[derive(Debug, Clone, StructOpt)]
+#[structopt(name = "S3 config", about = "configuration for AWS S3 SDK")]
+pub struct S3Config {
+    /// The endpoint to AWS S3 or compatible object storage platform
+    #[structopt(long, env = S3_URL_ENV_VAR, default_value = DEFAULT_S3_URL )]
+    pub s3_endpoint_url: String,
+
+    /// The access key for AWS S3 or compatible object storage platform
+    #[structopt(long, env = "P_S3_ACCESS_KEY", default_value = "minioadmin")]
+    pub s3_access_key_id: String,
+
+    /// The secret key for AWS S3 or compatible object storage platform
+    #[structopt(long, env = "P_S3_SECRET_KEY", default_value = "minioadmin")]
+    pub s3_secret_key: String,
+
+    /// The region for AWS S3 or compatible object storage platform
+    #[structopt(long, env = "P_S3_REGION", default_value = "us-east-1")]
+    pub s3_default_region: String,
+
+    /// The AWS S3 or compatible object storage bucket to be used for storage
+    #[structopt(long, env = "P_S3_BUCKET", default_value = "logstorage")]
+    pub s3_bucket_name: String,
+}
+
+impl StorageOpt for S3Config {
+    fn bucket_name(&self) -> &str {
+        &self.s3_bucket_name
+    }
+
+    fn endpoint_url(&self) -> &str {
+        &self.s3_endpoint_url
+    }
+
+    fn is_default_url(&self) -> bool {
+        self.s3_endpoint_url == DEFAULT_S3_URL
+    }
+
+    fn warning(&self) {
+        if self.is_default_url() {
+            eprintln!(
+                "
+        {}
+        {}",
+                "Parseable server is using default object storage backend with public access."
+                    .to_string()
+                    .red(),
+                format!(
+                    "Setup your object storage backend with {} before storing production logs.",
+                    S3_URL_ENV_VAR
+                )
+                .red()
+            )
+        }
+    }
+}
 
 impl ObjectStorageError for AwsSdkError {}
 
@@ -33,7 +98,7 @@ impl S3 {
         let _resp = self
             .client
             .put_object()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .key(format!("{}/.schema", stream_name))
             .body(body.into_bytes().into())
             .send()
@@ -46,13 +111,13 @@ impl S3 {
         let _resp = self
             .client
             .put_object()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .key(format!("{}/.schema", stream_name))
             .send()
             .await?;
         // Prefix created on S3, now create the directory in
         // the local storage as well
-        let _res = fs::create_dir_all(utils::local_stream_data_path(stream_name));
+        let _res = fs::create_dir_all(CONFIG.parseable.local_stream_data_path(stream_name));
         Ok(())
     }
 
@@ -60,7 +125,7 @@ impl S3 {
         let mut pages = self
             .client
             .list_objects_v2()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .prefix(stream_name)
             .into_paginator()
             .send();
@@ -78,7 +143,7 @@ impl S3 {
 
         self.client
             .delete_objects()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .delete(delete)
             .send()
             .await?;
@@ -90,7 +155,7 @@ impl S3 {
         let _resp = self
             .client
             .put_object()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .key(format!("{}/.alert.json", stream_name))
             .body(body.into_bytes().into())
             .send()
@@ -103,7 +168,7 @@ impl S3 {
         let resp = self
             .client
             .get_object()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .key(format!("{}/.schema", stream_name))
             .send()
             .await?;
@@ -117,7 +182,7 @@ impl S3 {
         let resp = self
             .client
             .get_object()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .key(format!("{}/.alert.json", stream_name))
             .send()
             .await?;
@@ -130,7 +195,7 @@ impl S3 {
         let resp = self
             .client
             .list_objects_v2()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .send()
             .await?;
         let body = resp.contents().unwrap_or_default();
@@ -155,7 +220,7 @@ impl S3 {
         let resp = self
             .client
             .put_object()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .key(key)
             .body(body)
             .send()
@@ -169,12 +234,12 @@ impl S3 {
 #[async_trait]
 impl ObjectStorage for S3 {
     fn new() -> Self {
-        let uri = CONFIG.s3_endpoint_url.parse::<Uri>().unwrap();
+        let uri = S3_CONFIG.s3_endpoint_url.parse::<Uri>().unwrap();
         let endpoint = Endpoint::immutable(uri);
-        let region = Region::new(&CONFIG.s3_default_region);
+        let region = Region::new(&S3_CONFIG.s3_default_region);
         let creds = Credentials::new(
-            &CONFIG.s3_access_key_id,
-            &CONFIG.s3_secret_key,
+            &S3_CONFIG.s3_access_key_id,
+            &S3_CONFIG.s3_secret_key,
             None,
             None,
             "",
@@ -193,7 +258,7 @@ impl ObjectStorage for S3 {
     async fn is_available(&self) -> bool {
         self.client
             .head_bucket()
-            .bucket(&CONFIG.s3_bucket_name)
+            .bucket(&S3_CONFIG.s3_bucket_name)
             .send()
             .await
             .is_ok()

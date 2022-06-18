@@ -23,7 +23,7 @@ use datafusion::prelude::*;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::utils;
+use crate::option::CONFIG;
 use crate::Error;
 
 // Query holds all values relevant to a query for a single log stream
@@ -70,7 +70,7 @@ impl Query {
 
         ctx.register_listing_table(
             logstream,
-            utils::get_cache_path(logstream).as_str(),
+            CONFIG.parseable.get_cache_path(logstream).as_str(),
             listing_options,
             None,
         )
