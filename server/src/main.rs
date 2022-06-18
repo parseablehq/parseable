@@ -53,7 +53,7 @@ const API_VERSION: &str = "/v1";
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    banner::print();
+    CONFIG.print();
     let storage = S3::new();
     if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
         println!("{}", e);
@@ -78,8 +78,8 @@ async fn validator(
     req: ServiceRequest,
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, actix_web::Error> {
-    if credentials.user_id().trim() == CONFIG.username
-        && credentials.password().unwrap().trim() == CONFIG.password
+    if credentials.user_id().trim() == CONFIG.parseable.username
+        && credentials.password().unwrap().trim() == CONFIG.parseable.password
     {
         return Ok(req);
     }
@@ -88,7 +88,10 @@ async fn validator(
 }
 
 async fn run_http() -> anyhow::Result<()> {
-    let ssl_acceptor = match (&CONFIG.tls_cert_path, &CONFIG.tls_key_path) {
+    let ssl_acceptor = match (
+        &CONFIG.parseable.tls_cert_path,
+        &CONFIG.parseable.tls_key_path,
+    ) {
         (Some(cert), Some(key)) => {
             let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
             builder.set_private_key_file(key, SslFiletype::PEM)?;
@@ -102,11 +105,11 @@ async fn run_http() -> anyhow::Result<()> {
         HttpServer::new(move || create_app!().wrap(HttpAuthentication::basic(validator)));
     if let Some(builder) = ssl_acceptor {
         http_server
-            .bind_openssl(&CONFIG.address, builder)?
+            .bind_openssl(&CONFIG.parseable.address, builder)?
             .run()
             .await?;
     } else {
-        http_server.bind(&CONFIG.address)?.run().await?;
+        http_server.bind(&CONFIG.parseable.address)?.run().await?;
     }
 
     Ok(())
