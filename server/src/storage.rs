@@ -86,7 +86,7 @@ pub trait ObjectStorage: Sync + 'static {
                 continue;
             }
 
-            if let Err(e) = dir.copy_parquet_to_tmp() {
+            if let Err(e) = dir.move_parquet_to_tmp() {
                 log::error!(
                     "Error copying parquet from stream dir to tmp in path {} due to error [{}]",
                     dir.dir_name_local,
@@ -131,13 +131,11 @@ struct DirName {
 }
 
 impl DirName {
-    fn copy_parquet_to_tmp(&self) -> io::Result<()> {
-        fs::copy(
+    fn move_parquet_to_tmp(&self) -> io::Result<()> {
+        fs::rename(
             &self.parquet_path,
             format!("{}/{}", self.dir_name_tmp, self.parquet_file),
-        )?;
-
-        Ok(())
+        )
     }
 
     fn create_dir_name_tmp(&self) -> io::Result<()> {
@@ -145,7 +143,7 @@ impl DirName {
     }
 
     fn delete_parquet_file(&self) -> io::Result<()> {
-        fs::remove_file(format!("{}/data.parquet", self.dir_name_local))
+        fs::remove_file(format!("{}/{}", self.dir_name_tmp, self.parquet_file))
     }
 }
 
