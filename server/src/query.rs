@@ -16,48 +16,99 @@
  *
  */
 
+use chrono::{DateTime, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::ListingOptions;
 use datafusion::prelude::*;
-use serde::Deserialize;
+use serde_json::Value;
 use std::sync::Arc;
 
 use crate::option::CONFIG;
+use crate::storage::ObjectStorage;
+use crate::utils::TimePeriod;
 use crate::Error;
 
+fn get_value<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, Error> {
+    value
+        .get(key)
+        .ok_or(Error::JsonQuery(key))?
+        .as_str()
+        .ok_or(Error::JsonQuery(key))
+}
+
 // Query holds all values relevant to a query for a single log stream
-#[derive(Deserialize)]
 pub struct Query {
     pub query: String,
+    pub stream_name: String,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
 }
 
 impl Query {
     // parse_query parses the SQL query and returns the log stream name on which
     // this query is supposed to be executed
-    pub fn parse(&self) -> Result<String, Error> {
-        // convert query to lowercase, and then tokenize
-        let query = self.query.to_lowercase();
+    pub fn parse(json: Value) -> Result<Query, Error> {
+        // retrieve query, start and end time information from payload.
+        // Convert query to lowercase.
+        let query = get_value(&json, "query")?.to_lowercase();
+        let start_time = get_value(&json, "startTime")?;
+        let end_time = get_value(&json, "endTime")?;
+
         let tokens = query.split(' ').collect::<Vec<&str>>();
         // validate query
         if tokens.is_empty() {
             return Err(Error::Empty);
         } else if tokens.contains(&"join") {
-            return Err(Error::Join(self.query.to_owned()));
+            return Err(Error::Join(query));
         }
         // log stream name is located after the `from` keyword
         let stream_name_index = tokens.iter().position(|&x| x == "from").unwrap() + 1;
         // we currently don't support queries like "select name, address from stream1 and stream2"
         // so if there is an `and` after the first log stream name, we return an error.
         if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
-            return Err(Error::MultipleStreams(self.query.to_owned()));
+            return Err(Error::MultipleStreams(query));
         }
+        let stream_name = tokens[stream_name_index].to_string();
 
-        Ok(tokens[stream_name_index].to_string())
+        // Parse time into DateTime
+        let start = DateTime::parse_from_rfc3339(start_time)?.into();
+        let end = DateTime::parse_from_rfc3339(end_time)?.into();
+
+        Ok(Query {
+            stream_name,
+            start,
+            end,
+            query,
+        })
     }
 
-    pub async fn execute(&self, logstream: &str) -> Result<Vec<RecordBatch>, Error> {
+    /// Return prefixes, each per day/hour/minutes as necessary
+    pub fn get_prefixes(&self, prefix: &str) -> Vec<String> {
+        let prefix = prefix.to_owned() + &self.stream_name;
+        TimePeriod::new(self.start, self.end, CONFIG.parseable.block_duration)
+            .generate_prefixes(&prefix)
+    }
+
+    /// Execute query on object storage(and if necessary on cache as well) with given stream information
+    pub async fn execute(&self, storage: &impl ObjectStorage) -> Result<Vec<RecordBatch>, Error> {
         let ctx = SessionContext::new();
+        storage.query(&ctx, self).await?;
+
+        // query cache only if end_time coulld have been after last sync.
+        let duration_since = Utc::now() - self.end;
+        if duration_since.num_seconds() < CONFIG.parseable.sync_duration as i64 {
+            self.execute_on_cache(&ctx).await?;
+        }
+
+        // execute the query and collect results
+        let df = ctx.sql(self.query.as_str()).await?;
+        let results = df.collect().await.map_err(Error::DataFusion)?;
+
+        Ok(results)
+    }
+
+    async fn execute_on_cache(&self, ctx: &SessionContext) -> Result<(), Error> {
         let file_format = ParquetFormat::default().with_enable_pruning(true);
 
         let listing_options = ListingOptions {
@@ -69,22 +120,42 @@ impl Query {
         };
 
         ctx.register_listing_table(
-            logstream,
-            CONFIG.parseable.get_cache_path(logstream).as_str(),
+            &self.stream_name,
+            CONFIG.parseable.get_cache_path(&self.stream_name).as_str(),
             listing_options,
             None,
         )
-        .await
-        .map_err(Error::DataFusion)?;
+        .await?;
 
-        // execute the query
-        let df = ctx
-            .sql(self.query.as_str())
-            .await
-            .map_err(Error::DataFusion)?;
+        Ok(())
+    }
+}
 
-        let results = df.collect().await.map_err(Error::DataFusion)?;
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
 
-        Ok(results)
+    use serde_json::Value;
+
+    use super::Query;
+
+    #[test]
+    fn query_parse_prefix() {
+        let query = Value::from_str(
+            r#"{
+    "query": "SELECT * FROM stream_name",
+    "startTime": "2022-10-15T10:00:00+00:00",
+    "endTime": "2022-10-15T10:01:00+00:00"
+}"#,
+        )
+        .unwrap();
+
+        let query = Query::parse(query).unwrap();
+
+        assert_eq!(&query.stream_name, "stream_name");
+        assert_eq!(
+            query.get_prefixes(""),
+            vec!["stream_name/date=2022-10-15/hour=10/minute=00-09/".to_string()]
+        );
     }
 }

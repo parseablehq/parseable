@@ -18,11 +18,12 @@
 
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use serde_json::Value;
 use sysinfo::{System, SystemExt};
 
 use crate::event;
 use crate::metadata;
-use crate::query;
+use crate::query::Query;
 use crate::response;
 use crate::s3::S3;
 use crate::storage::ObjectStorage;
@@ -52,9 +53,17 @@ pub async fn readiness() -> HttpResponse {
 //
 // **** Query related handlers ****
 //
-pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> HttpResponse {
-    let stream_name = match query.parse() {
-        Ok(stream_name) => stream_name,
+pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> HttpResponse {
+    let json = json.into_inner();
+    let query = match Query::parse(json) {
+        Ok(s) => s,
+        Err(crate::Error::JsonQuery(e)) => {
+            return response::ServerResponse {
+                msg: format!("Bad Request: missing \"{}\" field in query payload", e),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http()
+        }
         Err(e) => {
             return response::ServerResponse {
                 msg: format!("Failed to execute query due to err: {}", e),
@@ -64,15 +73,17 @@ pub async fn cache_query(_req: HttpRequest, query: web::Json<query::Query>) -> H
         }
     };
 
-    if S3::new().stream_exists(&stream_name).await.is_err() {
+    let storage = S3::new();
+
+    if storage.get_schema(&query.stream_name).await.is_err() {
         return response::ServerResponse {
-            msg: format!("log stream {} does not exist", stream_name),
+            msg: format!("log stream {} does not exist", query.stream_name),
             code: StatusCode::BAD_REQUEST,
         }
         .to_http();
     }
 
-    match query.execute(&stream_name).await {
+    match query.execute(&storage).await {
         Ok(results) => response::QueryResponse {
             body: results,
             code: StatusCode::OK,
@@ -102,7 +113,7 @@ pub async fn delete_stream(req: HttpRequest) -> HttpResponse {
 
     let s3 = S3::new();
 
-    if s3.stream_exists(&stream_name).await.is_err() {
+    if s3.get_schema(&stream_name).await.is_err() {
         return response::ServerResponse {
             msg: format!("log stream {} does not exist", stream_name),
             code: StatusCode::BAD_REQUEST,
@@ -158,7 +169,7 @@ pub async fn get_schema(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    match S3::new().stream_exists(&stream_name).await {
+    match S3::new().get_schema(&stream_name).await {
         Ok(schema) if schema.is_empty() => {
             response::ServerResponse {
                 msg: "Failed to get log stream schema, because log stream is not initialized yet. Please post an event before fetching schema".to_string(),
@@ -239,7 +250,7 @@ pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let s3 = S3::new();
 
     // Proceed to create log stream if it doesn't exist
-    if s3.stream_exists(&stream_name).await.is_err() {
+    if s3.get_schema(&stream_name).await.is_err() {
         // Fail if unable to create log stream on object store backend
         if let Err(e) = s3.create_stream(&stream_name).await {
             return response::ServerResponse {

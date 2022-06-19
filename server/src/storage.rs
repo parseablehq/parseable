@@ -18,11 +18,13 @@
 
 use crate::error::Error;
 use crate::option::CONFIG;
+use crate::query::Query;
 use crate::utils;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{Timelike, Utc};
+use datafusion::prelude::SessionContext;
 use serde::Serialize;
 
 use std::fmt::{Debug, Display};
@@ -36,16 +38,16 @@ pub trait ObjectStorageError: Display + Debug {}
 
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
-    fn new() -> Self;
     async fn is_available(&self) -> bool;
     async fn put_schema(&self, stream_name: String, body: String) -> Result<(), Error>;
     async fn create_stream(&self, stream_name: &str) -> Result<(), Error>;
     async fn delete_stream(&self, stream_name: &str) -> Result<(), Error>;
     async fn create_alert(&self, stream_name: &str, body: String) -> Result<(), Error>;
-    async fn stream_exists(&self, stream_name: &str) -> Result<Bytes, Error>;
+    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, Error>;
     async fn alert_exists(&self, stream_name: &str) -> Result<Bytes, Error>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, Error>;
     async fn put_parquet(&self, key: &str, path: &str) -> Result<(), Error>;
+    async fn query(&self, ctx: &SessionContext, query: &Query) -> Result<(), Error>;
     async fn sync(&self) -> Result<(), Error> {
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
             return Ok(());
@@ -58,10 +60,7 @@ pub trait ObjectStorage: Sync + 'static {
 
         for entry in entries {
             let path = entry.into_os_string().into_string().unwrap();
-            let init_sync = StorageSync {
-                path,
-                time: Utc::now(),
-            };
+            let init_sync = StorageSync::new(path);
 
             let dir = init_sync.get_dir_name();
             if !init_sync.parquet_path_exists() {
@@ -156,6 +155,13 @@ struct StorageSync {
 }
 
 impl StorageSync {
+    fn new(path: String) -> Self {
+        Self {
+            path,
+            time: Utc::now(),
+        }
+    }
+
     fn parquet_path_exists(&self) -> bool {
         let new_parquet_path = format!("{}/data.parquet", &self.path);
 
@@ -166,46 +172,25 @@ impl StorageSync {
         let local_path = format!("{}/", CONFIG.parseable.local_disk_path);
         let _storage_path = format!("{}/", CONFIG.storage.bucket_name());
         let stream_names = self.path.replace(&local_path, "");
-        let new_parquet_path = format!("{}/data.parquet", self.path);
+        let parquet_path = format!("{}/data.parquet", self.path);
+        let uri = utils::date_to_prefix(self.time.date())
+            + &utils::hour_to_prefix(self.time.hour())
+            + &utils::minute_to_prefix(self.time.minute(), CONFIG.parseable.block_duration)
+                .unwrap();
 
-        let dir_name_tmp = format!(
-            "{}{}/tmp/date={}/hour={:02}/minute={}",
-            local_path,
-            stream_names,
-            chrono::offset::Utc::now().date(),
-            self.time.hour(),
-            time_slot(),
-        );
+        let dir_name_tmp = format!("{}{}/tmp/{}", local_path, stream_names, uri);
 
-        let storage_dir_name = format!(
-            "{}/date={}/hour={:02}/minute={}",
-            stream_names,
-            chrono::offset::Utc::now().date(),
-            self.time.hour(),
-            time_slot()
-        );
+        let storage_dir_name = format!("{}/{}", stream_names, uri);
 
-        let parquet = format!("{}.parquet", utils::random_string());
+        let parquet_file = format!("{}.parquet", utils::random_string());
         let dir_name_local = local_path + &stream_names;
 
         DirName {
             storage_dir_name,
             dir_name_tmp,
             dir_name_local,
-            parquet_path: new_parquet_path,
-            parquet_file: parquet,
+            parquet_path,
+            parquet_file,
         }
-    }
-}
-
-pub fn time_slot() -> &'static str {
-    match chrono::offset::Utc::now().minute() {
-        0..=9 => "00-09",
-        10..=19 => "10-19",
-        20..=29 => "20-29",
-        30..=39 => "30-39",
-        40..=49 => "40-49",
-        50..=59 => "49-59",
-        _ => "",
     }
 }
