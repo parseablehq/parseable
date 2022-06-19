@@ -7,6 +7,7 @@
 <h4 align="center">
   <a href="https://www.parseable.io" target="_blank">Website</a> |
   <a href="https://docs.parseable.io" target="_blank">Documentation</a> |
+  <a href="https://docs.parseable.io" target="_blank">API Collection on Postman</a> |
   <a href="https://blog.parseable.io" target="_blank">Blog</a> |
   <a href="https://www.linkedin.com/company/parseable" target="_blank">LinkedIn</a> |
   <a href="https://twitter.com/parseableio" target="_blank">Twitter</a>
