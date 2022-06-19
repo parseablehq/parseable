@@ -111,12 +111,14 @@ list_log_streams () {
     exit 1
   fi
 
-  # content=$(sed '$ d' <<< "$response")
-  # if [ $(jq < "$content" 'any(.name == "$stream_name")') == "false" ]; then
-  #   printf "Failed to find new log stream %s in list stream result: %s\n" "$stream_name" "$content"
-  #   printf "Test list_log_streams: failed\n"
-  #   exit 1
-  # fi
+  content=$(sed '$ d' <<< "$response")
+  echo "$content" > "$PWD/log_streams.json"
+
+  if [ "$(jq < $PWD/log_streams.json '[.[].name | select(. == "'"$stream_name"'")] | length')" -ne 1 ]; then
+    printf "Failed to find new log stream %s in list stream result: %s\n" "$stream_name" "$content"
+    printf "Test list_log_streams: failed\n"
+    exit 1
+  fi
 
   printf "Test list_log_streams: successful\n"
   return 0
@@ -266,6 +268,7 @@ delete_stream () {
 
 cleanup () {
   rm -rf "$input_file"
+  rm -rf "$PWD/logstream_test.json"
   return $?
 }
 
