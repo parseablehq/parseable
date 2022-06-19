@@ -3,8 +3,12 @@ use aws_sdk_s3::model::{Delete, ObjectIdentifier};
 use aws_sdk_s3::types::ByteStream;
 use aws_sdk_s3::Error as AwsSdkError;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
+use aws_types::credentials::SharedCredentialsProvider;
 use bytes::Bytes;
 use crossterm::style::Stylize;
+use datafusion::datasource::listing::{ListingTable, ListingTableConfig};
+use datafusion::prelude::SessionContext;
+use datafusion_objectstore_s3::object_store::s3::S3FileSystem;
 use http::Uri;
 use std::collections::HashSet;
 use std::fs;
@@ -15,6 +19,7 @@ use tokio_stream::StreamExt;
 
 use crate::error::Error;
 use crate::option::{StorageOpt, CONFIG};
+use crate::query::Query;
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
 pub const DEFAULT_S3_URL: &str = "http://127.0.0.1:9000";
@@ -89,11 +94,52 @@ impl From<AwsSdkError> for Error {
     }
 }
 
+struct S3Options {
+    endpoint: Endpoint,
+    region: Region,
+    creds: Credentials,
+}
+
+impl S3Options {
+    fn new() -> Self {
+        let uri = S3_CONFIG.s3_endpoint_url.parse::<Uri>().unwrap();
+        let endpoint = Endpoint::immutable(uri);
+        let region = Region::new(&S3_CONFIG.s3_default_region);
+        let creds = Credentials::new(
+            &S3_CONFIG.s3_access_key_id,
+            &S3_CONFIG.s3_secret_key,
+            None,
+            None,
+            "",
+        );
+
+        Self {
+            endpoint,
+            region,
+            creds,
+        }
+    }
+}
+
 pub struct S3 {
+    options: S3Options,
     client: aws_sdk_s3::Client,
 }
 
 impl S3 {
+    pub fn new() -> Self {
+        let options = S3Options::new();
+        let config = aws_sdk_s3::Config::builder()
+            .region(options.region.clone())
+            .endpoint_resolver(options.endpoint.clone())
+            .credentials_provider(options.creds.clone())
+            .build();
+
+        let client = Client::from_conf(config);
+
+        Self { options, client }
+    }
+
     async fn _put_schema(&self, stream_name: String, body: String) -> Result<(), AwsSdkError> {
         let _resp = self
             .client
@@ -164,7 +210,7 @@ impl S3 {
         Ok(())
     }
 
-    async fn _stream_exists(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
+    async fn _get_schema(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
         let resp = self
             .client
             .get_object()
@@ -176,6 +222,17 @@ impl S3 {
         let body_bytes = body.unwrap().into_bytes();
 
         Ok(body_bytes)
+    }
+
+    async fn prefix_exists(&self, prefix: &str) -> bool {
+        self.client
+            .list_objects_v2()
+            .bucket(&S3_CONFIG.s3_bucket_name)
+            .prefix(prefix)
+            .max_keys(1)
+            .send()
+            .await
+            .is_ok()
     }
 
     async fn _alert_exists(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
@@ -225,7 +282,7 @@ impl S3 {
             .body(body)
             .send()
             .await?;
-        println!("{:?}", resp);
+        log::trace!("{:?}", resp);
 
         Ok(())
     }
@@ -233,28 +290,6 @@ impl S3 {
 
 #[async_trait]
 impl ObjectStorage for S3 {
-    fn new() -> Self {
-        let uri = S3_CONFIG.s3_endpoint_url.parse::<Uri>().unwrap();
-        let endpoint = Endpoint::immutable(uri);
-        let region = Region::new(&S3_CONFIG.s3_default_region);
-        let creds = Credentials::new(
-            &S3_CONFIG.s3_access_key_id,
-            &S3_CONFIG.s3_secret_key,
-            None,
-            None,
-            "",
-        );
-        let config = aws_sdk_s3::Config::builder()
-            .region(region)
-            .endpoint_resolver(endpoint)
-            .credentials_provider(creds)
-            .build();
-
-        let client = Client::from_conf(config);
-
-        Self { client }
-    }
-
     async fn is_available(&self) -> bool {
         self.client
             .head_bucket()
@@ -288,8 +323,8 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn stream_exists(&self, stream_name: &str) -> Result<Bytes, Error> {
-        let body_bytes = self._stream_exists(stream_name).await?;
+    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, Error> {
+        let body_bytes = self._get_schema(stream_name).await?;
 
         Ok(body_bytes)
     }
@@ -311,26 +346,34 @@ impl ObjectStorage for S3 {
 
         Ok(())
     }
+
+    async fn query(&self, ctx: &SessionContext, query: &Query) -> Result<(), Error> {
+        let s3_file_system = Arc::new(
+            S3FileSystem::new(
+                Some(SharedCredentialsProvider::new(self.options.creds.clone())),
+                Some(self.options.region.clone()),
+                Some(self.options.endpoint.clone()),
+                None,
+                None,
+                None,
+            )
+            .await,
+        );
+
+        for prefix in query.get_prefixes("s3://") {
+            if !self.prefix_exists(&prefix).await {
+                break;
+            }
+
+            let config = ListingTableConfig::new(s3_file_system.clone(), &prefix)
+                .infer()
+                .await?;
+
+            let table = ListingTable::try_new(config)?;
+
+            ctx.register_table(prefix.as_str(), Arc::new(table))?;
+        }
+
+        Ok(())
+    }
 }
-
-// fn s3_env_variables() {
-//     let (secret_key, access_key, region, endpoint_url, bucket_name) = (
-//         "AWS_SECRET_ACCESS_KEY",
-//         "AWS_ACCESS_KEY_ID",
-//         "AWS_DEFAULT_REGION",
-//         "AWS_ENDPOINT_URL",
-//         "AWS_BUCKET_NAME",
-//     );
-//     let data = vec![secret_key, access_key, region, endpoint_url, bucket_name];
-
-//     for data in data.iter() {
-//         match *data {
-//             "AWS_SECRET_ACCESS_KEY" => env::set_var(secret_key, &opt.s3_secret_key),
-//             "AWS_ACCESS_KEY_ID" => env::set_var(access_key, &opt.s3_access_key_id),
-//             "AWS_DEFAULT_REGION" => env::set_var(region, &opt.s3_default_region),
-//             "AWS_ENDPOINT_URL" => env::set_var(endpoint_url, &opt.s3_endpoint_url),
-//             "AWS_BUCKET_NAME" => env::set_var(bucket_name, &opt.s3_bucket_name),
-//             _ => println!(),
-//         }
-//     }
-// }

@@ -164,6 +164,11 @@ pub struct Opt {
     #[structopt(long, env = "P_STORAGE_SYNC_DURATION", default_value = "600")]
     pub sync_duration: u64,
 
+    /// Optional duration used to configure prefix in directory structure used for storage.
+    /// Defaults to 10min.
+    #[structopt(long, env = "P_BLOCK_DURATION", default_value = "10")]
+    pub block_duration: u32,
+
     /// Optional username to enable basic auth on the server
     #[structopt(long, env = USERNAME_ENV, default_value = DEFAULT_USERNAME)]
     pub username: String,

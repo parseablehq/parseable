@@ -28,6 +28,10 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("serde_json error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("error parsing time: {0}")]
+    TimeParse(#[from] chrono::ParseError),
+    #[error("JSON provided to query api doesn't contain {0}")]
+    JsonQuery(&'static str),
     #[error("Storage error: {0}")]
     Storage(Box<dyn ObjectStorageError>),
     #[error("Event error: {0}")]
@@ -38,6 +42,8 @@ pub enum Error {
     Arrow(#[from] ArrowError),
     #[error("Data Fusion error: {0}")]
     DataFusion(#[from] DataFusionError),
+    #[error("UTF8 parsing error: {0}")]
+    Utf8(#[from] std::string::FromUtf8Error),
     #[error("log stream name cannot be empty")]
     EmptyName,
     #[error("log stream name cannot contain spaces: {0}")]

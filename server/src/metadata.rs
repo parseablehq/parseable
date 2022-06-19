@@ -16,7 +16,9 @@
  *
  */
 
+use bytes::Bytes;
 use lazy_static::lazy_static;
+use log::warn;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -103,18 +105,8 @@ impl STREAM_INFO {
             // to load the stream metadata based on whatever is available.
             //
             // TODO: ignore failure(s) if any and skip to next stream
-            let mut alert_config = String::new();
-            if let Ok(x) = storage.alert_exists(&stream.name).await {
-                if !x.is_empty() {
-                    alert_config = format!("{:?}", x);
-                }
-            }
-            let mut schema = String::new();
-            if let Ok(x) = storage.stream_exists(&stream.name).await {
-                if !x.is_empty() {
-                    schema = format!("{:?}", x);
-                }
-            }
+            let alert_config = parse_string(storage.alert_exists(&stream.name).await)?;
+            let schema = parse_string(storage.get_schema(&stream.name).await)?;
             let metadata = LogStreamMetadata {
                 schema,
                 alert_config,
@@ -125,4 +117,21 @@ impl STREAM_INFO {
 
         Ok(())
     }
+}
+
+fn parse_string(result: Result<Bytes, Error>) -> Result<String, Error> {
+    let mut string = String::new();
+    let bytes = match result {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn!("Storage error: {}", e);
+            return Ok(string);
+        }
+    };
+
+    if !bytes.is_empty() {
+        string = String::from_utf8(bytes.to_vec())?;
+    }
+
+    Ok(string)
 }

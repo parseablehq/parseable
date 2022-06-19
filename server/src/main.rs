@@ -142,7 +142,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::resource(schema_path("{logstream}")).route(web::get().to(handler::get_schema)),
     )
     // GET "/query" ==> Get results of the SQL query passed in request body
-    .service(web::resource(query_path()).route(web::get().to(handler::cache_query)))
+    .service(web::resource(query_path()).route(web::get().to(handler::query)))
     // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
     .service(web::resource(liveness_path()).route(web::get().to(handler::liveness)))
     // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
