@@ -94,11 +94,12 @@ pub trait ObjectStorage: Sync + 'static {
                 );
                 continue;
             }
+
             // TODO: retries to storage
             let _put_parquet_file = self
                 .put_parquet(
-                    &format!("{}/{}", dir.storage_dir_name, dir.parquet_file),
-                    &format!("{}/{}", dir.dir_name_tmp, dir.parquet_file),
+                    &format!("{}{}", dir.storage_dir_name, dir.parquet_file),
+                    &format!("{}{}", dir.dir_name_tmp, dir.parquet_file),
                 )
                 .await;
 
