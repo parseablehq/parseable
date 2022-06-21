@@ -17,6 +17,7 @@
  */
 
 use actix_cors::Cors;
+use actix_files as fs;
 use actix_web::dev::ServiceRequest;
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
@@ -149,11 +150,20 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     .service(web::resource(readiness_path()).route(web::get().to(handler::readiness)));
 }
 
+pub fn configure_static_files(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        fs::Files::new("/", "./ui/")
+            .index_file("index.html")
+            .show_files_listing(),
+    );
+}
+
 #[macro_export]
 macro_rules! create_app {
     () => {
         App::new()
             .configure(|cfg| configure_routes(cfg))
+            .configure(|cfg| configure_static_files(cfg))
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
             .wrap(

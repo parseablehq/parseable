@@ -12,6 +12,7 @@ categories = ["olap", "analytics-store"]
 actix-web-httpauth = "0.6"
 actix-web = { version = "4.1", features = ["openssl"] }
 actix-cors = "0.6"
+actix-files = "0.6.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
 arrow = "15.0"
 async-trait = "0.1"
