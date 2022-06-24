@@ -17,8 +17,8 @@
  */
 
 use actix_cors::Cors;
-use actix_files as fs;
-use actix_web::dev::ServiceRequest;
+use actix_files::{Files, NamedFile};
+use actix_web::dev::{fn_service, ServiceRequest, ServiceResponse};
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
@@ -152,9 +152,15 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
 
 pub fn configure_static_files(cfg: &mut web::ServiceConfig) {
     cfg.service(
-        fs::Files::new("/", "./ui/")
+        Files::new("/", "./ui/build/")
             .index_file("index.html")
-            .show_files_listing(),
+            .show_files_listing()
+            .default_handler(fn_service(|req: ServiceRequest| async {
+                let (req, _) = req.into_parts();
+                let file = NamedFile::open_async("./ui/build/index.html").await?;
+                let res = file.into_response(&req);
+                Ok(ServiceResponse::new(req, res))
+            })),
     );
 }
 
