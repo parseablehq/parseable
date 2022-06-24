@@ -4,3 +4,5 @@ examples
 Cargo.lock
 cert.pem
 key.pem
+ui/build/
+ui/node_modules/
