@@ -106,9 +106,13 @@ const Dashboard = () => {
 
   const [selected, setSelected] = useState({});
   const [query, setQuery] = useState("");
-  const [selectedLogTime, setSelectedLogTime] = useState(logTimes[0]);
+  const [selectedLogTime, setSelectedLogTime] = useState(logTimes[1]);
+  const [noData, setNoData] = useState(false);
 
   const time = "2022-06-13T14:17:20.012644671Z";
+  console.log(moment().toISOString());
+  console.log('CURRENT TIME MINUS 10 MINUTES',moment().subtract(10, "minutes").toISOString());
+  
 
   const timeZoneChange = (e) => {
     setTimeZone(e.target.value);
@@ -143,12 +147,17 @@ const Dashboard = () => {
       })
       .then((result) => {
         console.log(result);
-        setLogStreams(result);
-        setSelected(result[0])
-        setLoading(false);
+
+        if (result.length > 0) {
+          setLogStreams(result);
+          setSelected(result[0]);
+          setLoading(false);
+        } else {
+          setNoData(true);
+        }
       })
       .catch((error) => {
-        console.log("error", error)
+        console.log("error", error);
       })
       .finally(() => setLoading(false));
 
@@ -187,6 +196,10 @@ const Dashboard = () => {
     <>
       {loading ? (
         <div>loading</div>
+      ) : noData ? (
+        <Layout>
+          <div>No streams available</div>
+        </Layout>
       ) : (
         <Layout>
           <div className="">
@@ -277,7 +290,7 @@ const Dashboard = () => {
                   </div>
 
                   <div className=" ml-10 hidden sm:flex flex-col h-full justify-around">
-                    <div className="text-xs text-gray-700">Capacity</div>
+                    <div className="text-xs text-gray-700">Ingested Logs</div>
                     <div className="font-bold text-xl">2 GB</div>
                   </div>
                 </div>
@@ -369,7 +382,7 @@ const Dashboard = () => {
                                   )}
                                 </Listbox.Option>
                               ))}
-                              <div value={"calendar"}>
+                              {/* <div value={"calendar"}>
                                 <div className="flex items-center justify-center">
                                   <div
                                     className="datepicker relative form-floating mb-3 xl:w-96"
@@ -389,29 +402,7 @@ const Dashboard = () => {
                                     />
                                   </div>
                                 </div>
-                                {/* <div className="relative">
-                                <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                                  <svg
-                                    className="w-5 h-5 text-gray-500 dark:text-gray-400"
-                                    fill="currentColor"
-                                    viewBox="0 0 20 20"
-                                    xmlns="http://www.w3.org/2000/svg"
-                                  >
-                                    <path
-                                      fill-rule="evenodd"
-                                      d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z"
-                                      clip-rule="evenodd"
-                                    ></path>
-                                  </svg>
-                                </div>
-                                <input
-                                  datepicker
-                                  type="text"
-                                  className="bg-gray-50 border border-gray-300 text-gray-900 sm:text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full pl-10 p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
-                                  placeholder="Select date"
-                                />
                               </div> */}
-                              </div>
                             </Listbox.Options>
                           </Transition>
                         </div>
