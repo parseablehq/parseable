@@ -6,6 +6,7 @@ import {
   FolderIcon,
   HomeIcon,
   InboxIcon,
+  LogoutIcon,
   MenuAlt2Icon,
   UsersIcon,
   XIcon,
@@ -62,6 +63,10 @@ export default function Layout({ children }) {
   const [query, setQuery] = useState("");
   const [selectedLogTime, setSelectedLogTime] = useState(logTimes[0]);
 
+  useEffect(() => {
+    localStorage.getItem("username");
+  }, []);
+
   const timeChangeHandler = (e) => {
     console.log(e);
 
@@ -91,52 +96,23 @@ export default function Layout({ children }) {
               <img src={StreamIcon} className="w-6" />
               <p>Streams</p>
             </button>
-
-            <Menu as="div" className="relative inline-block text-left">
-              <div>
-                <Menu.Button className="inline-flex justify-center w-full">
-                  <div className="flex  ml-16">
-                    <img className="w-3" src={UserIcon} />
-                    <div className="ml-2 text-gray-400 text-sm">
-                      Testuser234
-                    </div>
-                  </div>
-                </Menu.Button>
+            <div className="flex  ml-16">
+              <img className="w-3" src={UserIcon} />
+              <div className="ml-2 text-gray-400 text-sm">
+                {localStorage.getItem("username").length > 0
+                  ? localStorage.getItem("username")
+                  : ""}
               </div>
-
-              <Transition
-                as={Fragment}
-                enter="transition ease-out duration-100"
-                enterFrom="transform opacity-0 scale-95"
-                enterTo="transform opacity-100 scale-100"
-                leave="transition ease-in duration-75"
-                leaveFrom="transform opacity-100 scale-100"
-                leaveTo="transform opacity-0 scale-95"
-              >
-                <Menu.Items className="origin-top-right z-50 absolute right-0 mt- w-24 text-right rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none">
-                  <div className="py-1">
-                    <Menu.Item>
-                      {({ active }) => (
-                        <button
-                          onClick={() => {
-                            localStorage.removeItem("username");
-                            navigate('/')
-                          }}
-                          className={classNames(
-                            active
-                              ? "bg-gray-100 text-gray-900"
-                              : "text-gray-700",
-                            "block w-full text-right px-4 z-50 py-2 text-sm"
-                          )}
-                        >
-                          Sign out
-                        </button>
-                      )}
-                    </Menu.Item>
-                  </div>
-                </Menu.Items>
-              </Transition>
-            </Menu>
+            </div>
+            <div>
+              <LogoutIcon
+                className="text-gray-400 w-5 ml-6"
+                onClick={() => {
+                  localStorage.removeItem("username");
+                  navigate("/");
+                }}
+              />
+            </div>
           </div>
         </div>
       </div>
