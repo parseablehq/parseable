@@ -45,9 +45,19 @@ fn merge(v: &Value, fields: &HashMap<String, String>) -> Value {
         Value::Object(m) => {
             let mut m = m.clone();
             for (k, v) in fields {
-                m.insert(k.clone(), Value::String(v.clone()));
+                match m.get(k) {
+                    Some(curr_val) => {
+                        let mut final_val = String::new();
+                        final_val.push_str(curr_val.as_str().unwrap());
+                        final_val.push(',');
+                        final_val.push_str(v);
+                        m.insert(k.clone(), Value::String(final_val));
+                    }
+                    None => {
+                        m.insert(k.clone(), Value::String(v.to_string()));
+                    }
+                }
             }
-
             Value::Object(m)
         }
         v => v.clone(),
