@@ -25,6 +25,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::option::CONFIG;
+use crate::storage;
 use crate::storage::ObjectStorage;
 use crate::utils::TimePeriod;
 use crate::Error;
@@ -84,10 +85,9 @@ impl Query {
     }
 
     /// Return prefixes, each per day/hour/minutes as necessary
-    pub fn get_prefixes(&self, prefix: &str) -> Vec<String> {
-        let prefix = prefix.to_owned() + &self.stream_name;
-        TimePeriod::new(self.start, self.end, CONFIG.parseable.block_duration)
-            .generate_prefixes(&prefix)
+    pub fn get_prefixes(&self) -> Vec<String> {
+        TimePeriod::new(self.start, self.end, storage::BLOCK_DURATION)
+            .generate_prefixes(&self.stream_name)
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information
@@ -154,8 +154,8 @@ mod tests {
 
         assert_eq!(&query.stream_name, "stream_name");
         assert_eq!(
-            query.get_prefixes(""),
-            vec!["stream_name/date=2022-10-15/hour=10/minute=00-09/".to_string()]
+            query.get_prefixes(),
+            vec!["stream_name/date=2022-10-15/hour=10/minute=00/".to_string()]
         );
     }
 }
