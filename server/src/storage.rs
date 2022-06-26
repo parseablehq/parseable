@@ -36,6 +36,10 @@ use std::time::Duration;
 
 pub trait ObjectStorageError: Display + Debug {}
 
+/// duration used to configure prefix in s3 and local disk structure
+/// used for storage. Defaults to 1 min.
+pub const BLOCK_DURATION: u32 = 1;
+
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
     async fn is_available(&self) -> bool;
@@ -174,8 +178,7 @@ impl StorageSync {
         let parquet_path = format!("{}/data.parquet", self.path);
         let uri = utils::date_to_prefix(self.time.date())
             + &utils::hour_to_prefix(self.time.hour())
-            + &utils::minute_to_prefix(self.time.minute(), CONFIG.parseable.block_duration)
-                .unwrap();
+            + &utils::minute_to_prefix(self.time.minute(), BLOCK_DURATION).unwrap();
 
         let dir_name_tmp = format!("{}{}/tmp/{}", local_path, stream_names, uri);
 

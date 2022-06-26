@@ -22,8 +22,8 @@ use crate::option::{StorageOpt, CONFIG};
 use crate::query::Query;
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
-pub const DEFAULT_S3_URL: &str = "http://127.0.0.1:9000";
-pub const S3_URL_ENV_VAR: &str = "P_S3_URL";
+const DEFAULT_S3_URL: &str = "http://127.0.0.1:9000";
+const S3_URL_ENV_VAR: &str = "P_S3_URL";
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -225,6 +225,8 @@ impl S3 {
     }
 
     async fn prefix_exists(&self, prefix: &str) -> bool {
+        // TODO change this to use head object to prefix instead of
+        // list objects
         self.client
             .list_objects_v2()
             .bucket(&S3_CONFIG.s3_bucket_name)
@@ -360,18 +362,19 @@ impl ObjectStorage for S3 {
             .await,
         );
 
-        for prefix in query.get_prefixes("s3://") {
+        for prefix in query.get_prefixes() {
+            let path = format!("s3://{}/{}", &S3_CONFIG.s3_bucket_name, prefix);
+
             if !self.prefix_exists(&prefix).await {
                 break;
             }
 
-            let config = ListingTableConfig::new(s3_file_system.clone(), &prefix)
+            let config = ListingTableConfig::new(s3_file_system.clone(), &path)
                 .infer()
                 .await?;
 
             let table = ListingTable::try_new(config)?;
-
-            ctx.register_table(prefix.as_str(), Arc::new(table))?;
+            ctx.register_table(query.stream_name.as_str(), Arc::new(table))?;
         }
 
         Ok(())
