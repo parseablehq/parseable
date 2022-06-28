@@ -155,19 +155,25 @@ get_streams_schema () {
 
 # Query the log stream and verify if count of events is equal to the number of events posted
 query_log_stream() {
-  response=$(curl "${curl_std_opts[@]}" --request GET "$parseable_url"/api/v1/query --data-raw '{
-    "query": "select count(*) from '$stream_name'"
+  # Query last two minutes of data only
+  end_time=$(date "+%Y-%m-%dT%H:%M:%S%:z")
+  start_time=$(date --date="@$(($(date +%s)-120))" "+%Y-%m-%dT%H:%M:%S%:z")
+
+  response=$(curl "${curl_std_opts[@]}" --request POST "$parseable_url"/api/v1/query --data-raw '{
+    "query": "select count(*) from '$stream_name'",
+    "startTime": "'$start_time'",
+    "endTime": "'$end_time'"
   }')
   if [ $? -ne 0 ]; then
     printf "Failed to query log data from %s with exit code: %s\n" "$stream_name" "$?"
-    printf "Test query_log_stream: successful\n"
+    printf "Test query_log_stream: failed\n"
     exit 1
   fi
 
   http_code=$(tail -n1 <<< "$response")
   if [ "$http_code" -ne 200 ]; then
     printf "Failed to query stream %s with http code: %s and response: %s" "$stream_name" "$http_code" "$content"
-    printf "Test query_log_stream: successful\n"
+    printf "Test query_log_stream: failed\n"
     exit 1
   fi
 

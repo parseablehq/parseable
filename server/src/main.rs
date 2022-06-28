@@ -118,36 +118,36 @@ async fn run_http() -> anyhow::Result<()> {
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     // Base path "{url}/api/v1"
-    cfg.service(
-        // logstream API
-        web::resource(logstream_path("{logstream}"))
-            // PUT "/logstream/{logstream}" ==> Create log stream
-            .route(web::put().to(handler::put_stream))
-            // POST "/logstream/{logstream}" ==> Post logs to given log stream
-            .route(web::post().to(handler::post_event))
-            // DELETE "/logstream/{logstream}" ==> Delete log stream
-            .route(web::delete().to(handler::delete_stream))
-            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
-    )
-    .service(
-        web::resource(alert_path("{logstream}"))
-            // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
-            .route(web::put().to(handler::put_alert))
-            // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
-            .route(web::get().to(handler::get_alert)),
-    )
-    // GET "/logstream" ==> Get list of all Log Streams on the server
-    .service(web::resource(logstream_path("")).route(web::get().to(handler::list_streams)))
-    .service(
-        // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
-        web::resource(schema_path("{logstream}")).route(web::get().to(handler::get_schema)),
-    )
-    // GET "/query" ==> Get results of the SQL query passed in request body
-    .service(web::resource(query_path()).route(web::get().to(handler::query)))
-    // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
-    .service(web::resource(liveness_path()).route(web::get().to(handler::liveness)))
-    // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
-    .service(web::resource(readiness_path()).route(web::get().to(handler::readiness)));
+    // POST "/query" ==> Get results of the SQL query passed in request body
+    cfg.service(web::resource(query_path()).route(web::post().to(handler::query)))
+        .service(
+            // logstream API
+            web::resource(logstream_path("{logstream}"))
+                // PUT "/logstream/{logstream}" ==> Create log stream
+                .route(web::put().to(handler::put_stream))
+                // POST "/logstream/{logstream}" ==> Post logs to given log stream
+                .route(web::post().to(handler::post_event))
+                // DELETE "/logstream/{logstream}" ==> Delete log stream
+                .route(web::delete().to(handler::delete_stream))
+                .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+        )
+        .service(
+            web::resource(alert_path("{logstream}"))
+                // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
+                .route(web::put().to(handler::put_alert))
+                // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
+                .route(web::get().to(handler::get_alert)),
+        )
+        // GET "/logstream" ==> Get list of all Log Streams on the server
+        .service(web::resource(logstream_path("")).route(web::get().to(handler::list_streams)))
+        .service(
+            // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
+            web::resource(schema_path("{logstream}")).route(web::get().to(handler::get_schema)),
+        )
+        // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
+        .service(web::resource(liveness_path()).route(web::get().to(handler::liveness)))
+        // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
+        .service(web::resource(readiness_path()).route(web::get().to(handler::readiness)));
 }
 
 pub fn configure_static_files(cfg: &mut web::ServiceConfig) {
