@@ -225,16 +225,21 @@ impl S3 {
     }
 
     async fn prefix_exists(&self, prefix: &str) -> bool {
-        // TODO change this to use head object to prefix instead of
+        // TODO check if head object is faster compared to
         // list objects
-        self.client
+        let resp = self
+            .client
             .list_objects_v2()
             .bucket(&S3_CONFIG.s3_bucket_name)
             .prefix(prefix)
             .max_keys(1)
             .send()
-            .await
-            .is_ok()
+            .await;
+
+        if resp.unwrap().contents.is_some() {
+            return true;
+        }
+        false
     }
 
     async fn _alert_exists(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
