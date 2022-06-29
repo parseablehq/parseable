@@ -138,11 +138,12 @@ impl Event {
         let next_event_rb = event.next()?.ok_or(Error::MissingRecord)?;
 
         match self.convert_parquet_rb_reader() {
-            Ok(rb) => {
+            Ok(mut arrow_reader) => {
+                let rb = arrow_reader.get_record_reader(2048).unwrap();
                 for prev_rb in rb {
                     let new_rb = RecordBatch::concat(
-                        &next_event_rb.schema(),
-                        &[next_event_rb.clone(), prev_rb?],
+                        &std::sync::Arc::new(arrow_reader.get_schema().unwrap()),
+                        &[next_event_rb.clone(), prev_rb.unwrap()],
                     )?;
                     self.convert_arrow_parquet(new_rb)?;
                 }
@@ -187,12 +188,11 @@ impl Event {
 
     pub fn convert_parquet_rb_reader(
         &self,
-    ) -> Result<parquet::arrow::arrow_reader::ParquetRecordBatchReader, Error> {
+    ) -> Result<parquet::arrow::ParquetFileArrowReader, Error> {
         let file = fs::File::open(&self.data_file_path())?;
         let file_reader = SerializedFileReader::new(file)?;
-        let mut arrow_reader = ParquetFileArrowReader::new(Arc::new(file_reader));
-        let rb = arrow_reader.get_record_reader(2048)?;
+        let arrow_reader = ParquetFileArrowReader::new(Arc::new(file_reader));
 
-        Ok(rb)
+        Ok(arrow_reader)
     }
 }
