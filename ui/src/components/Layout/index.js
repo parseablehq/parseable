@@ -56,7 +56,7 @@ const logTimes = [
   { id: 4, name: "Past 24 Hour" },
 ];
 
-export default function Layout({ children }) {
+export default function Layout({ children, labels }) {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -65,13 +65,27 @@ export default function Layout({ children }) {
 
   useEffect(() => {
     localStorage.getItem("username");
-  }, []);
+    console.log("labels got in layout", labels);
+  }, [labels]);
 
   const timeChangeHandler = (e) => {
     console.log(e);
 
     if (e !== "calendar") {
       setSelectedLogTime(e);
+    }
+  };
+
+  const labelClickHandler = (label) => {
+    console.log(label);
+    const previousLabels = sessionStorage.getItem("labels");
+
+    console.log(localStorage.getItem("labels"));
+
+    if (previousLabels !== null) {
+      sessionStorage.setItem("labels", `${previousLabels},${label}`);
+    } else {
+      sessionStorage.setItem("labels", label);
     }
   };
 
@@ -198,27 +212,17 @@ export default function Layout({ children }) {
                         </dt>
                         <Disclosure.Panel as="dd" className="mt-2 pr-12">
                           <div className="flex mt-4 flex-col space-y-3 pb-4 pl-4 pr-10">
-                            <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                              Label 1
-                            </div>
-                            <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                              Label 2
-                            </div>
-                            <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                              Label 3
-                            </div>
-                            <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                              Label 4
-                            </div>
-                            <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                              Label 5
-                            </div>
-                            <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                              Label 6
-                            </div>
-                            <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                              Label 7
-                            </div>
+                            {labels
+                              ? labels.split(",").map((label, index) => (
+                                  <div
+                                    onClick={() => labelClickHandler(label)}
+                                    key={index}
+                                    className="cursor-pointer text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg"
+                                  >
+                                    {label}
+                                  </div>
+                                ))
+                              : null}
                           </div>
                         </Disclosure.Panel>
                       </>
@@ -269,7 +273,37 @@ export default function Layout({ children }) {
                     </dt>
                     <Disclosure.Panel as="dd" className="mt-2 pr-12">
                       <div className="flex mt-4 flex-col space-y-3 pb-4 pl-4 pr-10">
-                        <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
+                        {/* <div className="relative px-2 py-1 border border-white rounded-lg flex items-start">
+                          <div className="flex items-center h-5">
+                            <input
+                              id="offers"
+                              aria-describedby="offers-description"
+                              name="offers"
+                              type="checkbox"
+                              className=" hidden h-4 w-4 text-bluePrimary border-gray-300 rounded"
+                            />
+                          </div>
+                          <div className="ml-3 text-sm">
+                            <label
+                              htmlFor="offers"
+                              className="font-light py-1 text-white"
+                            >
+                              Offers
+                            </label>
+                          </div>
+                        </div> */}
+                        {labels
+                          ? labels.split(",").map((label, index) => (
+                              <div
+                                onClick={() => labelClickHandler(label)}
+                                key={index}
+                                className="cursor-pointer text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg"
+                              >
+                                {label}
+                              </div>
+                            ))
+                          : null}
+                        {/* <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
                           Label 1
                         </div>
                         <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
@@ -289,7 +323,7 @@ export default function Layout({ children }) {
                         </div>
                         <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
                           Label 7
-                        </div>
+                        </div> */}
                       </div>
                     </Disclosure.Panel>
                   </>

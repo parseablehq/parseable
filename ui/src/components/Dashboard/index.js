@@ -19,76 +19,27 @@ import { Disclosure } from "@headlessui/react";
 import { ChevronDownIcon } from "@heroicons/react/outline";
 import { Combobox } from "@headlessui/react";
 import { CheckIcon, SelectorIcon } from "@heroicons/react/solid";
-
+import axios from "axios";
 import StreamIcon from "../../assets/images/Icon awesome-stream (1).svg";
 import UserIcon from "../../assets/images//Icon feather-user.svg";
 import Logo from "../../assets/images/Group 295.svg";
 import Tv from "../../assets/images/Icon material-live-tv.svg";
+import BeatLoader from "react-spinners/BeatLoader";
+
+const override = {
+  display: "block",
+  margin: "0 auto",
+  borderColor: "red",
+};
 
 const logTimes = [
-  { id: 1, name: "Live Tracking" },
-  { id: 2, name: "Past 10 Minutes" },
-  { id: 4, name: "Past 1 Hour" },
-  { id: 4, name: "Past 5 Hour" },
-  { id: 4, name: "Past 24 Hour" },
-];
-
-const data = [
-  {
-    time: "2022-06-13T14:17:20.012644671Z",
-    priority: "Critical",
-    tags: [
-      "app=kafka",
-      "source=frontend",
-      "source=frontend",
-      "source=frontend",
-      "source=frontend",
-    ],
-    host: "Base64 encoded ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256…",
-    log: "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod ipsum.",
-  },
-  {
-    time: "2022-06-13T14:17:20.012644671Z",
-    priority: "Critical",
-    tags: ["app=kafka", "source=frontend", "source=frontend", "app=kafka.host"],
-    host: "Base64 encoded ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256…",
-    log: "Lorem ipsum dolor sit amet sit smet, consectetur adipiscing elit, sed do eiusmod ipsum.",
-  },
-  {
-    time: "2022-06-13T14:17:20.012644671Z",
-    priority: "Critical",
-    tags: ["app=kafka", "source=frontend", "source=frontend", "app=kafka.host"],
-    host: "Base64 encoded ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256…",
-    log: "Lorem ipsum dolor sit amet sit smet, consectetur adipiscing elit, sed do eiusmod ipsum.",
-  },
-  {
-    time: "2022-06-13T14:17:20.012644671Z",
-    priority: "Critical",
-    tags: ["app=kafka", "source=frontend", "source=frontend", "app=kafka.host"],
-    host: "Base64 encoded ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256…",
-    log: "Lorem ipsum dolor sit amet sit smet, consectetur adipiscing elit, sed do eiusmod ipsum.  consectetur adipiscing elit, sed do eiusmod ipsum.",
-  },
-  {
-    time: "2022-06-13T14:17:20.012644671Z",
-    priority: "Critical",
-    tags: ["app=kafka", "source=frontend", "source=frontend", "app=kafka.host"],
-    host: "Base64 encoded ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256…",
-    log: "Lorem ipsum dolor sit amet sit smet, consectetur adipiscing elit, sed do eiusmod ipsum.",
-  },
-  {
-    time: "2022-06-13T14:17:20.012644671Z",
-    priority: "Critical",
-    tags: ["app=kafka", "source=frontend", "source=frontend", "app=kafka.host"],
-    host: "Base64 encoded ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256…",
-    log: "Lorem ipsum dolor sit amet sit smet, consectetur adipiscing elit, sed do eiusmod ipsum.",
-  },
-  {
-    time: "2022-06-13T14:17:20.012644671Z",
-    priority: "Critical",
-    tags: ["app=kafka", "source=frontend", "source=frontend", "app=kafka.host"],
-    host: "Base64 encoded ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256ECDSA-SHA2-NIST256…",
-    log: "Lorem ipsum dolor sit amet sit smet, consectetur adipiscing elit, sed do eiusmod ipsum.",
-  },
+  { id: 1, name: "Live Tracking", value: 1 },
+  { id: 2, name: "Past 10 Minutes", value: 10 },
+  { id: 3, name: "Past 1 Hour", value: 60 },
+  { id: 4, name: "Past 5 Hours", value: 300 },
+  { id: 5, name: "Past 24 Hours", value: 1440 },
+  { id: 5, name: "Past 3 Days", value: 4320 },
+  { id: 5, name: "Past 7 Days", value: 10080 },
 ];
 
 function classNames(...classes) {
@@ -103,22 +54,39 @@ const Dashboard = () => {
   const [logStreams, setLogStreams] = useState([]);
   const [selectedLogStream, setSelectedLogStream] = useState("");
   const [loading, setLoading] = useState(false);
+  const [tableLoading, setTableLoading] = useState(false);
+  const [data, setData] = useState([]);
 
   const [selected, setSelected] = useState({});
   const [query, setQuery] = useState("");
   const [selectedLogTime, setSelectedLogTime] = useState(logTimes[1]);
   const [noData, setNoData] = useState(false);
-
+  const [searchInput, setSearchInput] = useState("");
+  const [startTime, setStartTime] = useState(
+    moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ")
+  );
+  const [endTime, setEndTime] = useState(
+    moment()
+      .utcOffset("+00:00")
+      .subtract(10, "minutes")
+      .format("YYYY-MM-DDThh:mm:ssZ")
+  );
   const time = "2022-06-13T14:17:20.012644671Z";
-  console.log(moment().toISOString());
-  console.log('CURRENT TIME MINUS 10 MINUTES',moment().subtract(10, "minutes").toISOString());
-  
+  console.log(moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ"));
+  console.log(
+    "CURRENT TIME MINUS 10 MINUTES",
+    moment()
+      .utcOffset("+00:00")
+      .subtract(10, "minutes")
+      .format("YYYY-MM-DDThh:mm:ssZ")
+  );
 
   const timeZoneChange = (e) => {
     setTimeZone(e.target.value);
   };
 
   const currentUser = localStorage.getItem("username");
+  const labels = sessionStorage.getItem("labels");
 
   useEffect(() => {
     // console.log(currentUser);
@@ -128,51 +96,40 @@ const Dashboard = () => {
       navigate("/");
     } else {
       console.log("User Found");
+      var myHeaders = new Headers();
+      myHeaders.append("Authorization", "Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==");
+      myHeaders.append("Content-Type", "applfilterication/json");
+
+      var requestOptions = {
+        method: "GET",
+        headers: myHeaders,
+        redirect: "follow",
+      };
+
+      fetch("/api/v1/logstream", requestOptions)
+        .then((response) => {
+          setLoading(true);
+          return response.json();
+        })
+        .then((result) => {
+          console.log(result);
+
+          if (result.length > 0) {
+            setLogStreams(result);
+            setSelected(result[0]);
+            setLoading(false);
+          } else {
+            setNoData(true);
+          }
+        })
+        .catch((error) => {
+          console.log("error", error);
+        })
+        .finally(() => setLoading(false));
     }
 
-    var myHeaders = new Headers();
-    myHeaders.append("Authorization", "Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==");
-    myHeaders.append("Content-Type", "application/json");
-
-    var requestOptions = {
-      method: "GET",
-      headers: myHeaders,
-      redirect: "follow",
-    };
-
-    fetch("/api/v1/logstream", requestOptions)
-      .then((response) => {
-        setLoading(true);
-        return response.json();
-      })
-      .then((result) => {
-        console.log(result);
-
-        if (result.length > 0) {
-          setLogStreams(result);
-          setSelected(result[0]);
-          setLoading(false);
-        } else {
-          setNoData(true);
-        }
-      })
-      .catch((error) => {
-        console.log("error", error);
-      })
-      .finally(() => setLoading(false));
-
-    // fetch("/api/v1/logstream", requestOptions).then((response) =>
-    //   response
-    //     .json()
-    //     .then((data) => ({
-    //       data: data,
-    //       status: response.status,
-    //     }))
-    //     .then((res) => {
-    //       console.log(res.status, res.data.title);
-    //     })
-    // );
-  }, [currentUser]);
+    
+  }, [currentUser, data]);
 
   const filteredStreams =
     query === ""
@@ -189,19 +146,72 @@ const Dashboard = () => {
 
     if (e !== "calendar") {
       setSelectedLogTime(e);
+      setEndTime(moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ"));
+      setStartTime(
+        moment()
+          .utcOffset("+00:00")
+          .subtract(e.value, "minutes")
+          .format("YYYY-MM-DDThh:mm:ssZ")
+      );
     }
+  };
+
+  const selectStreamHandler = (e) => {
+    console.log(e);
+    setSelected(e);
+
+    setTableLoading(true);
+
+    var data;
+
+    if (e.name === "teststream") {
+      data = JSON.stringify({
+        query: `select * from ${e.name}`,
+        startTime: "2022-06-29T09:05:00+00:00",
+        endTime: "2022-06-29T09:06:00+00:00",
+      });
+    } else if (e.name === "teststream2") {
+      data = JSON.stringify({
+        query: "select * from teststream2",
+        startTime: "2022-06-29T10:36:00+00:00",
+        endTime: "2022-06-29T10:37:00+00:00",
+      });
+    } else if (e.name === "teststream3") {
+      data = JSON.stringify({
+        query: "select * from teststream3",
+        startTime: "2022-06-29T10:42:00+00:00",
+        endTime: "2022-06-29T10:43:00+00:00",
+      });
+    }
+
+    var config = {
+      method: "post",
+      url: "/api/v1/query",
+      headers: {
+        Authorization: "Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==",
+        "Content-Type": "application/json",
+      },
+      data: data,
+    };
+
+    axios(config)
+      .then(function (response) {
+        setTableLoading(false);
+        console.log(response.data);
+        setData(response.data);
+      })
+      .catch(function (error) {
+        console.log("error", error);
+      })
+      .finally(() => setTableLoading(false));
   };
 
   return (
     <>
       {loading ? (
         <div>loading</div>
-      ) : noData ? (
-        <Layout>
-          <div>No streams available</div>
-        </Layout>
       ) : (
-        <Layout>
+        <Layout labels={data.length > 0 && data[0]?.labels}>
           <div className="">
             <div className="sticky top-0  flex-shrink-0 flex h-24 items-center sm:px-5 bg-white shadow">
               <div className="flex-1 px-4 flex justify-between">
@@ -213,7 +223,10 @@ const Dashboard = () => {
                     >
                       Stream
                     </label>
-                    <Combobox value={selected} onChange={setSelected}>
+                    <Combobox
+                      value={selected}
+                      onChange={(e) => selectStreamHandler(e)}
+                    >
                       <div className="relative mt-1">
                         <div className="relative w-full cursor-default overflow-hidden rounded-lg border border-gray-500 bg-white text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-opacity-75 focus-visible:ring-offset-2  sm:text-sm">
                           <Combobox.Input
@@ -414,6 +427,8 @@ const Dashboard = () => {
                       type="text"
                       name="search"
                       id="search"
+                      value={searchInput}
+                      onChange={(e) => setSearchInput(e.target.value)}
                       className=" focus:ring-0 outline-none focus:border-gray-300 block w-80 sm:text-sm border-gray-300"
                       placeholder="Search"
                     />
@@ -479,56 +494,72 @@ const Dashboard = () => {
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-200 bg-white">
-                    {data?.map((data, index) => (
-                      <tr
-                        onClick={() => {
-                          setOpen(true);
-                          setClickedRow(data);
-                        }}
-                        className="cursor-pointer hover:bg-slate-100 hover:shadow"
-                        key={index}
-                      >
-                        <td className="whitespace-nowrap py-5 pl-4 pr-3 text-xs md:text-sm font-medium text-gray-900 sm:pl-6">
-                          {timeZone === "UTC" || timeZone === "GMT"
-                            ? moment.utc(time).format("DD/MM/YYYY, HH:mm:ss")
-                            : moment(data.time)
-                                .utcOffset("+05:30")
-                                .format("DD/MM/YYYY, HH:mm:ss")}
-                        </td>
-                        {/* <td className="whitespace-nowrap px-3 py-4 text-sm text-red-500 ">
-                      <div className="flex space-x-2 items-center">
-                        <img
-                          src={"/Icon ionic-ios-information-circle-outline.svg"}
-                        />
-                        <div>{data.priority}</div>
-                      </div>
-                    </td> */}
-
-                        <td className="truncate text-ellipsis overflow-hidden max-w-200 sm:max-w-xs md:max-w-sm lg:max-w-sm  xl:max-w-md px-3 py-4 text-xs md:text-sm text-gray-700">
-                          {data.log}
-                        </td>
-                        <td className="hidden xl:flex  whitespace-nowrap px-3 py-4 text-sm text-gray-700">
-                          {data.tags
-                            .filter((tag, index) => index <= 2)
-                            .map((tag, index) => (
-                              <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
-                                {tag}
-                              </div>
-                            ))}
-                        </td>
-                        <td className="hidden lg:flex xl:hidden whitespace-nowrap px-3 py-4 text-sm text-gray-700">
-                          {data.tags
-                            .filter((tag, index) => index <= 1)
-                            .map((tag, index) => (
-                              <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
-                                {tag}
-                              </div>
-                            ))}
+                  {tableLoading ? (
+                    <tbody>
+                      <tr align={"center"}>
+                        <td></td>
+                        <td className=" flex py-3 justify-center">
+                          <BeatLoader
+                            color={"#1A237E"}
+                            loading={tableLoading}
+                            cssOverride={override}
+                            size={10}
+                          />
+                          <td></td>
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
+                    </tbody>
+                  ) : (
+                    <tbody className="divide-y divide-gray-200 bg-white">
+                      {data
+                        ?.filter(
+                          (data, index) => data.log.indexOf(searchInput) !== -1
+                        )
+                        .map((data, index) => (
+                          <tr
+                            onClick={() => {
+                              setOpen(true);
+                              setClickedRow(data);
+                            }}
+                            className="cursor-pointer hover:bg-slate-100 hover:shadow"
+                            key={index}
+                          >
+                            <td className="whitespace-nowrap py-5 pl-4 pr-3 text-xs md:text-sm font-medium text-gray-900 sm:pl-6">
+                              {timeZone === "UTC" || timeZone === "GMT"
+                                ? moment
+                                    .utc(data.time)
+                                    .format("DD/MM/YYYY, HH:mm:ss")
+                                : moment(data.time)
+                                    .utcOffset("+05:30")
+                                    .format("DD/MM/YYYY, HH:mm:ss")}
+                            </td>
+                            <td className="truncate text-ellipsis overflow-hidden max-w-200 sm:max-w-xs md:max-w-sm lg:max-w-sm  xl:max-w-md px-3 py-4 text-xs md:text-sm text-gray-700">
+                              {data.log}
+                            </td>
+                            <td className="hidden xl:flex  whitespace-nowrap px-3 py-4 text-sm text-gray-700">
+                              {data.labels
+                                .split(",")
+                                .filter((tag, index) => index <= 2)
+                                .map((tag, index) => (
+                                  <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
+                                    {tag}
+                                  </div>
+                                ))}
+                            </td>
+                            <td className="hidden lg:flex xl:hidden whitespace-nowrap px-3 py-4 text-sm text-gray-700">
+                              {data.labels
+                                .split(",")
+                                .filter((tag, index) => index <= 1)
+                                .map((tag, index) => (
+                                  <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
+                                    {tag}
+                                  </div>
+                                ))}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  )}
                 </table>
               </div>
             </div>
