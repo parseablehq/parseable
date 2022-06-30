@@ -117,6 +117,9 @@ const Dashboard = () => {
           if (result.length > 0) {
             setLogStreams(result);
             setSelected(result[0]);
+
+            selectStreamHandler(result[0])
+
             setLoading(false);
           } else {
             setNoData(true);
@@ -129,7 +132,7 @@ const Dashboard = () => {
     }
 
     
-  }, [currentUser, data]);
+  }, [currentUser]);
 
   const filteredStreams =
     query === ""
@@ -254,47 +257,57 @@ const Dashboard = () => {
                                 Nothing found.
                               </div>
                             ) : (
-                              filteredStreams.map((stream, index) => (
-                                <Combobox.Option
-                                  key={index}
-                                  className={({ active }) =>
-                                    `relative cursor-default select-none py-2 pl-10 pr-4 ${
-                                      active
-                                        ? "bg-bluePrimary text-white"
-                                        : "text-gray-900"
-                                    }`
+                              filteredStreams
+                                .sort(function (a, b) {
+                                  if (a.name < b.name) {
+                                    return -1;
                                   }
-                                  value={stream}
-                                >
-                                  {({ selected, active }) => (
-                                    <>
-                                      <span
-                                        className={`block truncate ${
-                                          selected
-                                            ? "font-medium"
-                                            : "font-normal"
-                                        }`}
-                                      >
-                                        {stream.name}
-                                      </span>
-                                      {selected ? (
+                                  if (a.name > b.name) {
+                                    return 1;
+                                  }
+                                  return 0;
+                                })
+                                .map((stream, index) => (
+                                  <Combobox.Option
+                                    key={index}
+                                    className={({ active }) =>
+                                      `relative cursor-default select-none py-2 pl-10 pr-4 ${
+                                        active
+                                          ? "bg-bluePrimary text-white"
+                                          : "text-gray-900"
+                                      }`
+                                    }
+                                    value={stream}
+                                  >
+                                    {({ selected, active }) => (
+                                      <>
                                         <span
-                                          className={`absolute inset-y-0 left-0 flex items-center pl-3 ${
-                                            active
-                                              ? "text-white"
-                                              : "text-bluePrimary"
+                                          className={`block truncate ${
+                                            selected
+                                              ? "font-medium"
+                                              : "font-normal"
                                           }`}
                                         >
-                                          <CheckIcon
-                                            className="h-5 w-5"
-                                            aria-hidden="true"
-                                          />
+                                          {stream.name}
                                         </span>
-                                      ) : null}
-                                    </>
-                                  )}
-                                </Combobox.Option>
-                              ))
+                                        {selected ? (
+                                          <span
+                                            className={`absolute inset-y-0 left-0 flex items-center pl-3 ${
+                                              active
+                                                ? "text-white"
+                                                : "text-bluePrimary"
+                                            }`}
+                                          >
+                                            <CheckIcon
+                                              className="h-5 w-5"
+                                              aria-hidden="true"
+                                            />
+                                          </span>
+                                        ) : null}
+                                      </>
+                                    )}
+                                  </Combobox.Option>
+                                ))
                             )}
                           </Combobox.Options>
                         </Transition>
