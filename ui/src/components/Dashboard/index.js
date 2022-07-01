@@ -250,7 +250,7 @@ const Dashboard = () => {
                       onChange={(e) => selectStreamHandler(e)}
                     >
                       <div className="relative mt-1">
-                        <div className="relative w-full cursor-default overflow-hidden rounded-lg border border-gray-500 bg-white text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-opacity-75 focus-visible:ring-offset-2  sm:text-sm">
+                        <div className="relative w-full cursor-default overflow-hidden  border border-gray-300 bg-white text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-opacity-75 focus-visible:ring-offset-2  sm:text-sm">
                           <Combobox.Input
                             className="w-full border-none py-2 pl-3 pr-10 text-sm leading-5 text-gray-900 focus:ring-0"
                             displayValue={(stream) => stream.name}
@@ -339,76 +339,83 @@ const Dashboard = () => {
                     <div className="font-bold text-xl">2 GB</div>
                   </div>
                 </div>
-                <div className="ml-4 flex items-center md:ml-6">
-                  <Listbox
-                    value={selectedLogTime}
-                    onChange={(e) => timeChangeHandler(e)}
+                <div>
+                  <label
+                    htmlFor="location"
+                    className="ml-4 md:ml-6 block text-xs text-gray-700"
                   >
-                    {({ open }) => (
-                      <>
-                        {/* <Listbox.Label className="block text-sm font-medium text-gray-700">
+                    Search
+                  </label>
+                  <div className="ml-4 flex items-center md:ml-6">
+                    <Listbox
+                      value={selectedLogTime}
+                      onChange={(e) => timeChangeHandler(e)}
+                    >
+                      {({ open }) => (
+                        <>
+                          {/* <Listbox.Label className="block text-sm font-medium text-gray-700">
                         Assigned to
                       </Listbox.Label> */}
-                        <div className="mt-1 relative">
-                          <Listbox.Button className="relative w-52 border-r-0 bg-white border border-gray-300  shadow-sm pl-3 pr-10 py-2 text-left cursor-default focus:outline-none focus:ring-0 focus:border-gray-300 sm:text-sm">
-                            <span className="block truncate">
-                              {selectedLogTime.name}
-                            </span>
-                            <span className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
-                              <CalendarIcon
-                                className="h-5 w-5 text-bluePrimary"
-                                aria-hidden="true"
-                              />
-                            </span>
-                          </Listbox.Button>
+                          <div className="mt-1 relative">
+                            <Listbox.Button className="relative w-52 border-r-0 bg-white border border-gray-300  shadow-sm pl-3 pr-10 py-2 text-left cursor-default focus:outline-none focus:ring-0 focus:border-gray-300 sm:text-sm">
+                              <span className="block truncate">
+                                {selectedLogTime.name}
+                              </span>
+                              <span className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
+                                <CalendarIcon
+                                  className="h-5 w-5 text-bluePrimary"
+                                  aria-hidden="true"
+                                />
+                              </span>
+                            </Listbox.Button>
 
-                          <Transition
-                            show={open}
-                            as={Fragment}
-                            leave="transition ease-in duration-100"
-                            leaveFrom="opacity-100"
-                            leaveTo="opacity-0"
-                          >
-                            <Listbox.Options className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
-                              {logTimes.map((time) => (
-                                <Listbox.Option
-                                  key={time.id}
-                                  className={({ active }) =>
-                                    classNames(
-                                      active
-                                        ? "text-white bg-bluePrimary"
-                                        : "text-bluePrimary",
-                                      "cursor-default border-y border-gray-100 select-none relative py-2 pl-8 pr-4"
-                                    )
-                                  }
-                                  value={time}
-                                >
-                                  {({ selected, active }) => (
-                                    <>
-                                      <span
-                                        className={classNames(
-                                          selected
-                                            ? "font-semibold"
-                                            : "font-normal",
-                                          "block truncate text-center"
-                                        )}
-                                      >
-                                        {time.name === "Live Tracking" ? (
-                                          <div className="flex items-center justify-center">
-                                            <div>
-                                              <img
-                                                src={Tv}
-                                                className="w-4 group-hover:fill-white mr-2"
-                                              />
-                                            </div>{" "}
-                                            <div>{time.name}</div>{" "}
-                                          </div>
-                                        ) : (
-                                          <div> {time.name}</div>
-                                        )}
-                                      </span>
+                            <Transition
+                              show={open}
+                              as={Fragment}
+                              leave="transition ease-in duration-100"
+                              leaveFrom="opacity-100"
+                              leaveTo="opacity-0"
+                            >
+                              <Listbox.Options className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
+                                {logTimes.map((time) => (
+                                  <Listbox.Option
+                                    key={time.id}
+                                    className={({ active }) =>
+                                      classNames(
+                                        active
+                                          ? "text-white bg-bluePrimary"
+                                          : "text-bluePrimary",
+                                        "cursor-default border-y border-gray-100 select-none relative py-2 pl-8 pr-4"
+                                      )
+                                    }
+                                    value={time}
+                                  >
+                                    {({ selected, active }) => (
+                                      <>
+                                        <span
+                                          className={classNames(
+                                            selected
+                                              ? "font-semibold"
+                                              : "font-normal",
+                                            "block truncate text-center"
+                                          )}
+                                        >
+                                          {time.name === "Live Tracking" ? (
+                                            <div className="flex items-center justify-center">
+                                              <div>
+                                                <img
+                                                  src={Tv}
+                                                  className="w-4 group-hover:fill-white mr-2"
+                                                />
+                                              </div>{" "}
+                                              <div>{time.name}</div>{" "}
+                                            </div>
+                                          ) : (
+                                            <div> {time.name}</div>
+                                          )}
+                                        </span>
 
-                                      {/* {selected ? (
+                                        {/* {selected ? (
                                       <span
                                         className={classNames(
                                           active
@@ -423,11 +430,11 @@ const Dashboard = () => {
                                         />
                                       </span>
                                     ) : null} */}
-                                    </>
-                                  )}
-                                </Listbox.Option>
-                              ))}
-                              {/* <div value={"calendar"}>
+                                      </>
+                                    )}
+                                  </Listbox.Option>
+                                ))}
+                                {/* <div value={"calendar"}>
                                 <div className="flex items-center justify-center">
                                   <div
                                     className="datepicker relative form-floating mb-3 xl:w-96"
@@ -448,13 +455,13 @@ const Dashboard = () => {
                                   </div>
                                 </div>
                               </div> */}
-                            </Listbox.Options>
-                          </Transition>
-                        </div>
-                      </>
-                    )}
-                  </Listbox>
-                  {/* <div className="mt-1 relative  ">
+                              </Listbox.Options>
+                            </Transition>
+                          </div>
+                        </>
+                      )}
+                    </Listbox>
+                    {/* <div className="mt-1 relative  ">
                     <input
                       type="text"
                       name="search"
@@ -471,88 +478,92 @@ const Dashboard = () => {
                       />
                     </div>
                   </div> */}{" "}
-                  <Combobox
-                    value={searchSelected}
-                    onChange={(e) => {
-                      setSearchSelected(e);
-                      setsearchOpen(true);
-                    }}
-                  >
-                    <div className="relative mt-1">
-                      <div className="relative cursor-default overflow-hidden focus:ring-0 outline-none focus:border-gray-300 block w-96 sm:text-sm border border-gray-300">
-                        <Combobox.Input
-                          className="w-full border-none py-2 pl-3 pr-10 text-sm leading-5 text-gray-900 focus:ring-0"
-                          displayValue={(data) => data.time}
-                          onChange={(event) =>
-                            setSearchQuery(event.target.value)
-                          }
-                        />
-                        <Combobox.Button className="absolute inset-y-0 right-0 flex items-center pr-2">
-                          <SearchIcon
-                            className="h-5 w-5 text-bluePrimary"
-                            aria-hidden="true"
+                    <Combobox
+                      value={searchSelected}
+                      onChange={(e) => {
+                        setSearchSelected(e);
+                        setsearchOpen(true);
+                      }}
+                    >
+                      <div className="relative mt-1">
+                        <div className="relative cursor-default overflow-hidden focus:ring-0 outline-none focus:border-gray-300 block w-96 sm:text-sm border border-gray-300">
+                          <Combobox.Input
+                            className="w-full border-none py-2 pl-3 pr-10 text-sm leading-5 text-gray-900 focus:ring-0"
+                            displayValue={(data) => data.time}
+                            onChange={(event) =>
+                              setSearchQuery(event.target.value)
+                            }
                           />
-                        </Combobox.Button>
-                      </div>
-                      <Transition
-                        as={Fragment}
-                        leave="transition ease-in duration-100"
-                        leaveFrom="opacity-100"
-                        leaveTo="opacity-0"
-                        afterLeave={() => setSearchQuery("")}
-                      >
-                        <Combobox.Options className="absolute mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm">
-                          {filteredSTreamStreams.length === 0 &&
-                          searchQuery !== "" ? (
-                            <div className="relative cursor-default select-none py-2 px-4 text-gray-700">
-                              Nothing found.
-                            </div>
-                          ) : (
-                            filteredSTreamStreams?.map((data, index) => (
-                              <Combobox.Option
-                                key={index}
-                                className={({ active }) =>
-                                  `relative cursor-default select-none py-2 pl-10 pr-4 ${
-                                    active
-                                      ? "bg-bluePrimary text-white"
-                                      : "text-gray-900"
-                                  }`
-                                }
-                                value={data}
-                              >
-                                {({ selected, active }) => (
-                                  <>
-                                    <span
-                                      className={`block truncate ${
-                                        selected ? "font-medium" : "font-normal"
-                                      }`}
-                                    >
-                                      {data.log}
-                                    </span>
-                                    {selected ? (
+                          <Combobox.Button className="absolute inset-y-0 right-0 flex items-center pr-2">
+                            <SearchIcon
+                              className="h-5 w-5 text-bluePrimary"
+                              aria-hidden="true"
+                            />
+                          </Combobox.Button>
+                        </div>
+                        <Transition
+                          as={Fragment}
+                          leave="transition ease-in duration-100"
+                          leaveFrom="opacity-100"
+                          leaveTo="opacity-0"
+                          afterLeave={() => setSearchQuery("")}
+                        >
+                          <Combobox.Options className="absolute mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm">
+                            {filteredSTreamStreams.length === 0 &&
+                            searchQuery !== "" ? (
+                              <div className="relative cursor-default select-none py-2 px-4 text-gray-700">
+                                Nothing found.
+                              </div>
+                            ) : (
+                              filteredSTreamStreams?.map((data, index) => (
+                                <Combobox.Option
+                                  key={index}
+                                  className={({ active }) =>
+                                    `relative cursor-default select-none py-2 pl-10 pr-4 ${
+                                      active
+                                        ? "bg-bluePrimary text-white"
+                                        : "text-gray-900"
+                                    }`
+                                  }
+                                  value={data}
+                                >
+                                  {({ selected, active }) => (
+                                    <>
                                       <span
-                                        className={`absolute inset-y-0 left-0 flex items-center pl-3 ${
-                                          active
-                                            ? "text-white"
-                                            : "text-bluePrimary"
+                                        className={`block truncate ${
+                                          selected
+                                            ? "font-medium"
+                                            : "font-normal"
                                         }`}
                                       >
-                                        <CheckIcon
-                                          className="h-5 w-5"
-                                          aria-hidden="true"
-                                        />
+                                        {data.log}
                                       </span>
-                                    ) : null}
-                                  </>
-                                )}
-                              </Combobox.Option>
-                            ))
-                          )}
-                        </Combobox.Options>
-                      </Transition>
-                    </div>
-                  </Combobox>
+                                      {selected ? (
+                                        <span
+                                          className={`absolute inset-y-0 left-0 flex items-center pl-3 ${
+                                            active
+                                              ? "text-white"
+                                              : "text-bluePrimary"
+                                          }`}
+                                        >
+                                          <CheckIcon
+                                            className="h-5 w-5"
+                                            aria-hidden="true"
+                                          />
+                                        </span>
+                                      ) : null}
+                                    </>
+                                  )}
+                                </Combobox.Option>
+                              ))
+                            )}
+                          </Combobox.Options>
+                        </Transition>
+                      </div>
+                    </Combobox>
+                  </div>
                 </div>
+             
               </div>
             </div>
 
@@ -571,7 +582,7 @@ const Dashboard = () => {
                         <select
                           id="time"
                           name="time"
-                          className="mt-1 block pl-3 pr-10 py-1 text-base border-gray-300 focus:outline-none sm:text-sm rounded-md"
+                          className="mt-1 block pl-3 pr-10 py-1 text-base  bg-gray-200 border-gray-300 focus:outline-none sm:text-sm rounded-md"
                           defaultValue={timeZone}
                           onChange={(e) => timeZoneChange(e)}
                         >

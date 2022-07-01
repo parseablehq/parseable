@@ -7,8 +7,7 @@ import moment from "moment";
 export default function SideDialog({ open, setOpen, data }) {
   console.log(data);
 
-  let jsonString = JSON.stringify(data.log ? data.log : '', null, 2);
-
+  let jsonString = JSON.stringify(data.log ? data.log : "", null, 2);
 
   return (
     <Transition.Root show={open} as={Fragment}>
@@ -46,7 +45,9 @@ export default function SideDialog({ open, setOpen, data }) {
                             </div>
                             <div className="mt-1 text-white flex space-x-1 items-center">
                               <div>
-                                {moment.utc(data?.time).format("DD/MM/YYYY,HH:mm:ss")}
+                                {moment
+                                  .utc(data?.time)
+                                  .format("DD/MM/YYYY,HH:mm:ss")}
                               </div>
                             </div>
                           </div>
@@ -167,6 +168,13 @@ export default function SideDialog({ open, setOpen, data }) {
                                 <pre className="text-white text-xs font-light">
                                   {data.log}
                                 </pre>
+                                {/* <pre className="text-white text-xs font-light">
+                                  {JSON.stringify(
+                                    JSON.parse(data?.log),
+                                    null,
+                                    2
+                                  )}
+                                </pre> */}
                                 {/* <pre className="text-white text-xs font-light">
                                   {jsonString}
                                 </pre> */}
