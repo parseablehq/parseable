@@ -105,7 +105,7 @@ impl STREAM_INFO {
             // to load the stream metadata based on whatever is available.
             //
             // TODO: ignore failure(s) if any and skip to next stream
-            let alert_config = parse_string(storage.alert_exists(&stream.name).await)?;
+            let alert_config = parse_string(storage.get_alert(&stream.name).await)?;
             let schema = parse_string(storage.get_schema(&stream.name).await)?;
             let metadata = LogStreamMetadata {
                 schema,

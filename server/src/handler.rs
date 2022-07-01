@@ -204,7 +204,7 @@ pub async fn get_alert(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    match S3::new().alert_exists(&stream_name).await {
+    match S3::new().get_alert(&stream_name).await {
         Ok(alert) if alert.is_empty() => {
             if let Err(e) = validator::stream_name(&stream_name) {
                 return response::ServerResponse {
