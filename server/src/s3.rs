@@ -211,20 +211,27 @@ impl S3 {
     }
 
     async fn _get_schema(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
+        self._get(stream_name, "schema").await
+    }
+
+    async fn _alert_exists(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
+        self._get(stream_name, "alert.json").await
+    }
+
+    async fn _get(&self, stream_name: &str, resource: &str) -> Result<Bytes, AwsSdkError> {
         let resp = self
             .client
             .get_object()
             .bucket(&S3_CONFIG.s3_bucket_name)
-            .key(format!("{}/.schema", stream_name))
+            .key(format!("{}/.{}", stream_name, resource))
             .send()
             .await?;
         let body = resp.body.collect().await;
         let body_bytes = body.unwrap().into_bytes();
-
         Ok(body_bytes)
     }
 
-    async fn prefix_exists(&self, prefix: &str) -> bool {
+    async fn prefix_exists(&self, prefix: &str) -> Result<bool, AwsSdkError> {
         // TODO check if head object is faster compared to
         // list objects
         let resp = self
@@ -234,25 +241,11 @@ impl S3 {
             .prefix(prefix)
             .max_keys(1)
             .send()
-            .await;
-
-        if resp.unwrap().contents.is_some() {
-            return true;
-        }
-        false
-    }
-
-    async fn _alert_exists(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
-        let resp = self
-            .client
-            .get_object()
-            .bucket(&S3_CONFIG.s3_bucket_name)
-            .key(format!("{}/.alert.json", stream_name))
-            .send()
             .await?;
-        let body = resp.body.collect().await;
-        let body_bytes = body.unwrap().into_bytes();
-        Ok(body_bytes)
+
+        let result = resp.contents.is_some();
+
+        Ok(result)
     }
 
     async fn _list_streams(&self) -> Result<Vec<LogStream>, AwsSdkError> {
@@ -336,7 +329,7 @@ impl ObjectStorage for S3 {
         Ok(body_bytes)
     }
 
-    async fn alert_exists(&self, stream_name: &str) -> Result<Bytes, Error> {
+    async fn get_alert(&self, stream_name: &str) -> Result<Bytes, Error> {
         let body_bytes = self._alert_exists(stream_name).await?;
 
         Ok(body_bytes)
@@ -370,7 +363,7 @@ impl ObjectStorage for S3 {
         for prefix in query.get_prefixes() {
             let path = format!("s3://{}/{}", &S3_CONFIG.s3_bucket_name, prefix);
 
-            if !self.prefix_exists(&prefix).await {
+            if !self.prefix_exists(&prefix).await? {
                 break;
             }
 

@@ -48,7 +48,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn delete_stream(&self, stream_name: &str) -> Result<(), Error>;
     async fn create_alert(&self, stream_name: &str, body: String) -> Result<(), Error>;
     async fn get_schema(&self, stream_name: &str) -> Result<Bytes, Error>;
-    async fn alert_exists(&self, stream_name: &str) -> Result<Bytes, Error>;
+    async fn get_alert(&self, stream_name: &str) -> Result<Bytes, Error>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, Error>;
     async fn put_parquet(&self, key: &str, path: &str) -> Result<(), Error>;
     async fn query(&self, ctx: &SessionContext, query: &Query) -> Result<(), Error>;
