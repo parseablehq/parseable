@@ -186,7 +186,7 @@ export default function Layout({ children, labels }) {
                   <div className="flex-shrink-0 flex items-center px-4">
                     <img className="h-8 w-auto" src={Logo} alt="Workflow" />
                   </div>
-                  <Disclosure as="div" className="pt-6 px-4">
+                  <Disclosure autoToggle as="div" className="pt-6 px-4">
                     {({ open }) => (
                       <>
                         <dt className="text-lg">
@@ -247,7 +247,7 @@ export default function Layout({ children, labels }) {
           {/* Sidebar component, swap this element with another sidebar if you like */}
           <div className="flex flex-col flex-grow  bg-bluePrimary overflow-y-auto">
             <div className=" flex-1 flex flex-col">
-              <Disclosure as="div" className=" ">
+              <Disclosure defaultOpen as="div" className=" ">
                 {({ open }) => (
                   <>
                     <dt className="text-lg">
@@ -263,7 +263,7 @@ export default function Layout({ children, labels }) {
                         <span className="ml-6 h-7 flex items-center">
                           <ChevronDownIcon
                             className={classNames(
-                              open ? "-rotate-180" : "rotate-0",
+                              open ? "-rotate-180 " : "rotate-0",
                               "h-6 w-6 transform"
                             )}
                             aria-hidden="true"
