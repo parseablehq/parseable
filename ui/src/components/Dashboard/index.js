@@ -56,12 +56,14 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(false);
   const [tableLoading, setTableLoading] = useState(false);
   const [data, setData] = useState([]);
-
+  const [searchOpen, setsearchOpen] = useState(false);
   const [selected, setSelected] = useState({});
   const [query, setQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [selectedLogTime, setSelectedLogTime] = useState(logTimes[1]);
   const [noData, setNoData] = useState(false);
   const [searchInput, setSearchInput] = useState("");
+  const [searchSelected, setSearchSelected] = useState({});
   const [startTime, setStartTime] = useState(
     moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ")
   );
@@ -116,9 +118,18 @@ const Dashboard = () => {
 
           if (result.length > 0) {
             setLogStreams(result);
+            result.sort(function (a, b) {
+              if (a.name < b.name) {
+                return -1;
+              }
+              if (a.name > b.name) {
+                return 1;
+              }
+              return 0;
+            });
             setSelected(result[0]);
 
-            selectStreamHandler(result[0])
+            selectStreamHandler(result[0]);
 
             setLoading(false);
           } else {
@@ -130,8 +141,6 @@ const Dashboard = () => {
         })
         .finally(() => setLoading(false));
     }
-
-    
   }, [currentUser]);
 
   const filteredStreams =
@@ -142,6 +151,16 @@ const Dashboard = () => {
             .toLowerCase()
             .replace(/\s+/g, "")
             .includes(query.toLowerCase().replace(/\s+/g, ""))
+        );
+
+  const filteredSTreamStreams =
+    searchQuery === ""
+      ? data
+      : data.filter((data) =>
+          data.log
+            .toLowerCase()
+            .replace(/\s+/g, "")
+            .includes(searchQuery.toLowerCase().replace(/\s+/g, ""))
         );
 
   const timeChangeHandler = (e) => {
@@ -435,7 +454,7 @@ const Dashboard = () => {
                       </>
                     )}
                   </Listbox>
-                  <div className="mt-1 relative  ">
+                  {/* <div className="mt-1 relative  ">
                     <input
                       type="text"
                       name="search"
@@ -451,7 +470,88 @@ const Dashboard = () => {
                         aria-hidden="true"
                       />
                     </div>
-                  </div>
+                  </div> */}{" "}
+                  <Combobox
+                    value={searchSelected}
+                    onChange={(e) => {
+                      setSearchSelected(e);
+                      setsearchOpen(true);
+                    }}
+                  >
+                    <div className="relative mt-1">
+                      <div className="relative cursor-default overflow-hidden focus:ring-0 outline-none focus:border-gray-300 block w-96 sm:text-sm border border-gray-300">
+                        <Combobox.Input
+                          className="w-full border-none py-2 pl-3 pr-10 text-sm leading-5 text-gray-900 focus:ring-0"
+                          displayValue={(data) => data.time}
+                          onChange={(event) =>
+                            setSearchQuery(event.target.value)
+                          }
+                        />
+                        <Combobox.Button className="absolute inset-y-0 right-0 flex items-center pr-2">
+                          <SearchIcon
+                            className="h-5 w-5 text-bluePrimary"
+                            aria-hidden="true"
+                          />
+                        </Combobox.Button>
+                      </div>
+                      <Transition
+                        as={Fragment}
+                        leave="transition ease-in duration-100"
+                        leaveFrom="opacity-100"
+                        leaveTo="opacity-0"
+                        afterLeave={() => setSearchQuery("")}
+                      >
+                        <Combobox.Options className="absolute mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm">
+                          {filteredSTreamStreams.length === 0 &&
+                          searchQuery !== "" ? (
+                            <div className="relative cursor-default select-none py-2 px-4 text-gray-700">
+                              Nothing found.
+                            </div>
+                          ) : (
+                            filteredSTreamStreams?.map((data, index) => (
+                              <Combobox.Option
+                                key={index}
+                                className={({ active }) =>
+                                  `relative cursor-default select-none py-2 pl-10 pr-4 ${
+                                    active
+                                      ? "bg-bluePrimary text-white"
+                                      : "text-gray-900"
+                                  }`
+                                }
+                                value={data}
+                              >
+                                {({ selected, active }) => (
+                                  <>
+                                    <span
+                                      className={`block truncate ${
+                                        selected ? "font-medium" : "font-normal"
+                                      }`}
+                                    >
+                                      {data.log}
+                                    </span>
+                                    {selected ? (
+                                      <span
+                                        className={`absolute inset-y-0 left-0 flex items-center pl-3 ${
+                                          active
+                                            ? "text-white"
+                                            : "text-bluePrimary"
+                                        }`}
+                                      >
+                                        <CheckIcon
+                                          className="h-5 w-5"
+                                          aria-hidden="true"
+                                        />
+                                      </span>
+                                    ) : null}
+                                  </>
+                                )}
+                              </Combobox.Option>
+                            ))
+                          )}
+                        </Combobox.Options>
+                      </Transition>
+                    </div>
+                  </Combobox>
                 </div>
               </div>
             </div>
@@ -524,59 +624,63 @@ const Dashboard = () => {
                     </tbody>
                   ) : (
                     <tbody className="divide-y divide-gray-200 bg-white">
-                      {data
-                        ?.filter(
-                          (data, index) => data.log.indexOf(searchInput) !== -1
-                        )
-                        .map((data, index) => (
-                          <tr
-                            onClick={() => {
-                              setOpen(true);
-                              setClickedRow(data);
-                            }}
-                            className="cursor-pointer hover:bg-slate-100 hover:shadow"
-                            key={index}
-                          >
-                            <td className="whitespace-nowrap py-5 pl-4 pr-3 text-xs md:text-sm font-medium text-gray-900 sm:pl-6">
-                              {timeZone === "UTC" || timeZone === "GMT"
-                                ? moment
-                                    .utc(data.time)
-                                    .format("DD/MM/YYYY, HH:mm:ss")
-                                : moment(data.time)
-                                    .utcOffset("+05:30")
-                                    .format("DD/MM/YYYY, HH:mm:ss")}
-                            </td>
-                            <td className="truncate text-ellipsis overflow-hidden max-w-200 sm:max-w-xs md:max-w-sm lg:max-w-sm  xl:max-w-md px-3 py-4 text-xs md:text-sm text-gray-700">
-                              {data.log}
-                            </td>
-                            <td className="hidden xl:flex  whitespace-nowrap px-3 py-4 text-sm text-gray-700">
-                              {data.labels
-                                .split(",")
-                                .filter((tag, index) => index <= 2)
-                                .map((tag, index) => (
-                                  <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
-                                    {tag}
-                                  </div>
-                                ))}
-                            </td>
-                            <td className="hidden lg:flex xl:hidden whitespace-nowrap px-3 py-4 text-sm text-gray-700">
-                              {data.labels
-                                .split(",")
-                                .filter((tag, index) => index <= 1)
-                                .map((tag, index) => (
-                                  <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
-                                    {tag}
-                                  </div>
-                                ))}
-                            </td>
-                          </tr>
-                        ))}
+                      {data?.map((data, index) => (
+                        <tr
+                          onClick={() => {
+                            setOpen(true);
+                            setClickedRow(data);
+                          }}
+                          className="cursor-pointer hover:bg-slate-100 hover:shadow"
+                          key={index}
+                        >
+                          <td className="whitespace-nowrap py-5 pl-4 pr-3 text-xs md:text-sm font-medium text-gray-900 sm:pl-6">
+                            {timeZone === "UTC" || timeZone === "GMT"
+                              ? moment
+                                  .utc(data.time)
+                                  .format("DD/MM/YYYY, HH:mm:ss")
+                              : moment(data.time)
+                                  .utcOffset("+05:30")
+                                  .format("DD/MM/YYYY, HH:mm:ss")}
+                          </td>
+                          <td className="truncate text-ellipsis overflow-hidden max-w-200 sm:max-w-xs md:max-w-sm lg:max-w-sm  xl:max-w-md px-3 py-4 text-xs md:text-sm text-gray-700">
+                            {data.log}
+                          </td>
+                          <td className="hidden xl:flex  whitespace-nowrap px-3 py-4 text-sm text-gray-700">
+                            {data.labels
+                              .split(",")
+                              .filter((tag, index) => index <= 2)
+                              .map((tag, index) => (
+                                <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
+                                  {tag}
+                                </div>
+                              ))}
+                          </td>
+                          <td className="hidden lg:flex xl:hidden whitespace-nowrap px-3 py-4 text-sm text-gray-700">
+                            {data.labels
+                              .split(",")
+                              .filter((tag, index) => index <= 1)
+                              .map((tag, index) => (
+                                <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
+                                  {tag}
+                                </div>
+                              ))}
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   )}
                 </table>
               </div>
             </div>
           </div>
+
+          {Object.keys(searchSelected).length !== 0 && (
+            <SideDialog
+              open={searchOpen}
+              setOpen={setsearchOpen}
+              data={searchSelected}
+            />
+          )}
 
           <SideDialog open={open} setOpen={setOpen} data={clickedRow} />
         </Layout>
