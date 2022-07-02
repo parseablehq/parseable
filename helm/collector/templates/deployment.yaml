@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "collector.fullname" . }}
+  labels:
+    {{- include "collector.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.collector.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "collector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.collector.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "collector.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.collector.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "collector.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.collector.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.collector.securityContext | nindent 12 }}
+          image: "{{ .Values.collector.image.repository }}:{{ .Values.collector.image.tag | default .Chart.AppVersion }}"
+          args: ["--config","config.yaml"]
+          volumeMounts:
+          - name: config-volume
+            mountPath: /config.yaml
+            readOnly: true
+            subPath: config.yaml
+          imagePullPolicy: {{ .Values.collector.image.pullPolicy }}
+          env:
+            {{- range $key, $value :=  .Values.collector.env }}
+            - name: {{ $key }}
+              value: {{ tpl $value $ | quote }}
+            {{- end }}
+            - name: PARSEABLE_URL
+              value: {{ .Values.collector.parseable_server.url }}
+            - name: PARSEABLE_USERNAME
+              value: {{ .Values.collector.parseable_server.username }}
+            - name: PARSEABLE_PASSWORD
+              value: {{ .Values.collector.parseable_server.password }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.collector.resources | nindent 12 }}
+      volumes:
+      - name: config-volume
+        configMap:
+          name: {{ include "collector.fullname" . }}
+      {{- with .Values.collector.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.collector.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.collector.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

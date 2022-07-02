@@ -5,34 +5,34 @@ metadata:
   labels:
     {{- include "parseable.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.parseable.replicaCount }}
   selector:
     matchLabels:
       {{- include "parseable.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- with .Values.parseable.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
         {{- include "parseable.selectorLabels" . | nindent 8 }}
     spec:
-      {{- with .Values.imagePullSecrets }}
+      {{- with .Values.parseable.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- toYaml .Values.parseable.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+            {{- toYaml .Values.parseable.securityContext | nindent 12 }}
+          image: "{{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
           env:
-            {{- range $key, $value :=  .Values.parseable }}
+            {{- range $key, $value :=  .Values.parseable.env }}
             - name: {{ $key }}
               value: {{ tpl $value $ | quote }}
             {{- end }}
@@ -41,22 +41,22 @@ spec:
               containerPort: 5678
               protocol: TCP
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.parseable.resources | nindent 12 }}
           volumeMounts:
           - mountPath: "/cache"
             name: cache-volume
       volumes:
       - name: cache-volume
         emptyDir: {}
-      {{- with .Values.nodeSelector }}
+      {{- with .Values.parseable.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- with .Values.parseable.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with .Values.parseable.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
