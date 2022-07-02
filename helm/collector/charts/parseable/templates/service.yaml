@@ -5,9 +5,9 @@ metadata:
   labels:
     {{- include "parseable.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ $.Values.parseable.service.type }}
   ports:
-    - port: {{ .Values.service.port }}
+    - port: {{ $.Values.parseable.service.port }}
       targetPort: 5678
       protocol: TCP
       name: parseable

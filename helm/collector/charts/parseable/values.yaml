@@ -1,0 +1,39 @@
+parseable:
+  replicaCount: 1
+  image:
+    repository: parseable/parseable
+    pullPolicy: IfNotPresent
+    tag: ""
+  env:
+    P_TLS_CERT_PATH: ""
+    P_LOCAL_STORAGE: "data"
+    P_S3_URL: ""
+    P_S3_ACCESS_KEY: ""
+    P_S3_SECRET_KEY: ""
+    P_S3_REGION: "us-east-1"
+    P_STORAGE_SYNC_DURATION: "600"
+    P_S3_BUCKET: "logstorage"
+    P_USERNAME: "parseable"
+    P_PASSWORD: "parseable"
+  nameOverride: ""
+  fullnameOverride: ""  
+  serviceAccount:
+    create: true
+    name: "parseable"
+    annotations: {}
+  service:
+    type: ClusterIP
+    port: "5678"
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  podAnnotations: {}
+  podSecurityContext: {}
+  securityContext: {}
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []

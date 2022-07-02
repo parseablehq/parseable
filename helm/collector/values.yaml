@@ -1,0 +1,51 @@
+collector:
+  replicaCount: 1
+  image:
+    repository: parseable/collector
+    pullPolicy: Always
+    tag: ""
+  parseable_server:
+    url: "asd"
+    username: "parseable"
+    password: "parseable"
+  config:
+    logStreams:
+      ## First LogStream Configuration
+      - name: app1
+        collectInterval: 20s
+        collectFrom: 
+          namespace: java-app
+          podSelector: 
+            app: java-app
+        labels:
+          language: java
+          version: 1.2.5
+      ## Second LogStream configuration
+      - name: app2
+        collectInterval: 10s
+        collectFrom: 
+          namespace: go-app
+          podSelector: 
+            app: go-app
+        labels:
+          language: go
+          version: 1.2.6
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  rbac:
+    create: true
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  podAnnotations: {}
+  podSecurityContext: {}
+  securityContext: {}
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
