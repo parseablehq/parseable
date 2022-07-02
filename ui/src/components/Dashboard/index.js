@@ -489,7 +489,8 @@ const Dashboard = () => {
                         <div className="relative cursor-default overflow-hidden focus:ring-0 outline-none focus:border-gray-300 block w-96 sm:text-sm border border-gray-300">
                           <Combobox.Input
                             className="w-full border-none py-2 pl-3 pr-10 text-sm leading-5 text-gray-900 focus:ring-0"
-                            displayValue={(data) => data.time}
+                            // displayValue={(data) => 'Search'}
+                              placeholder="search"
                             onChange={(event) =>
                               setSearchQuery(event.target.value)
                             }

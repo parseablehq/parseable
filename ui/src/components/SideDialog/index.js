@@ -1,5 +1,5 @@
 /* This example requires Tailwind CSS v2.0+ */
-import { Fragment } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
 import { XIcon } from "@heroicons/react/outline";
 import moment from "moment";
@@ -7,7 +7,35 @@ import moment from "moment";
 export default function SideDialog({ open, setOpen, data }) {
   console.log(data);
 
-  let jsonString = JSON.stringify(data.log ? data.log : "", null, 2);
+  const [log, setLog] = useState({})
+
+  const str =
+    Object.keys(data).length !== 0
+      ? data?.log.replace(/"([^"]+)":/g, "$1:")
+      : "";
+
+  // JSON.parse(str)
+
+  console.log(data?.log);
+
+  // console.log(JSON.parse(`${Object.keys(data).length !== 0 ? data?.log : ""}`));
+  // console.log(JSON.parse(`${data?.log}`));
+  console.log(
+    JSON.parse(
+      `{"host":"176.94.62.153", "user-identifier":"wehner6461", "datetime":"24/Jun/2022:14:11:59 +0000", "method": "POST", "request": "/schemas/facilitate/engage", "protocol":"HTTP/2.0", "status":502, "bytes":4859, "referer": "https://www.forwardstreamline.net/e-tailers"}`
+    )
+  );
+
+  useEffect(() => {
+    if (Object.keys(data).length !== 0) {
+      console.log("log found");
+      console.log(JSON.parse(`${data?.log}`));
+
+      setLog(JSON.parse(`${data?.log}`));
+    } else {
+      console.log('empty yet');
+    }
+  }, [data]);
 
   return (
     <Transition.Root show={open} as={Fragment}>
@@ -162,21 +190,21 @@ export default function SideDialog({ open, setOpen, data }) {
                           <div className="bg-codeBack p-1 mt-5">
                             <div className="bg-codeBack h-500 scrollbar-thin  scrollbar-thumb-white scrollbar-codeBlack overflow-y-scroll scrollbar-thumb-rounded-full scrollbar-track-rounded-full py-3 px-3">
                               <div>
-                                {/* <pre className="text-white text-xs font-light">
-                                  {JSON.stringify(data.log, null, 2)}
-                                </pre> */}
                                 <pre className="text-white text-xs font-light">
-                                  {data.log}
+                                  {JSON.stringify(log, null, 2)}
                                 </pre>
                                 {/* <pre className="text-white text-xs font-light">
+                                  {data.log}
+                                </pre>
+                                <pre className="text-white text-xs font-light">
+                                  {str}
+                                </pre> */}
+                                {/* <pre className="text-white text-xs font-light">
                                   {JSON.stringify(
-                                    JSON.parse(data?.log),
+                                    JSON.parse(`${data?.log}`),
                                     null,
                                     2
                                   )}
-                                </pre> */}
-                                {/* <pre className="text-white text-xs font-light">
-                                  {jsonString}
                                 </pre> */}
                               </div>
                             </div>
