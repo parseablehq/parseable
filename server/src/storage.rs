@@ -99,13 +99,12 @@ pub trait ObjectStorage: Sync + 'static {
                 continue;
             }
 
-            // TODO: retries to storage
             let _put_parquet_file = self
                 .put_parquet(
-                    &format!("{}{}", dir.storage_dir_name, dir.parquet_file),
-                    &format!("{}{}", dir.dir_name_tmp, dir.parquet_file),
+                    &dir.parquet_file_s3,
+                    &format!("{}/tmp/{}", &dir.dir_name_local, &dir.parquet_file_local),
                 )
-                .await;
+                .await?;
 
             if let Err(e) = dir.delete_parquet_file() {
                 log::error!(
@@ -128,27 +127,30 @@ pub struct LogStream {
 
 #[derive(Debug)]
 struct DirName {
-    storage_dir_name: String,
-    dir_name_tmp: String,
+    dir_name_tmp_local: String,
     dir_name_local: String,
     parquet_path: String,
-    parquet_file: String,
+    parquet_file_local: String,
+    parquet_file_s3: String,
 }
 
 impl DirName {
     fn move_parquet_to_tmp(&self) -> io::Result<()> {
         fs::rename(
             &self.parquet_path,
-            format!("{}/{}", self.dir_name_tmp, self.parquet_file),
+            format!("{}/{}", self.dir_name_tmp_local, self.parquet_file_local),
         )
     }
 
     fn create_dir_name_tmp(&self) -> io::Result<()> {
-        fs::create_dir_all(&self.dir_name_tmp)
+        fs::create_dir_all(&self.dir_name_tmp_local)
     }
 
     fn delete_parquet_file(&self) -> io::Result<()> {
-        fs::remove_file(format!("{}/{}", self.dir_name_tmp, self.parquet_file))
+        fs::remove_file(format!(
+            "{}/tmp/{}",
+            self.dir_name_local, self.parquet_file_local
+        ))
     }
 }
 
@@ -180,19 +182,26 @@ impl StorageSync {
             + &utils::hour_to_prefix(self.time.hour())
             + &utils::minute_to_prefix(self.time.minute(), BLOCK_DURATION).unwrap();
 
-        let dir_name_tmp = format!("{}{}/tmp/{}", local_path, stream_names, uri);
+        let local_uri = str::replace(&uri, "/", ".");
+
+        let dir_name_tmp_local = format!("{}{}/tmp", local_path, stream_names);
 
         let storage_dir_name = format!("{}/{}", stream_names, uri);
 
-        let parquet_file = format!("{}.parquet", utils::random_string());
+        let random_string = utils::random_string();
+
+        let parquet_file_local = format!("{}{}.parquet", local_uri, random_string);
+
+        let parquet_file_s3 = format!("{}{}.parquet", storage_dir_name, random_string);
+
         let dir_name_local = local_path + &stream_names;
 
         DirName {
-            storage_dir_name,
-            dir_name_tmp,
+            dir_name_tmp_local,
             dir_name_local,
             parquet_path,
-            parquet_file,
+            parquet_file_local,
+            parquet_file_s3,
         }
     }
 }
