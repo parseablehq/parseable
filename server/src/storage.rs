@@ -24,7 +24,7 @@ use crate::utils;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{Timelike, Utc};
-use datafusion::prelude::SessionContext;
+use datafusion::arrow::record_batch::RecordBatch;
 use serde::Serialize;
 
 use std::fmt::{Debug, Display};
@@ -51,7 +51,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn get_alert(&self, stream_name: &str) -> Result<Bytes, Error>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, Error>;
     async fn put_parquet(&self, key: &str, path: &str) -> Result<(), Error>;
-    async fn query(&self, ctx: &SessionContext, query: &Query) -> Result<(), Error>;
+    async fn query(&self, query: &Query, results: &mut Vec<RecordBatch>) -> Result<(), Error>;
     async fn sync(&self) -> Result<(), Error> {
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
             return Ok(());
