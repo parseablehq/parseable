@@ -91,24 +91,22 @@ impl Query {
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information
+    /// TODO: find a way to query all selected parquet files together in a single context.
     pub async fn execute(&self, storage: &impl ObjectStorage) -> Result<Vec<RecordBatch>, Error> {
-        let ctx = SessionContext::new();
-        storage.query(&ctx, self).await?;
+        let mut results = vec![];
+        storage.query(self, &mut results).await?;
 
         // query cache only if end_time coulld have been after last sync.
         let duration_since = Utc::now() - self.end;
         if duration_since.num_seconds() < CONFIG.parseable.sync_duration as i64 {
-            self.execute_on_cache(&ctx).await?;
+            self.execute_on_cache(&mut results).await?;
         }
-
-        // execute the query and collect results
-        let df = ctx.sql(self.query.as_str()).await?;
-        let results = df.collect().await.map_err(Error::DataFusion)?;
 
         Ok(results)
     }
 
-    async fn execute_on_cache(&self, ctx: &SessionContext) -> Result<(), Error> {
+    async fn execute_on_cache(&self, results: &mut Vec<RecordBatch>) -> Result<(), Error> {
+        let ctx = SessionContext::new();
         let file_format = ParquetFormat::default().with_enable_pruning(true);
 
         let listing_options = ListingOptions {
@@ -126,6 +124,10 @@ impl Query {
             None,
         )
         .await?;
+
+        // execute the query and collect results
+        let df = ctx.sql(self.query.as_str()).await?;
+        results.extend(df.collect().await.map_err(Error::DataFusion)?);
 
         Ok(())
     }

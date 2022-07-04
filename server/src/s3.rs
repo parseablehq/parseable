@@ -6,6 +6,7 @@ use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use aws_types::credentials::SharedCredentialsProvider;
 use bytes::Bytes;
 use crossterm::style::Stylize;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::listing::{ListingTable, ListingTableConfig};
 use datafusion::prelude::SessionContext;
 use datafusion_objectstore_s3::object_store::s3::S3FileSystem;
@@ -347,7 +348,7 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn query(&self, ctx: &SessionContext, query: &Query) -> Result<(), Error> {
+    async fn query(&self, query: &Query, results: &mut Vec<RecordBatch>) -> Result<(), Error> {
         let s3_file_system = Arc::new(
             S3FileSystem::new(
                 Some(SharedCredentialsProvider::new(self.options.creds.clone())),
@@ -361,10 +362,11 @@ impl ObjectStorage for S3 {
         );
 
         for prefix in query.get_prefixes() {
+            let ctx = SessionContext::new();
             let path = format!("s3://{}/{}", &S3_CONFIG.s3_bucket_name, prefix);
 
             if !self.prefix_exists(&prefix).await? {
-                break;
+                continue;
             }
 
             let config = ListingTableConfig::new(s3_file_system.clone(), &path)
@@ -373,6 +375,10 @@ impl ObjectStorage for S3 {
 
             let table = ListingTable::try_new(config)?;
             ctx.register_table(query.stream_name.as_str(), Arc::new(table))?;
+
+            // execute the query and collect results
+            let df = ctx.sql(query.query.as_str()).await?;
+            results.extend(df.collect().await.map_err(Error::DataFusion)?);
         }
 
         Ok(())
