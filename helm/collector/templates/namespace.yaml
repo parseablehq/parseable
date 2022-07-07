@@ -1,0 +1,6 @@
+{{ if eq .Values.demo.app.create true }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.demo.app.namespace }}
+{{ end }}

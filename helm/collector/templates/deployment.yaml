@@ -43,7 +43,11 @@ spec:
               value: {{ tpl $value $ | quote }}
             {{- end }}
             - name: PARSEABLE_URL
+            {{- if eq .Values.collector.parseable_server.url "" }}
+              value: http://{{ include "collector.fullname" . }}{{ .Release.namespace }}.svc.cluster.local:{{ .Values.collector.service.port }}
+            {{- else }}
               value: {{ .Values.collector.parseable_server.url }}
+            {{- end }}
             - name: PARSEABLE_USERNAME
               value: {{ .Values.collector.parseable_server.username }}
             - name: PARSEABLE_PASSWORD
@@ -70,3 +74,31 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{ if eq .Values.demo.app.create true }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.demo.app.name }}
+  namespace: {{ .Values.demo.app.namespace }}
+spec:
+  selector:
+    matchLabels:
+      {{- with .Values.demo.app.labels }}
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
+  replicas: 2
+  template:
+    metadata:
+      labels:
+      {{- with .Values.demo.app.labels }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      containers:
+      - name: log-generator
+        image: mingrammer/flog
+        args: ["-f","json","-d","2s","-n","200","-l"]
+        ports:
+        - containerPort: 80 
+{{ end }}
