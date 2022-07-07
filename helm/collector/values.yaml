@@ -1,3 +1,16 @@
+## This configures a demo app that 
+## generates random logs 
+demo:
+  app:
+    create: true
+    name: demo-app
+    namespace: go-app
+    labels:
+      app: go-app
+
+## Configure collector to collect logs
+## from the demo application created 
+## above
 collector:
   replicaCount: 1
   image:
@@ -5,23 +18,12 @@ collector:
     pullPolicy: Always
     tag: ""
   parseable_server:
-    url: "asd"
+    url: ""
     username: "parseable"
     password: "parseable"
   config:
     logStreams:
-      ## First LogStream Configuration
-      - name: app1
-        collectInterval: 20s
-        collectFrom: 
-          namespace: java-app
-          podSelector: 
-            app: java-app
-        labels:
-          language: java
-          version: 1.2.5
-      ## Second LogStream configuration
-      - name: app2
+      - name: demo-app
         collectInterval: 10s
         collectFrom: 
           namespace: go-app
