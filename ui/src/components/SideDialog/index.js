@@ -16,15 +16,15 @@ export default function SideDialog({ open, setOpen, data }) {
 
   // JSON.parse(str)
 
-  console.log(data?.log);
+  // console.log(data?.log);
 
   // console.log(JSON.parse(`${Object.keys(data).length !== 0 ? data?.log : ""}`));
   // console.log(JSON.parse(`${data?.log}`));
-  console.log(
-    JSON.parse(
-      `{"host":"176.94.62.153", "user-identifier":"wehner6461", "datetime":"24/Jun/2022:14:11:59 +0000", "method": "POST", "request": "/schemas/facilitate/engage", "protocol":"HTTP/2.0", "status":502, "bytes":4859, "referer": "https://www.forwardstreamline.net/e-tailers"}`
-    )
-  );
+  // console.log(
+  //   JSON.parse(
+  //     `{"host":"176.94.62.153", "user-identifier":"wehner6461", "datetime":"24/Jun/2022:14:11:59 +0000", "method": "POST", "request": "/schemas/facilitate/engage", "protocol":"HTTP/2.0", "status":502, "bytes":4859, "referer": "https://www.forwardstreamline.net/e-tailers"}`
+  //   )
+  // );
 
   useEffect(() => {
     if (Object.keys(data).length !== 0) {
