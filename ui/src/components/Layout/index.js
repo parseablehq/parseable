@@ -130,7 +130,7 @@ export default function Layout({ children, labels }) {
           </div>
         </div>
       </div>
-      <div>
+      <div className="">
         <Transition.Root show={sidebarOpen} as={Fragment}>
           <Dialog
             as="div"
@@ -229,22 +229,16 @@ export default function Layout({ children, labels }) {
                     )}
                   </Disclosure>
 
-                  {/* <div className="flex items-center border-t border-gray-400 pt-4 px-4 text-white text-sm mt-4 space-x-2">
-                    <img src={"/Icon feather-settings.svg"} className="w-5" />
-                    <div>Settings</div>
-                  </div> */}
+                  
                 </Dialog.Panel>
               </Transition.Child>
               <div className="flex-shrink-0 w-14" aria-hidden="true">
-                {/* Dummy element to force sidebar to shrink to fit close icon */}
               </div>
             </div>
           </Dialog>
         </Transition.Root>
 
-        {/* Static sidebar for desktop */}
-        <div className="hidden pt-16 md:flex md:w-64 md:flex-col md:fixed md:inset-y-0">
-          {/* Sidebar component, swap this element with another sidebar if you like */}
+        {/* <div className="hidden pt-16 md:flex md:w-64 md:flex-col md:fixed md:inset-y-0">
           <div className="flex flex-col flex-grow  bg-bluePrimary overflow-y-auto">
             <div className=" flex-1 flex flex-col">
               <Disclosure defaultOpen as="div" className=" ">
@@ -273,25 +267,6 @@ export default function Layout({ children, labels }) {
                     </dt>
                     <Disclosure.Panel as="dd" className="mt-2 pr-12">
                       <div className="flex mt-4 flex-col space-y-3 pb-4 pl-4 pr-10">
-                        {/* <div className="relative px-2 py-1 border border-white rounded-lg flex items-start">
-                          <div className="flex items-center h-5">
-                            <input
-                              id="offers"
-                              aria-describedby="offers-description"
-                              name="offers"
-                              type="checkbox"
-                              className=" hidden h-4 w-4 text-bluePrimary border-gray-300 rounded"
-                            />
-                          </div>
-                          <div className="ml-3 text-sm">
-                            <label
-                              htmlFor="offers"
-                              className="font-light py-1 text-white"
-                            >
-                              Offers
-                            </label>
-                          </div>
-                        </div> */}
                         {labels
                           ? labels.split(",").map((label, index) => (
                               <div
@@ -303,41 +278,15 @@ export default function Layout({ children, labels }) {
                               </div>
                             ))
                           : null}
-                        {/* <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                          Label 1
-                        </div>
-                        <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                          Label 2
-                        </div>
-                        <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                          Label 3
-                        </div>
-                        <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                          Label 4
-                        </div>
-                        <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                          Label 5
-                        </div>
-                        <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                          Label 6
-                        </div>
-                        <div className="text-white font-light w-full border py-1  flex justify-center items-center border-white rounded-lg">
-                          Label 7
-                        </div> */}
                       </div>
                     </Disclosure.Panel>
                   </>
                 )}
               </Disclosure>
-
-              {/* <div className="flex items-center border-t border-gray-400 pt-4 px-4 text-white text-sm m1 space-x-2">
-                <img src={"/Icon feather-settings.svg"} className="w-5" />
-                <div>Settings</div>
-              </div> */}
             </div>
           </div>
-        </div>
-        <div className="md:pl-64 flex flex-col flex-1">
+        </div> */}
+        <div className="flex flex-col flex-1">
           <main>
             <div className="">
               {/* <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
@@ -345,7 +294,7 @@ export default function Layout({ children, labels }) {
                   Dashboard
                 </h1>
               </div> */}
-              <div className="max-w-7xl mx-auto">
+              <div className="w-full">
                 {/* Replace with your content */}
                 <div className="">{children}</div>
                 {/* /End replace */}
