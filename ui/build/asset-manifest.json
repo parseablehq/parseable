@@ -1,7 +1,7 @@
 {
   "files": {
-    "main.css": "/static/css/main.72e09294.css",
-    "main.js": "/static/js/main.db475345.js",
+    "main.css": "/static/css/main.28c79446.css",
+    "main.js": "/static/js/main.2def23c5.js",
     "static/js/787.b603e55d.chunk.js": "/static/js/787.b603e55d.chunk.js",
     "static/media/Group 295.svg": "/static/media/Group 295.8024ce898a2fc07894e78c93b5637a69.svg",
     "static/media/Group 308.svg": "/static/media/Group 308.55e8ebc0915cc514abe14aef01b1cc40.svg",
@@ -10,12 +10,12 @@
     "static/media/Icon awesome-stream (1).svg": "/static/media/Icon awesome-stream (1).fd5cc0381daabc57dd348b35aa94fc8c.svg",
     "static/media/Icon material-live-tv.svg": "/static/media/Icon material-live-tv.43afcfad0d74755c7d004667125c019d.svg",
     "static/media/Path 369.svg": "/static/media/Path 369.bcbce409a0e98bad6438.svg",
-    "main.72e09294.css.map": "/static/css/main.72e09294.css.map",
-    "main.db475345.js.map": "/static/js/main.db475345.js.map",
+    "main.28c79446.css.map": "/static/css/main.28c79446.css.map",
+    "main.2def23c5.js.map": "/static/js/main.2def23c5.js.map",
     "787.b603e55d.chunk.js.map": "/static/js/787.b603e55d.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.72e09294.css",
-    "static/js/main.db475345.js"
+    "static/css/main.28c79446.css",
+    "static/js/main.2def23c5.js"
   ]
 }
