@@ -17,12 +17,14 @@
  */
 
 use actix_cors::Cors;
-use actix_files::{Files, NamedFile};
-use actix_web::dev::{fn_service, ServiceRequest, ServiceResponse};
+use actix_web::dev::ServiceRequest;
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
+use actix_web_static_files::ResourceFiles;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+
+include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 use std::thread;
 use std::time::Duration;
@@ -31,7 +33,7 @@ extern crate ticker;
 mod banner;
 mod error;
 mod event;
-mod handler;
+mod handlers;
 mod metadata;
 mod option;
 mod query;
@@ -117,51 +119,45 @@ async fn run_http() -> anyhow::Result<()> {
 }
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
+    let generated = generate();
+
     // Base path "{url}/api/v1"
     // POST "/query" ==> Get results of the SQL query passed in request body
-    cfg.service(web::resource(query_path()).route(web::post().to(handler::query)))
+    cfg.service(web::resource(query_path()).route(web::post().to(handlers::event::query)))
         .service(
             // logstream API
             web::resource(logstream_path("{logstream}"))
                 // PUT "/logstream/{logstream}" ==> Create log stream
-                .route(web::put().to(handler::put_stream))
+                .route(web::put().to(handlers::logstream::put_stream))
                 // POST "/logstream/{logstream}" ==> Post logs to given log stream
-                .route(web::post().to(handler::post_event))
+                .route(web::post().to(handlers::event::post_event))
                 // DELETE "/logstream/{logstream}" ==> Delete log stream
-                .route(web::delete().to(handler::delete_stream))
+                .route(web::delete().to(handlers::logstream::delete_stream))
                 .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
         )
         .service(
             web::resource(alert_path("{logstream}"))
                 // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
-                .route(web::put().to(handler::put_alert))
+                .route(web::put().to(handlers::logstream::put_alert))
                 // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
-                .route(web::get().to(handler::get_alert)),
+                .route(web::get().to(handlers::logstream::get_alert)),
         )
         // GET "/logstream" ==> Get list of all Log Streams on the server
-        .service(web::resource(logstream_path("")).route(web::get().to(handler::list_streams)))
+        .service(
+            web::resource(logstream_path(""))
+                .route(web::get().to(handlers::logstream::list_streams)),
+        )
         .service(
             // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
-            web::resource(schema_path("{logstream}")).route(web::get().to(handler::get_schema)),
+            web::resource(schema_path("{logstream}"))
+                .route(web::get().to(handlers::logstream::get_schema)),
         )
         // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
-        .service(web::resource(liveness_path()).route(web::get().to(handler::liveness)))
+        .service(web::resource(liveness_path()).route(web::get().to(handlers::liveness)))
         // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
-        .service(web::resource(readiness_path()).route(web::get().to(handler::readiness)));
-}
-
-pub fn configure_static_files(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        Files::new("/", "./ui/build/")
-            .index_file("index.html")
-            .show_files_listing()
-            .default_handler(fn_service(|req: ServiceRequest| async {
-                let (req, _) = req.into_parts();
-                let file = NamedFile::open_async("./ui/build/index.html").await?;
-                let res = file.into_response(&req);
-                Ok(ServiceResponse::new(req, res))
-            })),
-    );
+        .service(web::resource(readiness_path()).route(web::get().to(handlers::readiness)))
+        // GET "/" ==> Serve the static frontend directory
+        .service(ResourceFiles::new("/", generated));
 }
 
 #[macro_export]
@@ -169,7 +165,6 @@ macro_rules! create_app {
     () => {
         App::new()
             .configure(|cfg| configure_routes(cfg))
-            .configure(|cfg| configure_static_files(cfg))
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
             .wrap(

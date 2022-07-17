@@ -17,12 +17,15 @@
  */
 
 use actix_web::web;
+use actix_web::HttpRequest;
 use chrono::{Date, DateTime, Timelike, Utc};
 use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::Error;
+
+const META_LABEL: &str = "x-p-meta";
 
 pub fn flatten_json_body(
     body: web::Json<serde_json::Value>,
@@ -103,6 +106,24 @@ pub fn minute_to_prefix(minute: u32, block_duration: u32) -> Option<String> {
         "minute={}/",
         minute_to_slot(minute, block_duration)?
     ))
+}
+
+/// collect labels passed from http headers
+/// format: labels = "app=k8s, cloud=gcp"
+pub fn collect_labels(req: &HttpRequest) -> Option<String> {
+    let keys = req.headers().keys().cloned().collect::<Vec<_>>();
+
+    let mut labels_vec = Vec::with_capacity(100);
+    for key in keys {
+        if key.to_string().to_lowercase().starts_with(META_LABEL) {
+            let value = req.headers().get(&key)?.to_str().ok();
+            let remove_meta_char = format!("{}-", META_LABEL);
+            let kv = format! {"{}={}", key.to_string().replace(&remove_meta_char.to_string(), ""), value.unwrap()};
+            labels_vec.push(kv);
+        }
+    }
+
+    Some(labels_vec.join(","))
 }
 
 pub struct TimePeriod {
