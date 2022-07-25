@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use structopt::StructOpt;
 
-use crate::banner::{system_info, warning_line};
+use crate::banner;
 use crate::s3::S3Config;
 
 lazy_static::lazy_static! {
@@ -62,7 +62,7 @@ impl Config {
         self.status_info(&scheme);
         self.warning();
         self.storage_info();
-        system_info();
+        banner::system_info();
         println!();
     }
 
@@ -95,16 +95,16 @@ impl Config {
     fn warning(&self) {
         match (self.storage.is_default_url(), self.is_default_cred()) {
             (true, true) => {
-                warning_line();
+                banner::warning_line();
                 self.cred_warning();
                 self.storage.warning();
             }
             (true, _) => {
-                warning_line();
+                banner::warning_line();
                 self.storage.warning();
             }
             (_, true) => {
-                warning_line();
+                banner::warning_line();
                 self.cred_warning();
             }
             _ => {}

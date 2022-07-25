@@ -18,13 +18,17 @@
   <a href="https://github.com/parseablehq/parseable/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/badge/license-AGPL3-informational" alt="License"></a>
 </p>
 
-Parseable is a fast, open source, highly scalable, easy to use and deploy log storage and management platform. Parseable is built for modern, cloud native workloads and runs natively in Kubernetes. For more information about features go to [our documentation](https://docs.parseable.io/).
+Parseable is the cloud native log storage and management platform for developers. Built for cloud and container native workloads, Parseable runs natively on Kubernetes. It is written in Rust, to leverage the memory safety, portable builds and high perfomance gurantees. It uses object store as primary storage, allowing seamless scale and flexibility. Parseable will get you from zero to searchable logs in minutes.
+### Why Parseable
 
-## Features
-* Log ingestion at high throughput, high volume.
+* Indexing free design.
+* Highly compressed log data in Parquet - columnar, open data format.
+* Stateless design allowing seamless scale and flexibility.
 * SDK less, simple REST API calls to upload logs.
-* Kubernetes, container native design.
-* Highly compressed Parquet format.
-* Object storage as the primary backend.
-* Bring your own bucket and own your log storage data. 
-* Intuitive dashboard to parse through log data efficiently.
+* Own your log storage data on your S3 buckets.
+### Features
+
+* Filter log data on tags.
+* Query for specific keywords and fields.
+* Intuitive dashboard to parse and query through log data.
+* Get started on Kubernetes with helm chart.

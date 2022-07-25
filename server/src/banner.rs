@@ -37,7 +37,7 @@ pub fn system_info() {
 }
 
 pub fn warning_line() {
-    eprintln!(
+    eprint!(
         "
     {}",
         "Warning:".to_string().red().bold(),
