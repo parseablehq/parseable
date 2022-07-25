@@ -73,8 +73,12 @@ impl Query {
         let stream_name = tokens[stream_name_index].to_string();
 
         // Parse time into DateTime
-        let start = DateTime::parse_from_rfc3339(start_time)?.into();
-        let end = DateTime::parse_from_rfc3339(end_time)?.into();
+        let start: DateTime<Utc> = DateTime::parse_from_rfc3339(start_time)?.into();
+        let end: DateTime<Utc> = DateTime::parse_from_rfc3339(end_time)?.into();
+
+        if start.timestamp() > end.timestamp() {
+            return Err(Error::InvalidTimeRange());
+        }
 
         Ok(Query {
             stream_name,

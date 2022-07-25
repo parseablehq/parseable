@@ -60,6 +60,8 @@ pub enum Error {
     SQLKeyword(String),
     #[error("queries across multiple streams are not supported currently: {0}")]
     MultipleStreams(String),
+    #[error("start time can not be later than end time")]
+    InvalidTimeRange(),
     #[error("query cannot be empty")]
     Empty,
     #[error("joins are not supported currently: {0}")]
