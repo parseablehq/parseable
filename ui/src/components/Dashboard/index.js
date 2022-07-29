@@ -2,6 +2,7 @@ import moment from "moment";
 import { useEffect, useState, Fragment } from "react";
 import Layout from "../Layout";
 import SideDialog from "../SideDialog";
+import AdvanceDateTimePicker from "../AdvanceDateTimePicker";
 import { useNavigate } from "react-router-dom";
 import { Dialog, Listbox, Menu, Transition } from "@headlessui/react";
 import {
@@ -18,7 +19,7 @@ import { SearchIcon } from "@heroicons/react/solid";
 import { Disclosure } from "@headlessui/react";
 import { ChevronDownIcon } from "@heroicons/react/outline";
 import { Combobox } from "@headlessui/react";
-import { CheckIcon, SelectorIcon } from "@heroicons/react/solid";
+import { CheckIcon, XCircleIcon, SelectorIcon } from "@heroicons/react/solid";
 import axios from "axios";
 import StreamIcon from "../../assets/images/Icon awesome-stream (1).svg";
 import UserIcon from "../../assets/images//Icon feather-user.svg";
@@ -26,6 +27,7 @@ import Logo from "../../assets/images/Group 295.svg";
 import Tv from "../../assets/images/Icon material-live-tv.svg";
 import BeatLoader from "react-spinners/BeatLoader";
 import MultipleListBox from "../MultipleListBox";
+import DatetimeRangePicker from "react-datetime-range-picker";
 
 const override = {
   display: "block",
@@ -191,6 +193,10 @@ const Dashboard = () => {
     console.log(e);
     setSelected(e);
 
+    setLabelSelected([]);
+    setSearchSelected({});
+    setSelectedLogTime(logTimes[1]);
+
     setTableLoading(true);
 
     var data;
@@ -243,6 +249,18 @@ const Dashboard = () => {
       .finally(() => setTableLoading(false));
   };
 
+  const clearLabel = (label) => {
+    console.log(label);
+
+    console.log(labelSelected);
+
+    const labelArray = labelSelected;
+    // labelArray.filter((item) => item !== label);
+    console.log(labelArray.filter((item) => item !== label));
+    const filteredArray = [...labelArray.filter((item) => item !== label)];
+    setLabelSelected(filteredArray);
+  };
+
   return (
     <>
       {loading ? (
@@ -263,7 +281,9 @@ const Dashboard = () => {
                     </label>
                     <Combobox
                       value={selected}
-                      onChange={(e) => selectStreamHandler(e)}
+                      onChange={(e) => {
+                        selectStreamHandler(e);
+                      }}
                     >
                       <div className="relative mt-1">
                         <div className="relative w-full cursor-default overflow-hidden  border border-gray-300 bg-white text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-opacity-75 focus-visible:ring-offset-2  sm:text-sm">
@@ -349,11 +369,6 @@ const Dashboard = () => {
                       </div>
                     </Combobox>
                   </div>
-
-                  {/* <div className=" ml-10 hidden sm:flex flex-col h-full justify-around">
-                    <div className="text-xs text-gray-700">Ingested Logs</div>
-                    <div className="font-bold text-xl">2 GB</div>
-                  </div> */}
                 </div>
                 <div>
                   <label
@@ -369,9 +384,6 @@ const Dashboard = () => {
                     >
                       {({ open }) => (
                         <>
-                          {/* <Listbox.Label className="block text-sm font-medium text-gray-700">
-                        Assigned to
-                      </Listbox.Label> */}
                           <div className="mt-1 relative">
                             <Listbox.Button className="relative w-44 border-r-0 bg-white border border-gray-300  shadow-sm pl-3 pr-10 py-2 text-left cursor-default focus:outline-none focus:ring-0 focus:border-gray-300 sm:text-sm">
                               <span className="block truncate">
@@ -450,50 +462,33 @@ const Dashboard = () => {
                                     )}
                                   </Listbox.Option>
                                 ))}
-                                {/* <div value={"calendar"}>
-                                <div className="flex items-center justify-center">
-                                  <div
-                                    className="datepicker relative form-floating mb-3 xl:w-96"
-                                    data-mdb-toggle-button="false"
-                                  >
-                                    <input
-                                      id="date_"
-                                      type="text"
-                                      className="form-control block w-full px-3 py-1.5 text-base text-center font-normal placeholder-white text-white bg-bluePrimary bg-clip-padding border border-solid border-gray-300  transition ease-in-out m-0 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none"
-                                      placeholder="Select a date"
-                                      data-mdb-toggle="datepicker"
-                                      // value="2022-01-20"
-                                      onFocus={(e) => {
-                                        e.currentTarget.type = "date";
-                                        e.currentTarget.focus();
-                                      }}
-                                    />
+                                <div value={"calendar"}>
+                                  <div className="flex items-center justify-center">
+                                    <div
+                                      className="datepicker relative form-floating mb-3 xl:w-96"
+                                      data-mdb-toggle-button="false"
+                                    >
+                                      <input
+                                        id="date_"
+                                        type="text"
+                                        className="form-control block w-full px-3 py-1.5 text-base text-center font-normal placeholder-white text-white bg-bluePrimary bg-clip-padding border border-solid border-gray-300  transition ease-in-out m-0 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none"
+                                        placeholder="Select a date"
+                                        data-mdb-toggle="datepicker"
+                                        // value="2022-01-20"
+                                        onFocus={(e) => {
+                                          e.currentTarget.type = "date";
+                                          e.currentTarget.focus();
+                                        }}
+                                      />
+                                    </div>
                                   </div>
                                 </div>
-                              </div> */}
                               </Listbox.Options>
                             </Transition>
                           </div>
                         </>
                       )}
                     </Listbox>
-                    {/* <div className="mt-1 relative  ">
-                    <input
-                      type="text"
-                      name="search"
-                      id="search"
-                      value={searchInput}
-                      onChange={(e) => setSearchInput(e.target.value)}
-                      className=" focus:ring-0 outline-none focus:border-gray-300 block w-80 sm:text-sm border-gray-300"
-                      placeholder="Search"
-                    />
-                    <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                      <SearchIcon
-                        className="h-5 w-5 text-bluePrimary"
-                        aria-hidden="true"
-                      />
-                    </div>
-                  </div> */}{" "}
                     <Combobox
                       value={searchSelected}
                       onChange={(e) => {
@@ -595,13 +590,14 @@ const Dashboard = () => {
                   >
                     <div className="relative w-full mt-1">
                       <Listbox.Button className="flex relative w-full cursor-defaultbg-white border border-gray-300  shadow-sm  py-2 pl-3 pr-7 text-left focus:outline-none focus-visible:border-indigo-500 focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-opacity-75 focus-visible:ring-offset-2 focus-visible:ring-offset-orange-300 sm:text-sm">
-                        {/* <span className="block text-gray-400 truncate">
-                          Select Tags
-                        </span> */}
                         {labelSelected.length > 0
-                          ? labelSelected.map((person) => (
-                              <span className="block w-min py-px px-1 truncate ml-1 bg-slate-200 rounded-md">
-                                {person}
+                          ? labelSelected.map((label) => (
+                              <span className="relative block w-min py-px pl-1 pr-6 truncate ml-1 bg-slate-200 rounded-md">
+                                {label}
+                                <XCircleIcon
+                                  onClick={() => clearLabel(label)}
+                                  className="hover:text-gray-600 transform duration-200 text-gray-700 w-4 absolute top-1 right-1"
+                                />
                               </span>
                             ))
                           : "Select Tags"}
@@ -651,25 +647,6 @@ const Dashboard = () => {
                                           <div className="w-4 h-4 mr-1 bg-white rounded-sm border-2 border-gray-400"></div>
                                         )}
                                         {person}
-                                        {/* <div className="relative flex items-start">
-                                          <div className="flex items-center h-5">
-                                            <input
-                                              id="comments"
-                                              aria-describedby="comments-description"
-                                              name="comments"
-                                              type="checkbox"
-                                              className="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300 rounded"
-                                            />
-                                          </div>
-                                          <div className="ml-3 text-sm">
-                                            <label
-                                              htmlFor="comments"
-                                              className="font-medium "
-                                            >
-                                              {person}
-                                            </label>
-                                          </div>
-                                        </div> */}
                                       </span>
                                     </>
                                   )}
@@ -685,6 +662,12 @@ const Dashboard = () => {
                 </div>
               </div>
             </div>
+
+            {/* <DatetimeRangePicker onChange={(e) => console.log('skhd',e)} /> */}
+
+            {/* <div className="w-44">
+              <AdvanceDateTimePicker />
+            </div> */}
 
             <div className="overflow-x-auto">
               <div className="inline-block min-w-full align-middle">

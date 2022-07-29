@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import logo from "../../assets/images/Group 308.svg";
-
+import axios from "axios";
 import React, { useState } from "react";
 
 const Login = () => {
@@ -19,11 +19,31 @@ const Login = () => {
     }
   };
 
-  const loginHandler = () => {
+  const loginHandler = (e) => {
+    e.preventDefault();
+
     if (validate()) {
       localStorage.setItem("username", username);
       localStorage.setItem("password", password);
-      navigate("/dashboard");
+
+      // var myHeaders = new Headers();
+      // myHeaders.append("Authorization", `Basic ${btoa(username + password)}`);
+      // myHeaders.append("Content-Type", "applfilterication/json");
+
+      // var requestOptions = {
+      //   method: "GET",
+      //   headers: myHeaders,
+      //   redirect: "follow",
+      // };
+
+      // fetch("http://localhost:5678/api/v1/logstream", requestOptions)
+      //   .then((response) => console.log(response))
+      //   .then((result) => {
+      //     console.log(result);
+      //     navigate("/index.html");
+      //   })
+      //   .catch((error) => console.log("error", error));
+      navigate("/index.html");
     }
   };
 
@@ -37,7 +57,7 @@ const Login = () => {
         </div>
 
         <div className="mt-3 w-full">
-          <form >
+          <form onSubmit={(e) => loginHandler(e)}>
             <div className="mt-1 w-full">
               <input
                 type="username"
@@ -63,7 +83,7 @@ const Login = () => {
               />
             </div>
             <button
-              onClick={() => loginHandler()}
+              type="submit"
               className="hover:bg-yellow-500 transform duration-200 hover:shadow w-full py-3 flex justify-center items-center font-semibold text-white bg-yellowButton mt-3"
             >
               Login
