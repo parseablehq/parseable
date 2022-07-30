@@ -159,10 +159,10 @@ pub struct Opt {
     #[structopt(long, env = "P_LOCAL_STORAGE", default_value = "./data")]
     pub local_disk_path: String,
 
-    /// Optional duration after which server would send uncommited data to remote object
-    /// storage platform. Defaults to 10min.
-    /// TODO ensure this can be only set to 1 min and not less than that for now
-    #[structopt(long, env = "P_STORAGE_SYNC_DURATION", default_value = "600")]
+    /// Optional interval after which server would upload uncommited data to
+    /// remote object storage platform. Defaults to 1min.
+    /// TODO ensure this can be only set to 1 min and not less than that for now.
+    #[structopt(long, env = "P_STORAGE_UPLOAD_INTERVAL", default_value = "60")]
     pub sync_duration: u64,
 
     /// Optional username to enable basic auth on the server

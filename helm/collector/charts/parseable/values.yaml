@@ -11,7 +11,7 @@ parseable:
     P_S3_ACCESS_KEY: ""
     P_S3_SECRET_KEY: ""
     P_S3_REGION: "us-east-1"
-    P_STORAGE_SYNC_DURATION: "600"
+    P_STORAGE_UPLOAD_INTERVAL: "60"
     P_S3_BUCKET: "logstorage"
     P_USERNAME: "parseable"
     P_PASSWORD: "parseable"
