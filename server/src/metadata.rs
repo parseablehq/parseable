@@ -46,6 +46,11 @@ lazy_static! {
 // 5. When set alert API is called (update the alert)
 #[allow(clippy::all)]
 impl STREAM_INFO {
+    pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
+        let alert_config = self.alert(stream_name.clone())?;
+        self.add_stream(stream_name, schema, alert_config)
+    }
+
     pub fn schema(&self, stream_name: String) -> Result<String, Error> {
         let map = self.read().unwrap();
         let meta = map
@@ -55,6 +60,11 @@ impl STREAM_INFO {
         Ok(meta.schema.clone())
     }
 
+    pub fn set_alert(&self, stream_name: String, alert_config: String) -> Result<(), Error> {
+        let schema = self.schema(stream_name.clone())?;
+        self.add_stream(stream_name, schema, alert_config)
+    }
+
     pub fn alert(&self, stream_name: String) -> Result<String, Error> {
         let map = self.read().unwrap();
         let meta = map
@@ -62,16 +72,6 @@ impl STREAM_INFO {
             .ok_or(Error::StreamMetaNotFound(stream_name))?;
 
         Ok(meta.alert_config.clone())
-    }
-
-    pub fn set_alert(&self, stream_name: String, alert_config: String) -> Result<(), Error> {
-        let schema = self.schema(stream_name.clone())?;
-        self.add_stream(stream_name, schema, alert_config)
-    }
-
-    pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
-        let alert_config = self.alert(stream_name.clone())?;
-        self.add_stream(stream_name, schema, alert_config)
     }
 
     pub fn add_stream(

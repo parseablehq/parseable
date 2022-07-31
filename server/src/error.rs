@@ -66,10 +66,10 @@ pub enum Error {
     Empty,
     #[error("joins are not supported currently: {0}")]
     Join(String),
-    #[error("Missing record batch")]
+    #[error("missing record batch")]
     MissingRecord,
-    #[error("Metadata not found for log stream: {0}")]
+    #[error("metadata not found for log stream: {0}")]
     StreamMetaNotFound(String),
-    #[error("Invalid alert config: {0}")]
+    #[error("invalid alert config: {0}")]
     InvalidAlert(String),
 }
