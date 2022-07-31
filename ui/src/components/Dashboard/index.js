@@ -29,7 +29,7 @@ import Logo from "../../assets/images/Group 295.svg";
 import Tv from "../../assets/images/Icon material-live-tv.svg";
 import BeatLoader from "react-spinners/BeatLoader";
 import MultipleListBox from "../MultipleListBox";
-import { SERVER_URL } from "../../utils/api";
+import { getServerURL } from "../../utils/api";
 import "./index.css";
 import DatetimeRangePicker from "react-datetime-range-picker";
 
@@ -123,7 +123,7 @@ const Dashboard = () => {
         redirect: "follow",
       };
 
-      fetch(`${SERVER_URL}api/v1/logstream`, requestOptions)
+      fetch(`${getServerURL()}api/v1/logstream`, requestOptions)
         .then((response) => {
           setLoading(true);
           return response.json();
@@ -233,7 +233,7 @@ const Dashboard = () => {
 
     var config = {
       method: "post",
-      url: `${SERVER_URL}api/v1/query`,
+      url: `${getServerURL()}api/v1/query`,
       headers: {
         Authorization: "Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==",
         "Content-Type": "application/json",
