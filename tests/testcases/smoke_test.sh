@@ -21,7 +21,7 @@ stream_name=$2
 events=50
 input_file=$PWD/input.json
 curl_std_opts=( -sS --header 'Content-Type: application/json' --header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' -w '\n\n%{http_code}' )
-alert_body='{"alerts":[{"name":"server-fail-alert1","message":"server reported error status","rule":{"field":"http_status","contains":"500","repeats":"5","within":"10m"},"target":[{"name":"slack-target","server_url":"http://mailgun.com","api_key":"xxxx"}]}]}'
+alert_body='{"alerts":[{"name":"server-fail-alert1","message":"server reported error status","rule":{"field":"http_status","contains":"500","repeats":5,"within":"10m"},"target":[{"name":"slack-target","server_url":"http://mailgun.com","api_key":"xxxx"}]}]}'
 schema_body='{"fields":[{"name":"host","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"user-identifier","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"datetime","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"method","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"request","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"protocol","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"status","data_type":"Int64","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"bytes","data_type":"Int64","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"referer","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false},{"name":"labels","data_type":"Utf8","nullable":true,"dict_id":0,"dict_is_ordered":false}]}'
 
 # Generate events using flog (https://github.com/mingrammer/flog) and store it in input.json file
