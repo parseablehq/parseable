@@ -46,7 +46,7 @@ pub struct Alert {
 pub struct Rule {
     pub field: String,
     pub contains: String,
-    pub repeats: String,
+    pub repeats: u32,
     pub within: String,
 }
 
@@ -74,14 +74,22 @@ pub fn alert(body: String) -> Result<(), Error> {
             ));
         }
         if alert.rule.contains.is_empty() {
-            return Err(Error::InvalidAlert("Rule contains must be set".to_string()));
+            return Err(Error::InvalidAlert("rule.contains must be set".to_string()));
         }
         if alert.rule.field.is_empty() {
-            return Err(Error::InvalidAlert("Rule field must be set".to_string()));
+            return Err(Error::InvalidAlert("rule.field must be set".to_string()));
+        }
+        if alert.rule.within.is_empty() {
+            return Err(Error::InvalidAlert("rule.within must be set".to_string()));
+        }
+        if alert.rule.repeats == 0 {
+            return Err(Error::InvalidAlert(
+                "rule.repeats can't be set to 0".to_string(),
+            ));
         }
         if alert.target.is_empty() {
             return Err(Error::InvalidAlert(
-                "Alert must have at least one target".to_string(),
+                "alert must have at least one target".to_string(),
             ));
         }
     }
