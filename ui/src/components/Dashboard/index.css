@@ -1,0 +1,7 @@
+.search-button {
+  @apply relative w-44 text-left rounded-r-none border-grey rounded py-2 px-3 border font-medium text-textBlack;
+}
+
+.search-input {
+  @apply w-full rounded py-2 px-3  rounded-l-none  border  border-l-0 border-grey font-medium text-textBlack;
+}
