@@ -2,7 +2,7 @@ import moment from "moment";
 import { useEffect, useState, Fragment } from "react";
 import Layout from "../Layout";
 import SideDialog from "../SideDialog";
-import AdvanceDateTimePicker from "../AdvanceDateTimePicker";
+// import AdvanceDateTimePicker from "../AdvanceDateTimePicker";
 import { useNavigate } from "react-router-dom";
 import { Dialog, Listbox, Menu, Transition } from "@headlessui/react";
 import {
@@ -19,7 +19,9 @@ import { SearchIcon } from "@heroicons/react/solid";
 import { Disclosure } from "@headlessui/react";
 import { ChevronDownIcon } from "@heroicons/react/outline";
 import { Combobox } from "@headlessui/react";
+import { QuestionMarkCircleIcon } from "@heroicons/react/outline";
 import { CheckIcon, XCircleIcon, SelectorIcon } from "@heroicons/react/solid";
+
 import axios from "axios";
 import StreamIcon from "../../assets/images/Icon awesome-stream (1).svg";
 import UserIcon from "../../assets/images//Icon feather-user.svg";
@@ -27,6 +29,8 @@ import Logo from "../../assets/images/Group 295.svg";
 import Tv from "../../assets/images/Icon material-live-tv.svg";
 import BeatLoader from "react-spinners/BeatLoader";
 import MultipleListBox from "../MultipleListBox";
+import { SERVER_URL } from "../../utils/api";
+import "./index.css";
 import DatetimeRangePicker from "react-datetime-range-picker";
 
 const override = {
@@ -69,13 +73,13 @@ const Dashboard = () => {
   const [searchInput, setSearchInput] = useState("");
   const [searchSelected, setSearchSelected] = useState({});
   const [startTime, setStartTime] = useState(
-    moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ")
+    moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ"),
   );
   const [endTime, setEndTime] = useState(
     moment()
       .utcOffset("+00:00")
       .subtract(10, "minutes")
-      .format("YYYY-MM-DDThh:mm:ssZ")
+      .format("YYYY-MM-DDThh:mm:ssZ"),
   );
   const time = "2022-06-13T14:17:20.012644671Z";
   console.log(moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ"));
@@ -84,7 +88,7 @@ const Dashboard = () => {
     moment()
       .utcOffset("+00:00")
       .subtract(10, "minutes")
-      .format("YYYY-MM-DDThh:mm:ssZ")
+      .format("YYYY-MM-DDThh:mm:ssZ"),
   );
 
   // console.log(moment().timeZone())
@@ -119,7 +123,7 @@ const Dashboard = () => {
         redirect: "follow",
       };
 
-      fetch("/api/v1/logstream", requestOptions)
+      fetch(`${SERVER_URL}api/v1/logstream`, requestOptions)
         .then((response) => {
           setLoading(true);
           return response.json();
@@ -161,7 +165,7 @@ const Dashboard = () => {
           stream.name
             .toLowerCase()
             .replace(/\s+/g, "")
-            .includes(query.toLowerCase().replace(/\s+/g, ""))
+            .includes(query.toLowerCase().replace(/\s+/g, "")),
         );
 
   const filteredSTreamStreams =
@@ -171,7 +175,7 @@ const Dashboard = () => {
           data.log
             .toLowerCase()
             .replace(/\s+/g, "")
-            .includes(searchQuery.toLowerCase().replace(/\s+/g, ""))
+            .includes(searchQuery.toLowerCase().replace(/\s+/g, "")),
         );
 
   const timeChangeHandler = (e) => {
@@ -184,7 +188,7 @@ const Dashboard = () => {
         moment()
           .utcOffset("+00:00")
           .subtract(e.value, "minutes")
-          .format("YYYY-MM-DDThh:mm:ssZ")
+          .format("YYYY-MM-DDThh:mm:ssZ"),
       );
     }
   };
@@ -229,7 +233,7 @@ const Dashboard = () => {
 
     var config = {
       method: "post",
-      url: "/api/v1/query",
+      url: `${SERVER_URL}api/v1/query`,
       headers: {
         Authorization: "Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==",
         "Content-Type": "application/json",
@@ -286,19 +290,17 @@ const Dashboard = () => {
                       }}
                     >
                       <div className="relative mt-1">
-                        <div className="relative w-full cursor-default overflow-hidden  border border-gray-300 bg-white text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-opacity-75 focus-visible:ring-offset-2  sm:text-sm">
-                          <Combobox.Input
-                            className="w-full border-none py-2 pl-3 pr-10 text-sm leading-5 text-gray-900 focus:ring-0"
-                            displayValue={(stream) => stream.name}
-                            onChange={(event) => setQuery(event.target.value)}
+                        <Combobox.Input
+                          className="custom-input custom-focus"
+                          displayValue={(stream) => stream.name}
+                          onChange={(event) => setQuery(event.target.value)}
+                        />
+                        <Combobox.Button className="absolute inset-y-0 right-0 flex items-center pr-2">
+                          <SelectorIcon
+                            className="h-5 w-5 text-gray-400"
+                            aria-hidden="true"
                           />
-                          <Combobox.Button className="absolute inset-y-0 right-0 flex items-center pr-2">
-                            <SelectorIcon
-                              className="h-5 w-5 text-gray-400"
-                              aria-hidden="true"
-                            />
-                          </Combobox.Button>
-                        </div>
+                        </Combobox.Button>
                         <Transition
                           as={Fragment}
                           leave="transition ease-in duration-100"
@@ -385,7 +387,7 @@ const Dashboard = () => {
                       {({ open }) => (
                         <>
                           <div className="mt-1 relative">
-                            <Listbox.Button className="relative w-44 border-r-0 bg-white border border-gray-300  shadow-sm pl-3 pr-10 py-2 text-left cursor-default focus:outline-none focus:ring-0 focus:border-gray-300 sm:text-sm">
+                            <Listbox.Button className="search-button custom-focus">
                               <span className="block truncate">
                                 {selectedLogTime.name}
                               </span>
@@ -404,7 +406,7 @@ const Dashboard = () => {
                               leaveFrom="opacity-100"
                               leaveTo="opacity-0"
                             >
-                              <Listbox.Options className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
+                              <Listbox.Options className="absolute z-10 mt-1 pt-2 pb-2 w-full bg-white border focus:outline-0 rounded shadow">
                                 {logTimes.map((time) => (
                                   <Listbox.Option
                                     key={time.id}
@@ -412,8 +414,8 @@ const Dashboard = () => {
                                       classNames(
                                         active
                                           ? "text-white bg-bluePrimary"
-                                          : "text-bluePrimary",
-                                        "cursor-default border-y border-gray-100 select-none relative py-2 pl-8 pr-4"
+                                          : "text-textBlack",
+                                        "cursor-default border-y border-gray-100 select-none relative py-1 font-medium text-sm ",
                                       )
                                     }
                                     value={time}
@@ -424,8 +426,8 @@ const Dashboard = () => {
                                           className={classNames(
                                             selected
                                               ? "font-semibold"
-                                              : "font-normal",
-                                            "block truncate text-center"
+                                              : "font-norma",
+                                            "block truncate my-1 text-center",
                                           )}
                                         >
                                           {time.name === "Live Tracking" ? (
@@ -497,9 +499,9 @@ const Dashboard = () => {
                       }}
                     >
                       <div className="relative mt-1">
-                        <div className="relative cursor-default overflow-hidden focus:ring-0 outline-none focus:border-gray-300 block w-96 sm:text-sm border border-gray-300">
+                        <div className="relative cursor-default w-96">
                           <Combobox.Input
-                            className="w-full border-none py-2 pl-3 pr-10 text-sm leading-5 text-gray-900 focus:ring-0"
+                            className="search-input custom-focus placeholder-iconGrey"
                             // displayValue={(data) => 'Search'}
                             placeholder="search"
                             onChange={(event) =>
@@ -508,7 +510,7 @@ const Dashboard = () => {
                           />
                           <Combobox.Button className="absolute inset-y-0 right-0 flex items-center pr-2">
                             <SearchIcon
-                              className="h-5 w-5 text-bluePrimary"
+                              className="h-5 w-5 text-iconGrey"
                               aria-hidden="true"
                             />
                           </Combobox.Button>
@@ -527,6 +529,7 @@ const Dashboard = () => {
                                 Nothing found.
                               </div>
                             ) : (
+                              filteredSTreamStreams?.map &&
                               filteredSTreamStreams?.map((data, index) => (
                                 <Combobox.Option
                                   key={index}
@@ -589,7 +592,7 @@ const Dashboard = () => {
                     multiple
                   >
                     <div className="relative w-full mt-1">
-                      <Listbox.Button className="flex relative w-full cursor-defaultbg-white border border-gray-300  shadow-sm  py-2 pl-3 pr-7 text-left focus:outline-none focus-visible:border-indigo-500 focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-opacity-75 focus-visible:ring-offset-2 focus-visible:ring-offset-orange-300 sm:text-sm">
+                      <Listbox.Button className="custom-input text-left custom-focus">
                         {labelSelected.length > 0
                           ? labelSelected.map((label) => (
                               <span className="relative block w-min py-px pl-1 pr-6 truncate ml-1 bg-slate-200 rounded-md">
@@ -730,49 +733,50 @@ const Dashboard = () => {
                     </tbody>
                   ) : (
                     <tbody className="divide-y divide-gray-200 bg-white">
-                      {data?.map((data, index) => (
-                        <tr
-                          onClick={() => {
-                            setOpen(true);
-                            setClickedRow(data);
-                          }}
-                          className="cursor-pointer hover:bg-slate-100 hover:shadow"
-                          key={index}
-                        >
-                          <td className="whitespace-nowrap py-5 pl-4 pr-3 text-xs md:text-sm font-medium text-gray-900 sm:pl-6">
-                            {timeZone === "UTC" || timeZone === "GMT"
-                              ? moment
-                                  .utc(data.time)
-                                  .format("DD/MM/YYYY, HH:mm:ss")
-                              : moment(data.time)
-                                  .utcOffset("+05:30")
-                                  .format("DD/MM/YYYY, HH:mm:ss")}
-                          </td>
-                          <td className="truncate text-ellipsis overflow-hidden max-w-200 sm:max-w-xs md:max-w-sm lg:max-w-sm  xl:max-w-md px-3 py-4 text-xs md:text-sm text-gray-700">
-                            {data.log}
-                          </td>
-                          <td className="hidden xl:flex  whitespace-nowrap px-3 py-4 text-sm text-gray-700">
-                            {data.labels
-                              .split(",")
-                              .filter((tag, index) => index <= 2)
-                              .map((tag, index) => (
-                                <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
-                                  {tag}
-                                </div>
-                              ))}
-                          </td>
-                          <td className="hidden lg:flex xl:hidden whitespace-nowrap px-3 py-4 text-sm text-gray-700">
-                            {data.labels
-                              .split(",")
-                              .filter((tag, index) => index <= 1)
-                              .map((tag, index) => (
-                                <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
-                                  {tag}
-                                </div>
-                              ))}
-                          </td>
-                        </tr>
-                      ))}
+                      {data.map &&
+                        data?.map((data, index) => (
+                          <tr
+                            onClick={() => {
+                              setOpen(true);
+                              setClickedRow(data);
+                            }}
+                            className="cursor-pointer hover:bg-slate-100 hover:shadow"
+                            key={index}
+                          >
+                            <td className="whitespace-nowrap py-5 pl-4 pr-3 text-xs md:text-sm font-medium text-gray-900 sm:pl-6">
+                              {timeZone === "UTC" || timeZone === "GMT"
+                                ? moment
+                                    .utc(data.time)
+                                    .format("DD/MM/YYYY, HH:mm:ss")
+                                : moment(data.time)
+                                    .utcOffset("+05:30")
+                                    .format("DD/MM/YYYY, HH:mm:ss")}
+                            </td>
+                            <td className="truncate text-ellipsis overflow-hidden max-w-200 sm:max-w-xs md:max-w-sm lg:max-w-sm  xl:max-w-md px-3 py-4 text-xs md:text-sm text-gray-700">
+                              {data.log}
+                            </td>
+                            <td className="hidden xl:flex  whitespace-nowrap px-3 py-4 text-sm text-gray-700">
+                              {data.labels
+                                .split(",")
+                                .filter((tag, index) => index <= 2)
+                                .map((tag, index) => (
+                                  <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
+                                    {tag}
+                                  </div>
+                                ))}
+                            </td>
+                            <td className="hidden lg:flex xl:hidden whitespace-nowrap px-3 py-4 text-sm text-gray-700">
+                              {data.labels
+                                .split(",")
+                                .filter((tag, index) => index <= 1)
+                                .map((tag, index) => (
+                                  <div className="mx-1  bg-slate-200 rounded-sm flex justify-center items-center px-1 py-1">
+                                    {tag}
+                                  </div>
+                                ))}
+                            </td>
+                          </tr>
+                        ))}
                     </tbody>
                   )}
                 </table>

@@ -4,10 +4,13 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        grey: "#bababa",
         bluePrimary: "#1A237E",
         yellowButton: "#F29C38",
         codeBack: "#242424",
         drawerBlue: "#171F6F",
+        textBlack: "#4a4a4a",
+        iconGrey: "#9ca3af"
       },
       backgroundImage: {
         "login-back": "url('assets/images/Path 369.svg')",

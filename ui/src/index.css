@@ -1,3 +1,11 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+.custom-focus{
+ @apply focus:ring-yellowButton focus:border-yellowButton focus:ring-1 focus:outline-0;
+}
+
+.custom-input {
+  @apply w-full rounded py-2 px-3  border border-grey font-medium text-textBlack;
+}

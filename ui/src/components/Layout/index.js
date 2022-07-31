@@ -13,15 +13,18 @@ import {
 } from "@heroicons/react/outline";
 import { SearchIcon } from "@heroicons/react/solid";
 import { Disclosure } from "@headlessui/react";
-import { ChevronDownIcon } from "@heroicons/react/outline";
+import {
+  ChevronDownIcon,
+  QuestionMarkCircleIcon,
+} from "@heroicons/react/outline";
 import { Combobox } from "@headlessui/react";
 import { CheckIcon, SelectorIcon } from "@heroicons/react/solid";
-
 import StreamIcon from "../../assets/images/Icon awesome-stream (1).svg";
 import UserIcon from "../../assets/images//Icon feather-user.svg";
 import Logo from "../../assets/images/Group 295.svg";
 import Tv from "../../assets/images/Icon material-live-tv.svg";
 import { useNavigate } from "react-router-dom";
+import Dialogue from "./Dialogue"
 
 const navigation = [
   { name: "Dashboard", href: "#", icon: HomeIcon, current: true },
@@ -62,6 +65,7 @@ export default function Layout({ children, labels }) {
 
   const [query, setQuery] = useState("");
   const [selectedLogTime, setSelectedLogTime] = useState(logTimes[0]);
+  const [isHelpDialogueOpen, setIsHelpDialogueOpen] = useState(false);
 
   useEffect(() => {
     localStorage.getItem("username");
@@ -91,6 +95,8 @@ export default function Layout({ children, labels }) {
 
   return (
     <>
+      <Dialogue isOpen={isHelpDialogueOpen} setIsOpen={setIsHelpDialogueOpen} />
+
       <div className=" sticky top-0 z-10 px-10 flex-shrink-0 flex h-16 bg-bluePrimary border-b-2 border-gray-500 shadow">
         <button
           type="button"
@@ -110,7 +116,16 @@ export default function Layout({ children, labels }) {
               <img src={StreamIcon} className="w-6" />
               <p>Streams</p>
             </button>
-            <div className="flex  ml-16">
+            <button
+              onClick={() => setIsHelpDialogueOpen(true)}
+              className={
+                "flex text-gray-400 py-5 px-7 text-sm border border-l-0 border-t-0 border-b-0 border-r-1 border-gray-400 custom-focus"
+              }
+            >
+              <QuestionMarkCircleIcon className="h-5 w-5 my-auto mr-2" />
+              <span className={"block mb-1"}>Help</span>
+            </button>
+            <div className="flex  mx-8">
               <img className="w-3" src={UserIcon} />
               <div className="ml-2 text-gray-400 text-sm">
                 {localStorage.getItem("username").length > 0
@@ -203,7 +218,7 @@ export default function Layout({ children, labels }) {
                               <ChevronDownIcon
                                 className={classNames(
                                   open ? "-rotate-180" : "rotate-0",
-                                  "h-6 w-6 transform"
+                                  "h-6 w-6 transform",
                                 )}
                                 aria-hidden="true"
                               />
@@ -228,12 +243,9 @@ export default function Layout({ children, labels }) {
                       </>
                     )}
                   </Disclosure>
-
-                  
                 </Dialog.Panel>
               </Transition.Child>
-              <div className="flex-shrink-0 w-14" aria-hidden="true">
-              </div>
+              <div className="flex-shrink-0 w-14" aria-hidden="true"></div>
             </div>
           </Dialog>
         </Transition.Root>
