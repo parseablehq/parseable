@@ -5,16 +5,7 @@ import SideDialog from "../SideDialog";
 // import AdvanceDateTimePicker from "../AdvanceDateTimePicker";
 import { useNavigate } from "react-router-dom";
 import { Dialog, Listbox, Menu, Transition } from "@headlessui/react";
-import {
-  CalendarIcon,
-  ChartBarIcon,
-  FolderIcon,
-  HomeIcon,
-  InboxIcon,
-  MenuAlt2Icon,
-  UsersIcon,
-  XIcon,
-} from "@heroicons/react/outline";
+import { CalendarIcon } from "@heroicons/react/outline";
 import { SearchIcon } from "@heroicons/react/solid";
 import { Disclosure } from "@headlessui/react";
 import { ChevronDownIcon } from "@heroicons/react/outline";
@@ -45,8 +36,9 @@ const logTimes = [
   { id: 3, name: "Past 1 Hour", value: 60 },
   { id: 4, name: "Past 5 Hours", value: 300 },
   { id: 5, name: "Past 24 Hours", value: 1440 },
-  { id: 5, name: "Past 3 Days", value: 4320 },
-  { id: 5, name: "Past 7 Days", value: 10080 },
+  { id: 6, name: "Past 3 Days", value: 4320 },
+  { id: 7, name: "Past 7 Days", value: 10080 },
+  { id: 8, name: "Past 2 Months", value: 87600 },
 ];
 
 function classNames(...classes) {
@@ -73,28 +65,17 @@ const Dashboard = () => {
   const [searchInput, setSearchInput] = useState("");
   const [searchSelected, setSearchSelected] = useState({});
   const [startTime, setStartTime] = useState(
-    moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ"),
+    moment()
+      .utcOffset("+00:00")
+      .subtract(10, "minutes")
+      .format("YYYY-MM-DDThh:mm:ssZ")
   );
   const [endTime, setEndTime] = useState(
-    moment()
-      .utcOffset("+00:00")
-      .subtract(10, "minutes")
-      .format("YYYY-MM-DDThh:mm:ssZ"),
-  );
-  const time = "2022-06-13T14:17:20.012644671Z";
-  console.log(moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ"));
-  console.log(
-    "CURRENT TIME MINUS 10 MINUTES",
-    moment()
-      .utcOffset("+00:00")
-      .subtract(10, "minutes")
-      .format("YYYY-MM-DDThh:mm:ssZ"),
+    moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ")
   );
 
-  // console.log(moment().timeZone())
-  console.log(moment().zoneName());
-  console.log(moment().zoneAbbr());
-  console.log(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const time = "2022-06-13T14:17:20.012644671Z";
+  console.log(moment().utcOffset("+00:00").format("YYYY-MM-DDThh:mm:ssZ"));
 
   // console.log(moment().tz(Intl.DateTimeFormat().resolvedOptions().timeZone));
 
@@ -165,7 +146,7 @@ const Dashboard = () => {
           stream.name
             .toLowerCase()
             .replace(/\s+/g, "")
-            .includes(query.toLowerCase().replace(/\s+/g, "")),
+            .includes(query.toLowerCase().replace(/\s+/g, ""))
         );
 
   const filteredSTreamStreams =
@@ -175,11 +156,23 @@ const Dashboard = () => {
           data.log
             .toLowerCase()
             .replace(/\s+/g, "")
-            .includes(searchQuery.toLowerCase().replace(/\s+/g, "")),
+            .includes(searchQuery.toLowerCase().replace(/\s+/g, ""))
         );
+
+  useEffect(() => {
+    //j
+    selectStreamHandler(selected);
+    
+  }, [startTime, endTime]);
 
   const timeChangeHandler = (e) => {
     console.log(e);
+    console.log(
+      moment()
+        .utcOffset("+00:00")
+        .subtract(e.value, "minutes")
+        .format("YYYY-MM-DDThh:mm:ssZ")
+    );
 
     if (e !== "calendar") {
       setSelectedLogTime(e);
@@ -188,7 +181,7 @@ const Dashboard = () => {
         moment()
           .utcOffset("+00:00")
           .subtract(e.value, "minutes")
-          .format("YYYY-MM-DDThh:mm:ssZ"),
+          .format("YYYY-MM-DDThh:mm:ssZ")
       );
     }
   };
@@ -204,32 +197,37 @@ const Dashboard = () => {
     setTableLoading(true);
 
     var data;
+    data = JSON.stringify({
+      query: `select * from ${e.name}`,
+      startTime: startTime,
+      endTime: endTime,
+    });
 
-    if (e.name === "teststream") {
-      data = JSON.stringify({
-        query: `select * from ${e.name}`,
-        startTime: "2022-06-29T09:05:00+00:00",
-        endTime: "2022-06-29T09:06:00+00:00",
-      });
-    } else if (e.name === "teststream2") {
-      data = JSON.stringify({
-        query: "select * from teststream2",
-        startTime: "2022-06-29T10:36:00+00:00",
-        endTime: "2022-06-29T10:37:00+00:00",
-      });
-    } else if (e.name === "teststream3") {
-      data = JSON.stringify({
-        query: "select * from teststream3",
-        startTime: "2022-06-29T10:42:00+00:00",
-        endTime: "2022-06-29T10:43:00+00:00",
-      });
-    } else if (e.name === "teststream5") {
-      data = JSON.stringify({
-        query: "select * from teststream5",
-        startTime: "2022-07-12T08:37:00+00:00",
-        endTime: "2022-07-12T08:38:00+00:00",
-      });
-    }
+    // if (e.name === "teststream") {
+    //   data = JSON.stringify({
+    //     query: `select * from ${e.name}`,
+    //     startTime: startTime,
+    //     endTime: endTime,
+    //   });
+    // } else if (e.name === "teststream2") {
+    //   data = JSON.stringify({
+    //     query: "select * from teststream2",
+    //     startTime: "2022-06-29T10:36:00+00:00",
+    //     endTime: "2022-06-29T10:37:00+00:00",
+    //   });
+    // } else if (e.name === "teststream3") {
+    //   data = JSON.stringify({
+    //     query: "select * from teststream3",
+    //     startTime: "2022-06-29T10:42:00+00:00",
+    //     endTime: "2022-06-29T10:43:00+00:00",
+    //   });
+    // } else if (e.name === "teststream5") {
+    //   data = JSON.stringify({
+    //     query: "select * from teststream5",
+    //     startTime: "2022-07-12T08:37:00+00:00",
+    //     endTime: "2022-07-12T08:38:00+00:00",
+    //   });
+    // }
 
     var config = {
       method: "post",
@@ -415,7 +413,7 @@ const Dashboard = () => {
                                         active
                                           ? "text-white bg-bluePrimary"
                                           : "text-textBlack",
-                                        "cursor-default border-y border-gray-100 select-none relative py-1 font-medium text-sm ",
+                                        "cursor-default border-y border-gray-100 select-none relative py-1 font-medium text-sm "
                                       )
                                     }
                                     value={time}
@@ -427,7 +425,7 @@ const Dashboard = () => {
                                             selected
                                               ? "font-semibold"
                                               : "font-norma",
-                                            "block truncate my-1 text-center",
+                                            "block truncate my-1 text-center"
                                           )}
                                         >
                                           {time.name === "Live Tracking" ? (
