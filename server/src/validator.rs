@@ -16,9 +16,11 @@
  *
  */
 
+use chrono::{DateTime, Utc};
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 
+use crate::query::Query;
 use crate::Error;
 
 // TODO: add more sql keywords here in lower case
@@ -123,4 +125,45 @@ pub fn stream_name(str_name: &str) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Error> {
+    if query.is_empty() {
+        return Err(Error::EmptyQuery);
+    }
+
+    let tokens = query.split(' ').collect::<Vec<&str>>();
+    if tokens.contains(&"join") {
+        return Err(Error::Join(query.to_string()));
+    }
+    if tokens.len() < 4 {
+        return Err(Error::IncompleteQuery());
+    }
+    if start_time.is_empty() {
+        return Err(Error::EmptyStartTime);
+    }
+    if end_time.is_empty() {
+        return Err(Error::EmptyEndTime);
+    }
+
+    // log stream name is located after the `from` keyword
+    let stream_name_index = tokens.iter().position(|&x| x == "from").unwrap() + 1;
+    // we currently don't support queries like "select name, address from stream1 and stream2"
+    // so if there is an `and` after the first log stream name, we return an error.
+    if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
+        return Err(Error::MultipleStreams(query.to_owned()));
+    }
+
+    let start: DateTime<Utc> = DateTime::parse_from_rfc3339(start_time)?.into();
+    let end: DateTime<Utc> = DateTime::parse_from_rfc3339(end_time)?.into();
+    if start.timestamp() > end.timestamp() {
+        return Err(Error::StartTimeAfterEndTime());
+    }
+
+    Ok(Query {
+        stream_name: tokens[stream_name_index].to_string(),
+        start,
+        end,
+        query: query.to_string(),
+    })
 }

@@ -61,9 +61,15 @@ pub enum Error {
     #[error("queries across multiple streams are not supported currently: {0}")]
     MultipleStreams(String),
     #[error("start time can not be later than end time")]
-    InvalidTimeRange(),
+    StartTimeAfterEndTime(),
+    #[error("query is incomplete")]
+    IncompleteQuery(),
     #[error("query cannot be empty")]
-    Empty,
+    EmptyQuery,
+    #[error("start time cannot be empty in query")]
+    EmptyStartTime,
+    #[error("end time cannot be empty in query")]
+    EmptyEndTime,
     #[error("joins are not supported currently: {0}")]
     Join(String),
     #[error("missing record batch")]
