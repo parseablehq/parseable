@@ -17,6 +17,7 @@
  */
 
 use crate::error::Error;
+use crate::metadata::Stats;
 use crate::option::CONFIG;
 use crate::query::Query;
 use crate::utils;
@@ -49,8 +50,9 @@ pub trait ObjectStorage: Sync + 'static {
     async fn create_alert(&self, stream_name: &str, body: String) -> Result<(), Error>;
     async fn get_schema(&self, stream_name: &str) -> Result<Bytes, Error>;
     async fn get_alert(&self, stream_name: &str) -> Result<Bytes, Error>;
+    async fn get_stats(&self, stream_name: &str) -> Result<Stats, Error>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, Error>;
-    async fn put_parquet(&self, key: &str, path: &str) -> Result<(), Error>;
+    async fn upload_file(&self, key: &str, path: &str) -> Result<(), Error>;
     async fn query(&self, query: &Query, results: &mut Vec<RecordBatch>) -> Result<(), Error>;
     async fn sync(&self) -> Result<(), Error> {
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
@@ -100,7 +102,7 @@ pub trait ObjectStorage: Sync + 'static {
             }
 
             let _put_parquet_file = self
-                .put_parquet(
+                .upload_file(
                     &dir.parquet_file_s3,
                     &format!("{}/tmp/{}", &dir.dir_name_local, &dir.parquet_file_local),
                 )
@@ -113,6 +115,14 @@ pub trait ObjectStorage: Sync + 'static {
                     e
                 );
                 continue;
+            }
+
+            if let Err(e) = dir.flush_stream_stats(self).await {
+                log::error!(
+                    "Error flushing stats for stream {} due to error [{}]",
+                    dir.stream_name,
+                    e
+                );
             }
         }
 
@@ -127,6 +137,7 @@ pub struct LogStream {
 
 #[derive(Debug)]
 struct DirName {
+    stream_name: String,
     dir_name_tmp_local: String,
     dir_name_local: String,
     parquet_path: String,
@@ -152,6 +163,23 @@ impl DirName {
             self.dir_name_local, self.parquet_file_local
         ))
     }
+
+    async fn flush_stream_stats(
+        &self,
+        obj_store: &(impl ObjectStorage + ?Sized),
+    ) -> Result<(), Error> {
+        let stat_path = format!(
+            "{}/{}/.stats.json",
+            CONFIG.parseable.local_disk_path, self.stream_name
+        );
+        let stats = crate::metadata::STREAM_INFO.flush_stream_stats(&self.stream_name)?;
+        fs::write(&stat_path, serde_json::to_vec(&stats)?)?;
+
+        let stat_key = format!("{}/.stats.json", self.stream_name);
+        obj_store.upload_file(&stat_key, &stat_path).await?;
+
+        Ok(())
+    }
 }
 
 struct StorageSync {
@@ -176,7 +204,7 @@ impl StorageSync {
     fn get_dir_name(&self) -> DirName {
         let local_path = format!("{}/", CONFIG.parseable.local_disk_path);
         let _storage_path = format!("{}/", CONFIG.storage.bucket_name());
-        let stream_names = self.path.replace(&local_path, "");
+        let stream_name = self.path.replace(&local_path, "");
         let parquet_path = format!("{}/data.parquet", self.path);
         let uri = utils::date_to_prefix(self.time.date())
             + &utils::hour_to_prefix(self.time.hour())
@@ -184,9 +212,9 @@ impl StorageSync {
 
         let local_uri = str::replace(&uri, "/", ".");
 
-        let dir_name_tmp_local = format!("{}{}/tmp", local_path, stream_names);
+        let dir_name_tmp_local = format!("{}{}/tmp", local_path, stream_name);
 
-        let storage_dir_name = format!("{}/{}", stream_names, uri);
+        let storage_dir_name = format!("{}/{}", stream_name, uri);
 
         let random_string = utils::random_string();
 
@@ -194,9 +222,10 @@ impl StorageSync {
 
         let parquet_file_s3 = format!("{}{}.parquet", storage_dir_name, random_string);
 
-        let dir_name_local = local_path + &stream_names;
+        let dir_name_local = local_path + &stream_name;
 
         DirName {
+            stream_name,
             dir_name_tmp_local,
             dir_name_local,
             parquet_path,

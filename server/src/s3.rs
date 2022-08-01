@@ -19,6 +19,7 @@ use structopt::StructOpt;
 use tokio_stream::StreamExt;
 
 use crate::error::Error;
+use crate::metadata::Stats;
 use crate::option::{StorageOpt, CONFIG};
 use crate::query::Query;
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
@@ -219,6 +220,10 @@ impl S3 {
         self._get(stream_name, "alert.json").await
     }
 
+    async fn _get_stats(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
+        self._get(stream_name, "stats.json").await
+    }
+
     async fn _get(&self, stream_name: &str, resource: &str) -> Result<Bytes, AwsSdkError> {
         let resp = self
             .client
@@ -273,7 +278,7 @@ impl S3 {
         Ok(streams)
     }
 
-    async fn _put_parquet(&self, key: &str, path: &str) -> Result<(), AwsSdkError> {
+    async fn _upload_file(&self, key: &str, path: &str) -> Result<(), AwsSdkError> {
         let body = ByteStream::from_path(path).await.unwrap();
         let resp = self
             .client
@@ -336,14 +341,20 @@ impl ObjectStorage for S3 {
         Ok(body_bytes)
     }
 
+    async fn get_stats(&self, stream_name: &str) -> Result<Stats, Error> {
+        let stats = serde_json::from_slice(&self._get_stats(stream_name).await?)?;
+
+        Ok(stats)
+    }
+
     async fn list_streams(&self) -> Result<Vec<LogStream>, Error> {
         let streams = self._list_streams().await?;
 
         Ok(streams)
     }
 
-    async fn put_parquet(&self, key: &str, path: &str) -> Result<(), Error> {
-        self._put_parquet(key, path).await?;
+    async fn upload_file(&self, key: &str, path: &str) -> Result<(), Error> {
+        self._upload_file(key, path).await?;
 
         Ok(())
     }

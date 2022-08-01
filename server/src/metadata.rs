@@ -19,16 +19,44 @@
 use bytes::Bytes;
 use lazy_static::lazy_static;
 use log::warn;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
 use crate::error::Error;
 use crate::storage::ObjectStorage;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LogStreamMetadata {
     pub schema: String,
     pub alert_config: String,
+    pub stats: Stats,
+}
+
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+pub struct Stats {
+    pub size: u64,
+    pub compressed_size: u64,
+    #[serde(skip)]
+    pub prev_compressed: u64,
+}
+
+impl Stats {
+    /// Update stats considering the following facts about params:
+    /// - `size`: The event body's binary size.
+    /// - `compressed_size`: Binary size of parquet file, total compressed_size is this plus size of all past parquet files.
+    pub fn update(&mut self, size: u64, compressed_size: u64) {
+        self.size += size;
+        self.compressed_size = self.prev_compressed + compressed_size;
+    }
+
+    /// Once the temp local file is pushed to storage, flush stat info
+    pub fn flush(&mut self) -> Stats {
+        let curr = self.clone();
+        self.prev_compressed = self.compressed_size;
+
+        curr
+    }
 }
 
 lazy_static! {
@@ -84,6 +112,7 @@ impl STREAM_INFO {
         let metadata = LogStreamMetadata {
             schema,
             alert_config,
+            ..Default::default()
         };
         // TODO: Add check to confirm data insertion
         map.insert(stream_name, metadata);
@@ -107,15 +136,51 @@ impl STREAM_INFO {
             // TODO: ignore failure(s) if any and skip to next stream
             let alert_config = parse_string(storage.get_alert(&stream.name).await)?;
             let schema = parse_string(storage.get_schema(&stream.name).await)?;
+            let stats = storage.get_stats(&stream.name).await?;
             let metadata = LogStreamMetadata {
                 schema,
                 alert_config,
+                stats,
             };
             let mut map = self.write().unwrap();
             map.insert(stream.name.to_owned(), metadata);
         }
 
         Ok(())
+    }
+
+    pub fn update_stats(
+        &self,
+        stream_name: &str,
+        size: u64,
+        compressed_size: u64,
+    ) -> Result<(), Error> {
+        let mut map = self.write().unwrap();
+        let stream = map
+            .get_mut(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
+
+        stream.stats.update(size, compressed_size);
+
+        Ok(())
+    }
+
+    pub fn stream_stats(&self, stream_name: &str) -> Result<Stats, Error> {
+        let map = self.read().unwrap();
+        let stream = map
+            .get(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
+
+        Ok(stream.stats.clone())
+    }
+
+    pub fn flush_stream_stats(&self, stream_name: &str) -> Result<Stats, Error> {
+        let mut map = self.write().unwrap();
+        let stream = map
+            .get_mut(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
+
+        Ok(stream.stats.flush())
     }
 }
 
