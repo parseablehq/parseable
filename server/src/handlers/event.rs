@@ -23,7 +23,7 @@ use serde_json::Value;
 use crate::event;
 use crate::metadata;
 use crate::query::Query;
-use crate::response;
+use crate::response::{self, EventResponse};
 use crate::s3::S3;
 use crate::storage::ObjectStorage;
 use crate::utils;
@@ -117,21 +117,22 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
         }
         .to_http();
     }
-    let e = event::Event {
+
+    let event = event::Event {
         body: utils::flatten_json_body(body, labels).unwrap(),
         stream_name,
     };
-    if let Err(e) = e.process(&s3).await {
-        return response::ServerResponse {
+
+    match event.process(&s3).await {
+        Ok(EventResponse { msg }) => response::ServerResponse {
+            msg,
+            code: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+        .to_http(),
+        Err(e) => response::ServerResponse {
             msg: format!("Failed to process event due to err: {}", e),
             code: StatusCode::INTERNAL_SERVER_ERROR,
         }
-        .to_http();
+        .to_http(),
     }
-
-    response::ServerResponse {
-        msg: "Successfully posted event".to_string(),
-        code: StatusCode::OK,
-    }
-    .to_http()
 }

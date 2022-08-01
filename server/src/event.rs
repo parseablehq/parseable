@@ -20,6 +20,7 @@
 use arrow::json;
 use arrow::json::reader::infer_json_schema;
 use arrow::record_batch::RecordBatch;
+use log::error;
 use parquet::arrow::arrow_writer::ArrowWriter;
 use parquet::arrow::{ArrowReader, ParquetFileArrowReader};
 use parquet::file::properties::WriterProperties;
@@ -75,6 +76,7 @@ impl Event {
     ) -> Result<response::EventResponse, Error> {
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
+        let size = reader.len() as u64;
 
         c.write_all(reader)?;
         c.seek(SeekFrom::Start(0))?;
@@ -89,7 +91,11 @@ impl Event {
         let rb = event.next()?.ok_or(Error::MissingRecord)?;
 
         // Store record batch to Parquet file on local cache
-        self.convert_arrow_parquet(rb)?;
+        let compressed_size = self.convert_arrow_parquet(rb)?;
+        if let Err(e) = metadata::STREAM_INFO.update_stats(&self.stream_name, size, compressed_size)
+        {
+            error!("Couldn't update stream stats. {:?}", e);
+        }
 
         // Put the inferred schema to object store
         let schema = self.infer_schema()?.string_schema;
@@ -126,6 +132,8 @@ impl Event {
     fn event(&self) -> Result<response::EventResponse, Error> {
         let mut c = Cursor::new(Vec::new());
         let reader = self.body.as_bytes();
+        let size = reader.len() as u64;
+
         c.write_all(reader)?;
         c.seek(SeekFrom::Start(0))?;
 
@@ -137,19 +145,26 @@ impl Event {
         );
         let next_event_rb = event.next()?.ok_or(Error::MissingRecord)?;
 
-        match self.convert_parquet_rb_reader() {
+        let compressed_size = match self.convert_parquet_rb_reader() {
             Ok(mut arrow_reader) => {
+                let mut total_size = 0;
                 let rb = arrow_reader.get_record_reader(2048).unwrap();
                 for prev_rb in rb {
                     let new_rb = RecordBatch::concat(
                         &std::sync::Arc::new(arrow_reader.get_schema().unwrap()),
                         &[next_event_rb.clone(), prev_rb.unwrap()],
                     )?;
-                    self.convert_arrow_parquet(new_rb)?;
+                    total_size += self.convert_arrow_parquet(new_rb)?;
                 }
+
+                total_size
             }
             Err(_) => self.convert_arrow_parquet(next_event_rb)?,
         };
+        if let Err(e) = metadata::STREAM_INFO.update_stats(&self.stream_name, size, compressed_size)
+        {
+            error!("Couldn't update stream stats. {:?}", e);
+        }
 
         Ok(response::EventResponse {
             msg: format!("Event recieved for log stream {}", &self.stream_name),
@@ -172,8 +187,9 @@ impl Event {
 
     // convert arrow record batch to parquet
     // and write it to local cache path as a data.parquet file.
-    fn convert_arrow_parquet(&self, rb: RecordBatch) -> Result<(), Error> {
-        let parquet_file = fs::File::create(self.data_file_path())?;
+    fn convert_arrow_parquet(&self, rb: RecordBatch) -> Result<u64, Error> {
+        let parquet_path = self.data_file_path();
+        let parquet_file = fs::File::create(&parquet_path)?;
         let props = WriterProperties::builder().build();
         let mut writer = ArrowWriter::try_new(
             parquet_file,
@@ -183,7 +199,9 @@ impl Event {
         writer.write(&rb)?;
         writer.close()?;
 
-        Ok(())
+        let compressed_size = fs::metadata(parquet_path)?.len();
+
+        Ok(compressed_size)
     }
 
     pub fn convert_parquet_rb_reader(
