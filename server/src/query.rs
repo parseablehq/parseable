@@ -28,6 +28,7 @@ use crate::option::CONFIG;
 use crate::storage;
 use crate::storage::ObjectStorage;
 use crate::utils::TimePeriod;
+use crate::validator;
 use crate::Error;
 
 fn get_value<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, Error> {
@@ -49,43 +50,14 @@ pub struct Query {
 impl Query {
     // parse_query parses the SQL query and returns the log stream name on which
     // this query is supposed to be executed
-    pub fn parse(json: Value) -> Result<Query, Error> {
+    pub fn parse(query_json: Value) -> Result<Query, Error> {
         // retrieve query, start and end time information from payload.
         // Convert query to lowercase.
-        let query = get_value(&json, "query")?.to_lowercase();
-        let start_time = get_value(&json, "startTime")?;
-        let end_time = get_value(&json, "endTime")?;
+        let query = get_value(&query_json, "query")?.to_lowercase();
+        let start_time = get_value(&query_json, "startTime")?;
+        let end_time = get_value(&query_json, "endTime")?;
 
-        let tokens = query.split(' ').collect::<Vec<&str>>();
-        // validate query
-        if tokens.is_empty() {
-            return Err(Error::Empty);
-        } else if tokens.contains(&"join") {
-            return Err(Error::Join(query));
-        }
-        // log stream name is located after the `from` keyword
-        let stream_name_index = tokens.iter().position(|&x| x == "from").unwrap() + 1;
-        // we currently don't support queries like "select name, address from stream1 and stream2"
-        // so if there is an `and` after the first log stream name, we return an error.
-        if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
-            return Err(Error::MultipleStreams(query));
-        }
-        let stream_name = tokens[stream_name_index].to_string();
-
-        // Parse time into DateTime
-        let start: DateTime<Utc> = DateTime::parse_from_rfc3339(start_time)?.into();
-        let end: DateTime<Utc> = DateTime::parse_from_rfc3339(end_time)?.into();
-
-        if start.timestamp() > end.timestamp() {
-            return Err(Error::InvalidTimeRange());
-        }
-
-        Ok(Query {
-            stream_name,
-            start,
-            end,
-            query,
-        })
+        validator::query(&query, start_time, end_time)
     }
 
     /// Return prefixes, each per day/hour/minutes as necessary
