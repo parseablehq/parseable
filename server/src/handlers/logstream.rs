@@ -25,7 +25,7 @@ use crate::s3::S3;
 use crate::storage::ObjectStorage;
 use crate::validator;
 
-pub async fn delete_stream(req: HttpRequest) -> HttpResponse {
+pub async fn delete(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if let Err(e) = validator::stream_name(&stream_name) {
         // fail to proceed if there is an error in log stream name validation
@@ -75,11 +75,11 @@ pub async fn delete_stream(req: HttpRequest) -> HttpResponse {
     .to_http()
 }
 
-pub async fn list_streams(_: HttpRequest) -> impl Responder {
+pub async fn list(_: HttpRequest) -> impl Responder {
     response::list_response(S3::new().list_streams().await.unwrap())
 }
 
-pub async fn stream_stats(req: HttpRequest) -> HttpResponse {
+pub async fn stats(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     // Get from local stats
@@ -108,7 +108,7 @@ pub async fn stream_stats(req: HttpRequest) -> HttpResponse {
     }
 }
 
-pub async fn get_schema(req: HttpRequest) -> HttpResponse {
+pub async fn schema(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     match metadata::STREAM_INFO.schema(stream_name.clone()) {
@@ -174,7 +174,7 @@ pub async fn get_alert(req: HttpRequest) -> HttpResponse {
     }
 }
 
-pub async fn put_stream(req: HttpRequest) -> HttpResponse {
+pub async fn put(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     // fail to proceed if there is an error in log stream name validation
