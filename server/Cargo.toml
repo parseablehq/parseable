@@ -47,6 +47,7 @@ tokio-stream = "0.1.8"
 ticker="0.1.1"
 actix-web-static-files = "4.0"
 static-files = "0.2.1"
+walkdir = "2"
 
 [build-dependencies]
 static-files = "0.2.1"

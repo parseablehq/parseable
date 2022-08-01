@@ -162,7 +162,7 @@ pub struct Opt {
     /// Optional interval after which server would upload uncommited data to
     /// remote object storage platform. Defaults to 1min.
     /// TODO ensure this can be only set to 1 min and not less than that for now.
-    #[structopt(long, env = "P_STORAGE_UPLOAD_INTERVAL", default_value = "60")]
+    #[structopt(long, env = "P_STORAGE_UPLOAD_INTERVAL", default_value = "30")]
     pub sync_duration: u64,
 
     /// Optional username to enable basic auth on the server
