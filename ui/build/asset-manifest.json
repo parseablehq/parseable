@@ -1,7 +1,7 @@
 {
   "files": {
     "main.css": "/static/css/main.64aa0082.css",
-    "main.js": "/static/js/main.b54ef2ba.js",
+    "main.js": "/static/js/main.0b4acdba.js",
     "static/js/787.b603e55d.chunk.js": "/static/js/787.b603e55d.chunk.js",
     "static/media/slack_icon.png": "/static/media/slack_icon.55ad9eabc7f642f5e5a5.png",
     "static/media/documentation_icon.png": "/static/media/documentation_icon.18b10dd030d16dcf402a.png",
@@ -13,11 +13,11 @@
     "static/media/Icon material-live-tv.svg": "/static/media/Icon material-live-tv.43afcfad0d74755c7d004667125c019d.svg",
     "static/media/Path 369.svg": "/static/media/Path 369.bcbce409a0e98bad6438.svg",
     "main.64aa0082.css.map": "/static/css/main.64aa0082.css.map",
-    "main.b54ef2ba.js.map": "/static/js/main.b54ef2ba.js.map",
+    "main.0b4acdba.js.map": "/static/js/main.0b4acdba.js.map",
     "787.b603e55d.chunk.js.map": "/static/js/787.b603e55d.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.64aa0082.css",
-    "static/js/main.b54ef2ba.js"
+    "static/js/main.0b4acdba.js"
   ]
 }

@@ -128,11 +128,11 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             // logstream API
             web::resource(logstream_path("{logstream}"))
                 // PUT "/logstream/{logstream}" ==> Create log stream
-                .route(web::put().to(handlers::logstream::put_stream))
+                .route(web::put().to(handlers::logstream::put))
                 // POST "/logstream/{logstream}" ==> Post logs to given log stream
                 .route(web::post().to(handlers::event::post_event))
                 // DELETE "/logstream/{logstream}" ==> Delete log stream
-                .route(web::delete().to(handlers::logstream::delete_stream))
+                .route(web::delete().to(handlers::logstream::delete))
                 .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
         )
         .service(
@@ -145,17 +145,14 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .service(
             web::resource(stats_path("{logstream}"))
                 // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
-                .route(web::get().to(handlers::logstream::stream_stats)),
+                .route(web::get().to(handlers::logstream::stats)),
         )
         // GET "/logstream" ==> Get list of all Log Streams on the server
-        .service(
-            web::resource(logstream_path(""))
-                .route(web::get().to(handlers::logstream::list_streams)),
-        )
+        .service(web::resource(logstream_path("")).route(web::get().to(handlers::logstream::list)))
         .service(
             // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
             web::resource(schema_path("{logstream}"))
-                .route(web::get().to(handlers::logstream::get_schema)),
+                .route(web::get().to(handlers::logstream::schema)),
         )
         // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
         .service(web::resource(liveness_path()).route(web::get().to(handlers::liveness)))
@@ -192,10 +189,6 @@ fn logstream_path(stream_name: &str) -> String {
     format!("{}/logstream/{}", base_path(), stream_name)
 }
 
-fn stats_path(stream_name: &str) -> String {
-    format!("{}/{}/stats", base_path(), stream_name)
-}
-
 fn readiness_path() -> String {
     format!("{}/readiness", base_path())
 }
@@ -214,4 +207,8 @@ fn alert_path(stream_name: &str) -> String {
 
 fn schema_path(stream_name: &str) -> String {
     format!("{}/schema", logstream_path(stream_name))
+}
+
+fn stats_path(stream_name: &str) -> String {
+    format!("{}/stats", logstream_path(stream_name))
 }
