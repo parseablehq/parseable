@@ -61,17 +61,28 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
         println!("{}", e);
     }
-    thread::spawn(move || wrap(storage));
+    thread::spawn(|| wrap_local_sync(storage));
+    thread::spawn(|| wrap_s3_sync(S3::new()));
     run_http().await?;
 
     Ok(())
 }
 
 #[actix_web::main]
-async fn wrap(storage: impl ObjectStorage) {
-    let ticker = ticker::Ticker::new(0.., Duration::from_secs(1));
+async fn wrap_local_sync(storage: impl ObjectStorage) {
+    let ticker = ticker::Ticker::new(0.., Duration::from_secs(storage::LOCAL_SYNC_DURATION));
     for _ in ticker {
-        if let Err(e) = storage.sync().await {
+        if let Err(e) = storage.local_sync().await {
+            println!("{}", e)
+        }
+    }
+}
+
+#[actix_web::main]
+async fn wrap_s3_sync(storage: impl ObjectStorage) {
+    let ticker = ticker::Ticker::new(0.., Duration::from_secs(CONFIG.parseable.sync_duration));
+    for _ in ticker {
+        if let Err(e) = storage.s3_sync().await {
             println!("{}", e)
         }
     }

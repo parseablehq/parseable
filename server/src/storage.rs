@@ -34,12 +34,17 @@ use std::io;
 use std::iter::Iterator;
 use std::path::Path;
 use std::time::Duration;
-
+extern crate walkdir;
+use walkdir::WalkDir;
 pub trait ObjectStorageError: Display + Debug {}
 
 /// duration used to configure prefix in s3 and local disk structure
 /// used for storage. Defaults to 1 min.
 pub const BLOCK_DURATION: u32 = 1;
+
+/// local sync duration to move data parquet to /tmp dir
+/// 60 sec
+pub const LOCAL_SYNC_DURATION: u64 = 60;
 
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
@@ -54,7 +59,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_streams(&self) -> Result<Vec<LogStream>, Error>;
     async fn upload_file(&self, key: &str, path: &str) -> Result<(), Error>;
     async fn query(&self, query: &Query, results: &mut Vec<RecordBatch>) -> Result<(), Error>;
-    async fn sync(&self) -> Result<(), Error> {
+    async fn local_sync(&self) -> Result<(), Error> {
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
             return Ok(());
         }
@@ -62,7 +67,8 @@ pub trait ObjectStorage: Sync + 'static {
         let entries = fs::read_dir(&CONFIG.parseable.local_disk_path)?
             .map(|res| res.map(|e| e.path()))
             .collect::<Result<Vec<_>, io::Error>>()?;
-        let sync_duration = Duration::from_secs(CONFIG.parseable.sync_duration);
+
+        let sync_duration = Duration::from_secs(LOCAL_SYNC_DURATION);
 
         for entry in entries {
             let path = entry.into_os_string().into_string().unwrap();
@@ -100,21 +106,46 @@ pub trait ObjectStorage: Sync + 'static {
                 );
                 continue;
             }
+        }
 
-            let _put_parquet_file = self
-                .upload_file(
-                    &dir.parquet_file_s3,
-                    &format!("{}/tmp/{}", &dir.dir_name_local, &dir.parquet_file_local),
-                )
-                .await?;
+        Ok(())
+    }
 
-            if let Err(e) = dir.delete_parquet_file() {
-                log::error!(
-                    "Error deleting parquet file in path {} due to error [{}]",
-                    dir.parquet_path,
-                    e
-                );
-                continue;
+    async fn s3_sync(&self) -> Result<(), Error> {
+        if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
+            return Ok(());
+        }
+
+        let entries = fs::read_dir(&CONFIG.parseable.local_disk_path)?
+            .map(|res| res.map(|e| e.path()))
+            .collect::<Result<Vec<_>, io::Error>>()?;
+
+        for entry in entries {
+            let path = entry.into_os_string().into_string().unwrap();
+            let init_sync = StorageSync::new(path);
+
+            let dir = init_sync.get_dir_name();
+
+            for file in WalkDir::new(&format!("{}/tmp", &dir.dir_name_local))
+                .into_iter()
+                .filter_map(|file| file.ok())
+            {
+                if file.metadata().unwrap().is_file() {
+                    let file_local = format!("{}", file.path().display());
+                    let file_s3 = file_local.replace("/tmp", "");
+                    let final_s3_path =
+                        file_s3.replace(&format!("{}/", CONFIG.parseable.local_disk_path), "");
+                    let f_path = str::replace(&final_s3_path, ".", "/");
+                    let f_new_path = f_path.replace("/parquet", ".parquet");
+                    let _put_parquet_file = self.upload_file(&f_new_path, &file_local).await?;
+                    if let Err(e) = dir.delete_parquet_file(file_local.clone()) {
+                        log::error!(
+                            "Error deleting parquet file in path {} due to error [{}]",
+                            file_local,
+                            e
+                        );
+                    }
+                }
             }
 
             if let Err(e) = dir.flush_stream_stats(self).await {
@@ -125,7 +156,6 @@ pub trait ObjectStorage: Sync + 'static {
                 );
             }
         }
-
         Ok(())
     }
 }
@@ -142,7 +172,6 @@ struct DirName {
     dir_name_local: String,
     parquet_path: String,
     parquet_file_local: String,
-    parquet_file_s3: String,
 }
 
 impl DirName {
@@ -157,11 +186,8 @@ impl DirName {
         fs::create_dir_all(&self.dir_name_tmp_local)
     }
 
-    fn delete_parquet_file(&self) -> io::Result<()> {
-        fs::remove_file(format!(
-            "{}/tmp/{}",
-            self.dir_name_local, self.parquet_file_local
-        ))
+    fn delete_parquet_file(&self, path: String) -> io::Result<()> {
+        fs::remove_file(path)
     }
 
     async fn flush_stream_stats(
@@ -214,13 +240,13 @@ impl StorageSync {
 
         let dir_name_tmp_local = format!("{}{}/tmp", local_path, stream_name);
 
-        let storage_dir_name = format!("{}/{}", stream_name, uri);
+        let storage_dir_name_s3 = format!("{}/{}", stream_name, uri);
 
         let random_string = utils::random_string();
 
         let parquet_file_local = format!("{}{}.parquet", local_uri, random_string);
 
-        let parquet_file_s3 = format!("{}{}.parquet", storage_dir_name, random_string);
+        let _parquet_file_s3 = format!("{}{}.parquet", storage_dir_name_s3, random_string);
 
         let dir_name_local = local_path + &stream_name;
 
@@ -230,7 +256,6 @@ impl StorageSync {
             dir_name_local,
             parquet_path,
             parquet_file_local,
-            parquet_file_s3,
         }
     }
 }
