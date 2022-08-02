@@ -102,7 +102,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
 
             if let Err(e) = e.process(&s3).await {
                 return response::ServerResponse {
-                    msg: format!("Failed to process event at index {} due to err: {}", i, e),
+                    msg: format!("failed to process event because {}", e),
                     code: StatusCode::INTERNAL_SERVER_ERROR,
                 }
                 .to_http();

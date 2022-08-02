@@ -78,4 +78,6 @@ pub enum Error {
     StreamMetaNotFound(String),
     #[error("invalid alert config: {0}")]
     InvalidAlert(String),
+    #[error("this event schema doesn't match with stream schema. please ensure event data is in same format as previous events sent to the stream: {0}")]
+    SchemaMismatch(String),
 }
