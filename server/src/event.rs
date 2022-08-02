@@ -137,38 +137,54 @@ impl Event {
         c.write_all(reader)?;
         c.seek(SeekFrom::Start(0))?;
 
-        let options = json::reader::DecoderOptions::new().with_batch_size(1024);
-        let mut event = json::Reader::new(
-            self.body.as_bytes(),
-            Arc::new(self.infer_schema()?.arrow_schema),
-            options,
-        );
-        let next_event_rb = event.next()?.ok_or(Error::MissingRecord)?;
+        match self.infer_schema() {
+            Ok(event_schema) => {
+                let options = json::reader::DecoderOptions::new().with_batch_size(1024);
+                let mut event = json::Reader::new(
+                    self.body.as_bytes(),
+                    Arc::new(event_schema.arrow_schema),
+                    options,
+                );
 
-        let compressed_size = match self.convert_parquet_rb_reader() {
-            Ok(mut arrow_reader) => {
-                let mut total_size = 0;
-                let rb = arrow_reader.get_record_reader(2048).unwrap();
-                for prev_rb in rb {
-                    let new_rb = RecordBatch::concat(
-                        &std::sync::Arc::new(arrow_reader.get_schema().unwrap()),
-                        &[next_event_rb.clone(), prev_rb.unwrap()],
-                    )?;
-                    total_size += self.convert_arrow_parquet(new_rb)?;
+                // validate schema before attempting to append to parquet file
+                let stream_schema = metadata::STREAM_INFO.schema(self.stream_name.clone())?;
+                if stream_schema != event_schema.string_schema {
+                    return Err(Error::SchemaMismatch(self.stream_name.clone()));
                 }
 
-                total_size
-            }
-            Err(_) => self.convert_arrow_parquet(next_event_rb)?,
-        };
-        if let Err(e) = metadata::STREAM_INFO.update_stats(&self.stream_name, size, compressed_size)
-        {
-            error!("Couldn't update stream stats. {:?}", e);
-        }
+                let next_event_rb = event.next()?.ok_or(Error::MissingRecord)?;
 
-        Ok(response::EventResponse {
-            msg: format!("Event recieved for log stream {}", &self.stream_name),
-        })
+                let compressed_size = match self.convert_parquet_rb_reader() {
+                    Ok(mut arrow_reader) => {
+                        let mut total_size = 0;
+                        let rb = arrow_reader.get_record_reader(2048).unwrap();
+                        for prev_rb in rb {
+                            let new_rb = RecordBatch::concat(
+                                &std::sync::Arc::new(arrow_reader.get_schema().unwrap()),
+                                &[next_event_rb.clone(), prev_rb.unwrap()],
+                            )?;
+                            total_size += self.convert_arrow_parquet(new_rb)?;
+                        }
+
+                        total_size
+                    }
+                    Err(_) => self.convert_arrow_parquet(next_event_rb)?,
+                };
+                if let Err(e) =
+                    metadata::STREAM_INFO.update_stats(&self.stream_name, size, compressed_size)
+                {
+                    error!("Couldn't update stream stats. {:?}", e);
+                }
+
+                Ok(response::EventResponse {
+                    msg: format!("Event recieved for log stream {}", &self.stream_name),
+                })
+            }
+            Err(e) => {
+                error!("Failed to infer schema for event. {:?}", e);
+                Err(e)
+            }
+        }
     }
 
     // inferSchema is a constructor to Schema
