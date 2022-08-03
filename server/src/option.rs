@@ -66,6 +66,12 @@ impl Config {
         println!();
     }
 
+    pub fn validate(&self) {
+        if CONFIG.parseable.upload_interval < 60 {
+            panic!("object storage upload_interval (P_STORAGE_UPLOAD_INTERVAL) must be 60 seconds or more");
+        }
+    }
+
     fn status_info(&self, scheme: &str) {
         let url = format!("{}://{}", scheme, CONFIG.parseable.address).underlined();
         eprintln!(
@@ -161,9 +167,8 @@ pub struct Opt {
 
     /// Optional interval after which server would upload uncommited data to
     /// remote object storage platform. Defaults to 1min.
-    /// TODO ensure this can be only set to 1 min and not less than that for now.
-    #[structopt(long, env = "P_STORAGE_UPLOAD_INTERVAL", default_value = "30")]
-    pub sync_duration: u64,
+    #[structopt(long, env = "P_STORAGE_UPLOAD_INTERVAL", default_value = "60")]
+    pub upload_interval: u64,
 
     /// Optional username to enable basic auth on the server
     #[structopt(long, env = USERNAME_ENV, default_value = DEFAULT_USERNAME)]

@@ -33,18 +33,18 @@ use std::fs;
 use std::io;
 use std::iter::Iterator;
 use std::path::Path;
-use std::time::Duration;
+
 extern crate walkdir;
 use walkdir::WalkDir;
 pub trait ObjectStorageError: Display + Debug {}
 
+/// local sync interval to move data.parquet to /tmp dir of that stream.
+/// 60 sec is a reasonable value.
+pub const LOCAL_SYNC_INTERVAL: u64 = 60;
+
 /// duration used to configure prefix in s3 and local disk structure
 /// used for storage. Defaults to 1 min.
-pub const BLOCK_DURATION: u32 = 1;
-
-/// local sync duration to move data parquet to /tmp dir
-/// 60 sec
-pub const LOCAL_SYNC_DURATION: u64 = 60;
+pub const OBJECT_STORE_DATA_GRANULARITY: u32 = (LOCAL_SYNC_INTERVAL as u32) / 60;
 
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
@@ -60,6 +60,8 @@ pub trait ObjectStorage: Sync + 'static {
     async fn upload_file(&self, key: &str, path: &str) -> Result<(), Error>;
     async fn query(&self, query: &Query, results: &mut Vec<RecordBatch>) -> Result<(), Error>;
     async fn local_sync(&self) -> Result<(), Error> {
+        // If the local data path doesn't exist yet, return early.
+        // This method will be called again after next ticker interval
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
             return Ok(());
         }
@@ -68,27 +70,17 @@ pub trait ObjectStorage: Sync + 'static {
             .map(|res| res.map(|e| e.path()))
             .collect::<Result<Vec<_>, io::Error>>()?;
 
-        let sync_duration = Duration::from_secs(LOCAL_SYNC_DURATION);
-
+        // entries here means all the streams present on local disk
         for entry in entries {
             let path = entry.into_os_string().into_string().unwrap();
             let init_sync = StorageSync::new(path);
 
-            let dir = init_sync.get_dir_name();
+            // if data.parquet file not present, skip this stream
             if !init_sync.parquet_path_exists() {
                 continue;
             }
 
-            let metadata = fs::metadata(&dir.parquet_path)?;
-            let time = match metadata.created() {
-                Ok(time) => time,
-                _ => continue,
-            };
-
-            if time.elapsed().unwrap() <= sync_duration {
-                continue;
-            }
-
+            let dir = init_sync.get_dir_name();
             if let Err(e) = dir.create_dir_name_tmp() {
                 log::error!(
                     "Error copying parquet file {} due to error [{}]",
@@ -234,7 +226,10 @@ impl StorageSync {
         let parquet_path = format!("{}/data.parquet", self.path);
         let uri = utils::date_to_prefix(self.time.date())
             + &utils::hour_to_prefix(self.time.hour())
-            + &utils::minute_to_prefix(self.time.minute(), BLOCK_DURATION).unwrap();
+            // subtract OBJECT_STORE_DATA_GRANULARITY from current time here,
+            // this is because, when we're creating this file 
+            // the data in the file is from OBJECT_STORE_DATA_GRANULARITY time ago.
+            + &utils::minute_to_prefix(self.time.minute()-OBJECT_STORE_DATA_GRANULARITY, OBJECT_STORE_DATA_GRANULARITY).unwrap();
 
         let local_uri = str::replace(&uri, "/", ".");
 
