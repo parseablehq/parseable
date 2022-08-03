@@ -139,14 +139,6 @@ pub trait ObjectStorage: Sync + 'static {
                     }
                 }
             }
-
-            if let Err(e) = dir.flush_stream_stats(self).await {
-                log::error!(
-                    "Error flushing stats for stream {} due to error [{}]",
-                    dir.stream_name,
-                    e
-                );
-            }
         }
         Ok(())
     }
@@ -159,7 +151,6 @@ pub struct LogStream {
 
 #[derive(Debug)]
 struct DirName {
-    stream_name: String,
     dir_name_tmp_local: String,
     dir_name_local: String,
     parquet_path: String,
@@ -180,23 +171,6 @@ impl DirName {
 
     fn delete_parquet_file(&self, path: String) -> io::Result<()> {
         fs::remove_file(path)
-    }
-
-    async fn flush_stream_stats(
-        &self,
-        obj_store: &(impl ObjectStorage + ?Sized),
-    ) -> Result<(), Error> {
-        let stat_path = format!(
-            "{}/{}/.stats.json",
-            CONFIG.parseable.local_disk_path, self.stream_name
-        );
-        let stats = crate::metadata::STREAM_INFO.flush_stream_stats(&self.stream_name)?;
-        fs::write(&stat_path, serde_json::to_vec(&stats)?)?;
-
-        let stat_key = format!("{}/.stats.json", self.stream_name);
-        obj_store.upload_file(&stat_key, &stat_path).await?;
-
-        Ok(())
     }
 }
 
@@ -246,7 +220,6 @@ impl StorageSync {
         let dir_name_local = local_path + &stream_name;
 
         DirName {
-            stream_name,
             dir_name_tmp_local,
             dir_name_local,
             parquet_path,

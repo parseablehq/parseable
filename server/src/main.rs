@@ -156,11 +156,6 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
                 .route(web::get().to(handlers::logstream::get_alert)),
         )
-        .service(
-            web::resource(stats_path("{logstream}"))
-                // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
-                .route(web::get().to(handlers::logstream::stats)),
-        )
         // GET "/logstream" ==> Get list of all Log Streams on the server
         .service(web::resource(logstream_path("")).route(web::get().to(handlers::logstream::list)))
         .service(
@@ -221,8 +216,4 @@ fn alert_path(stream_name: &str) -> String {
 
 fn schema_path(stream_name: &str) -> String {
     format!("{}/schema", logstream_path(stream_name))
-}
-
-fn stats_path(stream_name: &str) -> String {
-    format!("{}/stats", logstream_path(stream_name))
 }

@@ -79,35 +79,6 @@ pub async fn list(_: HttpRequest) -> impl Responder {
     response::list_response(S3::new().list_streams().await.unwrap())
 }
 
-pub async fn stats(req: HttpRequest) -> HttpResponse {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    // Get from local stats
-    if let Ok(stats) = metadata::STREAM_INFO.stream_stats(&stream_name) {
-        return response::ServerResponse {
-            msg: serde_json::to_string(&stats).unwrap(),
-            code: StatusCode::OK,
-        }
-        .to_http();
-    }
-
-    let s3 = S3::new();
-
-    // Or from s3
-    match s3.get_stats(&stream_name).await {
-        Ok(stats) => response::ServerResponse {
-            msg: serde_json::to_string(&stats).unwrap(),
-            code: StatusCode::OK,
-        }
-        .to_http(),
-        Err(e) => response::ServerResponse {
-            msg: format!("Failed to get log stream stats: {}", e),
-            code: StatusCode::BAD_REQUEST,
-        }
-        .to_http(),
-    }
-}
-
 pub async fn schema(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 

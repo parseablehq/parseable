@@ -49,14 +49,6 @@ impl Stats {
         self.size += size;
         self.compressed_size = self.prev_compressed + compressed_size;
     }
-
-    /// Once the temp local file is pushed to storage, flush stat info
-    pub fn flush(&mut self) -> Stats {
-        let curr = self.clone();
-        self.prev_compressed = self.compressed_size;
-
-        curr
-    }
 }
 
 lazy_static! {
@@ -134,13 +126,14 @@ impl STREAM_INFO {
             // to load the stream metadata based on whatever is available.
             //
             // TODO: ignore failure(s) if any and skip to next stream
-            let alert_config = parse_string(storage.get_alert(&stream.name).await)?;
-            let schema = parse_string(storage.get_schema(&stream.name).await)?;
-            let stats = storage.get_stats(&stream.name).await?;
+            let alert_config = parse_string(storage.get_alert(&stream.name).await)
+                .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()))?;
+            let schema = parse_string(storage.get_schema(&stream.name).await)
+                .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()))?;
             let metadata = LogStreamMetadata {
                 schema,
                 alert_config,
-                stats,
+                ..Default::default()
             };
             let mut map = self.write().unwrap();
             map.insert(stream.name.to_owned(), metadata);
@@ -163,24 +156,6 @@ impl STREAM_INFO {
         stream.stats.update(size, compressed_size);
 
         Ok(())
-    }
-
-    pub fn stream_stats(&self, stream_name: &str) -> Result<Stats, Error> {
-        let map = self.read().unwrap();
-        let stream = map
-            .get(stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
-
-        Ok(stream.stats.clone())
-    }
-
-    pub fn flush_stream_stats(&self, stream_name: &str) -> Result<Stats, Error> {
-        let mut map = self.write().unwrap();
-        let stream = map
-            .get_mut(stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
-
-        Ok(stream.stats.flush())
     }
 }
 
