@@ -1,32 +1,39 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Parseable" width="700" height="200" />
+  <img src="assets/logo.svg" alt="Parseable" width="600" height="150" />
 </p>
-<p align="center"><b>Lightning Fast, Container Native, Log Storage and Management Platform</b></p>
-<p align="center"><b>From zero to searchable logs in minutes</b></p>
-<h1></h1>
+
+<p align="center">
+  <a href="https://deps.rs/repo/github/parseablehq/parseable" target="_blank"><img src="https://deps.rs/repo/github/parseablehq/parseable/status.svg" alt="Dependency status"></a>
+  <a href="https://github.com/parseablehq/parseable/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/badge/license-AGPL3-informational" alt="License"></a>
+  <a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/minio/minio" alt="Github stars"></a>
+  <a href="https://twitter.com/parseableio" target="_blank"><img src="https://img.shields.io/twitter/follow/parseableio" alt="Twitter"></a>
+</p>
 
 <h4 align="center">
   <a href="https://www.parseable.io" target="_blank">Website</a> |
-  <a href="https://docs.parseable.io" target="_blank">Documentation</a> |
-  <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">Postman Workspace</a> |
-  <a href="https://blog.parseable.io" target="_blank">Blog</a> |
-  <a href="https://www.linkedin.com/company/parseable" target="_blank">LinkedIn</a> |
-  <a href="https://twitter.com/parseableio" target="_blank">Twitter</a>
+  <a href="https://docs.parseable.io" target="_blank">Docs</a> | 
+  <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">Live Demo</a> |
+  <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">Postman Workspace</a>
 </h4>
 
+Parseable is an open source, cloud native, log storage and management platform. 
+
+Parseable helps you ingest high volumes of log data from various sources (Fluentbit, Logstash etc or directly from applications). Parseable stores log data into highly compressed Parquet file format. With object storage as primary storage for Parseable, you get seamless scale and flexibility for ever growing log data.
+
 <p align="center">
-  <a href="https://deps.rs/repo/github/parseablehq/parseable" target="_blank"><img src="https://deps.rs/repo/github/meilisearch/meilisearch/status.svg" alt="Dependency status"></a>
-  <a href="https://github.com/parseablehq/parseable/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/badge/license-AGPL3-informational" alt="License"></a>
+  <img src="assets/overview.svg" alt="Parseable Overview" width="800" height="650" />
 </p>
 
-Parseable is a cloud native log storage and management platform for developers. Built for cloud and container native workloads, Parseable runs natively on Kubernetes. It is written in Rust, to leverage the memory safety, portable builds and high perfomance gurantees. It uses object store as primary storage, allowing seamless scale and flexibility.
+<h1></h1>
+
 ### Why Parseable
 
 * Indexing free design.
-* Highly compressed log data in Parquet - columnar, open data format.
+* Highly compressed log data in Parquet - columnar, open data format. Search logs via Parseable UI or bring your own analytics platform.
 * Stateless design allowing seamless scale and flexibility.
+* Own your log storage data on your object storage buckets.
 * SDK less, simple REST API calls to upload logs.
-* Own your log storage data on your S3 buckets.
+
 ### Features
 
 * Filter log data on tags.
