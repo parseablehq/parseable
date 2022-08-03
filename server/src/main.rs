@@ -22,13 +22,13 @@ use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web_static_files::ResourceFiles;
+use clokwerk::{AsyncScheduler, TimeUnits};
+use log::warn;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 use std::thread;
-use std::time::Duration;
-extern crate ticker;
 
 mod banner;
 mod error;
@@ -57,34 +57,37 @@ const API_VERSION: &str = "/v1";
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
     CONFIG.print();
+    CONFIG.validate();
     let storage = S3::new();
     if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
-        println!("{}", e);
+        warn!("could not populate local metadata. {:?}", e);
     }
-    thread::spawn(|| wrap_local_sync(storage));
-    thread::spawn(|| wrap_s3_sync(S3::new()));
+    thread::spawn(sync);
     run_http().await?;
 
     Ok(())
 }
 
 #[actix_web::main]
-async fn wrap_local_sync(storage: impl ObjectStorage) {
-    let ticker = ticker::Ticker::new(0.., Duration::from_secs(storage::LOCAL_SYNC_DURATION));
-    for _ in ticker {
-        if let Err(e) = storage.local_sync().await {
-            println!("{}", e)
-        }
-    }
-}
+async fn sync() {
+    let mut scheduler = AsyncScheduler::new();
+    scheduler
+        .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
+        .run(|| async {
+            if let Err(e) = S3::new().local_sync().await {
+                warn!("failed to sync local data. {:?}", e);
+            }
+        });
+    scheduler
+        .every((CONFIG.parseable.upload_interval as u32).seconds())
+        .run(|| async {
+            if let Err(e) = S3::new().s3_sync().await {
+                warn!("failed to sync local data with object store. {:?}", e);
+            }
+        });
 
-#[actix_web::main]
-async fn wrap_s3_sync(storage: impl ObjectStorage) {
-    let ticker = ticker::Ticker::new(0.., Duration::from_secs(CONFIG.parseable.sync_duration));
-    for _ in ticker {
-        if let Err(e) = storage.s3_sync().await {
-            println!("{}", e)
-        }
+    loop {
+        scheduler.run_pending().await;
     }
 }
 

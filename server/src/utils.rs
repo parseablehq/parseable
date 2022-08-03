@@ -76,19 +76,19 @@ pub fn random_string() -> String {
 }
 
 /// Convert minutes to a slot range
-/// e.g. given minute = 15 and block_duration = 10 returns "10-19"
-pub fn minute_to_slot(minute: u32, block_duration: u32) -> Option<String> {
+/// e.g. given minute = 15 and OBJECT_STORE_DATA_GRANULARITY = 10 returns "10-19"
+pub fn minute_to_slot(minute: u32, data_granularity: u32) -> Option<String> {
     if minute >= 60 {
         return None;
     }
 
-    let block_n = minute / block_duration;
-    let block_start = block_n * block_duration;
-    if block_duration == 1 {
+    let block_n = minute / data_granularity;
+    let block_start = block_n * data_granularity;
+    if data_granularity == 1 {
         return Some(format!("{:02}", block_start));
     }
 
-    let block_end = (block_n + 1) * block_duration - 1;
+    let block_end = (block_n + 1) * data_granularity - 1;
     Some(format!("{:02}-{:02}", block_start, block_end))
 }
 
@@ -101,10 +101,10 @@ pub fn hour_to_prefix(hour: u32) -> String {
     format!("hour={:02}/", hour)
 }
 
-pub fn minute_to_prefix(minute: u32, block_duration: u32) -> Option<String> {
+pub fn minute_to_prefix(minute: u32, data_granularity: u32) -> Option<String> {
     Some(format!(
         "minute={}/",
-        minute_to_slot(minute, block_duration)?
+        minute_to_slot(minute, data_granularity)?
     ))
 }
 
@@ -129,13 +129,13 @@ pub fn collect_labels(req: &HttpRequest) -> Option<String> {
 pub struct TimePeriod {
     start: DateTime<Utc>,
     end: DateTime<Utc>,
-    block_duration: u32,
+    data_granularity: u32,
 }
 
 impl TimePeriod {
-    pub fn new(start: DateTime<Utc>, end: DateTime<Utc>, block_duration: u32) -> Self {
+    pub fn new(start: DateTime<Utc>, end: DateTime<Utc>, data_granularity: u32) -> Self {
         Self {
-            block_duration,
+            data_granularity,
             start,
             end,
         }
@@ -166,11 +166,11 @@ impl TimePeriod {
         }
 
         let (start_block, end_block) = (
-            start_minute / self.block_duration,
-            end_minute / self.block_duration,
+            start_minute / self.data_granularity,
+            end_minute / self.data_granularity,
         );
 
-        let forbidden_block = 60 / self.block_duration;
+        let forbidden_block = 60 / self.data_granularity;
 
         // ensure both start and end are within the same hour, else return prefix as is
         if end_block - start_block >= forbidden_block {
@@ -181,7 +181,7 @@ impl TimePeriod {
 
         let push_prefix = |block: u32, prefixes: &mut Vec<_>| {
             if let Some(minute_prefix) =
-                minute_to_prefix(block * self.block_duration, self.block_duration)
+                minute_to_prefix(block * self.data_granularity, self.data_granularity)
             {
                 let prefix = prefix.to_owned() + &minute_prefix;
                 prefixes.push(prefix);
@@ -194,7 +194,7 @@ impl TimePeriod {
 
         // NOTE: for block sizes larger than a minute ensure
         // ensure last block is considered
-        if self.block_duration > 1 {
+        if self.data_granularity > 1 {
             push_prefix(end_block, &mut prefixes);
         }
 

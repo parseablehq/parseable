@@ -44,7 +44,7 @@ structopt = { version = "0.3.25" }
 sysinfo = "0.20.5"
 thiserror = "1"
 tokio-stream = "0.1.8"
-ticker="0.1.1"
+clokwerk = "0.4.0-rc1"
 actix-web-static-files = "4.0"
 static-files = "0.2.1"
 walkdir = "2"

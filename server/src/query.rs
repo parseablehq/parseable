@@ -62,7 +62,7 @@ impl Query {
 
     /// Return prefixes, each per day/hour/minutes as necessary
     pub fn get_prefixes(&self) -> Vec<String> {
-        TimePeriod::new(self.start, self.end, storage::BLOCK_DURATION)
+        TimePeriod::new(self.start, self.end, storage::OBJECT_STORE_DATA_GRANULARITY)
             .generate_prefixes(&self.stream_name)
     }
 
@@ -74,7 +74,7 @@ impl Query {
 
         // query cache only if end_time coulld have been after last sync.
         let duration_since = Utc::now() - self.end;
-        if duration_since.num_seconds() < CONFIG.parseable.sync_duration as i64 {
+        if duration_since.num_seconds() < CONFIG.parseable.upload_interval as i64 {
             self.execute_on_cache(&mut results).await?;
         }
 
