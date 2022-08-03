@@ -80,4 +80,8 @@ pub enum Error {
     InvalidAlert(String),
     #[error("this event schema doesn't match with stream schema. please ensure event data is in same format as previous events sent to the stream: {0}")]
     SchemaMismatch(String),
+    #[error("alert for stream not found in storage: {0}")]
+    AlertNotInStore(String),
+    #[error("schema for stream not found in storage: {0}")]
+    SchemaNotInStore(String),
 }
