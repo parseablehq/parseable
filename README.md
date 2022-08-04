@@ -13,8 +13,8 @@
 
 <h4 align="center">
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a> |
-  <a href="https://www.parseable.io/docs" target="_blank">Docs</a> | 
-  <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">Postman Workspace</a>
+  <a href="https://www.parseable.io" target="_blank">Website</a> | 
+  <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">API Workspace on Postman</a>
 </h4>
 
 Parseable is an open source, cloud native, log storage and management platform. 
@@ -31,13 +31,13 @@ Parseable helps you ingest high volumes of log data from various sources (Fluent
 
 Checkout Parseable without installation.
 
-|          |                                        |
+| Field    | Value                                  |
 -----------|-----------------------------------------
-| Server   | https://demo.parseable.io              |
-| User ID  | parseable                              |
+| URL      | https://demo.parseable.io              |
+| Username | parseable                              |
 | Password | parseable                              |
 
-Note: Please do not store any sensitive data on this server as the data is openly available. We'll clean this server periodically.
+Note: Please do not store any sensitive data on this server as the data is openly available. We'll delete the data on this server periodically.
 
 ### Why Parseable
 
