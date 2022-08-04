@@ -27,27 +27,38 @@ Parseable helps you ingest high volumes of log data from various sources (Fluent
 
 <h1></h1>
 
-### Live Demo 
+## Live Demo 
 
 Checkout Parseable without installation.
 
-| Field    | Value                                  |
------------|-----------------------------------------
-| URL      | https://demo.parseable.io              |
-| Username | parseable                              |
-| Password | parseable                              |
+<table>
+<tr>
+    <td>URL</td>
+    <td><a href="https://demo.parseable.io" target="_blank">https://demo.parseable.io</a></td>
+</tr>
+<tr>
+    <td>Username</td>
+    <td>parseable</td>
+</tr>
+<tr>
+    <td>Password</td>
+    <td>parseable</td>
+</tr>
+</table>
+
+You can also use this demo endpoint to send log data. For Parseable API documentation, refer to [Parseable API workspace on Postman](https://www.postman.com/parseable/workspace/parseable/overview).
 
 Note: Please do not store any sensitive data on this server as the data is openly available. We'll delete the data on this server periodically.
 
-### Why Parseable
+## Why Parseable
 
-* Indexing free design.
+* Index free design.
 * Highly compressed log data in Parquet - columnar, open data format. Search logs via Parseable UI or bring your own analytics platform.
 * Stateless design allowing seamless scale and flexibility.
 * Own your log storage data on your object storage buckets.
 * SDK less, simple REST API calls to upload logs.
 
-### Features
+## Features
 
 * Filter log data on tags.
 * Query for specific keywords and fields.
