@@ -5,6 +5,7 @@ on:
       - 'docs/**'
       - 'helm/**'
       - 'assets/**'
+      - '**.md'
 
 name: Continuous Integration
 
