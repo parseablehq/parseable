@@ -1,13 +1,16 @@
 import { useNavigate } from "react-router-dom";
 import logo from "../../assets/images/Group 308.svg";
-import axios from "axios";
 import React, { useState } from "react";
+import { getLogStream } from "../../utils/api";
 
 const Login = () => {
   const navigate = useNavigate();
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState(false);
+  const [errorText, setErrorText] = useState("");
+  const [loading, setLoading] = useState("");
 
   const validate = () => {
     if (username.trim() === "") {
@@ -19,32 +22,30 @@ const Login = () => {
     }
   };
 
-  const loginHandler = (e) => {
+  const loginHandler = async (e) => {
     e.preventDefault();
 
+    setLoading(true);
+    setError(false);
     if (validate()) {
+      const credentials = btoa(username + ":" + password);
+      localStorage.setItem("auth", credentials);
       localStorage.setItem("username", username);
       localStorage.setItem("password", password);
-
-      // var myHeaders = new Headers();
-      // myHeaders.append("Authorization", `Basic ${btoa(username + password)}`);
-      // myHeaders.append("Content-Type", "applfilterication/json");
-
-      // var requestOptions = {
-      //   method: "GET",
-      //   headers: myHeaders,
-      //   redirect: "follow",
-      // };
-
-      // fetch("http://localhost:5678/api/v1/logstream", requestOptions)
-      //   .then((response) => console.log(response))
-      //   .then((result) => {
-      //     console.log(result);
-      //     navigate("/index.html");
-      //   })
-      //   .catch((error) => console.log("error", error));
-      navigate("/index.html");
+      try {
+        const res = await getLogStream();
+        if (res.statusText === "OK") {
+          navigate("/index.html");
+        }
+      } catch (e) {
+        setError(true);
+        setErrorText("Invalid credentials");
+      }
+    } else {
+      setError(true);
+      setErrorText("Invalid username or password");
     }
+    setLoading(false);
   };
 
   return (
@@ -64,7 +65,7 @@ const Login = () => {
                 name="username"
                 id="username"
                 required
-                className="shadow-sm border-2 italic px-3 py-3 focus:outline outline-bluePrimary block w-full sm:text-sm border-gray-300 rounded-sm"
+                className="shadow-sm border-2 px-3 py-3 focus:outline outline-bluePrimary block w-full sm:text-sm border-gray-300 rounded-sm"
                 placeholder="Username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -76,7 +77,7 @@ const Login = () => {
                 name="username"
                 id="username"
                 required
-                className="shadow-sm border-2 italic px-3 py-3 focus:outline outline-bluePrimary block w-full sm:text-sm border-gray-300 rounded-sm"
+                className="shadow-sm border-2 px-3 py-3 focus:outline outline-bluePrimary block w-full sm:text-sm border-gray-300 rounded-sm"
                 placeholder="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -84,10 +85,14 @@ const Login = () => {
             </div>
             <button
               type="submit"
-              className="hover:bg-yellow-500 transform duration-200 hover:shadow w-full py-3 flex justify-center items-center font-semibold text-white bg-yellowButton mt-3"
+              disabled={loading}
+              className="hover:bg-yellow-500 disabled:bg-yellow-300 transform duration-200 hover:shadow w-full py-3 flex justify-center items-center font-semibold text-white bg-yellowButton mt-3"
             >
               Login
             </button>
+            {error && (
+              <p className="text-red-600 text-center mt-1">{errorText}</p>
+            )}
           </form>
           <div
             onClick={() => navigate("/forgot-password")}
@@ -97,10 +102,6 @@ const Login = () => {
           </div>
         </div>
       </div>
-
-      {/* <div class="absolute bottom-0 w-screen overflow-hidden inline-block">
-        <div class="h-screen w-screen bg-white rotate-45 transform origin-bottom-left"></div>
-      </div> */}
     </div>
   );
 };
