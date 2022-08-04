@@ -1,18 +1,17 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Parseable" width="600" height="150" />
+  <a href="https://www.parseable.io" target="_blank"><img src="assets/logo.svg" alt="Parseable" width="600" height="150" /></a>
 </p>
 
 <p align="center">
   <a href="https://deps.rs/repo/github/parseablehq/parseable" target="_blank"><img src="https://deps.rs/repo/github/parseablehq/parseable/status.svg" alt="Dependency status"></a>
   <a href="https://github.com/parseablehq/parseable/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/badge/license-AGPL3-informational" alt="License"></a>
-  <a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/minio/minio" alt="Github stars"></a>
+  <a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/parseablehq/parseable" alt="Github stars"></a>
   <a href="https://twitter.com/parseableio" target="_blank"><img src="https://img.shields.io/twitter/follow/parseableio" alt="Twitter"></a>
 </p>
 
 <h4 align="center">
-  <a href="https://www.parseable.io" target="_blank">Website</a> |
-  <a href="https://docs.parseable.io" target="_blank">Docs</a> | 
-  <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">Live Demo</a> |
+  <a href="https://demo.parseable.io" target="_blank">Live Demo</a> |
+  <a href="https://www.parseable.io/docs" target="_blank">Docs</a> | 
   <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">Postman Workspace</a>
 </h4>
 
