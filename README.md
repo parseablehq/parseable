@@ -3,9 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://deps.rs/repo/github/parseablehq/parseable" target="_blank"><img src="https://deps.rs/repo/github/parseablehq/parseable/status.svg" alt="Dependency status"></a>
-  <a href="https://github.com/parseablehq/parseable/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/badge/license-AGPL3-informational" alt="License"></a>
+  <img src="https://img.shields.io/website?down_message=red&up_color=green&up_message=online&url=https%3A%2F%2Fwww.parseable.io" alt="website status">
+  <img src="https://img.shields.io/github/contributors/parseablehq/parseable" alt="contributors">
+  <img src="https://img.shields.io/github/commit-activity/m/parseablehq/parseable" alt="commits activity monthly">
   <a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/parseablehq/parseable" alt="Github stars"></a>
+  <img src="https://img.shields.io/github/license/parseablehq/parseable" alt="License">  
   <a href="https://twitter.com/parseableio" target="_blank"><img src="https://img.shields.io/twitter/follow/parseableio" alt="Twitter"></a>
 </p>
 
@@ -24,6 +26,18 @@ Parseable helps you ingest high volumes of log data from various sources (Fluent
 </p>
 
 <h1></h1>
+
+### Live Demo 
+
+Checkout Parseable without installation.
+
+|          |                                        |
+-----------|-----------------------------------------
+| Server   | https://demo.parseable.io              |
+| User ID  | parseable                              |
+| Password | parseable                              |
+
+Note: Please do not store any sensitive data on this server as the data is openly available. We'll clean this server periodically.
 
 ### Why Parseable
 
