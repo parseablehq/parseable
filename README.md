@@ -27,7 +27,7 @@ Parseable helps you ingest high volumes of log data from various sources (Fluent
 
 <h1></h1>
 
-### Live Demo 
+## Live Demo 
 
 Checkout Parseable without installation.
 
@@ -50,7 +50,7 @@ You can also use this demo endpoint to send log data. For Parseable API document
 
 Note: Please do not store any sensitive data on this server as the data is openly available. We'll delete the data on this server periodically.
 
-### Why Parseable
+## Why Parseable
 
 * Index free design.
 * Highly compressed log data in Parquet - columnar, open data format. Search logs via Parseable UI or bring your own analytics platform.
@@ -58,7 +58,7 @@ Note: Please do not store any sensitive data on this server as the data is openl
 * Own your log storage data on your object storage buckets.
 * SDK less, simple REST API calls to upload logs.
 
-### Features
+## Features
 
 * Filter log data on tags.
 * Query for specific keywords and fields.
