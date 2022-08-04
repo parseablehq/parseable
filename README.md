@@ -46,11 +46,13 @@ Checkout Parseable without installation.
 </tr>
 </table>
 
+You can also use this demo endpoint to send log data. For Parseable API documentation, refer to [Parseable API workspace on Postman](https://www.postman.com/parseable/workspace/parseable/overview).
+
 Note: Please do not store any sensitive data on this server as the data is openly available. We'll delete the data on this server periodically.
 
 ### Why Parseable
 
-* Indexing free design.
+* Index free design.
 * Highly compressed log data in Parquet - columnar, open data format. Search logs via Parseable UI or bring your own analytics platform.
 * Stateless design allowing seamless scale and flexibility.
 * Own your log storage data on your object storage buckets.
