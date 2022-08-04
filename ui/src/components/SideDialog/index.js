@@ -9,10 +9,10 @@ export default function SideDialog({ open, setOpen, data }) {
 
   const [log, setLog] = useState({})
 
-  const str =
-    Object.keys(data).length !== 0
-      ? data?.log.replace(/"([^"]+)":/g, "$1:")
-      : "";
+  // const str =
+  //   Object.keys(data).length !== 0
+  //     ? data?.log.replace(/"([^"]+)":/g, "$1:")
+  //     : "";
 
   // JSON.parse(str)
 

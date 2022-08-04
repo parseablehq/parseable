@@ -8,7 +8,7 @@ const ForgotPassword = () => {
   return (
     <div className="h-screen px-5 w-screen flex bg-login-back bg-cover md:bg-contain bg-top bg-no-repeat justify-center items-center">
       <div className="z-10 px-5 md:px-10 w-96 shadow-xl rounded-lg border bg-white border-gray-200 pt-8 pb-4 flex flex-col justify-center items-center">
-        <img src={logo} className="w-32 px-4" />
+        <img alt="" src={logo} className="w-32 px-4" />
         <div className="mt-6 text-bluePrimary font-bold text-sm">
           How to reset your password
         </div>

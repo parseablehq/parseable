@@ -1,0 +1,55 @@
+.form-control {
+  @apply w-full rounded  border border-grey font-medium text-sm text-textBlack text-center p-3;
+  @apply focus:ring-yellowButton focus:border-yellowButton focus:ring-1 focus:outline-0;
+}
+
+.fromDateHourContainer {
+  @apply px-3 py-1;
+}
+
+.maxDateLabel {
+  display: none;
+}
+
+.calendarGrid {
+  @apply font-medium;
+}
+
+.monthYearContainer {
+  @apply mb-6;
+}
+
+#Hour_start,
+#Minutes_start,
+#Hour_end,
+#Minutes_end,
+#MonthSelector_start,
+#MonthSelector_end,
+#YearSelector_start,
+#YearSelector_end {
+  @apply rounded py-1 px-2  border border-grey font-medium text-xs text-textBlack text-center;
+  @apply focus:ring-yellowButton focus:border-yellowButton focus:ring-1 focus:outline-0;
+}
+
+.multipleContentOnLine {
+  outline: none !important;
+}
+
+#Hour_start,
+#Minutes_start,
+#Hour_end,
+#Minutes_end {
+  @apply w-16;
+}
+
+#MonthSelector_start,
+#MonthSelector_end,
+#YearSelector_start,
+#YearSelector_end {
+  @apply w-28;
+}
+
+.applyButton {
+  background-color: #F29C38!important;
+  border: none;
+}
