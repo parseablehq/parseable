@@ -1,22 +1,22 @@
 {
   "files": {
-    "main.css": "/static/css/main.f2ddbca0.css",
-    "main.js": "/static/js/main.25c93169.js",
+    "main.css": "/static/css/main.72a8a4f4.css",
+    "main.js": "/static/js/main.02c29bb0.js",
     "static/js/787.b603e55d.chunk.js": "/static/js/787.b603e55d.chunk.js",
     "static/media/slack_icon.png": "/static/media/slack_icon.55ad9eabc7f642f5e5a5.png",
     "static/media/documentation_icon.png": "/static/media/documentation_icon.18b10dd030d16dcf402a.png",
-    "static/media/Group 295.svg": "/static/media/Group 295.5a7e7bbdd046bb156c2663f350873c5c.svg",
-    "static/media/Group 308.svg": "/static/media/Group 308.3142f6f145c101a7a3cfaccbdf9d8c03.svg",
-    "static/media/Icon feather-user.svg": "/static/media/Icon feather-user.9818560be617a2db1baa43d40b79859a.svg",
+    "static/media/Group 295.svg": "/static/media/Group 295.8024ce898a2fc07894e78c93b5637a69.svg",
+    "static/media/Group 308.svg": "/static/media/Group 308.55e8ebc0915cc514abe14aef01b1cc40.svg",
+    "static/media/Icon feather-user.svg": "/static/media/Icon feather-user.6a47e71ba848dd789df267a8e0652319.svg",
     "index.html": "/index.html",
-    "static/media/Icon awesome-stream (1).svg": "/static/media/Icon awesome-stream (1).8e850ec0a4837bbf19c117d74a04ae9d.svg",
-    "static/media/Path 369.svg": "/static/media/Path 369.e8adc02833c6a21dc59c.svg",
-    "main.f2ddbca0.css.map": "/static/css/main.f2ddbca0.css.map",
-    "main.25c93169.js.map": "/static/js/main.25c93169.js.map",
+    "static/media/Icon awesome-stream (1).svg": "/static/media/Icon awesome-stream (1).fd5cc0381daabc57dd348b35aa94fc8c.svg",
+    "static/media/Path 369.svg": "/static/media/Path 369.bcbce409a0e98bad6438.svg",
+    "main.72a8a4f4.css.map": "/static/css/main.72a8a4f4.css.map",
+    "main.02c29bb0.js.map": "/static/js/main.02c29bb0.js.map",
     "787.b603e55d.chunk.js.map": "/static/js/787.b603e55d.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.f2ddbca0.css",
-    "static/js/main.25c93169.js"
+    "static/css/main.72a8a4f4.css",
+    "static/js/main.02c29bb0.js"
   ]
 }
