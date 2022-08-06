@@ -12,11 +12,11 @@
     "static/media/Icon awesome-stream (1).svg": "/static/media/Icon awesome-stream (1).8e850ec0a4837bbf19c117d74a04ae9d.svg",
     "static/media/Path 369.svg": "/static/media/Path 369.e8adc02833c6a21dc59c.svg",
     "main.8e1b0419.css.map": "/static/css/main.8e1b0419.css.map",
-    "main.fd4d9c8f.js.map": "/static/js/main.fd4d9c8f.js.map",
+    "main.9e6da6cf.js.map": "/static/js/main.9e6da6cf.js.map",
     "787.b603e55d.chunk.js.map": "/static/js/787.b603e55d.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.8e1b0419.css",
-    "static/js/main.fd4d9c8f.js"
+    "static/js/main.9e6da6cf.js"
   ]
 }
