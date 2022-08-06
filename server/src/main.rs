@@ -51,7 +51,7 @@ use storage::ObjectStorage;
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 102400;
 const API_BASE_PATH: &str = "/api";
-const API_VERSION: &str = "/v1";
+const API_VERSION: &str = "v1";
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
@@ -118,8 +118,7 @@ async fn run_http() -> anyhow::Result<()> {
         (_, _) => None,
     };
 
-    let http_server =
-        HttpServer::new(move || create_app!().wrap(HttpAuthentication::basic(validator)));
+    let http_server = HttpServer::new(move || create_app!());
     if let Some(builder) = ssl_acceptor {
         http_server
             .bind_openssl(&CONFIG.parseable.address, builder)?
@@ -135,40 +134,46 @@ async fn run_http() -> anyhow::Result<()> {
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     let generated = generate();
 
-    // Base path "{url}/api/v1"
-    // POST "/query" ==> Get results of the SQL query passed in request body
-    cfg.service(web::resource(query_path()).route(web::post().to(handlers::event::query)))
-        .service(
-            // logstream API
-            web::resource(logstream_path("{logstream}"))
-                // PUT "/logstream/{logstream}" ==> Create log stream
-                .route(web::put().to(handlers::logstream::put))
-                // POST "/logstream/{logstream}" ==> Post logs to given log stream
-                .route(web::post().to(handlers::event::post_event))
-                // DELETE "/logstream/{logstream}" ==> Delete log stream
-                .route(web::delete().to(handlers::logstream::delete))
-                .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
-        )
-        .service(
-            web::resource(alert_path("{logstream}"))
-                // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
-                .route(web::put().to(handlers::logstream::put_alert))
-                // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
-                .route(web::get().to(handlers::logstream::get_alert)),
-        )
-        // GET "/logstream" ==> Get list of all Log Streams on the server
-        .service(web::resource(logstream_path("")).route(web::get().to(handlers::logstream::list)))
-        .service(
-            // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
-            web::resource(schema_path("{logstream}"))
-                .route(web::get().to(handlers::logstream::schema)),
-        )
-        // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
-        .service(web::resource(liveness_path()).route(web::get().to(handlers::liveness)))
-        // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
-        .service(web::resource(readiness_path()).route(web::get().to(handlers::readiness)))
-        // GET "/" ==> Serve the static frontend directory
-        .service(ResourceFiles::new("/", generated));
+    cfg.service(
+        // Base path "{url}/api/v1"
+        web::scope(&base_path())
+            // POST "/query" ==> Get results of the SQL query passed in request body
+            .service(web::resource(query_path()).route(web::post().to(handlers::event::query)))
+            .service(
+                // logstream API
+                web::resource(logstream_path("{logstream}"))
+                    // PUT "/logstream/{logstream}" ==> Create log stream
+                    .route(web::put().to(handlers::logstream::put))
+                    // POST "/logstream/{logstream}" ==> Post logs to given log stream
+                    .route(web::post().to(handlers::event::post_event))
+                    // DELETE "/logstream/{logstream}" ==> Delete log stream
+                    .route(web::delete().to(handlers::logstream::delete))
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+            )
+            .service(
+                web::resource(alert_path("{logstream}"))
+                    // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
+                    .route(web::put().to(handlers::logstream::put_alert))
+                    // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
+                    .route(web::get().to(handlers::logstream::get_alert)),
+            )
+            // GET "/logstream" ==> Get list of all Log Streams on the server
+            .service(
+                web::resource(logstream_path("")).route(web::get().to(handlers::logstream::list)),
+            )
+            .service(
+                // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
+                web::resource(schema_path("{logstream}"))
+                    .route(web::get().to(handlers::logstream::schema)),
+            )
+            // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
+            .service(web::resource(liveness_path()).route(web::get().to(handlers::liveness)))
+            // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
+            .service(web::resource(readiness_path()).route(web::get().to(handlers::readiness)))
+            .wrap(HttpAuthentication::basic(validator)),
+    )
+    // GET "/" ==> Serve the static frontend directory
+    .service(ResourceFiles::new("/", generated));
 }
 
 #[macro_export]
@@ -188,26 +193,27 @@ macro_rules! create_app {
 }
 
 fn base_path() -> String {
-    format!("{}{}", API_BASE_PATH, API_VERSION)
+    format!("{}/{}", API_BASE_PATH, API_VERSION)
 }
 
 fn logstream_path(stream_name: &str) -> String {
     if stream_name.is_empty() {
-        return format!("{}/logstream", base_path());
+        "/logstream".to_string()
+    } else {
+        format!("/logstream/{}", stream_name)
     }
-    format!("{}/logstream/{}", base_path(), stream_name)
 }
 
 fn readiness_path() -> String {
-    format!("{}/readiness", base_path())
+    "/readiness".to_string()
 }
 
 fn liveness_path() -> String {
-    format!("{}/liveness", base_path())
+    "/liveness".to_string()
 }
 
 fn query_path() -> String {
-    format!("{}/query", base_path())
+    "/query".to_string()
 }
 
 fn alert_path(stream_name: &str) -> String {
