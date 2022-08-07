@@ -31,12 +31,9 @@ const Login = () => {
       const credentials = btoa(username + ":" + password);
       localStorage.setItem("auth", credentials);
       localStorage.setItem("username", username);
-      localStorage.setItem("password", password);
       try {
-        const res = await getLogStream();
-        if (res.statusText === "OK") {
-          navigate("/index.html");
-        }
+        await getLogStream();
+        navigate("/index.html");
       } catch (e) {
         setError(true);
         setErrorText("Invalid credentials");

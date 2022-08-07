@@ -1,7 +1,7 @@
 {
   "files": {
     "main.css": "/static/css/main.8e1b0419.css",
-    "main.js": "/static/js/main.fd4d9c8f.js",
+    "main.js": "/static/js/main.7fe876e0.js",
     "static/js/787.b603e55d.chunk.js": "/static/js/787.b603e55d.chunk.js",
     "static/media/slack_icon.png": "/static/media/slack_icon.55ad9eabc7f642f5e5a5.png",
     "static/media/documentation_icon.png": "/static/media/documentation_icon.18b10dd030d16dcf402a.png",
@@ -12,11 +12,11 @@
     "static/media/Icon awesome-stream (1).svg": "/static/media/Icon awesome-stream (1).8e850ec0a4837bbf19c117d74a04ae9d.svg",
     "static/media/Path 369.svg": "/static/media/Path 369.e8adc02833c6a21dc59c.svg",
     "main.8e1b0419.css.map": "/static/css/main.8e1b0419.css.map",
-    "main.fd4d9c8f.js.map": "/static/js/main.fd4d9c8f.js.map",
+    "main.7fe876e0.js.map": "/static/js/main.7fe876e0.js.map",
     "787.b603e55d.chunk.js.map": "/static/js/787.b603e55d.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.8e1b0419.css",
-    "static/js/main.fd4d9c8f.js"
+    "static/js/main.7fe876e0.js"
   ]
 }
