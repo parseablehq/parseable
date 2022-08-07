@@ -5,15 +5,14 @@ import ForgotPassword from "./page/ForgotPassword";
 import Dashboard from "./page/Dashboard";
 
 function App() {
-
   return (
-    <div className="">
+    <>
       <Routes>
         <Route path="/" element={<Login />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/index.html" element={<Dashboard />} />
       </Routes>
-    </div>
+    </>
   );
 }
 
