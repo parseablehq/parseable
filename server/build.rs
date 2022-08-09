@@ -27,34 +27,35 @@ fn main() {
 mod ui {
 
     use std::env;
-    use std::io::{self, Cursor, Read, Write};
-    use std::path::{PathBuf, Path};
     use std::fs::{self, create_dir_all, OpenOptions};
+    use std::io::{self, Cursor, Read, Write};
+    use std::path::{Path, PathBuf};
     use std::str::FromStr;
 
-    use static_files::resource_dir;
-    use ureq::get as get_from_url;
     use cargo_toml::Manifest;
     use sha1_smol::Sha1;
+    use static_files::resource_dir;
+    use ureq::get as get_from_url;
 
     fn build_resource_from(local_path: impl AsRef<Path>) -> io::Result<()> {
         let local_path = local_path.as_ref();
         if local_path.exists() {
             resource_dir(local_path).build()
-        }
-        else {
-            Err(io::Error::new(io::ErrorKind::NotFound, "Local UI directory not found!"))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Local UI directory not found!",
+            ))
         }
     }
 
     pub fn setup() -> io::Result<()> {
-
         let cargo_manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
         let cargo_toml = cargo_manifest_dir.join("Cargo.toml");
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
         let parseable_ui_path = out_dir.join("ui");
         let checksum_path = out_dir.join("parseable_ui.sha1");
-        
+
         let _use_local_assets = env::var("USE_LOCAL_ASSETS").unwrap_or("false".to_string());
         // Maybe throw a warning here
         let use_local_assets = bool::from_str(&_use_local_assets).unwrap_or(false);
@@ -66,22 +67,25 @@ mod ui {
             .expect("package not specified in Cargo.toml")
             .metadata
             .expect("no metadata specified in Cargo.toml");
-            
+
         let metadata = manifest
             .get("parseable_ui")
-            .ok_or(io::Error::new(io::ErrorKind::Other, "Parseable UI Metadata not defined correctly"))
+            .ok_or(io::Error::new(
+                io::ErrorKind::Other,
+                "Parseable UI Metadata not defined correctly",
+            ))
             .unwrap();
-        
-        // If local build of ui is to be used 
+
+        // If local build of ui is to be used
         if use_local_assets {
             if let Some(local_path) = metadata.get("local-assets") {
                 println!("cargo:rerun-if-changed={}", local_path.as_str().unwrap());
                 build_resource_from(local_path.as_str().unwrap()).unwrap();
-                return Ok(())
+                return Ok(());
             }
         }
 
-        // If UI is already downloaded in the target directory then verify and return 
+        // If UI is already downloaded in the target directory then verify and return
         if checksum_path.exists() && parseable_ui_path.exists() {
             let checksum = fs::read_to_string(&checksum_path)?;
             if checksum == metadata["assets-sha1"].as_str().unwrap() {
@@ -100,8 +104,13 @@ mod ui {
                 let mut buf: Vec<u8> = Vec::new();
                 data.into_reader().read_to_end(&mut buf).unwrap();
                 buf
-            },
-            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, format!("Failed to download from {url}"))),
+            }
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to download from {url}"),
+                ))
+            }
         };
 
         let checksum = Sha1::from(&parseable_ui_bytes).hexdigest();
