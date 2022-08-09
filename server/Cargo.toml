@@ -51,3 +51,16 @@ walkdir = "2"
 
 [build-dependencies]
 static-files = "0.2.1"
+cargo_toml = "0.11.5"
+ureq = "2.5.0"
+sha1_smol = {version = "1.0.0", features=["std"]}
+hex = "0.4.3"
+zip = { git = "https://github.com/zip-rs/zip" }
+
+[package.metadata.parseable_ui]
+assets-url = "http://localhost:5555/ui/build.zip"
+assets-sha1 = "541f1887087ff80149b1d19bce802b4e359cb2e3"
+# specifies where to find local assests
+# default behaviour is to use assets from url above
+# USE_LOCAL_ASSESTS=true to prefer local build over build linked above
+local-assets = "../ui/build"
