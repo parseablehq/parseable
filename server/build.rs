@@ -56,9 +56,10 @@ mod ui {
         let parseable_ui_path = out_dir.join("ui");
         let checksum_path = out_dir.join("parseable_ui.sha1");
 
-        let _use_local_assets = env::var("USE_LOCAL_ASSETS").unwrap_or("false".to_string());
+        let _use_local_assets =
+            env::var("USE_LOCAL_ASSETS").unwrap_or_else(|_| String::from("false"));
         // Maybe throw a warning here
-        let use_local_assets = bool::from_str(&_use_local_assets).unwrap_or(false);
+        let use_local_assets = bool::from_str(&_use_local_assets).unwrap_or_default();
 
         let manifest = Manifest::from_path(cargo_toml).unwrap();
 
@@ -70,10 +71,12 @@ mod ui {
 
         let metadata = manifest
             .get("parseable_ui")
-            .ok_or(io::Error::new(
-                io::ErrorKind::Other,
-                "Parseable UI Metadata not defined correctly",
-            ))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "Parseable UI Metadata not defined correctly",
+                )
+            })
             .unwrap();
 
         // If local build of ui is to be used
