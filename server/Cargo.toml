@@ -57,8 +57,8 @@ sha1_smol = {version = "1.0.0", features=["std"]}
 zip = { git = "https://github.com/zip-rs/zip" }
 
 [package.metadata.parseable_ui]
-assets-url = "http://localhost:5555/ui/build.zip"
-assets-sha1 = "541f1887087ff80149b1d19bce802b4e359cb2e3"
+assets-url = "https://github.com/parseablehq/frontend/releases/download/v0.0.1/build.zip"
+assets-sha1 = "d9243bde7a98bdd8a19ed47cca2f12f9a5ce40ba"
 # specifies where to find local assests
 # default behaviour is to use assets from url above
 # USE_LOCAL_ASSESTS=true to prefer local build over build linked above
