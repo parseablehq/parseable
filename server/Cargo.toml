@@ -54,7 +54,6 @@ static-files = "0.2.1"
 cargo_toml = "0.11.5"
 ureq = "2.5.0"
 sha1_smol = {version = "1.0.0", features=["std"]}
-hex = "0.4.3"
 zip = { git = "https://github.com/zip-rs/zip" }
 
 [package.metadata.parseable_ui]
