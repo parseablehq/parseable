@@ -96,19 +96,14 @@ mod ui {
         let url = metadata["assets-url"].as_str().unwrap();
 
         // See https://docs.rs/ureq/2.5.0/ureq/struct.Response.html#method.into_reader
-        let parseable_ui_bytes = match get_from_url(url).call() {
-            Ok(data) => {
+        let parseable_ui_bytes = get_from_url(url)
+            .call()
+            .map(|data| {
                 let mut buf: Vec<u8> = Vec::new();
                 data.into_reader().read_to_end(&mut buf).unwrap();
                 buf
-            }
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Failed to download from {url}"),
-                ))
-            }
-        };
+            })
+            .expect("Failed to get resource from {url}");
 
         let checksum = Sha1::from(&parseable_ui_bytes).hexdigest();
 
