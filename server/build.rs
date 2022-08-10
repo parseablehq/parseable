@@ -19,18 +19,17 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-env-changed=USE_LOCAL_ASSETS");
+    println!("cargo:rerun-if-env-changed=LOCAL_ASSETS_PATH");
     println!("Build File running");
     ui::setup().unwrap()
 }
 
 mod ui {
 
-    use std::env;
     use std::fs::{self, create_dir_all, OpenOptions};
     use std::io::{self, Cursor, Read, Write};
     use std::path::{Path, PathBuf};
-    use std::str::FromStr;
+    use std::{env, panic};
 
     use cargo_toml::Manifest;
     use sha1_smol::Sha1;
@@ -56,11 +55,6 @@ mod ui {
         let parseable_ui_path = out_dir.join("ui");
         let checksum_path = out_dir.join("parseable_ui.sha1");
 
-        let _use_local_assets =
-            env::var("USE_LOCAL_ASSETS").unwrap_or_else(|_| String::from("false"));
-        // Maybe throw a warning here
-        let use_local_assets = bool::from_str(&_use_local_assets).unwrap_or_default();
-
         let manifest = Manifest::from_path(cargo_toml).unwrap();
 
         let manifest = manifest
@@ -71,20 +65,20 @@ mod ui {
 
         let metadata = manifest
             .get("parseable_ui")
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    "Parseable UI Metadata not defined correctly",
-                )
-            })
-            .unwrap();
+            .expect("Parseable UI Metadata not defined correctly");
+
+        // try fetching frontend path from env var
+        let local_assets_path: Option<PathBuf> =
+            env::var("LOCAL_ASSETS_PATH").ok().map(PathBuf::from);
 
         // If local build of ui is to be used
-        if use_local_assets {
-            if let Some(local_path) = metadata.get("local-assets") {
-                println!("cargo:rerun-if-changed={}", local_path.as_str().unwrap());
-                build_resource_from(local_path.as_str().unwrap()).unwrap();
+        if let Some(ref path) = local_assets_path {
+            if path.exists() {
+                println!("cargo:rerun-if-changed={}", path.to_str().unwrap());
+                build_resource_from(path).unwrap();
                 return Ok(());
+            } else {
+                panic!("Directory specified in LOCAL_ASSETS_PATH is not found")
             }
         }
 

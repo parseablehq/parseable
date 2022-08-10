@@ -59,7 +59,3 @@ zip = { git = "https://github.com/zip-rs/zip" }
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/frontend/releases/download/v0.0.1/build.zip"
 assets-sha1 = "d9243bde7a98bdd8a19ed47cca2f12f9a5ce40ba"
-# specifies where to find local assests
-# default behaviour is to use assets from url above
-# USE_LOCAL_ASSESTS=true to prefer local build over build linked above
-local-assets = "../ui/build"
