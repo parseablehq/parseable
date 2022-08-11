@@ -16,6 +16,7 @@
  *
  */
 
+use crate::alerts::Alerts;
 use crate::error::Error;
 use crate::metadata::Stats;
 use crate::option::CONFIG;
@@ -52,9 +53,9 @@ pub trait ObjectStorage: Sync + 'static {
     async fn put_schema(&self, stream_name: String, body: String) -> Result<(), Error>;
     async fn create_stream(&self, stream_name: &str) -> Result<(), Error>;
     async fn delete_stream(&self, stream_name: &str) -> Result<(), Error>;
-    async fn create_alert(&self, stream_name: &str, body: String) -> Result<(), Error>;
+    async fn put_alerts(&self, stream_name: &str, alerts: Alerts) -> Result<(), Error>;
     async fn get_schema(&self, stream_name: &str) -> Result<Bytes, Error>;
-    async fn get_alert(&self, stream_name: &str) -> Result<Bytes, Error>;
+    async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, Error>;
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, Error>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, Error>;
     async fn upload_file(&self, key: &str, path: &str) -> Result<(), Error>;

@@ -30,6 +30,7 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 use std::thread;
 
+mod alerts;
 mod banner;
 mod error;
 mod event;

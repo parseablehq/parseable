@@ -23,13 +23,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use crate::alerts::Alerts;
 use crate::error::Error;
+use crate::event::Event;
 use crate::storage::ObjectStorage;
 
 #[derive(Debug, Default)]
 pub struct LogStreamMetadata {
     pub schema: String,
-    pub alert_config: String,
+    pub alerts: Alerts,
     pub stats: Stats,
 }
 
@@ -66,9 +68,22 @@ lazy_static! {
 // 5. When set alert API is called (update the alert)
 #[allow(clippy::all)]
 impl STREAM_INFO {
+    pub async fn parse_event(&self, event: &Event) -> Result<(), Error> {
+        let map = self.read().unwrap();
+        let meta = map
+            .get(&event.stream_name)
+            .ok_or(Error::StreamMetaNotFound(event.stream_name.to_owned()))?;
+
+        for alert in &meta.alerts.alerts {
+            alert.parse_event(event).await?;
+        }
+
+        Ok(())
+    }
+
     pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
-        let alert_config = self.alert(stream_name.clone())?;
-        self.add_stream(stream_name, schema, alert_config)
+        let alerts = self.alert(stream_name.clone())?;
+        self.add_stream(stream_name, schema, alerts)
     }
 
     pub fn schema(&self, stream_name: String) -> Result<String, Error> {
@@ -80,30 +95,30 @@ impl STREAM_INFO {
         Ok(meta.schema.clone())
     }
 
-    pub fn set_alert(&self, stream_name: String, alert_config: String) -> Result<(), Error> {
+    pub fn set_alert(&self, stream_name: String, alerts: Alerts) -> Result<(), Error> {
         let schema = self.schema(stream_name.clone())?;
-        self.add_stream(stream_name, schema, alert_config)
+        self.add_stream(stream_name, schema, alerts)
     }
 
-    pub fn alert(&self, stream_name: String) -> Result<String, Error> {
+    pub fn alert(&self, stream_name: String) -> Result<Alerts, Error> {
         let map = self.read().unwrap();
         let meta = map
             .get(&stream_name)
             .ok_or(Error::StreamMetaNotFound(stream_name))?;
 
-        Ok(meta.alert_config.clone())
+        Ok(meta.alerts.clone())
     }
 
     pub fn add_stream(
         &self,
         stream_name: String,
         schema: String,
-        alert_config: String,
+        alerts: Alerts,
     ) -> Result<(), Error> {
         let mut map = self.write().unwrap();
         let metadata = LogStreamMetadata {
             schema,
-            alert_config,
+            alerts,
             ..Default::default()
         };
         // TODO: Add check to confirm data insertion
@@ -126,13 +141,15 @@ impl STREAM_INFO {
             // to load the stream metadata based on whatever is available.
             //
             // TODO: ignore failure(s) if any and skip to next stream
-            let alert_config = parse_string(storage.get_alert(&stream.name).await)
+            let alerts = storage
+                .get_alerts(&stream.name)
+                .await
                 .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()))?;
             let schema = parse_string(storage.get_schema(&stream.name).await)
                 .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()))?;
             let metadata = LogStreamMetadata {
                 schema,
-                alert_config,
+                alerts,
                 ..Default::default()
             };
             let mut map = self.write().unwrap();

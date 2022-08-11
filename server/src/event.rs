@@ -35,6 +35,7 @@ use crate::response;
 use crate::storage::ObjectStorage;
 use crate::Error;
 
+#[derive(Clone)]
 pub struct Event {
     pub body: String,
     pub stream_name: String,
@@ -60,6 +61,8 @@ impl Event {
         storage: &impl ObjectStorage,
     ) -> Result<response::EventResponse, Error> {
         let schema = metadata::STREAM_INFO.schema(self.stream_name.clone())?;
+        metadata::STREAM_INFO.parse_event(self).await?;
+
         if schema.is_empty() {
             self.first_event(storage).await
         } else {
