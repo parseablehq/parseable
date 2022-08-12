@@ -116,7 +116,7 @@ mod ui {
         create_dir_all(&parseable_ui_path)?;
         let mut zip = zip::read::ZipArchive::new(Cursor::new(&parseable_ui_bytes))?;
         zip.extract(&parseable_ui_path)?;
-        resource_dir(&parseable_ui_path).build()?;
+        resource_dir(parseable_ui_path.join("build")).build()?;
 
         let mut file = OpenOptions::new()
             .write(true)
