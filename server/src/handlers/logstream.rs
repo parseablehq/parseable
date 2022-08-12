@@ -244,15 +244,13 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
             }
             .to_http(),
         },
-        Err(e) => {
-            response::ServerResponse {
-                msg: format!(
-                    "failed to set alert configuration for log stream {} due to err: {}",
-                    stream_name, e
-                ),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http()
+        Err(e) => response::ServerResponse {
+            msg: format!(
+                "failed to set alert configuration for log stream {} due to err: {}",
+                stream_name, e
+            ),
+            code: StatusCode::BAD_REQUEST,
         }
+        .to_http(),
     }
 }
