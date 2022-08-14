@@ -59,7 +59,7 @@ impl Event {
         &self,
         storage: &impl ObjectStorage,
     ) -> Result<response::EventResponse, Error> {
-        let schema = metadata::STREAM_INFO.schema(self.stream_name.clone())?;
+        let schema = metadata::STREAM_INFO.schema(&self.stream_name)?;
         if schema.is_empty() {
             self.first_event(storage).await
         } else {
@@ -147,7 +147,7 @@ impl Event {
                 );
 
                 // validate schema before attempting to append to parquet file
-                let stream_schema = metadata::STREAM_INFO.schema(self.stream_name.clone())?;
+                let stream_schema = metadata::STREAM_INFO.schema(&self.stream_name)?;
                 if stream_schema != event_schema.string_schema {
                     return Err(Error::SchemaMismatch(self.stream_name.clone()));
                 }

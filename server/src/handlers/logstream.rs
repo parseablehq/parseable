@@ -57,7 +57,7 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    if let Err(e) = metadata::STREAM_INFO.delete_stream(stream_name.to_string()) {
+    if let Err(e) = metadata::STREAM_INFO.delete_stream(&stream_name) {
         return response::ServerResponse {
             msg: format!(
                 "failed to delete log stream {} from metadata due to err: {}",
@@ -82,7 +82,7 @@ pub async fn list(_: HttpRequest) -> impl Responder {
 pub async fn schema(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    match metadata::STREAM_INFO.schema(stream_name.clone()) {
+    match metadata::STREAM_INFO.schema(&stream_name) {
         Ok(schema) => response::ServerResponse {
             msg: schema,
             code: StatusCode::OK,
@@ -116,7 +116,7 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
 pub async fn get_alert(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    match metadata::STREAM_INFO.alert(stream_name.clone()) {
+    match metadata::STREAM_INFO.alert(&stream_name) {
         Ok(alert) => response::ServerResponse {
             msg: alert,
             code: StatusCode::OK,
@@ -178,9 +178,7 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
         // Fail if unable to create log stream on object store backend
         if let Err(e) = s3.create_stream(&stream_name).await {
             // delete the stream from metadata because we couldn't create it on object store backend
-            metadata::STREAM_INFO
-                .delete_stream(stream_name.to_string())
-                .unwrap();
+            metadata::STREAM_INFO.delete_stream(&stream_name).unwrap();
             return response::ServerResponse {
                 msg: format!(
                     "failed to create log stream {} due to err: {}",
@@ -217,8 +215,8 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
             .await
         {
             Ok(_) => {
-                if let Err(e) = metadata::STREAM_INFO
-                    .set_alert(stream_name.to_string(), alert_config.to_string())
+                if let Err(e) =
+                    metadata::STREAM_INFO.set_alert(stream_name.clone(), alert_config.to_string())
                 {
                     return response::ServerResponse {
                         msg: format!(

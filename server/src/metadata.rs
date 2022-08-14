@@ -26,14 +26,14 @@ use std::sync::RwLock;
 use crate::error::Error;
 use crate::storage::ObjectStorage;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LogStreamMetadata {
     pub schema: String,
     pub alert_config: String,
     pub stats: Stats,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone, PartialEq, Eq)]
 pub struct Stats {
     pub size: u64,
     pub compressed_size: u64,
@@ -67,29 +67,29 @@ lazy_static! {
 #[allow(clippy::all)]
 impl STREAM_INFO {
     pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
-        let alert_config = self.alert(stream_name.clone())?;
+        let alert_config = self.alert(&stream_name)?;
         self.add_stream(stream_name, schema, alert_config)
     }
 
-    pub fn schema(&self, stream_name: String) -> Result<String, Error> {
+    pub fn schema(&self, stream_name: &str) -> Result<String, Error> {
         let map = self.read().unwrap();
         let meta = map
-            .get(&stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name))?;
+            .get(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))?;
 
         Ok(meta.schema.clone())
     }
 
     pub fn set_alert(&self, stream_name: String, alert_config: String) -> Result<(), Error> {
-        let schema = self.schema(stream_name.clone())?;
+        let schema = self.schema(&stream_name)?;
         self.add_stream(stream_name, schema, alert_config)
     }
 
-    pub fn alert(&self, stream_name: String) -> Result<String, Error> {
+    pub fn alert(&self, stream_name: &str) -> Result<String, Error> {
         let map = self.read().unwrap();
         let meta = map
-            .get(&stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name))?;
+            .get(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
 
         Ok(meta.alert_config.clone())
     }
@@ -112,10 +112,10 @@ impl STREAM_INFO {
         Ok(())
     }
 
-    pub fn delete_stream(&self, stream_name: String) -> Result<(), Error> {
+    pub fn delete_stream(&self, stream_name: &str) -> Result<(), Error> {
         let mut map = self.write().unwrap();
         // TODO: Add check to confirm data deletion
-        map.remove(&stream_name);
+        map.remove(stream_name);
 
         Ok(())
     }
