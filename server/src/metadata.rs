@@ -181,6 +181,7 @@ mod tests {
     use super::*;
     use maplit::hashmap;
     use rstest::*;
+    use serial_test::serial;
 
     #[rstest]
     #[case::zero(0, 0, 0)]
@@ -226,6 +227,7 @@ mod tests {
     #[rstest]
     #[case::stream_schema_alert("teststream", "schema", "alert_config")]
     #[case::stream_only("teststream", "", "")]
+    #[serial]
     fn test_add_stream(
         #[case] stream_name: String,
         #[case] schema: String,
@@ -249,6 +251,7 @@ mod tests {
 
     #[rstest]
     #[case::stream_only("teststream")]
+    #[serial]
     fn test_delete_stream(#[case] stream_name: String) {
         clear_map();
         STREAM_INFO
