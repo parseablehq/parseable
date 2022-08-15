@@ -175,3 +175,88 @@ fn parse_string(result: Result<Bytes, Error>) -> Result<String, Error> {
 
     Ok(string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maplit::hashmap;
+    use rstest::*;
+
+    #[rstest]
+    #[case::zero(0, 0, 0)]
+    #[case::some(1024, 512, 2048)]
+    fn update_stats(#[case] size: u64, #[case] compressed_size: u64, #[case] prev_compressed: u64) {
+        let mut stats = Stats {
+            size,
+            compressed_size,
+            prev_compressed,
+        };
+
+        stats.update(2056, 2000);
+
+        assert_eq!(
+            stats,
+            Stats {
+                size: size + 2056,
+                compressed_size: prev_compressed + 2000,
+                prev_compressed
+            }
+        )
+    }
+
+    fn clear_map() {
+        STREAM_INFO.write().unwrap().clear();
+    }
+
+    #[rstest]
+    #[case::nonempty_string("Hello world")]
+    #[case::empty_string("")]
+    fn test_parse_string(#[case] string: String) {
+        let bytes = Bytes::from(string);
+        assert!(parse_string(Ok(bytes)).is_ok())
+    }
+
+    #[test]
+    fn test_bad_parse_string() {
+        let bad: Vec<u8> = vec![195, 40];
+        let bytes = Bytes::from(bad);
+        assert!(parse_string(Ok(bytes)).is_err());
+    }
+
+    #[rstest]
+    #[case::stream_schema_alert("teststream", "schema", "alert_config")]
+    #[case::stream_only("teststream", "", "")]
+    fn test_add_stream(
+        #[case] stream_name: String,
+        #[case] schema: String,
+        #[case] alert_config: String,
+    ) {
+        clear_map();
+        STREAM_INFO
+            .add_stream(stream_name.clone(), schema.clone(), alert_config.clone())
+            .unwrap();
+
+        let left = STREAM_INFO.read().unwrap().clone();
+        let right = hashmap! {
+            stream_name => LogStreamMetadata {
+                schema: schema,
+                alert_config: alert_config,
+                ..Default::default()
+            }
+        };
+        assert_eq!(left, right);
+    }
+
+    #[rstest]
+    #[case::stream_only("teststream")]
+    fn test_delete_stream(#[case] stream_name: String) {
+        clear_map();
+        STREAM_INFO
+            .add_stream(stream_name.clone(), "".to_string(), "".to_string())
+            .unwrap();
+
+        STREAM_INFO.delete_stream(&stream_name).unwrap();
+        let map = STREAM_INFO.read().unwrap();
+        assert!(!map.contains_key(&stream_name));
+    }
+}
