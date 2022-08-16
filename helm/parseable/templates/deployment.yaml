@@ -37,7 +37,7 @@ spec:
               value: {{ tpl $value $ | quote }}
             {{- end }}
           ports:
-            - containerPort: 5678
+            - containerPort: 8000
           resources:
             {{- toYaml .Values.parseable.resources | nindent 12 }}
           volumeMounts:
