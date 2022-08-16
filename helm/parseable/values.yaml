@@ -5,7 +5,7 @@ parseable:
     pullPolicy: IfNotPresent
     tag: ""
   env:
-    P_ADDR: "0.0.0.0:5678"
+    P_ADDR: "0.0.0.0:8000"
     P_TLS_CERT_PATH: ""
     P_LOCAL_STORAGE: "data"
     P_STORAGE_UPLOAD_INTERVAL: "60"

@@ -7,7 +7,7 @@ spec:
   type: {{ $.Values.parseable.service.type }}
   ports:
     - port: {{ $.Values.parseable.service.port }}
-      targetPort: 5678
+      targetPort: 8000
       protocol: TCP
   selector:
     {{- include "parseable.selectorLabels" . | nindent 4 }}
