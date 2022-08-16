@@ -18,7 +18,7 @@
 
 use bytes::Bytes;
 use lazy_static::lazy_static;
-use log::warn;
+use log::{error, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -68,15 +68,22 @@ lazy_static! {
 // 5. When set alert API is called (update the alert)
 #[allow(clippy::all)]
 impl STREAM_INFO {
-    pub async fn parse_event(&self, event: &Event) -> Result<(), Error> {
+    pub async fn check_alerts(&self, event: &Event) -> Result<(), Error> {
         let map = self.read().unwrap();
         let meta = map
             .get(&event.stream_name)
             .ok_or(Error::StreamMetaNotFound(event.stream_name.to_owned()))?;
 
-        for alert in &meta.alerts.alerts {
-            alert.parse_event(event).await?;
-        }
+        let alerts = meta.alerts.alerts.clone();
+        let event: serde_json::Value = serde_json::from_str(&event.body)?;
+
+        actix_web::rt::spawn(async move {
+            for mut alert in alerts {
+                if let Err(e) = alert.check_alert(&event).await {
+                    error!("Error while parsing event against alerts: {}", e);
+                }
+            }
+        });
 
         Ok(())
     }

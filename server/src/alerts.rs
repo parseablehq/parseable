@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::{error::Error, event::Event};
+use crate::error::Error;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,8 +20,8 @@ pub struct Alert {
 impl Alert {
     // TODO: spawn async tasks to call webhooks if alert rules are met
     // This is done to ensure that threads aren't blocked by calls to the webhook
-    pub async fn parse_event(&self, event: &Event) -> Result<(), Error> {
-        if self.rule.matches(&event) {
+    pub async fn check_alert(&mut self, event: &serde_json::Value) -> Result<(), Error> {
+        if self.rule.resolves(event).await {
             for _ in self.targets.clone() {
                 actix_web::rt::spawn(async move {});
             }
@@ -38,27 +37,54 @@ pub struct Rule {
     pub field: String,
     /// Field that determines what comparison operator is to be used
     #[serde(default)]
-    pub comparator: Comparator,
-    pub value: Value,
+    pub operator: Operator,
+    pub value: String,
     pub repeats: u32,
+    #[serde(skip)]
+    repeated: u32,
     pub within: String,
 }
 
 impl Rule {
-    pub fn matches(&self, _event: &Event) -> bool {
-        true
+    // TODO: utilise `within` to set a range for validity of rule to trigger alert
+    pub async fn resolves(&mut self, event: &serde_json::Value) -> bool {
+        let comparison = match self.operator {
+            Operator::EqualTo => event.get(&self.field).unwrap() == &serde_json::json!(self.value),
+            // TODO: currently this is a hack, ensure checks are performed in the right way
+            Operator::GreaterThan => {
+                event.get(&self.field).unwrap().as_f64().unwrap()
+                    > serde_json::json!(self.value).as_f64().unwrap()
+            }
+            Operator::LessThan => {
+                event.get(&self.field).unwrap().as_f64().unwrap()
+                    < serde_json::json!(self.value).as_f64().unwrap()
+            }
+        };
+
+        // If truthy, increment count of repeated
+        if comparison {
+            self.repeated += 1;
+        }
+
+        // If enough repetitions made, return true
+        if self.repeated >= self.repeats {
+            self.repeated = 0;
+            return true;
+        }
+
+        false
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Comparator {
+pub enum Operator {
     EqualTo,
     GreaterThan,
     LessThan,
 }
 
-impl Default for Comparator {
+impl Default for Operator {
     fn default() -> Self {
         Self::EqualTo
     }
@@ -87,9 +113,9 @@ pub fn alert(body: String) -> Result<(), Error> {
                 "alert message cannot be empty".to_string(),
             ));
         }
-        if alert.rule.value.is_number() {
+        if alert.rule.value.is_empty() {
             return Err(Error::InvalidAlert(
-                "rule.value must be a numerical value".to_string(),
+                "rule.value cannot be empty".to_string(),
             ));
         }
         if alert.rule.field.is_empty() {

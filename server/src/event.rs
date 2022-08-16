@@ -61,13 +61,16 @@ impl Event {
         storage: &impl ObjectStorage,
     ) -> Result<response::EventResponse, Error> {
         let schema = metadata::STREAM_INFO.schema(self.stream_name.clone())?;
-        metadata::STREAM_INFO.parse_event(self).await?;
 
-        if schema.is_empty() {
+        let result = if schema.is_empty() {
             self.first_event(storage).await
         } else {
             self.event()
-        }
+        };
+
+        metadata::STREAM_INFO.check_alerts(self).await?;
+
+        result
     }
 
     // This is called when the first event of a log stream is received. The first event is
