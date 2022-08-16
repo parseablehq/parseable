@@ -1,6 +1,6 @@
 apiVersion: v2
 name: parseable
-description: A Helm chart for Kubernetes
+description: Helm chart for Parseable Server
 type: application
 version: 0.0.1
 AppVersion: ""
