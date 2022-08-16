@@ -24,7 +24,7 @@ use crate::utils;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{Timelike, Utc};
+use chrono::{Duration, Timelike, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use serde::Serialize;
 
@@ -198,12 +198,13 @@ impl StorageSync {
         let _storage_path = format!("{}/", CONFIG.storage.bucket_name());
         let stream_name = self.path.replace(&local_path, "");
         let parquet_path = format!("{}/data.parquet", self.path);
-        let uri = utils::date_to_prefix(self.time.date())
-            + &utils::hour_to_prefix(self.time.hour())
-            // subtract OBJECT_STORE_DATA_GRANULARITY from current time here,
-            // this is because, when we're creating this file 
-            // the data in the file is from OBJECT_STORE_DATA_GRANULARITY time ago.
-            + &utils::minute_to_prefix(self.time.minute()-OBJECT_STORE_DATA_GRANULARITY, OBJECT_STORE_DATA_GRANULARITY).unwrap();
+        // subtract OBJECT_STORE_DATA_GRANULARITY from current time here,
+        // this is because, when we're creating this file
+        // the data in the file is from OBJECT_STORE_DATA_GRANULARITY time ago.
+        let time = self.time - Duration::minutes(OBJECT_STORE_DATA_GRANULARITY as i64);
+        let uri = utils::date_to_prefix(time.date())
+            + &utils::hour_to_prefix(time.hour())
+            + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
 
         let local_uri = str::replace(&uri, "/", ".");
 
