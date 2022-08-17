@@ -1,3 +1,4 @@
+use log::error;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -22,8 +23,11 @@ impl Alert {
     // This is done to ensure that threads aren't blocked by calls to the webhook
     pub async fn check_alert(&mut self, event: &serde_json::Value) -> Result<(), Error> {
         if self.rule.resolves(event).await {
-            for _ in self.targets.clone() {
-                actix_web::rt::spawn(async move {});
+            for target in self.targets.clone() {
+                let msg = self.message.clone();
+                actix_web::rt::spawn(async move {
+                    target.call(&msg);
+                });
             }
         }
 
@@ -98,6 +102,18 @@ pub struct Target {
     pub server_url: String,
     #[serde(rename = "api_key")]
     pub api_key: String,
+}
+
+impl Target {
+    pub fn call(&self, msg: &str) {
+        if let Err(e) = ureq::post(&self.server_url)
+            .set("Content-Type", "text/plain; charset=iso-8859-1")
+            .set("X-API-Key", &self.api_key)
+            .send_string(msg)
+        {
+            error!("Couldn't make call to webhook, error: {}", e)
+        }
+    }
 }
 
 pub fn alert(body: String) -> Result<(), Error> {

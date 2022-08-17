@@ -48,6 +48,7 @@ clokwerk = "0.4.0-rc1"
 actix-web-static-files = "4.0"
 static-files = "0.2.1"
 walkdir = "2"
+ureq = "2.5.0"
 
 [build-dependencies]
 static-files = "0.2.1"
