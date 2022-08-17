@@ -22,7 +22,8 @@ Parseable is an open source, cloud native, log storage and management platform.
 Parseable helps you ingest high volumes of log data from various sources (Fluentbit, Logstash etc or directly from applications). Parseable stores log data into highly compressed Parquet file format. With object storage as primary storage for Parseable, you get seamless scale and flexibility for ever growing log data.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview.svg" alt="Parseable Overview" width="800" height="650" />
+  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview.svg#gh-light-mode-only" alt="Parseable Overview" width="800" height="650" />
+  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview-dark.svg#gh-dark-mode-only" alt="Parseable Overview" width="800" height="650" />
 </p>
 
 <h1></h1>
