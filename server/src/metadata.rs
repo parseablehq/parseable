@@ -139,14 +139,12 @@ impl STREAM_INFO {
                 .and_then(parse_string)
                 .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()));
 
-            let metadata = match (alert_config, schema) {
-                (Ok(alert_config), Ok(schema)) => LogStreamMetadata {
-                    schema,
-                    alert_config,
-                    ..Default::default()
-                },
-                _ => continue,
+            let metadata = LogStreamMetadata {
+                schema: schema.unwrap_or_default(),
+                alert_config: alert_config.unwrap_or_default(),
+                ..Default::default()
             };
+
             let mut map = self.write().unwrap();
             map.insert(stream.name.clone(), metadata);
         }
