@@ -61,6 +61,6 @@ COPY    --from=compiler /parseable/target/release/parseable /bin/parseable
 
 USER parseable:parseable
 
-EXPOSE  5678/tcp
+EXPOSE  8000/tcp
 
 CMD    ["/bin/parseable"]

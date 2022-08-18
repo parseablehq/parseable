@@ -156,7 +156,7 @@ pub struct Opt {
     pub tls_key_path: Option<PathBuf>,
 
     /// The address on which the http server will listen.
-    #[structopt(long, env = "P_ADDR", default_value = "127.0.0.1:5678")]
+    #[structopt(long, env = "P_ADDR", default_value = "0.0.0.0:8000")]
     pub address: String,
 
     /// The local storage path is used as temporary landing point

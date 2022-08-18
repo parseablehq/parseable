@@ -25,7 +25,15 @@ use crate::option::{StorageOpt, CONFIG};
 use crate::query::Query;
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
-const DEFAULT_S3_URL: &str = "http://127.0.0.1:9000";
+// Default object storage currently is DO Spaces bucket
+// Any user who starts the Parseable server with default configuration
+// will point to this bucket and will see any data present on this bucket
+const DEFAULT_S3_URL: &str = "https://sgp1.digitaloceanspaces.com";
+const DEFAULT_S3_REGION: &str = "sgp1";
+const DEFAULT_S3_BUCKET: &str = "parseable";
+const DEFAULT_S3_ACCESS_KEY: &str = "DO00KWGMX3M4ABBBFPCZ";
+const DEFAULT_S3_SECRET_KEY: &str = "5CqfjVsIPBjZxTOz51Bxod3Cd0FWkMLC3/vTwRavaaQ";
+
 const S3_URL_ENV_VAR: &str = "P_S3_URL";
 
 lazy_static::lazy_static! {
@@ -41,19 +49,19 @@ pub struct S3Config {
     pub s3_endpoint_url: String,
 
     /// The access key for AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_ACCESS_KEY", default_value = "minioadmin")]
+    #[structopt(long, env = "P_S3_ACCESS_KEY", default_value = DEFAULT_S3_ACCESS_KEY)]
     pub s3_access_key_id: String,
 
     /// The secret key for AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_SECRET_KEY", default_value = "minioadmin")]
+    #[structopt(long, env = "P_S3_SECRET_KEY", default_value = DEFAULT_S3_SECRET_KEY)]
     pub s3_secret_key: String,
 
     /// The region for AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_REGION", default_value = "us-east-1")]
+    #[structopt(long, env = "P_S3_REGION", default_value = DEFAULT_S3_REGION)]
     pub s3_default_region: String,
 
     /// The AWS S3 or compatible object storage bucket to be used for storage
-    #[structopt(long, env = "P_S3_BUCKET", default_value = "logstorage")]
+    #[structopt(long, env = "P_S3_BUCKET", default_value = DEFAULT_S3_BUCKET)]
     pub s3_bucket_name: String,
 }
 

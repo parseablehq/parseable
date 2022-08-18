@@ -26,6 +26,42 @@ const DENIED_NAMES: &[&str] = &[
     "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
 ];
 
+pub fn alert(body: String) -> Result<(), Error> {
+    let alerts: Alerts = serde_json::from_str(body.as_str())?;
+    for alert in alerts.alerts {
+        if alert.name.is_empty() {
+            return Err(Error::InvalidAlert(
+                "alert name cannot be empty".to_string(),
+            ));
+        }
+        if alert.message.is_empty() {
+            return Err(Error::InvalidAlert(
+                "alert message cannot be empty".to_string(),
+            ));
+        }
+        if alert.rule.contains.is_empty() {
+            return Err(Error::InvalidAlert("rule.contains must be set".to_string()));
+        }
+        if alert.rule.field.is_empty() {
+            return Err(Error::InvalidAlert("rule.field must be set".to_string()));
+        }
+        if alert.rule.within.is_empty() {
+            return Err(Error::InvalidAlert("rule.within must be set".to_string()));
+        }
+        if alert.rule.repeats == 0 {
+            return Err(Error::InvalidAlert(
+                "rule.repeats can't be set to 0".to_string(),
+            ));
+        }
+        if alert.target.is_empty() {
+            return Err(Error::InvalidAlert(
+                "alert must have at least one target".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn stream_name(str_name: &str) -> Result<(), Error> {
     if str_name.is_empty() {
         return Err(Error::EmptyName);

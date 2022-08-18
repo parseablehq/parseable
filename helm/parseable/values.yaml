@@ -5,6 +5,7 @@ parseable:
     pullPolicy: IfNotPresent
     tag: ""
   env:
+    P_ADDR: "0.0.0.0:8000"
     P_TLS_CERT_PATH: ""
     P_LOCAL_STORAGE: "data"
     P_STORAGE_UPLOAD_INTERVAL: "60"
@@ -13,8 +14,8 @@ parseable:
     P_S3_SECRET_KEY: ""
     P_S3_REGION: ""
     P_S3_BUCKET: ""
-    P_USERNAME: ""
-    P_PASSWORD: ""
+    P_USERNAME: "parseable"
+    P_PASSWORD: "parseable"
   nameOverride: ""
   fullnameOverride: ""  
   serviceAccount:
@@ -23,7 +24,7 @@ parseable:
     annotations: {}
   service:
     type: ClusterIP
-    port: "5678"
+    port: 80
   resources:
     limits:
       cpu: 100m
