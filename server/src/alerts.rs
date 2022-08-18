@@ -60,7 +60,7 @@ pub struct Rule {
     /// Field that determines what comparison operator is to be used
     #[serde(default)]
     pub operator: Operator,
-    pub value: String,
+    pub value: serde_json::Value,
     pub repeats: u32,
     #[serde(skip)]
     repeated: u32,
@@ -71,15 +71,13 @@ impl Rule {
     // TODO: utilise `within` to set a range for validity of rule to trigger alert
     pub async fn resolves(&mut self, event: &serde_json::Value) -> bool {
         let comparison = match self.operator {
-            Operator::EqualTo => event.get(&self.field).unwrap() == &serde_json::json!(self.value),
+            Operator::EqualTo => event.get(&self.field).unwrap() == &self.value,
             // TODO: currently this is a hack, ensure checks are performed in the right way
             Operator::GreaterThan => {
-                event.get(&self.field).unwrap().as_f64().unwrap()
-                    > serde_json::json!(self.value).as_f64().unwrap()
+                event.get(&self.field).unwrap().as_f64().unwrap() > (self.value).as_f64().unwrap()
             }
             Operator::LessThan => {
-                event.get(&self.field).unwrap().as_f64().unwrap()
-                    < serde_json::json!(self.value).as_f64().unwrap()
+                event.get(&self.field).unwrap().as_f64().unwrap() < (self.value).as_f64().unwrap()
             }
         };
 

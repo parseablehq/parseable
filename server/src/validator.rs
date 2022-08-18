@@ -17,6 +17,7 @@
  */
 
 use chrono::{DateTime, Utc};
+use serde_json::json;
 
 use crate::alerts::Alerts;
 use crate::query::Query;
@@ -40,7 +41,7 @@ pub fn alert(body: String) -> Result<(), Error> {
                 "alert message cannot be empty".to_string(),
             ));
         }
-        if alert.rule.value.is_empty() {
+        if alert.rule.value == json!(null) {
             return Err(Error::InvalidAlert(
                 "rule.value cannot be empty".to_string(),
             ));
