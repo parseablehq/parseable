@@ -23,7 +23,7 @@ use crate::alerts::Alerts;
 use crate::response;
 use crate::s3::S3;
 use crate::storage::ObjectStorage;
-use crate::{alerts, metadata, validator};
+use crate::{metadata, validator};
 
 pub async fn delete(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -218,7 +218,7 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
             .to_http()
         }
     };
-    match alerts::alert(serde_json::to_string(&body.as_object()).unwrap()) {
+    match validator::alert(serde_json::to_string(&body.as_object()).unwrap()) {
         Ok(_) => match S3::new().put_alerts(&stream_name, alerts.clone()).await {
             Ok(_) => {
                 if let Err(e) = metadata::STREAM_INFO.set_alert(stream_name.to_string(), alerts) {

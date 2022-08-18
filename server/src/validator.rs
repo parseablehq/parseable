@@ -18,6 +18,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::alerts::Alerts;
 use crate::query::Query;
 use crate::Error;
 
@@ -39,8 +40,10 @@ pub fn alert(body: String) -> Result<(), Error> {
                 "alert message cannot be empty".to_string(),
             ));
         }
-        if alert.rule.contains.is_empty() {
-            return Err(Error::InvalidAlert("rule.contains must be set".to_string()));
+        if alert.rule.value.is_empty() {
+            return Err(Error::InvalidAlert(
+                "rule.value cannot be empty".to_string(),
+            ));
         }
         if alert.rule.field.is_empty() {
             return Err(Error::InvalidAlert("rule.field must be set".to_string()));
@@ -53,7 +56,7 @@ pub fn alert(body: String) -> Result<(), Error> {
                 "rule.repeats can't be set to 0".to_string(),
             ));
         }
-        if alert.target.is_empty() {
+        if alert.targets.is_empty() {
             return Err(Error::InvalidAlert(
                 "alert must have at least one target".to_string(),
             ));

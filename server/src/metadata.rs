@@ -103,14 +103,14 @@ impl STREAM_INFO {
     }
 
     pub fn set_alert(&self, stream_name: String, alerts: Alerts) -> Result<(), Error> {
-        let schema = self.schema(stream_name.clone())?;
+        let schema = self.schema(&stream_name)?;
         self.add_stream(stream_name, schema, alerts)
     }
 
     pub fn alert(&self, stream_name: String) -> Result<Alerts, Error> {
         let map = self.read().unwrap();
         let meta = map
-            .get(stream_name)
+            .get(&stream_name)
             .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
 
         Ok(meta.alerts.clone())
@@ -249,24 +249,21 @@ mod tests {
     }
 
     #[rstest]
-    #[case::stream_schema_alert("teststream", "schema", "alert_config")]
-    #[case::stream_only("teststream", "", "")]
+    #[case::stream_schema_alert("teststream", "schema")]
+    #[case::stream_only("teststream", "")]
     #[serial]
-    fn test_add_stream(
-        #[case] stream_name: String,
-        #[case] schema: String,
-        #[case] alert_config: String,
-    ) {
+    fn test_add_stream(#[case] stream_name: String, #[case] schema: String) {
+        let alerts = Alerts { alerts: vec![] };
         clear_map();
         STREAM_INFO
-            .add_stream(stream_name.clone(), schema.clone(), alert_config.clone())
+            .add_stream(stream_name.clone(), schema.clone(), alerts.clone())
             .unwrap();
 
         let left = STREAM_INFO.read().unwrap().clone();
         let right = hashmap! {
             stream_name => LogStreamMetadata {
-                schema: schema,
-                alert_config: alert_config,
+                schema,
+                alerts,
                 ..Default::default()
             }
         };
@@ -279,7 +276,11 @@ mod tests {
     fn test_delete_stream(#[case] stream_name: String) {
         clear_map();
         STREAM_INFO
-            .add_stream(stream_name.clone(), "".to_string(), "".to_string())
+            .add_stream(
+                stream_name.clone(),
+                "".to_string(),
+                Alerts { alerts: vec![] },
+            )
             .unwrap();
 
         STREAM_INFO.delete_stream(&stream_name).unwrap();

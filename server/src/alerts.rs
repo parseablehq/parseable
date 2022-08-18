@@ -21,13 +21,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
     pub alerts: Vec<Alert>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
     pub name: String,
@@ -53,7 +53,7 @@ impl Alert {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rule {
     pub field: String,
@@ -98,7 +98,7 @@ impl Rule {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Operator {
     EqualTo,
@@ -112,7 +112,7 @@ impl Default for Operator {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Target {
     pub name: String,
@@ -132,42 +132,4 @@ impl Target {
             error!("Couldn't make call to webhook, error: {}", e)
         }
     }
-}
-
-pub fn alert(body: String) -> Result<(), Error> {
-    let alerts: Alerts = serde_json::from_str(body.as_str())?;
-    for alert in alerts.alerts {
-        if alert.name.is_empty() {
-            return Err(Error::InvalidAlert(
-                "alert name cannot be empty".to_string(),
-            ));
-        }
-        if alert.message.is_empty() {
-            return Err(Error::InvalidAlert(
-                "alert message cannot be empty".to_string(),
-            ));
-        }
-        if alert.rule.value.is_empty() {
-            return Err(Error::InvalidAlert(
-                "rule.value cannot be empty".to_string(),
-            ));
-        }
-        if alert.rule.field.is_empty() {
-            return Err(Error::InvalidAlert("rule.field must be set".to_string()));
-        }
-        if alert.rule.within.is_empty() {
-            return Err(Error::InvalidAlert("rule.within must be set".to_string()));
-        }
-        if alert.rule.repeats == 0 {
-            return Err(Error::InvalidAlert(
-                "rule.repeats can't be set to 0".to_string(),
-            ));
-        }
-        if alert.targets.is_empty() {
-            return Err(Error::InvalidAlert(
-                "alert must have at least one target".to_string(),
-            ));
-        }
-    }
-    Ok(())
 }
