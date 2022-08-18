@@ -23,6 +23,7 @@ use structopt::StructOpt;
 
 use crate::banner;
 use crate::s3::S3Config;
+use crate::storage::{ObjectStorage, ObjectStorageError};
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -69,6 +70,23 @@ impl Config {
     pub fn validate(&self) {
         if CONFIG.parseable.upload_interval < 60 {
             panic!("object storage upload_interval (P_STORAGE_UPLOAD_INTERVAL) must be 60 seconds or more");
+        }
+    }
+
+    pub async fn validate_storage(&self, storage: &impl ObjectStorage) {
+        match storage.check().await {
+            Ok(_) => (),
+            Err(ObjectStorageError::NoSuchBucket(name)) => panic!(
+                "Could not start because the bucket doesn't exist. Please ensure bucket {bucket} exists on {url}",
+                bucket = name,
+                url = self.storage.endpoint_url()
+            ),
+            Err(ObjectStorageError::ConnectionError(inner)) => panic!(
+                "Failed to connect to the Object Storage Service on {url}\nCaused by: {cause}",
+                url = self.storage.endpoint_url(),
+                cause = inner
+            ),
+            Err(error) => { panic!("{error}") } 
         }
     }
 

@@ -33,7 +33,7 @@ pub enum Error {
     #[error("JSON provided to query api doesn't contain {0}")]
     JsonQuery(&'static str),
     #[error("Storage error: {0}")]
-    Storage(Box<dyn ObjectStorageError>),
+    Storage(ObjectStorageError),
     #[error("Event error: {0}")]
     Event(#[from] EventError),
     #[error("Parquet error: {0}")]
