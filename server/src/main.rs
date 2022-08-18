@@ -59,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.print();
     CONFIG.validate();
     let storage = S3::new();
+    CONFIG.validate_storage(&storage).await;
     if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
         warn!("could not populate local metadata. {:?}", e);
     }

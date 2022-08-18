@@ -128,12 +128,14 @@ impl STREAM_INFO {
             let alert_config = storage
                 .get_alert(&stream.name)
                 .await
+                .map_err(|e| e.into())
                 .and_then(parse_string)
                 .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()));
 
             let schema = storage
                 .get_schema(&stream.name)
                 .await
+                .map_err(|e| e.into())
                 .and_then(parse_string)
                 .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()));
 
