@@ -77,13 +77,14 @@ impl Config {
         match storage.check().await {
             Ok(_) => (),
             Err(ObjectStorageError::NoSuchBucket(name)) => panic!(
-                "Could not start because the bucket named {bucket} doesn't exist. Please make sure bucket with the name {bucket} exists on {url} and then start parseable again",
+                "Could not start because the bucket doesn't exist. Please ensure bucket {bucket} exists on {url}",
                 bucket = name,
                 url = self.storage.endpoint_url()
             ),
             Err(ObjectStorageError::ConnectionError(inner)) => panic!(
-                "Failed to connect to the Object Storage Service\nCaused by: {}",
-                inner
+                "Failed to connect to the Object Storage Service on {url}\nCaused by: {cause}",
+                url = self.storage.endpoint_url(),
+                cause = inner
             ),
             Err(error) => { panic!("{error}") } 
         }
