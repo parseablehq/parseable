@@ -91,9 +91,8 @@ impl Event {
         {
             error!("Couldn't update stream stats. {:?}", e);
         }
-        
-        if let Err(e) = metadata::STREAM_INFO.check_alerts(self).await
-        {
+
+        if let Err(e) = metadata::STREAM_INFO.check_alerts(self).await {
             error!("Error checking for alerts. {:?}", e);
         }
 
