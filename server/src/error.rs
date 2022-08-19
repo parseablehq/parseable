@@ -62,8 +62,8 @@ pub enum Error {
     MultipleStreams(String),
     #[error("start time can not be later than end time")]
     StartTimeAfterEndTime(),
-    #[error("query is incomplete")]
-    IncompleteQuery(),
+    #[error("query '{0}' is incomplete")]
+    IncompleteQuery(String),
     #[error("query cannot be empty")]
     EmptyQuery,
     #[error("start time cannot be empty in query")]

@@ -52,12 +52,11 @@ impl Query {
     // this query is supposed to be executed
     pub fn parse(query_json: Value) -> Result<Query, Error> {
         // retrieve query, start and end time information from payload.
-        // Convert query to lowercase.
-        let query = get_value(&query_json, "query")?.to_lowercase();
+        let query = get_value(&query_json, "query")?;
         let start_time = get_value(&query_json, "startTime")?;
         let end_time = get_value(&query_json, "endTime")?;
 
-        validator::query(&query, start_time, end_time)
+        validator::query(query, start_time, end_time)
     }
 
     /// Return prefixes, each per day/hour/minutes as necessary
