@@ -63,7 +63,7 @@ pub trait ObjectStorage: Sync + 'static {
         query: &Query,
         results: &mut Vec<RecordBatch>,
     ) -> Result<(), ObjectStorageError>;
-    async fn local_sync(&self) -> io::Result<()> {
+    fn local_sync(&self) -> io::Result<()> {
         // If the local data path doesn't exist yet, return early.
         // This method will be called again after next ticker interval
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
