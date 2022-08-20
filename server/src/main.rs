@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
             _ = &mut localsync_outbox => {
                 // crash the server if localsync fails for any reason
                 // panic!("Local Sync thread died. Server will fail now!")
-                return Err(anyhow::Error::msg("Local Sync failed"))
+                return Err(anyhow::Error::msg("Failed to sync local data to disc. This can happen due to critical error in disc or environment. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
             },
             _ = &mut s3sync_outbox => {
                 // s3sync failed, this is recoverable by just starting s3sync thread again
