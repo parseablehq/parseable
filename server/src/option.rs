@@ -110,7 +110,7 @@ impl Config {
         Local Data Path: {}
         Object Storage: {}/{}",
             "Storage:".to_string().blue().bold(),
-            self.parseable.local_disk_path,
+            self.parseable.local_disk_path.to_string_lossy(),
             self.storage.endpoint_url(),
             self.storage.bucket_name()
         )
@@ -181,7 +181,7 @@ pub struct Opt {
     /// for incoming events and local cache while querying data pulled
     /// from object storage backend
     #[structopt(long, env = "P_LOCAL_STORAGE", default_value = "./data")]
-    pub local_disk_path: String,
+    pub local_disk_path: PathBuf,
 
     /// Optional interval after which server would upload uncommited data to
     /// remote object storage platform. Defaults to 1min.
@@ -198,12 +198,12 @@ pub struct Opt {
 }
 
 impl Opt {
-    pub fn get_cache_path(&self, stream_name: &str) -> String {
-        format!("{}/{}", self.local_disk_path, stream_name)
+    pub fn get_cache_path(&self, stream_name: &str) -> PathBuf {
+        self.local_disk_path.join(stream_name)
     }
 
-    pub fn local_stream_data_path(&self, stream_name: &str) -> String {
-        format!("{}/{}", self.local_disk_path, stream_name)
+    pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
+        self.local_disk_path.join(stream_name)
     }
 
     pub fn get_scheme(&self) -> String {

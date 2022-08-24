@@ -170,6 +170,10 @@ impl STREAM_INFO {
         Ok(())
     }
 
+    pub fn list_streams(&self) -> Vec<String> {
+        self.read().unwrap().keys().map(String::clone).collect()
+    }
+
     pub fn update_stats(
         &self,
         stream_name: &str,

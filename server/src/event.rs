@@ -51,7 +51,10 @@ impl Event {
     fn data_file_path(&self) -> String {
         format!(
             "{}/{}",
-            CONFIG.parseable.local_stream_data_path(&self.stream_name),
+            CONFIG
+                .parseable
+                .local_stream_data_path(&self.stream_name)
+                .to_string_lossy(),
             "data.parquet"
         )
     }

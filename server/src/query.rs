@@ -94,7 +94,11 @@ impl Query {
 
         ctx.register_listing_table(
             &self.stream_name,
-            CONFIG.parseable.get_cache_path(&self.stream_name).as_str(),
+            CONFIG
+                .parseable
+                .get_cache_path(&self.stream_name)
+                .to_str()
+                .unwrap(),
             listing_options,
             None,
         )
