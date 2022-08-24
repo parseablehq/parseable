@@ -41,7 +41,7 @@ spec:
           resources:
             {{- toYaml .Values.parseable.resources | nindent 12 }}
           volumeMounts:
-          - mountPath: "/parseable/cache"
+          - mountPath: "/parseable"
             name: cache-volume
       volumes:
       - name: cache-volume
