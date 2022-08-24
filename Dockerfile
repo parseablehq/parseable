@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # Compile
-FROM    rust:alpine3.14 AS compiler
+FROM    rust:1.63-alpine AS compiler
 
 RUN     apk add -q --update-cache --no-cache build-base openssl-dev
 
