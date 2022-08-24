@@ -18,17 +18,20 @@
 
 use bytes::Bytes;
 use lazy_static::lazy_static;
+use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use crate::alerts::Alerts;
 use crate::error::Error;
+use crate::event::Event;
 use crate::storage::ObjectStorage;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LogStreamMetadata {
     pub schema: String,
-    pub alert_config: String,
+    pub alerts: Alerts,
     pub stats: Stats,
 }
 
@@ -65,9 +68,26 @@ lazy_static! {
 // 5. When set alert API is called (update the alert)
 #[allow(clippy::all)]
 impl STREAM_INFO {
+    pub async fn check_alerts(&self, event: &Event) -> Result<(), Error> {
+        let mut map = self.write().unwrap();
+        let meta = map
+            .get_mut(&event.stream_name)
+            .ok_or(Error::StreamMetaNotFound(event.stream_name.to_owned()))?;
+
+        let event: serde_json::Value = serde_json::from_str(&event.body)?;
+
+        for alert in meta.alerts.alerts.iter_mut() {
+            if let Err(e) = alert.check_alert(&event).await {
+                error!("Error while parsing event against alerts: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
-        let alert_config = self.alert(&stream_name)?;
-        self.add_stream(stream_name, schema, alert_config)
+        let alerts = self.alert(stream_name.clone())?;
+        self.add_stream(stream_name, schema, alerts)
     }
 
     pub fn schema(&self, stream_name: &str) -> Result<String, Error> {
@@ -79,30 +99,30 @@ impl STREAM_INFO {
         Ok(meta.schema.clone())
     }
 
-    pub fn set_alert(&self, stream_name: String, alert_config: String) -> Result<(), Error> {
+    pub fn set_alert(&self, stream_name: String, alerts: Alerts) -> Result<(), Error> {
         let schema = self.schema(&stream_name)?;
-        self.add_stream(stream_name, schema, alert_config)
+        self.add_stream(stream_name, schema, alerts)
     }
 
-    pub fn alert(&self, stream_name: &str) -> Result<String, Error> {
+    pub fn alert(&self, stream_name: String) -> Result<Alerts, Error> {
         let map = self.read().unwrap();
         let meta = map
-            .get(stream_name)
+            .get(&stream_name)
             .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
 
-        Ok(meta.alert_config.clone())
+        Ok(meta.alerts.clone())
     }
 
     pub fn add_stream(
         &self,
         stream_name: String,
         schema: String,
-        alert_config: String,
+        alerts: Alerts,
     ) -> Result<(), Error> {
         let mut map = self.write().unwrap();
         let metadata = LogStreamMetadata {
             schema,
-            alert_config,
+            alerts,
             ..Default::default()
         };
         // TODO: Add check to confirm data insertion
@@ -125,23 +145,19 @@ impl STREAM_INFO {
             // to load the stream metadata based on whatever is available.
             //
             // TODO: ignore failure(s) if any and skip to next stream
-            let alert_config = storage
-                .get_alert(&stream.name)
+            let alerts = storage
+                .get_alerts(&stream.name)
                 .await
-                .map_err(|e| e.into())
-                .and_then(parse_string)
-                .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()));
-
+                .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()))?;
             let schema = storage
                 .get_schema(&stream.name)
                 .await
                 .map_err(|e| e.into())
                 .and_then(parse_string)
-                .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()));
-
+                .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()))?;
             let metadata = LogStreamMetadata {
-                schema: schema.unwrap_or_default(),
-                alert_config: alert_config.unwrap_or_default(),
+                schema,
+                alerts,
                 ..Default::default()
             };
 
@@ -222,24 +238,21 @@ mod tests {
     }
 
     #[rstest]
-    #[case::stream_schema_alert("teststream", "schema", "alert_config")]
-    #[case::stream_only("teststream", "", "")]
+    #[case::stream_schema_alert("teststream", "schema")]
+    #[case::stream_only("teststream", "")]
     #[serial]
-    fn test_add_stream(
-        #[case] stream_name: String,
-        #[case] schema: String,
-        #[case] alert_config: String,
-    ) {
+    fn test_add_stream(#[case] stream_name: String, #[case] schema: String) {
+        let alerts = Alerts { alerts: vec![] };
         clear_map();
         STREAM_INFO
-            .add_stream(stream_name.clone(), schema.clone(), alert_config.clone())
+            .add_stream(stream_name.clone(), schema.clone(), alerts.clone())
             .unwrap();
 
         let left = STREAM_INFO.read().unwrap().clone();
         let right = hashmap! {
             stream_name => LogStreamMetadata {
-                schema: schema,
-                alert_config: alert_config,
+                schema,
+                alerts,
                 ..Default::default()
             }
         };
@@ -252,7 +265,11 @@ mod tests {
     fn test_delete_stream(#[case] stream_name: String) {
         clear_map();
         STREAM_INFO
-            .add_stream(stream_name.clone(), "".to_string(), "".to_string())
+            .add_stream(
+                stream_name.clone(),
+                "".to_string(),
+                Alerts { alerts: vec![] },
+            )
             .unwrap();
 
         STREAM_INFO.delete_stream(&stream_name).unwrap();

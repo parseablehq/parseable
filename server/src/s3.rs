@@ -19,6 +19,7 @@ use std::sync::Arc;
 use structopt::StructOpt;
 use tokio_stream::StreamExt;
 
+use crate::alerts::Alerts;
 use crate::metadata::Stats;
 use crate::option::{StorageOpt, CONFIG};
 use crate::query::Query;
@@ -199,13 +200,13 @@ impl S3 {
         Ok(())
     }
 
-    async fn _create_alert(&self, stream_name: &str, body: String) -> Result<(), AwsSdkError> {
+    async fn _put_alerts(&self, stream_name: &str, body: Vec<u8>) -> Result<(), AwsSdkError> {
         let _resp = self
             .client
             .put_object()
             .bucket(&S3_CONFIG.s3_bucket_name)
             .key(format!("{}/.alert.json", stream_name))
-            .body(body.into_bytes().into())
+            .body(body.into())
             .send()
             .await?;
 
@@ -328,12 +329,13 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn create_alert(
+    async fn put_alerts(
         &self,
         stream_name: &str,
-        body: String,
+        alerts: Alerts,
     ) -> Result<(), ObjectStorageError> {
-        self._create_alert(stream_name, body).await?;
+        let body = serde_json::to_vec(&alerts)?;
+        self._put_alerts(stream_name, body).await?;
 
         Ok(())
     }
@@ -344,10 +346,11 @@ impl ObjectStorage for S3 {
         Ok(body_bytes)
     }
 
-    async fn get_alert(&self, stream_name: &str) -> Result<Bytes, ObjectStorageError> {
+    async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError> {
         let body_bytes = self._alert_exists(stream_name).await?;
+        let alerts = serde_json::from_slice(&body_bytes)?;
 
-        Ok(body_bytes)
+        Ok(alerts)
     }
 
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {

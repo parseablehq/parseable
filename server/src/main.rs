@@ -34,6 +34,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
 
+mod alerts;
 mod banner;
 mod error;
 mod event;

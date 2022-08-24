@@ -16,6 +16,7 @@
  *
  */
 
+use crate::alerts::Alerts;
 use crate::metadata::Stats;
 use crate::option::CONFIG;
 use crate::query::Query;
@@ -51,10 +52,11 @@ pub trait ObjectStorage: Sync + 'static {
         -> Result<(), ObjectStorageError>;
     async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
-    async fn create_alert(&self, stream_name: &str, body: String)
+
+    async fn put_alerts(&self, stream_name: &str, alerts: Alerts)
         -> Result<(), ObjectStorageError>;
     async fn get_schema(&self, stream_name: &str) -> Result<Bytes, ObjectStorageError>;
-    async fn get_alert(&self, stream_name: &str) -> Result<Bytes, ObjectStorageError>;
+    async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError>;
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &str) -> Result<(), ObjectStorageError>;

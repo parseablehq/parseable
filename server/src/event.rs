@@ -35,6 +35,7 @@ use crate::response;
 use crate::storage::ObjectStorage;
 use crate::Error;
 
+#[derive(Clone)]
 pub struct Event {
     pub body: String,
     pub stream_name: String,
@@ -89,6 +90,10 @@ impl Event {
         if let Err(e) = metadata::STREAM_INFO.update_stats(&self.stream_name, size, compressed_size)
         {
             error!("Couldn't update stream stats. {:?}", e);
+        }
+
+        if let Err(e) = metadata::STREAM_INFO.check_alerts(self).await {
+            error!("Error checking for alerts. {:?}", e);
         }
 
         let msg = if is_first_event {
