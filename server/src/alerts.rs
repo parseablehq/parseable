@@ -45,8 +45,9 @@ impl Alert {
             info!("Alert triggered; name: {}", self.name);
 
             let msg = self.message.clone();
+            let targets = self.targets.clone();
             actix_web::rt::spawn(async move {
-                for target in self.targets.clone() {
+                for target in targets {
                     target.call(&msg);
                 }
             });
