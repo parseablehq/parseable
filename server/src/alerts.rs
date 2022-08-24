@@ -18,6 +18,7 @@
 
 use log::{error, info};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 use crate::error::Error;
 
@@ -57,19 +58,26 @@ impl Alert {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rule {
+    /// Determines what field the alert is to compare against
     pub field: String,
-    /// Field that determines what comparison operator is to be used
+    /// Determines what comparison operator is to be used
     #[serde(default)]
     pub operator: Operator,
+    /// Value compared against incoming data
     pub value: serde_json::Value,
+    /// Number of times the rule is expected to meet before resolving
     pub repeats: u32,
+    /// Number of times the rule has been met as of now
     #[serde(skip)]
     repeated: u32,
-    pub within: String,
+    /// Seconds after first event that meets rule that can trigger alert
+    pub within: u64,
+    /// Instant after which timer for resolution is reset
+    #[serde(skip)]
+    period_end: Option<Instant>,
 }
 
 impl Rule {
-    // TODO: utilise `within` to set a range for validity of rule to trigger alert
     pub async fn resolves(&mut self, event: &serde_json::Value) -> bool {
         let comparison = match self.operator {
             Operator::EqualTo => event.get(&self.field).unwrap() == &self.value,
@@ -82,18 +90,31 @@ impl Rule {
             }
         };
 
+        // Reset rule if last timer passed or it is currently untimed
+        match self.period_end {
+            Some(instant) if Instant::now() > instant => self.reset(),
+            None => self.reset(),
+            _ => {}
+        }
+
         // If truthy, increment count of repeated
         if comparison {
             self.repeated += 1;
         }
 
-        // If enough repetitions made, return true
+        // If enough repetitions made set repeated to 0 and remove timer before returning true
         if self.repeated >= self.repeats {
             self.repeated = 0;
+            self.period_end.take();
             return true;
         }
 
         false
+    }
+
+    fn reset(&mut self) {
+        self.period_end = Some(Instant::now() + Duration::from_secs(self.within));
+        self.repeated = 0;
     }
 }
 

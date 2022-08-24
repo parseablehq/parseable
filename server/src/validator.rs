@@ -49,9 +49,6 @@ pub fn alert(body: String) -> Result<(), Error> {
         if alert.rule.field.is_empty() {
             return Err(Error::InvalidAlert("rule.field must be set".to_string()));
         }
-        if alert.rule.within.is_empty() {
-            return Err(Error::InvalidAlert("rule.within must be set".to_string()));
-        }
         if alert.rule.repeats == 0 {
             return Err(Error::InvalidAlert(
                 "rule.repeats can't be set to 0".to_string(),
