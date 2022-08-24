@@ -9,11 +9,13 @@ parseable:
     P_TLS_CERT_PATH: ""
     P_LOCAL_STORAGE: "data"
     P_STORAGE_UPLOAD_INTERVAL: "60"
-    P_S3_URL: ""
-    P_S3_ACCESS_KEY: ""
-    P_S3_SECRET_KEY: ""
-    P_S3_REGION: ""
-    P_S3_BUCKET: ""
+    RUST_LOG: "parseable=trace"
+    # By default parseable uses demo env digital ocean spaces
+    #P_S3_URL: ""
+    #P_S3_ACCESS_KEY: ""
+    #P_S3_SECRET_KEY: ""
+    #P_S3_REGION: ""
+    #P_S3_BUCKET: ""
     P_USERNAME: "parseable"
     P_PASSWORD: "parseable"
   nameOverride: ""
@@ -32,9 +34,11 @@ parseable:
     requests:
       cpu: 100m
       memory: 128Mi
+  securityContext:
+   runAsUser: 10001
+   allowPrivilegeEscalation: false
   podAnnotations: {}
   podSecurityContext: {}
-  securityContext: {}
   nodeSelector: {}
   affinity: {}
   tolerations: []
