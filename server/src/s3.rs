@@ -20,7 +20,6 @@ use structopt::StructOpt;
 use tokio_stream::StreamExt;
 
 use crate::alerts::Alerts;
-use crate::error::Error;
 use crate::metadata::Stats;
 use crate::option::{StorageOpt, CONFIG};
 use crate::query::Query;
@@ -330,7 +329,11 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn put_alerts(&self, stream_name: &str, alerts: Alerts) -> Result<(), ObjectStorageError> {
+    async fn put_alerts(
+        &self,
+        stream_name: &str,
+        alerts: Alerts,
+    ) -> Result<(), ObjectStorageError> {
         let body = serde_json::to_vec(&alerts)?;
         self._put_alerts(stream_name, body).await?;
 

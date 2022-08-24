@@ -17,7 +17,6 @@
  */
 
 use crate::alerts::Alerts;
-use crate::error::Error;
 use crate::metadata::Stats;
 use crate::option::CONFIG;
 use crate::query::Query;
