@@ -43,12 +43,13 @@ impl Alert {
     pub async fn check_alert(&mut self, event: &serde_json::Value) -> Result<(), Error> {
         if self.rule.resolves(event).await {
             info!("Alert triggered; name: {}", self.name);
-            for target in self.targets.clone() {
-                let msg = self.message.clone();
-                actix_web::rt::spawn(async move {
+
+            let msg = self.message.clone();
+            actix_web::rt::spawn(async move {
+                for target in self.targets.clone() {
                     target.call(&msg);
-                });
-            }
+                }
+            });
         }
 
         Ok(())
