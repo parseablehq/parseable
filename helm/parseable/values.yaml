@@ -9,7 +9,7 @@ parseable:
     P_TLS_CERT_PATH: ""
     P_LOCAL_STORAGE: "data"
     P_STORAGE_UPLOAD_INTERVAL: "60"
-    RUST_LOG: "parseable=trace"
+    RUST_LOG: "parseable=info"
     # By default parseable uses demo env digital ocean spaces
     #P_S3_URL: ""
     #P_S3_ACCESS_KEY: ""
