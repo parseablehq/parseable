@@ -69,21 +69,18 @@ lazy_static! {
 #[allow(clippy::all)]
 impl STREAM_INFO {
     pub async fn check_alerts(&self, event: &Event) -> Result<(), Error> {
-        let map = self.read().unwrap();
+        let mut map = self.write().unwrap();
         let meta = map
-            .get(&event.stream_name)
+            .get_mut(&event.stream_name)
             .ok_or(Error::StreamMetaNotFound(event.stream_name.to_owned()))?;
 
-        let alerts = meta.alerts.alerts.clone();
         let event: serde_json::Value = serde_json::from_str(&event.body)?;
 
-        actix_web::rt::spawn(async move {
-            for mut alert in alerts {
-                if let Err(e) = alert.check_alert(&event).await {
-                    error!("Error while parsing event against alerts: {}", e);
-                }
+        for alert in meta.alerts.alerts.iter_mut() {
+            if let Err(e) = alert.check_alert(&event).await {
+                error!("Error while parsing event against alerts: {}", e);
             }
-        });
+        }
 
         Ok(())
     }

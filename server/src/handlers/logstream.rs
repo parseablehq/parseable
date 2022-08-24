@@ -205,7 +205,7 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
 
 pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let alerts: Alerts = match serde_json::from_value(body.clone()) {
+    let alerts: Alerts = match serde_json::from_value(body.into_inner()) {
         Ok(alerts) => alerts,
         Err(e) => {
             return response::ServerResponse {
@@ -213,46 +213,48 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
                     "failed to set alert configuration for log stream {} due to err: {}",
                     stream_name, e
                 ),
-                code: StatusCode::INTERNAL_SERVER_ERROR,
+                code: StatusCode::BAD_REQUEST,
             }
             .to_http()
         }
     };
-    match validator::alert(serde_json::to_string(&body.as_object()).unwrap()) {
-        Ok(_) => match S3::new().put_alerts(&stream_name, alerts.clone()).await {
-            Ok(_) => {
-                if let Err(e) = metadata::STREAM_INFO.set_alert(stream_name.to_string(), alerts) {
-                    return response::ServerResponse {
-                        msg: format!(
-                            "failed to set alert configuration for log stream {} due to err: {}",
-                            stream_name, e
-                        ),
-                        code: StatusCode::INTERNAL_SERVER_ERROR,
-                    }
-                    .to_http();
-                }
-                response::ServerResponse {
-                    msg: format!("set alert configuration for log stream {}", stream_name),
-                    code: StatusCode::OK,
-                }
-                .to_http()
-            }
-            Err(e) => response::ServerResponse {
-                msg: format!(
-                    "failed to set alert configuration for log stream {} due to err: {}",
-                    stream_name, e
-                ),
-                code: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-            .to_http(),
-        },
-        Err(e) => response::ServerResponse {
+
+    if let Err(e) = validator::alert(serde_json::to_string(&alerts).unwrap()) {
+        return response::ServerResponse {
             msg: format!(
                 "failed to set alert configuration for log stream {} due to err: {}",
                 stream_name, e
             ),
             code: StatusCode::BAD_REQUEST,
         }
-        .to_http(),
+        .to_http();
     }
+
+    if let Err(e) = S3::new().put_alerts(&stream_name, alerts.clone()).await {
+        return response::ServerResponse {
+            msg: format!(
+                "failed to set alert configuration for log stream {} due to err: {}",
+                stream_name, e
+            ),
+            code: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+        .to_http();
+    }
+
+    if let Err(e) = metadata::STREAM_INFO.set_alert(stream_name.to_string(), alerts) {
+        return response::ServerResponse {
+            msg: format!(
+                "failed to set alert configuration for log stream {} due to err: {}",
+                stream_name, e
+            ),
+            code: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+        .to_http();
+    }
+
+    response::ServerResponse {
+        msg: format!("set alert configuration for log stream {}", stream_name),
+        code: StatusCode::OK,
+    }
+    .to_http()
 }
