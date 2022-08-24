@@ -29,7 +29,7 @@ use chrono::{Duration, Timelike, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use serde::Serialize;
 
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::fs;
 use std::io;
 use std::iter::Iterator;
@@ -37,7 +37,6 @@ use std::path::Path;
 
 extern crate walkdir;
 use walkdir::WalkDir;
-pub trait ObjectStorageError: Display + Debug {}
 
 /// local sync interval to move data.parquet to /tmp dir of that stream.
 /// 60 sec is a reasonable value.
@@ -49,18 +48,25 @@ pub const OBJECT_STORE_DATA_GRANULARITY: u32 = (LOCAL_SYNC_INTERVAL as u32) / 60
 
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
-    async fn is_available(&self) -> bool;
-    async fn put_schema(&self, stream_name: String, body: String) -> Result<(), Error>;
-    async fn create_stream(&self, stream_name: &str) -> Result<(), Error>;
-    async fn delete_stream(&self, stream_name: &str) -> Result<(), Error>;
-    async fn put_alerts(&self, stream_name: &str, alerts: Alerts) -> Result<(), Error>;
-    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, Error>;
-    async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, Error>;
-    async fn get_stats(&self, stream_name: &str) -> Result<Stats, Error>;
-    async fn list_streams(&self) -> Result<Vec<LogStream>, Error>;
-    async fn upload_file(&self, key: &str, path: &str) -> Result<(), Error>;
-    async fn query(&self, query: &Query, results: &mut Vec<RecordBatch>) -> Result<(), Error>;
-    async fn local_sync(&self) -> Result<(), Error> {
+    async fn check(&self) -> Result<(), ObjectStorageError>;
+    async fn put_schema(&self, stream_name: String, body: String)
+        -> Result<(), ObjectStorageError>;
+    async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
+    async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
+
+    async fn put_alerts(&self, stream_name: &str, alerts: Alerts)
+        -> Result<(), ObjectStorageError>;
+    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, ObjectStorageError>;
+    async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError>;
+    async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError>;
+    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
+    async fn upload_file(&self, key: &str, path: &str) -> Result<(), ObjectStorageError>;
+    async fn query(
+        &self,
+        query: &Query,
+        results: &mut Vec<RecordBatch>,
+    ) -> Result<(), ObjectStorageError>;
+    fn local_sync(&self) -> io::Result<()> {
         // If the local data path doesn't exist yet, return early.
         // This method will be called again after next ticker interval
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
@@ -104,7 +110,7 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(())
     }
 
-    async fn s3_sync(&self) -> Result<(), Error> {
+    async fn s3_sync(&self) -> Result<(), ObjectStorageError> {
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
             return Ok(());
         }
@@ -227,5 +233,25 @@ impl StorageSync {
             parquet_path,
             parquet_file_local,
         }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ObjectStorageError {
+    #[error("Bucket {0} not found")]
+    NoSuchBucket(String),
+    #[error("Connection Error: {0}")]
+    ConnectionError(Box<dyn std::error::Error>),
+    #[error("IO Error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("DataFusion Error: {0}")]
+    DataFusionError(#[from] datafusion::error::DataFusionError),
+    #[error("Unhandled Error: {0}")]
+    UnhandledError(Box<dyn std::error::Error>),
+}
+
+impl From<ObjectStorageError> for crate::error::Error {
+    fn from(e: ObjectStorageError) -> Self {
+        crate::error::Error::Storage(e)
     }
 }

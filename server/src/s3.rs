@@ -1,6 +1,7 @@
 use async_trait::async_trait;
+use aws_sdk_s3::error::{HeadBucketError, HeadBucketErrorKind};
 use aws_sdk_s3::model::{Delete, ObjectIdentifier};
-use aws_sdk_s3::types::ByteStream;
+use aws_sdk_s3::types::{ByteStream, SdkError};
 use aws_sdk_s3::Error as AwsSdkError;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use aws_types::credentials::SharedCredentialsProvider;
@@ -94,14 +95,6 @@ impl StorageOpt for S3Config {
                 .red()
             )
         }
-    }
-}
-
-impl ObjectStorageError for AwsSdkError {}
-
-impl From<AwsSdkError> for Error {
-    fn from(e: AwsSdkError) -> Self {
-        Self::Storage(Box::new(e))
     }
 }
 
@@ -305,72 +298,81 @@ impl S3 {
 
 #[async_trait]
 impl ObjectStorage for S3 {
-    async fn is_available(&self) -> bool {
+    async fn check(&self) -> Result<(), ObjectStorageError> {
         self.client
             .head_bucket()
             .bucket(&S3_CONFIG.s3_bucket_name)
             .send()
             .await
-            .is_ok()
+            .map(|_| ())
+            .map_err(|err| err.into())
     }
 
-    async fn put_schema(&self, stream_name: String, body: String) -> Result<(), Error> {
+    async fn put_schema(
+        &self,
+        stream_name: String,
+        body: String,
+    ) -> Result<(), ObjectStorageError> {
         self._put_schema(stream_name, body).await?;
 
         Ok(())
     }
 
-    async fn create_stream(&self, stream_name: &str) -> Result<(), Error> {
+    async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
         self._create_stream(stream_name).await?;
 
         Ok(())
     }
 
-    async fn delete_stream(&self, stream_name: &str) -> Result<(), Error> {
+    async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
         self._delete_stream(stream_name).await?;
 
         Ok(())
     }
 
-    async fn put_alerts(&self, stream_name: &str, alerts: Alerts) -> Result<(), Error> {
+    async fn put_alerts(&self, stream_name: &str, alerts: Alerts) -> Result<(), ObjectStorageError> {
         let body = serde_json::to_vec(&alerts)?;
         self._put_alerts(stream_name, body).await?;
 
         Ok(())
     }
 
-    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, Error> {
+    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, ObjectStorageError> {
         let body_bytes = self._get_schema(stream_name).await?;
 
         Ok(body_bytes)
     }
 
-    async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, Error> {
+    async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError> {
         let body_bytes = self._alert_exists(stream_name).await?;
         let alerts = serde_json::from_slice(&body_bytes)?;
 
         Ok(alerts)
     }
 
-    async fn get_stats(&self, stream_name: &str) -> Result<Stats, Error> {
+    async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
         let stats = serde_json::from_slice(&self._get_stats(stream_name).await?)?;
 
         Ok(stats)
     }
 
-    async fn list_streams(&self) -> Result<Vec<LogStream>, Error> {
+    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
         let streams = self._list_streams().await?;
 
         Ok(streams)
     }
 
-    async fn upload_file(&self, key: &str, path: &str) -> Result<(), Error> {
+    async fn upload_file(&self, key: &str, path: &str) -> Result<(), ObjectStorageError> {
         self._upload_file(key, path).await?;
 
         Ok(())
     }
 
-    async fn query(&self, query: &Query, results: &mut Vec<RecordBatch>) -> Result<(), Error> {
+    async fn query(
+        &self,
+        query: &Query,
+        results: &mut Vec<RecordBatch>,
+    ) -> Result<(), ObjectStorageError> {
         let s3_file_system = Arc::new(
             S3FileSystem::new(
                 Some(SharedCredentialsProvider::new(self.options.creds.clone())),
@@ -400,9 +402,39 @@ impl ObjectStorage for S3 {
 
             // execute the query and collect results
             let df = ctx.sql(query.query.as_str()).await?;
-            results.extend(df.collect().await.map_err(Error::DataFusion)?);
+            results.extend(df.collect().await?);
         }
 
         Ok(())
+    }
+}
+
+impl From<AwsSdkError> for ObjectStorageError {
+    fn from(error: AwsSdkError) -> Self {
+        ObjectStorageError::UnhandledError(error.into())
+    }
+}
+
+impl From<SdkError<HeadBucketError>> for ObjectStorageError {
+    fn from(error: SdkError<HeadBucketError>) -> Self {
+        match error {
+            SdkError::ServiceError {
+                err:
+                    HeadBucketError {
+                        kind: HeadBucketErrorKind::NotFound(_),
+                        ..
+                    },
+                ..
+            } => ObjectStorageError::NoSuchBucket(S3_CONFIG.bucket_name().to_string()),
+            SdkError::DispatchFailure(err) => ObjectStorageError::ConnectionError(err.into()),
+            SdkError::TimeoutError(err) => ObjectStorageError::ConnectionError(err),
+            err => ObjectStorageError::UnhandledError(err.into()),
+        }
+    }
+}
+
+impl From<serde_json::Error> for ObjectStorageError {
+    fn from(error: serde_json::Error) -> Self {
+        ObjectStorageError::UnhandledError(error.into())
     }
 }

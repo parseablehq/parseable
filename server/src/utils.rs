@@ -118,7 +118,8 @@ pub fn collect_labels(req: &HttpRequest) -> Option<String> {
         if key.to_string().to_lowercase().starts_with(META_LABEL) {
             let value = req.headers().get(&key)?.to_str().ok();
             let remove_meta_char = format!("{}-", META_LABEL);
-            let kv = format! {"{}={}", key.to_string().replace(&remove_meta_char.to_string(), ""), value.unwrap()};
+            let kv =
+                format! {"{}={}", key.to_string().replace(&remove_meta_char, ""), value.unwrap()};
             labels_vec.push(kv);
         }
     }
@@ -142,7 +143,7 @@ impl TimePeriod {
     }
 
     pub fn generate_prefixes(&self, prefix: &str) -> Vec<String> {
-        let prefix = prefix.to_string() + "/";
+        let prefix = format!("{}/", prefix);
 
         let end_minute = self.end.minute() + if self.end.second() > 0 { 1 } else { 0 };
 

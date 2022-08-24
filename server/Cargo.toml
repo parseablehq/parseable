@@ -44,6 +44,7 @@ structopt = { version = "0.3.25" }
 sysinfo = "0.20.5"
 thiserror = "1"
 tokio-stream = "0.1.8"
+tokio = { version = "1.13.1", default-features = false, features=["sync", "macros"] }
 clokwerk = "0.4.0-rc1"
 actix-web-static-files = "4.0"
 static-files = "0.2.1"
@@ -63,5 +64,5 @@ rstest = "0.15.0"
 serial_test = { version = "0.9.0", default-features = false }
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/frontend/releases/download/v0.0.1/build.zip"
-assets-sha1 = "d9243bde7a98bdd8a19ed47cca2f12f9a5ce40ba"
+assets-url = "https://github.com/parseablehq/console/releases/download/0.0.2/build.zip"
+assets-sha1 = "8c50ee6ab27e9c0af3ea677f1cde0fbb737e0f87"

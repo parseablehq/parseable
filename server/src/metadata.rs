@@ -18,7 +18,7 @@
 
 use bytes::Bytes;
 use lazy_static::lazy_static;
-use log::{error, warn};
+use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -149,15 +149,20 @@ impl STREAM_INFO {
                 .get_alerts(&stream.name)
                 .await
                 .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()))?;
-            let schema = parse_string(storage.get_schema(&stream.name).await)
+            let schema = storage
+                .get_schema(&stream.name)
+                .await
+                .map_err(|e| e.into())
+                .and_then(parse_string)
                 .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()))?;
             let metadata = LogStreamMetadata {
                 schema,
                 alerts,
                 ..Default::default()
             };
+
             let mut map = self.write().unwrap();
-            map.insert(stream.name.to_owned(), metadata);
+            map.insert(stream.name.clone(), metadata);
         }
 
         Ok(())
@@ -180,21 +185,8 @@ impl STREAM_INFO {
     }
 }
 
-fn parse_string(result: Result<Bytes, Error>) -> Result<String, Error> {
-    let mut string = String::new();
-    let bytes = match result {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            warn!("Storage error: {}", e);
-            return Ok(string);
-        }
-    };
-
-    if !bytes.is_empty() {
-        string = String::from_utf8(bytes.to_vec())?;
-    }
-
-    Ok(string)
+fn parse_string(bytes: Bytes) -> Result<String, Error> {
+    String::from_utf8(bytes.to_vec()).map_err(|e| e.into())
 }
 
 #[cfg(test)]
@@ -235,14 +227,14 @@ mod tests {
     #[case::empty_string("")]
     fn test_parse_string(#[case] string: String) {
         let bytes = Bytes::from(string);
-        assert!(parse_string(Ok(bytes)).is_ok())
+        assert!(parse_string(bytes).is_ok())
     }
 
     #[test]
     fn test_bad_parse_string() {
         let bad: Vec<u8> = vec![195, 40];
         let bytes = Bytes::from(bad);
-        assert!(parse_string(Ok(bytes)).is_err());
+        assert!(parse_string(bytes).is_err());
     }
 
     #[rstest]
