@@ -37,9 +37,7 @@ spec:
               value: {{ tpl $value $ | quote }}
             {{- end }}
           ports:
-            - name: parseable
-              containerPort: 5678
-              protocol: TCP
+            - containerPort: 8000
           resources:
             {{- toYaml .Values.parseable.resources | nindent 12 }}
           volumeMounts:

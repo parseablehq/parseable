@@ -52,12 +52,11 @@ impl Query {
     // this query is supposed to be executed
     pub fn parse(query_json: Value) -> Result<Query, Error> {
         // retrieve query, start and end time information from payload.
-        // Convert query to lowercase.
-        let query = get_value(&query_json, "query")?.to_lowercase();
+        let query = get_value(&query_json, "query")?;
         let start_time = get_value(&query_json, "startTime")?;
         let end_time = get_value(&query_json, "endTime")?;
 
-        validator::query(&query, start_time, end_time)
+        validator::query(query, start_time, end_time)
     }
 
     /// Return prefixes, each per day/hour/minutes as necessary
@@ -111,29 +110,34 @@ impl Query {
 
 #[cfg(test)]
 mod tests {
+    use super::Query;
+    use rstest::*;
+    use serde_json::Value;
     use std::str::FromStr;
 
-    use serde_json::Value;
-
-    use super::Query;
-
-    #[test]
-    fn query_parse_prefix() {
-        let query = Value::from_str(
-            r#"{
-    "query": "SELECT * FROM stream_name",
-    "startTime": "2022-10-15T10:00:00+00:00",
-    "endTime": "2022-10-15T10:01:00+00:00"
-}"#,
-        )
-        .unwrap();
-
+    #[rstest]
+    #[case(
+        r#"{
+            "query": "SELECT * FROM stream_name",
+            "startTime": "2022-10-15T10:00:00+00:00",
+            "endTime": "2022-10-15T10:01:00+00:00"
+        }"#,
+        &["stream_name/date=2022-10-15/hour=10/minute=00/"]
+    )]
+    #[case(
+        r#"{
+            "query": "SELECT * FROM stream_name",
+            "startTime": "2022-10-15T10:00:00+00:00",
+            "endTime": "2022-10-15T10:02:00+00:00"
+        }"#,
+        &["stream_name/date=2022-10-15/hour=10/minute=00/", "stream_name/date=2022-10-15/hour=10/minute=01/"]
+    )]
+    fn query_parse_prefix(#[case] prefix: &str, #[case] right: &[&str]) {
+        let query = Value::from_str(prefix).unwrap();
         let query = Query::parse(query).unwrap();
-
         assert_eq!(&query.stream_name, "stream_name");
-        assert_eq!(
-            query.get_prefixes(),
-            vec!["stream_name/date=2022-10-15/hour=10/minute=00/".to_string()]
-        );
+        let prefixes = query.get_prefixes();
+        let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
+        assert_eq!(left.as_slice(), right);
     }
 }

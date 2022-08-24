@@ -22,14 +22,19 @@ use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web_static_files::ResourceFiles;
-use clokwerk::{AsyncScheduler, TimeUnits};
+use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
 use log::warn;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
-use std::thread;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+use tokio::sync::oneshot;
+use tokio::sync::oneshot::error::TryRecvError;
 
+mod alerts;
 mod banner;
 mod error;
 mod event;
@@ -59,36 +64,114 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.print();
     CONFIG.validate();
     let storage = S3::new();
+    CONFIG.validate_storage(&storage).await;
     if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
         warn!("could not populate local metadata. {:?}", e);
     }
-    thread::spawn(sync);
-    run_http().await?;
 
-    Ok(())
+    let (localsync_handler, mut localsync_outbox, localsync_inbox) = run_local_sync();
+    let (mut s3sync_handler, mut s3sync_outbox, mut s3sync_inbox) = s3_sync();
+
+    let app = run_http();
+    tokio::pin!(app);
+    loop {
+        tokio::select! {
+            e = &mut app => {
+                // actix server finished .. stop other threads and stop the server
+                s3sync_inbox.send(()).unwrap_or(());
+                localsync_inbox.send(()).unwrap_or(());
+                localsync_handler.join().unwrap_or(());
+                s3sync_handler.join().unwrap_or(());
+                return e
+            },
+            _ = &mut localsync_outbox => {
+                // crash the server if localsync fails for any reason
+                // panic!("Local Sync thread died. Server will fail now!")
+                return Err(anyhow::Error::msg("Failed to sync local data to disc. This can happen due to critical error in disc or environment. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
+            },
+            _ = &mut s3sync_outbox => {
+                // s3sync failed, this is recoverable by just starting s3sync thread again
+                s3sync_handler.join().unwrap_or(());
+                (s3sync_handler, s3sync_outbox, s3sync_inbox) = s3_sync();
+            }
+        };
+    }
 }
 
-#[actix_web::main]
-async fn sync() {
-    let mut scheduler = AsyncScheduler::new();
-    scheduler
-        .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
-        .run(|| async {
-            if let Err(e) = S3::new().local_sync().await {
-                warn!("failed to sync local data. {:?}", e);
-            }
+fn s3_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+    let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
+    let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
+    let mut inbox_rx = AssertUnwindSafe(inbox_rx);
+    let handle = thread::spawn(move || {
+        let res = catch_unwind(move || {
+            let rt = actix_web::rt::System::new();
+            rt.block_on(async {
+                let mut scheduler = AsyncScheduler::new();
+                scheduler
+                    .every((CONFIG.parseable.upload_interval as u32).seconds())
+                    .run(|| async {
+                        if let Err(e) = S3::new().s3_sync().await {
+                            warn!("failed to sync local data with object store. {:?}", e);
+                        }
+                    });
+
+                loop {
+                    scheduler.run_pending().await;
+                    match AssertUnwindSafe(|| inbox_rx.try_recv())() {
+                        Ok(_) => break,
+                        Err(TryRecvError::Empty) => continue,
+                        Err(TryRecvError::Closed) => {
+                            // should be unreachable but breaking anyways
+                            break;
+                        }
+                    }
+                }
+            })
         });
-    scheduler
-        .every((CONFIG.parseable.upload_interval as u32).seconds())
-        .run(|| async {
-            if let Err(e) = S3::new().s3_sync().await {
-                warn!("failed to sync local data with object store. {:?}", e);
+
+        if res.is_err() {
+            outbox_tx.send(()).unwrap();
+        }
+    });
+
+    (handle, outbox_rx, inbox_tx)
+}
+
+fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+    let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
+    let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
+    let mut inbox_rx = AssertUnwindSafe(inbox_rx);
+    let handle = thread::spawn(move || {
+        let res = catch_unwind(move || {
+            let mut scheduler = Scheduler::new();
+            scheduler
+                .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
+                .run(move || {
+                    if let Err(e) = S3::new().local_sync() {
+                        warn!("failed to sync local data. {:?}", e);
+                    }
+                });
+
+            loop {
+                thread::sleep(Duration::from_millis(50));
+                scheduler.run_pending();
+                match AssertUnwindSafe(|| inbox_rx.try_recv())() {
+                    Ok(_) => break,
+                    Err(TryRecvError::Empty) => continue,
+                    Err(TryRecvError::Closed) => {
+                        // should be unreachable but breaking anyways
+                        break;
+                    }
+                }
             }
         });
 
-    loop {
-        scheduler.run_pending().await;
-    }
+        if res.is_err() {
+            outbox_tx.send(()).unwrap();
+        }
+    });
+
+    (handle, outbox_rx, inbox_tx)
 }
 
 async fn validator(

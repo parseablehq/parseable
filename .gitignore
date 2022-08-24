@@ -4,4 +4,4 @@ examples
 Cargo.lock
 cert.pem
 key.pem
-ui/node_modules/
+.env

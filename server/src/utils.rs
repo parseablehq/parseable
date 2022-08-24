@@ -118,7 +118,8 @@ pub fn collect_labels(req: &HttpRequest) -> Option<String> {
         if key.to_string().to_lowercase().starts_with(META_LABEL) {
             let value = req.headers().get(&key)?.to_str().ok();
             let remove_meta_char = format!("{}-", META_LABEL);
-            let kv = format! {"{}={}", key.to_string().replace(&remove_meta_char.to_string(), ""), value.unwrap()};
+            let kv =
+                format! {"{}={}", key.to_string().replace(&remove_meta_char, ""), value.unwrap()};
             labels_vec.push(kv);
         }
     }
@@ -142,7 +143,7 @@ impl TimePeriod {
     }
 
     pub fn generate_prefixes(&self, prefix: &str) -> Vec<String> {
-        let prefix = prefix.to_string() + "/";
+        let prefix = format!("{}/", prefix);
 
         let end_minute = self.end.minute() + if self.end.second() > 0 { 1 } else { 0 };
 
@@ -281,6 +282,7 @@ impl TimePeriod {
 #[cfg(test)]
 mod tests {
     use chrono::DateTime;
+    use rstest::*;
 
     use super::TimePeriod;
 
@@ -292,125 +294,70 @@ mod tests {
         )
     }
 
-    #[test]
-    fn prefix_generation_same_minute() {
-        let time_period =
-            time_period_from_str("2022-06-11T16:30:00+00:00", "2022-06-11T16:30:59+00:00");
-
-        assert_eq!(
-            time_period.generate_prefixes("stream_name"),
-            vec!["stream_name/date=2022-06-11/hour=16/minute=30/".to_string()]
-        );
-    }
-
-    #[test]
-    fn prefix_generation_same_hour_different_minute() {
-        let time_period =
-            time_period_from_str("2022-06-11T16:57:00+00:00", "2022-06-11T16:59:00+00:00");
-
-        assert_eq!(
-            time_period.generate_prefixes("stream_name"),
-            vec![
-                "stream_name/date=2022-06-11/hour=16/minute=57/".to_string(),
-                "stream_name/date=2022-06-11/hour=16/minute=58/".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn prefix_generation_same_hour_with_00_to_59_minute_block() {
-        let time_period =
-            time_period_from_str("2022-06-11T16:00:00+00:00", "2022-06-11T16:59:59+00:00");
-
-        assert_eq!(
-            time_period.generate_prefixes("stream_name"),
-            vec!["stream_name/date=2022-06-11/hour=16/".to_string(),]
-        );
-    }
-
-    #[test]
-    fn prefix_generation_same_date_different_hours_coherent_minute() {
-        let time_period =
-            time_period_from_str("2022-06-11T15:00:00+00:00", "2022-06-11T17:00:00+00:00");
-
-        assert_eq!(
-            time_period.generate_prefixes("stream_name"),
-            vec![
-                "stream_name/date=2022-06-11/hour=15/".to_string(),
-                "stream_name/date=2022-06-11/hour=16/".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn prefix_generation_same_date_different_hours_incoherent_minutes() {
-        let time_period =
-            time_period_from_str("2022-06-11T15:59:00+00:00", "2022-06-11T16:01:00+00:00");
-
-        assert_eq!(
-            time_period.generate_prefixes("stream_name"),
-            vec![
-                "stream_name/date=2022-06-11/hour=15/minute=59/".to_string(),
-                "stream_name/date=2022-06-11/hour=16/minute=00/".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn prefix_generation_same_date_different_hours_whole_hours_between_incoherent_minutes() {
-        let time_period =
-            time_period_from_str("2022-06-11T15:59:00+00:00", "2022-06-11T17:01:00+00:00");
-
-        assert_eq!(
-            time_period.generate_prefixes("stream_name"),
-            vec![
-                "stream_name/date=2022-06-11/hour=15/minute=59/".to_string(),
-                "stream_name/date=2022-06-11/hour=16/".to_string(),
-                "stream_name/date=2022-06-11/hour=17/minute=00/".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn prefix_generation_different_date_coherent_hours_and_minutes() {
-        let time_period =
-            time_period_from_str("2022-06-11T00:00:00+00:00", "2022-06-13T00:00:00+00:00");
-
-        assert_eq!(
-            time_period.generate_prefixes("stream_name"),
-            vec![
-                "stream_name/date=2022-06-11/".to_string(),
-                "stream_name/date=2022-06-12/".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn prefix_generation_different_date_incoherent_hours_coherent_minutes() {
-        let time_period =
-            time_period_from_str("2022-06-11T23:00:01+00:00", "2022-06-12T01:59:59+00:00");
-
-        assert_eq!(
-            time_period.generate_prefixes("stream_name"),
-            vec![
-                "stream_name/date=2022-06-11/hour=23/".to_string(),
-                "stream_name/date=2022-06-12/hour=00/".to_string(),
-                "stream_name/date=2022-06-12/hour=01/".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn prefix_generation_different_date_incoherent_hours_incoherent_minutes() {
-        let time_period =
-            time_period_from_str("2022-06-11T23:59:59+00:00", "2022-06-12T00:01:00+00:00");
-
-        assert_eq!(
-            time_period.generate_prefixes("stream_name"),
-            vec![
-                "stream_name/date=2022-06-11/hour=23/minute=59/".to_string(),
-                "stream_name/date=2022-06-12/hour=00/minute=00/".to_string(),
-            ]
-        );
+    #[rstest]
+    #[case::same_minute(
+        "2022-06-11T16:30:00+00:00", "2022-06-11T16:30:59+00:00",
+        &["stream_name/date=2022-06-11/hour=16/minute=30/"]
+    )]
+    #[case::same_hour_different_minute(
+        "2022-06-11T16:57:00+00:00", "2022-06-11T16:59:00+00:00",
+        &[
+            "stream_name/date=2022-06-11/hour=16/minute=57/",
+            "stream_name/date=2022-06-11/hour=16/minute=58/"
+        ]
+    )]
+    #[case::same_hour_with_00_to_59_minute_block(
+        "2022-06-11T16:00:00+00:00", "2022-06-11T16:59:59+00:00",   
+        &["stream_name/date=2022-06-11/hour=16/"]
+    )]
+    #[case::same_date_different_hours_coherent_minute(
+        "2022-06-11T15:00:00+00:00", "2022-06-11T17:00:00+00:00",
+       &[
+            "stream_name/date=2022-06-11/hour=15/",
+            "stream_name/date=2022-06-11/hour=16/"
+        ]
+    )]
+    #[case::same_date_different_hours_incoherent_minutes(
+        "2022-06-11T15:59:00+00:00", "2022-06-11T16:01:00+00:00", 
+        &[
+            "stream_name/date=2022-06-11/hour=15/minute=59/",
+            "stream_name/date=2022-06-11/hour=16/minute=00/"
+        ]
+    )]
+    #[case::same_date_different_hours_whole_hours_between_incoherent_minutes(
+        "2022-06-11T15:59:00+00:00", "2022-06-11T17:01:00+00:00", 
+        &[
+            "stream_name/date=2022-06-11/hour=15/minute=59/",
+            "stream_name/date=2022-06-11/hour=16/",
+            "stream_name/date=2022-06-11/hour=17/minute=00/"
+        ]
+    )]
+    #[case::different_date_coherent_hours_and_minutes(
+        "2022-06-11T00:00:00+00:00", "2022-06-13T00:00:00+00:00", 
+        &[
+            "stream_name/date=2022-06-11/",
+            "stream_name/date=2022-06-12/"
+        ]
+    )]
+    #[case::different_date_incoherent_hours_coherent_minutes(
+        "2022-06-11T23:00:01+00:00", "2022-06-12T01:59:59+00:00", 
+        &[
+            "stream_name/date=2022-06-11/hour=23/",
+            "stream_name/date=2022-06-12/hour=00/",
+            "stream_name/date=2022-06-12/hour=01/"
+        ]
+    )]
+    #[case::different_date_incoherent_hours_incoherent_minutes(
+        "2022-06-11T23:59:59+00:00", "2022-06-12T00:01:00+00:00", 
+        &[
+            "stream_name/date=2022-06-11/hour=23/minute=59/",
+            "stream_name/date=2022-06-12/hour=00/minute=00/"
+        ]
+    )]
+    fn prefix_generation(#[case] start: &str, #[case] end: &str, #[case] right: &[&str]) {
+        let time_period = time_period_from_str(start, end);
+        let prefixes = time_period.generate_prefixes("stream_name");
+        let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
+        assert_eq!(left.as_slice(), right);
     }
 }

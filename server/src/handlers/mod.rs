@@ -37,7 +37,7 @@ pub async fn liveness() -> HttpResponse {
 }
 
 pub async fn readiness() -> HttpResponse {
-    if S3::new().is_available().await {
+    if let Ok(()) = S3::new().check().await {
         return HttpResponse::new(StatusCode::OK);
     }
 

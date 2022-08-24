@@ -33,7 +33,7 @@ pub enum Error {
     #[error("JSON provided to query api doesn't contain {0}")]
     JsonQuery(&'static str),
     #[error("Storage error: {0}")]
-    Storage(Box<dyn ObjectStorageError>),
+    Storage(ObjectStorageError),
     #[error("Event error: {0}")]
     Event(#[from] EventError),
     #[error("Parquet error: {0}")]
@@ -62,8 +62,8 @@ pub enum Error {
     MultipleStreams(String),
     #[error("start time can not be later than end time")]
     StartTimeAfterEndTime(),
-    #[error("query is incomplete")]
-    IncompleteQuery(),
+    #[error("query '{0}' is incomplete")]
+    IncompleteQuery(String),
     #[error("query cannot be empty")]
     EmptyQuery,
     #[error("start time cannot be empty in query")]

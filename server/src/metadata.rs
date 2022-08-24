@@ -18,22 +18,24 @@
 
 use bytes::Bytes;
 use lazy_static::lazy_static;
-use log::warn;
+use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use crate::alerts::Alerts;
 use crate::error::Error;
+use crate::event::Event;
 use crate::storage::ObjectStorage;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LogStreamMetadata {
     pub schema: String,
-    pub alert_config: String,
+    pub alerts: Alerts,
     pub stats: Stats,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone, PartialEq, Eq)]
 pub struct Stats {
     pub size: u64,
     pub compressed_size: u64,
@@ -66,44 +68,61 @@ lazy_static! {
 // 5. When set alert API is called (update the alert)
 #[allow(clippy::all)]
 impl STREAM_INFO {
-    pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
-        let alert_config = self.alert(stream_name.clone())?;
-        self.add_stream(stream_name, schema, alert_config)
+    pub async fn check_alerts(&self, event: &Event) -> Result<(), Error> {
+        let mut map = self.write().unwrap();
+        let meta = map
+            .get_mut(&event.stream_name)
+            .ok_or(Error::StreamMetaNotFound(event.stream_name.to_owned()))?;
+
+        let event: serde_json::Value = serde_json::from_str(&event.body)?;
+
+        for alert in meta.alerts.alerts.iter_mut() {
+            if let Err(e) = alert.check_alert(&event).await {
+                error!("Error while parsing event against alerts: {}", e);
+            }
+        }
+
+        Ok(())
     }
 
-    pub fn schema(&self, stream_name: String) -> Result<String, Error> {
+    pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
+        let alerts = self.alert(stream_name.clone())?;
+        self.add_stream(stream_name, schema, alerts)
+    }
+
+    pub fn schema(&self, stream_name: &str) -> Result<String, Error> {
         let map = self.read().unwrap();
         let meta = map
-            .get(&stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name))?;
+            .get(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))?;
 
         Ok(meta.schema.clone())
     }
 
-    pub fn set_alert(&self, stream_name: String, alert_config: String) -> Result<(), Error> {
-        let schema = self.schema(stream_name.clone())?;
-        self.add_stream(stream_name, schema, alert_config)
+    pub fn set_alert(&self, stream_name: String, alerts: Alerts) -> Result<(), Error> {
+        let schema = self.schema(&stream_name)?;
+        self.add_stream(stream_name, schema, alerts)
     }
 
-    pub fn alert(&self, stream_name: String) -> Result<String, Error> {
+    pub fn alert(&self, stream_name: String) -> Result<Alerts, Error> {
         let map = self.read().unwrap();
         let meta = map
             .get(&stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name))?;
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
 
-        Ok(meta.alert_config.clone())
+        Ok(meta.alerts.clone())
     }
 
     pub fn add_stream(
         &self,
         stream_name: String,
         schema: String,
-        alert_config: String,
+        alerts: Alerts,
     ) -> Result<(), Error> {
         let mut map = self.write().unwrap();
         let metadata = LogStreamMetadata {
             schema,
-            alert_config,
+            alerts,
             ..Default::default()
         };
         // TODO: Add check to confirm data insertion
@@ -112,10 +131,10 @@ impl STREAM_INFO {
         Ok(())
     }
 
-    pub fn delete_stream(&self, stream_name: String) -> Result<(), Error> {
+    pub fn delete_stream(&self, stream_name: &str) -> Result<(), Error> {
         let mut map = self.write().unwrap();
         // TODO: Add check to confirm data deletion
-        map.remove(&stream_name);
+        map.remove(stream_name);
 
         Ok(())
     }
@@ -126,17 +145,24 @@ impl STREAM_INFO {
             // to load the stream metadata based on whatever is available.
             //
             // TODO: ignore failure(s) if any and skip to next stream
-            let alert_config = parse_string(storage.get_alert(&stream.name).await)
+            let alerts = storage
+                .get_alerts(&stream.name)
+                .await
                 .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()))?;
-            let schema = parse_string(storage.get_schema(&stream.name).await)
+            let schema = storage
+                .get_schema(&stream.name)
+                .await
+                .map_err(|e| e.into())
+                .and_then(parse_string)
                 .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()))?;
             let metadata = LogStreamMetadata {
                 schema,
-                alert_config,
+                alerts,
                 ..Default::default()
             };
+
             let mut map = self.write().unwrap();
-            map.insert(stream.name.to_owned(), metadata);
+            map.insert(stream.name.clone(), metadata);
         }
 
         Ok(())
@@ -159,19 +185,95 @@ impl STREAM_INFO {
     }
 }
 
-fn parse_string(result: Result<Bytes, Error>) -> Result<String, Error> {
-    let mut string = String::new();
-    let bytes = match result {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            warn!("Storage error: {}", e);
-            return Ok(string);
-        }
-    };
+fn parse_string(bytes: Bytes) -> Result<String, Error> {
+    String::from_utf8(bytes.to_vec()).map_err(|e| e.into())
+}
 
-    if !bytes.is_empty() {
-        string = String::from_utf8(bytes.to_vec())?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maplit::hashmap;
+    use rstest::*;
+    use serial_test::serial;
+
+    #[rstest]
+    #[case::zero(0, 0, 0)]
+    #[case::some(1024, 512, 2048)]
+    fn update_stats(#[case] size: u64, #[case] compressed_size: u64, #[case] prev_compressed: u64) {
+        let mut stats = Stats {
+            size,
+            compressed_size,
+            prev_compressed,
+        };
+
+        stats.update(2056, 2000);
+
+        assert_eq!(
+            stats,
+            Stats {
+                size: size + 2056,
+                compressed_size: prev_compressed + 2000,
+                prev_compressed
+            }
+        )
     }
 
-    Ok(string)
+    fn clear_map() {
+        STREAM_INFO.write().unwrap().clear();
+    }
+
+    #[rstest]
+    #[case::nonempty_string("Hello world")]
+    #[case::empty_string("")]
+    fn test_parse_string(#[case] string: String) {
+        let bytes = Bytes::from(string);
+        assert!(parse_string(bytes).is_ok())
+    }
+
+    #[test]
+    fn test_bad_parse_string() {
+        let bad: Vec<u8> = vec![195, 40];
+        let bytes = Bytes::from(bad);
+        assert!(parse_string(bytes).is_err());
+    }
+
+    #[rstest]
+    #[case::stream_schema_alert("teststream", "schema")]
+    #[case::stream_only("teststream", "")]
+    #[serial]
+    fn test_add_stream(#[case] stream_name: String, #[case] schema: String) {
+        let alerts = Alerts { alerts: vec![] };
+        clear_map();
+        STREAM_INFO
+            .add_stream(stream_name.clone(), schema.clone(), alerts.clone())
+            .unwrap();
+
+        let left = STREAM_INFO.read().unwrap().clone();
+        let right = hashmap! {
+            stream_name => LogStreamMetadata {
+                schema,
+                alerts,
+                ..Default::default()
+            }
+        };
+        assert_eq!(left, right);
+    }
+
+    #[rstest]
+    #[case::stream_only("teststream")]
+    #[serial]
+    fn test_delete_stream(#[case] stream_name: String) {
+        clear_map();
+        STREAM_INFO
+            .add_stream(
+                stream_name.clone(),
+                "".to_string(),
+                Alerts { alerts: vec![] },
+            )
+            .unwrap();
+
+        STREAM_INFO.delete_stream(&stream_name).unwrap();
+        let map = STREAM_INFO.read().unwrap();
+        assert!(!map.contains_key(&stream_name));
+    }
 }

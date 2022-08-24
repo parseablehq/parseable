@@ -76,7 +76,7 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let labels = utils::collect_labels(&req);
 
-    if let Err(e) = metadata::STREAM_INFO.schema(stream_name.clone()) {
+    if let Err(e) = metadata::STREAM_INFO.schema(&stream_name) {
         // if stream doesn't exist, fail to post data
         return response::ServerResponse {
             msg: format!(

@@ -17,9 +17,9 @@
  */
 
 use chrono::{DateTime, Utc};
-use serde_derive::Deserialize;
-use serde_derive::Serialize;
+use serde_json::json;
 
+use crate::alerts::Alerts;
 use crate::query::Query;
 use crate::Error;
 
@@ -27,40 +27,6 @@ use crate::Error;
 const DENIED_NAMES: &[&str] = &[
     "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
 ];
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Alerts {
-    pub alerts: Vec<Alert>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Alert {
-    pub name: String,
-    pub message: String,
-    pub rule: Rule,
-    pub target: Vec<Target>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Rule {
-    pub field: String,
-    pub contains: String,
-    pub repeats: u32,
-    pub within: String,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Target {
-    pub name: String,
-    #[serde(rename = "server_url")]
-    pub server_url: String,
-    #[serde(rename = "api_key")]
-    pub api_key: String,
-}
 
 pub fn alert(body: String) -> Result<(), Error> {
     let alerts: Alerts = serde_json::from_str(body.as_str())?;
@@ -75,8 +41,10 @@ pub fn alert(body: String) -> Result<(), Error> {
                 "alert message cannot be empty".to_string(),
             ));
         }
-        if alert.rule.contains.is_empty() {
-            return Err(Error::InvalidAlert("rule.contains must be set".to_string()));
+        if alert.rule.value == json!(null) {
+            return Err(Error::InvalidAlert(
+                "rule.value cannot be empty".to_string(),
+            ));
         }
         if alert.rule.field.is_empty() {
             return Err(Error::InvalidAlert("rule.field must be set".to_string()));
@@ -89,7 +57,7 @@ pub fn alert(body: String) -> Result<(), Error> {
                 "rule.repeats can't be set to 0".to_string(),
             ));
         }
-        if alert.target.is_empty() {
+        if alert.targets.is_empty() {
             return Err(Error::InvalidAlert(
                 "alert must have at least one target".to_string(),
             ));
@@ -132,12 +100,17 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Err
         return Err(Error::EmptyQuery);
     }
 
-    let tokens = query.split(' ').collect::<Vec<&str>>();
+    // convert query to lower case for validation only
+    // if validation succeeds, we use the original query
+    // since table names/fields are case sensitive
+    let query_lower = query.to_lowercase();
+
+    let tokens = query_lower.split(' ').collect::<Vec<&str>>();
     if tokens.contains(&"join") {
         return Err(Error::Join(query.to_string()));
     }
     if tokens.len() < 4 {
-        return Err(Error::IncompleteQuery());
+        return Err(Error::IncompleteQuery(query.to_string()));
     }
     if start_time.is_empty() {
         return Err(Error::EmptyStartTime);
@@ -151,7 +124,7 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Err
     // we currently don't support queries like "select name, address from stream1 and stream2"
     // so if there is an `and` after the first log stream name, we return an error.
     if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
-        return Err(Error::MultipleStreams(query.to_owned()));
+        return Err(Error::MultipleStreams(query.to_string()));
     }
 
     let start: DateTime<Utc> = DateTime::parse_from_rfc3339(start_time)?.into();
