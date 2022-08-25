@@ -23,7 +23,7 @@ use structopt::StructOpt;
 
 use crate::banner;
 use crate::s3::S3Config;
-use crate::storage::{ObjectStorage, ObjectStorageError};
+use crate::storage::{ObjectStorage, ObjectStorageError, LOCAL_SYNC_INTERVAL};
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -68,7 +68,7 @@ impl Config {
     }
 
     pub fn validate(&self) {
-        if CONFIG.parseable.upload_interval < 60 {
+        if CONFIG.parseable.upload_interval < LOCAL_SYNC_INTERVAL {
             panic!("object storage upload_interval (P_STORAGE_UPLOAD_INTERVAL) must be 60 seconds or more");
         }
     }
