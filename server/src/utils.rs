@@ -19,7 +19,6 @@
 use actix_web::web;
 use actix_web::HttpRequest;
 use chrono::{Date, DateTime, Timelike, Utc};
-use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -67,12 +66,15 @@ fn merge(v: &Value, fields: &HashMap<String, String>) -> Value {
     }
 }
 
-pub fn random_string() -> String {
-    rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(7)
-        .map(char::from)
-        .collect()
+#[allow(dead_code)]
+pub fn hostname() -> Option<String> {
+    hostname::get()
+        .ok()
+        .and_then(|hostname| hostname.into_string().ok())
+}
+
+pub fn hostname_unchecked() -> String {
+    hostname::get().unwrap().into_string().unwrap()
 }
 
 /// Convert minutes to a slot range

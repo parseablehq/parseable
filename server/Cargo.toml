@@ -34,6 +34,7 @@ log = "0.4.14"
 num_cpus = "1.0.0"
 openssl = { version = "0.10" }
 os_info = "3.0.7"
+hostname = "0.3"
 parquet = "15.0"
 rand = "0.8.4"
 rust-flatten-json = "0.2.0"
