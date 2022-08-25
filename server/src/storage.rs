@@ -149,7 +149,6 @@ pub struct LogStream {
 
 #[derive(Debug)]
 struct StorageDir {
-    stream_name: String,
     pub data_path: PathBuf,
     pub temp_dir: PathBuf,
 }
@@ -160,20 +159,9 @@ impl StorageDir {
         let temp_dir = data_path.join("tmp");
 
         Self {
-            stream_name,
             data_path,
             temp_dir,
         }
-    }
-
-    #[allow(dead_code)]
-    fn temp_dir_path(&self) -> PathBuf {
-        self.temp_dir.clone()
-    }
-
-    #[allow(dead_code)]
-    fn local_stream_data_path(&self) -> PathBuf {
-        CONFIG.parseable.local_stream_data_path(&self.stream_name)
     }
 
     fn create_temp_dir(&self) -> io::Result<()> {
