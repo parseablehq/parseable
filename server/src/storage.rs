@@ -114,9 +114,9 @@ pub trait ObjectStorage: Sync + 'static {
         let streams = STREAM_INFO.list_streams();
 
         for stream in streams {
-            let sync = StorageSync::new(stream.clone());
+            let dir = StorageDir::new(stream.clone());
 
-            for file in WalkDir::new(sync.dir.temp_dir)
+            for file in WalkDir::new(dir.temp_dir)
                 .min_depth(1)
                 .max_depth(1)
                 .into_iter()
