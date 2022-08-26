@@ -31,8 +31,8 @@ use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 const DEFAULT_S3_URL: &str = "https://sgp1.digitaloceanspaces.com";
 const DEFAULT_S3_REGION: &str = "sgp1";
 const DEFAULT_S3_BUCKET: &str = "parseable";
-const DEFAULT_S3_ACCESS_KEY: &str = "DO00KWGMX3M4ABBBFPCZ";
-const DEFAULT_S3_SECRET_KEY: &str = "5CqfjVsIPBjZxTOz51Bxod3Cd0FWkMLC3/vTwRavaaQ";
+const DEFAULT_S3_ACCESS_KEY: &str = "DO00YF68WC2P3QUAM82K";
+const DEFAULT_S3_SECRET_KEY: &str = "Ov6D7DvM6NHlyU4W2ajrHhRnT4IVRqKxExLPhekNIKw";
 
 const S3_URL_ENV_VAR: &str = "P_S3_URL";
 
