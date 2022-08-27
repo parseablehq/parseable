@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use aws_sdk_s3::error::{HeadBucketError, HeadBucketErrorKind};
-use aws_sdk_s3::model::{Delete, ObjectIdentifier};
+use aws_sdk_s3::model::{CommonPrefix, Delete, ObjectIdentifier};
 use aws_sdk_s3::types::{ByteStream, SdkError};
 use aws_sdk_s3::Error as AwsSdkError;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
@@ -18,7 +18,6 @@ use futures::StreamExt;
 use http::Uri;
 use object_store::aws::AmazonS3Builder;
 use object_store::limit::LimitStore;
-use std::collections::HashSet;
 use std::fs;
 use std::iter::Iterator;
 use std::sync::Arc;
@@ -298,23 +297,22 @@ impl S3 {
             .client
             .list_objects_v2()
             .bucket(&S3_CONFIG.s3_bucket_name)
+            .delimiter('/')
             .send()
             .await?;
-        let body = resp.contents().unwrap_or_default();
-        // make a set of unique prefixes at the root level
-        let mut hs = HashSet::<String>::new();
-        for logstream in body {
-            let name = logstream.key().unwrap_or_default().to_string();
-            let tokens = name.split('/').collect::<Vec<&str>>();
-            hs.insert(tokens[0].to_string());
-        }
-        // transform that hashset to a vector before returning
-        let mut streams = Vec::new();
-        for v in hs {
-            streams.push(LogStream { name: v });
-        }
 
-        Ok(streams)
+        let common_prefixes = resp.common_prefixes().unwrap_or_default();
+
+        // return prefixes at the root level
+        let logstreams: Vec<_> = common_prefixes
+            .iter()
+            .filter_map(CommonPrefix::prefix)
+            .filter_map(|name| name.strip_suffix('/'))
+            .map(String::from)
+            .map(|name| LogStream { name })
+            .collect();
+
+        Ok(logstreams)
     }
 
     async fn _upload_file(&self, key: &str, path: &str) -> Result<(), AwsSdkError> {
