@@ -175,7 +175,7 @@ impl S3 {
             .client
             .list_objects_v2()
             .bucket(&S3_CONFIG.s3_bucket_name)
-            .prefix(stream_name)
+            .prefix(format!("{}/", stream_name))
             .into_paginator()
             .send();
 
