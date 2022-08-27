@@ -1,9 +1,7 @@
 <p align="center">
-  <a href="https://www.parseable.io" target="_blank">
+  <span">
     <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="600" height="150" />
-  </a>
-  <a href="https://www.parseable.io" target="_blank">
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="600"/>
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="650"/>
   </a> 
 </p>
 
