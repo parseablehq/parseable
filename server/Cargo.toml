@@ -23,8 +23,8 @@ aws-types = "0.47"
 bytes = "1"
 chrono = "0.4.19"
 crossterm = "0.23.2"
-datafusion = "8.0"
-datafusion-objectstore-s3 = { git = "https://github.com/parseablehq/datafusion-objectstore-s3" }
+datafusion = "11.0"
+object_store = { version = "0.4", features=["aws"] }
 derive_more = "0.99.17"
 env_logger = "0.9.0"
 futures = "0.3"

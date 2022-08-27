@@ -209,13 +209,13 @@ pub enum ObjectStorageError {
     #[error("Bucket {0} not found")]
     NoSuchBucket(String),
     #[error("Connection Error: {0}")]
-    ConnectionError(Box<dyn std::error::Error>),
+    ConnectionError(Box<dyn std::error::Error + Send + 'static>),
     #[error("IO Error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("DataFusion Error: {0}")]
     DataFusionError(#[from] datafusion::error::DataFusionError),
     #[error("Unhandled Error: {0}")]
-    UnhandledError(Box<dyn std::error::Error>),
+    UnhandledError(Box<dyn std::error::Error + Send + 'static>),
 }
 
 impl From<ObjectStorageError> for crate::error::Error {
