@@ -7,7 +7,10 @@ use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use bytes::Bytes;
 use crossterm::style::Stylize;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::datasource::listing::{ListingTable, ListingTableConfig, ListingTableUrl};
+use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::listing::{
+    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
+};
 use datafusion::datasource::object_store::ObjectStoreRegistry;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -26,6 +29,7 @@ use crate::metadata::Stats;
 use crate::option::{StorageOpt, CONFIG};
 use crate::query::Query;
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
+use crate::utils::hostname_unchecked;
 
 // Default object storage currently is DO Spaces bucket
 // Any user who starts the Parseable server with default configuration
@@ -450,7 +454,17 @@ impl ObjectStorage for S3 {
             return Ok(());
         }
 
+        let file_format = ParquetFormat::default().with_enable_pruning(true);
+        let listing_options = ListingOptions {
+            file_extension: format!("{}.data.parquet", hostname_unchecked()),
+            format: Arc::new(file_format),
+            table_partition_cols: vec![],
+            collect_stat: true,
+            target_partitions: 1,
+        };
+
         let config = ListingTableConfig::new_with_multi_paths(prefixes)
+            .with_listing_options(listing_options)
             .infer(&ctx.state())
             .await?;
 
