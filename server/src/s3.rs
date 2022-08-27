@@ -305,9 +305,9 @@ impl S3 {
 
         // return prefixes at the root level
         let logstreams: Vec<_> = common_prefixes
-            .into_iter()
+            .iter()
             .filter_map(CommonPrefix::prefix)
-            .filter_map(|name| name.strip_suffix("/"))
+            .filter_map(|name| name.strip_suffix('/'))
             .map(String::from)
             .map(|name| LogStream { name })
             .collect();
