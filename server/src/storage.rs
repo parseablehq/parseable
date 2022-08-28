@@ -76,7 +76,7 @@ pub trait ObjectStorage: Sync + 'static {
 
         // entries here means all the streams present on local disk
         for stream in streams {
-            let sync = StorageSync::new(stream.clone());
+            let sync = StorageSync::new(&stream);
 
             // if data.parquet file not present, skip this stream
             if !sync.dir.parquet_path_exists() {
@@ -114,7 +114,7 @@ pub trait ObjectStorage: Sync + 'static {
         let streams = STREAM_INFO.list_streams();
 
         for stream in streams {
-            let dir = StorageDir::new(stream.clone());
+            let dir = StorageDir::new(&stream);
 
             for file in WalkDir::new(dir.temp_dir)
                 .min_depth(1)
@@ -148,14 +148,14 @@ pub struct LogStream {
 }
 
 #[derive(Debug)]
-struct StorageDir {
+pub struct StorageDir {
     pub data_path: PathBuf,
     pub temp_dir: PathBuf,
 }
 
 impl StorageDir {
-    fn new(stream_name: String) -> Self {
-        let data_path = CONFIG.parseable.local_stream_data_path(&stream_name);
+    pub fn new(stream_name: &str) -> Self {
+        let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
         let temp_dir = data_path.join("tmp");
 
         Self {
@@ -186,7 +186,7 @@ struct StorageSync {
 }
 
 impl StorageSync {
-    fn new(stream_name: String) -> Self {
+    fn new(stream_name: &str) -> Self {
         let dir = StorageDir::new(stream_name);
         let time = Utc::now();
         Self { dir, time }
