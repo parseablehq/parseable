@@ -48,10 +48,10 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    if let Err(e) = metadata::STREAM_INFO.delete_stream(&stream_name) {
+    if let Err(e) = s3.delete_stream(&stream_name).await {
         return response::ServerResponse {
             msg: format!(
-                "failed to delete log stream {} from metadata due to err: {}",
+                "failed to delete log stream {} due to err: {}",
                 stream_name, e
             ),
             code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -68,15 +68,12 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
         )
     }
 
-    if let Err(e) = s3.delete_stream(&stream_name).await {
-        return response::ServerResponse {
-            msg: format!(
-                "failed to delete log stream {} due to err: {}",
-                stream_name, e
-            ),
-            code: StatusCode::INTERNAL_SERVER_ERROR,
-        }
-        .to_http();
+    if let Err(e) = metadata::STREAM_INFO.delete_stream(&stream_name) {
+        log::warn!(
+            "failed to delete log stream {} from metadata due to err: {}",
+            stream_name,
+            e
+        )
     }
 
     response::ServerResponse {
