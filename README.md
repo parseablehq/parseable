@@ -79,7 +79,12 @@ curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/front
 
 For complete Parseable API documentation, refer to [Parseable API workspace on Postman](https://www.postman.com/parseable/workspace/parseable/overview).
 
-**Note**: Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically.
+| :memo: | Parseable is a work in progress. Features will evolve over time and there may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new). |
+|-|:-|
+
+| :exclamation: | Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically. |
+|-|:-|
+
 ## Why Parseable
 
 * Log data compressed and stored in [Parquet](https://parquet.apache.org) - columnar, open data format, designed for analytics.
@@ -100,3 +105,13 @@ For complete Parseable API documentation, refer to [Parseable API workspace on P
 ## Contributing 
 
 Refer to the contributing guide [here](https://www.parseable.io/docs/contributing).
+
+## License
+
+Copyright (c) 2022 [Parseable, Inc.](https://parseable.io)
+
+Licensed under the GNU Affero General Public License, Version 3 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+[https://www.gnu.org/licenses/agpl-3.0.txt](https://www.gnu.org/licenses/agpl-3.0.txt)
