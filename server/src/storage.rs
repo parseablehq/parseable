@@ -187,7 +187,7 @@ struct StorageSync {
 
 impl StorageSync {
     fn new(stream_name: &str) -> Self {
-        let dir = StorageDir::new(&stream_name);
+        let dir = StorageDir::new(stream_name);
         let time = Utc::now();
         Self { dir, time }
     }
