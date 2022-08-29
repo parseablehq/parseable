@@ -297,7 +297,7 @@ impl S3 {
             .client
             .list_objects_v2()
             .bucket(&S3_CONFIG.s3_bucket_name)
-            .delimiter("/.schema")
+            .delimiter('/')
             .send()
             .await?;
 
@@ -307,7 +307,7 @@ impl S3 {
         let logstreams: Vec<_> = common_prefixes
             .iter()
             .filter_map(CommonPrefix::prefix)
-            .filter_map(|name| name.strip_suffix("/.schema"))
+            .filter_map(|name| name.strip_suffix('/'))
             .map(String::from)
             .map(|name| LogStream { name })
             .collect();
