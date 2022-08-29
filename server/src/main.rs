@@ -22,8 +22,9 @@ use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web_static_files::ResourceFiles;
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
+use filetime::FileTime;
 use log::warn;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 
@@ -129,20 +130,21 @@ fn startup_sync() {
 
         // metadata.modified gives us system time
         // This may not work on all platfomns
-        let last_modified: DateTime<Utc> = match fs::metadata(&path)
-            .and_then(|meta| meta.modified())
-            .map(DateTime::from)
-        {
-            Ok(time) => time,
+        let metadata = match fs::metadata(&path) {
+            Ok(meta) => meta,
             Err(err) => {
                 log::warn!(
-                    "Failed to get last modified time for {} due to {:?}. Skipping!",
+                    "Failed to get file metadata for {} due to {:?}. Skipping!",
                     path.display(),
                     err
                 );
                 continue;
             }
         };
+
+        let last_modified = FileTime::from_last_modification_time(&metadata);
+        let last_modified = NaiveDateTime::from_timestamp(last_modified.unix_seconds(), 0);
+        let last_modified: DateTime<Utc> = DateTime::from_utc(last_modified, Utc);
 
         let uri = utils::date_to_prefix(last_modified.date())
             + &utils::hour_to_prefix(last_modified.hour())
