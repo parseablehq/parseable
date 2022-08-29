@@ -22,13 +22,17 @@ use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web_static_files::ResourceFiles;
+use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
+use filetime::FileTime;
 use log::warn;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
+use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::Path;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -51,7 +55,7 @@ mod validator;
 use error::Error;
 use option::CONFIG;
 use s3::S3;
-use storage::ObjectStorage;
+use storage::{ObjectStorage, StorageDir};
 
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 102400;
@@ -68,6 +72,10 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
         warn!("could not populate local metadata. {:?}", e);
     }
+
+    // Move all exiting data.parquet file to their respective tmp directory
+    // they will be synced to object store on next s3 sync cycle
+    startup_sync();
 
     let (localsync_handler, mut localsync_outbox, localsync_inbox) = run_local_sync();
     let (mut s3sync_handler, mut s3sync_outbox, mut s3sync_inbox) = s3_sync();
@@ -95,6 +103,66 @@ async fn main() -> anyhow::Result<()> {
                 (s3sync_handler, s3sync_outbox, s3sync_inbox) = s3_sync();
             }
         };
+    }
+}
+
+fn startup_sync() {
+    if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
+        return;
+    }
+
+    for stream in metadata::STREAM_INFO.list_streams() {
+        let dir = StorageDir::new(&stream);
+        // if data.parquet file is not present then skip this stream
+        if !dir.parquet_path_exists() {
+            continue;
+        }
+        if let Err(e) = dir.create_temp_dir() {
+            log::error!(
+                "Error creating tmp directory for {} due to error [{}]",
+                &stream,
+                e
+            );
+            continue;
+        }
+        // create prefix for this file from its last modified time
+        let path = dir.data_path.join("data.parquet");
+
+        // metadata.modified gives us system time
+        // This may not work on all platfomns
+        let metadata = match fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(err) => {
+                log::warn!(
+                    "Failed to get file metadata for {} due to {:?}. Skipping!",
+                    path.display(),
+                    err
+                );
+                continue;
+            }
+        };
+
+        let last_modified = FileTime::from_last_modification_time(&metadata);
+        let last_modified = NaiveDateTime::from_timestamp(last_modified.unix_seconds(), 0);
+        let last_modified: DateTime<Utc> = DateTime::from_utc(last_modified, Utc);
+
+        let uri = utils::date_to_prefix(last_modified.date())
+            + &utils::hour_to_prefix(last_modified.hour())
+            + &utils::minute_to_prefix(
+                last_modified.minute(),
+                storage::OBJECT_STORE_DATA_GRANULARITY,
+            )
+            .unwrap();
+        let local_uri = str::replace(&uri, "/", ".");
+        let hostname = utils::hostname_unchecked();
+        let parquet_file_local = format!("{}{}.data.parquet", local_uri, hostname);
+        if let Err(err) = dir.move_parquet_to_temp(parquet_file_local) {
+            log::warn!(
+                "Failed to move parquet file at {} to tmp directory due to error {}",
+                path.display(),
+                err
+            )
+        }
     }
 }
 

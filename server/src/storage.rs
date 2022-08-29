@@ -164,18 +164,18 @@ impl StorageDir {
         }
     }
 
-    fn create_temp_dir(&self) -> io::Result<()> {
+    pub fn create_temp_dir(&self) -> io::Result<()> {
         fs::create_dir_all(&self.temp_dir)
     }
 
-    fn move_parquet_to_temp(&self, filename: String) -> io::Result<()> {
+    pub fn move_parquet_to_temp(&self, filename: String) -> io::Result<()> {
         fs::rename(
             self.data_path.join("data.parquet"),
             self.temp_dir.join(filename),
         )
     }
 
-    fn parquet_path_exists(&self) -> bool {
+    pub fn parquet_path_exists(&self) -> bool {
         self.data_path.join("data.parquet").exists()
     }
 }
