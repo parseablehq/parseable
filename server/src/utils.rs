@@ -60,7 +60,7 @@ pub mod header_parsing {
     pub fn collect_labelled(
         req: &HttpRequest,
         prefix: &str,
-        kv_seperator: char,
+        kv_separator: char,
     ) -> Result<String, ParseHeaderError> {
         // filter out headers which has right prefix label and convert them into str;
         let headers = req.headers().iter().filter_map(|(key, value)| {
@@ -75,11 +75,11 @@ pub mod header_parsing {
             if key.is_empty() {
                 return Err(ParseHeaderError::Emptykey);
             }
-            if key.contains(kv_seperator) {
-                return Err(ParseHeaderError::SeperatorInKey(kv_seperator));
+            if key.contains(kv_separator) {
+                return Err(ParseHeaderError::SeperatorInKey(kv_separator));
             }
-            if value.contains(kv_seperator) {
-                return Err(ParseHeaderError::SeperatorInValue(kv_seperator));
+            if value.contains(kv_separator) {
+                return Err(ParseHeaderError::SeperatorInValue(kv_separator));
             }
 
             labels.push(format!("{}={}", key, value));
