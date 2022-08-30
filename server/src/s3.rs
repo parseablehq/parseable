@@ -494,6 +494,14 @@ impl From<SdkError<HeadBucketError>> for ObjectStorageError {
                     },
                 ..
             } => ObjectStorageError::NoSuchBucket(S3_CONFIG.bucket_name().to_string()),
+            SdkError::ServiceError {
+                err:
+                    HeadBucketError {
+                        kind: HeadBucketErrorKind::Unhandled(err),
+                        ..
+                    },
+                ..
+            } => ObjectStorageError::AuthenticationError(err),
             SdkError::DispatchFailure(err) => ObjectStorageError::ConnectionError(Box::new(err)),
             SdkError::TimeoutError(err) => ObjectStorageError::ConnectionError(err),
             err => ObjectStorageError::UnhandledError(Box::new(err)),

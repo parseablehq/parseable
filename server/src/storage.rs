@@ -216,6 +216,8 @@ pub enum ObjectStorageError {
     DataFusionError(#[from] datafusion::error::DataFusionError),
     #[error("Unhandled Error: {0}")]
     UnhandledError(Box<dyn std::error::Error + Send + 'static>),
+    #[error("Authentication Error: {0}")]
+    AuthenticationError(Box<dyn std::error::Error + Send + 'static>),
 }
 
 impl From<ObjectStorageError> for crate::error::Error {

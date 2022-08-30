@@ -86,6 +86,10 @@ impl Config {
                 url = self.storage.endpoint_url(),
                 cause = inner
             ),
+            Err(ObjectStorageError::AuthenticationError(inner)) => panic!(
+                "Failed to authenticate. Please ensure credentials are valid\n Caused by: {cause}",
+                cause = inner
+            ),
             Err(error) => { panic!("{error}") } 
         }
     }
