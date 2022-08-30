@@ -55,6 +55,7 @@ pub fn merge(value: Value, fields: HashMap<String, String>) -> Value {
 }
 
 pub mod header_parsing {
+    const MAX_HEADERS_ALLOWED: usize = 5;
     use actix_web::{HttpRequest, HttpResponse, ResponseError};
 
     pub fn collect_labelled_headers(
@@ -85,11 +86,17 @@ pub mod header_parsing {
             labels.push(format!("{}={}", key, value));
         }
 
+        if labels.len() > MAX_HEADERS_ALLOWED {
+            return Err(ParseHeaderError::MaxHeadersLimitExceeded);
+        }
+
         Ok(labels.join(","))
     }
 
     #[derive(Debug, thiserror::Error)]
     pub enum ParseHeaderError {
+        #[error("Too many headers received. Limit is of 5 headers")]
+        MaxHeadersLimitExceeded,
         #[error("A value passed in header is not formattable to plain visible ASCII")]
         InvalidValue,
         #[error("Invalid Key was passed which terminated just after the end of prefix")]
