@@ -17,52 +17,104 @@
  */
 
 use actix_web::web;
-use actix_web::HttpRequest;
 use chrono::{Date, DateTime, Timelike, Utc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::Error;
 
-const META_LABEL: &str = "x-p-meta";
-
-pub fn flatten_json_body(
-    body: web::Json<serde_json::Value>,
-    labels: Option<String>,
-) -> Result<String, Error> {
-    let mut collector_labels = HashMap::new();
-
-    collector_labels.insert("labels".to_string(), labels.unwrap());
-
+pub fn flatten_json_body(body: web::Json<serde_json::Value>) -> Result<String, Error> {
     let mut flat_value: Value = json!({});
-    let new_body = merge(&body, &collector_labels);
-    flatten_json::flatten(&new_body, &mut flat_value, None, true, Some("_")).unwrap();
+    flatten_json::flatten(&body, &mut flat_value, None, true, Some("_")).unwrap();
     let flattened = serde_json::to_string(&flat_value)?;
 
     Ok(flattened)
 }
 
-fn merge(v: &Value, fields: &HashMap<String, String>) -> Value {
-    match v {
-        Value::Object(m) => {
-            let mut m = m.clone();
+pub fn merge(value: Value, fields: HashMap<String, String>) -> Value {
+    match value {
+        Value::Object(mut m) => {
             for (k, v) in fields {
-                match m.get(k) {
-                    Some(curr_val) => {
+                match m.get_mut(&k) {
+                    Some(val) => {
                         let mut final_val = String::new();
-                        final_val.push_str(curr_val.as_str().unwrap());
+                        final_val.push_str(val.as_str().unwrap());
                         final_val.push(',');
-                        final_val.push_str(v);
-                        m.insert(k.clone(), Value::String(final_val));
+                        final_val.push_str(&v);
+                        *val = Value::String(final_val);
                     }
                     None => {
-                        m.insert(k.clone(), Value::String(v.to_string()));
+                        m.insert(k, Value::String(v));
                     }
                 }
             }
             Value::Object(m)
         }
-        v => v.clone(),
+        value => value,
+    }
+}
+
+pub mod header_parsing {
+    const MAX_HEADERS_ALLOWED: usize = 5;
+    use actix_web::{HttpRequest, HttpResponse, ResponseError};
+
+    pub fn collect_labelled_headers(
+        req: &HttpRequest,
+        prefix: &str,
+        kv_separator: char,
+    ) -> Result<String, ParseHeaderError> {
+        // filter out headers which has right prefix label and convert them into str;
+        let headers = req.headers().iter().filter_map(|(key, value)| {
+            let key = key.as_str().strip_prefix(prefix)?;
+            Some((key, value))
+        });
+
+        let mut labels: Vec<String> = Vec::new();
+
+        for (key, value) in headers {
+            let value = value.to_str().map_err(|_| ParseHeaderError::InvalidValue)?;
+            if key.is_empty() {
+                return Err(ParseHeaderError::Emptykey);
+            }
+            if key.contains(kv_separator) {
+                return Err(ParseHeaderError::SeperatorInKey(kv_separator));
+            }
+            if value.contains(kv_separator) {
+                return Err(ParseHeaderError::SeperatorInValue(kv_separator));
+            }
+
+            labels.push(format!("{}={}", key, value));
+        }
+
+        if labels.len() > MAX_HEADERS_ALLOWED {
+            return Err(ParseHeaderError::MaxHeadersLimitExceeded);
+        }
+
+        Ok(labels.join(","))
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum ParseHeaderError {
+        #[error("Too many headers received. Limit is of 5 headers")]
+        MaxHeadersLimitExceeded,
+        #[error("A value passed in header is not formattable to plain visible ASCII")]
+        InvalidValue,
+        #[error("Invalid Key was passed which terminated just after the end of prefix")]
+        Emptykey,
+        #[error("A key passed in header contains reserved char {0}")]
+        SeperatorInKey(char),
+        #[error("A value passed in header contains reserved char {0}")]
+        SeperatorInValue(char),
+    }
+
+    impl ResponseError for ParseHeaderError {
+        fn status_code(&self) -> http::StatusCode {
+            http::StatusCode::BAD_REQUEST
+        }
+
+        fn error_response(&self) -> HttpResponse {
+            HttpResponse::build(self.status_code()).body(self.to_string())
+        }
     }
 }
 
@@ -108,25 +160,6 @@ pub fn minute_to_prefix(minute: u32, data_granularity: u32) -> Option<String> {
         "minute={}/",
         minute_to_slot(minute, data_granularity)?
     ))
-}
-
-/// collect labels passed from http headers
-/// format: labels = "app=k8s, cloud=gcp"
-pub fn collect_labels(req: &HttpRequest) -> Option<String> {
-    let keys = req.headers().keys().cloned().collect::<Vec<_>>();
-
-    let mut labels_vec = Vec::with_capacity(100);
-    for key in keys {
-        if key.to_string().to_lowercase().starts_with(META_LABEL) {
-            let value = req.headers().get(&key)?.to_str().ok();
-            let remove_meta_char = format!("{}-", META_LABEL);
-            let kv =
-                format! {"{}={}", key.to_string().replace(&remove_meta_char, ""), value.unwrap()};
-            labels_vec.push(kv);
-        }
-    }
-
-    Some(labels_vec.join(","))
 }
 
 pub struct TimePeriod {

@@ -16,8 +16,10 @@
  *
  */
 
+use std::collections::HashMap;
+
 use actix_web::http::StatusCode;
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse, ResponseError};
 use serde_json::Value;
 
 use crate::event;
@@ -26,7 +28,12 @@ use crate::query::Query;
 use crate::response::{self, EventResponse};
 use crate::s3::S3;
 use crate::storage::ObjectStorage;
-use crate::utils;
+use crate::utils::header_parsing::collect_labelled_headers;
+use crate::utils::{self, merge};
+
+const PREFIX_TAGS: &str = "x-p-tags-";
+const PREFIX_META: &str = "x-p-meta-";
+const SEPARATOR: char = ',';
 
 pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> HttpResponse {
     let json = json.into_inner();
@@ -74,7 +81,16 @@ pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> HttpResponse {
 
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let labels = utils::collect_labels(&req);
+
+    let tags = match collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR) {
+        Ok(tags) => HashMap::from([("p_tags".to_string(), tags)]),
+        Err(e) => return e.error_response(),
+    };
+
+    let metadata = match collect_labelled_headers(&req, PREFIX_META, SEPARATOR) {
+        Ok(metadata) => HashMap::from([("p_metadata".to_string(), metadata)]),
+        Err(e) => return e.error_response(),
+    };
 
     if let Err(e) = metadata::STREAM_INFO.schema(&stream_name) {
         // if stream doesn't exist, fail to post data
@@ -94,7 +110,10 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
         let mut i = 0;
 
         for body in array {
-            let body = utils::flatten_json_body(web::Json(body.clone()), labels.clone()).unwrap();
+            let body = merge(body.clone(), metadata.clone());
+            let body = merge(body, tags.clone());
+            let body = utils::flatten_json_body(web::Json(body)).unwrap();
+
             let e = event::Event {
                 body,
                 stream_name: stream_name.clone(),
@@ -118,8 +137,11 @@ pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) ->
         .to_http();
     }
 
+    let body = merge(body.clone(), metadata);
+    let body = merge(body, tags);
+
     let event = event::Event {
-        body: utils::flatten_json_body(body, labels).unwrap(),
+        body: utils::flatten_json_body(web::Json(body)).unwrap(),
         stream_name,
     };
 
