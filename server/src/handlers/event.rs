@@ -28,7 +28,7 @@ use crate::query::Query;
 use crate::response::{self, EventResponse};
 use crate::s3::S3;
 use crate::storage::ObjectStorage;
-use crate::utils::header_parsing::collect_labelled;
+use crate::utils::header_parsing::collect_labelled_headers;
 use crate::utils::{self, merge};
 
 const PREFIX_TAGS: &str = "x-p-tags-";
@@ -82,12 +82,12 @@ pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> HttpResponse {
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    let tags = match collect_labelled(&req, PREFIX_TAGS, SEPARATOR) {
+    let tags = match collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR) {
         Ok(tags) => HashMap::from([("p_tags".to_string(), tags)]),
         Err(e) => return e.error_response(),
     };
 
-    let metadata = match collect_labelled(&req, PREFIX_META, SEPARATOR) {
+    let metadata = match collect_labelled_headers(&req, PREFIX_META, SEPARATOR) {
         Ok(metadata) => HashMap::from([("p_metadata".to_string(), metadata)]),
         Err(e) => return e.error_response(),
     };

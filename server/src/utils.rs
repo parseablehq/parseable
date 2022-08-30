@@ -57,7 +57,7 @@ pub fn merge(value: Value, fields: HashMap<String, String>) -> Value {
 pub mod header_parsing {
     use actix_web::{HttpRequest, HttpResponse, ResponseError};
 
-    pub fn collect_labelled(
+    pub fn collect_labelled_headers(
         req: &HttpRequest,
         prefix: &str,
         kv_separator: char,
