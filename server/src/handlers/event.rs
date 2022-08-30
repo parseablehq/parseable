@@ -33,6 +33,7 @@ use crate::utils::{self, merge};
 
 const PREFIX_TAGS: &str = "x-p-tags-";
 const PREFIX_META: &str = "x-p-meta-";
+const SEPARATOR: char = ',';
 
 pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> HttpResponse {
     let json = json.into_inner();
@@ -81,12 +82,12 @@ pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> HttpResponse {
 pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    let tags = match collect_labelled(&req, PREFIX_TAGS, ',') {
+    let tags = match collect_labelled(&req, PREFIX_TAGS, SEPARATOR) {
         Ok(tags) => HashMap::from([("p_tags".to_string(), tags)]),
         Err(e) => return e.error_response(),
     };
 
-    let metadata = match collect_labelled(&req, PREFIX_META, ',') {
+    let metadata = match collect_labelled(&req, PREFIX_META, SEPARATOR) {
         Ok(metadata) => HashMap::from([("p_metadata".to_string(), metadata)]),
         Err(e) => return e.error_response(),
     };
