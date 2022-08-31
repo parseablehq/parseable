@@ -33,7 +33,7 @@ use crate::utils::{self, merge};
 
 const PREFIX_TAGS: &str = "x-p-tags-";
 const PREFIX_META: &str = "x-p-meta-";
-const SEPARATOR: char = ',';
+const SEPARATOR: char = '^';
 
 pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> HttpResponse {
     let json = json.into_inner();
