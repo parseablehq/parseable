@@ -90,7 +90,7 @@ pub mod header_parsing {
             return Err(ParseHeaderError::MaxHeadersLimitExceeded);
         }
 
-        Ok(labels.join(","))
+        Ok(labels.join(&kv_separator.to_string()))
     }
 
     #[derive(Debug, thiserror::Error)]
