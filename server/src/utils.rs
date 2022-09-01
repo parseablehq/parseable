@@ -55,7 +55,7 @@ pub fn merge(value: Value, fields: HashMap<String, String>) -> Value {
 }
 
 pub mod header_parsing {
-    const MAX_HEADERS_ALLOWED: usize = 5;
+    const MAX_HEADERS_ALLOWED: usize = 10;
     use actix_web::{HttpRequest, HttpResponse, ResponseError};
 
     pub fn collect_labelled_headers(
