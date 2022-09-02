@@ -39,23 +39,24 @@ Try out Parseable server with our demo instance.
 
 ```sh
 curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/frontend' \
---header 'X-P-META-label1: value1' \
---header 'X-P-META-label2: value2' \
+--header 'X-P-META-meta1: value1' \
+--header 'X-P-META-meta2: value2' \
+--header 'X-P-TAGS-tag1: value1' \
+--header 'X-P-TAGS-tag2: value2' \
 --header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' \
 --header 'Content-Type: application/json' \
 --data-raw '[
     {
-        "id": 2,
-        "time": "2022-06-24T14:12:17.411829648Z",
-        "log": "{\"host\":\"153.10.110.81\", \"user-identifier\":\"-\", \"datetime\":\"24/Jun/2022:14:12:15 +0000\", \"method\": \"DELETE\", \"request\": \"/virtual/drive\", \"protocol\":\"HTTP/2.0\", \"status\":500, \"bytes\":21969, \"referer\": \"http://www.seniordisintermediate.net/mesh/users\"}",
-        "http_status": 500,
-        "meta_Host": "10.116.0.3",
-        "meta_Source": "10.244.0.147",
-        "meta_ContainerName": "log-generator",
-        "meta_ContainerImage": "mingrammer/flog",
-        "meta_PodName": "go-app-6c87bc9cc9-vqv66",
-        "meta_Namespace": "go-apasdp",
-        "meta_PodLabels": "app=go-app,pod-template-hash=6c87bc9cc9"
+        "id": 4,
+        "host":"153.10.110.81", 
+        "user-identifier":"-", 
+        "datetime":"24/Jun/2022:14:12:15 +0000", 
+        "method": "DELETE", 
+        "request": "/virtual/drive", 
+        "protocol":"HTTP/2.0", 
+        "status":500, 
+        "bytes":21969, 
+        "referer": "http://www.google.com/"
     }
 ]'
 ```
