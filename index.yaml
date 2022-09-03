@@ -2,9 +2,9 @@ apiVersion: v1
 entries:
   collector:
   - apiVersion: v2
-    created: "2022-08-16T15:11:56.387673+05:30"
+    created: "2022-09-03T07:49:20.635612+05:30"
     description: Helm chart for Parseable Collector
-    digest: 217f45e29a9e6328e34bb7379d931f5955377f850d3992385f4b21eb64ff31d4
+    digest: b9d6d348335af317629d1d11f48ea8ab9b174e2610efff323908b3b955f21aee
     name: collector
     type: application
     urls:
@@ -12,12 +12,13 @@ entries:
     version: 0.0.1
   parseable:
   - apiVersion: v2
-    created: "2022-08-16T15:11:56.388153+05:30"
+    appVersion: v0.0.1
+    created: "2022-09-03T07:49:20.636087+05:30"
     description: Helm chart for Parseable Server
-    digest: ecda1d9a1324540c9bf8cc32284c5cab830506087499541f81660a37196206ae
+    digest: e62c672829b96097ca89e8316f66f7fbae3b4f7d8abee71138befac17881b969
     name: parseable
     type: application
     urls:
     - https://charts.parseable.io/helm-releases/parseable-0.0.1.tgz
     version: 0.0.1
-generated: "2022-08-16T15:11:56.3869+05:30"
+generated: "2022-09-03T07:49:20.634697+05:30"

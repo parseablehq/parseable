@@ -2,6 +2,7 @@ parseable:
   replicaCount: 1
   image:
     repository: parseable/parseable
+    tag: v0.0.1
     pullPolicy: IfNotPresent
     tag: ""
   env:
