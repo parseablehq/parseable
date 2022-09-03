@@ -3,4 +3,4 @@ name: parseable
 description: Helm chart for Parseable Server
 type: application
 version: 0.0.1
-AppVersion: "sha-b6d9366"
+AppVersion: "v0.0.1"
