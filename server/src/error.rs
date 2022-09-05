@@ -16,11 +16,8 @@
  *
  */
 
-use arrow::error::ArrowError;
-use datafusion::error::DataFusionError;
-use parquet::errors::ParquetError;
-
 use crate::{response::EventError, storage::ObjectStorageError};
+use datafusion::{arrow::error::ArrowError, error::DataFusionError, parquet::errors::ParquetError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
