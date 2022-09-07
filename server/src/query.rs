@@ -17,7 +17,6 @@
  */
 
 use chrono::{DateTime, Utc};
-use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::ListingOptions;
@@ -94,13 +93,12 @@ impl Query {
             target_partitions: 1,
         };
 
-        let schema = &STREAM_INFO.schema(&self.stream_name)?;
+        let schema = STREAM_INFO.schema(&self.stream_name)?;
 
-        if schema.is_empty() {
-            return Ok(());
-        }
-
-        let schema: Arc<Schema> = Arc::new(serde_json::from_str(schema)?);
+        let schema = match schema {
+            Some(schema) => Arc::new(schema),
+            None => return Ok(()),
+        };
 
         ctx.register_listing_table(
             &self.stream_name,

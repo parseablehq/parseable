@@ -16,7 +16,7 @@
  *
  */
 
-use bytes::Bytes;
+use datafusion::arrow::datatypes::Schema;
 use lazy_static::lazy_static;
 use log::error;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ use crate::storage::ObjectStorage;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LogStreamMetadata {
-    pub schema: String,
+    pub schema: Option<Schema>,
     pub alerts: Alerts,
     pub stats: Stats,
 }
@@ -85,38 +85,42 @@ impl STREAM_INFO {
         Ok(())
     }
 
-    pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
-        let alerts = self.alert(stream_name.clone())?;
-        self.add_stream(stream_name, schema, alerts)
+    pub fn set_schema(&self, stream_name: &str, schema: Schema) -> Result<(), Error> {
+        let mut map = self.write().unwrap();
+        map.get_mut(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.schema.replace(schema);
+            })
     }
 
-    pub fn schema(&self, stream_name: &str) -> Result<String, Error> {
+    pub fn schema(&self, stream_name: &str) -> Result<Option<Schema>, Error> {
         let map = self.read().unwrap();
-        let meta = map
-            .get(stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))?;
-
-        Ok(meta.schema.clone())
+        map.get(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.schema.to_owned())
     }
 
-    pub fn set_alert(&self, stream_name: String, alerts: Alerts) -> Result<(), Error> {
-        let schema = self.schema(&stream_name)?;
-        self.add_stream(stream_name, schema, alerts)
+    pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), Error> {
+        let mut map = self.write().unwrap();
+        map.get_mut(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.alerts = alerts;
+            })
     }
 
-    pub fn alert(&self, stream_name: String) -> Result<Alerts, Error> {
+    pub fn alert(&self, stream_name: &str) -> Result<Alerts, Error> {
         let map = self.read().unwrap();
-        let meta = map
-            .get(&stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
-
-        Ok(meta.alerts.clone())
+        map.get(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))
+            .map(|metadata| metadata.alerts.to_owned())
     }
 
     pub fn add_stream(
         &self,
         stream_name: String,
-        schema: String,
+        schema: Option<Schema>,
         alerts: Alerts,
     ) -> Result<(), Error> {
         let mut map = self.write().unwrap();
@@ -153,8 +157,6 @@ impl STREAM_INFO {
             let schema = storage
                 .get_schema(&stream.name)
                 .await
-                .map_err(|e| e.into())
-                .and_then(parse_string)
                 .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()))?;
 
             let metadata = LogStreamMetadata {
@@ -189,10 +191,6 @@ impl STREAM_INFO {
 
         Ok(())
     }
-}
-
-fn parse_string(bytes: Bytes) -> Result<String, Error> {
-    String::from_utf8(bytes.to_vec()).map_err(|e| e.into())
 }
 
 #[cfg(test)]
