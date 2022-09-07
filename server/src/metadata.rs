@@ -196,9 +196,17 @@ impl STREAM_INFO {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field};
     use maplit::hashmap;
     use rstest::*;
     use serial_test::serial;
+
+    #[fixture]
+    fn schema() -> Schema {
+        let field_a = Field::new("a", DataType::Int64, false);
+        let field_b = Field::new("b", DataType::Boolean, false);
+        Schema::new(vec![field_a, field_b])
+    }
 
     #[rstest]
     #[case::zero(0, 0, 0)]
@@ -227,25 +235,10 @@ mod tests {
     }
 
     #[rstest]
-    #[case::nonempty_string("Hello world")]
-    #[case::empty_string("")]
-    fn test_parse_string(#[case] string: String) {
-        let bytes = Bytes::from(string);
-        assert!(parse_string(bytes).is_ok())
-    }
-
-    #[test]
-    fn test_bad_parse_string() {
-        let bad: Vec<u8> = vec![195, 40];
-        let bytes = Bytes::from(bad);
-        assert!(parse_string(bytes).is_err());
-    }
-
-    #[rstest]
-    #[case::stream_schema_alert("teststream", "schema")]
-    #[case::stream_only("teststream", "")]
+    #[case::stream_schema_alert("teststream", Some(schema()))]
+    #[case::stream_only("teststream", None)]
     #[serial]
-    fn test_add_stream(#[case] stream_name: String, #[case] schema: String) {
+    fn test_add_stream(#[case] stream_name: String, #[case] schema: Option<Schema>) {
         let alerts = Alerts { alerts: vec![] };
         clear_map();
         STREAM_INFO
@@ -269,11 +262,7 @@ mod tests {
     fn test_delete_stream(#[case] stream_name: String) {
         clear_map();
         STREAM_INFO
-            .add_stream(
-                stream_name.clone(),
-                "".to_string(),
-                Alerts { alerts: vec![] },
-            )
+            .add_stream(stream_name.clone(), None, Alerts { alerts: vec![] })
             .unwrap();
 
         STREAM_INFO.delete_stream(&stream_name).unwrap();
