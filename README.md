@@ -1,5 +1,8 @@
 <p align="center">
-  <a href="https://www.parseable.io" target="_blank"><img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg" alt="Parseable" width="600" height="150" /></a>
+  <span">
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="600" height="150" />
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="650"/>
+  </a> 
 </p>
 
 <p align="center">
@@ -19,7 +22,7 @@
 
 Parseable is an open source, cloud native, log storage and management platform. 
 
-Parseable helps you ingest high volumes of log data from various sources (Fluentbit, Logstash etc or directly from applications). Parseable stores log data into highly compressed Parquet file format. With object storage as primary storage for Parseable, you get seamless scale and flexibility for ever growing log data.
+Parseable helps you ingest high volumes of log data from various sources (Fluent Bit, Logstash etc or directly from applications). Parseable stores log data into highly compressed Parquet file format. With object storage as primary storage for Parseable, you get seamless scale and flexibility for ever growing log data.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview.svg#gh-light-mode-only" alt="Parseable Overview" width="800" height="650" />
@@ -36,16 +39,24 @@ Try out Parseable server with our demo instance.
 
 ```sh
 curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/frontend' \
---header 'X-P-META-label1: value1' \
---header 'X-P-META-label2: value2' \
+--header 'X-P-META-meta1: value1' \
+--header 'X-P-META-meta2: value2' \
+--header 'X-P-TAGS-tag1: value1' \
+--header 'X-P-TAGS-tag2: value2' \
 --header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' \
 --header 'Content-Type: application/json' \
 --data-raw '[
     {
-        "log": "{\"id\": 4, \"host\":\"153.10.110.81\", \"user-identifier\":\"-\", \"datetime\":\"24/Jun/2022:14:12:15 +0000\", \"method\": \"GET\", \"request\": \"/virtual/drive\", \"protocol\":\"HTTP/2.0\", \"status\":500, \"bytes\":21969, \"referer\": \"http://www.seniordisintermediate.net/mesh/users\"}",
-        "meta_Host": "10.116.0.3",
-        "meta_Source": "10.244.0.147",
-        "meta_ContainerName": "log-generator"
+        "id": 4,
+        "host":"153.10.110.81", 
+        "user-identifier":"-", 
+        "datetime":"24/Jun/2022:14:12:15 +0000", 
+        "method": "DELETE", 
+        "request": "/virtual/drive", 
+        "protocol":"HTTP/2.0", 
+        "status":500, 
+        "bytes":21969, 
+        "referer": "http://www.google.com/"
     }
 ]'
 ```
@@ -69,18 +80,39 @@ curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/front
 
 For complete Parseable API documentation, refer to [Parseable API workspace on Postman](https://www.postman.com/parseable/workspace/parseable/overview).
 
-**Note**: Please do not store any sensitive data on this server as the data is openly available. We'll delete the data on this server periodically.
+| :memo: | Parseable is a work in progress. Features will evolve over time and there may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new). |
+|-|:-|
+
+| :exclamation: | Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically. |
+|-|:-|
+
 ## Why Parseable
 
-* Indexing free design.
-* Highly compressed log data, stored in [Parquet](https://parquet.apache.org) - columnar, open data format. Query logs via Parseable or bring your own analytics platform.
-* Stateless design allowing seamless scale and flexibility.
+* Log data compressed and stored in [Parquet](https://parquet.apache.org) - columnar, open data format, designed for analytics.
+* Query logs via Parseable or bring your own analytics platform.
+* Stateless design with object storage (S3, MinIO) as primary storage. Allowing cost effective scale and flexibility. 
 * Own your log data on your object storage buckets.
 * SDK less, simple REST API calls for log ingestion.
+* Indexing free design.
 
 ## Features
 
-* Kubernetes native design, allowing to get started with pod logs in minutes.
-* Filter log data on tags.
-* Query for specific keywords and fields.
+* Cloud native design, get started with Pod logs in minutes.
+* Filter log data on labels.
+* SQL compatible API for querying log data.
 * Intuitive dashboard to parse and query the log data.
+* Bring your own analytics platform for deeper analysis of log data.
+
+## Contributing 
+
+Refer to the contributing guide [here](https://www.parseable.io/docs/contributing).
+
+## License
+
+Copyright (c) 2022 [Parseable, Inc.](https://parseable.io)
+
+Licensed under the GNU Affero General Public License, Version 3 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+[https://www.gnu.org/licenses/agpl-3.0.txt](https://www.gnu.org/licenses/agpl-3.0.txt)

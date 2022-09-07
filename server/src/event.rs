@@ -16,15 +16,14 @@
  *
  *
  */
-
-use arrow::json;
-use arrow::json::reader::infer_json_schema;
-use arrow::record_batch::RecordBatch;
+use datafusion::arrow;
+use datafusion::arrow::json;
+use datafusion::arrow::json::reader::infer_json_schema;
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::parquet::arrow::{ArrowReader, ArrowWriter, ParquetFileArrowReader};
+use datafusion::parquet::file::properties::WriterProperties;
+use datafusion::parquet::file::serialized_reader::SerializedFileReader;
 use log::error;
-use parquet::arrow::arrow_writer::ArrowWriter;
-use parquet::arrow::{ArrowReader, ParquetFileArrowReader};
-use parquet::file::properties::WriterProperties;
-use parquet::file::reader::SerializedFileReader;
 use std::fs;
 use std::io::BufReader;
 use std::sync::Arc;
@@ -51,7 +50,10 @@ impl Event {
     fn data_file_path(&self) -> String {
         format!(
             "{}/{}",
-            CONFIG.parseable.local_stream_data_path(&self.stream_name),
+            CONFIG
+                .parseable
+                .local_stream_data_path(&self.stream_name)
+                .to_string_lossy(),
             "data.parquet"
         )
     }
@@ -217,9 +219,7 @@ impl Event {
         Ok(compressed_size)
     }
 
-    pub fn convert_parquet_rb_reader(
-        &self,
-    ) -> Result<parquet::arrow::ParquetFileArrowReader, Error> {
+    pub fn convert_parquet_rb_reader(&self) -> Result<ParquetFileArrowReader, Error> {
         let file = fs::File::open(&self.data_file_path())?;
         let file_reader = SerializedFileReader::new(file)?;
         let arrow_reader = ParquetFileArrowReader::new(Arc::new(file_reader));

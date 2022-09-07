@@ -16,13 +16,15 @@
  *
  */
 
+use std::fs;
+
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 
 use crate::alerts::Alerts;
 use crate::response;
 use crate::s3::S3;
-use crate::storage::ObjectStorage;
+use crate::storage::{ObjectStorage, StorageDir};
 use crate::{metadata, validator};
 
 pub async fn delete(req: HttpRequest) -> HttpResponse {
@@ -57,15 +59,21 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
+    let stream_dir = StorageDir::new(&stream_name);
+    if fs::remove_dir_all(&stream_dir.data_path).is_err() {
+        log::warn!(
+            "failed to delete local data for stream {}. Clean {} manually",
+            stream_name,
+            stream_dir.data_path.to_string_lossy()
+        )
+    }
+
     if let Err(e) = metadata::STREAM_INFO.delete_stream(&stream_name) {
-        return response::ServerResponse {
-            msg: format!(
-                "failed to delete log stream {} from metadata due to err: {}",
-                stream_name, e
-            ),
-            code: StatusCode::INTERNAL_SERVER_ERROR,
-        }
-        .to_http();
+        log::warn!(
+            "failed to delete log stream {} from metadata due to err: {}",
+            stream_name,
+            e
+        )
     }
 
     response::ServerResponse {

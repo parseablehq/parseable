@@ -14,27 +14,24 @@ actix-web = { version = "4.1", features = ["openssl"] }
 actix-cors = "0.6"
 actix-files = "0.6.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
-arrow = "15.0"
 async-trait = "0.1"
-aws-config = "0.6.0"
-aws-sdk-s3 = "0.13"
-aws-smithy-http = "0.42.0"
-aws-types = "0.13"
+aws-sdk-s3 = "0.17"
 bytes = "1"
 chrono = "0.4.19"
 crossterm = "0.23.2"
-datafusion = "8.0"
-datafusion-objectstore-s3 = { git = "https://github.com/de-sh/datafusion-objectstore-s3", branch = "parseable" }
+datafusion = "11.0"
+object_store = { version = "0.4", features=["aws"] }
 derive_more = "0.99.17"
 env_logger = "0.9.0"
 futures = "0.3"
+filetime = "0.2.17"
 http = "0.2.4"
 lazy_static = "1.4.0"
 log = "0.4.14"
 num_cpus = "1.0.0"
 openssl = { version = "0.10" }
 os_info = "3.0.7"
-parquet = "15.0"
+hostname = "0.3"
 rand = "0.8.4"
 rust-flatten-json = "0.2.0"
 serde = "^1.0.8"
@@ -64,5 +61,5 @@ rstest = "0.15.0"
 serial_test = { version = "0.9.0", default-features = false }
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/0.0.2/build.zip"
-assets-sha1 = "8c50ee6ab27e9c0af3ea677f1cde0fbb737e0f87"
+assets-url = "https://github.com/parseablehq/console/releases/download/0.0.5/build.zip"
+assets-sha1 = "d66c5aa6668568b49356e8a633a2872f865e637d"

@@ -148,16 +148,18 @@ impl STREAM_INFO {
             let alerts = storage
                 .get_alerts(&stream.name)
                 .await
-                .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()))?;
+                .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()));
+
             let schema = storage
                 .get_schema(&stream.name)
                 .await
                 .map_err(|e| e.into())
                 .and_then(parse_string)
                 .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()))?;
+
             let metadata = LogStreamMetadata {
                 schema,
-                alerts,
+                alerts: alerts.unwrap_or_default(),
                 ..Default::default()
             };
 
@@ -166,6 +168,10 @@ impl STREAM_INFO {
         }
 
         Ok(())
+    }
+
+    pub fn list_streams(&self) -> Vec<String> {
+        self.read().unwrap().keys().map(String::clone).collect()
     }
 
     pub fn update_stats(

@@ -23,7 +23,7 @@ use structopt::StructOpt;
 
 use crate::banner;
 use crate::s3::S3Config;
-use crate::storage::{ObjectStorage, ObjectStorageError};
+use crate::storage::{ObjectStorage, ObjectStorageError, LOCAL_SYNC_INTERVAL};
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -68,7 +68,7 @@ impl Config {
     }
 
     pub fn validate(&self) {
-        if CONFIG.parseable.upload_interval < 60 {
+        if CONFIG.parseable.upload_interval < LOCAL_SYNC_INTERVAL {
             panic!("object storage upload_interval (P_STORAGE_UPLOAD_INTERVAL) must be 60 seconds or more");
         }
     }
@@ -84,6 +84,10 @@ impl Config {
             Err(ObjectStorageError::ConnectionError(inner)) => panic!(
                 "Failed to connect to the Object Storage Service on {url}\nCaused by: {cause}",
                 url = self.storage.endpoint_url(),
+                cause = inner
+            ),
+            Err(ObjectStorageError::AuthenticationError(inner)) => panic!(
+                "Failed to authenticate. Please ensure credentials are valid\n Caused by: {cause}",
                 cause = inner
             ),
             Err(error) => { panic!("{error}") } 
@@ -110,7 +114,7 @@ impl Config {
         Local Data Path: {}
         Object Storage: {}/{}",
             "Storage:".to_string().blue().bold(),
-            self.parseable.local_disk_path,
+            self.parseable.local_disk_path.to_string_lossy(),
             self.storage.endpoint_url(),
             self.storage.bucket_name()
         )
@@ -181,7 +185,7 @@ pub struct Opt {
     /// for incoming events and local cache while querying data pulled
     /// from object storage backend
     #[structopt(long, env = "P_LOCAL_STORAGE", default_value = "./data")]
-    pub local_disk_path: String,
+    pub local_disk_path: PathBuf,
 
     /// Optional interval after which server would upload uncommited data to
     /// remote object storage platform. Defaults to 1min.
@@ -198,12 +202,12 @@ pub struct Opt {
 }
 
 impl Opt {
-    pub fn get_cache_path(&self, stream_name: &str) -> String {
-        format!("{}/{}", self.local_disk_path, stream_name)
+    pub fn get_cache_path(&self, stream_name: &str) -> PathBuf {
+        self.local_disk_path.join(stream_name)
     }
 
-    pub fn local_stream_data_path(&self, stream_name: &str) -> String {
-        format!("{}/{}", self.local_disk_path, stream_name)
+    pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
+        self.local_disk_path.join(stream_name)
     }
 
     pub fn get_scheme(&self) -> String {
