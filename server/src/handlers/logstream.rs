@@ -92,25 +92,24 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
 
     match metadata::STREAM_INFO.schema(&stream_name) {
         Ok(schema) => response::ServerResponse {
-            msg: schema,
+            msg: schema
+                .map(|schema| schema.to_json().to_string())
+                .unwrap_or_default(),
             code: StatusCode::OK,
         }
         .to_http(),
         Err(_) => match S3::new().get_schema(&stream_name).await {
-            Ok(schema) if schema.is_empty() => response::ServerResponse {
+            Ok(None) => response::ServerResponse {
                 msg: "log stream is not initialized, please post an event before fetching schema"
                     .to_string(),
                 code: StatusCode::BAD_REQUEST,
             }
             .to_http(),
-            Ok(schema) => {
-                let buf = schema.as_ref();
-                response::ServerResponse {
-                    msg: String::from_utf8(buf.to_vec()).unwrap(),
-                    code: StatusCode::OK,
-                }
-                .to_http()
+            Ok(Some(schema)) => response::ServerResponse {
+                msg: serde_json::from_value(schema.to_json()).unwrap(),
+                code: StatusCode::OK,
             }
+            .to_http(),
             Err(_) => response::ServerResponse {
                 msg: "failed to get log stream schema, because log stream doesn't exist"
                     .to_string(),
@@ -124,7 +123,7 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
 pub async fn get_alert(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    match metadata::STREAM_INFO.alert(stream_name.clone()) {
+    match metadata::STREAM_INFO.alert(&stream_name) {
         Ok(alerts) => response::ServerResponse {
             msg: serde_json::to_string(&alerts).unwrap(),
             code: StatusCode::OK,
@@ -166,11 +165,9 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
 
     // Proceed to create log stream if it doesn't exist
     if s3.get_schema(&stream_name).await.is_err() {
-        if let Err(e) = metadata::STREAM_INFO.add_stream(
-            stream_name.to_string(),
-            "".to_string(),
-            Default::default(),
-        ) {
+        if let Err(e) =
+            metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Default::default())
+        {
             return response::ServerResponse {
                 msg: format!(
                     "failed to create log stream {} due to error: {}",
@@ -249,7 +246,7 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
         .to_http();
     }
 
-    if let Err(e) = metadata::STREAM_INFO.set_alert(stream_name.to_string(), alerts) {
+    if let Err(e) = metadata::STREAM_INFO.set_alert(&stream_name, alerts) {
         return response::ServerResponse {
             msg: format!(
                 "failed to set alert configuration for log stream {} due to err: {}",

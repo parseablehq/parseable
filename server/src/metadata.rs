@@ -16,7 +16,7 @@
  *
  */
 
-use bytes::Bytes;
+use datafusion::arrow::datatypes::Schema;
 use lazy_static::lazy_static;
 use log::error;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ use crate::storage::ObjectStorage;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LogStreamMetadata {
-    pub schema: String,
+    pub schema: Option<Schema>,
     pub alerts: Alerts,
     pub stats: Stats,
 }
@@ -85,38 +85,42 @@ impl STREAM_INFO {
         Ok(())
     }
 
-    pub fn set_schema(&self, stream_name: String, schema: String) -> Result<(), Error> {
-        let alerts = self.alert(stream_name.clone())?;
-        self.add_stream(stream_name, schema, alerts)
+    pub fn set_schema(&self, stream_name: &str, schema: Schema) -> Result<(), Error> {
+        let mut map = self.write().unwrap();
+        map.get_mut(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.schema.replace(schema);
+            })
     }
 
-    pub fn schema(&self, stream_name: &str) -> Result<String, Error> {
+    pub fn schema(&self, stream_name: &str) -> Result<Option<Schema>, Error> {
         let map = self.read().unwrap();
-        let meta = map
-            .get(stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))?;
-
-        Ok(meta.schema.clone())
+        map.get(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.schema.to_owned())
     }
 
-    pub fn set_alert(&self, stream_name: String, alerts: Alerts) -> Result<(), Error> {
-        let schema = self.schema(&stream_name)?;
-        self.add_stream(stream_name, schema, alerts)
+    pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), Error> {
+        let mut map = self.write().unwrap();
+        map.get_mut(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.alerts = alerts;
+            })
     }
 
-    pub fn alert(&self, stream_name: String) -> Result<Alerts, Error> {
+    pub fn alert(&self, stream_name: &str) -> Result<Alerts, Error> {
         let map = self.read().unwrap();
-        let meta = map
-            .get(&stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
-
-        Ok(meta.alerts.clone())
+        map.get(stream_name)
+            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))
+            .map(|metadata| metadata.alerts.to_owned())
     }
 
     pub fn add_stream(
         &self,
         stream_name: String,
-        schema: String,
+        schema: Option<Schema>,
         alerts: Alerts,
     ) -> Result<(), Error> {
         let mut map = self.write().unwrap();
@@ -153,8 +157,6 @@ impl STREAM_INFO {
             let schema = storage
                 .get_schema(&stream.name)
                 .await
-                .map_err(|e| e.into())
-                .and_then(parse_string)
                 .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()))?;
 
             let metadata = LogStreamMetadata {
@@ -191,16 +193,20 @@ impl STREAM_INFO {
     }
 }
 
-fn parse_string(bytes: Bytes) -> Result<String, Error> {
-    String::from_utf8(bytes.to_vec()).map_err(|e| e.into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field};
     use maplit::hashmap;
     use rstest::*;
     use serial_test::serial;
+
+    #[fixture]
+    fn schema() -> Schema {
+        let field_a = Field::new("a", DataType::Int64, false);
+        let field_b = Field::new("b", DataType::Boolean, false);
+        Schema::new(vec![field_a, field_b])
+    }
 
     #[rstest]
     #[case::zero(0, 0, 0)]
@@ -229,25 +235,10 @@ mod tests {
     }
 
     #[rstest]
-    #[case::nonempty_string("Hello world")]
-    #[case::empty_string("")]
-    fn test_parse_string(#[case] string: String) {
-        let bytes = Bytes::from(string);
-        assert!(parse_string(bytes).is_ok())
-    }
-
-    #[test]
-    fn test_bad_parse_string() {
-        let bad: Vec<u8> = vec![195, 40];
-        let bytes = Bytes::from(bad);
-        assert!(parse_string(bytes).is_err());
-    }
-
-    #[rstest]
-    #[case::stream_schema_alert("teststream", "schema")]
-    #[case::stream_only("teststream", "")]
+    #[case::stream_schema_alert("teststream", Some(schema()))]
+    #[case::stream_only("teststream", None)]
     #[serial]
-    fn test_add_stream(#[case] stream_name: String, #[case] schema: String) {
+    fn test_add_stream(#[case] stream_name: String, #[case] schema: Option<Schema>) {
         let alerts = Alerts { alerts: vec![] };
         clear_map();
         STREAM_INFO
@@ -271,11 +262,7 @@ mod tests {
     fn test_delete_stream(#[case] stream_name: String) {
         clear_map();
         STREAM_INFO
-            .add_stream(
-                stream_name.clone(),
-                "".to_string(),
-                Alerts { alerts: vec![] },
-            )
+            .add_stream(stream_name.clone(), None, Alerts { alerts: vec![] })
             .unwrap();
 
         STREAM_INFO.delete_stream(&stream_name).unwrap();

@@ -23,8 +23,8 @@ use crate::query::Query;
 use crate::utils;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use chrono::{Duration, Timelike, Utc};
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use serde::Serialize;
 
@@ -48,14 +48,17 @@ pub const OBJECT_STORE_DATA_GRANULARITY: u32 = (LOCAL_SYNC_INTERVAL as u32) / 60
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
     async fn check(&self) -> Result<(), ObjectStorageError>;
-    async fn put_schema(&self, stream_name: String, body: String)
-        -> Result<(), ObjectStorageError>;
+    async fn put_schema(
+        &self,
+        stream_name: String,
+        schema: &Schema,
+    ) -> Result<(), ObjectStorageError>;
     async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
 
     async fn put_alerts(&self, stream_name: &str, alerts: Alerts)
         -> Result<(), ObjectStorageError>;
-    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, ObjectStorageError>;
+    async fn get_schema(&self, stream_name: &str) -> Result<Option<Schema>, ObjectStorageError>;
     async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError>;
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;

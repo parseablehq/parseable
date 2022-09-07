@@ -17,6 +17,7 @@
  *
  */
 use datafusion::arrow;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::json;
 use datafusion::arrow::json::reader::infer_json_schema;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -41,10 +42,6 @@ pub struct Event {
 }
 
 // Events holds the schema related to a each event for a single log stream
-pub struct Schema {
-    pub arrow_schema: arrow::datatypes::Schema,
-    pub string_schema: String,
-}
 
 impl Event {
     fn data_file_path(&self) -> String {
@@ -62,31 +59,29 @@ impl Event {
         &self,
         storage: &impl ObjectStorage,
     ) -> Result<response::EventResponse, Error> {
-        let Schema {
-            arrow_schema,
-            string_schema,
-        } = self.infer_schema().map_err(|e| {
+        let inferred_schema = self.infer_schema().map_err(|e| {
             error!("Failed to infer schema for event. {:?}", e);
             e
         })?;
 
-        let event = self.get_reader(arrow_schema);
+        let event = self.get_reader(inferred_schema.clone());
         let size = self.body_size();
 
         let stream_schema = metadata::STREAM_INFO.schema(&self.stream_name)?;
-        let is_first_event = stream_schema.is_empty();
-        // if stream schema is empty then it is first event.
-        let compressed_size = if is_first_event {
-            // process first event and store schema in obect store
-            self.process_first_event(event, string_schema.clone(), storage)
-                .await?
-        } else {
+        let is_first_event = stream_schema.is_none();
+
+        let compressed_size = if let Some(existing_schema) = stream_schema {
             // validate schema before processing the event
-            if stream_schema != string_schema {
+            if existing_schema != inferred_schema {
                 return Err(Error::SchemaMismatch(self.stream_name.clone()));
             } else {
                 self.process_event(event)?
             }
+        } else {
+            // if stream schema is none then it is first event,
+            // process first event and store schema in obect store
+            self.process_first_event(event, inferred_schema, storage)
+                .await?
         };
 
         if let Err(e) = metadata::STREAM_INFO.update_stats(&self.stream_name, size, compressed_size)
@@ -116,7 +111,7 @@ impl Event {
     async fn process_first_event<R: std::io::Read>(
         &self,
         mut event: json::Reader<R>,
-        string_schema: String,
+        schema: Schema,
         storage: &impl ObjectStorage,
     ) -> Result<u64, Error> {
         let rb = event.next()?.ok_or(Error::MissingRecord)?;
@@ -126,8 +121,9 @@ impl Event {
 
         // Put the inferred schema to object store
         let stream_name = &self.stream_name;
+
         storage
-            .put_schema(stream_name.clone(), string_schema.clone())
+            .put_schema(stream_name.clone(), &schema)
             .await
             .map_err(|e| response::EventError {
                 msg: format!(
@@ -138,7 +134,7 @@ impl Event {
 
         // set the schema in memory for this stream
         metadata::STREAM_INFO
-            .set_schema(self.stream_name.clone(), string_schema)
+            .set_schema(&self.stream_name, schema)
             .map_err(|e| response::EventError {
                 msg: format!(
                     "Failed to set schema for log stream {} due to err: {}",
@@ -180,12 +176,8 @@ impl Event {
         let reader = self.body.as_bytes();
         let mut buf_reader = BufReader::new(reader);
         let inferred_schema = infer_json_schema(&mut buf_reader, None)?;
-        let str_inferred_schema = serde_json::to_string(&inferred_schema)?;
 
-        Ok(Schema {
-            arrow_schema: inferred_schema,
-            string_schema: str_inferred_schema,
-        })
+        Ok(inferred_schema)
     }
 
     fn get_reader(&self, arrow_schema: arrow::datatypes::Schema) -> json::Reader<&[u8]> {
@@ -206,11 +198,8 @@ impl Event {
         let parquet_path = self.data_file_path();
         let parquet_file = fs::File::create(&parquet_path)?;
         let props = WriterProperties::builder().build();
-        let mut writer = ArrowWriter::try_new(
-            parquet_file,
-            Arc::new(self.infer_schema()?.arrow_schema),
-            Some(props),
-        )?;
+        let mut writer =
+            ArrowWriter::try_new(parquet_file, Arc::new(self.infer_schema()?), Some(props))?;
         writer.write(&rb)?;
         writer.close()?;
 

@@ -6,6 +6,7 @@ use aws_sdk_s3::Error as AwsSdkError;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use bytes::Bytes;
 use crossterm::style::Stylize;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
@@ -346,9 +347,10 @@ impl ObjectStorage for S3 {
     async fn put_schema(
         &self,
         stream_name: String,
-        body: String,
+        schema: &Schema,
     ) -> Result<(), ObjectStorageError> {
-        self._put_schema(stream_name, body).await?;
+        self._put_schema(stream_name, serde_json::to_string(&schema)?)
+            .await?;
 
         Ok(())
     }
@@ -376,15 +378,15 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, ObjectStorageError> {
+    async fn get_schema(&self, stream_name: &str) -> Result<Option<Schema>, ObjectStorageError> {
         let body_bytes = self._get_schema(stream_name).await?;
-
-        Ok(body_bytes)
+        let schema = serde_json::from_slice(&body_bytes).ok();
+        Ok(schema)
     }
 
     async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError> {
         let body_bytes = self._alert_exists(stream_name).await?;
-        let alerts = serde_json::from_slice(&body_bytes)?;
+        let alerts = serde_json::from_slice(&body_bytes).unwrap_or_default();
 
         Ok(alerts)
     }
