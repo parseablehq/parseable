@@ -41,8 +41,6 @@ Parseable is a log storage and observability platform for modern, cloud native w
   <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview-dark.svg#gh-dark-mode-only" alt="Parseable Overview" width="800" height="650" />
 </p>
 
-<h1></h1>
-
 ## Live Demo 
 
 Try out Parseable server with our demo instance. Send log data to default log stream `frontend`
@@ -85,12 +83,7 @@ Access the Parseable dashboard to verify the log data is present
 
 For complete Parseable API documentation, refer to [Parseable API workspace on Postman](https://www.postman.com/parseable/workspace/parseable/overview).
 
-| :memo: | Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new). |
-|-|:-|
-
-| :exclamation: | Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically. |
-|-|:-|
-
+:exclamation: Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically.
 ## Getting Started
 
 Parseable binary is available on [Github releases](https://github.com/parseablehq/parseable/releases). Please download the latest release for your platform. 
@@ -106,6 +99,8 @@ export P_S3_BUCKET="parseable"
 ```
 
 By default Parseable uses a public bucket to store the data. Please change the object storage credentials to your own bucket, before using Parseable.
+
+:memo: Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new).
 
 ## Contributing 
 
