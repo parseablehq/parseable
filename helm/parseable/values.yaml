@@ -4,7 +4,6 @@ parseable:
     repository: parseable/parseable
     tag: v0.0.1
     pullPolicy: IfNotPresent
-    tag: ""
   env:
     P_ADDR: "0.0.0.0:8000"
     P_TLS_CERT_PATH: ""
