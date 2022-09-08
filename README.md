@@ -47,9 +47,7 @@ Parseable ingests high volumes of log data from various sources (Fluent Bit, Log
 
 ## Live Demo 
 
-Try out Parseable server with our demo instance.
-
-1. Post log data to default log stream `frontend`
+Try out Parseable server with our demo instance. Send log data to default log stream `frontend`
 
 ```sh
 curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/frontend' \
@@ -70,7 +68,7 @@ curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/front
 ]'
 ```
 
-2. Then access the Parseable dashboard to verify the log data is present
+Access the Parseable dashboard to verify the log data is present
 
 <table>
 <tr>
