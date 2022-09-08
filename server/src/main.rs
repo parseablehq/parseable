@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
         warn!("could not populate local metadata. {:?}", e);
     }
 
-    // Move all exiting data.parquet file to their respective tmp directory
+    // Move all exiting data.records file to their respective tmp directory
     // they will be synced to object store on next s3 sync cycle
     startup_sync();
 
@@ -112,11 +112,12 @@ fn startup_sync() {
     }
 
     for stream in metadata::STREAM_INFO.list_streams() {
-        let dir = StorageDir::new(&stream);
-        // if data.parquet file is not present then skip this stream
-        if !dir.parquet_path_exists() {
+        let dir = StorageDir::new(stream.clone());
+        // if data.records file is not present then skip this stream
+        if !dir.local_data_exists() {
             continue;
         }
+
         if let Err(e) = dir.create_temp_dir() {
             log::error!(
                 "Error creating tmp directory for {} due to error [{}]",
@@ -126,7 +127,7 @@ fn startup_sync() {
             continue;
         }
         // create prefix for this file from its last modified time
-        let path = dir.data_path.join("data.parquet");
+        let path = dir.data_path.join("data.records");
 
         // metadata.modified gives us system time
         // This may not work on all platfomns
@@ -156,7 +157,7 @@ fn startup_sync() {
         let local_uri = str::replace(&uri, "/", ".");
         let hostname = utils::hostname_unchecked();
         let parquet_file_local = format!("{}{}.data.parquet", local_uri, hostname);
-        if let Err(err) = dir.move_parquet_to_temp(parquet_file_local) {
+        if let Err(err) = dir.move_local_to_temp(parquet_file_local) {
             log::warn!(
                 "Failed to move parquet file at {} to tmp directory due to error {}",
                 path.display(),
@@ -269,7 +270,7 @@ async fn run_http() -> anyhow::Result<()> {
         (_, _) => None,
     };
 
-    let http_server = HttpServer::new(move || create_app!());
+    let http_server = HttpServer::new(move || create_app!()).workers(num_cpus::get() - 1);
     if let Some(builder) = ssl_acceptor {
         http_server
             .bind_openssl(&CONFIG.parseable.address, builder)?

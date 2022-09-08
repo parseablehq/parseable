@@ -20,16 +20,21 @@ use crate::alerts::Alerts;
 use crate::metadata::{Stats, STREAM_INFO};
 use crate::option::CONFIG;
 use crate::query::Query;
-use crate::utils;
+use crate::{event, utils};
 
 use async_trait::async_trait;
 use chrono::{Duration, Timelike, Utc};
 use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::error::ArrowError;
+use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::parquet::arrow::ArrowWriter;
+use datafusion::parquet::errors::ParquetError;
+use datafusion::parquet::file::properties::WriterProperties;
 use serde::Serialize;
 
 use std::fmt::Debug;
-use std::fs;
+use std::fs::{self, File};
 use std::io;
 use std::iter::Iterator;
 use std::path::{Path, PathBuf};
@@ -37,7 +42,7 @@ use std::path::{Path, PathBuf};
 extern crate walkdir;
 use walkdir::WalkDir;
 
-/// local sync interval to move data.parquet to /tmp dir of that stream.
+/// local sync interval to move data.records to /tmp dir of that stream.
 /// 60 sec is a reasonable value.
 pub const LOCAL_SYNC_INTERVAL: u64 = 60;
 
@@ -79,10 +84,10 @@ pub trait ObjectStorage: Sync + 'static {
 
         // entries here means all the streams present on local disk
         for stream in streams {
-            let sync = StorageSync::new(&stream);
+            let sync = StorageSync::new(stream.clone());
 
-            // if data.parquet file not present, skip this stream
-            if !sync.dir.parquet_path_exists() {
+            // if data.records file not present, skip this stream
+            if !sync.dir.local_data_exists() {
                 continue;
             }
 
@@ -95,14 +100,21 @@ pub trait ObjectStorage: Sync + 'static {
                 continue;
             }
 
-            if let Err(e) = sync.move_parquet_to_temp() {
-                log::error!(
-                    "Error copying parquet from stream directory in [{}] to tmp directory [{}] due to error [{}]",
-                    sync.dir.data_path.to_string_lossy(),
-                    sync.dir.temp_dir.to_string_lossy(),
-                    e
-                );
-                continue;
+            match sync.move_local_to_temp() {
+                Ok(parquet_size) => {
+                    if let Err(e) = STREAM_INFO.update_stats(&stream, 0, parquet_size) {
+                        log::error!("Couldn't update stream stats. {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    log::error!(
+                        "Error copying parquet from stream directory in [{}] to tmp directory [{}] due to error [{}]",
+                        sync.dir.data_path.to_string_lossy(),
+                        sync.dir.temp_dir.to_string_lossy(),
+                        e
+                    );
+                    continue;
+                }
             }
         }
 
@@ -117,7 +129,7 @@ pub trait ObjectStorage: Sync + 'static {
         let streams = STREAM_INFO.list_streams();
 
         for stream in streams {
-            let dir = StorageDir::new(&stream);
+            let dir = StorageDir::new(stream.clone());
 
             for file in WalkDir::new(dir.temp_dir)
                 .min_depth(1)
@@ -126,6 +138,14 @@ pub trait ObjectStorage: Sync + 'static {
                 .filter_map(|file| file.ok())
                 .map(|file| file.path().to_path_buf())
                 .filter(|file| file.is_file())
+                .filter(|file| {
+                    let is_tmp = match file.extension() {
+                        Some(ext) => ext.eq_ignore_ascii_case("tmp"),
+                        None => false,
+                    };
+
+                    !is_tmp
+                })
             {
                 let filename = file.file_name().unwrap().to_str().unwrap();
                 let file_suffix = str::replacen(filename, ".", "/", 3);
@@ -152,35 +172,86 @@ pub struct LogStream {
 
 #[derive(Debug)]
 pub struct StorageDir {
+    pub stream_name: String,
     pub data_path: PathBuf,
     pub temp_dir: PathBuf,
 }
 
+// Storage Dir is a type which can move files form datapath to temp dir
 impl StorageDir {
-    pub fn new(stream_name: &str) -> Self {
-        let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
+    pub fn new(stream_name: String) -> Self {
+        let data_path = CONFIG.parseable.local_stream_data_path(&stream_name);
         let temp_dir = data_path.join("tmp");
 
         Self {
+            stream_name,
             data_path,
             temp_dir,
         }
     }
 
+    // create tmp dir if it does not exist
     pub fn create_temp_dir(&self) -> io::Result<()> {
         fs::create_dir_all(&self.temp_dir)
     }
 
-    pub fn move_parquet_to_temp(&self, filename: String) -> io::Result<()> {
-        fs::rename(
-            self.data_path.join("data.parquet"),
-            self.temp_dir.join(filename),
-        )
+    pub fn move_local_to_temp(&self, filename: String) -> Result<u64, MoveDataError> {
+        let record_tmp_file_path = self.temp_dir.join(filename.clone() + ".tmp");
+        fs::rename(self.data_path.join("data.records"), &record_tmp_file_path)
+            .map_err(|_| MoveDataError::Rename)?;
+        event::STREAM_WRITERS::unset_entry(&self.stream_name);
+        let file = File::open(&record_tmp_file_path).map_err(|_| MoveDataError::Open)?;
+        let reader = StreamReader::try_new(file, None)?;
+        let schema = reader.schema();
+        let records = reader.filter_map(|record| match record {
+            Ok(record) => Some(record),
+            Err(e) => {
+                log::warn!("error when reading from arrow stream {:?}", e);
+                None
+            }
+        });
+
+        let parquet_path = self.temp_dir.join(filename);
+        let parquet_file = fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
+        let props = WriterProperties::builder().build();
+        let mut writer = ArrowWriter::try_new(parquet_file, schema, Some(props))?;
+
+        for ref record in records {
+            writer.write(record)?;
+        }
+
+        writer.close()?;
+
+        fs::remove_file(record_tmp_file_path).map_err(|_| MoveDataError::Delete)?;
+
+        let compressed_size = fs::metadata(parquet_path)
+            .map_err(|_| MoveDataError::Metadata)?
+            .len();
+
+        Ok(compressed_size)
     }
 
-    pub fn parquet_path_exists(&self) -> bool {
-        self.data_path.join("data.parquet").exists()
+    pub fn local_data_exists(&self) -> bool {
+        self.data_path.join("data.records").exists()
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MoveDataError {
+    #[error("Failed to rename file")]
+    Rename,
+    #[error("Unable to Open file after moving")]
+    Open,
+    #[error("Unable to create recordbatch stream")]
+    Arrow(#[from] ArrowError),
+    #[error("Could not generate parquet file")]
+    Parquet(#[from] ParquetError),
+    #[error("Could not generate parquet file")]
+    Create,
+    #[error("Could not delete temp arrow file")]
+    Delete,
+    #[error("Could not fetch metadata of moved parquet file")]
+    Metadata,
 }
 
 struct StorageSync {
@@ -189,13 +260,13 @@ struct StorageSync {
 }
 
 impl StorageSync {
-    fn new(stream_name: &str) -> Self {
+    fn new(stream_name: String) -> Self {
         let dir = StorageDir::new(stream_name);
         let time = Utc::now();
         Self { dir, time }
     }
 
-    fn move_parquet_to_temp(&self) -> io::Result<()> {
+    fn move_local_to_temp(&self) -> Result<u64, MoveDataError> {
         let time = self.time - Duration::minutes(OBJECT_STORE_DATA_GRANULARITY as i64);
         let uri = utils::date_to_prefix(time.date())
             + &utils::hour_to_prefix(time.hour())
@@ -203,7 +274,7 @@ impl StorageSync {
         let local_uri = str::replace(&uri, "/", ".");
         let hostname = utils::hostname_unchecked();
         let parquet_file_local = format!("{}{}.data.parquet", local_uri, hostname);
-        self.dir.move_parquet_to_temp(parquet_file_local)
+        self.dir.move_local_to_temp(parquet_file_local)
     }
 }
 
