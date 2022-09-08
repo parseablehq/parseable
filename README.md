@@ -18,11 +18,8 @@
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a> |
   <a href="https://www.parseable.io" target="_blank">Website</a> | 
   <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">API Workspace on Postman</a>
+  Parseable is a log storage and observability platform for modern, cloud native workloads. Parseable is built for high volume log data from sources like Fluent Bit, Logstash etc or directly from applications.
 </h4>
-
-Parseable is a free and open source, log storage and observability platform. 
-
-Parseable ingests high volumes of log data from various sources (Fluent Bit, Logstash etc or directly from applications). It stores logs into highly compressed Parquet file format. With object storage as primary storage for Parseable, you get seamless scale and flexibility for ever growing log data.
 
 ## Why Parseable
 
