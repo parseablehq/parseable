@@ -104,6 +104,8 @@ chmod +x parseable
 ./parseable
 ```
 
+<h1></h1>
+
 Parseable dashboard is available at [http://localhost:8000](http://localhost:8000). Default username and password is `parseable`.
 
 By default Parseable uses a public bucket to store the data. Please change the object storage credentials to your own bucket, before using Parseable.
