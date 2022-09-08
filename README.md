@@ -85,22 +85,45 @@ For complete Parseable API documentation, refer to [Parseable API workspace on P
 
 :exclamation: Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically.
 ## Getting Started
+### Docker
+Parseable docker image is available on [Docker Hub](https://hub.docker.com/r/parseable/parseable). 
 
+```sh
+mkdir -p /tmp/parseable
+docker run \
+  -p 8000:8000 \
+  -v /tmp/parseable:/data \
+  parseable/parseable:v0.0.1
+```
+
+### Binary
 Parseable binary is available on [Github releases](https://github.com/parseablehq/parseable/releases). Please download the latest release for your platform. 
 
 ```sh
 chmod +x parseable
+./parseable
+```
+
+Parseable dashboard is available at [http://localhost:8000](http://localhost:8000). Default username and password is `parseable`.
+
+By default Parseable uses a public bucket to store the data. Please change the object storage credentials to your own bucket, before using Parseable.
+
+:memo: Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new).
+
+### Configuration
+
+Parseable can be configured using environment variables listed below, with sample values.
+
+```sh
 export P_S3_URL="https://minio.parseable.io:9000"
 export P_S3_ACCESS_KEY="minioadmin"
 export P_S3_SECRET_KEY="minioadmin"
 export P_S3_REGION="us-east-1"
 export P_S3_BUCKET="parseable"
-./parseable
+export P_LOCAL_STORAGE="./data"
+export P_USERNAME="parseable"
+export P_PASSWORD="parseable"
 ```
-
-By default Parseable uses a public bucket to store the data. Please change the object storage credentials to your own bucket, before using Parseable.
-
-:memo: Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new).
 
 ## Contributing 
 
