@@ -1,6 +1,6 @@
 <p align="center">
   <span">
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="600" height="150" />
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="600" height="110" />
     <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="650"/>
   </a> 
 </p>
@@ -18,12 +18,10 @@
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a> |
   <a href="https://www.parseable.io" target="_blank">Website</a> | 
   <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">API Workspace on Postman</a>
+  <br>
 </h4>
 
-Parseable is a free and open source, log storage and observability platform. 
-
-Parseable ingests high volumes of log data from various sources (Fluent Bit, Logstash etc or directly from applications). It stores logs into highly compressed Parquet file format. With object storage as primary storage for Parseable, you get seamless scale and flexibility for ever growing log data.
-
+Parseable is a log storage and observability platform for modern, cloud native workloads. Parseable is built for high volume log data from sources like Fluent Bit, Logstash etc or directly from applications.
 ## Why Parseable
 
 * Developer first platform, designed for ease of use and flexibility.
@@ -42,8 +40,6 @@ Parseable ingests high volumes of log data from various sources (Fluent Bit, Log
   <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview.svg#gh-light-mode-only" alt="Parseable Overview" width="800" height="650" />
   <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview-dark.svg#gh-dark-mode-only" alt="Parseable Overview" width="800" height="650" />
 </p>
-
-<h1></h1>
 
 ## Live Demo 
 
@@ -87,12 +83,7 @@ Access the Parseable dashboard to verify the log data is present
 
 For complete Parseable API documentation, refer to [Parseable API workspace on Postman](https://www.postman.com/parseable/workspace/parseable/overview).
 
-| :memo: | Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new). |
-|-|:-|
-
-| :exclamation: | Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically. |
-|-|:-|
-
+:exclamation: Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically.
 ## Getting Started
 
 Parseable binary is available on [Github releases](https://github.com/parseablehq/parseable/releases). Please download the latest release for your platform. 
@@ -108,6 +99,8 @@ export P_S3_BUCKET="parseable"
 ```
 
 By default Parseable uses a public bucket to store the data. Please change the object storage credentials to your own bucket, before using Parseable.
+
+:memo: Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new).
 
 ## Contributing 
 
