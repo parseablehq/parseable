@@ -17,6 +17,7 @@
  */
 
 use chrono::{DateTime, Utc};
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::ListingOptions;
@@ -44,6 +45,7 @@ fn get_value<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, Error> 
 pub struct Query {
     pub query: String,
     pub stream_name: String,
+    pub schema: Arc<Schema>,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
 }
@@ -123,10 +125,25 @@ impl Query {
 #[cfg(test)]
 mod tests {
     use super::Query;
+    use crate::{alerts::Alerts, metadata::STREAM_INFO};
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::arrow::datatypes::{DataType, Field};
     use rstest::*;
     use serde_json::Value;
     use std::str::FromStr;
 
+    #[fixture]
+    fn schema() -> Schema {
+        let field_a = Field::new("a", DataType::Int64, false);
+        let field_b = Field::new("b", DataType::Boolean, false);
+        Schema::new(vec![field_a, field_b])
+    }
+
+    fn clear_map() {
+        STREAM_INFO.write().unwrap().clear();
+    }
+
+    // A query can only be performed on streams with a valid schema
     #[rstest]
     #[case(
         r#"{
@@ -144,12 +161,38 @@ mod tests {
         }"#,
         &["stream_name/date=2022-10-15/hour=10/minute=00/", "stream_name/date=2022-10-15/hour=10/minute=01/"]
     )]
-    fn query_parse_prefix(#[case] prefix: &str, #[case] right: &[&str]) {
+    #[serial_test::serial]
+    fn query_parse_prefix_with_some_schema(#[case] prefix: &str, #[case] right: &[&str]) {
+        clear_map();
+        STREAM_INFO
+            .add_stream("stream_name".to_string(), Some(schema()), Alerts::default())
+            .unwrap();
+
         let query = Value::from_str(prefix).unwrap();
         let query = Query::parse(query).unwrap();
         assert_eq!(&query.stream_name, "stream_name");
         let prefixes = query.get_prefixes();
         let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
         assert_eq!(left.as_slice(), right);
+    }
+
+    // If there is no schema for this stream then parsing a Query should fail
+    #[rstest]
+    #[case(
+        r#"{
+            "query": "SELECT * FROM stream_name",
+            "startTime": "2022-10-15T10:00:00+00:00",
+            "endTime": "2022-10-15T10:01:00+00:00"
+        }"#
+    )]
+    #[serial_test::serial]
+    fn query_parse_prefix_with_no_schema(#[case] prefix: &str) {
+        clear_map();
+        STREAM_INFO
+            .add_stream("stream_name".to_string(), None, Alerts::default())
+            .unwrap();
+
+        let query = Value::from_str(prefix).unwrap();
+        assert!(Query::parse(query).is_err());
     }
 }

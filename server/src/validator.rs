@@ -16,10 +16,13 @@
  *
  */
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde_json::json;
 
 use crate::alerts::Alerts;
+use crate::metadata::STREAM_INFO;
 use crate::query::Query;
 use crate::Error;
 
@@ -133,10 +136,18 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Err
         return Err(Error::StartTimeAfterEndTime());
     }
 
+    let stream_name = tokens[stream_name_index].to_string();
+
+    let schema = match STREAM_INFO.schema(&stream_name)? {
+        Some(schema) => Arc::new(schema),
+        None => return Err(Error::MissingRecord),
+    };
+
     Ok(Query {
         stream_name: tokens[stream_name_index].to_string(),
         start,
         end,
         query: query.to_string(),
+        schema,
     })
 }
