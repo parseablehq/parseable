@@ -44,8 +44,6 @@ const S3_URL_ENV_VAR: &str = "P_S3_URL";
 
 // max concurrent request allowed for datafusion object store
 const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
-// max concurrent request allowed for prefix checks during listing
-const MAX_CONCURRENT_PREFIX_CHECK: usize = 1000;
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -276,6 +274,7 @@ impl S3 {
         Ok(body_bytes)
     }
 
+    #[allow(dead_code)]
     async fn prefix_exists(&self, prefix: &str) -> Result<bool, AwsSdkError> {
         // TODO check if head object is faster compared to
         // list objects
@@ -418,41 +417,14 @@ impl ObjectStorage for S3 {
             SessionContext::with_config_rt(SessionConfig::default(), Arc::clone(&STORAGE_RUNTIME));
 
         // Get all prefix paths and convert them into futures which yeilds ListingTableUrl
-        let handles = query.get_prefixes().into_iter().map(|prefix| async move {
-            let t: Result<Option<ListingTableUrl>, ObjectStorageError> = {
-                if self.prefix_exists(&prefix).await? {
-                    let path = format!("s3://{}/{}", &S3_CONFIG.s3_bucket_name, prefix);
-                    Ok(Some(ListingTableUrl::parse(path)?))
-                } else {
-                    Ok(None)
-                }
-            };
-            t
-        });
-
-        // Poll futures but limit them to concurrency of MAX_CONCURRENT_PREFIX_CHECK
-        let list: Vec<_> = futures::stream::iter(handles)
-            .buffer_unordered(MAX_CONCURRENT_PREFIX_CHECK)
-            .collect()
-            .await;
-
-        // Collect all available prefixes
-        let prefixes: Vec<_> = list
+        let prefixes = query
+            .get_prefixes()
             .into_iter()
-            .filter_map(|fetch| {
-                fetch
-                    .map_err(|err| {
-                        log::error!("prefix lookup failed due to {}", err);
-                        err
-                    })
-                    .ok()
+            .map(|prefix| {
+                let path = format!("s3://{}/{}", &S3_CONFIG.s3_bucket_name, prefix);
+                ListingTableUrl::parse(path).unwrap()
             })
-            .flatten()
             .collect();
-
-        if prefixes.is_empty() {
-            return Ok(());
-        }
 
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options = ListingOptions {
@@ -465,8 +437,7 @@ impl ObjectStorage for S3 {
 
         let config = ListingTableConfig::new_with_multi_paths(prefixes)
             .with_listing_options(listing_options)
-            .infer(&ctx.state())
-            .await?;
+            .with_schema(Arc::clone(&query.schema));
 
         let table = ListingTable::try_new(config)?;
         ctx.register_table(query.stream_name.as_str(), Arc::new(table))?;

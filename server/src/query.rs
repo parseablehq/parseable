@@ -17,6 +17,7 @@
  */
 
 use chrono::{DateTime, Utc};
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::ListingOptions;
@@ -44,6 +45,7 @@ fn get_value<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, Error> 
 pub struct Query {
     pub query: String,
     pub stream_name: String,
+    pub schema: Arc<Schema>,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
 }
