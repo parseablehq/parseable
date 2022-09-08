@@ -18,9 +18,10 @@
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a> |
   <a href="https://www.parseable.io" target="_blank">Website</a> | 
   <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">API Workspace on Postman</a>
-  Parseable is a log storage and observability platform for modern, cloud native workloads. Parseable is built for high volume log data from sources like Fluent Bit, Logstash etc or directly from applications.
+  <br>
 </h4>
 
+Parseable is a log storage and observability platform for modern, cloud native workloads. Parseable is built for high volume log data from sources like Fluent Bit, Logstash etc or directly from applications.
 ## Why Parseable
 
 * Developer first platform, designed for ease of use and flexibility.
