@@ -86,7 +86,7 @@ For complete Parseable API documentation, refer to [Parseable API workspace on P
 :exclamation: Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically.
 ## Getting Started
 ### Docker
-Parseable docker image is available on [Docker Hub](https://hub.docker.com/r/parseable/parseable). 
+Parseable docker image is available on [Docker hub](https://hub.docker.com/r/parseable/parseable). 
 
 ```sh
 mkdir -p /tmp/parseable
