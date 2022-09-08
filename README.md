@@ -96,6 +96,15 @@ docker run \
   parseable/parseable:v0.0.1
 ```
 
+### Kubernetes
+Parseable helm chart is available at [Parseable charts repository](https://charts.parseable.io/). 
+
+```sh
+helm repo add parseable https://charts.parseable.io/
+kubectl create namespace parseable
+helm install parseable parseable/parseable --namespace parseable
+```
+
 ### Binary
 Parseable binary is available on [Github releases](https://github.com/parseablehq/parseable/releases). Please download the latest release for your platform. 
 
