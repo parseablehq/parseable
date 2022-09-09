@@ -185,6 +185,7 @@ fn s3_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
                     });
 
                 loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                     scheduler.run_pending().await;
                     match AssertUnwindSafe(|| inbox_rx.try_recv())() {
                         Ok(_) => break,
