@@ -27,6 +27,7 @@ use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
 use filetime::FileTime;
 use log::warn;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+use thread_priority::{ThreadBuilder, ThreadPriority};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -211,35 +212,43 @@ fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<(
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
     let mut inbox_rx = AssertUnwindSafe(inbox_rx);
-    let handle = thread::spawn(move || {
-        let res = catch_unwind(move || {
-            let mut scheduler = Scheduler::new();
-            scheduler
-                .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
-                .run(move || {
-                    if let Err(e) = S3::new().local_sync() {
-                        warn!("failed to sync local data. {:?}", e);
-                    }
-                });
 
-            loop {
-                thread::sleep(Duration::from_millis(50));
-                scheduler.run_pending();
-                match AssertUnwindSafe(|| inbox_rx.try_recv())() {
-                    Ok(_) => break,
-                    Err(TryRecvError::Empty) => continue,
-                    Err(TryRecvError::Closed) => {
-                        // should be unreachable but breaking anyways
-                        break;
+    let handle = ThreadBuilder::default()
+        .name("local-sync")
+        .priority(ThreadPriority::Max)
+        .spawn(move |priority_result| {
+            if priority_result.is_err() {
+                log::warn!("Max priority cannot be set for sync thread. Make sure that user/program is allowed to set thread priority.")
+            }
+            let res = catch_unwind(move || {
+                let mut scheduler = Scheduler::new();
+                scheduler
+                    .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
+                    .run(move || {
+                        if let Err(e) = S3::new().local_sync() {
+                            warn!("failed to sync local data. {:?}", e);
+                        }
+                    });
+
+                loop {
+                    thread::sleep(Duration::from_millis(50));
+                    scheduler.run_pending();
+                    match AssertUnwindSafe(|| inbox_rx.try_recv())() {
+                        Ok(_) => break,
+                        Err(TryRecvError::Empty) => continue,
+                        Err(TryRecvError::Closed) => {
+                            // should be unreachable but breaking anyways
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            });
 
-        if res.is_err() {
-            outbox_tx.send(()).unwrap();
-        }
-    });
+            if res.is_err() {
+                outbox_tx.send(()).unwrap();
+            }
+        })
+        .unwrap();
 
     (handle, outbox_rx, inbox_tx)
 }
