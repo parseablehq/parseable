@@ -271,7 +271,8 @@ async fn run_http() -> anyhow::Result<()> {
         (_, _) => None,
     };
 
-    let http_server = HttpServer::new(move || create_app!()).workers(num_cpus::get() - 1);
+    // concurrent workers equal to number of cores on the cpu
+    let http_server = HttpServer::new(move || create_app!()).workers(num_cpus::get());
     if let Some(builder) = ssl_acceptor {
         http_server
             .bind_openssl(&CONFIG.parseable.address, builder)?
