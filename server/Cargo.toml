@@ -40,6 +40,7 @@ serde_json = "^1.0.8"
 structopt = { version = "0.3.25" }
 sysinfo = "0.20.5"
 thiserror = "1"
+thread-priority = "0.9.2"
 tokio-stream = "0.1.8"
 tokio = { version = "1.13.1", default-features = false, features=["sync", "macros"] }
 clokwerk = "0.4.0-rc1"
