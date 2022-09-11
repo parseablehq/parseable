@@ -199,7 +199,7 @@ impl StorageDir {
         let record_tmp_file_path = self.temp_dir.join(filename.clone() + ".tmp");
         fs::rename(self.data_path.join("data.records"), &record_tmp_file_path)
             .map_err(|_| MoveDataError::Rename)?;
-        event::STREAM_WRITERS::unset_entry(&self.stream_name);
+        event::STREAM_WRITERS::unset_entry(&self.stream_name).unwrap();
         let file = File::open(&record_tmp_file_path).map_err(|_| MoveDataError::Open)?;
         let reader = StreamReader::try_new(file, None)?;
         let schema = reader.schema();
