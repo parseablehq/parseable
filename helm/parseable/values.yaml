@@ -2,7 +2,7 @@ parseable:
   replicaCount: 1
   image:
     repository: parseable/parseable
-    tag: v0.0.1
+    tag: v0.0.2
     pullPolicy: IfNotPresent
   env:
     P_ADDR: "0.0.0.0:8000"
@@ -10,7 +10,8 @@ parseable:
     P_LOCAL_STORAGE: "data"
     P_STORAGE_UPLOAD_INTERVAL: "60"
     RUST_LOG: "parseable=info"
-    # By default parseable uses demo env digital ocean spaces
+    # By default parseable uses demo environment. 
+    # Please change this before running in production.
     #P_S3_URL: ""
     #P_S3_ACCESS_KEY: ""
     #P_S3_SECRET_KEY: ""

@@ -13,6 +13,16 @@ entries:
     version: 0.0.1
   parseable:
   - apiVersion: v2
+    appVersion: v0.0.2
+    created: "2022-09-11T15:03:00.505929+05:30"
+    description: Helm chart for Parseable Server
+    digest: 38a0a3e4c498afbbcc76ebfcb9cb598fa2ca843a53cc93b3cb4f135b85c10844
+    name: parseable
+    type: application
+    urls:
+    - https://charts.parseable.io/helm-releases/parseable-0.0.2.tgz
+    version: 0.0.2
+  - apiVersion: v2
     appVersion: v0.0.1
     created: "2022-09-08T18:21:10.790129+05:30"
     description: Helm chart for Parseable Server
@@ -22,4 +32,4 @@ entries:
     urls:
     - https://charts.parseable.io/helm-releases/parseable-0.0.1.tgz
     version: 0.0.1
-generated: "2022-09-08T18:21:10.7888+05:30"
+generated: "2022-09-11T15:03:00.502125+05:30"
