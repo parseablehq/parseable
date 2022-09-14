@@ -1,23 +1,21 @@
 <p align="center">
   <span">
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="600" height="110" />
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="650"/>
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="500" height="100" />
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="500" height="100" />
   </a> 
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/website?down_message=red&up_color=green&up_message=online&url=https%3A%2F%2Fwww.parseable.io" alt="website status">
-  <img src="https://img.shields.io/github/contributors/parseablehq/parseable" alt="contributors">
   <img src="https://img.shields.io/github/commit-activity/m/parseablehq/parseable" alt="commits activity monthly">
-  <a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/parseablehq/parseable" alt="Github stars"></a>
-  <img src="https://img.shields.io/github/license/parseablehq/parseable" alt="License">  
+  <a href="https://launchpass.com/parseable" target="_blank"><img src="https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg" alt="join slack"></a>
+  <a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/parseablehq/parseable?style=social" alt="Github stars"></a>
   <a href="https://twitter.com/parseableio" target="_blank"><img src="https://img.shields.io/twitter/follow/parseableio" alt="Twitter"></a>
 </p>
 
 <h4 align="center">
-  <a href="https://demo.parseable.io" target="_blank">Live Demo</a> |
-  <a href="https://www.parseable.io" target="_blank">Website</a> | 
-  <a href="https://www.postman.com/parseable/workspace/parseable/overview" target="_blank">API Workspace on Postman</a>
+  <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
+  <a href="https://www.parseable.io/docs/introduction" target="_blank">Documentation</a> |
+  <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
   <br>
 </h4>
 
@@ -36,55 +34,8 @@ Parseable is a log storage and observability platform for modern, cloud native w
 * Bring your own analytics platform for deeper analysis of log data.
 * Auto inferred schema.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview.svg#gh-light-mode-only" alt="Parseable Overview" width="800" height="650" />
-  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview-dark.svg#gh-dark-mode-only" alt="Parseable Overview" width="800" height="650" />
-</p>
-
-## Live Demo 
-
-Try out Parseable server with our demo instance. Send log data to default log stream `frontend`
-
-```sh
-curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/frontend' \
---header 'X-P-META-meta1: value1' \
---header 'X-P-TAG-tag1: value1' \
---header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' \
---header 'Content-Type: application/json' \
---data-raw '[
-    {
-        "id": "434a5f5e-2f5f-11ed-a261-0242ac120002",
-        "datetime": "24/Jun/2022:14:12:15 +0000",
-        "host": "153.10.110.81", 
-        "user-identifier": "Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:64.0) Gecko/20100101 Firefox/64.0", 
-        "method": "PUT", 
-        "status": 500, 
-        "referrer": "http://www.google.com/"
-    }
-]'
-```
-
-Access the Parseable dashboard to verify the log data is present
-
-<table>
-<tr>
-    <td>URL</td>
-    <td><a href="https://demo.parseable.io" target="_blank">https://demo.parseable.io</a></td>
-</tr>
-<tr>
-    <td>Username</td>
-    <td>parseable</td>
-</tr>
-<tr>
-    <td>Password</td>
-    <td>parseable</td>
-</tr>
-</table>
-
-For complete Parseable API documentation, refer to [Parseable API workspace on Postman](https://www.postman.com/parseable/workspace/parseable/overview).
-
-:exclamation: Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically.
 ## Getting Started
+
 ### Docker
 Parseable docker image is available on [Docker hub](https://hub.docker.com/r/parseable/parseable). 
 
@@ -136,13 +87,62 @@ export P_USERNAME="parseable"
 export P_PASSWORD="parseable"
 ```
 
+## Architecture
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview.svg#gh-light-mode-only" alt="Parseable Overview" width="800" height="650" />
+  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview-dark.svg#gh-dark-mode-only" alt="Parseable Overview" width="800" height="650" />
+</p>
+
+## Live Demo 
+
+Try out Parseable server with our demo instance. Send log data to default log stream `frontend`
+
+```sh
+curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/frontend' \
+--header 'X-P-META-meta1: value1' \
+--header 'X-P-TAG-tag1: value1' \
+--header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' \
+--header 'Content-Type: application/json' \
+--data-raw '[
+    {
+        "id": "434a5f5e-2f5f-11ed-a261-0242ac120002",
+        "datetime": "24/Jun/2022:14:12:15 +0000",
+        "host": "153.10.110.81", 
+        "user-identifier": "Mozilla/5.0 Gecko/20100101 Firefox/64.0", 
+        "method": "PUT", 
+        "status": 500, 
+        "referrer": "http://www.google.com/"
+    }
+]'
+```
+
+Access the Parseable dashboard to verify the log data is present
+
+<table>
+<tr>
+    <td>URL</td>
+    <td><a href="https://demo.parseable.io" target="_blank">https://demo.parseable.io</a></td>
+</tr>
+<tr>
+    <td>Username</td>
+    <td>parseable</td>
+</tr>
+<tr>
+    <td>Password</td>
+    <td>parseable</td>
+</tr>
+</table>
+
+For complete Parseable API documentation, refer to [Parseable API workspace on Postman](https://www.postman.com/parseable/workspace/parseable/overview).
+
+:exclamation: Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically.
+
 ## Contributing 
 
 Refer to the contributing guide [here](https://www.parseable.io/docs/contributing).
 
 ## License
-
-Copyright (c) 2022 [Parseable, Inc.](https://parseable.io)
 
 Licensed under the GNU Affero General Public License, Version 3 (the "License");
 you may not use this file except in compliance with the License.
