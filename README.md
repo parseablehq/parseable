@@ -19,7 +19,8 @@
   <br>
 </h4>
 
-Parseable is a log storage and observability platform for modern, cloud native workloads. Parseable is built for high volume log data from sources like Fluent Bit, Logstash etc or directly from applications.
+Parseable is an efficient and scalable log storage and management platform. Cloud native by design, Parseable ensures ease of deployment and use. It is compatible with standard logging agents like FluentBit, LogStash etc. With object storage as primary storage for Parseable, you get seamless scale and flexibility for ever growing log data. Parseable also offers a builtin, intuitive GUI for log query and analysis.
+
 ## Why Parseable
 
 * Developer first platform, designed for ease of use and flexibility.
