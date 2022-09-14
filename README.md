@@ -48,7 +48,7 @@ Try out Parseable server with our demo instance. Send log data to default log st
 ```sh
 curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/frontend' \
 --header 'X-P-META-meta1: value1' \
---header 'X-P-TAGS-tag1: value1' \
+--header 'X-P-TAG-tag1: value1' \
 --header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' \
 --header 'Content-Type: application/json' \
 --data-raw '[

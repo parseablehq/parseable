@@ -31,7 +31,7 @@ use crate::storage::ObjectStorage;
 use crate::utils::header_parsing::collect_labelled_headers;
 use crate::utils::{self, merge};
 
-const PREFIX_TAGS: &str = "x-p-tags-";
+const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
 const SEPARATOR: char = '^';
 
