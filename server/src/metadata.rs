@@ -172,6 +172,7 @@ impl STREAM_INFO {
         self.read().unwrap().keys().map(String::clone).collect()
     }
 
+    #[allow(dead_code)]
     pub fn update_stats(
         &self,
         stream_name: &str,
