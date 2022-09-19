@@ -276,8 +276,7 @@ impl S3 {
 
     #[allow(dead_code)]
     async fn prefix_exists(&self, prefix: &str) -> Result<bool, AwsSdkError> {
-        // TODO check if head object is faster compared to
-        // list objects
+        // TODO check if head object is faster compared to list objects
         let resp = self
             .client
             .list_objects_v2()

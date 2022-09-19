@@ -173,7 +173,7 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
     // Proceed to create log stream if it doesn't exist
     if s3.get_schema(&stream_name).await.is_err() {
         if let Err(e) =
-            metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Default::default())
+            metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Alerts::default())
         {
             return response::ServerResponse {
                 msg: format!(
