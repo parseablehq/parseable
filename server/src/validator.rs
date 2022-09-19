@@ -26,7 +26,7 @@ use crate::metadata::STREAM_INFO;
 use crate::query::Query;
 use crate::Error;
 
-// TODO: add more sql keywords here in lower case
+// Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
     "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
 ];

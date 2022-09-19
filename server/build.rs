@@ -36,6 +36,10 @@ mod ui {
     use static_files::resource_dir;
     use ureq::get as get_from_url;
 
+    const CARGO_MANIFEST_DIR: &str = "CARGO_MANIFEST_DIR";
+    const OUT_DIR: &str = "OUT_DIR";
+    const LOCAL_ASSETS_PATH: &str = "LOCAL_ASSETS_PATH";
+
     fn build_resource_from(local_path: impl AsRef<Path>) -> io::Result<()> {
         let local_path = local_path.as_ref();
         if local_path.exists() {
@@ -49,9 +53,9 @@ mod ui {
     }
 
     pub fn setup() -> io::Result<()> {
-        let cargo_manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+        let cargo_manifest_dir = PathBuf::from(env::var(CARGO_MANIFEST_DIR).unwrap());
         let cargo_toml = cargo_manifest_dir.join("Cargo.toml");
-        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+        let out_dir = PathBuf::from(env::var(OUT_DIR).unwrap());
         let parseable_ui_path = out_dir.join("ui");
         let checksum_path = out_dir.join("parseable_ui.sha1");
 
@@ -69,7 +73,7 @@ mod ui {
 
         // try fetching frontend path from env var
         let local_assets_path: Option<PathBuf> =
-            env::var("LOCAL_ASSETS_PATH").ok().map(PathBuf::from);
+            env::var(LOCAL_ASSETS_PATH).ok().map(PathBuf::from);
 
         // If local build of ui is to be used
         if let Some(ref path) = local_assets_path {

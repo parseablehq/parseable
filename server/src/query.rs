@@ -69,7 +69,7 @@ impl Query {
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information
-    /// TODO: find a way to query all selected parquet files together in a single context.
+    /// TODO: Query local and remote S3 parquet files in a single context
     pub async fn execute(&self, storage: &impl ObjectStorage) -> Result<Vec<RecordBatch>, Error> {
         let mut results = vec![];
         storage.query(self, &mut results).await?;

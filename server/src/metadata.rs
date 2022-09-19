@@ -129,7 +129,6 @@ impl STREAM_INFO {
             alerts,
             ..Default::default()
         };
-        // TODO: Add check to confirm data insertion
         map.insert(stream_name, metadata);
 
         Ok(())
@@ -137,7 +136,6 @@ impl STREAM_INFO {
 
     pub fn delete_stream(&self, stream_name: &str) -> Result<(), Error> {
         let mut map = self.write().unwrap();
-        // TODO: Add check to confirm data deletion
         map.remove(stream_name);
 
         Ok(())
@@ -147,8 +145,6 @@ impl STREAM_INFO {
         for stream in storage.list_streams().await? {
             // Ignore S3 errors here, because we are just trying
             // to load the stream metadata based on whatever is available.
-            //
-            // TODO: ignore failure(s) if any and skip to next stream
             let alerts = storage
                 .get_alerts(&stream.name)
                 .await
