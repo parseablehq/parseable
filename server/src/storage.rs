@@ -238,7 +238,7 @@ impl StorageDir {
     }
 
     pub fn move_local_to_temp(&self, filename: String) -> io::Result<()> {
-        let record_tmp_file_path = self.temp_dir.join(filename.clone() + ".tmp");
+        let record_tmp_file_path = self.temp_dir.join(filename + ".tmp");
         fs::rename(self.data_path.join("data.records"), &record_tmp_file_path)?;
         event::STREAM_WRITERS::unset_entry(&self.stream_name).unwrap();
         Ok(())
