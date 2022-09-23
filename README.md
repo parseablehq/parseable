@@ -27,20 +27,20 @@ Parseable ships with a GUI to query and analyze logs.
 
 ## Features
 
-[x] Highly compressed log data storage with [Parquet](https://parquet.apache.org).
-[x] Use standard SQL for querying log data.
-[x] Auto inferred schema for log streams.
-[x] Dashboard to query the log data.
-[x] Compatible with existing logging agents.
-[x] Scale with scaling up the node.
-[ ] Configurable alerting.
-[ ] Distributed, multi-node cluster.
-[ ] Log data visualization via Parseable UI.
-[ ] Access control for users and groups.
-[ ] Log data retention and export.
-[ ] Kafka plugin to ingest log data.
-[ ] Grafana plugin to visualize log data.
-[ ] Anomaly detection within log data.
+- [x] Highly compressed log data storage with [Parquet](https://parquet.apache.org).
+- [x] Use standard SQL for querying log data.
+- [x] Auto inferred schema for log streams.
+- [x] Dashboard to query the log data.
+- [x] Compatible with existing logging agents.
+- [x] Scale with scaling up the node.
+- [ ] Configurable alerting.
+- [ ] Distributed, multi-node cluster.
+- [ ] Log data visualization via Parseable UI.
+- [ ] Access control for users and groups.
+- [ ] Log data retention and export.
+- [ ] Kafka plugin to ingest log data.
+- [ ] Grafana plugin to visualize log data.
+- [ ] Anomaly detection within log data.
 
 ## Getting Started
 
