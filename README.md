@@ -19,11 +19,9 @@
   <br>
 </h4>
 
-Parseable is a cloud native, log storage and analysis platform. Parseable is written in Rust and can be deployed on Baremetal, VMs, Containers (Kubernetes). 
+Parseable is a cloud native, log storage and analysis platform. Parseable is indexing free by design. Written in Rust, Parseable can be deployed on Baremetal, VMs and Kubernetes.
 
-Parseable is designed to ensure index-free ingests log data via HTTP POST calls and exposes a query API to search and analyze logs. It is compatible with logging agents like FluentBit, LogStash, FileBeat among others. So, you can point existing logging agents to Parseable.
-
-Parseable ships with a GUI to query and analyze logs.
+It ingests log data via HTTP POST calls and exposes a query API to search and analyze logs. It is compatible with logging agents like FluentBit, LogStash, FileBeat among others.
 
 ## Features
 
@@ -94,13 +92,6 @@ export P_LOCAL_STORAGE="./data"
 export P_USERNAME="parseable"
 export P_PASSWORD="parseable"
 ```
-
-## Architecture
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview.svg#gh-light-mode-only" alt="Parseable Overview" width="800" height="650" />
-  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/overview-dark.svg#gh-dark-mode-only" alt="Parseable Overview" width="800" height="650" />
-</p>
 
 ## Live Demo 
 
