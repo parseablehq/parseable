@@ -19,21 +19,28 @@
   <br>
 </h4>
 
-Parseable is an efficient and scalable log storage and management platform. Cloud native by design, Parseable ensures ease of deployment and use. It is compatible with standard logging agents like FluentBit, LogStash etc. With object storage as primary storage for Parseable, you get seamless scale and flexibility for ever growing log data. Parseable also offers a builtin, intuitive GUI for log query and analysis.
+Parseable is a cloud native, log storage and analysis platform. Parseable is written in Rust and can be deployed on Baremetal, VMs, Containers (Kubernetes). 
 
-## Why Parseable
+Parseable is designed to ensure index-free ingests log data via HTTP POST calls and exposes a query API to search and analyze logs. It is compatible with logging agents like FluentBit, LogStash, FileBeat among others. So, you can point existing logging agents to Parseable.
 
-* Developer first platform, designed for ease of use and flexibility.
-* Log data stored as [Parquet](https://parquet.apache.org) - columnar, open data format, designed for analytics.
-* Stateless, index free design with object storage as primary storage.
-* SDK less, simple REST API calls for log ingestion.
+Parseable ships with a GUI to query and analyze logs.
 
 ## Features
 
-* SQL compatible API for querying log data.
-* Intuitive dashboard to parse and query the log data.
-* Bring your own analytics platform for deeper analysis of log data.
-* Auto inferred schema.
+[x] Highly compressed log data storage with [Parquet](https://parquet.apache.org).
+[x] Use standard SQL for querying log data.
+[x] Auto inferred schema for log streams.
+[x] Dashboard to query the log data.
+[x] Compatible with existing logging agents.
+[x] Scale with scaling up the node.
+[ ] Configurable alerting.
+[ ] Distributed, multi-node cluster.
+[ ] Log data visualization via Parseable UI.
+[ ] Access control for users and groups.
+[ ] Log data retention and export.
+[ ] Kafka plugin to ingest log data.
+[ ] Grafana plugin to visualize log data.
+[ ] Anomaly detection within log data.
 
 ## Getting Started
 
@@ -45,7 +52,7 @@ mkdir -p /tmp/parseable
 docker run \
   -p 8000:8000 \
   -v /tmp/parseable:/data \
-  parseable/parseable:v0.0.1
+  parseable/parseable:latest
 ```
 
 ### Kubernetes
