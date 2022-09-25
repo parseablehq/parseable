@@ -21,6 +21,9 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::ListingOptions;
+use datafusion::datasource::listing::ListingTable;
+use datafusion::datasource::listing::ListingTableConfig;
+use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::prelude::*;
 use serde_json::Value;
 use std::sync::Arc;
@@ -29,6 +32,7 @@ use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 use crate::storage;
 use crate::storage::ObjectStorage;
+use crate::storage::ObjectStorageError;
 use crate::utils::TimePeriod;
 use crate::validator;
 use crate::Error;
@@ -102,17 +106,20 @@ impl Query {
             None => return Ok(()),
         };
 
-        ctx.register_listing_table(
-            &self.stream_name,
-            CONFIG
-                .parseable
-                .get_cache_path(&self.stream_name)
-                .to_str()
-                .unwrap(),
-            listing_options,
-            Some(schema),
-        )
-        .await?;
+        let cache_path = CONFIG.parseable.get_cache_path(&self.stream_name);
+
+        let table_path =
+            ListingTableUrl::parse(cache_path.to_str().expect("path should is valid unicode"))
+                .expect("path should parse into valid listing url for local filesystem");
+
+        let config = ListingTableConfig::new(table_path)
+            .with_listing_options(listing_options)
+            .with_schema(schema);
+
+        let table = ListingTable::try_new(config)?;
+
+        ctx.register_table(&*self.stream_name, Arc::new(table))
+            .map_err(ObjectStorageError::DataFusionError)?;
 
         // execute the query and collect results
         let df = ctx.sql(self.query.as_str()).await?;
