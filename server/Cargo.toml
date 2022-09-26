@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "0.0.1"
+version = "0.0.3"
 authors = [
     "NitishTiwari <nitish@parseable.io>", 
     "AdheipSingh <adheip@parseable.io>",
@@ -18,6 +18,7 @@ async-trait = "0.1"
 aws-sdk-s3 = "0.17"
 bytes = "1"
 chrono = "0.4.19"
+chrono-humanize = "0.2.2"
 crossterm = "0.23.2"
 datafusion = "11.0"
 object_store = { version = "0.4", features=["aws"] }
@@ -34,6 +35,7 @@ os_info = "3.0.7"
 hostname = "0.3"
 rand = "0.8.4"
 rust-flatten-json = "0.2.0"
+semver = "1.0.14"
 serde = "^1.0.8"
 serde_derive = "^1.0.8"
 serde_json = "^1.0.8"
@@ -47,7 +49,7 @@ clokwerk = "0.4.0-rc1"
 actix-web-static-files = "4.0"
 static-files = "0.2.1"
 walkdir = "2"
-ureq = "2.5.0"
+ureq = { version = "2.5.0", features = ["json"] }
 
 [build-dependencies]
 static-files = "0.2.1"
