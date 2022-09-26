@@ -29,7 +29,6 @@ use crate::metadata::Stats;
 use crate::option::{StorageOpt, CONFIG};
 use crate::query::Query;
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
-use crate::utils::hostname_unchecked;
 
 // Default object storage currently is DO Spaces bucket
 // Any user who starts the Parseable server with default configuration
@@ -427,7 +426,7 @@ impl ObjectStorage for S3 {
 
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options = ListingOptions {
-            file_extension: format!("{}.data.parquet", hostname_unchecked()),
+            file_extension: ".data.parquet".to_string(),
             format: Arc::new(file_format),
             table_partition_cols: vec![],
             collect_stat: true,

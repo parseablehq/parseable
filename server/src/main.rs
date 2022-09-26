@@ -114,10 +114,6 @@ fn startup_sync() {
 
     for stream in metadata::STREAM_INFO.list_streams() {
         let dir = StorageDir::new(stream.clone());
-        // if data.records file is not present then skip this stream
-        if !dir.local_data_exists() {
-            continue;
-        }
 
         if let Err(e) = dir.create_temp_dir() {
             log::error!(
@@ -127,6 +123,12 @@ fn startup_sync() {
             );
             continue;
         }
+
+        // if data.records file is not present then skip this stream
+        if !dir.local_data_exists() {
+            continue;
+        }
+
         // create prefix for this file from its last modified time
         let path = dir.data_path.join("data.records");
 
