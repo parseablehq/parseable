@@ -108,9 +108,15 @@ impl Query {
 
         let cache_path = CONFIG.parseable.get_cache_path(&self.stream_name);
 
-        let table_path =
-            ListingTableUrl::parse(cache_path.to_str().expect("path should is valid unicode"))
-                .expect("path should parse into valid listing url for local filesystem");
+        let table_path = match ListingTableUrl::parse(
+            cache_path.to_str().expect("path should is valid unicode"),
+        ) {
+            Ok(table_path) => table_path,
+            Err(e) => {
+                log::warn!("could not parse local filesystem path. Maybe directory does not exist. Error {}", e);
+                return Ok(());
+            }
+        };
 
         let config = ListingTableConfig::new(table_path)
             .with_listing_options(listing_options)
