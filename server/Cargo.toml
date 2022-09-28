@@ -10,7 +10,7 @@ categories = ["olap", "analytics-store"]
 
 [dependencies]
 actix-web-httpauth = "0.6"
-actix-web = { version = "4.1", features = ["openssl"] }
+actix-web = { version = "4.1", features = ["rustls"] }
 actix-cors = "0.6"
 actix-files = "0.6.1"
 anyhow = { version = "1.0.43", features = ["backtrace"] }
@@ -30,10 +30,11 @@ http = "0.2.4"
 lazy_static = "1.4.0"
 log = "0.4.14"
 num_cpus = "1.0.0"
-openssl = { version = "0.10" }
 os_info = "3.0.7"
 hostname = "0.3"
 rand = "0.8.4"
+rustls = "0.20.6"
+rustls-pemfile = "1.0.1"
 rust-flatten-json = "0.2.0"
 semver = "1.0.14"
 serde = "^1.0.8"

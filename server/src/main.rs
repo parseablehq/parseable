@@ -26,12 +26,14 @@ use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
 use filetime::FileTime;
 use log::warn;
-use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+use rustls::{Certificate, PrivateKey, ServerConfig};
+use rustls_pemfile::{certs, pkcs8_private_keys};
 use thread_priority::{ThreadBuilder, ThreadPriority};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::BufReader;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::thread::{self, JoinHandle};
@@ -274,19 +276,40 @@ async fn run_http() -> anyhow::Result<()> {
         &CONFIG.parseable.tls_key_path,
     ) {
         (Some(cert), Some(key)) => {
-            let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls())?;
-            builder.set_private_key_file(key, SslFiletype::PEM)?;
-            builder.set_certificate_chain_file(cert)?;
-            Some(builder)
+            // init server config builder with safe defaults
+            let config = ServerConfig::builder()
+                .with_safe_defaults()
+                .with_no_client_auth();
+
+            // load TLS key/cert files
+            let cert_file = &mut BufReader::new(File::open(cert)?);
+            let key_file = &mut BufReader::new(File::open(key)?);
+
+            // convert files to key/cert objects
+            let cert_chain = certs(cert_file)?.into_iter().map(Certificate).collect();
+
+            let mut keys: Vec<PrivateKey> = pkcs8_private_keys(key_file)?
+                .into_iter()
+                .map(PrivateKey)
+                .collect();
+
+            // exit if no keys could be parsed
+            if keys.is_empty() {
+                anyhow::bail!("Could not locate PKCS 8 private keys.");
+            }
+
+            let server_config = config.with_single_cert(cert_chain, keys.remove(0))?;
+
+            Some(server_config)
         }
         (_, _) => None,
     };
 
     // concurrent workers equal to number of cores on the cpu
     let http_server = HttpServer::new(move || create_app!()).workers(num_cpus::get());
-    if let Some(builder) = ssl_acceptor {
+    if let Some(config) = ssl_acceptor {
         http_server
-            .bind_openssl(&CONFIG.parseable.address, builder)?
+            .bind_rustls(&CONFIG.parseable.address, config)?
             .run()
             .await?;
     } else {
