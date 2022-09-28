@@ -129,6 +129,39 @@ pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
 }
 
+pub mod github {
+    use anyhow::anyhow;
+    use chrono::{DateTime, Utc};
+
+    pub struct LatestRelease {
+        pub version: semver::Version,
+        pub date: DateTime<Utc>,
+    }
+
+    pub fn get_latest() -> Result<LatestRelease, anyhow::Error> {
+        let json: serde_json::Value =
+            ureq::get("https://api.github.com/repos/parseablehq/parseable/releases/latest")
+                .call()?
+                .into_json()?;
+
+        let version = json["tag_name"]
+            .as_str()
+            .and_then(|ver| ver.strip_prefix('v'))
+            .and_then(|ver| semver::Version::parse(ver).ok())
+            .ok_or_else(|| anyhow!("Bad parse when parsing verison"))?;
+
+        let date = json["published_at"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Bad parse when parsing published date"))?;
+
+        let date = chrono::DateTime::parse_from_rfc3339(date)
+            .expect("date-time from github is in rfc3339 format")
+            .into();
+
+        Ok(LatestRelease { version, date })
+    }
+}
+
 /// Convert minutes to a slot range
 /// e.g. given minute = 15 and OBJECT_STORE_DATA_GRANULARITY = 10 returns "10-19"
 pub fn minute_to_slot(minute: u32, data_granularity: u32) -> Option<String> {

@@ -61,6 +61,7 @@ impl Config {
     pub fn print(&self) {
         let scheme = CONFIG.parseable.get_scheme();
         self.status_info(&scheme);
+        banner::version::print();
         self.warning();
         self.storage_info();
         banner::system_info();
