@@ -23,6 +23,8 @@ Parseable is a cloud native, log storage and analysis platform. Parseable is ind
 
 It ingests log data via HTTP POST calls and exposes a query API to search and analyze logs. It is compatible with logging agents like FluentBit, LogStash, FileBeat among others.
 
+<img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/parseable.png" />
+
 ## Features
 
 - [x] Highly compressed log data storage with [Parquet](https://parquet.apache.org).
