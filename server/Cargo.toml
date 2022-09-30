@@ -65,5 +65,5 @@ rstest = "0.15.0"
 serial_test = { version = "0.9.0", default-features = false }
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/v0.0.6/build.zip"
-assets-sha1 = "c529d11acb35376d1b41bf3fa7746f26571e51cf"
+assets-url = "https://github.com/parseablehq/console/releases/download/v0.0.7/build.zip"
+assets-sha1 = "3167f4d4a01c06b4dd0ea9b5e30c67442ce12186"
