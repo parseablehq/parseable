@@ -62,8 +62,13 @@ impl QueryResponse {
     }
 }
 
-pub struct EventResponse {
-    pub msg: String,
+impl From<Vec<RecordBatch>> for QueryResponse {
+    fn from(body: Vec<RecordBatch>) -> Self {
+        Self {
+            code: StatusCode::OK,
+            body,
+        }
+    }
 }
 
 #[derive(Debug, Display, Error)]

@@ -18,15 +18,15 @@
 
 use datafusion::arrow::datatypes::Schema;
 use lazy_static::lazy_static;
-use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
 use crate::alerts::Alerts;
-use crate::error::Error;
 use crate::event::Event;
 use crate::storage::ObjectStorage;
+
+use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LogStreamMetadata {
@@ -60,6 +60,9 @@ lazy_static! {
         RwLock::new(HashMap::new());
 }
 
+// It is very unlikely that panic will occur when dealing with metadata.
+pub const LOCK_EXPECT: &str = "no method in metadata should panic while holding a lock";
+
 // STREAM_INFO should be updated
 // 1. During server start up
 // 2. When a new stream is created (make a new entry in the map)
@@ -68,108 +71,102 @@ lazy_static! {
 // 5. When set alert API is called (update the alert)
 #[allow(clippy::all)]
 impl STREAM_INFO {
-    pub async fn check_alerts(&self, event: &Event) -> Result<(), Error> {
-        let mut map = self.write().unwrap();
+    pub async fn check_alerts(&self, event: &Event) -> Result<(), CheckAlertError> {
+        let event_json: serde_json::Value = serde_json::from_str(&event.body)?;
+
+        let mut map = self.write().expect(LOCK_EXPECT);
         let meta = map
             .get_mut(&event.stream_name)
-            .ok_or(Error::StreamMetaNotFound(event.stream_name.to_owned()))?;
-
-        let event: serde_json::Value = serde_json::from_str(&event.body)?;
+            .ok_or(MetadataError::StreamMetaNotFound(
+                event.stream_name.to_owned(),
+            ))?;
 
         for alert in meta.alerts.alerts.iter_mut() {
-            if let Err(e) = alert.check_alert(&event).await {
-                error!("Error while parsing event against alerts: {}", e);
+            if let Err(_) = alert.check_alert(&event_json).await {
+                log::error!("Error while parsing event against alerts");
             }
         }
 
         Ok(())
     }
 
-    pub fn set_schema(&self, stream_name: &str, schema: Schema) -> Result<(), Error> {
-        let mut map = self.write().unwrap();
+    pub fn set_schema(&self, stream_name: &str, schema: Schema) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
                 metadata.schema.replace(schema);
             })
     }
 
-    pub fn schema(&self, stream_name: &str) -> Result<Option<Schema>, Error> {
-        let map = self.read().unwrap();
+    pub fn schema(&self, stream_name: &str) -> Result<Option<Schema>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
         map.get(stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| metadata.schema.to_owned())
     }
 
-    pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), Error> {
-        let mut map = self.write().unwrap();
+    pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_string()))
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
                 metadata.alerts = alerts;
             })
     }
 
-    pub fn alert(&self, stream_name: &str) -> Result<Alerts, Error> {
-        let map = self.read().unwrap();
+    pub fn alert(&self, stream_name: &str) -> Result<Alerts, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
         map.get(stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))
             .map(|metadata| metadata.alerts.to_owned())
     }
 
-    pub fn add_stream(
-        &self,
-        stream_name: String,
-        schema: Option<Schema>,
-        alerts: Alerts,
-    ) -> Result<(), Error> {
-        let mut map = self.write().unwrap();
+    pub fn add_stream(&self, stream_name: String, schema: Option<Schema>, alerts: Alerts) {
+        let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
             schema,
             alerts,
             ..Default::default()
         };
         map.insert(stream_name, metadata);
-
-        Ok(())
     }
 
-    pub fn delete_stream(&self, stream_name: &str) -> Result<(), Error> {
-        let mut map = self.write().unwrap();
+    pub fn delete_stream(&self, stream_name: &str) {
+        let mut map = self.write().expect(LOCK_EXPECT);
         map.remove(stream_name);
-
-        Ok(())
     }
 
-    pub async fn load(&self, storage: &impl ObjectStorage) -> Result<(), Error> {
-        for stream in storage.list_streams().await? {
-            // Ignore S3 errors here, because we are just trying
-            // to load the stream metadata based on whatever is available.
-            let alerts = storage
-                .get_alerts(&stream.name)
-                .await
-                .map_err(|_| Error::AlertNotInStore(stream.name.to_owned()));
+    pub async fn load(&self, storage: &impl ObjectStorage) -> Result<(), LoadError> {
+        // When loading streams this funtion will assume list_streams only returns valid streams.
+        // a valid stream would have a .schema file.
+        // .schema file could be empty in that case it will be treated as an uninitialized stream.
+        // return error in case of an error from object storage itself.
 
-            let schema = storage
-                .get_schema(&stream.name)
-                .await
-                .map_err(|_| Error::SchemaNotInStore(stream.name.to_owned()))?;
+        for stream in storage.list_streams().await? {
+            let alerts = storage.get_alerts(&stream.name).await?;
+            let schema = storage.get_schema(&stream.name).await?;
 
             let metadata = LogStreamMetadata {
                 schema,
-                alerts: alerts.unwrap_or_default(),
-                ..Default::default()
+                alerts,
+                ..LogStreamMetadata::default()
             };
 
-            let mut map = self.write().unwrap();
-            map.insert(stream.name.clone(), metadata);
+            let mut map = self.write().expect(LOCK_EXPECT);
+
+            map.insert(stream.name, metadata);
         }
 
         Ok(())
     }
 
     pub fn list_streams(&self) -> Vec<String> {
-        self.read().unwrap().keys().map(String::clone).collect()
+        self.read()
+            .expect(LOCK_EXPECT)
+            .keys()
+            .map(String::clone)
+            .collect()
     }
 
     #[allow(dead_code)]
@@ -178,15 +175,41 @@ impl STREAM_INFO {
         stream_name: &str,
         size: u64,
         compressed_size: u64,
-    ) -> Result<(), Error> {
-        let mut map = self.write().unwrap();
+    ) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
         let stream = map
             .get_mut(stream_name)
-            .ok_or(Error::StreamMetaNotFound(stream_name.to_owned()))?;
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))?;
 
         stream.stats.update(size, compressed_size);
 
         Ok(())
+    }
+}
+
+pub mod error {
+    pub mod stream_info {
+        use crate::storage::ObjectStorageError;
+
+        #[derive(Debug, thiserror::Error)]
+        pub enum CheckAlertError {
+            #[error("Serde Json Error: {0}")]
+            Serde(#[from] serde_json::Error),
+            #[error("Metadata Error: {0}")]
+            Metadata(#[from] MetadataError),
+        }
+
+        #[derive(Debug, thiserror::Error)]
+        pub enum MetadataError {
+            #[error("Metadata for stream {0} not found. Maybe the stream does not exist")]
+            StreamMetaNotFound(String),
+        }
+
+        #[derive(Debug, thiserror::Error)]
+        pub enum LoadError {
+            #[error("Error while loading from object storage: {0}")]
+            ObjectStorage(#[from] ObjectStorageError),
+        }
     }
 }
 

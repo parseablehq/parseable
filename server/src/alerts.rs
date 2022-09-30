@@ -19,8 +19,6 @@
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
-
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
@@ -39,7 +37,7 @@ pub struct Alert {
 impl Alert {
     // TODO: spawn async tasks to call webhooks if alert rules are met
     // This is done to ensure that threads aren't blocked by calls to the webhook
-    pub async fn check_alert(&mut self, event: &serde_json::Value) -> Result<(), Error> {
+    pub async fn check_alert(&mut self, event: &serde_json::Value) -> Result<(), ()> {
         if self.rule.resolves(event).await {
             info!("Alert triggered; name: {}", self.name);
             for target in self.targets.clone() {
