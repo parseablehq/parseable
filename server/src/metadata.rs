@@ -261,9 +261,7 @@ mod tests {
     fn test_add_stream(#[case] stream_name: String, #[case] schema: Option<Schema>) {
         let alerts = Alerts { alerts: vec![] };
         clear_map();
-        STREAM_INFO
-            .add_stream(stream_name.clone(), schema.clone(), alerts.clone())
-            .unwrap();
+        STREAM_INFO.add_stream(stream_name.clone(), schema.clone(), alerts.clone());
 
         let left = STREAM_INFO.read().unwrap().clone();
         let right = hashmap! {
@@ -281,11 +279,9 @@ mod tests {
     #[serial]
     fn test_delete_stream(#[case] stream_name: String) {
         clear_map();
-        STREAM_INFO
-            .add_stream(stream_name.clone(), None, Alerts { alerts: vec![] })
-            .unwrap();
+        STREAM_INFO.add_stream(stream_name.clone(), None, Alerts { alerts: vec![] });
 
-        STREAM_INFO.delete_stream(&stream_name).unwrap();
+        STREAM_INFO.delete_stream(&stream_name);
         let map = STREAM_INFO.read().unwrap();
         assert!(!map.contains_key(&stream_name));
     }

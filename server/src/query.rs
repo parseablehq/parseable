@@ -201,8 +201,7 @@ mod tests {
     fn query_parse_prefix_with_some_schema(#[case] prefix: &str, #[case] right: &[&str]) {
         clear_map();
         STREAM_INFO
-            .add_stream("stream_name".to_string(), Some(schema()), Alerts::default())
-            .unwrap();
+            .add_stream("stream_name".to_string(), Some(schema()), Alerts::default());
 
         let query = Value::from_str(prefix).unwrap();
         let query = Query::parse(query).unwrap();
@@ -225,8 +224,7 @@ mod tests {
     fn query_parse_prefix_with_no_schema(#[case] prefix: &str) {
         clear_map();
         STREAM_INFO
-            .add_stream("stream_name".to_string(), None, Alerts::default())
-            .unwrap();
+            .add_stream("stream_name".to_string(), None, Alerts::default());
 
         let query = Value::from_str(prefix).unwrap();
         assert!(Query::parse(query).is_err());
