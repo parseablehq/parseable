@@ -82,7 +82,7 @@ impl STREAM_INFO {
             ))?;
 
         for alert in meta.alerts.alerts.iter_mut() {
-            if let Err(_) = alert.check_alert(&event_json).await {
+            if alert.check_alert(&event_json).await.is_err() {
                 log::error!("Error while parsing event against alerts");
             }
         }
