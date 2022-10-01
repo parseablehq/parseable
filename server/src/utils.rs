@@ -21,9 +21,7 @@ use chrono::{Date, DateTime, Timelike, Utc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::Error;
-
-pub fn flatten_json_body(body: web::Json<serde_json::Value>) -> Result<String, Error> {
+pub fn flatten_json_body(body: web::Json<serde_json::Value>) -> Result<String, serde_json::Error> {
     let mut flat_value: Value = json!({});
     flatten_json::flatten(&body, &mut flat_value, None, true, Some("_")).unwrap();
     let flattened = serde_json::to_string(&flat_value)?;

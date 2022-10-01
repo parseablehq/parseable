@@ -382,10 +382,15 @@ impl ObjectStorage for S3 {
     }
 
     async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError> {
-        let body_bytes = self._alert_exists(stream_name).await?;
-        let alerts = serde_json::from_slice(&body_bytes).unwrap_or_default();
+        let res = self._alert_exists(stream_name).await;
 
-        Ok(alerts)
+        match res {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_default()),
+            Err(e) => match e {
+                AwsSdkError::NoSuchKey(_) => Ok(Alerts::default()),
+                e => Err(e.into()),
+            },
+        }
     }
 
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {

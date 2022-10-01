@@ -28,21 +28,18 @@ use datafusion::prelude::*;
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 use crate::storage;
 use crate::storage::ObjectStorage;
 use crate::storage::ObjectStorageError;
 use crate::utils::TimePeriod;
 use crate::validator;
-use crate::Error;
 
-fn get_value<'a>(value: &'a Value, key: &'static str) -> Result<&'a str, Error> {
-    value
-        .get(key)
-        .ok_or(Error::JsonQuery(key))?
-        .as_str()
-        .ok_or(Error::JsonQuery(key))
+use self::error::{ExecuteError, ParseError};
+
+type Key = &'static str;
+fn get_value(value: &Value, key: Key) -> Result<&str, Key> {
+    value.get(key).and_then(|value| value.as_str()).ok_or(key)
 }
 
 // Query holds all values relevant to a query for a single log stream
@@ -57,13 +54,13 @@ pub struct Query {
 impl Query {
     // parse_query parses the SQL query and returns the log stream name on which
     // this query is supposed to be executed
-    pub fn parse(query_json: Value) -> Result<Query, Error> {
+    pub fn parse(query_json: Value) -> Result<Query, ParseError> {
         // retrieve query, start and end time information from payload.
         let query = get_value(&query_json, "query")?;
         let start_time = get_value(&query_json, "startTime")?;
         let end_time = get_value(&query_json, "endTime")?;
 
-        validator::query(query, start_time, end_time)
+        Ok(validator::query(query, start_time, end_time)?)
     }
 
     /// Return prefixes, each per day/hour/minutes as necessary
@@ -73,8 +70,11 @@ impl Query {
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information
-    /// TODO: Query local and remote S3 parquet files in a single context
-    pub async fn execute(&self, storage: &impl ObjectStorage) -> Result<Vec<RecordBatch>, Error> {
+    /// TODO: find a way to query all selected parquet files together in a single context.
+    pub async fn execute(
+        &self,
+        storage: &impl ObjectStorage,
+    ) -> Result<Vec<RecordBatch>, ExecuteError> {
         let mut results = vec![];
         storage.query(self, &mut results).await?;
 
@@ -87,7 +87,7 @@ impl Query {
         Ok(results)
     }
 
-    async fn execute_on_cache(&self, results: &mut Vec<RecordBatch>) -> Result<(), Error> {
+    async fn execute_on_cache(&self, results: &mut Vec<RecordBatch>) -> Result<(), ExecuteError> {
         let ctx = SessionContext::new();
         let file_format = ParquetFormat::default().with_enable_pruning(true);
 
@@ -97,13 +97,6 @@ impl Query {
             table_partition_cols: vec![],
             collect_stat: true,
             target_partitions: 1,
-        };
-
-        let schema = STREAM_INFO.schema(&self.stream_name)?;
-
-        let schema = match schema {
-            Some(schema) => Arc::new(schema),
-            None => return Ok(()),
         };
 
         let cache_path = CONFIG.parseable.get_cache_path(&self.stream_name);
@@ -120,7 +113,7 @@ impl Query {
 
         let config = ListingTableConfig::new(table_path)
             .with_listing_options(listing_options)
-            .with_schema(schema);
+            .with_schema(Arc::clone(&self.schema));
 
         let table = ListingTable::try_new(config)?;
 
@@ -129,9 +122,39 @@ impl Query {
 
         // execute the query and collect results
         let df = ctx.sql(self.query.as_str()).await?;
-        results.extend(df.collect().await.map_err(Error::DataFusion)?);
+        results.extend(df.collect().await?);
 
         Ok(())
+    }
+}
+
+pub mod error {
+    use datafusion::error::DataFusionError;
+
+    use crate::{storage::ObjectStorageError, validator::error::QueryValidationError};
+
+    use super::Key;
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum ParseError {
+        #[error("Key not found: {0}")]
+        Key(String),
+        #[error("Error parsing query: {0}")]
+        Validation(#[from] QueryValidationError),
+    }
+
+    impl From<Key> for ParseError {
+        fn from(key: Key) -> Self {
+            ParseError::Key(key.to_string())
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum ExecuteError {
+        #[error("Query Execution failed due to error in object storage: {0}")]
+        ObjectStorage(#[from] ObjectStorageError),
+        #[error("Query Execution failed due to error in datafusion: {0}")]
+        Datafusion(#[from] DataFusionError),
     }
 }
 
@@ -177,9 +200,7 @@ mod tests {
     #[serial_test::serial]
     fn query_parse_prefix_with_some_schema(#[case] prefix: &str, #[case] right: &[&str]) {
         clear_map();
-        STREAM_INFO
-            .add_stream("stream_name".to_string(), Some(schema()), Alerts::default())
-            .unwrap();
+        STREAM_INFO.add_stream("stream_name".to_string(), Some(schema()), Alerts::default());
 
         let query = Value::from_str(prefix).unwrap();
         let query = Query::parse(query).unwrap();
@@ -201,9 +222,7 @@ mod tests {
     #[serial_test::serial]
     fn query_parse_prefix_with_no_schema(#[case] prefix: &str) {
         clear_map();
-        STREAM_INFO
-            .add_stream("stream_name".to_string(), None, Alerts::default())
-            .unwrap();
+        STREAM_INFO.add_stream("stream_name".to_string(), None, Alerts::default());
 
         let query = Value::from_str(prefix).unwrap();
         assert!(Query::parse(query).is_err());

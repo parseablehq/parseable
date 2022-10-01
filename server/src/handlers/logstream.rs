@@ -59,13 +59,7 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    if let Err(e) = metadata::STREAM_INFO.delete_stream(&stream_name) {
-        log::warn!(
-            "failed to delete log stream {} from metadata due to err: {}",
-            stream_name,
-            e
-        )
-    }
+    metadata::STREAM_INFO.delete_stream(&stream_name);
 
     if event::STREAM_WRITERS::delete_entry(&stream_name).is_err() {
         log::warn!(
@@ -172,22 +166,11 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
 
     // Proceed to create log stream if it doesn't exist
     if s3.get_schema(&stream_name).await.is_err() {
-        if let Err(e) =
-            metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Alerts::default())
-        {
-            return response::ServerResponse {
-                msg: format!(
-                    "failed to create log stream {} due to error: {}",
-                    stream_name, e
-                ),
-                code: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-            .to_http();
-        }
+        metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Alerts::default());
         // Fail if unable to create log stream on object store backend
         if let Err(e) = s3.create_stream(&stream_name).await {
             // delete the stream from metadata because we couldn't create it on object store backend
-            metadata::STREAM_INFO.delete_stream(&stream_name).unwrap();
+            metadata::STREAM_INFO.delete_stream(&stream_name);
             return response::ServerResponse {
                 msg: format!(
                     "failed to create log stream {} due to err: {}",
@@ -231,7 +214,7 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
         }
     };
 
-    if let Err(e) = validator::alert(serde_json::to_string(&alerts).unwrap()) {
+    if let Err(e) = validator::alert(&alerts) {
         return response::ServerResponse {
             msg: format!(
                 "failed to set alert configuration for log stream {} due to err: {}",

@@ -43,7 +43,6 @@ use tokio::sync::oneshot::error::TryRecvError;
 
 mod alerts;
 mod banner;
-mod error;
 mod event;
 mod handlers;
 mod metadata;
@@ -55,7 +54,6 @@ mod storage;
 mod utils;
 mod validator;
 
-use error::Error;
 use option::CONFIG;
 use s3::S3;
 use storage::{ObjectStorage, StorageDir};

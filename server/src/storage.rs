@@ -304,9 +304,3 @@ pub enum ObjectStorageError {
     #[error("Authentication Error: {0}")]
     AuthenticationError(Box<dyn std::error::Error + Send + 'static>),
 }
-
-impl From<ObjectStorageError> for crate::error::Error {
-    fn from(e: ObjectStorageError) -> Self {
-        crate::error::Error::Storage(e)
-    }
-}

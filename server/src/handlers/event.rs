@@ -18,143 +18,135 @@
 
 use std::collections::HashMap;
 
-use actix_web::http::StatusCode;
-use actix_web::{web, HttpRequest, HttpResponse, ResponseError};
+use actix_web::{web, HttpRequest, HttpResponse};
 use serde_json::Value;
 
 use crate::event;
-use crate::metadata;
 use crate::query::Query;
-use crate::response::{self, EventResponse};
+use crate::response::QueryResponse;
 use crate::s3::S3;
-use crate::storage::ObjectStorage;
 use crate::utils::header_parsing::collect_labelled_headers;
-use crate::utils::{self, merge};
+use crate::utils::{self, flatten_json_body, merge};
+
+use self::error::{PostError, QueryError};
 
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
 const SEPARATOR: char = '^';
 
-pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> HttpResponse {
+pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResponse, QueryError> {
     let json = json.into_inner();
-    let query = match Query::parse(json) {
-        Ok(s) => s,
-        Err(crate::Error::JsonQuery(e)) => {
-            return response::ServerResponse {
-                msg: format!("Bad Request: missing \"{}\" field in query payload", e),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http()
-        }
-        Err(e) => {
-            return response::ServerResponse {
-                msg: format!("Failed to execute query due to err: {}", e),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http()
-        }
-    };
+    let query = Query::parse(json)?;
 
     let storage = S3::new();
 
-    if storage.get_schema(&query.stream_name).await.is_err() {
-        return response::ServerResponse {
-            msg: format!("log stream {} does not exist", query.stream_name),
-            code: StatusCode::BAD_REQUEST,
-        }
-        .to_http();
-    }
+    let query_result = query.execute(&storage).await;
 
-    match query.execute(&storage).await {
-        Ok(results) => response::QueryResponse {
-            body: results,
-            code: StatusCode::OK,
-        }
-        .to_http(),
-        Err(e) => response::ServerResponse {
-            msg: e.to_string(),
-            code: StatusCode::INTERNAL_SERVER_ERROR,
-        }
-        .to_http(),
-    }
+    query_result
+        .map(Into::<QueryResponse>::into)
+        .map(|response| response.to_http())
+        .map_err(|e| e.into())
 }
 
-pub async fn post_event(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
+pub async fn post_event(
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    let tags = match collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR) {
-        Ok(tags) => HashMap::from([("p_tags".to_string(), tags)]),
-        Err(e) => return e.error_response(),
-    };
+    let tags = HashMap::from([(
+        "p_tags".to_string(),
+        collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?,
+    )]);
 
-    let metadata = match collect_labelled_headers(&req, PREFIX_META, SEPARATOR) {
-        Ok(metadata) => HashMap::from([("p_metadata".to_string(), metadata)]),
-        Err(e) => return e.error_response(),
-    };
-
-    if let Err(e) = metadata::STREAM_INFO.schema(&stream_name) {
-        // if stream doesn't exist, fail to post data
-        return response::ServerResponse {
-            msg: format!(
-                "Failed to post event. Log stream {} does not exist. Error: {}",
-                stream_name, e
-            ),
-            code: StatusCode::NOT_FOUND,
-        }
-        .to_http();
-    };
+    let metadata = HashMap::from([(
+        "p_metadata".to_string(),
+        collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?,
+    )]);
 
     let s3 = S3::new();
 
     if let Some(array) = body.as_array() {
-        let mut i = 0;
-
         for body in array {
             let body = merge(body.clone(), metadata.clone());
             let body = merge(body, tags.clone());
-            let body = utils::flatten_json_body(web::Json(body)).unwrap();
+            let body = flatten_json_body(web::Json(body)).unwrap();
 
             let e = event::Event {
                 body,
                 stream_name: stream_name.clone(),
             };
 
-            if let Err(e) = e.process(&s3).await {
-                return response::ServerResponse {
-                    msg: format!("failed to process event because {}", e),
-                    code: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-                .to_http();
-            }
-
-            i += 1;
+            e.process(&s3).await?;
         }
+    } else {
+        let body = merge(body.clone(), metadata);
+        let body = merge(body, tags);
 
-        return response::ServerResponse {
-            msg: format!("Successfully posted {} events", i),
-            code: StatusCode::OK,
-        }
-        .to_http();
+        let event = event::Event {
+            body: utils::flatten_json_body(web::Json(body)).unwrap(),
+            stream_name,
+        };
+
+        event.process(&s3).await?;
     }
 
-    let body = merge(body.clone(), metadata);
-    let body = merge(body, tags);
+    Ok(HttpResponse::Ok().finish())
+}
 
-    let event = event::Event {
-        body: utils::flatten_json_body(web::Json(body)).unwrap(),
-        stream_name,
+pub mod error {
+    use actix_web::http::header::ContentType;
+    use http::StatusCode;
+
+    use crate::{
+        event::error::EventError,
+        query::error::{ExecuteError, ParseError},
+        utils::header_parsing::ParseHeaderError,
     };
 
-    match event.process(&s3).await {
-        Ok(EventResponse { msg }) => response::ServerResponse {
-            msg,
-            code: StatusCode::INTERNAL_SERVER_ERROR,
+    #[derive(Debug, thiserror::Error)]
+    pub enum QueryError {
+        #[error("Bad request: {0}")]
+        Parse(#[from] ParseError),
+        #[error("Query execution failed due to {0}")]
+        Execute(#[from] ExecuteError),
+    }
+
+    impl actix_web::ResponseError for QueryError {
+        fn status_code(&self) -> http::StatusCode {
+            match self {
+                QueryError::Parse(_) => StatusCode::BAD_REQUEST,
+                QueryError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            }
         }
-        .to_http(),
-        Err(e) => response::ServerResponse {
-            msg: format!("Failed to process event due to err: {}", e),
-            code: StatusCode::INTERNAL_SERVER_ERROR,
+
+        fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
+            actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string())
         }
-        .to_http(),
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum PostError {
+        #[error("Header Error: {0}")]
+        Header(#[from] ParseHeaderError),
+        #[error("Event Error: {0}")]
+        Event(#[from] EventError),
+    }
+
+    impl actix_web::ResponseError for PostError {
+        fn status_code(&self) -> http::StatusCode {
+            match self {
+                PostError::Header(_) => StatusCode::BAD_REQUEST,
+                PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        }
+
+        fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
+            actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string())
+        }
     }
 }

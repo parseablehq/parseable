@@ -24,83 +24,91 @@ use serde_json::json;
 use crate::alerts::Alerts;
 use crate::metadata::STREAM_INFO;
 use crate::query::Query;
-use crate::Error;
+
+use self::error::{AlertValidationError, QueryValidationError, StreamNameValidationError};
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
     "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
 ];
 
-pub fn alert(body: String) -> Result<(), Error> {
-    let alerts: Alerts = serde_json::from_str(body.as_str())?;
-    for alert in alerts.alerts {
+pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
+    for alert in &alerts.alerts {
         if alert.name.is_empty() {
-            return Err(Error::InvalidAlert(
-                "alert name cannot be empty".to_string(),
-            ));
+            return Err(AlertValidationError::EmptyName);
         }
         if alert.message.is_empty() {
-            return Err(Error::InvalidAlert(
-                "alert message cannot be empty".to_string(),
-            ));
+            return Err(AlertValidationError::EmptyMessage);
         }
         if alert.rule.value == json!(null) {
-            return Err(Error::InvalidAlert(
-                "rule.value cannot be empty".to_string(),
-            ));
+            return Err(AlertValidationError::EmptyRuleValue);
         }
         if alert.rule.field.is_empty() {
-            return Err(Error::InvalidAlert("rule.field must be set".to_string()));
+            return Err(AlertValidationError::EmptyRuleField);
         }
         if alert.rule.within.is_empty() {
-            return Err(Error::InvalidAlert("rule.within must be set".to_string()));
+            return Err(AlertValidationError::EmptyRuleWithin);
         }
         if alert.rule.repeats == 0 {
-            return Err(Error::InvalidAlert(
-                "rule.repeats can't be set to 0".to_string(),
-            ));
+            return Err(AlertValidationError::InvalidRuleRepeat);
         }
         if alert.targets.is_empty() {
-            return Err(Error::InvalidAlert(
-                "alert must have at least one target".to_string(),
-            ));
+            return Err(AlertValidationError::NoTarget);
         }
     }
     Ok(())
 }
 
-pub fn stream_name(str_name: &str) -> Result<(), Error> {
-    if str_name.is_empty() {
-        return Err(Error::EmptyName);
+pub fn stream_name(stream_name: &str) -> Result<(), StreamNameValidationError> {
+    if stream_name.is_empty() {
+        return Err(StreamNameValidationError::EmptyName);
     }
 
-    if str_name.chars().all(char::is_numeric) {
-        return Err(Error::NameNumericOnly(str_name.to_owned()));
+    if stream_name.chars().all(char::is_numeric) {
+        return Err(StreamNameValidationError::NameNumericOnly(
+            stream_name.to_owned(),
+        ));
     }
 
-    if str_name.chars().next().unwrap().is_numeric() {
-        return Err(Error::NameCantStartWithNumber(str_name.to_owned()));
+    if stream_name.chars().next().unwrap().is_numeric() {
+        return Err(StreamNameValidationError::NameCantStartWithNumber(
+            stream_name.to_owned(),
+        ));
     }
 
-    for c in str_name.chars() {
+    for c in stream_name.chars() {
         match c {
-            ' ' => return Err(Error::NameWhiteSpace(str_name.to_owned())),
-            c if !c.is_alphanumeric() => return Err(Error::NameSpecialChar(str_name.to_owned())),
-            c if c.is_ascii_uppercase() => return Err(Error::NameUpperCase(str_name.to_owned())),
+            ' ' => {
+                return Err(StreamNameValidationError::NameWhiteSpace(
+                    stream_name.to_owned(),
+                ))
+            }
+            c if !c.is_alphanumeric() => {
+                return Err(StreamNameValidationError::NameSpecialChar(
+                    stream_name.to_owned(),
+                ))
+            }
+            c if c.is_ascii_uppercase() => {
+                return Err(StreamNameValidationError::NameUpperCase(
+                    stream_name.to_owned(),
+                ))
+            }
             _ => {}
         }
     }
 
-    if DENIED_NAMES.contains(&str_name) {
-        return Err(Error::SQLKeyword(str_name.to_owned()));
+    if DENIED_NAMES.contains(&stream_name) {
+        return Err(StreamNameValidationError::SQLKeyword(
+            stream_name.to_owned(),
+        ));
     }
 
     Ok(())
 }
 
-pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Error> {
+pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, QueryValidationError> {
     if query.is_empty() {
-        return Err(Error::EmptyQuery);
+        return Err(QueryValidationError::EmptyQuery);
     }
 
     // convert query to lower case for validation only
@@ -110,16 +118,16 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Err
 
     let tokens = query_lower.split(' ').collect::<Vec<&str>>();
     if tokens.contains(&"join") {
-        return Err(Error::Join(query.to_string()));
+        return Err(QueryValidationError::ContainsJoin(query.to_string()));
     }
     if tokens.len() < 4 {
-        return Err(Error::IncompleteQuery(query.to_string()));
+        return Err(QueryValidationError::IncompleteQuery(query.to_string()));
     }
     if start_time.is_empty() {
-        return Err(Error::EmptyStartTime);
+        return Err(QueryValidationError::EmptyStartTime);
     }
     if end_time.is_empty() {
-        return Err(Error::EmptyEndTime);
+        return Err(QueryValidationError::EmptyEndTime);
     }
 
     // log stream name is located after the `from` keyword
@@ -127,20 +135,26 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Err
     // we currently don't support queries like "select name, address from stream1 and stream2"
     // so if there is an `and` after the first log stream name, we return an error.
     if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
-        return Err(Error::MultipleStreams(query.to_string()));
+        return Err(QueryValidationError::MultipleStreams(query.to_string()));
     }
 
-    let start: DateTime<Utc> = DateTime::parse_from_rfc3339(start_time)?.into();
-    let end: DateTime<Utc> = DateTime::parse_from_rfc3339(end_time)?.into();
+    let start: DateTime<Utc> = DateTime::parse_from_rfc3339(start_time)
+        .map_err(|_| QueryValidationError::StartTimeParse)?
+        .into();
+
+    let end: DateTime<Utc> = DateTime::parse_from_rfc3339(end_time)
+        .map_err(|_| QueryValidationError::EndTimeParse)?
+        .into();
+
     if start.timestamp() > end.timestamp() {
-        return Err(Error::StartTimeAfterEndTime());
+        return Err(QueryValidationError::StartTimeAfterEndTime);
     }
 
     let stream_name = tokens[stream_name_index].to_string();
 
     let schema = match STREAM_INFO.schema(&stream_name)? {
         Some(schema) => Arc::new(schema),
-        None => return Err(Error::MissingRecord),
+        None => return Err(QueryValidationError::UninitializedStream),
     };
 
     Ok(Query {
@@ -150,4 +164,70 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Err
         query: query.to_string(),
         schema,
     })
+}
+
+pub mod error {
+    use crate::metadata::error::stream_info::MetadataError;
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum AlertValidationError {
+        #[error("Alert name cannot be empty")]
+        EmptyName,
+        #[error("Alert message cannot be empty")]
+        EmptyMessage,
+        #[error("Alert's rule.value cannot be empty")]
+        EmptyRuleValue,
+        #[error("Alert's rule.field cannot be empty")]
+        EmptyRuleField,
+        #[error("Alert's rule.within cannot be empty")]
+        EmptyRuleWithin,
+        #[error("Alert's rule.repeats can't be set to 0")]
+        InvalidRuleRepeat,
+        #[error("Alert must have at least one target")]
+        NoTarget,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum QueryValidationError {
+        #[error("Query cannot be empty")]
+        EmptyQuery,
+        #[error("Start time cannot be empty")]
+        EmptyStartTime,
+        #[error("End time cannot be empty")]
+        EmptyEndTime,
+        #[error("Could not parse start time correctly")]
+        StartTimeParse,
+        #[error("Could not parse end time correctly")]
+        EndTimeParse,
+        #[error("Start time cannot be greater than the end time")]
+        StartTimeAfterEndTime,
+        #[error("Stream is not initialized yet. Post an event first.")]
+        UninitializedStream,
+        #[error("Query {0} is incomplete")]
+        IncompleteQuery(String),
+        #[error("Query contains join keyword which is not supported yet.")]
+        ContainsJoin(String),
+        #[error("Querying multiple streams is not supported yet")]
+        MultipleStreams(String),
+        #[error("Metadata Error: {0}")]
+        Metadata(#[from] MetadataError),
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum StreamNameValidationError {
+        #[error("Stream name cannot be empty")]
+        EmptyName,
+        #[error("Invalid stream name with numeric values only")]
+        NameNumericOnly(String),
+        #[error("Stream name cannot start with a number")]
+        NameCantStartWithNumber(String),
+        #[error("Stream name cannot contain whitespace")]
+        NameWhiteSpace(String),
+        #[error("Stream name cannot contain special characters")]
+        NameSpecialChar(String),
+        #[error("Uppercase character in stream name")]
+        NameUpperCase(String),
+        #[error("SQL keyword cannot be used as stream name")]
+        SQLKeyword(String),
+    }
 }
