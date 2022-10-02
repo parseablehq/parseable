@@ -3,7 +3,9 @@ use aws_sdk_s3::error::{HeadBucketError, HeadBucketErrorKind};
 use aws_sdk_s3::model::{CommonPrefix, Delete, ObjectIdentifier};
 use aws_sdk_s3::types::{ByteStream, SdkError};
 use aws_sdk_s3::Error as AwsSdkError;
+use aws_sdk_s3::RetryConfig;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
+use aws_smithy_async::rt::sleep::default_async_sleep;
 use bytes::Bytes;
 use crossterm::style::Stylize;
 use datafusion::arrow::datatypes::Schema;
@@ -171,6 +173,8 @@ impl S3 {
             .region(options.region)
             .endpoint_resolver(options.endpoint)
             .credentials_provider(options.creds)
+            .retry_config(RetryConfig::standard().with_max_attempts(5))
+            .sleep_impl(default_async_sleep().expect("sleep impl is provided for tokio rt"))
             .build();
 
         let client = Client::from_conf(config);
