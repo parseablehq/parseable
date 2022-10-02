@@ -173,7 +173,7 @@ impl S3 {
             .region(options.region)
             .endpoint_resolver(options.endpoint)
             .credentials_provider(options.creds)
-            .retry_config(RetryConfig::standard().with_max_attempts(1))
+            .retry_config(RetryConfig::standard().with_max_attempts(5))
             .sleep_impl(default_async_sleep().expect("sleep impl is provided for tokio rt"))
             .build();
 
