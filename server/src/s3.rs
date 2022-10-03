@@ -22,10 +22,10 @@ use futures::StreamExt;
 use http::Uri;
 use object_store::aws::AmazonS3Builder;
 use object_store::limit::LimitStore;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::iter::Iterator;
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
 
 use crate::alerts::Alerts;
 use crate::metadata::Stats;
@@ -223,7 +223,7 @@ impl S3 {
             .await?;
         // create .parseable.json file in the stream-name prefix.
         // This indicates the format version for this stream.
-        // This is helpful in case we may change the backend format 
+        // This is helpful in case we may change the backend format
         // in the future
         let _resp = self
             .client

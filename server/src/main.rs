@@ -28,8 +28,8 @@ use filetime::FileTime;
 use log::warn;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use thread_priority::{ThreadBuilder, ThreadPriority};
 use std::env;
+use thread_priority::{ThreadBuilder, ThreadPriority};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
