@@ -166,7 +166,6 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
 
     // Proceed to create log stream if it doesn't exist
     if s3.get_schema(&stream_name).await.is_err() {
-        metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Alerts::default());
         // Fail if unable to create log stream on object store backend
         if let Err(e) = s3.create_stream(&stream_name).await {
             // delete the stream from metadata because we couldn't create it on object store backend
@@ -180,6 +179,7 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
             }
             .to_http();
         }
+        metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Alerts::default());
         return response::ServerResponse {
             msg: format!("created log stream {}", stream_name),
             code: StatusCode::OK,

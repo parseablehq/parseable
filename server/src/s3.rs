@@ -25,6 +25,7 @@ use object_store::limit::LimitStore;
 use std::fs;
 use std::iter::Iterator;
 use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 
 use crate::alerts::Alerts;
 use crate::metadata::Stats;
@@ -45,6 +46,20 @@ const S3_URL_ENV_VAR: &str = "P_S3_URL";
 
 // max concurrent request allowed for datafusion object store
 const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectStoreFormat {
+    #[serde(rename = "objectstore-format")]
+    pub version: String,
+}
+
+impl ObjectStoreFormat {
+    pub fn new() -> Self {
+        Self {
+            version: "v1".to_string(),
+        }
+    }
+}
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -195,12 +210,27 @@ impl S3 {
         Ok(())
     }
 
-    async fn _create_stream(&self, stream_name: &str) -> Result<(), AwsSdkError> {
+    async fn _create_stream(&self, stream_name: &str, format: Vec<u8>) -> Result<(), AwsSdkError> {
+        // create ./schema empty file in the stream-name prefix
+        // this indicates that the stream has been created
+        // but doesn't have any content yet
         let _resp = self
             .client
             .put_object()
             .bucket(&S3_CONFIG.s3_bucket_name)
             .key(format!("{}/.schema", stream_name))
+            .send()
+            .await?;
+        // create .parseable.json file in the stream-name prefix.
+        // This indicates the format version for this stream.
+        // This is helpful in case we may change the backend format 
+        // in the future
+        let _resp = self
+            .client
+            .put_object()
+            .bucket(&S3_CONFIG.s3_bucket_name)
+            .key(format!("{}/.parseable.json", stream_name))
+            .body(format.into())
             .send()
             .await?;
         // Prefix created on S3, now create the directory in
@@ -357,7 +387,9 @@ impl ObjectStorage for S3 {
     }
 
     async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
-        self._create_stream(stream_name).await?;
+        let format = ObjectStoreFormat::new();
+        let body = serde_json::to_vec(&format)?;
+        self._create_stream(stream_name, body).await?;
 
         Ok(())
     }

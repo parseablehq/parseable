@@ -10,6 +10,7 @@
   <a href="https://launchpass.com/parseable" target="_blank"><img src="https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg" alt="join slack"></a>
   <a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/parseablehq/parseable?style=social" alt="Github stars"></a>
   <a href="https://twitter.com/parseableio" target="_blank"><img src="https://img.shields.io/twitter/follow/parseableio" alt="Twitter"></a>
+  [![FOSSUnited](http://fossunited.org/files/fossunited-badge.svg)](https://fossunited.org/) &nbsp;&nbsp;
 </p>
 
 <h4 align="center">
