@@ -90,6 +90,7 @@ impl STREAM_INFO {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn set_schema(&self, stream_name: &str, schema: Schema) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)

@@ -24,17 +24,19 @@ use datafusion::arrow::json;
 use datafusion::arrow::json::reader::infer_json_schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use lazy_static::lazy_static;
-use log::error;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::BufReader;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::RwLock;
 
 use crate::metadata;
+use crate::metadata::LOCK_EXPECT;
 use crate::option::CONFIG;
+use crate::s3;
 use crate::storage::ObjectStorage;
 
 use self::error::EventError;
@@ -190,7 +192,7 @@ pub struct Event {
 // Events holds the schema related to a each event for a single log stream
 
 impl Event {
-    pub async fn process(&self, storage: &impl ObjectStorage) -> Result<(), EventError> {
+    pub async fn process(&self) -> Result<(), EventError> {
         let inferred_schema = self.infer_schema()?;
 
         let event = self.get_reader(inferred_schema.clone());
@@ -207,12 +209,12 @@ impl Event {
         } else {
             // if stream schema is none then it is first event,
             // process first event and store schema in obect store
-            self.process_first_event(event, inferred_schema, storage)
+            self.process_first_event::<s3::S3, _>(event, inferred_schema)
                 .await?
         };
 
         if let Err(e) = metadata::STREAM_INFO.check_alerts(self).await {
-            error!("Error checking for alerts. {:?}", e);
+            log::error!("Error checking for alerts. {:?}", e);
         }
 
         Ok(())
@@ -221,25 +223,47 @@ impl Event {
     // This is called when the first event of a log stream is received. The first event is
     // special because we parse this event to generate the schema for the log stream. This
     // schema is then enforced on rest of the events sent to this log stream.
-    async fn process_first_event<R: std::io::Read>(
+    async fn process_first_event<S: ObjectStorage, R: std::io::Read>(
         &self,
         mut event: json::Reader<R>,
         schema: Schema,
-        storage: &impl ObjectStorage,
     ) -> Result<u64, EventError> {
-        let rb = event.next()?.ok_or(EventError::MissingRecord)?;
+        // note for functions _schema_with_map and _set_schema_with_map,
+        // these are to be called while holding a write lock specifically.
+        // this guarantees two things
+        // - no other metadata operation can happen inbetween
+        // - map always have an entry for this stream
+
         let stream_name = &self.stream_name;
 
-        // Store record batch on local cache
-        STREAM_WRITERS::create_entry(stream_name.clone(), &rb).unwrap();
+        let mut stream_metadata = metadata::STREAM_INFO.write().expect(LOCK_EXPECT);
+        // if the metadata is not none after acquiring lock
+        // then some other thread has already completed this function.
+        if _schema_with_map(stream_name, &stream_metadata).is_some() {
+            // drop the lock
+            drop(stream_metadata);
+            // Try to post event usual way
+            log::info!("first event is redirected to process_event");
+            self.process_event(event)
+        } else {
+            // stream metadata is still none,
+            // this means this execution should be considered as first event.
+            log::info!(
+                "setting schema on objectstore for logstream {}",
+                stream_name
+            );
+            let storage = S::new();
+            storage.put_schema(stream_name.clone(), &schema).await?;
+            // Store record batch on local cache
+            log::info!("creating local writer for this first event");
+            let rb = event.next()?.ok_or(EventError::MissingRecord)?;
+            STREAM_WRITERS::append_to_local(stream_name, &rb)?;
 
-        // Put the inferred schema to object store
-        storage.put_schema(stream_name.clone(), &schema).await?;
+            log::info!("schema is set in memory map for logstream {}", stream_name);
+            _set_schema_with_map(stream_name, schema, &mut stream_metadata);
 
-        // set the schema in memory for this stream
-        metadata::STREAM_INFO.set_schema(stream_name, schema)?;
-
-        Ok(0)
+            Ok(0)
+        }
     }
 
     // event process all events after the 1st event. Concatenates record batches
@@ -271,6 +295,31 @@ impl Event {
             json::reader::DecoderOptions::new().with_batch_size(1024),
         )
     }
+}
+
+//  Special functions which reads from metadata map while holding the lock
+#[inline]
+pub fn _schema_with_map(
+    stream_name: &str,
+    map: &impl Deref<Target = HashMap<String, metadata::LogStreamMetadata>>,
+) -> Option<Schema> {
+    map.get(stream_name)
+        .expect("map has entry for this stream name")
+        .schema
+        .to_owned()
+}
+
+#[inline]
+//  Special functions which writes to metadata map while holding the lock
+pub fn _set_schema_with_map(
+    stream_name: &str,
+    schema: Schema,
+    map: &mut impl DerefMut<Target = HashMap<String, metadata::LogStreamMetadata>>,
+) {
+    map.get_mut(stream_name)
+        .expect("map has entry for this stream name")
+        .schema
+        .replace(schema);
 }
 
 pub mod error {

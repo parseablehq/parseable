@@ -365,6 +365,10 @@ impl S3 {
 
 #[async_trait]
 impl ObjectStorage for S3 {
+    fn new() -> Self {
+        Self::new()
+    }
+
     async fn check(&self) -> Result<(), ObjectStorageError> {
         self.client
             .head_bucket()
