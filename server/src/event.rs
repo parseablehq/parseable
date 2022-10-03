@@ -16,6 +16,7 @@
  *
  *
  */
+use actix_web::rt::spawn;
 use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
@@ -209,8 +210,7 @@ impl Event {
         } else {
             // if stream schema is none then it is first event,
             // process first event and store schema in obect store
-            self.process_first_event::<s3::S3, _>(event, inferred_schema)
-                .await?
+            self.process_first_event::<s3::S3, _>(event, inferred_schema)?
         };
 
         if let Err(e) = metadata::STREAM_INFO.check_alerts(self).await {
@@ -223,7 +223,7 @@ impl Event {
     // This is called when the first event of a log stream is received. The first event is
     // special because we parse this event to generate the schema for the log stream. This
     // schema is then enforced on rest of the events sent to this log stream.
-    async fn process_first_event<S: ObjectStorage, R: std::io::Read>(
+    fn process_first_event<S: ObjectStorage, R: std::io::Read>(
         &self,
         mut event: json::Reader<R>,
         schema: Schema,
@@ -264,19 +264,23 @@ impl Event {
                 stream_name
             );
             let storage = S::new();
-            if let Err(e) = storage.put_schema(stream_name.clone(), &schema).await {
-                // If this call has failed then currently there is no right way to make local state consistent
-                // this needs a fix after more constraints are safety guarentee is provided by localwriter and s3_sync.
-                // Reasoning -
-                // - After dropping lock many events may process through
-                // - Processed events may sync before metadata deletion
-                log::error!(
-                    "Parseable failed to upload schema to objectstore due to error {}",
-                    e
-                );
-                log::error!("Please manually delete this logstream and create a new one.");
-                metadata::STREAM_INFO.delete_stream(stream_name);
-            }
+
+            let stream_name = stream_name.clone();
+            spawn(async move {
+                if let Err(e) = storage.put_schema(stream_name.clone(), &schema).await {
+                    // If this call has failed then currently there is no right way to make local state consistent
+                    // this needs a fix after more constraints are safety guarentee is provided by localwriter and s3_sync.
+                    // Reasoning -
+                    // - After dropping lock many events may process through
+                    // - Processed events may sync before metadata deletion
+                    log::error!(
+                        "Parseable failed to upload schema to objectstore due to error {}",
+                        e
+                    );
+                    log::error!("Please manually delete this logstream and create a new one.");
+                    metadata::STREAM_INFO.delete_stream(&stream_name);
+                }
+            });
 
             Ok(0)
         }
