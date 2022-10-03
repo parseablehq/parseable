@@ -7,6 +7,7 @@ use aws_sdk_s3::RetryConfig;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use aws_smithy_async::rt::sleep::default_async_sleep;
 use bytes::Bytes;
+use clap::Parser;
 use crossterm::style::Stylize;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -24,7 +25,6 @@ use object_store::limit::LimitStore;
 use std::fs;
 use std::iter::Iterator;
 use std::sync::Arc;
-use structopt::StructOpt;
 
 use crate::alerts::Alerts;
 use crate::metadata::Stats;
@@ -48,7 +48,7 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
-    pub static ref S3_CONFIG: Arc<S3Config> = Arc::new(S3Config::from_args());
+    pub static ref S3_CONFIG: Arc<S3Config> = Arc::new(S3Config::parse());
 
     // runtime to be used in query session
     pub static ref STORAGE_RUNTIME: Arc<RuntimeEnv> = {
@@ -79,27 +79,27 @@ lazy_static::lazy_static! {
     };
 }
 
-#[derive(Debug, Clone, StructOpt)]
-#[structopt(name = "S3 config", about = "configuration for AWS S3 SDK")]
+#[derive(Debug, Clone, Parser)]
+#[command(name = "S3 config", about = "configuration for AWS S3 SDK")]
 pub struct S3Config {
     /// The endpoint to AWS S3 or compatible object storage platform
-    #[structopt(long, env = S3_URL_ENV_VAR, default_value = DEFAULT_S3_URL )]
+    #[arg(long, env = S3_URL_ENV_VAR, default_value = DEFAULT_S3_URL )]
     pub s3_endpoint_url: String,
 
     /// The access key for AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_ACCESS_KEY", default_value = DEFAULT_S3_ACCESS_KEY)]
+    #[arg(long, env = "P_S3_ACCESS_KEY", default_value = DEFAULT_S3_ACCESS_KEY)]
     pub s3_access_key_id: String,
 
     /// The secret key for AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_SECRET_KEY", default_value = DEFAULT_S3_SECRET_KEY)]
+    #[arg(long, env = "P_S3_SECRET_KEY", default_value = DEFAULT_S3_SECRET_KEY)]
     pub s3_secret_key: String,
 
     /// The region for AWS S3 or compatible object storage platform
-    #[structopt(long, env = "P_S3_REGION", default_value = DEFAULT_S3_REGION)]
+    #[arg(long, env = "P_S3_REGION", default_value = DEFAULT_S3_REGION)]
     pub s3_default_region: String,
 
     /// The AWS S3 or compatible object storage bucket to be used for storage
-    #[structopt(long, env = "P_S3_BUCKET", default_value = DEFAULT_S3_BUCKET)]
+    #[arg(long, env = "P_S3_BUCKET", default_value = DEFAULT_S3_BUCKET)]
     pub s3_bucket_name: String,
 }
 

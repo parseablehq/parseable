@@ -2,7 +2,7 @@
 name = "parseable"
 version = "0.0.3"
 authors = [
-    "NitishTiwari <nitish@parseable.io>", 
+    "NitishTiwari <nitish@parseable.io>",
     "AdheipSingh <adheip@parseable.io>",
 ]
 edition = "2021"
@@ -20,6 +20,7 @@ aws-smithy-async = { version = "0.49.0", features = ["rt-tokio"] }
 bytes = "1"
 chrono = "0.4.19"
 chrono-humanize = "0.2.2"
+clap = { version = "4.0.8", features = ["derive", "env"] }
 crossterm = "0.23.2"
 datafusion = "11.0"
 object_store = { version = "0.4", features=["aws"] }
@@ -41,7 +42,6 @@ semver = "1.0.14"
 serde = "^1.0.8"
 serde_derive = "^1.0.8"
 serde_json = "^1.0.8"
-structopt = { version = "0.3.25" }
 sysinfo = "0.20.5"
 thiserror = "1"
 thread-priority = "0.9.2"

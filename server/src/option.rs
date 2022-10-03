@@ -16,10 +16,10 @@
  *
  */
 
+use clap::Parser;
 use crossterm::style::Stylize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use structopt::StructOpt;
 
 use crate::banner;
 use crate::s3::S3Config;
@@ -28,7 +28,7 @@ use crate::storage::{ObjectStorage, ObjectStorageError, LOCAL_SYNC_INTERVAL};
 lazy_static::lazy_static! {
     #[derive(Debug)]
     pub static ref CONFIG: Arc<Config> = {
-        let storage = Box::new(S3Config::from_args());
+        let storage = Box::new(S3Config::parse());
         Arc::new(Config::new(storage))
     };
 }
@@ -53,7 +53,7 @@ pub struct Config {
 impl Config {
     fn new(storage: Box<dyn StorageOpt>) -> Config {
         Config {
-            parseable: Opt::from_args(),
+            parseable: Opt::parse(),
             storage,
         }
     }
@@ -91,7 +91,7 @@ impl Config {
                 "Failed to authenticate. Please ensure credentials are valid\n Caused by: {cause}",
                 cause = inner
             ),
-            Err(error) => { panic!("{error}") } 
+            Err(error) => { panic!("{error}") }
         }
     }
 
@@ -164,41 +164,41 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, StructOpt)]
-#[structopt(
+#[derive(Debug, Clone, Parser)]
+#[command(
     name = "Parseable config",
     about = "configuration for Parseable server"
 )]
 pub struct Opt {
     /// The location of TLS Cert file
-    #[structopt(long, env = "P_TLS_CERT_PATH")]
+    #[arg(long, env = "P_TLS_CERT_PATH")]
     pub tls_cert_path: Option<PathBuf>,
 
     /// The location of TLS Private Key file
-    #[structopt(long, env = "P_TLS_KEY_PATH")]
+    #[arg(long, env = "P_TLS_KEY_PATH")]
     pub tls_key_path: Option<PathBuf>,
 
     /// The address on which the http server will listen.
-    #[structopt(long, env = "P_ADDR", default_value = "0.0.0.0:8000")]
+    #[arg(long, env = "P_ADDR", default_value = "0.0.0.0:8000")]
     pub address: String,
 
     /// The local storage path is used as temporary landing point
     /// for incoming events and local cache while querying data pulled
     /// from object storage backend
-    #[structopt(long, env = "P_LOCAL_STORAGE", default_value = "./data")]
+    #[arg(long, env = "P_LOCAL_STORAGE", default_value = "./data")]
     pub local_disk_path: PathBuf,
 
     /// Optional interval after which server would upload uncommited data to
     /// remote object storage platform. Defaults to 1min.
-    #[structopt(long, env = "P_STORAGE_UPLOAD_INTERVAL", default_value = "60")]
+    #[arg(long, env = "P_STORAGE_UPLOAD_INTERVAL", default_value = "60")]
     pub upload_interval: u64,
 
     /// Optional username to enable basic auth on the server
-    #[structopt(long, env = USERNAME_ENV, default_value = DEFAULT_USERNAME)]
+    #[arg(long, env = USERNAME_ENV, default_value = DEFAULT_USERNAME)]
     pub username: String,
 
     /// Optional password to enable basic auth on the server
-    #[structopt(long, env = PASSOWRD_ENV, default_value = DEFAULT_PASSWORD)]
+    #[arg(long, env = PASSOWRD_ENV, default_value = DEFAULT_PASSWORD)]
     pub password: String,
 }
 
