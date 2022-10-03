@@ -28,6 +28,7 @@ use filetime::FileTime;
 use log::warn;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
+use std::env;
 use thread_priority::{ThreadBuilder, ThreadPriority};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
@@ -133,7 +134,7 @@ fn startup_sync() {
         let path = dir.data_path.join("data.records");
 
         // metadata.modified gives us system time
-        // This may not work on all platfomns
+        // This may not work on all platforms
         let metadata = match fs::metadata(&path) {
             Ok(meta) => meta,
             Err(err) => {
