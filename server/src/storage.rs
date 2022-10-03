@@ -52,6 +52,7 @@ pub const OBJECT_STORE_DATA_GRANULARITY: u32 = (LOCAL_SYNC_INTERVAL as u32) / 60
 
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
+    fn new() -> Self;
     async fn check(&self) -> Result<(), ObjectStorageError>;
     async fn put_schema(
         &self,

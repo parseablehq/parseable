@@ -168,8 +168,6 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
     if s3.get_schema(&stream_name).await.is_err() {
         // Fail if unable to create log stream on object store backend
         if let Err(e) = s3.create_stream(&stream_name).await {
-            // delete the stream from metadata because we couldn't create it on object store backend
-            metadata::STREAM_INFO.delete_stream(&stream_name);
             return response::ServerResponse {
                 msg: format!(
                     "failed to create log stream {} due to err: {}",

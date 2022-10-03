@@ -64,20 +64,18 @@ pub async fn post_event(
         collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?,
     )]);
 
-    let s3 = S3::new();
-
     if let Some(array) = body.as_array() {
         for body in array {
             let body = merge(body.clone(), metadata.clone());
             let body = merge(body, tags.clone());
             let body = flatten_json_body(web::Json(body)).unwrap();
 
-            let e = event::Event {
+            let event = event::Event {
                 body,
                 stream_name: stream_name.clone(),
             };
 
-            e.process(&s3).await?;
+            event.process().await?;
         }
     } else {
         let body = merge(body.clone(), metadata);
@@ -88,7 +86,7 @@ pub async fn post_event(
             stream_name,
         };
 
-        event.process(&s3).await?;
+        event.process().await?;
     }
 
     Ok(HttpResponse::Ok().finish())
