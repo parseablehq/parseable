@@ -248,19 +248,35 @@ impl Event {
         } else {
             // stream metadata is still none,
             // this means this execution should be considered as first event.
-            log::info!(
-                "setting schema on objectstore for logstream {}",
-                stream_name
-            );
-            let storage = S::new();
-            storage.put_schema(stream_name.clone(), &schema).await?;
+
             // Store record batch on local cache
             log::info!("creating local writer for this first event");
             let rb = event.next()?.ok_or(EventError::MissingRecord)?;
             STREAM_WRITERS::append_to_local(stream_name, &rb)?;
 
             log::info!("schema is set in memory map for logstream {}", stream_name);
-            _set_schema_with_map(stream_name, schema, &mut stream_metadata);
+            _set_schema_with_map(stream_name, schema.clone(), &mut stream_metadata);
+            // drop mutex before going across await point
+            drop(stream_metadata);
+
+            log::info!(
+                "setting schema on objectstore for logstream {}",
+                stream_name
+            );
+            let storage = S::new();
+            if let Err(e) = storage.put_schema(stream_name.clone(), &schema).await {
+                // If this call has failed then currently there is no right way to make local state consistent
+                // this needs a fix after more constraints are safety guarentee is provided by localwriter and s3_sync.
+                // Reasoning -
+                // - After dropping lock many events may process through
+                // - Processed events may sync before metadata deletion
+                log::error!(
+                    "Parseable failed to upload schema to objectstore due to error {}",
+                    e
+                );
+                log::error!("Please manually delete this logstream and create a new one.");
+                metadata::STREAM_INFO.delete_stream(stream_name);
+            }
 
             Ok(0)
         }
