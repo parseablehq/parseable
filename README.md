@@ -1,17 +1,17 @@
-Parseable
-==========
+<p align="center">
+  <span">
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="500" height="100" />
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="500" height="100" />
+  </a> 
+</p>
 
-<img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable logo" height="100px" align="right" />
-<img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable logo" height="100px" align="right" />
-
-Parseable is a cloud native, log storage and analysis platform. Parseable is indexing free by design. Written in Rust, Parseable can be deployed on Baremetal, VMs and Kubernetes.
-
-It ingests log data via HTTP POST calls and exposes a query API to search and analyze logs. It is compatible with logging agents like FluentBit, LogStash, FileBeat among others.
-
-[![GitHub stars](https://img.shields.io/github/stars/parseablehq/parseable.svg?style=for-the-badge&label=Stars&logo=github)](https://github.com/parseablehq/parseable)
-[![Twitter Follow](https://img.shields.io/twitter/follow/parseableio.svg?style=for-the-badge&label=Follow&logo=twitter)](https://twitter.com/parseableio)
-[![Slack](https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg?style=for-the-badge&label=Follow&logo=slack)](https://launchpass.com/parseable)
-[![FOSSUnited](http://fossunited.org/files/fossunited-badge.svg)](https://fossunited.org/)
+<p align="center">
+  <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
+  <img src="https://img.shields.io/github/commit-activity/m/parseablehq/parseable" alt="commits activity monthly">
+  <a href="https://launchpass.com/parseable" target="_blank"><img src="https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg" alt="join slack"></a>
+  <a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/parseablehq/parseable?style=social" alt="Github stars"></a>
+  <a href="https://twitter.com/parseableio" target="_blank"><img src="https://img.shields.io/twitter/follow/parseableio" alt="Twitter"></a>
+</p>
 
 <h4 align="center">
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
@@ -20,7 +20,11 @@ It ingests log data via HTTP POST calls and exposes a query API to search and an
   <br>
 </h4>
 
-<div style="position: relative; padding-bottom: calc(61.75000000000001% + 41px); height: 0;"><iframe src="https://demo.arcade.software/dNcJyqEm3avSE5iYdiiy?embed" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></iframe></div>
+Parseable is a cloud native, log storage and observability platform. Parseable is written in Rust and index free by design. Parseable is available as a single binary / Docker image and can be deployed on a wide range of platforms.
+
+It ingests log data via HTTP POST calls and exposes a query API to search and analyze logs. It is compatible with all the standard logging agents via HTTP output plugins.
+
+<img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.gif" />
 
 ## Features
 
