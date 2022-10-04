@@ -10,7 +10,7 @@ It ingests log data via HTTP POST calls and exposes a query API to search and an
 
 [![GitHub stars](https://img.shields.io/github/stars/parseablehq/parseable.svg?style=for-the-badge&label=Stars&logo=github)](https://github.com/parseablehq/parseable)
 [![Twitter Follow](https://img.shields.io/twitter/follow/parseableio.svg?style=for-the-badge&label=Follow&logo=twitter)](https://twitter.com/parseableio)
-[![Slack](https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg)](https://launchpass.com/parseable)
+[![Slack](https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg?style=for-the-badge&label=Follow&logo=slack)](https://launchpass.com/parseable)
 [![FOSSUnited](http://fossunited.org/files/fossunited-badge.svg)](https://fossunited.org/)
 
 <h4 align="center">
