@@ -16,6 +16,7 @@
  *
  */
 
+use clap::builder::ArgPredicate;
 use clap::Parser;
 use crossterm::style::Stylize;
 use std::path::PathBuf;
@@ -27,42 +28,45 @@ use crate::storage::{ObjectStorage, ObjectStorageError, LOCAL_SYNC_INTERVAL};
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
-    pub static ref CONFIG: Arc<Config> = {
-        let storage = Box::new(S3Config::parse());
-        Arc::new(Config::new(storage))
-    };
+    pub static ref CONFIG: Arc<Config<S3Config>> = Arc::new(Config::new());
 }
 
 pub const USERNAME_ENV: &str = "P_USERNAME";
-pub const PASSOWRD_ENV: &str = "P_PASSWORD";
+pub const PASSWORD_ENV: &str = "P_PASSWORD";
 pub const DEFAULT_USERNAME: &str = "parseable";
 pub const DEFAULT_PASSWORD: &str = "parseable";
 
 pub trait StorageOpt: Sync + Send {
     fn bucket_name(&self) -> &str;
     fn endpoint_url(&self) -> &str;
-    fn warning(&self);
-    fn is_default_url(&self) -> bool;
 }
 
-pub struct Config {
-    pub parseable: Opt,
-    pub storage: Box<dyn StorageOpt>,
+pub struct Config<S>
+where
+    S: Clone + clap::Args + StorageOpt,
+{
+    pub parseable: Opt<S>,
 }
 
-impl Config {
-    fn new(storage: Box<dyn StorageOpt>) -> Config {
+impl<S> Config<S>
+where
+    S: Clone + clap::Args + StorageOpt,
+{
+    fn new() -> Self {
         Config {
-            parseable: Opt::parse(),
-            storage,
+            parseable: Opt::<S>::parse(),
         }
+    }
+
+    pub fn storage(&self) -> &S {
+        &self.parseable.objectstore_config
     }
 
     pub fn print(&self) {
         let scheme = CONFIG.parseable.get_scheme();
         self.status_info(&scheme);
         banner::version::print();
-        self.warning();
+        self.demo();
         self.storage_info();
         banner::system_info();
         println!();
@@ -80,11 +84,11 @@ impl Config {
             Err(ObjectStorageError::NoSuchBucket(name)) => panic!(
                 "Could not start because the bucket doesn't exist. Please ensure bucket {bucket} exists on {url}",
                 bucket = name,
-                url = self.storage.endpoint_url()
+                url = self.storage().endpoint_url()
             ),
             Err(ObjectStorageError::ConnectionError(inner)) => panic!(
                 "Failed to connect to the Object Storage Service on {url}\nCaused by: {cause}",
-                url = self.storage.endpoint_url(),
+                url = self.storage().endpoint_url(),
                 cause = inner
             ),
             Err(ObjectStorageError::AuthenticationError(inner)) => panic!(
@@ -96,15 +100,15 @@ impl Config {
     }
 
     fn status_info(&self, scheme: &str) {
-        let url = format!("{}://{}", scheme, CONFIG.parseable.address).underlined();
+        let url = format!("{}://{}", scheme, self.parseable.address).underlined();
         eprintln!(
             "
     {}
     {}
     {}",
             format!("Parseable server started at: {}", url).bold(),
-            format!("Username: {}", CONFIG.parseable.username).bold(),
-            format!("Password: {}", CONFIG.parseable.password).bold(),
+            format!("Username: {}", self.parseable.username).bold(),
+            format!("Password: {}", self.parseable.password).bold(),
         )
     }
 
@@ -116,60 +120,39 @@ impl Config {
         Object Storage: {}/{}",
             "Storage:".to_string().blue().bold(),
             self.parseable.local_disk_path.to_string_lossy(),
-            self.storage.endpoint_url(),
-            self.storage.bucket_name()
+            self.storage().endpoint_url(),
+            self.storage().bucket_name()
         )
     }
 
-    fn warning(&self) {
-        match (self.storage.is_default_url(), self.is_default_cred()) {
-            (true, true) => {
-                banner::warning_line();
-                self.cred_warning();
-                self.storage.warning();
-            }
-            (true, _) => {
-                banner::warning_line();
-                self.storage.warning();
-            }
-            (_, true) => {
-                banner::warning_line();
-                self.cred_warning();
-            }
-            _ => {}
-        }
-    }
-
-    fn is_default_cred(&self) -> bool {
-        CONFIG.parseable.username == DEFAULT_USERNAME
-            && CONFIG.parseable.password == DEFAULT_PASSWORD
-    }
-
-    fn cred_warning(&self) {
-        if self.is_default_cred() {
+    fn demo(&self) {
+        banner::warning_line();
+        if self.is_demo() {
             eprintln!(
                 "
-        {}
         {}",
-                "Parseable server is using default credentials."
+                "Parseable server is running on demo mode with default object storage backend with public access."
                     .to_string()
                     .red(),
-                format!(
-                    "Setup your credentials with {} and {} before storing production logs.",
-                    USERNAME_ENV, PASSOWRD_ENV
                 )
-                .red()
-            )
         }
+    }
+
+    fn is_demo(&self) -> bool {
+        self.parseable.demo
     }
 }
 
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "Parseable config",
-    about = "configuration for Parseable server"
+    name = "Parseable",
+    about = "Configuration for Parseable server",
+    version
 )]
-pub struct Opt {
+pub struct Opt<S>
+where
+    S: Clone + clap::Args + StorageOpt,
+{
     /// The location of TLS Cert file
     #[arg(long, env = "P_TLS_CERT_PATH")]
     pub tls_cert_path: Option<PathBuf>,
@@ -194,15 +177,34 @@ pub struct Opt {
     pub upload_interval: u64,
 
     /// Optional username to enable basic auth on the server
-    #[arg(long, env = USERNAME_ENV, default_value = DEFAULT_USERNAME)]
+    #[arg(
+        long,
+        env = USERNAME_ENV,
+        required_unless_present = "demo",
+        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_USERNAME)
+    )]
     pub username: String,
 
     /// Optional password to enable basic auth on the server
-    #[arg(long, env = PASSOWRD_ENV, default_value = DEFAULT_PASSWORD)]
+    #[arg(
+        long,
+        env = PASSWORD_ENV,
+        required_unless_present = "demo",
+        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_PASSWORD)
+    )]
     pub password: String,
+
+    #[clap(flatten)]
+    pub objectstore_config: S,
+
+    #[arg(long, exclusive = true)]
+    pub demo: bool,
 }
 
-impl Opt {
+impl<S> Opt<S>
+where
+    S: Clone + clap::Args + StorageOpt,
+{
     pub fn get_cache_path(&self, stream_name: &str) -> PathBuf {
         self.local_disk_path.join(stream_name)
     }
