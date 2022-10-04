@@ -180,7 +180,6 @@ where
     #[arg(
         long,
         env = USERNAME_ENV,
-        required_unless_present = "demo",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_USERNAME)
     )]
     pub username: String,
@@ -189,7 +188,6 @@ where
     #[arg(
         long,
         env = PASSWORD_ENV,
-        required_unless_present = "demo",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_PASSWORD)
     )]
     pub password: String,
