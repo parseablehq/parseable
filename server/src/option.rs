@@ -195,7 +195,8 @@ where
     #[clap(flatten)]
     pub objectstore_config: S,
 
-    #[arg(long, exclusive = true)]
+    /// Run parseable in demo mode with default credentials and open object store
+    #[arg(short, long, exclusive = true)]
     pub demo: bool,
 }
 
