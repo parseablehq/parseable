@@ -7,8 +7,7 @@ use aws_sdk_s3::RetryConfig;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use aws_smithy_async::rt::sleep::default_async_sleep;
 use bytes::Bytes;
-use clap::Parser;
-use crossterm::style::Stylize;
+use clap::builder::ArgPredicate;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
@@ -42,8 +41,6 @@ const DEFAULT_S3_BUCKET: &str = "parseable";
 const DEFAULT_S3_ACCESS_KEY: &str = "minioadmin";
 const DEFAULT_S3_SECRET_KEY: &str = "minioadmin";
 
-const S3_URL_ENV_VAR: &str = "P_S3_URL";
-
 // max concurrent request allowed for datafusion object store
 const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 
@@ -63,13 +60,13 @@ impl ObjectStoreFormat {
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
-    pub static ref S3_CONFIG: Arc<S3Config> = Arc::new(S3Config::parse());
+    pub static ref S3_CONFIG: Arc<S3Config> = Arc::new(CONFIG.storage().clone());
 
     // runtime to be used in query session
     pub static ref STORAGE_RUNTIME: Arc<RuntimeEnv> = {
 
         let s3 = AmazonS3Builder::new()
-            .with_region(&S3_CONFIG.s3_default_region)
+            .with_region(&S3_CONFIG.s3_region)
             .with_endpoint(&S3_CONFIG.s3_endpoint_url)
             .with_bucket_name(&S3_CONFIG.s3_bucket_name)
             .with_access_key_id(&S3_CONFIG.s3_access_key_id)
@@ -94,27 +91,47 @@ lazy_static::lazy_static! {
     };
 }
 
-#[derive(Debug, Clone, Parser)]
+#[derive(Debug, Clone, clap::Args)]
 #[command(name = "S3 config", about = "configuration for AWS S3 SDK")]
 pub struct S3Config {
     /// The endpoint to AWS S3 or compatible object storage platform
-    #[arg(long, env = S3_URL_ENV_VAR, default_value = DEFAULT_S3_URL )]
+    #[arg(
+        long,
+        env = "P_S3_URL",
+        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_URL)
+    )]
     pub s3_endpoint_url: String,
 
     /// The access key for AWS S3 or compatible object storage platform
-    #[arg(long, env = "P_S3_ACCESS_KEY", default_value = DEFAULT_S3_ACCESS_KEY)]
+    #[arg(
+        long,
+        env = "P_S3_ACCESS_KEY",
+        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_ACCESS_KEY)
+    )]
     pub s3_access_key_id: String,
 
     /// The secret key for AWS S3 or compatible object storage platform
-    #[arg(long, env = "P_S3_SECRET_KEY", default_value = DEFAULT_S3_SECRET_KEY)]
+    #[arg(
+        long,
+        env = "P_S3_SECRET_KEY",
+        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_SECRET_KEY)
+    )]
     pub s3_secret_key: String,
 
     /// The region for AWS S3 or compatible object storage platform
-    #[arg(long, env = "P_S3_REGION", default_value = DEFAULT_S3_REGION)]
-    pub s3_default_region: String,
+    #[arg(
+        long,
+        env = "P_S3_REGION",
+        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_REGION)
+    )]
+    pub s3_region: String,
 
     /// The AWS S3 or compatible object storage bucket to be used for storage
-    #[arg(long, env = "P_S3_BUCKET", default_value = DEFAULT_S3_BUCKET)]
+    #[arg(
+        long,
+        env = "P_S3_BUCKET",
+        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_BUCKET)
+    )]
     pub s3_bucket_name: String,
 }
 
@@ -125,28 +142,6 @@ impl StorageOpt for S3Config {
 
     fn endpoint_url(&self) -> &str {
         &self.s3_endpoint_url
-    }
-
-    fn is_default_url(&self) -> bool {
-        self.s3_endpoint_url == DEFAULT_S3_URL
-    }
-
-    fn warning(&self) {
-        if self.is_default_url() {
-            eprintln!(
-                "
-        {}
-        {}",
-                "Parseable server is using default object storage backend with public access."
-                    .to_string()
-                    .red(),
-                format!(
-                    "Setup your object storage backend with {} before storing production logs.",
-                    S3_URL_ENV_VAR
-                )
-                .red()
-            )
-        }
     }
 }
 
@@ -160,7 +155,7 @@ impl S3Options {
     fn new() -> Self {
         let uri = S3_CONFIG.s3_endpoint_url.parse::<Uri>().unwrap();
         let endpoint = Endpoint::immutable(uri);
-        let region = Region::new(&S3_CONFIG.s3_default_region);
+        let region = Region::new(&S3_CONFIG.s3_region);
         let creds = Credentials::new(
             &S3_CONFIG.s3_access_key_id,
             &S3_CONFIG.s3_secret_key,
