@@ -131,7 +131,7 @@ where
             eprintln!(
                 "
         {}",
-                "Parseable server is running on demo mode with default object storage backend with public access."
+                "Parseable is in demo mode with default credentials and open object store. Please use this for demo purposes only."
                     .to_string()
                     .red(),
                 )
