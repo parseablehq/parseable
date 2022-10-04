@@ -66,7 +66,7 @@ lazy_static::lazy_static! {
     pub static ref STORAGE_RUNTIME: Arc<RuntimeEnv> = {
 
         let s3 = AmazonS3Builder::new()
-            .with_region(&S3_CONFIG.s3_default_region)
+            .with_region(&S3_CONFIG.s3_region)
             .with_endpoint(&S3_CONFIG.s3_endpoint_url)
             .with_bucket_name(&S3_CONFIG.s3_bucket_name)
             .with_access_key_id(&S3_CONFIG.s3_access_key_id)
@@ -124,7 +124,7 @@ pub struct S3Config {
         env = "P_S3_REGION",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_REGION)
     )]
-    pub s3_default_region: String,
+    pub s3_region: String,
 
     /// The AWS S3 or compatible object storage bucket to be used for storage
     #[arg(
@@ -155,7 +155,7 @@ impl S3Options {
     fn new() -> Self {
         let uri = S3_CONFIG.s3_endpoint_url.parse::<Uri>().unwrap();
         let endpoint = Endpoint::immutable(uri);
-        let region = Region::new(&S3_CONFIG.s3_default_region);
+        let region = Region::new(&S3_CONFIG.s3_region);
         let creds = Credentials::new(
             &S3_CONFIG.s3_access_key_id,
             &S3_CONFIG.s3_secret_key,
