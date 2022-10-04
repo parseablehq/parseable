@@ -126,8 +126,8 @@ where
     }
 
     fn demo(&self) {
-        banner::warning_line();
         if self.is_demo() {
+            banner::warning_line();
             eprintln!(
                 "
         {}",
