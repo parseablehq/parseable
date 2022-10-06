@@ -100,12 +100,17 @@ Parseable dashboard is available at [http://localhost:8000](http://localhost:800
 :memo: Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new).
 
 ## Using Parseable
-`<stream-name>` is the name of the stream you want to create. `<basic-auth-header>` is the basic auth header value generated from username & password of the user you created in the environment variables.
+`<stream-name>` is the name of the stream you want to create. `<basic-auth-header>` is the basic auth header value generated from username & password of the user you created in the environment variables. You can generate the basic auth header value using the following command.
+
+```sh
+echo -n '<user-name>:<password>' | base64
+```
+
 ### Create a stream
 
 ```sh
 curl --location --request PUT 'http://localhost:8000/api/v1/logstream/<stream-name>' \
---header '<basic-auth-header>'
+--header 'Authorization: Basic <basic-auth-header>'
 ```
 
 ### Send events to the stream
@@ -114,7 +119,7 @@ curl --location --request PUT 'http://localhost:8000/api/v1/logstream/<stream-na
 curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-name>' \
 --header 'X-P-META-meta1: value1' \
 --header 'X-P-TAG-tag1: value1' \
---header '<basic-auth-header>' \
+--header 'Authorization: Basic <basic-auth-header>' \
 --header 'Content-Type: application/json' \
 --data-raw '[
     {
