@@ -8,3 +8,4 @@ key.pem
 .vscode
 helm-releases/.DS_Store
 .DS_Store
+env-file
