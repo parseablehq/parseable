@@ -4,6 +4,7 @@ parseable:
     repository: parseable/parseable
     tag: v0.0.2
     pullPolicy: IfNotPresent
+  demo: true
   env:
     P_ADDR: "0.0.0.0:8000"
     P_TLS_CERT_PATH: ""
@@ -12,13 +13,14 @@ parseable:
     RUST_LOG: "parseable=info"
     # By default parseable uses demo environment. 
     # Please change this before running in production.
-    #P_S3_URL: ""
-    #P_S3_ACCESS_KEY: ""
-    #P_S3_SECRET_KEY: ""
-    #P_S3_REGION: ""
-    #P_S3_BUCKET: ""
-    P_USERNAME: "parseable"
-    P_PASSWORD: "parseable"
+    P_S3_URL: ""
+    P_S3_ACCESS_KEY: ""
+    P_S3_SECRET_KEY: ""
+    P_S3_REGION: ""
+    P_S3_BUCKET: ""
+    P_LOCAL_STORAGE: ""
+    P_USERNAME: ""
+    P_PASSWORD: ""
   nameOverride: ""
   fullnameOverride: ""  
   serviceAccount:

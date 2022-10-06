@@ -56,8 +56,8 @@ P_S3_SECRET_KEY=minioadmin
 P_S3_REGION=us-east-1
 P_S3_BUCKET=parseable
 P_LOCAL_STORAGE=/data
-P_USERNAME=parseable123
-P_PASSWORD=parseable123
+P_USERNAME=parseable
+P_PASSWORD=parseable
 EOF
 
 mkdir -p /tmp/data
@@ -87,8 +87,8 @@ export P_S3_SECRET_KEY="minioadmin"
 export P_S3_REGION="us-east-1"
 export P_S3_BUCKET="parseable"
 export P_LOCAL_STORAGE="./data"
-export P_USERNAME="parseable123"
-export P_PASSWORD="parseable123"
+export P_USERNAME="parseable"
+export P_PASSWORD="parseable"
 chmod +x parseable
 ./parseable
 ```
@@ -99,12 +99,9 @@ Parseable dashboard is available at [http://localhost:8000](http://localhost:800
 
 :memo: Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new).
 
-<h1></h1>
-
 ## Using Parseable
-
-### Create a stream
 `<stream-name>` is the name of the stream you want to create. `<basic-auth-header>` is the basic auth header value generated from username & password of the user you created in the environment variables.
+### Create a stream
 
 ```sh
 curl --location --request PUT 'http://localhost:8000/api/v1/logstream/<stream-name>' \
@@ -112,7 +109,6 @@ curl --location --request PUT 'http://localhost:8000/api/v1/logstream/<stream-na
 ```
 
 ### Send events to the stream
-`<stream-name>` is the name of the stream you want to send events to. `<basic-auth-header>` is the basic auth header value generated from username & password of the user you created in the environment variables.
 
 ```sh
 curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-name>' \
