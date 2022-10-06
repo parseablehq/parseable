@@ -36,7 +36,6 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::Path;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -109,21 +108,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn startup_sync() {
-    if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
-        return;
-    }
-
     for stream in metadata::STREAM_INFO.list_streams() {
         let dir = StorageDir::new(stream.clone());
 
-        if let Err(e) = dir.create_temp_dir() {
-            log::error!(
-                "Error creating tmp directory for {} due to error [{}]",
-                &stream,
-                e
-            );
-            continue;
-        }
+        dir.create_temp_dir()
+            .expect("Could not create temporary directory. Please check if Parseable is running with correct permissions.");
 
         // if data.records file is not present then skip this stream
         if !dir.local_data_exists() {
@@ -162,7 +151,7 @@ fn startup_sync() {
         let hostname = utils::hostname_unchecked();
         let parquet_file_local = format!("{}{}.data.parquet", local_uri, hostname);
         if let Err(err) = dir.move_local_to_temp(parquet_file_local) {
-            log::warn!(
+            panic!(
                 "Failed to move parquet file at {} to tmp directory due to error {}",
                 path.display(),
                 err
