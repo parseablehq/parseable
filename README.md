@@ -46,13 +46,25 @@ It ingests log data via HTTP POST calls and exposes a query API to search and an
 ## Getting Started
 
 ### Docker
-Parseable docker image is available on [Docker hub](https://hub.docker.com/r/parseable/parseable). 
+Parseable docker image is available on [Docker hub](https://hub.docker.com/r/parseable/parseable). Please remember to change the environment variables as relevant. 
 
 ```sh
-mkdir -p /tmp/parseable
+cat << EOF > parseable-env
+P_S3_URL=https://minio.parseable.io:9000
+P_S3_ACCESS_KEY=minioadmin
+P_S3_SECRET_KEY=minioadmin
+P_S3_REGION=us-east-1
+P_S3_BUCKET=parseable
+P_LOCAL_STORAGE=/data
+P_USERNAME=parseable
+P_PASSWORD=parseable
+EOF
+
+mkdir -p /tmp/data
 docker run \
   -p 8000:8000 \
-  -v /tmp/parseable:/data \
+  --env-file parseable-env \
+  -v /tmp/data:/data \
   parseable/parseable:latest
 ```
 
@@ -66,24 +78,7 @@ helm install parseable parseable/parseable --namespace parseable
 ```
 
 ### Binary
-Parseable binary is available on [Github releases](https://github.com/parseablehq/parseable/releases). Please download the latest release for your platform. 
-
-```sh
-chmod +x parseable
-./parseable
-```
-
-<h1></h1>
-
-Parseable dashboard is available at [http://localhost:8000](http://localhost:8000). Default username and password is `parseable`.
-
-By default Parseable uses a public bucket to store the data. Please change the object storage credentials to your own bucket, before using Parseable.
-
-:memo: Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new).
-
-### Configuration
-
-Parseable can be configured using environment variables listed below, with sample values.
+Parseable binary is available on [Github releases](https://github.com/parseablehq/parseable/releases). Please download the latest release for your platform, also make sure to change the environment variables as relevant. 
 
 ```sh
 export P_S3_URL="https://minio.parseable.io:9000"
@@ -94,17 +89,37 @@ export P_S3_BUCKET="parseable"
 export P_LOCAL_STORAGE="./data"
 export P_USERNAME="parseable"
 export P_PASSWORD="parseable"
+chmod +x parseable
+./parseable
 ```
 
-## Live Demo 
+<h1></h1>
 
-Try out Parseable server with our demo instance. Send log data to default log stream `frontend`
+Parseable dashboard is available at [http://localhost:8000](http://localhost:8000). Credentials to login to the dashboard are the values you set in the environment variables.
+
+:memo: Parseable is in alpha stage and will evolve over time. There may be breaking changes between releases. Please give us your feedback in [Slack](https://launchpass.com/parseable), or [Issues](https://github.com/parseablehq/parseable/issues/new).
+
+## Using Parseable
+`<stream-name>` is the name of the stream you want to create. `<basic-auth-header>` is the basic auth header value generated from username & password of the user you created in the environment variables. You can generate the basic auth header value using the following command.
 
 ```sh
-curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/frontend' \
+echo -n '<user-name>:<password>' | base64
+```
+
+### Create a stream
+
+```sh
+curl --location --request PUT 'http://localhost:8000/api/v1/logstream/<stream-name>' \
+--header 'Authorization: Basic <basic-auth-header>'
+```
+
+### Send events to the stream
+
+```sh
+curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-name>' \
 --header 'X-P-META-meta1: value1' \
 --header 'X-P-TAG-tag1: value1' \
---header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' \
+--header 'Authorization: Basic <basic-auth-header>' \
 --header 'Content-Type: application/json' \
 --data-raw '[
     {
@@ -119,26 +134,11 @@ curl --location --request POST 'https://demo.parseable.io/api/v1/logstream/front
 ]'
 ```
 
-Access the Parseable dashboard to verify the log data is present
+For complete Parseable API documentation, refer to [Parseable API Ref Docs](https://www.parseable.io/docs/api-reference).
 
-<table>
-<tr>
-    <td>URL</td>
-    <td><a href="https://demo.parseable.io" target="_blank">https://demo.parseable.io</a></td>
-</tr>
-<tr>
-    <td>Username</td>
-    <td>parseable</td>
-</tr>
-<tr>
-    <td>Password</td>
-    <td>parseable</td>
-</tr>
-</table>
+## Live Demo 
 
-For complete Parseable API documentation, refer to [Parseable API workspace on Postman](https://www.postman.com/parseable/workspace/parseable/overview).
-
-:exclamation: Please do not store any sensitive data on this server as the data is openly accessible. We'll delete the data on this server periodically.
+You can also try out Parseable on our [https://demo.parseable.io](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
 
 ## Contributing 
 

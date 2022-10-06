@@ -1,12 +1,11 @@
 [package]
 name = "parseable"
-version = "0.0.3"
+version = "0.0.4"
 authors = [
-    "NitishTiwari <nitish@parseable.io>",
-    "AdheipSingh <adheip@parseable.io>",
+    "Parseable Team <hi@parseable.io>",
 ]
 edition = "2021"
-categories = ["olap", "analytics-store"]
+categories = ["olap", "logging", "analytics-store"]
 
 [dependencies]
 actix-web-httpauth = "0.6"
