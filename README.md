@@ -46,7 +46,7 @@ It ingests log data via HTTP POST calls and exposes a query API to search and an
 ## Getting Started
 
 ### Docker
-Parseable docker image is available on [Docker hub](https://hub.docker.com/r/parseable/parseable). Please remember to change the environment variables as relevant. 
+Parseable docker image is available on [Docker hub](https://hub.docker.com/r/parseable/parseable). Please change the environment variables as relevant. 
 
 ```sh
 cat << EOF > parseable-env
