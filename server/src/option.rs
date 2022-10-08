@@ -154,32 +154,48 @@ where
     S: Clone + clap::Args + StorageOpt,
 {
     /// The location of TLS Cert file
-    #[arg(long, env = "P_TLS_CERT_PATH")]
+    #[arg(long, env = "P_TLS_CERT_PATH", value_name = "path")]
     pub tls_cert_path: Option<PathBuf>,
 
     /// The location of TLS Private Key file
-    #[arg(long, env = "P_TLS_KEY_PATH")]
+    #[arg(long, env = "P_TLS_KEY_PATH", value_name = "path")]
     pub tls_key_path: Option<PathBuf>,
 
     /// The address on which the http server will listen.
-    #[arg(long, env = "P_ADDR", default_value = "0.0.0.0:8000")]
+    #[arg(
+        long,
+        env = "P_ADDR",
+        default_value = "0.0.0.0:8000",
+        value_name = "url"
+    )]
     pub address: String,
 
     /// The local storage path is used as temporary landing point
     /// for incoming events and local cache while querying data pulled
     /// from object storage backend
-    #[arg(long, env = "P_LOCAL_STORAGE", default_value = "./data")]
+    #[arg(
+        long,
+        env = "P_LOCAL_STORAGE",
+        default_value = "./data",
+        value_name = "path"
+    )]
     pub local_disk_path: PathBuf,
 
     /// Optional interval after which server would upload uncommited data to
     /// remote object storage platform. Defaults to 1min.
-    #[arg(long, env = "P_STORAGE_UPLOAD_INTERVAL", default_value = "60")]
+    #[arg(
+        long,
+        env = "P_STORAGE_UPLOAD_INTERVAL",
+        default_value = "60",
+        value_name = "seconds"
+    )]
     pub upload_interval: u64,
 
     /// Optional username to enable basic auth on the server
     #[arg(
         long,
         env = USERNAME_ENV,
+        value_name = "username",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_USERNAME)
     )]
     pub username: String,
@@ -188,6 +204,7 @@ where
     #[arg(
         long,
         env = PASSWORD_ENV,
+        value_name = "password",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_PASSWORD)
     )]
     pub password: String,
