@@ -98,6 +98,7 @@ pub struct S3Config {
     #[arg(
         long,
         env = "P_S3_URL",
+        value_name = "url",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_URL)
     )]
     pub s3_endpoint_url: String,
@@ -106,6 +107,7 @@ pub struct S3Config {
     #[arg(
         long,
         env = "P_S3_ACCESS_KEY",
+        value_name = "access-key",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_ACCESS_KEY)
     )]
     pub s3_access_key_id: String,
@@ -114,6 +116,7 @@ pub struct S3Config {
     #[arg(
         long,
         env = "P_S3_SECRET_KEY",
+        value_name = "secret-key",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_SECRET_KEY)
     )]
     pub s3_secret_key: String,
@@ -122,6 +125,7 @@ pub struct S3Config {
     #[arg(
         long,
         env = "P_S3_REGION",
+        value_name = "region",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_REGION)
     )]
     pub s3_region: String,
@@ -130,6 +134,7 @@ pub struct S3Config {
     #[arg(
         long,
         env = "P_S3_BUCKET",
+        value_name = "bucket-name",
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_BUCKET)
     )]
     pub s3_bucket_name: String,
