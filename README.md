@@ -139,21 +139,11 @@ For complete Parseable API documentation, refer to [Parseable API Ref Docs](http
 ## Live Demo 
 
 You can also try out Parseable on our [https://demo.parseable.io](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
-
-## Contributing 
+                                                                              
+## Contributing
 
 Refer to the contributing guide [here](https://www.parseable.io/docs/contributing).
 
-## License
+### Contributors
 
-Licensed under the GNU Affero General Public License, Version 3 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-[https://www.gnu.org/licenses/agpl-3.0.txt](https://www.gnu.org/licenses/agpl-3.0.txt)
-
-                                                                              
-## Our Contributers
- <a href="https://github.com/parseablehq/parseable">
-  <img src="https://contrib.rocks/image?repo=parseablehq/parseable" />
-</a>
+<a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
