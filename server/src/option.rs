@@ -53,9 +53,14 @@ where
     S: Clone + clap::Args + StorageOpt,
 {
     fn new() -> Self {
-        Config {
-            parseable: Opt::<S>::parse(),
-        }
+        let parseable = match Opt::<S>::try_parse() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("You can also use the --demo flag to run Parseable with default object storage. For testing purposes only");
+                e.exit();
+            }
+        };
+        Config { parseable }
     }
 
     pub fn storage(&self) -> &S {
