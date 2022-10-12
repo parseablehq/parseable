@@ -127,7 +127,10 @@ pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
 }
 
-pub mod github {
+pub mod update {
+    use crate::banner::version::current;
+    use std::path::Path;
+
     use anyhow::anyhow;
     use chrono::{DateTime, Utc};
 
@@ -136,11 +139,32 @@ pub mod github {
         pub date: DateTime<Utc>,
     }
 
+    fn is_docker() -> String {
+        if Path::new("/.dockerenv").exists() {
+            return "Docker".to_string();
+        }
+        "Native".to_string()
+    }
+
+    // User Agent for Github API call
+    // Format: Parseable/<version> (OS; Platform)
+    fn user_agent() -> String {
+        let info = os_info::get();
+        format!(
+            "Parseable/{} ({}; {})",
+            current(),
+            info.os_type(),
+            is_docker()
+        )
+    }
+
     pub fn get_latest() -> Result<LatestRelease, anyhow::Error> {
-        let json: serde_json::Value =
-            ureq::get("https://api.github.com/repos/parseablehq/parseable/releases/latest")
-                .call()?
-                .into_json()?;
+        let agent = ureq::builder().user_agent(user_agent().as_str()).build();
+
+        let json: serde_json::Value = agent
+            .get("https://api.github.com/repos/parseablehq/parseable/releases/latest")
+            .call()?
+            .into_json()?;
 
         let version = json["tag_name"]
             .as_str()
