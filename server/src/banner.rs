@@ -92,8 +92,8 @@ pub mod version {
     }
 
     fn current_version() -> Version {
-        let current_version = env!("CARGO_PKG_VERSION");
-        semver::Version::parse(current_version).expect("CARGO_PKG_VERSION is always valid semver")
+        let current_version = env!("VERGEN_BUILD_SEMVER");
+        semver::Version::parse(current_version).expect("VERGEN_BUILD_SEMVER is always valid semver")
     }
 
     fn humanize_time(time_passed: Duration) -> String {
