@@ -50,21 +50,21 @@ pub mod version {
     use crossterm::style::Stylize;
     use semver::Version;
 
-    use crate::utils::github;
+    use crate::utils::update;
 
     pub fn print() {
         // print current version
-        let current_version = current_version();
+        let current = current();
         // not eprintln because if it is old release then time passed with be displayed beside it
         eprint!(
             "
     {} {} ",
             "Current Version:".to_string().blue().bold(),
-            current_version
+            current
         );
 
         // check for latest release, if it cannot be fetched then print error as warn and return
-        let latest_release = match github::get_latest() {
+        let latest_release = match update::get_latest() {
             Ok(latest_release) => latest_release,
             Err(e) => {
                 log::warn!("{}", e);
@@ -72,7 +72,7 @@ pub mod version {
             }
         };
 
-        if latest_release.version > current_version {
+        if latest_release.version > current {
             let time_since_latest_release = chrono::Utc::now() - latest_release.date;
             let time_since_latest_release = humanize_time(time_since_latest_release);
 
@@ -91,9 +91,9 @@ pub mod version {
         }
     }
 
-    fn current_version() -> Version {
-        let current_version = env!("VERGEN_BUILD_SEMVER");
-        semver::Version::parse(current_version).expect("VERGEN_BUILD_SEMVER is always valid semver")
+    pub fn current() -> Version {
+        let current = env!("VERGEN_BUILD_SEMVER");
+        semver::Version::parse(current).expect("VERGEN_BUILD_SEMVER is always valid semver")
     }
 
     fn humanize_time(time_passed: Duration) -> String {
