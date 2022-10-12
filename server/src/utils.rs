@@ -150,18 +150,21 @@ pub mod update {
     // Format: Parseable/<version> (OS; Platform)
     fn user_agent() -> String {
         let info = os_info::get();
-        format!("Parseable/{} ({}; {})", current(), info.os_type(), is_docker())
+        format!(
+            "Parseable/{} ({}; {})",
+            current(),
+            info.os_type(),
+            is_docker()
+        )
     }
 
     pub fn get_latest() -> Result<LatestRelease, anyhow::Error> {
-        let agent = ureq::builder()
-            .user_agent(user_agent().as_str())
-            .build();
+        let agent = ureq::builder().user_agent(user_agent().as_str()).build();
 
-        let json: serde_json::Value =
-                agent.get("https://api.github.com/repos/parseablehq/parseable/releases/latest")
-                .call()?
-                .into_json()?;
+        let json: serde_json::Value = agent
+            .get("https://api.github.com/repos/parseablehq/parseable/releases/latest")
+            .call()?
+            .into_json()?;
 
         let version = json["tag_name"]
             .as_str()
