@@ -16,7 +16,17 @@
  *
  */
 
+use vergen::{vergen, Config};
+
 fn main() {
+    // Init vergen
+    if let Err(e) = vergen(Config::default()) {
+        println!(
+            "cargo:warning=initializing vergen failed due to error: {}",
+            e
+        );
+    }
+
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=LOCAL_ASSETS_PATH");

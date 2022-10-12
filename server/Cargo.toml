@@ -57,6 +57,7 @@ static-files = "0.2.1"
 cargo_toml = "0.11.5"
 ureq = "2.5.0"
 sha1_smol = { version = "1.0.0", features=["std"] }
+vergen = { version = "7.4.2", features = ["build", "git"] }
 zip = { git = "https://github.com/zip-rs/zip" }
 
 [dev-dependencies]
