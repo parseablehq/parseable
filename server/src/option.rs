@@ -162,10 +162,7 @@ where
 }
 
 #[derive(clap::Args, Debug, Clone)]
-#[clap(
-    name = "server",
-    about = "Start the Parseable server",
-)]
+#[clap(name = "server", about = "Start the Parseable server")]
 pub struct Server<S>
 where
     S: Clone + clap::Args + StorageOpt,
