@@ -45,7 +45,7 @@ pub struct Config<S>
 where
     S: Clone + clap::Args + StorageOpt,
 {
-    pub parseable: Opt<S>,
+    pub parseable: Server<S>,
 }
 
 impl<S> Config<S>
@@ -53,14 +53,13 @@ where
     S: Clone + clap::Args + StorageOpt,
 {
     fn new() -> Self {
-        let parseable = match Opt::<S>::try_parse() {
+        let Cli::Server::<S>(args) = match Cli::<S>::try_parse() {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("You can also use the --demo flag to run Parseable with default object storage. For testing purposes only");
                 e.exit();
             }
         };
-        Config { parseable }
+        Config { parseable: args }
     }
 
     pub fn storage(&self) -> &S {
@@ -148,13 +147,23 @@ where
     }
 }
 
-#[derive(Debug, Clone, Parser)]
+#[derive(Parser)] // requires `derive` feature
 #[command(
     name = "Parseable",
-    about = "Configuration for Parseable server",
+    bin_name = "parseable",
+    about = "Parseable is a log storage and observability platform.",
     version
 )]
-pub struct Opt<S>
+enum Cli<S>
+where
+    S: Clone + clap::Args + StorageOpt,
+{
+    Server(Server<S>),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+#[clap(name = "server", about = "Start the Parseable server")]
+pub struct Server<S>
 where
     S: Clone + clap::Args + StorageOpt,
 {
@@ -222,7 +231,7 @@ where
     pub demo: bool,
 }
 
-impl<S> Opt<S>
+impl<S> Server<S>
 where
     S: Clone + clap::Args + StorageOpt,
 {
