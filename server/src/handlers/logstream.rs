@@ -94,7 +94,9 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
     match metadata::STREAM_INFO.schema(&stream_name) {
         Ok(schema) => response::ServerResponse {
             msg: schema
-                .map(|schema| schema.to_json().to_string())
+                .map(|ref schema| {
+                    serde_json::to_string(schema).expect("schema can be converted to json")
+                })
                 .unwrap_or_default(),
             code: StatusCode::OK,
         }
@@ -106,8 +108,8 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
                 code: StatusCode::BAD_REQUEST,
             }
             .to_http(),
-            Ok(Some(schema)) => response::ServerResponse {
-                msg: serde_json::from_value(schema.to_json()).unwrap(),
+            Ok(Some(ref schema)) => response::ServerResponse {
+                msg: serde_json::to_string(schema).unwrap(),
                 code: StatusCode::OK,
             }
             .to_http(),
