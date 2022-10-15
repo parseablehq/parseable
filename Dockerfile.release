@@ -13,11 +13,11 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-FROM    alpine:3.14
+FROM    alpine:3.16
 
-RUN     apk update --quiet \
-        && apk add -q --no-cache libgcc curl
-        
+RUN     apk update --quiet && \
+        apk add -q --no-cache tini
+
 # Create appuser
 ENV USER=parseable
 ENV UID=10001
@@ -43,4 +43,5 @@ USER    parseable:parseable
 
 EXPOSE  8000/tcp
 
-CMD     ["/bin/parseable"]
+ENTRYPOINT ["tini", "--"]
+CMD     /bin/parseable

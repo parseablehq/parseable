@@ -31,6 +31,11 @@ spec:
             {{- toYaml .Values.parseable.securityContext | nindent 12 }}
           image: "{{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
+          {{- if .Values.parseable.demo }}
+          args: ["parseable", "server", "--demo"]
+          {{- else }}
+          args: ["parseable", "server"]
+          {{- end }}
           env:
             {{- range $key, $value :=  .Values.parseable.env }}
             - name: {{ $key }}

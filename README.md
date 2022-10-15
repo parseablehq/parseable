@@ -65,7 +65,8 @@ docker run \
   -p 8000:8000 \
   --env-file parseable-env \
   -v /tmp/data:/data \
-  parseable/parseable:latest
+  parseable/parseable:latest \
+  parseable server
 ```
 
 ### Kubernetes

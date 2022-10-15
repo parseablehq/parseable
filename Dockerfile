@@ -16,7 +16,22 @@
 # Compile
 FROM    rust:1.63-alpine AS compiler
 
-RUN     apk add -q --update-cache --no-cache build-base openssl-dev
+WORKDIR /parseable
+
+COPY . .
+
+RUN     set -eux; \
+        apkArch="$(apk --print-arch)"; \
+        if [ "$apkArch" = "aarch64" ]; then \
+            export JEMALLOC_SYS_WITH_LG_PAGE=16; \
+        fi && \
+        cargo build --release
+
+# Run
+FROM    alpine:3.16
+
+RUN     apk update --quiet \
+        && apk add -q --no-cache tini
 
 # Create appuser
 ENV USER=parseable
@@ -33,34 +48,11 @@ RUN adduser \
 
 WORKDIR /parseable
 
-COPY . .
-
-RUN     set -eux; \
-        apkArch="$(apk --print-arch)"; \
-        if [ "$apkArch" = "aarch64" ]; then \
-            export JEMALLOC_SYS_WITH_LG_PAGE=16; \
-        fi && \
-        cargo build --release
-
-# Run
-FROM    alpine:3.14
-
-RUN     apk update --quiet \
-        && apk add -q --no-cache libgcc curl
-
-# add parseable to the `/bin` so you can run it from anywhere and it's easy
-# to find.
-COPY    --from=compiler /etc/passwd /etc/passwd
-COPY    --from=compiler /etc/group /etc/group
-
-# This directory should hold all the data related to parseable so we're going
-# to move our PWD in there.
-WORKDIR /parseable
-
 COPY    --from=compiler /parseable/target/release/parseable /bin/parseable
 
 USER parseable:parseable
 
 EXPOSE  8000/tcp
+ENTRYPOINT ["tini", "--"]
 
-CMD    ["/bin/parseable"]
+CMD    /bin/parseable
