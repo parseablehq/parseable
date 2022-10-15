@@ -248,14 +248,14 @@ fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<(
 async fn validator(
     req: ServiceRequest,
     credentials: BasicAuth,
-) -> Result<ServiceRequest, actix_web::Error> {
+) -> Result<ServiceRequest, (actix_web::Error, ServiceRequest)> {
     if credentials.user_id().trim() == CONFIG.parseable.username
         && credentials.password().unwrap().trim() == CONFIG.parseable.password
     {
         return Ok(req);
     }
 
-    Err(actix_web::error::ErrorUnauthorized("Unauthorized"))
+    Err((actix_web::error::ErrorUnauthorized("Unauthorized"), req))
 }
 
 async fn run_http() -> anyhow::Result<()> {
