@@ -2,25 +2,24 @@ parseable:
   replicaCount: 1
   image:
     repository: parseable/parseable
-    tag: v0.0.2
+    tag: v0.0.5
     pullPolicy: IfNotPresent
   demo: true
   env:
-    P_ADDR: "0.0.0.0:8000"
-    P_TLS_CERT_PATH: ""
-    P_LOCAL_STORAGE: "data"
-    P_STORAGE_UPLOAD_INTERVAL: "60"
     RUST_LOG: "parseable=info"
-    # By default parseable uses demo environment. 
-    # Please change this before running in production.
-    P_S3_URL: ""
-    P_S3_ACCESS_KEY: ""
-    P_S3_SECRET_KEY: ""
-    P_S3_REGION: ""
-    P_S3_BUCKET: ""
-    P_LOCAL_STORAGE: ""
-    P_USERNAME: ""
-    P_PASSWORD: ""
+    # P_ADDR: "0.0.0.0:8000"
+    # P_TLS_CERT_PATH: ""
+    # P_TLS_KEY_PATH: ""
+    # P_LOCAL_STORAGE: "data"
+    # P_STORAGE_UPLOAD_INTERVAL: "60"
+    # P_S3_URL: ""
+    # P_S3_ACCESS_KEY: ""
+    # P_S3_SECRET_KEY: ""
+    # P_S3_REGION: ""
+    # P_S3_BUCKET: ""
+    # P_LOCAL_STORAGE: ""
+    # P_USERNAME: ""
+    # P_PASSWORD: ""
   nameOverride: ""
   fullnameOverride: ""  
   serviceAccount:
