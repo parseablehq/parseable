@@ -16,6 +16,7 @@
  *
  *
  */
+
 use actix_web::rt::spawn;
 use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
@@ -24,11 +25,14 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::json;
 use datafusion::arrow::json::reader::infer_json_schema;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::parquet::arrow::ArrowWriter;
+use datafusion::parquet::file::properties::WriterProperties;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::BufReader;
+use std::fs::{self, remove_file, OpenOptions};
+use std::io::{BufReader, Write};
 use std::ops::{Deref, DerefMut};
+use std::path::{self};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -36,14 +40,78 @@ use std::sync::RwLock;
 
 use crate::metadata;
 use crate::metadata::LOCK_EXPECT;
-use crate::option::CONFIG;
 use crate::s3;
-use crate::storage::ObjectStorage;
+use crate::storage::{ObjectStorage, StorageDir};
 
 use self::error::EventError;
 
-type LocalWriter = Mutex<Option<StreamWriter<std::fs::File>>>;
-type LocalWriterGuard<'a> = MutexGuard<'a, Option<StreamWriter<std::fs::File>>>;
+pub struct ParquetRecordWriter {
+    path: path::PathBuf,
+    parquet_writer: ArrowWriter<Vec<u8>>,
+    arrow_writer: StreamWriter<fs::File>,
+}
+
+impl ParquetRecordWriter {
+    // create a new writer instance given full file path
+    pub fn new_uninitialized(
+        file_path: path::PathBuf,
+        arrow_schema: Arc<Schema>,
+    ) -> anyhow::Result<Self> {
+        let mut path = file_path.clone();
+        path.set_extension("arrow");
+
+        let arrow_file = OpenOptions::new()
+            .append(true)
+            .create_new(true)
+            .open(path)?;
+        let arrow_writer = StreamWriter::try_new(arrow_file, &arrow_schema)?;
+
+        let buffer = Vec::with_capacity(1024);
+        let parquet_writer_config = WriterProperties::builder()
+            .set_max_row_group_size(1024 * 128)
+            .build();
+
+        let parquet_writer =
+            ArrowWriter::try_new(buffer, arrow_schema, Some(parquet_writer_config))?;
+
+        Ok(Self {
+            path: file_path,
+            parquet_writer,
+            arrow_writer,
+        })
+    }
+
+    pub fn write_recordbatch(&mut self, batch: &RecordBatch) -> anyhow::Result<()> {
+        self.parquet_writer.write(batch)?;
+        log::warn!("writing");
+        self.arrow_writer.write(batch)?;
+        Ok(())
+    }
+
+    #[allow(dead_code, unused_variables)]
+    fn from_partial(path: path::PathBuf) -> Self {
+        todo!()
+    }
+
+    pub fn offload_file_closing(mut self) {
+        std::thread::spawn(move || {
+            // close arrow
+            self.arrow_writer.finish().unwrap();
+
+            let completed_file = self.parquet_writer.into_inner().unwrap();
+
+            let mut file = fs::File::create(&self.path).unwrap();
+            file.write_all(&completed_file).unwrap();
+            file.flush().unwrap();
+
+            self.path.set_extension("arrow");
+            remove_file(self.path).unwrap();
+        });
+    }
+}
+
+type LocalWriter = Mutex<Option<ParquetRecordWriter>>;
+type LocalWriterGuard<'a> = MutexGuard<'a, Option<ParquetRecordWriter>>;
 
 lazy_static! {
     #[derive(Default)]
@@ -66,7 +134,9 @@ impl STREAM_WRITERS {
                 // if it's some writer then we write without dropping any lock
                 // hashmap cannot be brought mutably at any point until this finishes
                 if let Some(ref mut writer) = *writer_guard {
-                    writer.write(record).map_err(StreamWriterError::Writer)?;
+                    writer
+                        .write_recordbatch(record)
+                        .map_err(StreamWriterError::Writer)?;
                 } else {
                     // pass on this mutex to set entry so that it can be reused
                     // we have a guard for underlying entry thus
@@ -91,17 +161,14 @@ impl STREAM_WRITERS {
             .write()
             .map_err(|_| StreamWriterError::RwPoisoned)?;
 
-        let file = OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .open(data_file_path(&stream))
-            .map_err(StreamWriterError::Io)?;
+        let dir = StorageDir::new(stream.clone());
 
-        let mut stream_writer = StreamWriter::try_new(file, &record.schema())
-            .expect("File and RecordBatch both are checked");
+        let mut stream_writer =
+            ParquetRecordWriter::new_uninitialized(dir.path_by_current_time(), record.schema())
+                .expect("File and RecordBatch both are checked");
 
         stream_writer
-            .write(record)
+            .write_recordbatch(record)
             .map_err(StreamWriterError::Writer)?;
 
         hashmap_guard.insert(stream, Mutex::new(Some(stream_writer)));
@@ -125,17 +192,14 @@ impl STREAM_WRITERS {
         stream: &str,
         record: &RecordBatch,
     ) -> Result<(), StreamWriterError> {
-        let file = OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .open(data_file_path(stream))
-            .map_err(StreamWriterError::Io)?;
+        let dir = StorageDir::new(stream.to_owned());
 
-        let mut stream_writer = StreamWriter::try_new(file, &record.schema())
-            .expect("File and RecordBatch both are checked");
+        let mut stream_writer =
+            ParquetRecordWriter::new_uninitialized(dir.path_by_current_time(), record.schema())
+                .expect("File and RecordBatch both are checked");
 
         stream_writer
-            .write(record)
+            .write_recordbatch(record)
             .map_err(StreamWriterError::Writer)?;
 
         writer_guard.replace(stream_writer); // replace the stream writer behind this mutex
@@ -152,10 +216,27 @@ impl STREAM_WRITERS {
             Some(writer) => writer,
             None => return Ok(()),
         };
-        stream_writer
+
+        let parquet_writer = stream_writer
             .lock()
             .map_err(|_| StreamWriterError::MutexPoisoned)?
             .take();
+
+        if let Some(writer) = parquet_writer {
+            writer.offload_file_closing()
+        }
+
+        Ok(())
+    }
+
+    pub fn sync(&self) -> Result<(), StreamWriterError> {
+        for stream in self
+            .read()
+            .map_err(|_| StreamWriterError::RwPoisoned)?
+            .keys()
+        {
+            Self::unset_entry(stream)?;
+        }
 
         Ok(())
     }
@@ -164,24 +245,11 @@ impl STREAM_WRITERS {
 #[derive(Debug, thiserror::Error)]
 pub enum StreamWriterError {
     #[error("Arrow writer failed: {0}")]
-    Writer(arrow::error::ArrowError),
-    #[error("Io Error when creating new file: {0}")]
-    Io(std::io::Error),
+    Writer(anyhow::Error),
     #[error("RwLock was poisoned")]
     RwPoisoned,
     #[error("Mutex was poisoned")]
     MutexPoisoned,
-}
-
-fn data_file_path(stream_name: &str) -> String {
-    format!(
-        "{}/{}",
-        CONFIG
-            .parseable
-            .local_stream_data_path(stream_name)
-            .to_string_lossy(),
-        "data.records"
-    )
 }
 
 #[derive(Clone)]

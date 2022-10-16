@@ -22,9 +22,10 @@ use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web_static_files::ResourceFiles;
-use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
-use filetime::FileTime;
+use datafusion::arrow::ipc::reader::StreamReader;
+use datafusion::parquet::arrow::ArrowWriter;
+use datafusion::parquet::file::properties::WriterProperties;
 use log::warn;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
@@ -111,51 +112,36 @@ fn startup_sync() {
     for stream in metadata::STREAM_INFO.list_streams() {
         let dir = StorageDir::new(stream.clone());
 
-        dir.create_temp_dir()
-            .expect("Could not create temporary directory. Please check if Parseable is running with correct permissions.");
+        fs::create_dir_all(&dir.data_path).expect("could not create data directory");
 
-        // if data.records file is not present then skip this stream
-        if !dir.local_data_exists() {
-            continue;
-        }
+        // if persistence arrow file is not present then skip this stream
+        let part_files = dir.partial_data();
 
-        // create prefix for this file from its last modified time
-        let path = dir.data_path.join("data.records");
+        for arrow_path in part_files {
+            let file = File::open(&arrow_path).unwrap();
+            let reader = StreamReader::try_new(file, None).unwrap();
+            let schema = reader.schema();
+            let records = reader.filter_map(|record| match record {
+                Ok(record) => Some(record),
+                Err(e) => {
+                    log::warn!("error when reading from arrow stream {:?}", e);
+                    None
+                }
+            });
 
-        // metadata.modified gives us system time
-        // This may not work on all platforms
-        let metadata = match fs::metadata(&path) {
-            Ok(meta) => meta,
-            Err(err) => {
-                log::warn!(
-                    "Failed to get file metadata for {} due to {:?}. Skipping!",
-                    path.display(),
-                    err
-                );
-                continue;
+            let mut parquet_path = arrow_path.clone();
+            parquet_path.set_extension("parquet");
+            let parquet_file = fs::File::create(&parquet_path).unwrap();
+            let props = WriterProperties::builder().build();
+            let mut writer = ArrowWriter::try_new(parquet_file, schema, Some(props)).unwrap();
+
+            for ref record in records {
+                writer.write(record).unwrap();
             }
-        };
 
-        let last_modified = FileTime::from_last_modification_time(&metadata);
-        let last_modified = NaiveDateTime::from_timestamp(last_modified.unix_seconds(), 0);
-        let last_modified: DateTime<Utc> = DateTime::from_utc(last_modified, Utc);
+            writer.close().unwrap();
 
-        let uri = utils::date_to_prefix(last_modified.date())
-            + &utils::hour_to_prefix(last_modified.hour())
-            + &utils::minute_to_prefix(
-                last_modified.minute(),
-                storage::OBJECT_STORE_DATA_GRANULARITY,
-            )
-            .unwrap();
-        let local_uri = str::replace(&uri, "/", ".");
-        let hostname = utils::hostname_unchecked();
-        let parquet_file_local = format!("{}{}.data.parquet", local_uri, hostname);
-        if let Err(err) = dir.move_local_to_temp(parquet_file_local) {
-            panic!(
-                "Failed to move parquet file at {} to tmp directory due to error {}",
-                path.display(),
-                err
-            )
+            fs::remove_file(&arrow_path).unwrap();
         }
     }
 }
@@ -217,7 +203,7 @@ fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<(
                 scheduler
                     .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
                     .run(move || {
-                        if let Err(e) = S3::new().local_sync() {
+                        if let Err(e) = event::STREAM_WRITERS.sync() {
                             warn!("failed to sync local data. {:?}", e);
                         }
                     });
