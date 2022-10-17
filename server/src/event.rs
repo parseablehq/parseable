@@ -30,7 +30,7 @@ use datafusion::parquet::file::properties::WriterProperties;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::fs::{self, remove_file, OpenOptions};
-use std::io::{BufReader, Write};
+use std::io::BufReader;
 use std::ops::{Deref, DerefMut};
 use std::path::{self};
 use std::sync::Arc;
@@ -47,7 +47,7 @@ use self::error::EventError;
 
 pub struct ParquetRecordWriter {
     path: path::PathBuf,
-    parquet_writer: ArrowWriter<Vec<u8>>,
+    parquet_writer: ArrowWriter<fs::File>,
     arrow_writer: StreamWriter<fs::File>,
 }
 
@@ -58,21 +58,26 @@ impl ParquetRecordWriter {
         arrow_schema: Arc<Schema>,
     ) -> anyhow::Result<Self> {
         let mut path = file_path.clone();
-        path.set_extension("arrow");
 
-        let arrow_file = OpenOptions::new()
+        path.set_extension("tmp");
+        let parquet_file = OpenOptions::new()
             .append(true)
             .create_new(true)
-            .open(path)?;
-        let arrow_writer = StreamWriter::try_new(arrow_file, &arrow_schema)?;
+            .open(&path)?;
 
-        let buffer = Vec::with_capacity(1024);
         let parquet_writer_config = WriterProperties::builder()
             .set_max_row_group_size(1024 * 128)
             .build();
 
+        path.set_extension("arrow");
+        let arrow_file = OpenOptions::new()
+            .append(true)
+            .create_new(true)
+            .open(&path)?;
+
+        let arrow_writer = StreamWriter::try_new(arrow_file, &arrow_schema)?;
         let parquet_writer =
-            ArrowWriter::try_new(buffer, arrow_schema, Some(parquet_writer_config))?;
+            ArrowWriter::try_new(parquet_file, arrow_schema, Some(parquet_writer_config))?;
 
         Ok(Self {
             path: file_path,
@@ -82,9 +87,8 @@ impl ParquetRecordWriter {
     }
 
     pub fn write_recordbatch(&mut self, batch: &RecordBatch) -> anyhow::Result<()> {
-        self.parquet_writer.write(batch)?;
-        log::warn!("writing");
         self.arrow_writer.write(batch)?;
+        self.parquet_writer.write(batch)?;
         Ok(())
     }
 
@@ -93,20 +97,24 @@ impl ParquetRecordWriter {
         todo!()
     }
 
-    pub fn offload_file_closing(mut self) {
-        std::thread::spawn(move || {
-            // close arrow
-            self.arrow_writer.finish().unwrap();
+    pub fn offload_file_closing(self) {
+        let offloaded_dropper = defer_drop::DeferDrop::new(self);
+        drop(offloaded_dropper);
+    }
+}
 
-            let completed_file = self.parquet_writer.into_inner().unwrap();
+impl Drop for ParquetRecordWriter {
+    fn drop(&mut self) {
+        let mut path = self.path.clone();
 
-            let mut file = fs::File::create(&self.path).unwrap();
-            file.write_all(&completed_file).unwrap();
-            file.flush().unwrap();
+        self.arrow_writer.finish().unwrap();
+        self.parquet_writer.flush().unwrap();
 
-            self.path.set_extension("arrow");
-            remove_file(self.path).unwrap();
-        });
+        path.set_extension("tmp");
+        fs::rename(&path, &self.path).unwrap();
+
+        path.set_extension("arrow");
+        remove_file(path).unwrap();
     }
 }
 
