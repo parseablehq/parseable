@@ -34,25 +34,26 @@ RUN     apk update --quiet \
         && apk add -q --no-cache tini
 
 # Create appuser
-ENV USER=parseable
-ENV UID=10001
+ENV     USER=parseable
+ENV     UID=10001
 
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --home "/nonexistent" \
-    --shell "/sbin/nologin" \
-    --no-create-home \
-    --uid "${UID}" \
-    "${USER}"
+RUN     adduser \
+        --disabled-password \
+        --gecos "" \
+        --home "/nonexistent" \
+        --shell "/sbin/nologin" \
+        --no-create-home \
+        --uid "${UID}" \
+        "${USER}"
 
 WORKDIR /parseable
 
 COPY    --from=compiler /parseable/target/release/parseable /bin/parseable
+RUN     chown -R parseable /parseable/
 
-USER parseable:parseable
+USER    parseable:parseable
 
 EXPOSE  8000/tcp
-ENTRYPOINT ["tini", "--"]
 
-CMD    /bin/parseable
+ENTRYPOINT  ["tini", "--"]
+CMD     /bin/parseable
