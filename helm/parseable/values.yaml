@@ -4,7 +4,7 @@ parseable:
     repository: parseable/parseable
     tag: v0.0.5
     pullPolicy: IfNotPresent
-  demo: true
+  demo: false
   env:
     RUST_LOG: "parseable=info"
     # P_ADDR: "0.0.0.0:8000"
