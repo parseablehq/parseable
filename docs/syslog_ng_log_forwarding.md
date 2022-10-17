@@ -27,6 +27,21 @@ services:
       - 601:6601/tcp
       - 6514:6514/tcp
     restart: unless-stopped
+  parseable:
+    image: parseable/parseable:latest
+    entrypoint: /bin/parseable
+    command: server
+    ports:
+    - "8000:8000"
+    environment:
+    - P_S3_URL=https://minio.parseable.io:9000
+    - P_S3_ACCESS_KEY=minioadmin
+    - P_S3_SECRET_KEY=minioadmin
+    - P_S3_REGION=us-east-1
+    - P_S3_BUCKET=parseable
+    - P_LOCAL_STORAGE=/tmp/data
+    - P_USERNAME=parseable
+    - P_PASSWORD=parseable
 ```
 
 Run `docker-compose up` and syslog-ng will listen on port UDP `514` and in `/your/local/path/syslog-ng/config`
@@ -84,7 +99,7 @@ Add following section in `syslog-ng.conf` file:
 ```
 destination d_http {
     http(
-        url("http://host.docker.internal:8000/api/v1/logstream/logstream-name")
+        url("http://parseable:8000/api/v1/logstream/logstream-name")
         method("POST")
         user-agent("syslog-ng User Agent")
         user("parseable")
@@ -109,7 +124,7 @@ log {
 };
 ```
 
-`url()` define the address of parseable server, use `host.docker.internal` if you following 
+`url()` define the address of parseable server, use `parseable` if you following 
 docker compose step. `user(), password()` to define HTTP Basic Auth, required by Parseable to authenticate
 sending log request. `headers()` to customize custom header and set content-type of the payload. And
 finally `body('$(format-json --scope rfc5424 --key ISODATE)')` to format syslog as JSON.
