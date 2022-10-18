@@ -60,7 +60,7 @@ cargo_toml = "0.12.4"
 ureq = "2.5.0"
 sha1_smol = { version = "1.0.0", features = ["std"] }
 vergen = { version = "7.4.2", features = ["build", "git"] }
-zip = { git = "https://github.com/zip-rs/zip" }
+zip = { version = "0.6.3", default_features = false, features = ["deflate"] }
 
 [dev-dependencies]
 maplit = "1.0.2"
