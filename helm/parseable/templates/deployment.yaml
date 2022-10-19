@@ -31,6 +31,8 @@ spec:
             {{- toYaml .Values.parseable.securityContext | nindent 12 }}
           image: "{{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
+          # Uncomment to debug
+          # command: [ "/bin/sh", "-c", "sleep 1000000" ]
           {{- if .Values.parseable.demo }}
           args: ["parseable", "server", "--demo"]
           {{- else }}
@@ -41,12 +43,23 @@ spec:
             - name: {{ $key }}
               value: {{ tpl $value $ | quote }}
             {{- end }}
+            {{- range $secret := .Values.parseable.secrets }}
+            {{- range $key := $secret.keys }}
+            {{- $envPrefix := $secret.prefix | default "" | upper }}
+            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+            - name: {{ $envPrefix }}{{ $envKey }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret.name }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- end }}
           ports:
             - containerPort: 8000
           resources:
             {{- toYaml .Values.parseable.resources | nindent 12 }}
           volumeMounts:
-          - mountPath: "/parseable"
+          - mountPath: "/parseable/data"
             name: cache-volume
       volumes:
       - name: cache-volume

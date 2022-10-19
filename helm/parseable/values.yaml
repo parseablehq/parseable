@@ -1,25 +1,28 @@
 parseable:
-  replicaCount: 1
   image:
     repository: parseable/parseable
     tag: v0.0.5
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   demo: false
+  secrets: 
+  - type: env
+    name: parseable-env-secret
+    prefix: P_
+    keys:
+    - addr
+    - tls.cert.path
+    - tls.key.path
+    - s3.url
+    - s3.access.key
+    - s3.secret.key
+    - s3.bucket
+    - s3.region
+    - local.storage
+    - username
+    - password
+  replicaCount: 1
   env:
     RUST_LOG: "parseable=info"
-    # P_ADDR: "0.0.0.0:8000"
-    # P_TLS_CERT_PATH: ""
-    # P_TLS_KEY_PATH: ""
-    # P_LOCAL_STORAGE: "data"
-    # P_STORAGE_UPLOAD_INTERVAL: "60"
-    # P_S3_URL: ""
-    # P_S3_ACCESS_KEY: ""
-    # P_S3_SECRET_KEY: ""
-    # P_S3_REGION: ""
-    # P_S3_BUCKET: ""
-    # P_LOCAL_STORAGE: ""
-    # P_USERNAME: ""
-    # P_PASSWORD: ""
   nameOverride: ""
   fullnameOverride: ""  
   serviceAccount:
