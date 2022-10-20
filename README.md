@@ -74,6 +74,7 @@ Parseable helm chart is available at [Parseable charts repository](https://chart
 
 ```sh
 helm repo add parseable https://charts.parseable.io/
+helm repo update
 kubectl create namespace parseable
 helm install parseable parseable/parseable --namespace parseable --set parseable.demo=true
 ```
