@@ -9,9 +9,11 @@ parseable:
     name: parseable-env-secret
     prefix: P_
     keys:
+    ## Comment / uncomment the following lines as required
+    # - tls.cert.path
+    # - tls.key.path
+    # - storage.upload.interval
     - addr
-    - tls.cert.path
-    - tls.key.path
     - s3.url
     - s3.access.key
     - s3.secret.key
