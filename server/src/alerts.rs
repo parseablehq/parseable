@@ -16,16 +16,21 @@
  *
  */
 
+use std::{
+    fmt::Debug,
+    sync::atomic::{AtomicU32, Ordering},
+};
+
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
     pub alerts: Vec<Alert>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
     pub name: String,
@@ -37,8 +42,8 @@ pub struct Alert {
 impl Alert {
     // TODO: spawn async tasks to call webhooks if alert rules are met
     // This is done to ensure that threads aren't blocked by calls to the webhook
-    pub async fn check_alert(&mut self, event: &serde_json::Value) -> Result<(), ()> {
-        if self.rule.resolves(event).await {
+    pub async fn check_alert(&self, event: &serde_json::Value) -> Result<(), ()> {
+        if self.rule.resolves(event) {
             info!("Alert triggered; name: {}", self.name);
             for target in self.targets.clone() {
                 let msg = self.message.clone();
@@ -52,58 +57,79 @@ impl Alert {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Rule {
-    pub field: String,
-    /// Field that determines what comparison operator is to be used
-    #[serde(default)]
-    pub operator: Operator,
-    pub value: serde_json::Value,
-    pub repeats: u32,
-    #[serde(skip)]
-    repeated: u32,
-    pub within: String,
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Rule {
+    NumericRule(NumericRule),
 }
 
 impl Rule {
+    fn resolves(&self, event: &serde_json::Value) -> bool {
+        match self {
+            Rule::NumericRule(rule) => rule.resolves(event),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NumericRule {
+    pub field: String,
+    /// Field that determines what comparison operator is to be used
+    #[serde(default)]
+    pub operator: NumericOperator,
+    pub value: serde_json::Number,
+    pub repeats: u32,
+    #[serde(skip)]
+    repeated: AtomicU32,
+}
+
+impl NumericRule {
     // TODO: utilise `within` to set a range for validity of rule to trigger alert
-    pub async fn resolves(&mut self, event: &serde_json::Value) -> bool {
+    fn resolves(&self, event: &serde_json::Value) -> bool {
+        let number = match event.get(&self.field).expect("field exists") {
+            serde_json::Value::Number(number) => number,
+            _ => unreachable!("right rule is set for right column type"),
+        };
+
         let comparison = match self.operator {
-            Operator::EqualTo => event.get(&self.field).unwrap() == &self.value,
+            NumericOperator::EqualTo => number == &self.value,
             // TODO: currently this is a hack, ensure checks are performed in the right way
-            Operator::GreaterThan => {
-                event.get(&self.field).unwrap().as_f64().unwrap() > (self.value).as_f64().unwrap()
-            }
-            Operator::LessThan => {
-                event.get(&self.field).unwrap().as_f64().unwrap() < (self.value).as_f64().unwrap()
-            }
+            NumericOperator::GreaterThan => number.as_f64().unwrap() > self.value.as_f64().unwrap(),
+            NumericOperator::LessThan => number.as_f64().unwrap() < self.value.as_f64().unwrap(),
         };
 
         // If truthy, increment count of repeated
+        // acquire lock and load
+        let mut repeated = self.repeated.load(Ordering::Acquire);
+
         if comparison {
-            self.repeated += 1;
+            repeated += 1
         }
 
         // If enough repetitions made, return true
-        if self.repeated >= self.repeats {
-            self.repeated = 0;
-            return true;
-        }
+        let ret = if repeated >= self.repeats {
+            repeated = 0;
+            true
+        } else {
+            false
+        };
+        // store the value back to repeated and release
+        self.repeated.store(repeated, Ordering::Release);
 
-        false
+        ret
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Operator {
+pub enum NumericOperator {
     EqualTo,
     GreaterThan,
     LessThan,
 }
 
-impl Default for Operator {
+impl Default for NumericOperator {
     fn default() -> Self {
         Self::EqualTo
     }

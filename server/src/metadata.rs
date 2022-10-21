@@ -28,7 +28,7 @@ use crate::storage::ObjectStorage;
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct LogStreamMetadata {
     pub schema: Option<Schema>,
     pub alerts: Alerts,
@@ -114,13 +114,6 @@ impl STREAM_INFO {
             .map(|metadata| {
                 metadata.alerts = alerts;
             })
-    }
-
-    pub fn alert(&self, stream_name: &str) -> Result<Alerts, MetadataError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        map.get(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))
-            .map(|metadata| metadata.alerts.to_owned())
     }
 
     pub fn add_stream(&self, stream_name: String, schema: Option<Schema>, alerts: Alerts) {
@@ -211,79 +204,5 @@ pub mod error {
             #[error("Error while loading from object storage: {0}")]
             ObjectStorage(#[from] ObjectStorageError),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use datafusion::arrow::datatypes::{DataType, Field};
-    use maplit::hashmap;
-    use rstest::*;
-    use serial_test::serial;
-
-    #[fixture]
-    fn schema() -> Schema {
-        let field_a = Field::new("a", DataType::Int64, false);
-        let field_b = Field::new("b", DataType::Boolean, false);
-        Schema::new(vec![field_a, field_b])
-    }
-
-    #[rstest]
-    #[case::zero(0, 0, 0)]
-    #[case::some(1024, 512, 2048)]
-    fn update_stats(#[case] size: u64, #[case] compressed_size: u64, #[case] prev_compressed: u64) {
-        let mut stats = Stats {
-            size,
-            compressed_size,
-            prev_compressed,
-        };
-
-        stats.update(2056, 2000);
-
-        assert_eq!(
-            stats,
-            Stats {
-                size: size + 2056,
-                compressed_size: prev_compressed + 2000,
-                prev_compressed
-            }
-        )
-    }
-
-    fn clear_map() {
-        STREAM_INFO.write().unwrap().clear();
-    }
-
-    #[rstest]
-    #[case::stream_schema_alert("teststream", Some(schema()))]
-    #[case::stream_only("teststream", None)]
-    #[serial]
-    fn test_add_stream(#[case] stream_name: String, #[case] schema: Option<Schema>) {
-        let alerts = Alerts { alerts: vec![] };
-        clear_map();
-        STREAM_INFO.add_stream(stream_name.clone(), schema.clone(), alerts.clone());
-
-        let left = STREAM_INFO.read().unwrap().clone();
-        let right = hashmap! {
-            stream_name => LogStreamMetadata {
-                schema,
-                alerts,
-                ..Default::default()
-            }
-        };
-        assert_eq!(left, right);
-    }
-
-    #[rstest]
-    #[case::stream_only("teststream")]
-    #[serial]
-    fn test_delete_stream(#[case] stream_name: String) {
-        clear_map();
-        STREAM_INFO.add_stream(stream_name.clone(), None, Alerts { alerts: vec![] });
-
-        STREAM_INFO.delete_stream(&stream_name);
-        let map = STREAM_INFO.read().unwrap();
-        assert!(!map.contains_key(&stream_name));
     }
 }

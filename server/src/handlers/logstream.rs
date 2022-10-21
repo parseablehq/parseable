@@ -126,13 +126,19 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
 pub async fn get_alert(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    match metadata::STREAM_INFO.alert(&stream_name) {
-        Ok(alerts) => response::ServerResponse {
-            msg: serde_json::to_string(&alerts).unwrap(),
+    let alerts = metadata::STREAM_INFO
+        .read()
+        .expect(metadata::LOCK_EXPECT)
+        .get(&stream_name)
+        .map(|metadata| serde_json::to_string(&metadata.alerts).unwrap());
+
+    match alerts {
+        Some(alerts) => response::ServerResponse {
+            msg: alerts,
             code: StatusCode::OK,
         }
         .to_http(),
-        Err(_) => match S3::new().get_alerts(&stream_name).await {
+        None => match S3::new().get_alerts(&stream_name).await {
             Ok(alerts) if alerts.alerts.is_empty() => response::ServerResponse {
                 msg: "alert configuration not set for log stream {}".to_string(),
                 code: StatusCode::BAD_REQUEST,
@@ -225,7 +231,7 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
         .to_http();
     }
 
-    if let Err(e) = S3::new().put_alerts(&stream_name, alerts.clone()).await {
+    if let Err(e) = S3::new().put_alerts(&stream_name, &alerts).await {
         return response::ServerResponse {
             msg: format!(
                 "failed to set alert configuration for log stream {} due to err: {}",
