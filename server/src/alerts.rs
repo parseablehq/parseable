@@ -57,13 +57,13 @@ impl Alert {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Rule {
-    NumericRule(NumericRule),
+    Numeric(NumericRule),
 }
 
 impl Rule {
     fn resolves(&self, event: &serde_json::Value) -> bool {
         match self {
-            Rule::NumericRule(rule) => rule.resolves(event),
+            Rule::Numeric(rule) => rule.resolves(event),
         }
     }
 }

@@ -43,7 +43,7 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
         }
 
         match alert.rule {
-            Rule::NumericRule(ref rule) => {
+            Rule::Numeric(ref rule) => {
                 if rule.field.is_empty() {
                     return Err(AlertValidationError::EmptyRuleField);
                 }
