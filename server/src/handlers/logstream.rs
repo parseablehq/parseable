@@ -94,9 +94,7 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
     match metadata::STREAM_INFO.schema(&stream_name) {
         Ok(schema) => response::ServerResponse {
             msg: schema
-                .map(|ref schema| {
-                    serde_json::to_string(schema).expect("schema can be converted to json")
-                })
+                .and_then(|ref schema| serde_json::to_string(schema).ok())
                 .unwrap_or_default(),
             code: StatusCode::OK,
         }
