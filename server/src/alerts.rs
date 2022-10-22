@@ -16,10 +16,7 @@
  *
  */
 
-use std::{
-    fmt::Debug,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use log::{error, info};
 use serde::{Deserialize, Serialize};
