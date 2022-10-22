@@ -18,6 +18,8 @@ FROM    rust:1.63-alpine AS compiler
 
 WORKDIR /parseable
 
+RUN     apk add --no-cache musl-dev
+
 COPY . .
 
 RUN     set -eux; \
