@@ -168,11 +168,21 @@ where
     S: Clone + clap::Args + StorageOpt,
 {
     /// The location of TLS Cert file
-    #[arg(long, env = "P_TLS_CERT_PATH", value_name = "path")]
+    #[arg(
+        long,
+        env = "P_TLS_CERT_PATH",
+        value_name = "path",
+        value_parser = validation::non_empty_path
+    )]
     pub tls_cert_path: Option<PathBuf>,
 
     /// The location of TLS Private Key file
-    #[arg(long, env = "P_TLS_KEY_PATH", value_name = "path")]
+    #[arg(
+        long,
+        env = "P_TLS_KEY_PATH",
+        value_name = "path",
+        value_parser = validation::non_empty_path
+    )]
     pub tls_key_path: Option<PathBuf>,
 
     /// The address on which the http server will listen.
@@ -249,5 +259,17 @@ where
         }
 
         "http".to_string()
+    }
+}
+
+pub(self) mod validation {
+    use std::path::PathBuf;
+
+    pub fn non_empty_path(s: &str) -> Result<PathBuf, String> {
+        if s.is_empty() {
+            return Err("empty path".to_owned());
+        }
+
+        Ok(PathBuf::from(s))
     }
 }
