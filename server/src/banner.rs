@@ -27,12 +27,12 @@ pub fn system_info() {
     {}
         OS: {}
         Processor: {} logical, {} physical
-        Memory: {} GiB total",
+        Memory: {:.2} GiB total",
         "System:".to_string().blue().bold(),
         os_info::get(),
         num_cpus::get(),
         num_cpus::get_physical(),
-        system.total_memory() / (1024 * 1024)
+        system.total_memory() as f32 / (1024 * 1024 * 1024) as f32
     )
 }
 
