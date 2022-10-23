@@ -172,7 +172,7 @@ where
         long,
         env = "P_TLS_CERT_PATH",
         value_name = "path",
-        value_parser = validation::non_empty_path
+        value_parser = validation::file_path
     )]
     pub tls_cert_path: Option<PathBuf>,
 
@@ -181,7 +181,7 @@ where
         long,
         env = "P_TLS_KEY_PATH",
         value_name = "path",
-        value_parser = validation::non_empty_path
+        value_parser = validation::file_path
     )]
     pub tls_key_path: Option<PathBuf>,
 
@@ -265,11 +265,17 @@ where
 pub(self) mod validation {
     use std::path::PathBuf;
 
-    pub fn non_empty_path(s: &str) -> Result<PathBuf, String> {
+    pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
             return Err("empty path".to_owned());
         }
 
-        Ok(PathBuf::from(s))
+        let path = PathBuf::from(s);
+
+        if !path.is_file() {
+            return Err("path specified does not point to an accessible file".to_string());
+        }
+
+        Ok(path)
     }
 }
