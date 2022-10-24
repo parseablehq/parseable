@@ -70,20 +70,20 @@ impl Rule {
     pub fn valid_for_schema(&self, schema: &arrow_schema::Schema) -> bool {
         match self {
             Rule::Numeric(NumericRule { field, .. }) => match schema.column_with_name(field) {
-                Some((_, field)) => match field.data_type() {
+                Some((_, field)) => matches!(
+                    field.data_type(),
                     arrow_schema::DataType::Int8
-                    | arrow_schema::DataType::Int16
-                    | arrow_schema::DataType::Int32
-                    | arrow_schema::DataType::Int64
-                    | arrow_schema::DataType::UInt8
-                    | arrow_schema::DataType::UInt16
-                    | arrow_schema::DataType::UInt32
-                    | arrow_schema::DataType::UInt64
-                    | arrow_schema::DataType::Float16
-                    | arrow_schema::DataType::Float32
-                    | arrow_schema::DataType::Float64 => true,
-                    _ => false,
-                },
+                        | arrow_schema::DataType::Int16
+                        | arrow_schema::DataType::Int32
+                        | arrow_schema::DataType::Int64
+                        | arrow_schema::DataType::UInt8
+                        | arrow_schema::DataType::UInt16
+                        | arrow_schema::DataType::UInt32
+                        | arrow_schema::DataType::UInt64
+                        | arrow_schema::DataType::Float16
+                        | arrow_schema::DataType::Float32
+                        | arrow_schema::DataType::Float64
+                ),
                 None => false,
             },
         }
