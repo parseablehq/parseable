@@ -113,9 +113,15 @@ impl NumericRule {
 
         let comparison = match self.operator {
             NumericOperator::EqualTo => number == &self.value,
-            // TODO: currently this is a hack, ensure checks are performed in the right way
+            NumericOperator::NotEqualTo => number != &self.value,
             NumericOperator::GreaterThan => number.as_f64().unwrap() > self.value.as_f64().unwrap(),
+            NumericOperator::GreaterThanEquals => {
+                number.as_f64().unwrap() >= self.value.as_f64().unwrap()
+            }
             NumericOperator::LessThan => number.as_f64().unwrap() < self.value.as_f64().unwrap(),
+            NumericOperator::LessThanEquals => {
+                number.as_f64().unwrap() <= self.value.as_f64().unwrap()
+            }
         };
 
         // If truthy, increment count of repeated
@@ -143,9 +149,18 @@ impl NumericRule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NumericOperator {
+    #[serde(alias = "=")]
     EqualTo,
+    #[serde(alias = "!=")]
+    NotEqualTo,
+    #[serde(alias = ">")]
     GreaterThan,
+    #[serde(alias = ">=")]
+    GreaterThanEquals,
+    #[serde(alias = "<")]
     LessThan,
+    #[serde(alias = "<=")]
+    LessThanEquals,
 }
 
 impl Default for NumericOperator {
