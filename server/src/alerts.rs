@@ -69,9 +69,9 @@ impl Rule {
 
     pub fn valid_for_schema(&self, schema: &arrow_schema::Schema) -> bool {
         match self {
-            Rule::Numeric(NumericRule { field, .. }) => match schema.column_with_name(field) {
-                Some((_, field)) => matches!(
-                    field.data_type(),
+            Rule::Numeric(NumericRule { column, .. }) => match schema.column_with_name(column) {
+                Some((_, column)) => matches!(
+                    column.data_type(),
                     arrow_schema::DataType::Int8
                         | arrow_schema::DataType::Int16
                         | arrow_schema::DataType::Int32
@@ -93,7 +93,7 @@ impl Rule {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NumericRule {
-    pub field: String,
+    pub column: String,
     /// Field that determines what comparison operator is to be used
     #[serde(default)]
     pub operator: NumericOperator,
@@ -106,7 +106,7 @@ pub struct NumericRule {
 impl NumericRule {
     // TODO: utilise `within` to set a range for validity of rule to trigger alert
     fn resolves(&self, event: &serde_json::Value) -> bool {
-        let number = match event.get(&self.field).expect("field exists") {
+        let number = match event.get(&self.column).expect("column exists") {
             serde_json::Value::Number(number) => number,
             _ => unreachable!("right rule is set for right column type"),
         };

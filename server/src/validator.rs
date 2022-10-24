@@ -44,7 +44,7 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
 
         match alert.rule {
             Rule::Numeric(ref rule) => {
-                if rule.field.is_empty() {
+                if rule.column.is_empty() {
                     return Err(AlertValidationError::EmptyRuleField);
                 }
                 if rule.repeats == 0 {
@@ -172,7 +172,7 @@ pub mod error {
         EmptyName,
         #[error("Alert message cannot be empty")]
         EmptyMessage,
-        #[error("Alert's rule.field cannot be empty")]
+        #[error("Alert's rule.column cannot be empty")]
         EmptyRuleField,
         #[error("Alert's rule.repeats can't be set to 0")]
         InvalidRuleRepeat,
