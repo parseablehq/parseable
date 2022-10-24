@@ -229,6 +229,39 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
         .to_http();
     }
 
+    match metadata::STREAM_INFO.schema(&stream_name) {
+        Ok(Some(schema)) => {
+            let invalid_alert = alerts
+                .alerts
+                .iter()
+                .find(|alert| !alert.rule.valid_for_schema(&schema));
+
+            if let Some(alert) = invalid_alert {
+                return response::ServerResponse {
+                    msg:
+                        format!("alert - \"{}\" is invalid, please check if alert is valid according to this stream's schema and try again", alert.name),
+                    code: StatusCode::BAD_REQUEST,
+                }
+                .to_http();
+            }
+        }
+        Ok(None) => {
+            return response::ServerResponse {
+                msg: "log stream is not initialized, please post an event before setting up alerts"
+                    .to_string(),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http()
+        }
+        Err(_) => {
+            return response::ServerResponse {
+                msg: "log stream is not found".to_string(),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http()
+        }
+    }
+
     if let Err(e) = S3::new().put_alerts(&stream_name, &alerts).await {
         return response::ServerResponse {
             msg: format!(
