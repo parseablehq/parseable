@@ -18,7 +18,6 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use log::{error, info};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -44,7 +43,7 @@ impl Alert {
     // This is done to ensure that threads aren't blocked by calls to the webhook
     pub async fn check_alert(&self, event: &serde_json::Value) -> Result<(), ()> {
         if self.rule.resolves(event) {
-            info!("Alert triggered; name: {}", self.name);
+            log::info!("Alert triggered; name: {}", self.name);
             for target in self.targets.clone() {
                 let msg = self.message.clone();
                 actix_web::rt::spawn(async move {
@@ -172,24 +171,103 @@ impl Default for NumericOperator {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Target {
-    pub name: String,
-    #[serde(rename = "server_url")]
-    pub server_url: String,
-    #[serde(rename = "api_key")]
-    pub api_key: String,
+#[serde(tag = "type")]
+pub enum Target {
+    Slack(targets::slack::SlackWebHook),
+    #[serde(alias = "webhook")]
+    Other(targets::other::OtherWebHook),
 }
 
 impl Target {
     pub fn call(&self, msg: &str) {
-        if let Err(e) = ureq::post(&self.server_url)
-            .set("Content-Type", "text/plain; charset=iso-8859-1")
-            .set("X-API-Key", &self.api_key)
-            .send_string(msg)
-        {
-            error!("Couldn't make call to webhook, error: {}", e)
+        match self {
+            Target::Slack(target) => target.call(msg),
+            Target::Other(target) => target.call(msg),
+        }
+    }
+}
+
+pub trait CallableTarget<T> {
+    fn call(&self, payload: T);
+}
+
+pub mod targets {
+    pub mod slack {
+        use serde::{Deserialize, Serialize};
+        use serde_json::Value;
+
+        use crate::alerts::CallableTarget;
+
+        #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        pub struct SlackWebHook {
+            #[serde(rename = "server_url")]
+            server_url: String,
+        }
+
+        impl CallableTarget<&Value> for SlackWebHook {
+            fn call(&self, payload: &Value) {
+                if let Err(e) = ureq::post(&self.server_url)
+                    .set("Content-Type", "application/json")
+                    .send_json(payload)
+                {
+                    log::error!("Couldn't make call to webhook, error: {}", e)
+                }
+            }
+        }
+
+        impl CallableTarget<&str> for SlackWebHook {
+            fn call(&self, payload: &str) {
+                if let Err(e) = ureq::post(&self.server_url)
+                    .set("Content-Type", "application/json")
+                    .send_json(ureq::json!({ "text": payload }))
+                {
+                    log::error!("Couldn't make call to webhook, error: {}", e)
+                }
+            }
+        }
+    }
+
+    pub mod other {
+        use serde::{Deserialize, Serialize};
+
+        use crate::alerts::CallableTarget;
+
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(untagged)]
+        pub enum OtherWebHook {
+            Simple {
+                #[serde(rename = "server_url")]
+                server_url: String,
+            },
+            ApiKey {
+                #[serde(rename = "server_url")]
+                server_url: String,
+                #[serde(rename = "api_key")]
+                api_key: String,
+            },
+        }
+
+        impl CallableTarget<&str> for OtherWebHook {
+            fn call(&self, payload: &str) {
+                let res = match self {
+                    OtherWebHook::Simple { server_url } => ureq::post(server_url)
+                        .set("Content-Type", "application/json")
+                        .send_string(payload),
+                    OtherWebHook::ApiKey {
+                        server_url,
+                        api_key,
+                    } => ureq::post(server_url)
+                        .set("Content-Type", "application/json")
+                        .set("X-API-Key", api_key)
+                        .send_json(ureq::json!({ "text": payload })),
+                };
+
+                if let Err(e) = res {
+                    log::error!("Couldn't make call to webhook, error: {}", e)
+                }
+            }
         }
     }
 }
