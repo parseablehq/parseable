@@ -21,6 +21,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::event::Event;
+
 #[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
@@ -41,13 +43,20 @@ pub struct Alert {
 impl Alert {
     // TODO: spawn async tasks to call webhooks if alert rules are met
     // This is done to ensure that threads aren't blocked by calls to the webhook
-    pub async fn check_alert(&self, event: &serde_json::Value) -> Result<(), ()> {
-        if self.rule.resolves(event) {
-            log::info!("Alert triggered; name: {}", self.name);
+    pub async fn check_alert(&self, event: &Event) -> Result<(), ()> {
+        let event_json: serde_json::Value = serde_json::from_str(&event.body).map_err(|_| ())?;
+
+        if self.rule.resolves(&event_json) {
+            log::info!("Alert triggered for stream {}", self.name);
             for target in self.targets.clone() {
-                let msg = self.message.clone();
+                let context = Context::new(
+                    event.stream_name.clone(),
+                    self.name.clone(),
+                    self.message.clone(),
+                    self.rule.trigger_reason(),
+                );
                 actix_web::rt::spawn(async move {
-                    target.call(&msg);
+                    target.call(&context);
                 });
             }
         }
@@ -90,6 +99,43 @@ impl Rule {
             },
         }
     }
+
+    pub fn trigger_reason(&self) -> String {
+        match self {
+            Rule::Numeric(NumericRule {
+                column,
+                operator,
+                value,
+                repeats,
+                ..
+            }) => match operator {
+                NumericOperator::EqualTo => format!(
+                    "{} column was equal to {}, {} times",
+                    column, value, repeats
+                ),
+                NumericOperator::NotEqualTo => format!(
+                    "{} column was not equal to {}, {} times",
+                    column, value, repeats
+                ),
+                NumericOperator::GreaterThan => format!(
+                    "{} column was greater than {}, {} times",
+                    column, value, repeats
+                ),
+                NumericOperator::GreaterThanEquals => format!(
+                    "{} column was greater than or equal to {}, {} times",
+                    column, value, repeats
+                ),
+                NumericOperator::LessThan => format!(
+                    "{} column was less than {}, {} times",
+                    column, value, repeats
+                ),
+                NumericOperator::LessThanEquals => format!(
+                    "{} column was less than or equal to {}, {} times",
+                    column, value, repeats
+                ),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -106,7 +152,6 @@ pub struct NumericRule {
 }
 
 impl NumericRule {
-    // TODO: utilise `within` to set a range for validity of rule to trigger alert
     fn resolves(&self, event: &serde_json::Value) -> bool {
         let number = match event.get(&self.column).expect("column exists") {
             serde_json::Value::Number(number) => number,
@@ -181,24 +226,23 @@ pub enum Target {
 }
 
 impl Target {
-    pub fn call(&self, msg: &str) {
+    pub fn call(&self, payload: &Context) {
         match self {
-            Target::Slack(target) => target.call(msg),
-            Target::Other(target) => target.call(msg),
+            Target::Slack(target) => target.call(payload),
+            Target::Other(target) => target.call(payload),
         }
     }
 }
 
-pub trait CallableTarget<T> {
-    fn call(&self, payload: T);
+pub trait CallableTarget {
+    fn call(&self, payload: &Context);
 }
 
 pub mod targets {
     pub mod slack {
         use serde::{Deserialize, Serialize};
-        use serde_json::Value;
 
-        use crate::alerts::CallableTarget;
+        use crate::alerts::{CallableTarget, Context};
 
         #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
         pub struct SlackWebHook {
@@ -206,22 +250,11 @@ pub mod targets {
             server_url: String,
         }
 
-        impl CallableTarget<&Value> for SlackWebHook {
-            fn call(&self, payload: &Value) {
+        impl CallableTarget for SlackWebHook {
+            fn call(&self, payload: &Context) {
                 if let Err(e) = ureq::post(&self.server_url)
                     .set("Content-Type", "application/json")
-                    .send_json(payload)
-                {
-                    log::error!("Couldn't make call to webhook, error: {}", e)
-                }
-            }
-        }
-
-        impl CallableTarget<&str> for SlackWebHook {
-            fn call(&self, payload: &str) {
-                if let Err(e) = ureq::post(&self.server_url)
-                    .set("Content-Type", "application/json")
-                    .send_json(ureq::json!({ "text": payload }))
+                    .send_json(ureq::json!({ "text": payload.default_alert_string() }))
                 {
                     log::error!("Couldn't make call to webhook, error: {}", e)
                 }
@@ -232,7 +265,7 @@ pub mod targets {
     pub mod other {
         use serde::{Deserialize, Serialize};
 
-        use crate::alerts::CallableTarget;
+        use crate::alerts::{CallableTarget, Context};
 
         #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
         #[serde(untagged)]
@@ -249,19 +282,19 @@ pub mod targets {
             },
         }
 
-        impl CallableTarget<&str> for OtherWebHook {
-            fn call(&self, payload: &str) {
+        impl CallableTarget for OtherWebHook {
+            fn call(&self, payload: &Context) {
                 let res = match self {
                     OtherWebHook::Simple { server_url } => ureq::post(server_url)
-                        .set("Content-Type", "application/json")
-                        .send_string(payload),
+                        .set("Content-Type", "text/plain; charset=iso-8859-1")
+                        .send_string(&payload.default_alert_string()),
                     OtherWebHook::ApiKey {
                         server_url,
                         api_key,
                     } => ureq::post(server_url)
-                        .set("Content-Type", "application/json")
+                        .set("Content-Type", "text/plain; charset=iso-8859-1")
                         .set("X-API-Key", api_key)
-                        .send_json(ureq::json!({ "text": payload })),
+                        .send_string(&payload.default_alert_string()),
                 };
 
                 if let Err(e) = res {
@@ -269,5 +302,33 @@ pub mod targets {
                 }
             }
         }
+    }
+}
+
+pub struct Context {
+    stream: String,
+    alert_name: String,
+    message: String,
+    reason: String,
+}
+
+impl Context {
+    pub fn new(stream: String, alert_name: String, message: String, reason: String) -> Self {
+        Self {
+            stream,
+            alert_name,
+            message,
+            reason,
+        }
+    }
+
+    // <Alert_Name> Triggered on <Log_stream>
+    // Message: Ting
+    // Failing Condition: Status column was equal to 500, 5 times
+    fn default_alert_string(&self) -> String {
+        format!(
+            "{} triggered on {}\nMessage: {}\nFailing Condition: {}",
+            self.alert_name, self.stream, self.message, self.reason
+        )
     }
 }

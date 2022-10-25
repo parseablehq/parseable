@@ -72,8 +72,6 @@ pub const LOCK_EXPECT: &str = "no method in metadata should panic while holding 
 #[allow(clippy::all)]
 impl STREAM_INFO {
     pub async fn check_alerts(&self, event: &Event) -> Result<(), CheckAlertError> {
-        let event_json: serde_json::Value = serde_json::from_str(&event.body)?;
-
         let mut map = self.write().expect(LOCK_EXPECT);
         let meta = map
             .get_mut(&event.stream_name)
@@ -82,7 +80,7 @@ impl STREAM_INFO {
             ))?;
 
         for alert in meta.alerts.alerts.iter_mut() {
-            if alert.check_alert(&event_json).await.is_err() {
+            if alert.check_alert(event).await.is_err() {
                 log::error!("Error while parsing event against alerts");
             }
         }
