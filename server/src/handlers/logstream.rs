@@ -204,6 +204,25 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
 
 pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    // Error if any alert field contains id
+    if let Some(serde_json::Value::Array(alerts)) = body.get("alerts") {
+        if alerts
+            .iter()
+            .map_while(|alert| alert.as_object())
+            .any(|map| map.contains_key("id"))
+        {
+            return response::ServerResponse {
+                msg: format!(
+                    "failed to set alert configuration for log stream {}, \"id\" is a reserved field.",
+                    stream_name
+                ),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http();
+        }
+    }
+
     let alerts: Alerts = match serde_json::from_value(body.into_inner()) {
         Ok(alerts) => alerts,
         Err(e) => {
