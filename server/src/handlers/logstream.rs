@@ -20,6 +20,7 @@ use std::fs;
 
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use serde_json::Value;
 
 use crate::alerts::Alerts;
 use crate::s3::S3;
@@ -124,15 +125,29 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
 pub async fn get_alert(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    let alerts = metadata::STREAM_INFO
+    let mut alerts = metadata::STREAM_INFO
         .read()
         .expect(metadata::LOCK_EXPECT)
         .get(&stream_name)
-        .map(|metadata| serde_json::to_string(&metadata.alerts).unwrap());
+        .map(|metadata| {
+            serde_json::to_value(&metadata.alerts).expect("alerts can serialize to valid json")
+        });
+
+    // remove id from each alert
+    alerts
+        .iter_mut()
+        .map(|alert| {
+            alert
+                .as_object_mut()
+                .expect("every alert is a valid object")
+        })
+        .for_each(|alert_map| {
+            alert_map.remove("id");
+        });
 
     match alerts {
         Some(alerts) => response::ServerResponse {
-            msg: alerts,
+            msg: alerts.to_string(),
             code: StatusCode::OK,
         }
         .to_http(),
@@ -143,7 +158,7 @@ pub async fn get_alert(req: HttpRequest) -> HttpResponse {
             }
             .to_http(),
             Ok(alerts) => response::ServerResponse {
-                msg: serde_json::to_string(&alerts).unwrap(),
+                msg: serde_json::to_string(&alerts).expect("alerts can serialize to valid json"),
                 code: StatusCode::OK,
             }
             .to_http(),
@@ -206,7 +221,7 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     // Error if any alert field contains id
-    if let Some(serde_json::Value::Array(alerts)) = body.get("alerts") {
+    if let Some(Value::Array(alerts)) = body.get("alerts") {
         if alerts
             .iter()
             .map_while(|alert| alert.as_object())
