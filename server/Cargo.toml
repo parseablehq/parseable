@@ -53,6 +53,7 @@ actix-web-static-files = "4.0"
 static-files = "0.2.1"
 walkdir = "2"
 ureq = { version = "2.5.0", features = ["json"] }
+uuid = { version = "1.2.1", features = ["v4", "fast-rng", "serde"] }
 
 [build-dependencies]
 static-files = "0.2.1"

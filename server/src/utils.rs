@@ -127,6 +127,14 @@ pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
 }
 
+pub mod uuid {
+    use uuid::Uuid;
+
+    pub fn gen() -> Uuid {
+        Uuid::new_v4()
+    }
+}
+
 pub mod update {
     use crate::banner::version::current;
     use std::path::Path;

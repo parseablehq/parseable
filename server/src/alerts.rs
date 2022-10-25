@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use log::{error, info};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +31,8 @@ pub struct Alerts {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
+    #[serde(default = "crate::utils::uuid::gen")]
+    pub id: Uuid,
     pub name: String,
     pub message: String,
     pub rule: Rule,
