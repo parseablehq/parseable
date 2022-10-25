@@ -125,7 +125,7 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
 pub async fn get_alert(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    let mut alerts = metadata::STREAM_INFO
+    let alerts = metadata::STREAM_INFO
         .read()
         .expect(metadata::LOCK_EXPECT)
         .get(&stream_name)
@@ -133,42 +133,34 @@ pub async fn get_alert(req: HttpRequest) -> HttpResponse {
             serde_json::to_value(&metadata.alerts).expect("alerts can serialize to valid json")
         });
 
-    // remove id from each alert
-    alerts
-        .iter_mut()
-        .map(|alert| {
-            alert
-                .as_object_mut()
-                .expect("every alert is a valid object")
-        })
-        .for_each(|alert_map| {
-            alert_map.remove("id");
-        });
-
-    match alerts {
-        Some(alerts) => response::ServerResponse {
-            msg: alerts.to_string(),
-            code: StatusCode::OK,
-        }
-        .to_http(),
+    let mut alerts = match alerts {
+        Some(alerts) => alerts,
         None => match S3::new().get_alerts(&stream_name).await {
-            Ok(alerts) if alerts.alerts.is_empty() => response::ServerResponse {
-                msg: "alert configuration not set for log stream {}".to_string(),
-                code: StatusCode::BAD_REQUEST,
+            Ok(alerts) if alerts.alerts.is_empty() => {
+                return response::ServerResponse {
+                    msg: "alert configuration not set for log stream {}".to_string(),
+                    code: StatusCode::BAD_REQUEST,
+                }
+                .to_http()
             }
-            .to_http(),
-            Ok(alerts) => response::ServerResponse {
-                msg: serde_json::to_string(&alerts).expect("alerts can serialize to valid json"),
-                code: StatusCode::OK,
+            Ok(alerts) => serde_json::to_value(alerts).expect("alerts can serialize to valid json"),
+            Err(_) => {
+                return response::ServerResponse {
+                    msg: "alert doesn't exist".to_string(),
+                    code: StatusCode::BAD_REQUEST,
+                }
+                .to_http()
             }
-            .to_http(),
-            Err(_) => response::ServerResponse {
-                msg: "alert doesn't exist".to_string(),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http(),
         },
+    };
+
+    remove_id_from_alerts(&mut alerts);
+
+    response::ServerResponse {
+        msg: alerts.to_string(),
+        code: StatusCode::OK,
     }
+    .to_http()
 }
 
 pub async fn put(req: HttpRequest) -> HttpResponse {
@@ -220,25 +212,10 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
 pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    // Error if any alert field contains id
-    if let Some(Value::Array(alerts)) = body.get("alerts") {
-        if alerts
-            .iter()
-            .map_while(|alert| alert.as_object())
-            .any(|map| map.contains_key("id"))
-        {
-            return response::ServerResponse {
-                msg: format!(
-                    "failed to set alert configuration for log stream {}, \"id\" is a reserved field.",
-                    stream_name
-                ),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http();
-        }
-    }
+    let mut body = body.into_inner();
+    remove_id_from_alerts(&mut body);
 
-    let alerts: Alerts = match serde_json::from_value(body.into_inner()) {
+    let alerts: Alerts = match serde_json::from_value(body) {
         Ok(alerts) => alerts,
         Err(e) => {
             return response::ServerResponse {
@@ -323,4 +300,15 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
         code: StatusCode::OK,
     }
     .to_http()
+}
+
+fn remove_id_from_alerts(value: &mut Value) {
+    if let Some(Value::Array(alerts)) = value.get_mut("alerts") {
+        alerts
+            .iter_mut()
+            .map_while(|alert| alert.as_object_mut())
+            .for_each(|map| {
+                map.remove("id");
+            });
+    }
 }
