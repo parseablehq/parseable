@@ -237,15 +237,15 @@ pub mod targets {
         #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
         #[serde(untagged)]
         pub enum OtherWebHook {
-            Simple {
-                #[serde(rename = "server_url")]
-                server_url: String,
-            },
             ApiKey {
                 #[serde(rename = "server_url")]
                 server_url: String,
                 #[serde(rename = "api_key")]
                 api_key: String,
+            },
+            Simple {
+                #[serde(rename = "server_url")]
+                server_url: String,
             },
         }
 
