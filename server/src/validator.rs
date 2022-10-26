@@ -51,6 +51,11 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
                     return Err(AlertValidationError::InvalidRuleRepeat);
                 }
             }
+            Rule::String(ref rule) => {
+                if rule.column.is_empty() {
+                    return Err(AlertValidationError::EmptyRuleField);
+                }
+            }
         }
     }
     Ok(())
