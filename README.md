@@ -18,9 +18,6 @@
 
 - Written in Rust, Parseable has a low CPU, memory footprint and offers low latency, high throughput, out of the box.
 - Parseable is designed keeping modern cloud native infrastructure at its heart. This means Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow. 
-- 
-
-
 
 - [x] Highly compressed log data storage with [Parquet](https://parquet.apache.org).
 - [x] Use standard SQL for querying log data.
@@ -53,6 +50,10 @@ docker run \
 Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard with `parseable`, `parseable` as the credentials. Please make sure not to post any important data while in demo mode.
 
 For non-demo and other deployment platforms, please refer to the [installation documentation](https://www.parseable.io/docs/category/installation).
+
+#### Live Demo 
+
+Instead of installing locally, you can also try out Parseable on our [Demo instance](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
 
 ## Using Parseable
 
@@ -87,10 +88,6 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-n
 ```
 
 For complete Parseable API documentation, refer to [Parseable API Docs](https://www.parseable.io/docs/category/api).
-
-## Live Demo 
-
-You can also try out Parseable on our [https://demo.parseable.io](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
                                                                               
 ## Contributing
 
@@ -99,4 +96,7 @@ Refer to the contributing guide [here](https://www.parseable.io/docs/contributin
 #### Contributors
 
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
+
+#### Supported by
+
 <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
