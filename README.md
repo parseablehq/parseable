@@ -22,9 +22,9 @@ Parseable started because of this _missing_ case. We intend to enrich the ecosys
 
 #### Key Differentiators
 
-- Written in Rust. Low CPU & memory footprint, with low latency, high throughput. 
-- Single binary / container based deployment (including UI). Deploy in minutes.
+- Written in Rust. Low CPU & memory footprint, with low latency, high throughput.
 - Open data format (Parquet). Complete ownership of data. Wide range of possibilities for data analysis.
+- Single binary / container based deployment (including UI). Deploy in minutes if not seconds.
 - Indexing free design. Lower CPU and storage overhead. Similar levels of performance as indexing based systems.
 
 #### How it works?
