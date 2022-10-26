@@ -23,12 +23,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 #[serde(untagged)]
 pub enum Rule {
     Numeric(NumericRule),
+    String(StringRule),
 }
 
 impl Rule {
     pub(super) fn resolves(&self, event: &serde_json::Value) -> bool {
         match self {
             Rule::Numeric(rule) => rule.resolves(event),
+            Rule::String(rule) => rule.resolves(event),
         }
     }
 
@@ -49,6 +51,10 @@ impl Rule {
                         | arrow_schema::DataType::Float32
                         | arrow_schema::DataType::Float64
                 ),
+                None => false,
+            },
+            Rule::String(StringRule { column, .. }) => match schema.column_with_name(column) {
+                Some((_, column)) => matches!(column.data_type(), arrow_schema::DataType::Utf8),
                 None => false,
             },
         }
@@ -87,6 +93,19 @@ impl Rule {
                     "{} column was less than or equal to {}, {} times",
                     column, value, repeats
                 ),
+            },
+            Rule::String(StringRule {
+                column,
+                operator,
+                value,
+                ..
+            }) => match operator {
+                StringOperator::Exact => format!("{} column value is {}", column, value),
+                StringOperator::NotExact => format!("{} column value is not {}", column, value),
+                StringOperator::Contains => format!("{} column contains {}", column, value),
+                StringOperator::NotContains => {
+                    format!("{} column does not contains {}", column, value)
+                }
             },
         }
     }
@@ -149,6 +168,44 @@ impl NumericRule {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StringRule {
+    pub column: String,
+    #[serde(default)]
+    pub operator: StringOperator,
+    pub ignore_case: Option<bool>,
+    pub value: String,
+}
+
+impl StringRule {
+    pub fn resolves(&self, event: &serde_json::Value) -> bool {
+        let string = match event.get(&self.column).expect("column exists") {
+            serde_json::Value::String(s) => s,
+            _ => unreachable!("right rule is set for right column type"),
+        };
+
+        if self.ignore_case.unwrap_or_default() {
+            match self.operator {
+                StringOperator::Exact => string.eq_ignore_ascii_case(&self.value),
+                StringOperator::NotExact => !string.eq_ignore_ascii_case(&self.value),
+                StringOperator::Contains => string
+                    .to_ascii_lowercase()
+                    .contains(&self.value.to_ascii_lowercase()),
+                StringOperator::NotContains => !string
+                    .to_ascii_lowercase()
+                    .contains(&self.value.to_ascii_lowercase()),
+            }
+        } else {
+            match self.operator {
+                StringOperator::Exact => string.eq(&self.value),
+                StringOperator::NotExact => !string.eq(&self.value),
+                StringOperator::Contains => string.contains(&self.value),
+                StringOperator::NotContains => !string.contains(&self.value),
+            }
+        }
+    }
+}
 // Operator for comparing values
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,5 +228,22 @@ pub enum NumericOperator {
 impl Default for NumericOperator {
     fn default() -> Self {
         Self::EqualTo
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StringOperator {
+    #[serde(alias = "=")]
+    Exact,
+    #[serde(alias = "!=")]
+    NotExact,
+    Contains,
+    NotContains,
+}
+
+impl Default for StringOperator {
+    fn default() -> Self {
+        Self::Contains
     }
 }
