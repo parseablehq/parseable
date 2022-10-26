@@ -6,7 +6,7 @@
 </p>
 
 <h4 align="center">
-  <p> Parseable is an open source log storage and observability platform, built for cloud native ecosystem. </p>
+  <p> Parseable is an open source log storage and observability platform, built for Kubernetes. </p>
   <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png" />
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
   <a href="https://www.parseable.io/docs/introduction" target="_blank">Documentation</a> |
@@ -16,8 +16,18 @@
 
 ## Why Parseable?
 
+Parseable started because of _missing_ developer friendly, Kubernetes native event and log storage platform. 
+
+There is a clear shortage of log storage and observability solutions for cloud native ecosystem. Parseable is an open source log storage and observability platform, built for cloud native ecosystem. Parseable is a self-hosted solution, which means you can run it on your own infrastructure. Parseable is built on top of the open source projects, which means you can contribute to the project and help us make it better.
+
+#### Key Differentiators
+
 - Written in Rust, Parseable has a low CPU, memory footprint and offers low latency, high throughput, out of the box.
-- Parseable is designed keeping modern cloud native infrastructure at its heart. This means Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow. 
+- Single binary / container based deployment, which means you can deploy Parseable in minutes.
+- 
+Parseable is designed keeping modern cloud native infrastructure at its heart. This means Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow. 
+
+#### Features
 
 - [x] Highly compressed log data storage with [Parquet](https://parquet.apache.org).
 - [x] Use standard SQL for querying log data.
@@ -49,13 +59,13 @@ docker run \
 
 Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard with `parseable`, `parseable` as the credentials. Please make sure not to post any important data while in demo mode.
 
-For non-demo and other deployment platforms, please refer to the [installation documentation](https://www.parseable.io/docs/category/installation).
+For non-demo and other installation options (Kubernetes, bare-metal), please refer to the [documentation](https://www.parseable.io/docs/category/installation).
 
 #### Live Demo 
 
 Instead of installing locally, you can also try out Parseable on our [Demo instance](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
 
-## Using Parseable
+## Usage
 
 If you've already deployed Parseable using the above Docker command, use below commands to create stream and post event(s) to the stream. Make sure to replace `<stream-name>` with the name of the stream you want to create and post events (e.g. `my-stream`).
 
