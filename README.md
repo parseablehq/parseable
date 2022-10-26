@@ -1,9 +1,5 @@
-<p align="center">
-  <span">
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="500" height="100" />
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="500" height="100" />
-  </a> 
-</p>
+# <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" height=30 style="height: 2rem">
+# <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logodark.png#gh-dark-mode-only" height=30 style="height: 2rem">
 
 <p align="center">
   <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
