@@ -14,18 +14,18 @@
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
 </h4>
 
-## Problem Statement
+## Why Parseable?
 
 As SREs, DevOps deploy and manage more and more cloud native applications, there is a glaring gap in the ecosystem for a developer friendly, cloud native, event & log observability platform. We faced this issue first hand at our jobs, and we've seen several other large scale Kubernetes users relating to this gap.
 
 Parseable started because of this _missing_ case. We intend to enrich the ecosystem with a developer friendly, cloud native, event & log observability platform.
-## Working
+## How it works
 
 Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to handle and compress high volume log data. All data is stored in S3 (or compatible systems). Parseable also has a bundled web console to visualize and query log data. 
 
 Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow.
 
-#### Key Differentiators
+#### Key differentiators
 
 - Written in Rust. Low CPU & memory footprint, with low latency, high throughput.
 - Open data format (Parquet). Complete ownership of data. Wide range of possibilities for data analysis.
@@ -49,7 +49,7 @@ Once this runs successfully, you'll see dashboard at [http://localhost:8000](htt
 
 For non-demo and other installation options (Kubernetes, bare-metal), please refer to the [documentation](https://www.parseable.io/docs/category/installation).
 
-#### Live Demo 
+#### Live demo 
 
 Instead of installing locally, you can also try out Parseable on our [Demo instance](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
 
@@ -86,7 +86,13 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-n
 ```
 
 For complete Parseable API documentation, refer to [Parseable API Docs](https://www.parseable.io/docs/category/api).
-                                                                              
+
+## Support
+
+For questions and feedback please feel free to reach out to us on [Slack](https://launchpass.com/parseable). For bugs, please create issue on [GitHub](https://github.com/parseablehq/parseable/issues). 
+
+For commercial support and consultation, please reach out to us at [`hi@parseable.io`](mailto:hi@parseable.io).
+
 ## Contributing
 
 Refer to the contributing guide [here](https://www.parseable.io/docs/contributing).
