@@ -19,7 +19,7 @@
 As SREs, DevOps deploy and manage more and more cloud native applications, there is a glaring gap in the ecosystem for a developer friendly, cloud native, event & log observability platform. We faced this issue first hand at our jobs, and we've seen several other large scale Kubernetes users relating to this gap.
 
 Parseable started because of this _missing_ case. We intend to enrich the ecosystem with a developer friendly, cloud native, event & log observability platform.
-## How it works?
+## Working
 
 Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to handle and compress high volume log data. All data is stored in S3 (or compatible systems). Parseable also has a bundled web console to visualize and query log data. 
 
