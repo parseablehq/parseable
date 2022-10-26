@@ -14,11 +14,16 @@
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
 </h4>
 
-## Why?
+## Problem Statement
 
 As SREs, DevOps deploy and manage more and more cloud native applications, there is a glaring gap in the ecosystem for a developer friendly, cloud native, event & log observability platform. We faced this issue first hand at our jobs, and we've seen several other large scale Kubernetes users relating to this gap.
 
 Parseable started because of this _missing_ case. We intend to enrich the ecosystem with a developer friendly, cloud native, event & log observability platform.
+## How it works?
+
+Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to handle and compress high volume log data. All data is stored in S3 (or compatible systems). Parseable also has a bundled web console to visualize and query log data. 
+
+Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow.
 
 #### Key Differentiators
 
@@ -26,12 +31,6 @@ Parseable started because of this _missing_ case. We intend to enrich the ecosys
 - Open data format (Parquet). Complete ownership of data. Wide range of possibilities for data analysis.
 - Single binary / container based deployment (including UI). Deploy in minutes if not seconds.
 - Indexing free design. Lower CPU and storage overhead. Similar levels of performance as indexing based systems.
-
-#### How it works?
-
-Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to handle and compress high volume log data. All data is stored in S3 (or compatible systems). Parseable also has a bundled web console to visualize and query log data. 
-
-Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow.
 
 ## Installing
 
