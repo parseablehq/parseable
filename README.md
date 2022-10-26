@@ -1,24 +1,29 @@
-# <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" height=50 style="height: 5rem">
-# <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logodark.png#gh-dark-mode-only" height=50 style="height: 5rem">
+<p align="center">
+  <span">
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="400" height="80" />
+    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="400" height="80" />
+  </a> 
+</p>
 
-<a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
-<img src="https://img.shields.io/github/commit-activity/m/parseablehq/parseable" alt="commits activity monthly">
-<a href="https://launchpass.com/parseable" target="_blank"><img src="https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg" alt="join slack"></a>
-<a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/parseablehq/parseable?style=social" alt="Github stars"></a>
-<a href="https://twitter.com/parseableio" target="_blank"><img src="https://img.shields.io/twitter/follow/parseableio" alt="Twitter"></a>
+Parseable is an open source, Kubernetes native, log storage and observability platform. 
+
+<img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png" />
 
 <h4 align="center">
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
   <a href="https://www.parseable.io/docs/introduction" target="_blank">Documentation</a> |
+  <a href="https://launchpass.com/parseable" target="_blank">Community<img src="https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg" alt="join slack"></a> |
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
-  <br>
 </h4>
 
+### What it does
 Parseable is a cloud native, log storage and observability platform. Parseable is written in Rust and index free by design. Parseable is available as a single binary / Docker image and can be deployed on a wide range of platforms.
 
 It ingests log data via HTTP POST calls and exposes a query API to search and analyze logs. It is compatible with all the standard logging agents via HTTP output plugins.
 
-<img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.gif" />
+Written in Rust, Parseable has a low CPU, memory footprint and offers low latency, high throughput, out of the box. 
+
+Parseable is designed keeping modern cloud native infrastructure at its heart. This means Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow. 
 
 ## Features
 
@@ -143,3 +148,7 @@ Refer to the contributing guide [here](https://www.parseable.io/docs/contributin
 ### Contributors
 
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
+
+### Supported by
+
+<a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
