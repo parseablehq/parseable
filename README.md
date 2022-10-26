@@ -37,7 +37,7 @@ Parseable is designed keeping modern cloud native infrastructure at its heart. T
 
 ## Installing
 
-Docker is the quickest way to experience Parseable on your machine. Run the below command to deploy Parseable with a demo configuration.
+Docker is the quickest way to experience Parseable on your machine. Run the below command to deploy Parseable in demo mode.
 
 ```sh
 mkdir -p /tmp/data
@@ -48,25 +48,28 @@ docker run \
   parseable server --demo
 ```
 
-Parseable dashboard is available at [http://localhost:8000](http://localhost:8000). Credentials to login to the dashboard are `parseable`, `parseable`.
+Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard with `parseable`, `parseable` as the credentials. Please make sure not to post any important data while in demo mode.
 
 For non-demo and other deployment platforms, please refer to the [installation documentation](https://www.parseable.io/docs/category/installation).
 
 ## Using Parseable
-### Create a stream
+
+If you've already deployed Parseable using the above Docker command, use below commands to create stream and post event(s) to the stream. Make sure to replace `<stream-name>` with the name of the stream you want to create and post events (e.g. `my-stream`).
+
+#### Create a stream
 
 ```sh
 curl --location --request PUT 'http://localhost:8000/api/v1/logstream/<stream-name>' \
---header 'Authorization: Basic <basic-auth-header>'
+--header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ=='
 ```
 
-### Send events to the stream
+#### Send events to the stream
 
 ```sh
 curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-name>' \
 --header 'X-P-META-meta1: value1' \
 --header 'X-P-TAG-tag1: value1' \
---header 'Authorization: Basic <basic-auth-header>' \
+--header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' \
 --header 'Content-Type: application/json' \
 --data-raw '[
     {
@@ -91,10 +94,10 @@ You can also try out Parseable on our [https://demo.parseable.io](https://demo.p
 
 Refer to the contributing guide [here](https://www.parseable.io/docs/contributing).
 
-### Contributors
+#### Contributors
 
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
 
-### Supported by
+#### Supported by
 
 <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
