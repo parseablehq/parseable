@@ -1,13 +1,11 @@
-# <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" height=30 style="height: 2rem">
-# <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logodark.png#gh-dark-mode-only" height=30 style="height: 2rem">
+# <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" height=50 style="height: 5rem">
+# <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logodark.png#gh-dark-mode-only" height=50 style="height: 5rem">
 
-<p align="center">
-  <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
-  <img src="https://img.shields.io/github/commit-activity/m/parseablehq/parseable" alt="commits activity monthly">
-  <a href="https://launchpass.com/parseable" target="_blank"><img src="https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg" alt="join slack"></a>
-  <a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/parseablehq/parseable?style=social" alt="Github stars"></a>
-  <a href="https://twitter.com/parseableio" target="_blank"><img src="https://img.shields.io/twitter/follow/parseableio" alt="Twitter"></a>
-</p>
+<a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
+<img src="https://img.shields.io/github/commit-activity/m/parseablehq/parseable" alt="commits activity monthly">
+<a href="https://launchpass.com/parseable" target="_blank"><img src="https://img.shields.io/badge/join%20slack-parseable-brightgreen.svg" alt="join slack"></a>
+<a href="https://github.com/parseablehq/parseable/stargazers" target="_blank"><img src="https://img.shields.io/github/stars/parseablehq/parseable?style=social" alt="Github stars"></a>
+<a href="https://twitter.com/parseableio" target="_blank"><img src="https://img.shields.io/twitter/follow/parseableio" alt="Twitter"></a>
 
 <h4 align="center">
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
