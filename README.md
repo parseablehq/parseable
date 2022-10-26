@@ -16,33 +16,20 @@
 
 ## Why Parseable?
 
-Parseable started because of _missing_ developer friendly, Kubernetes native event and log storage platform. 
+Parseable started because of _missing_ case of developer friendly, event & log storage platform, for Kubernetes. As SREs, DevOps folks deploy and manage more and more cloud native applications, there is a clear gap today for a developer friendly, cloud native event & log observability platform. Parseable is built to solve this problem.
 
-There is a clear shortage of log storage and observability solutions for cloud native ecosystem. Parseable is an open source log storage and observability platform, built for cloud native ecosystem. Parseable is a self-hosted solution, which means you can run it on your own infrastructure. Parseable is built on top of the open source projects, which means you can contribute to the project and help us make it better.
+#### How Parseable works?
+
+Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to efficiently handle and compress high volume log data. All data is stored in S3 and can be accessed via S3 compatible API. Parseable also has a bundled web console to visualize and query log data. 
+
+Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow.
 
 #### Key Differentiators
 
-- Written in Rust, Parseable has a low CPU, memory footprint and offers low latency, high throughput, out of the box.
-- Single binary / container based deployment, which means you can deploy Parseable in minutes.
-- 
-Parseable is designed keeping modern cloud native infrastructure at its heart. This means Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow. 
-
-#### Features
-
-- [x] Highly compressed log data storage with [Parquet](https://parquet.apache.org).
-- [x] Use standard SQL for querying log data.
-- [x] Auto inferred schema for log streams.
-- [x] Dashboard to query the log data.
-- [x] Compatible with existing logging agents.
-- [x] Scale with scaling up the node.
-- [ ] Configurable alerting.
-- [ ] Distributed, multi-node cluster.
-- [ ] Log data visualization via Parseable UI.
-- [ ] Access control for users and groups.
-- [ ] Log data retention and export.
-- [ ] Kafka plugin to ingest log data.
-- [ ] Grafana plugin to visualize log data.
-- [ ] Anomaly detection within log data.
+- Written in Rust. Low CPU & memory footprint, with low latency, high throughput. 
+- Single binary / container based deployment (including UI). Deploy in minutes.
+- Open data format (Parquet). Complete ownership of data. Wide range of possibilities for data analysis.
+- Indexing free design. Similar levels of performance.
 
 ## Installing
 
