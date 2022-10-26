@@ -16,9 +16,11 @@
 
 ## Why Parseable?
 
-Written in Rust, Parseable has a low CPU, memory footprint and offers low latency, high throughput, out of the box. 
+- Written in Rust, Parseable has a low CPU, memory footprint and offers low latency, high throughput, out of the box.
+- Parseable is designed keeping modern cloud native infrastructure at its heart. This means Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow. 
+- 
 
-Parseable is designed keeping modern cloud native infrastructure at its heart. This means Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow. 
+
 
 - [x] Highly compressed log data storage with [Parquet](https://parquet.apache.org).
 - [x] Use standard SQL for querying log data.
@@ -97,7 +99,4 @@ Refer to the contributing guide [here](https://www.parseable.io/docs/contributin
 #### Contributors
 
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
-
-#### Supported by
-
 <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
