@@ -6,7 +6,7 @@
 </p>
 
 <h4 align="center">
-  <p> Parseable is an open source log storage and observability platform, built for container & cloud native ecosystem. </p>
+  <p> Parseable is an open source log storage and observability platform, built for cloud native ecosystem. </p>
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
   <a href="https://www.parseable.io/docs/introduction" target="_blank">Documentation</a> |
   <a href="https://launchpass.com/parseable" target="_blank">Community</a> |
