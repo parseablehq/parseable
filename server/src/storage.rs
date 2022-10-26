@@ -62,8 +62,11 @@ pub trait ObjectStorage: Sync + 'static {
     async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
 
-    async fn put_alerts(&self, stream_name: &str, alerts: Alerts)
-        -> Result<(), ObjectStorageError>;
+    async fn put_alerts(
+        &self,
+        stream_name: &str,
+        alerts: &Alerts,
+    ) -> Result<(), ObjectStorageError>;
     async fn get_schema(&self, stream_name: &str) -> Result<Option<Schema>, ObjectStorageError>;
     async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError>;
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError>;

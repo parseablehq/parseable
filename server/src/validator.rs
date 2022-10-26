@@ -18,12 +18,10 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
-use serde_json::json;
-
-use crate::alerts::Alerts;
+use crate::alerts::{Alerts, Rule};
 use crate::metadata::STREAM_INFO;
 use crate::query::Query;
+use chrono::{DateTime, Utc};
 
 use self::error::{AlertValidationError, QueryValidationError, StreamNameValidationError};
 
@@ -40,20 +38,19 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
         if alert.message.is_empty() {
             return Err(AlertValidationError::EmptyMessage);
         }
-        if alert.rule.value == json!(null) {
-            return Err(AlertValidationError::EmptyRuleValue);
-        }
-        if alert.rule.field.is_empty() {
-            return Err(AlertValidationError::EmptyRuleField);
-        }
-        if alert.rule.within.is_empty() {
-            return Err(AlertValidationError::EmptyRuleWithin);
-        }
-        if alert.rule.repeats == 0 {
-            return Err(AlertValidationError::InvalidRuleRepeat);
-        }
         if alert.targets.is_empty() {
             return Err(AlertValidationError::NoTarget);
+        }
+
+        match alert.rule {
+            Rule::Numeric(ref rule) => {
+                if rule.column.is_empty() {
+                    return Err(AlertValidationError::EmptyRuleField);
+                }
+                if rule.repeats == 0 {
+                    return Err(AlertValidationError::InvalidRuleRepeat);
+                }
+            }
         }
     }
     Ok(())
@@ -175,12 +172,8 @@ pub mod error {
         EmptyName,
         #[error("Alert message cannot be empty")]
         EmptyMessage,
-        #[error("Alert's rule.value cannot be empty")]
-        EmptyRuleValue,
-        #[error("Alert's rule.field cannot be empty")]
+        #[error("Alert's rule.column cannot be empty")]
         EmptyRuleField,
-        #[error("Alert's rule.within cannot be empty")]
-        EmptyRuleWithin,
         #[error("Alert's rule.repeats can't be set to 0")]
         InvalidRuleRepeat,
         #[error("Alert must have at least one target")]

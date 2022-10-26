@@ -407,9 +407,9 @@ impl ObjectStorage for S3 {
     async fn put_alerts(
         &self,
         stream_name: &str,
-        alerts: Alerts,
+        alerts: &Alerts,
     ) -> Result<(), ObjectStorageError> {
-        let body = serde_json::to_vec(&alerts)?;
+        let body = serde_json::to_vec(alerts)?;
         self._put_alerts(stream_name, body).await?;
 
         Ok(())

@@ -20,6 +20,7 @@ use std::fs;
 
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use serde_json::Value;
 
 use crate::alerts::Alerts;
 use crate::s3::S3;
@@ -94,9 +95,7 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
     match metadata::STREAM_INFO.schema(&stream_name) {
         Ok(schema) => response::ServerResponse {
             msg: schema
-                .map(|ref schema| {
-                    serde_json::to_string(schema).expect("schema can be converted to json")
-                })
+                .and_then(|ref schema| serde_json::to_string(schema).ok())
                 .unwrap_or_default(),
             code: StatusCode::OK,
         }
@@ -126,30 +125,42 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
 pub async fn get_alert(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    match metadata::STREAM_INFO.alert(&stream_name) {
-        Ok(alerts) => response::ServerResponse {
-            msg: serde_json::to_string(&alerts).unwrap(),
-            code: StatusCode::OK,
-        }
-        .to_http(),
-        Err(_) => match S3::new().get_alerts(&stream_name).await {
-            Ok(alerts) if alerts.alerts.is_empty() => response::ServerResponse {
-                msg: "alert configuration not set for log stream {}".to_string(),
-                code: StatusCode::BAD_REQUEST,
+    let alerts = metadata::STREAM_INFO
+        .read()
+        .expect(metadata::LOCK_EXPECT)
+        .get(&stream_name)
+        .map(|metadata| {
+            serde_json::to_value(&metadata.alerts).expect("alerts can serialize to valid json")
+        });
+
+    let mut alerts = match alerts {
+        Some(alerts) => alerts,
+        None => match S3::new().get_alerts(&stream_name).await {
+            Ok(alerts) if alerts.alerts.is_empty() => {
+                return response::ServerResponse {
+                    msg: "alert configuration not set for log stream {}".to_string(),
+                    code: StatusCode::BAD_REQUEST,
+                }
+                .to_http()
             }
-            .to_http(),
-            Ok(alerts) => response::ServerResponse {
-                msg: serde_json::to_string(&alerts).unwrap(),
-                code: StatusCode::OK,
+            Ok(alerts) => serde_json::to_value(alerts).expect("alerts can serialize to valid json"),
+            Err(_) => {
+                return response::ServerResponse {
+                    msg: "alert doesn't exist".to_string(),
+                    code: StatusCode::BAD_REQUEST,
+                }
+                .to_http()
             }
-            .to_http(),
-            Err(_) => response::ServerResponse {
-                msg: "alert doesn't exist".to_string(),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http(),
         },
+    };
+
+    remove_id_from_alerts(&mut alerts);
+
+    response::ServerResponse {
+        msg: alerts.to_string(),
+        code: StatusCode::OK,
     }
+    .to_http()
 }
 
 pub async fn put(req: HttpRequest) -> HttpResponse {
@@ -200,7 +211,11 @@ pub async fn put(req: HttpRequest) -> HttpResponse {
 
 pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let alerts: Alerts = match serde_json::from_value(body.into_inner()) {
+
+    let mut body = body.into_inner();
+    remove_id_from_alerts(&mut body);
+
+    let alerts: Alerts = match serde_json::from_value(body) {
         Ok(alerts) => alerts,
         Err(e) => {
             return response::ServerResponse {
@@ -225,7 +240,40 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
         .to_http();
     }
 
-    if let Err(e) = S3::new().put_alerts(&stream_name, alerts.clone()).await {
+    match metadata::STREAM_INFO.schema(&stream_name) {
+        Ok(Some(schema)) => {
+            let invalid_alert = alerts
+                .alerts
+                .iter()
+                .find(|alert| !alert.rule.valid_for_schema(&schema));
+
+            if let Some(alert) = invalid_alert {
+                return response::ServerResponse {
+                    msg:
+                        format!("alert - \"{}\" is invalid, please check if alert is valid according to this stream's schema and try again", alert.name),
+                    code: StatusCode::BAD_REQUEST,
+                }
+                .to_http();
+            }
+        }
+        Ok(None) => {
+            return response::ServerResponse {
+                msg: "log stream is not initialized, please post an event before setting up alerts"
+                    .to_string(),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http()
+        }
+        Err(_) => {
+            return response::ServerResponse {
+                msg: "log stream is not found".to_string(),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http()
+        }
+    }
+
+    if let Err(e) = S3::new().put_alerts(&stream_name, &alerts).await {
         return response::ServerResponse {
             msg: format!(
                 "failed to set alert configuration for log stream {} due to err: {}",
@@ -252,4 +300,15 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
         code: StatusCode::OK,
     }
     .to_http()
+}
+
+fn remove_id_from_alerts(value: &mut Value) {
+    if let Some(Value::Array(alerts)) = value.get_mut("alerts") {
+        alerts
+            .iter_mut()
+            .map_while(|alert| alert.as_object_mut())
+            .for_each(|map| {
+                map.remove("id");
+            });
+    }
 }
