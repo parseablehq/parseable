@@ -7,11 +7,11 @@
 
 <h4 align="center">
   <p> Parseable is an open source log storage and observability platform, built for cloud native ecosystem. </p>
+  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png" />
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
   <a href="https://www.parseable.io/docs/introduction" target="_blank">Documentation</a> |
   <a href="https://launchpass.com/parseable" target="_blank">Community</a> |
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
-  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png" />
 </h4>
 
 ## Why Parseable?
