@@ -56,7 +56,6 @@ Instead of installing locally, you can also try out Parseable on our [Demo insta
 ## Usage
 
 If you've already deployed Parseable using the above Docker command, use below commands to create stream and post event(s) to the stream. Make sure to replace `<stream-name>` with the name of the stream you want to create and post events (e.g. `my-stream`).
-
 #### Create a stream
 
 ```sh
@@ -86,6 +85,8 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-n
 ```
 
 For complete Parseable API documentation, refer to [Parseable API Docs](https://www.parseable.io/docs/category/api).
+To configure Parseable with popular logging agents, please refer to the [agent documentation](https://www.parseable.io/docs/category/log-agents).
+To integrate Parseable with your applications directly, please refer to the [integration documentation](https://www.parseable.io/docs/category/application-integration).
 
 ## Support
 
