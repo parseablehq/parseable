@@ -18,12 +18,10 @@
 
 As SREs, DevOps deploy and manage more and more cloud native applications, there is a glaring gap in the ecosystem for a developer friendly, cloud native, event & log observability platform. We faced this issue first hand at our jobs, and we've seen several other large scale Kubernetes users relating to this gap.
 
-Parseable started because of this _missing_ case. We intend to enrich the ecosystem with a developer friendly, cloud native, event & log observability platform.
+Our aim with Parseable is to provide a fully open source, developer friendly, kubernetes and cloud native, scalable logging and observability platform.
 ## How it works
 
 Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to handle and compress high volume log data. All data is stored in S3 (or compatible systems). Parseable also has a bundled web console to visualize and query log data. 
-
-Parseable can be deployed in cloud and container based environments in minutes and can scale as the requirements grow.
 
 #### Key differentiators
 
@@ -34,7 +32,7 @@ Parseable can be deployed in cloud and container based environments in minutes a
 
 ## Installing
 
-Docker is the quickest way to experience Parseable on your machine. Run the below command to deploy Parseable in demo mode.
+Run the below command to deploy Parseable in demo mode with Docker.
 
 ```sh
 mkdir -p /tmp/data
@@ -47,7 +45,7 @@ docker run \
 
 Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard with `parseable`, `parseable` as the credentials. Please make sure not to post any important data while in demo mode.
 
-For non-demo and other installation options (Kubernetes, bare-metal), please refer to the [documentation](https://www.parseable.io/docs/category/installation).
+Prefer other platforms? Check out installation options (Kubernetes, bare-metal), in the [documentation](https://www.parseable.io/docs/category/installation).
 
 #### Live demo 
 
@@ -84,9 +82,9 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-n
 ]'
 ```
 
-For complete Parseable API documentation, refer to [Parseable API Docs](https://www.parseable.io/docs/category/api).
-To configure Parseable with popular logging agents, please refer to the [agent documentation](https://www.parseable.io/docs/category/log-agents).
-To integrate Parseable with your applications directly, please refer to the [integration documentation](https://www.parseable.io/docs/category/application-integration).
+- For complete Parseable API documentation, refer to [Parseable API Docs](https://www.parseable.io/docs/category/api).
+- To configure Parseable with popular logging agents, please refer to the [agent documentation](https://www.parseable.io/docs/category/log-agents).
+- To integrate Parseable with your applications directly, please refer to the [integration documentation](https://www.parseable.io/docs/category/application-integration).
 
 ## Support
 
