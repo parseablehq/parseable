@@ -230,7 +230,7 @@ impl Event {
     // schema is then enforced on rest of the events sent to this log stream.
     fn process_first_event<S: ObjectStorage, R: std::io::Read>(
         &self,
-        mut event: json::Reader<R>,
+        event: json::Reader<R>,
         schema: Schema,
     ) -> Result<(), EventError> {
         // note for functions _schema_with_map and _set_schema_with_map,
