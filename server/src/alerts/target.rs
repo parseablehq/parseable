@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{CallableTarget, Context};
+use super::{AlertState, CallableTarget, Context};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,10 +30,10 @@ pub enum Target {
 }
 
 impl Target {
-    pub fn call(&self, payload: &Context) {
+    pub fn call(&self, payload: impl AsRef<Context>) {
         match self {
-            Target::Slack(target) => target.call(payload),
-            Target::Other(target) => target.call(payload),
+            Target::Slack(target) => target.call(payload.as_ref()),
+            Target::Other(target) => target.call(payload.as_ref()),
         }
     }
 }
@@ -46,9 +46,15 @@ pub struct SlackWebHook {
 
 impl CallableTarget for SlackWebHook {
     fn call(&self, payload: &Context) {
+        let alert = match payload.alert_state {
+            AlertState::SetToFiring => ureq::json!({ "text": payload.default_alert_string() }),
+            AlertState::Resolved => ureq::json!({ "text": payload.default_resolved_string() }),
+            _ => unreachable!(),
+        };
+
         if let Err(e) = ureq::post(&self.server_url)
             .set("Content-Type", "application/json")
-            .send_json(ureq::json!({ "text": payload.default_alert_string() }))
+            .send_json(alert)
         {
             log::error!("Couldn't make call to webhook, error: {}", e)
         }
@@ -72,17 +78,23 @@ pub enum OtherWebHook {
 
 impl CallableTarget for OtherWebHook {
     fn call(&self, payload: &Context) {
+        let alert = match payload.alert_state {
+            AlertState::SetToFiring => payload.default_alert_string(),
+            AlertState::Resolved => payload.default_resolved_string(),
+            _ => unreachable!(),
+        };
+
         let res = match self {
             OtherWebHook::Simple { server_url } => ureq::post(server_url)
                 .set("Content-Type", "text/plain; charset=iso-8859-1")
-                .send_string(&payload.default_alert_string()),
+                .send_string(&alert),
             OtherWebHook::ApiKey {
                 server_url,
                 api_key,
             } => ureq::post(server_url)
                 .set("Content-Type", "text/plain; charset=iso-8859-1")
                 .set("X-API-Key", api_key)
-                .send_string(&payload.default_alert_string()),
+                .send_string(&alert),
         };
 
         if let Err(e) = res {

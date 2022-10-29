@@ -19,24 +19,33 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use self::base::{
+    ops::{NumericOperator, StringOperator},
+    NumericRule, StringRule,
+};
+
+use super::AlertState;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Rule {
-    Numeric(NumericRule),
-    String(StringRule),
+    ConsecutiveNumeric(ConsecutiveNumericRule),
+    ConsecutiveString(ConsecutiveStringRule),
 }
 
 impl Rule {
-    pub(super) fn resolves(&self, event: &serde_json::Value) -> bool {
+    pub(super) fn resolves(&self, event: &serde_json::Value) -> AlertState {
         match self {
-            Rule::Numeric(rule) => rule.resolves(event),
-            Rule::String(rule) => rule.resolves(event),
+            Rule::ConsecutiveNumeric(rule) => rule.resolves(event),
+            Rule::ConsecutiveString(rule) => rule.resolves(event),
         }
     }
 
     pub fn valid_for_schema(&self, schema: &arrow_schema::Schema) -> bool {
         match self {
-            Rule::Numeric(NumericRule { column, .. }) => match schema.column_with_name(column) {
+            Rule::ConsecutiveNumeric(ConsecutiveNumericRule {
+                base_rule: rule, ..
+            }) => match schema.column_with_name(&rule.column) {
                 Some((_, column)) => matches!(
                     column.data_type(),
                     arrow_schema::DataType::Int8
@@ -53,7 +62,9 @@ impl Rule {
                 ),
                 None => false,
             },
-            Rule::String(StringRule { column, .. }) => match schema.column_with_name(column) {
+            Rule::ConsecutiveString(ConsecutiveStringRule {
+                base_rule: rule, ..
+            }) => match schema.column_with_name(&rule.column) {
                 Some((_, column)) => matches!(column.data_type(), arrow_schema::DataType::Utf8),
                 None => false,
             },
@@ -62,51 +73,51 @@ impl Rule {
 
     pub(super) fn trigger_reason(&self) -> String {
         match self {
-            Rule::Numeric(NumericRule {
-                column,
-                operator,
-                value,
-                repeats,
+            Rule::ConsecutiveNumeric(ConsecutiveNumericRule {
+                base_rule:
+                    NumericRule {
+                        column,
+                        operator,
+                        value,
+                    },
+                state: ConsecutiveRepeatState { repeats, .. },
                 ..
-            }) => match operator {
-                NumericOperator::EqualTo => format!(
-                    "{} column was equal to {}, {} times",
-                    column, value, repeats
-                ),
-                NumericOperator::NotEqualTo => format!(
-                    "{} column was not equal to {}, {} times",
-                    column, value, repeats
-                ),
-                NumericOperator::GreaterThan => format!(
-                    "{} column was greater than {}, {} times",
-                    column, value, repeats
-                ),
-                NumericOperator::GreaterThanEquals => format!(
-                    "{} column was greater than or equal to {}, {} times",
-                    column, value, repeats
-                ),
-                NumericOperator::LessThan => format!(
-                    "{} column was less than {}, {} times",
-                    column, value, repeats
-                ),
-                NumericOperator::LessThanEquals => format!(
-                    "{} column was less than or equal to {}, {} times",
-                    column, value, repeats
-                ),
-            },
-            Rule::String(StringRule {
+            }) => format!(
+                "{} column was {} {}, {} times",
                 column,
-                operator,
                 value,
+                match operator {
+                    NumericOperator::EqualTo => "equal to",
+                    NumericOperator::NotEqualTo => " not equal to",
+                    NumericOperator::GreaterThan => "greater than",
+                    NumericOperator::GreaterThanEquals => "greater than or equal to",
+                    NumericOperator::LessThan => "less than",
+                    NumericOperator::LessThanEquals => "less than or equal to",
+                },
+                repeats
+            ),
+            Rule::ConsecutiveString(ConsecutiveStringRule {
+                base_rule:
+                    StringRule {
+                        column,
+                        operator,
+                        value,
+                        ..
+                    },
+                state: ConsecutiveRepeatState { repeats, .. },
                 ..
-            }) => match operator {
-                StringOperator::Exact => format!("{} column value is {}", column, value),
-                StringOperator::NotExact => format!("{} column value is not {}", column, value),
-                StringOperator::Contains => format!("{} column contains {}", column, value),
-                StringOperator::NotContains => {
-                    format!("{} column does not contains {}", column, value)
-                }
-            },
+            }) => format!(
+                "{} column {} {}, {} times",
+                column,
+                value,
+                match operator {
+                    StringOperator::Exact => "was equal to",
+                    StringOperator::NotExact => "was not equal to",
+                    StringOperator::Contains => "contained",
+                    StringOperator::NotContains => "did not contain",
+                },
+                repeats
+            ),
         }
     }
 }
@@ -115,135 +126,247 @@ impl Rule {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NumericRule {
-    pub column: String,
-    /// Field that determines what comparison operator is to be used
-    #[serde(default)]
-    pub operator: NumericOperator,
-    pub value: serde_json::Number,
-    pub repeats: u32,
-    #[serde(skip)]
-    repeated: AtomicU32,
+pub struct ConsecutiveNumericRule {
+    #[serde(flatten)]
+    pub base_rule: base::NumericRule,
+    #[serde(flatten)]
+    pub state: ConsecutiveRepeatState,
 }
 
-impl NumericRule {
-    fn resolves(&self, event: &serde_json::Value) -> bool {
-        let number = match event.get(&self.column).expect("column exists") {
-            serde_json::Value::Number(number) => number,
-            _ => unreachable!("right rule is set for right column type"),
-        };
-
-        let comparison = match self.operator {
-            NumericOperator::EqualTo => number == &self.value,
-            NumericOperator::NotEqualTo => number != &self.value,
-            NumericOperator::GreaterThan => number.as_f64().unwrap() > self.value.as_f64().unwrap(),
-            NumericOperator::GreaterThanEquals => {
-                number.as_f64().unwrap() >= self.value.as_f64().unwrap()
-            }
-            NumericOperator::LessThan => number.as_f64().unwrap() < self.value.as_f64().unwrap(),
-            NumericOperator::LessThanEquals => {
-                number.as_f64().unwrap() <= self.value.as_f64().unwrap()
-            }
-        };
-
-        // If truthy, increment count of repeated
-        // acquire lock and load
-        let mut repeated = self.repeated.load(Ordering::Acquire);
-
-        if comparison {
-            repeated += 1
-        }
-
-        // If enough repetitions made, return true
-        let ret = if repeated >= self.repeats {
-            repeated = 0;
-            true
+impl ConsecutiveNumericRule {
+    fn resolves(&self, event: &serde_json::Value) -> AlertState {
+        if self.base_rule.resolves(event) {
+            self.state.update_and_fetch_state()
         } else {
-            false
-        };
-        // store the value back to repeated and release
-        self.repeated.store(repeated, Ordering::Release);
-
-        ret
+            self.state.fetch_state()
+        }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StringRule {
-    pub column: String,
-    #[serde(default)]
-    pub operator: StringOperator,
-    pub ignore_case: Option<bool>,
-    pub value: String,
+pub struct ConsecutiveStringRule {
+    #[serde(flatten)]
+    pub base_rule: base::StringRule,
+    #[serde(flatten)]
+    pub state: ConsecutiveRepeatState,
 }
 
-impl StringRule {
-    pub fn resolves(&self, event: &serde_json::Value) -> bool {
-        let string = match event.get(&self.column).expect("column exists") {
-            serde_json::Value::String(s) => s,
-            _ => unreachable!("right rule is set for right column type"),
-        };
-
-        if self.ignore_case.unwrap_or_default() {
-            match self.operator {
-                StringOperator::Exact => string.eq_ignore_ascii_case(&self.value),
-                StringOperator::NotExact => !string.eq_ignore_ascii_case(&self.value),
-                StringOperator::Contains => string
-                    .to_ascii_lowercase()
-                    .contains(&self.value.to_ascii_lowercase()),
-                StringOperator::NotContains => !string
-                    .to_ascii_lowercase()
-                    .contains(&self.value.to_ascii_lowercase()),
-            }
+impl ConsecutiveStringRule {
+    fn resolves(&self, event: &serde_json::Value) -> AlertState {
+        if self.base_rule.resolves(event) {
+            self.state.update_and_fetch_state()
         } else {
-            match self.operator {
-                StringOperator::Exact => string.eq(&self.value),
-                StringOperator::NotExact => !string.eq(&self.value),
-                StringOperator::Contains => string.contains(&self.value),
-                StringOperator::NotContains => !string.contains(&self.value),
-            }
+            self.state.fetch_state()
         }
     }
 }
-// Operator for comparing values
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum NumericOperator {
-    #[serde(alias = "=")]
-    EqualTo,
-    #[serde(alias = "!=")]
-    NotEqualTo,
-    #[serde(alias = ">")]
-    GreaterThan,
-    #[serde(alias = ">=")]
-    GreaterThanEquals,
-    #[serde(alias = "<")]
-    LessThan,
-    #[serde(alias = "<=")]
-    LessThanEquals,
+fn one() -> u32 {
+    1
 }
 
-impl Default for NumericOperator {
-    fn default() -> Self {
-        Self::EqualTo
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConsecutiveRepeatState {
+    #[serde(default = "one")]
+    pub repeats: u32,
+    #[serde(skip)]
+    repeated: AtomicU32,
+}
+
+impl ConsecutiveRepeatState {
+    fn update_and_fetch_state(&self) -> AlertState {
+        self._fetch_state(true)
+    }
+
+    fn fetch_state(&self) -> AlertState {
+        self._fetch_state(false)
+    }
+
+    fn _fetch_state(&self, update: bool) -> AlertState {
+        let mut repeated = self.repeated.load(Ordering::Acquire);
+        let mut state = AlertState::Listening;
+
+        let firing = repeated >= self.repeats;
+
+        if firing {
+            if update {
+                state = AlertState::Firing;
+            } else {
+                // did not match, i.e resolved
+                repeated = 0;
+                state = AlertState::Resolved;
+            }
+        } else if update {
+            repeated += 1;
+            if repeated == self.repeats {
+                state = AlertState::SetToFiring;
+            }
+        }
+
+        self.repeated.store(repeated, Ordering::Release);
+        state
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StringOperator {
-    #[serde(alias = "=")]
-    Exact,
-    #[serde(alias = "!=")]
-    NotExact,
-    Contains,
-    NotContains,
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU32;
+
+    use rstest::*;
+
+    use super::{AlertState, ConsecutiveRepeatState};
+
+    #[fixture]
+    pub fn rule(#[default(5)] repeats: u32, #[default(0)] repeated: u32) -> ConsecutiveRepeatState {
+        ConsecutiveRepeatState {
+            repeats,
+            repeated: AtomicU32::new(repeated),
+        }
+    }
+
+    #[rstest]
+    fn numeric_consecutive_rule_repeats_1(#[with(1, 0)] rule: ConsecutiveRepeatState) {
+        assert_eq!(rule.update_and_fetch_state(), AlertState::SetToFiring);
+        assert_eq!(rule.update_and_fetch_state(), AlertState::Firing);
+        assert_eq!(rule.update_and_fetch_state(), AlertState::Firing);
+        assert_eq!(rule.fetch_state(), AlertState::Resolved);
+        assert_eq!(rule.fetch_state(), AlertState::Listening);
+        assert_eq!(rule.update_and_fetch_state(), AlertState::SetToFiring);
+    }
+
+    #[rstest]
+    fn numeric_consecutive_rule_repeats_2(#[with(2, 1)] rule: ConsecutiveRepeatState) {
+        assert_eq!(rule.update_and_fetch_state(), AlertState::SetToFiring);
+        assert_eq!(rule.update_and_fetch_state(), AlertState::Firing);
+        assert_eq!(rule.fetch_state(), AlertState::Resolved);
+        assert_eq!(rule.fetch_state(), AlertState::Listening);
+        assert_eq!(rule.update_and_fetch_state(), AlertState::Listening);
+        assert_eq!(rule.update_and_fetch_state(), AlertState::SetToFiring);
+    }
 }
 
-impl Default for StringOperator {
-    fn default() -> Self {
-        Self::Contains
+pub mod base {
+    use serde::{Deserialize, Serialize};
+
+    use self::ops::{NumericOperator, StringOperator};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct NumericRule {
+        pub column: String,
+        /// Field that determines what comparison operator is to be used
+        #[serde(default)]
+        pub operator: NumericOperator,
+        pub value: serde_json::Number,
+    }
+
+    impl NumericRule {
+        pub fn resolves(&self, event: &serde_json::Value) -> bool {
+            let number = match event.get(&self.column).expect("column exists") {
+                serde_json::Value::Number(number) => number,
+                _ => unreachable!("right rule is set for right column type"),
+            };
+
+            match self.operator {
+                NumericOperator::EqualTo => number == &self.value,
+                NumericOperator::NotEqualTo => number != &self.value,
+                NumericOperator::GreaterThan => {
+                    number.as_f64().unwrap() > self.value.as_f64().unwrap()
+                }
+                NumericOperator::GreaterThanEquals => {
+                    number.as_f64().unwrap() >= self.value.as_f64().unwrap()
+                }
+                NumericOperator::LessThan => {
+                    number.as_f64().unwrap() < self.value.as_f64().unwrap()
+                }
+                NumericOperator::LessThanEquals => {
+                    number.as_f64().unwrap() <= self.value.as_f64().unwrap()
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StringRule {
+        pub column: String,
+        #[serde(default)]
+        pub operator: StringOperator,
+        pub ignore_case: Option<bool>,
+        pub value: String,
+    }
+
+    impl StringRule {
+        pub fn resolves(&self, event: &serde_json::Value) -> bool {
+            let string = match event.get(&self.column).expect("column exists") {
+                serde_json::Value::String(s) => s,
+                _ => unreachable!("right rule is set for right column type"),
+            };
+
+            if self.ignore_case.unwrap_or_default() {
+                match self.operator {
+                    StringOperator::Exact => string.eq_ignore_ascii_case(&self.value),
+                    StringOperator::NotExact => !string.eq_ignore_ascii_case(&self.value),
+                    StringOperator::Contains => string
+                        .to_ascii_lowercase()
+                        .contains(&self.value.to_ascii_lowercase()),
+                    StringOperator::NotContains => !string
+                        .to_ascii_lowercase()
+                        .contains(&self.value.to_ascii_lowercase()),
+                }
+            } else {
+                match self.operator {
+                    StringOperator::Exact => string.eq(&self.value),
+                    StringOperator::NotExact => !string.eq(&self.value),
+                    StringOperator::Contains => string.contains(&self.value),
+                    StringOperator::NotContains => !string.contains(&self.value),
+                }
+            }
+        }
+    }
+
+    pub mod ops {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub enum NumericOperator {
+            #[serde(alias = "=")]
+            EqualTo,
+            #[serde(alias = "!=")]
+            NotEqualTo,
+            #[serde(alias = ">")]
+            GreaterThan,
+            #[serde(alias = ">=")]
+            GreaterThanEquals,
+            #[serde(alias = "<")]
+            LessThan,
+            #[serde(alias = "<=")]
+            LessThanEquals,
+        }
+
+        impl Default for NumericOperator {
+            fn default() -> Self {
+                Self::EqualTo
+            }
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub enum StringOperator {
+            #[serde(alias = "=")]
+            Exact,
+            #[serde(alias = "!=")]
+            NotExact,
+            Contains,
+            NotContains,
+        }
+
+        impl Default for StringOperator {
+            fn default() -> Self {
+                Self::Contains
+            }
+        }
     }
 }
