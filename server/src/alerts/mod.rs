@@ -226,10 +226,7 @@ impl Context {
     }
 
     fn default_resolved_string(&self) -> String {
-        format!(
-            "{} on {} is now resolved \nWas Triggered because {}",
-            self.alert_name, self.stream, self.reason
-        )
+        format!("{} on {} is now resolved ", self.alert_name, self.stream)
     }
 }
 
