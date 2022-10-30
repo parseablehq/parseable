@@ -21,12 +21,14 @@ use std::{
     time::Duration,
 };
 
+use humantime_serde::re::humantime;
 use serde::{Deserialize, Serialize};
 
 use super::{AlertState, CallableTarget, Context};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(try_from = "TargetVerifier")]
 pub struct Target {
     #[serde(flatten)]
     pub target: TargetType,
@@ -116,6 +118,34 @@ fn call_target(target: TargetType, context: Context) {
     actix_web::rt::spawn(async move {
         target.call(&context);
     });
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetVerifier {
+    #[serde(flatten)]
+    pub target: TargetType,
+    #[serde(alias = "repeat")]
+    pub timeout: Option<String>,
+}
+
+impl TryFrom<TargetVerifier> for Target {
+    type Error = humantime::DurationError;
+
+    fn try_from(value: TargetVerifier) -> Result<Self, Self::Error> {
+        let timeout = value
+            .timeout
+            .map(|ref dur| humantime::parse_duration(dur))
+            .transpose()?;
+
+        Ok(Target {
+            target: value.target,
+            timeout: timeout.map(|duration| Timeout {
+                timeout: duration,
+                state: Default::default(),
+            }),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
