@@ -24,7 +24,6 @@ pub mod target;
 
 pub use self::rule::Rule;
 use self::target::Target;
-use crate::event::Event;
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,25 +43,28 @@ pub struct Alert {
 }
 
 impl Alert {
-    pub async fn check_alert(&self, event: &Event) -> Result<(), ()> {
-        let event_json: serde_json::Value = serde_json::from_str(&event.body).map_err(|_| ())?;
+    pub fn check_alert(&self, stream_name: String, event_json: &serde_json::Value) {
+        let resolves = self.rule.resolves(event_json);
 
-        if self.rule.resolves(&event_json) {
-            log::info!("Alert triggered for stream {}", self.name);
-            for target in self.targets.clone() {
-                let context = Context::new(
-                    event.stream_name.clone(),
-                    self.name.clone(),
-                    self.message.clone(),
-                    self.rule.trigger_reason(),
-                );
-                actix_web::rt::spawn(async move {
-                    target.call(&context);
-                });
+        match resolves {
+            AlertState::Listening | AlertState::Firing => (),
+            alert_state @ (AlertState::SetToFiring | AlertState::Resolved) => {
+                let context = self.get_context(stream_name, alert_state);
+                for target in &self.targets {
+                    target.call(context.clone());
+                }
             }
         }
+    }
 
-        Ok(())
+    fn get_context(&self, stream_name: String, alert_state: AlertState) -> Context {
+        Context::new(
+            stream_name,
+            self.name.clone(),
+            self.message.clone(),
+            self.rule.trigger_reason(),
+            alert_state,
+        )
     }
 }
 
@@ -70,20 +72,29 @@ pub trait CallableTarget {
     fn call(&self, payload: &Context);
 }
 
+#[derive(Debug, Clone)]
 pub struct Context {
     stream: String,
     alert_name: String,
     message: String,
     reason: String,
+    alert_state: AlertState,
 }
 
 impl Context {
-    pub fn new(stream: String, alert_name: String, message: String, reason: String) -> Self {
+    pub fn new(
+        stream: String,
+        alert_name: String,
+        message: String,
+        reason: String,
+        alert_state: AlertState,
+    ) -> Self {
         Self {
             stream,
             alert_name,
             message,
             reason,
+            alert_state,
         }
     }
 
@@ -92,5 +103,23 @@ impl Context {
             "{} triggered on {}\nMessage: {}\nFailing Condition: {}",
             self.alert_name, self.stream, self.message, self.reason
         )
+    }
+
+    fn default_resolved_string(&self) -> String {
+        format!("{} on {} is now resolved ", self.alert_name, self.stream)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum AlertState {
+    Listening,
+    SetToFiring,
+    Firing,
+    Resolved,
+}
+
+impl Default for AlertState {
+    fn default() -> Self {
+        Self::Listening
     }
 }

@@ -18,6 +18,8 @@
 
 use std::sync::Arc;
 
+use crate::alerts::rule::base::{NumericRule, StringRule};
+use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
 use crate::metadata::STREAM_INFO;
 use crate::query::Query;
@@ -43,19 +45,23 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
         }
 
         match alert.rule {
-            Rule::Numeric(ref rule) => {
-                if rule.column.is_empty() {
-                    return Err(AlertValidationError::EmptyRuleField);
+            Rule::Column(ref column_rule) => match column_rule {
+                ColumnRule::ConsecutiveNumeric(ConsecutiveNumericRule {
+                    base_rule: NumericRule { ref column, .. },
+                    ref state,
+                })
+                | ColumnRule::ConsecutiveString(ConsecutiveStringRule {
+                    base_rule: StringRule { ref column, .. },
+                    ref state,
+                }) => {
+                    if column.is_empty() {
+                        return Err(AlertValidationError::EmptyRuleField);
+                    }
+                    if state.repeats == 0 {
+                        return Err(AlertValidationError::InvalidRuleRepeat);
+                    }
                 }
-                if rule.repeats == 0 {
-                    return Err(AlertValidationError::InvalidRuleRepeat);
-                }
-            }
-            Rule::String(ref rule) => {
-                if rule.column.is_empty() {
-                    return Err(AlertValidationError::EmptyRuleField);
-                }
-            }
+            },
         }
     }
     Ok(())
