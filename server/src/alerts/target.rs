@@ -120,10 +120,11 @@ fn call_target(target: TargetType, context: Context) {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[serde(tag = "type")]
+#[serde(tag = "type", content = "config")]
+#[serde(deny_unknown_fields)]
 pub enum TargetType {
     Slack(SlackWebHook),
-    #[serde(alias = "webhook")]
+    #[serde(rename = "webhook")]
     Other(OtherWebHook),
 }
 
@@ -138,8 +139,7 @@ impl TargetType {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlackWebHook {
-    #[serde(rename = "server_url")]
-    server_url: String,
+    url: String,
 }
 
 impl CallableTarget for SlackWebHook {
@@ -150,7 +150,7 @@ impl CallableTarget for SlackWebHook {
             _ => unreachable!(),
         };
 
-        if let Err(e) = ureq::post(&self.server_url)
+        if let Err(e) = ureq::post(&self.url)
             .set("Content-Type", "application/json")
             .send_json(alert)
         {
@@ -162,15 +162,13 @@ impl CallableTarget for SlackWebHook {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OtherWebHook {
+    #[serde(rename_all = "camelCase")]
     ApiKey {
-        #[serde(rename = "server_url")]
-        server_url: String,
-        #[serde(rename = "api_key")]
+        url: String,
         api_key: String,
     },
     Simple {
-        #[serde(rename = "server_url")]
-        server_url: String,
+        url: String,
     },
 }
 
@@ -183,13 +181,10 @@ impl CallableTarget for OtherWebHook {
         };
 
         let res = match self {
-            OtherWebHook::Simple { server_url } => ureq::post(server_url)
+            OtherWebHook::Simple { url } => ureq::post(url)
                 .set("Content-Type", "text/plain; charset=iso-8859-1")
                 .send_string(&alert),
-            OtherWebHook::ApiKey {
-                server_url,
-                api_key,
-            } => ureq::post(server_url)
+            OtherWebHook::ApiKey { url, api_key } => ureq::post(url)
                 .set("Content-Type", "text/plain; charset=iso-8859-1")
                 .set("X-API-Key", api_key)
                 .send_string(&alert),
@@ -204,6 +199,7 @@ impl CallableTarget for OtherWebHook {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Timeout {
     #[serde(with = "humantime_serde")]
+    #[serde(rename = "repeat")]
     pub timeout: Duration,
     #[serde(skip)]
     pub state: Arc<Mutex<TimeoutState>>,

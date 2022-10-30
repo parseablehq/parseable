@@ -27,23 +27,50 @@ use self::base::{
 use super::AlertState;
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", content = "config")]
+#[serde(rename_all = "camelCase")]
 pub enum Rule {
-    ConsecutiveNumeric(ConsecutiveNumericRule),
-    ConsecutiveString(ConsecutiveStringRule),
+    Column(ColumnRule),
 }
 
 impl Rule {
-    pub(super) fn resolves(&self, event: &serde_json::Value) -> AlertState {
+    pub fn resolves(&self, event: &serde_json::Value) -> AlertState {
         match self {
-            Rule::ConsecutiveNumeric(rule) => rule.resolves(event),
-            Rule::ConsecutiveString(rule) => rule.resolves(event),
+            Rule::Column(rule) => rule.resolves(event),
         }
     }
 
     pub fn valid_for_schema(&self, schema: &arrow_schema::Schema) -> bool {
         match self {
-            Rule::ConsecutiveNumeric(ConsecutiveNumericRule {
+            Rule::Column(rule) => rule.valid_for_schema(schema),
+        }
+    }
+
+    pub fn trigger_reason(&self) -> String {
+        match self {
+            Rule::Column(rule) => rule.trigger_reason(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ColumnRule {
+    ConsecutiveNumeric(ConsecutiveNumericRule),
+    ConsecutiveString(ConsecutiveStringRule),
+}
+
+impl ColumnRule {
+    fn resolves(&self, event: &serde_json::Value) -> AlertState {
+        match self {
+            Self::ConsecutiveNumeric(rule) => rule.resolves(event),
+            Self::ConsecutiveString(rule) => rule.resolves(event),
+        }
+    }
+
+    fn valid_for_schema(&self, schema: &arrow_schema::Schema) -> bool {
+        match self {
+            Self::ConsecutiveNumeric(ConsecutiveNumericRule {
                 base_rule: rule, ..
             }) => match schema.column_with_name(&rule.column) {
                 Some((_, column)) => matches!(
@@ -62,7 +89,7 @@ impl Rule {
                 ),
                 None => false,
             },
-            Rule::ConsecutiveString(ConsecutiveStringRule {
+            Self::ConsecutiveString(ConsecutiveStringRule {
                 base_rule: rule, ..
             }) => match schema.column_with_name(&rule.column) {
                 Some((_, column)) => matches!(column.data_type(), arrow_schema::DataType::Utf8),
@@ -71,9 +98,9 @@ impl Rule {
         }
     }
 
-    pub(super) fn trigger_reason(&self) -> String {
+    fn trigger_reason(&self) -> String {
         match self {
-            Rule::ConsecutiveNumeric(ConsecutiveNumericRule {
+            Self::ConsecutiveNumeric(ConsecutiveNumericRule {
                 base_rule:
                     NumericRule {
                         column,
@@ -96,7 +123,7 @@ impl Rule {
                 },
                 repeats
             ),
-            Rule::ConsecutiveString(ConsecutiveStringRule {
+            Self::ConsecutiveString(ConsecutiveStringRule {
                 base_rule:
                     StringRule {
                         column,
