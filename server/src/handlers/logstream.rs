@@ -20,6 +20,7 @@ use std::fs;
 
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use chrono::Utc;
 use serde_json::Value;
 
 use crate::alerts::Alerts;
@@ -305,22 +306,37 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
 pub async fn get_stats(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    let stats = metadata::STREAM_INFO
-        .get_stats(&stream_name)
-        .map(|ref stats| serde_json::to_string(stats).expect("stats can serialize to json"));
+    let stats = match metadata::STREAM_INFO.get_stats(&stream_name) {
+        Ok(stats) => stats,
+        Err(e) => {
+            return response::ServerResponse {
+                msg: format!("Could not return stats due to error: {}", e),
+                code: StatusCode::BAD_REQUEST,
+            }
+            .to_http()
+        }
+    };
 
-    match stats {
-        Ok(stats) => response::ServerResponse {
-            msg: stats,
-            code: StatusCode::OK,
+    let time = Utc::now();
+
+    let stats = serde_json::json!({
+        "stream": stream_name,
+        "time": time,
+        "ingestion": {
+            "size": format!("{} {}", stats.ingestion, "Bytes"),
+            "format": "json"
+        },
+        "storage": {
+            "size": format!("{} {}", stats.storage, "Bytes"),
+            "format": "parquet"
         }
-        .to_http(),
-        Err(e) => response::ServerResponse {
-            msg: format!("Could not return stats due to error: {}", e),
-            code: StatusCode::BAD_REQUEST,
-        }
-        .to_http(),
+    });
+
+    response::ServerResponse {
+        msg: stats.to_string(),
+        code: StatusCode::OK,
     }
+    .to_http()
 }
 
 fn remove_id_from_alerts(value: &mut Value) {
