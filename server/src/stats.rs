@@ -52,8 +52,8 @@ impl StatsCounter {
 /// Helper struct type created by copying stats values from metadata
 #[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
-    ingestion: u64,
-    storage: u64,
+    pub ingestion: u64,
+    pub storage: u64,
 }
 
 impl From<&StatsCounter> for Stats {
