@@ -302,6 +302,27 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
     .to_http()
 }
 
+pub async fn get_stats(req: HttpRequest) -> HttpResponse {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    let stats = metadata::STREAM_INFO
+        .get_stats(&stream_name)
+        .map(|ref stats| serde_json::to_string(stats).expect("stats can serialize to json"));
+
+    match stats {
+        Ok(stats) => response::ServerResponse {
+            msg: stats,
+            code: StatusCode::OK,
+        }
+        .to_http(),
+        Err(e) => response::ServerResponse {
+            msg: format!("Could not return stats due to error: {}", e),
+            code: StatusCode::BAD_REQUEST,
+        }
+        .to_http(),
+    }
+}
+
 fn remove_id_from_alerts(value: &mut Value) {
     if let Some(Value::Array(alerts)) = value.get_mut("alerts") {
         alerts

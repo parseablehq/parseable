@@ -18,12 +18,12 @@
 
 use datafusion::arrow::datatypes::Schema;
 use lazy_static::lazy_static;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
 use crate::alerts::Alerts;
 use crate::event::Event;
+use crate::stats::{Stats, StatsCounter};
 use crate::storage::ObjectStorage;
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
@@ -32,25 +32,7 @@ use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 pub struct LogStreamMetadata {
     pub schema: Option<Schema>,
     pub alerts: Alerts,
-    pub stats: Stats,
-}
-
-#[derive(Debug, Deserialize, Serialize, Default, Clone, PartialEq, Eq)]
-pub struct Stats {
-    pub size: u64,
-    pub compressed_size: u64,
-    #[serde(skip)]
-    pub prev_compressed: u64,
-}
-
-impl Stats {
-    /// Update stats considering the following facts about params:
-    /// - `size`: The event body's binary size.
-    /// - `compressed_size`: Binary size of parquet file, total compressed_size is this plus size of all past parquet files.
-    pub fn update(&mut self, size: u64, compressed_size: u64) {
-        self.size += size;
-        self.compressed_size = self.prev_compressed + compressed_size;
-    }
+    pub stats: StatsCounter,
 }
 
 lazy_static! {
@@ -138,11 +120,12 @@ impl STREAM_INFO {
         for stream in storage.list_streams().await? {
             let alerts = storage.get_alerts(&stream.name).await?;
             let schema = storage.get_schema(&stream.name).await?;
+            let stats = storage.get_stats(&stream.name).await?;
 
             let metadata = LogStreamMetadata {
                 schema,
                 alerts,
-                ..LogStreamMetadata::default()
+                stats: stats.into(),
             };
 
             let mut map = self.write().expect(LOCK_EXPECT);
@@ -161,21 +144,23 @@ impl STREAM_INFO {
             .collect()
     }
 
-    #[allow(dead_code)]
-    pub fn update_stats(
-        &self,
-        stream_name: &str,
-        size: u64,
-        compressed_size: u64,
-    ) -> Result<(), MetadataError> {
-        let mut map = self.write().expect(LOCK_EXPECT);
+    pub fn update_stats(&self, stream_name: &str, size: u64) -> Result<(), MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
         let stream = map
-            .get_mut(stream_name)
+            .get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))?;
 
-        stream.stats.update(size, compressed_size);
+        stream.stats.add_ingestion_size(size);
 
         Ok(())
+    }
+
+    pub fn get_stats(&self, stream_name: &str) -> Result<Stats, MetadataError> {
+        self.read()
+            .expect(LOCK_EXPECT)
+            .get(stream_name)
+            .map(|metadata| Stats::from(&metadata.stats))
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))
     }
 }
 

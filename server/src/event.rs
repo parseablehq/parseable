@@ -213,6 +213,11 @@ impl Event {
             self.process_first_event::<s3::S3, _>(event, inferred_schema)?
         };
 
+        metadata::STREAM_INFO.update_stats(
+            &self.stream_name,
+            std::mem::size_of_val(self.body.as_bytes()) as u64,
+        )?;
+
         if let Err(e) = metadata::STREAM_INFO.check_alerts(self).await {
             log::error!("Error checking for alerts. {:?}", e);
         }
@@ -227,7 +232,7 @@ impl Event {
         &self,
         mut event: json::Reader<R>,
         schema: Schema,
-    ) -> Result<u64, EventError> {
+    ) -> Result<(), EventError> {
         // note for functions _schema_with_map and _set_schema_with_map,
         // these are to be called while holding a write lock specifically.
         // this guarantees two things
@@ -282,7 +287,7 @@ impl Event {
                 }
             });
 
-            Ok(0)
+            Ok(())
         }
     }
 
@@ -291,13 +296,13 @@ impl Event {
     fn process_event<R: std::io::Read>(
         &self,
         mut event: json::Reader<R>,
-    ) -> Result<u64, EventError> {
+    ) -> Result<(), EventError> {
         let rb = event.next()?.ok_or(EventError::MissingRecord)?;
         let stream_name = &self.stream_name;
 
         STREAM_WRITERS::append_to_local(stream_name, &rb)?;
 
-        Ok(0)
+        Ok(())
     }
 
     // inferSchema is a constructor to Schema

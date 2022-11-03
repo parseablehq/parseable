@@ -22,14 +22,15 @@ use http::Uri;
 use object_store::aws::AmazonS3Builder;
 use object_store::limit::LimitStore;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs;
 use std::iter::Iterator;
 use std::sync::Arc;
 
 use crate::alerts::Alerts;
-use crate::metadata::Stats;
 use crate::option::{StorageOpt, CONFIG};
 use crate::query::Query;
+use crate::stats::Stats;
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
 // Default object storage currently is DO Spaces bucket
@@ -221,21 +222,27 @@ impl S3 {
             .key(format!("{}/.schema", stream_name))
             .send()
             .await?;
-        // create .parseable.json file in the stream-name prefix.
-        // This indicates the format version for this stream.
-        // This is helpful in case we may change the backend format
-        // in the future
+        self._put_parseable_config(stream_name, format).await?;
+        // Prefix created on S3, now create the directory in
+        // the local storage as well
+        let _res = fs::create_dir_all(CONFIG.parseable.local_stream_data_path(stream_name));
+        Ok(())
+    }
+
+    async fn _put_parseable_config(
+        &self,
+        stream_name: &str,
+        body: Vec<u8>,
+    ) -> Result<(), AwsSdkError> {
         let _resp = self
             .client
             .put_object()
             .bucket(&S3_CONFIG.s3_bucket_name)
             .key(format!("{}/.parseable.json", stream_name))
-            .body(format.into())
+            .body(body.into())
             .send()
             .await?;
-        // Prefix created on S3, now create the directory in
-        // the local storage as well
-        let _res = fs::create_dir_all(CONFIG.parseable.local_stream_data_path(stream_name));
+
         Ok(())
     }
 
@@ -290,8 +297,8 @@ impl S3 {
         self._get(stream_name, "alert.json").await
     }
 
-    async fn _get_stats(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
-        self._get(stream_name, "stats.json").await
+    async fn _get_parseable_config(&self, stream_name: &str) -> Result<Bytes, AwsSdkError> {
+        self._get(stream_name, "parseable.json").await
     }
 
     async fn _get(&self, stream_name: &str, resource: &str) -> Result<Bytes, AwsSdkError> {
@@ -434,9 +441,28 @@ impl ObjectStorage for S3 {
     }
 
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
-        let stats = serde_json::from_slice(&self._get_stats(stream_name).await?)?;
+        let parseable_metadata = self._get_parseable_config(stream_name).await?;
+        let parseable_metadata: Value =
+            serde_json::from_slice(&parseable_metadata).expect("parseable config is valid json");
+
+        let stats = &parseable_metadata["stats"];
+
+        let stats = serde_json::from_value(stats.clone()).unwrap_or_default();
 
         Ok(stats)
+    }
+
+    async fn put_stats(&self, stream_name: &str, stats: &Stats) -> Result<(), ObjectStorageError> {
+        let stats = serde_json::to_value(stats).expect("stats are perfectly serializable");
+        let parseable_metadata = self._get_parseable_config(stream_name).await?;
+        let mut parseable_metadata: Value =
+            serde_json::from_slice(&parseable_metadata).expect("parseable config is valid json");
+
+        parseable_metadata["stats"] = stats;
+
+        self._put_parseable_config(stream_name, parseable_metadata.to_string().into_bytes())
+            .await?;
+        Ok(())
     }
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
