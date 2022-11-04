@@ -17,9 +17,10 @@
  */
 
 use crate::alerts::Alerts;
-use crate::metadata::{Stats, STREAM_INFO};
+use crate::metadata::{LOCK_EXPECT, STREAM_INFO};
 use crate::option::CONFIG;
 use crate::query::Query;
+use crate::stats::Stats;
 use crate::{event, utils};
 
 use async_trait::async_trait;
@@ -33,6 +34,7 @@ use datafusion::parquet::errors::ParquetError;
 use datafusion::parquet::file::properties::WriterProperties;
 use serde::Serialize;
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::{self, File};
 use std::io;
@@ -67,6 +69,7 @@ pub trait ObjectStorage: Sync + 'static {
         stream_name: &str,
         alerts: &Alerts,
     ) -> Result<(), ObjectStorageError>;
+    async fn put_stats(&self, stream_name: &str, stats: &Stats) -> Result<(), ObjectStorageError>;
     async fn get_schema(&self, stream_name: &str) -> Result<Option<Schema>, ObjectStorageError>;
     async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError>;
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError>;
@@ -125,7 +128,9 @@ pub trait ObjectStorage: Sync + 'static {
 
         let streams = STREAM_INFO.list_streams();
 
-        for stream in streams {
+        let mut stream_stats = HashMap::new();
+
+        for stream in &streams {
             // get dir
             let dir = StorageDir::new(stream.clone());
             // walk dir, find all .tmp files and convert to parquet
@@ -198,6 +203,12 @@ pub trait ObjectStorage: Sync + 'static {
                 let s3_path = format!("{}/{}", stream, file_suffix);
 
                 let _put_parquet_file = self.upload_file(&s3_path, file.to_str().unwrap()).await?;
+
+                stream_stats
+                    .entry(stream)
+                    .and_modify(|size| *size += file.metadata().map(|meta| meta.len()).unwrap_or(0))
+                    .or_insert_with(|| file.metadata().map(|meta| meta.len()).unwrap_or(0));
+
                 if let Err(e) = fs::remove_file(&file) {
                     log::error!(
                         "Error deleting parquet file in path {} due to error [{}]",
@@ -207,6 +218,24 @@ pub trait ObjectStorage: Sync + 'static {
                 }
             }
         }
+
+        for (stream, compressed_size) in stream_stats {
+            let stats = STREAM_INFO
+                .read()
+                .expect(LOCK_EXPECT)
+                .get(stream)
+                .map(|metadata| {
+                    metadata.stats.add_storage_size(compressed_size);
+                    Stats::from(&metadata.stats)
+                });
+
+            if let Some(stats) = stats {
+                if let Err(e) = self.put_stats(stream, &stats).await {
+                    log::warn!("Error updating stats to s3 due to error [{}]", e);
+                }
+            }
+        }
+
         Ok(())
     }
 }

@@ -50,6 +50,7 @@ mod option;
 mod query;
 mod response;
 mod s3;
+mod stats;
 mod storage;
 mod utils;
 mod validator;
@@ -342,6 +343,11 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 web::resource(schema_path("{logstream}"))
                     .route(web::get().to(handlers::logstream::schema)),
             )
+            .service(
+                // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
+                web::resource(stats_path("{logstream}"))
+                    .route(web::get().to(handlers::logstream::get_stats)),
+            )
             // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
             .service(web::resource(liveness_path()).route(web::get().to(handlers::liveness)))
             // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
@@ -398,4 +404,8 @@ fn alert_path(stream_name: &str) -> String {
 
 fn schema_path(stream_name: &str) -> String {
     format!("{}/schema", logstream_path(stream_name))
+}
+
+fn stats_path(stream_name: &str) -> String {
+    format!("{}/stats", logstream_path(stream_name))
 }

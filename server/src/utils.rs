@@ -243,7 +243,7 @@ impl TimePeriod {
     pub fn generate_prefixes(&self, prefix: &str) -> Vec<String> {
         let prefix = format!("{}/", prefix);
 
-        let end_minute = self.end.minute() + if self.end.second() > 0 { 1 } else { 0 };
+        let end_minute = self.end.minute() + u32::from(self.end.second() > 0);
 
         self.generate_date_prefixes(
             &prefix,
