@@ -3,9 +3,9 @@ entries:
   collector:
   - apiVersion: v2
     appVersion: 4769fbf
-    created: "2022-10-20T07:42:45.329407+05:30"
+    created: "2022-11-10T08:37:26.414143+05:30"
     description: Helm chart for Parseable Collector
-    digest: d1ee73d526246c51eaf6babba8f2c3d3e19f18fbbe100b921a568879f4fed08d
+    digest: 2467f971bce22007d98a33c9814ec99cc64e47c1365314d51f7323bf25909ddf
     name: collector
     type: application
     urls:
@@ -13,10 +13,20 @@ entries:
     version: 0.0.1
   parseable:
   - apiVersion: v2
-    appVersion: v0.0.5
-    created: "2022-10-20T07:42:45.333199+05:30"
+    appVersion: v0.0.6
+    created: "2022-11-10T08:37:26.417267+05:30"
     description: Helm chart for Parseable Server
-    digest: c5fe789c292fd6a05d99b3b2e6aa1550566f69cbdc2404de4839455e4277f7ac
+    digest: f9ae56a6fcd6a59e7bee0436200ddbedeb74ade6073deb435b8fcbaf08dda795
+    name: parseable
+    type: application
+    urls:
+    - https://charts.parseable.io/helm-releases/parseable-0.0.6.tgz
+    version: 0.0.6
+  - apiVersion: v2
+    appVersion: v0.0.5
+    created: "2022-11-10T08:37:26.416801+05:30"
+    description: Helm chart for Parseable Server
+    digest: 4d6b08a064fba36e16feeb820b77e1e8e60fb6de48dbf7ec8410d03d10c26ad0
     name: parseable
     type: application
     urls:
@@ -24,7 +34,7 @@ entries:
     version: 0.0.5
   - apiVersion: v2
     appVersion: v0.0.2
-    created: "2022-10-20T07:42:45.332689+05:30"
+    created: "2022-11-10T08:37:26.416341+05:30"
     description: Helm chart for Parseable Server
     digest: 38a0a3e4c498afbbcc76ebfcb9cb598fa2ca843a53cc93b3cb4f135b85c10844
     name: parseable
@@ -34,7 +44,7 @@ entries:
     version: 0.0.2
   - apiVersion: v2
     appVersion: v0.0.1
-    created: "2022-10-20T07:42:45.330761+05:30"
+    created: "2022-11-10T08:37:26.415325+05:30"
     description: Helm chart for Parseable Server
     digest: 1f1142db092b9620ee38bb2294ccbb1c17f807b33bf56da43816af7fe89f301e
     name: parseable
@@ -42,4 +52,4 @@ entries:
     urls:
     - https://charts.parseable.io/helm-releases/parseable-0.0.1.tgz
     version: 0.0.1
-generated: "2022-10-20T07:42:45.32853+05:30"
+generated: "2022-11-10T08:37:26.411065+05:30"
