@@ -6,7 +6,7 @@
 </p>
 
 <h4 align="center">
-  <p> Parseable is an open source log storage and observability platform, built for Kubernetes. </p>
+  <p> Parseable is an open source log storage and observability platform. </p>
   <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png" />
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
   <a href="https://www.parseable.io/docs/introduction" target="_blank">Documentation</a> |
@@ -14,11 +14,12 @@
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
 </h4>
 
-## Why Parseable?
+## Motivation
 
-As SREs, DevOps deploy and manage more and more cloud native applications, there is a glaring gap in the ecosystem for a developer friendly, cloud native, event & log observability platform. We saw this issue manifest multiple times in several shapes and forms, across organizations.
+Given the analytical nature of log data, columnar formats like Parquet are the best way to store and analyze. Parquet offers compression and inherent analytical capabilities. However, indexing based text search engines are _still_ prevalent. We are building Parseable to take full advantage of advanced data formats like Apache Parquet and Arrow. This approach is simpler, efficient and much more scalable.
 
-Our aim with Parseable is to provide a fully open source, developer friendly, kubernetes and cloud native, scalable, logging and observability platform.
+Parseable is developer friendly, cloud native, logging platforms today that is simple to deploy and run - while offering a rich set of features.
+
 ## How it works
 
 Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to handle and compress high volume log data. All data is stored in S3 (or compatible systems). Parseable also has a bundled web console to visualize and query log data. 
@@ -29,6 +30,7 @@ Parseable exposes REST API to ingest and query log data. Under the hood, it uses
 - Open data format (Parquet). Complete ownership of data. Wide range of possibilities for data analysis.
 - Single binary / container based deployment (including UI). Deploy in minutes if not seconds.
 - Indexing free design. Lower CPU and storage overhead. Similar levels of performance as indexing based systems.
+- Kubernetes and Cloud native design, build ground up for cloud native environments.
 
 ## Installing
 
