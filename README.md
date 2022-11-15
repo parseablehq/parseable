@@ -6,7 +6,7 @@
 </p>
 
 <h4 align="center">
-  <p> Parseable is an open source log storage and observability platform. </p>
+  <p> Log observability platform. </p>
   <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png" />
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
   <a href="https://www.parseable.io/docs/introduction" target="_blank">Documentation</a> |
@@ -14,17 +14,26 @@
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
 </h4>
 
-## Motivation
+## :wave: Introduction
+
+Parseable is a open source log observability platform. Written in Rust, it is designed for simplicity of deployment and use. It is compatible with standard logging agents via their HTTP output. Parseable also offers a builtin GUI for log query and analysis.
+
+We're focussed on 
+
+* Simplicity - ease of deployment and use. 
+* Efficiency - lesser CPU, Memory usage. 
+* Extensibility - freedom to do more with event data. 
+* Performance - lower latency, higher throughput.
+
+## :dart: Motivation
 
 Given the analytical nature of log data, columnar formats like Parquet are the best way to store and analyze. Parquet offers compression and inherent analytical capabilities. However, indexing based text search engines are _still_ prevalent. We are building Parseable to take full advantage of advanced data formats like Apache Parquet and Arrow. This approach is simpler, efficient and much more scalable.
 
 Parseable is developer friendly, cloud native, logging platforms today that is simple to deploy and run - while offering a rich set of features.
 
-## How it works
+## :grey_question: How it works
 
 Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to handle and compress high volume log data. All data is stored in S3 (or compatible systems). Parseable also has a bundled web console to visualize and query log data. 
-
-#### Key differentiators
 
 - Written in Rust. Low CPU & memory footprint, with low latency, high throughput.
 - Open data format (Parquet). Complete ownership of data. Wide range of possibilities for data analysis.
