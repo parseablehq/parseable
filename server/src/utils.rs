@@ -17,7 +17,7 @@
  */
 
 use actix_web::web;
-use chrono::{NaiveDate, DateTime, Timelike, Utc};
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
