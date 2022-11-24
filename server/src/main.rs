@@ -138,10 +138,10 @@ fn startup_sync() {
         };
 
         let last_modified = FileTime::from_last_modification_time(&metadata);
-        let last_modified = NaiveDateTime::from_timestamp(last_modified.unix_seconds(), 0);
-        let last_modified: DateTime<Utc> = DateTime::from_utc(last_modified, Utc);
+        let last_modified = NaiveDateTime::from_timestamp_opt(last_modified.unix_seconds(), 0);
+        let last_modified: DateTime<Utc> = DateTime::from_utc(last_modified.unwrap(), Utc);
 
-        let uri = utils::date_to_prefix(last_modified.date())
+        let uri = utils::date_to_prefix(last_modified.date_naive())
             + &utils::hour_to_prefix(last_modified.hour())
             + &utils::minute_to_prefix(
                 last_modified.minute(),

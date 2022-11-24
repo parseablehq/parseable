@@ -312,7 +312,7 @@ impl StorageSync {
 
     fn move_local_to_temp(&self) -> io::Result<()> {
         let time = self.time - Duration::minutes(OBJECT_STORE_DATA_GRANULARITY as i64);
-        let uri = utils::date_to_prefix(time.date())
+        let uri = utils::date_to_prefix(time.date_naive())
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");

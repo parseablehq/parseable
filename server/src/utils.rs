@@ -17,7 +17,7 @@
  */
 
 use actix_web::web;
-use chrono::{Date, DateTime, Timelike, Utc};
+use chrono::{NaiveDate, DateTime, Timelike, Utc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -209,7 +209,7 @@ pub fn minute_to_slot(minute: u32, data_granularity: u32) -> Option<String> {
     Some(format!("{:02}-{:02}", block_start, block_end))
 }
 
-pub fn date_to_prefix(date: Date<Utc>) -> String {
+pub fn date_to_prefix(date: NaiveDate) -> String {
     let date = format!("date={}/", date);
     date.replace("UTC", "")
 }
@@ -247,8 +247,8 @@ impl TimePeriod {
 
         self.generate_date_prefixes(
             &prefix,
-            self.start.date(),
-            self.end.date(),
+            self.start.date_naive(),
+            self.end.date_naive(),
             (self.start.hour(), self.start.minute()),
             (self.end.hour(), end_minute),
         )
@@ -341,8 +341,8 @@ impl TimePeriod {
     pub fn generate_date_prefixes(
         &self,
         prefix: &str,
-        start_date: Date<Utc>,
-        end_date: Date<Utc>,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
         start_time: (u32, u32),
         end_time: (u32, u32),
     ) -> Vec<String> {
