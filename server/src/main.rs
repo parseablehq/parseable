@@ -60,7 +60,7 @@ use s3::S3;
 use storage::{ObjectStorage, StorageDir};
 
 // Global configurations
-const MAX_EVENT_PAYLOAD_SIZE: usize = 102400;
+const MAX_EVENT_PAYLOAD_SIZE: usize = 1024000;
 const API_BASE_PATH: &str = "/api";
 const API_VERSION: &str = "v1";
 
