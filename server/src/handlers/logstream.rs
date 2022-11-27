@@ -70,7 +70,7 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
         )
     }
 
-    let stream_dir = StorageDir::new(stream_name.clone());
+    let stream_dir = StorageDir::new(&stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
         log::warn!(
             "failed to delete local data for stream {}. Clean {} manually",

@@ -17,7 +17,6 @@
  *
  */
 use actix_web::rt::spawn;
-use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::writer::StreamWriter;
@@ -36,11 +35,10 @@ use std::sync::RwLock;
 
 use crate::metadata;
 use crate::metadata::LOCK_EXPECT;
-use crate::option::CONFIG;
 use crate::s3;
-use crate::storage::ObjectStorage;
+use crate::storage::{ObjectStorage, StorageDir};
 
-use self::error::EventError;
+use self::error::{EventError, StreamWriterError};
 
 type LocalWriter = Mutex<Option<StreamWriter<std::fs::File>>>;
 type LocalWriterGuard<'a> = MutexGuard<'a, Option<StreamWriter<std::fs::File>>>;
@@ -91,18 +89,7 @@ impl STREAM_WRITERS {
             .write()
             .map_err(|_| StreamWriterError::RwPoisoned)?;
 
-        let file = OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .open(data_file_path(&stream))
-            .map_err(StreamWriterError::Io)?;
-
-        let mut stream_writer = StreamWriter::try_new(file, &record.schema())
-            .expect("File and RecordBatch both are checked");
-
-        stream_writer
-            .write(record)
-            .map_err(StreamWriterError::Writer)?;
+        let stream_writer = init_new_stream_writer_file(&stream, record)?;
 
         hashmap_guard.insert(stream, Mutex::new(Some(stream_writer)));
 
@@ -125,63 +112,54 @@ impl STREAM_WRITERS {
         stream: &str,
         record: &RecordBatch,
     ) -> Result<(), StreamWriterError> {
-        let file = OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .open(data_file_path(stream))
-            .map_err(StreamWriterError::Io)?;
-
-        let mut stream_writer = StreamWriter::try_new(file, &record.schema())
-            .expect("File and RecordBatch both are checked");
-
-        stream_writer
-            .write(record)
-            .map_err(StreamWriterError::Writer)?;
+        let stream_writer = init_new_stream_writer_file(stream, record)?;
 
         writer_guard.replace(stream_writer); // replace the stream writer behind this mutex
 
         Ok(())
     }
 
-    // Unset the entry so that
-    pub fn unset_entry(stream: &str) -> Result<(), StreamWriterError> {
-        let guard = STREAM_WRITERS
+    pub fn unset_all() -> Result<(), StreamWriterError> {
+        let map = STREAM_WRITERS
             .read()
             .map_err(|_| StreamWriterError::RwPoisoned)?;
-        let stream_writer = match guard.get(stream) {
-            Some(writer) => writer,
-            None => return Ok(()),
-        };
-        stream_writer
-            .lock()
-            .map_err(|_| StreamWriterError::MutexPoisoned)?
-            .take();
+
+        for writer in map.values() {
+            if let Some(mut streamwriter) = writer
+                .lock()
+                .map_err(|_| StreamWriterError::MutexPoisoned)?
+                .take()
+            {
+                let _ = streamwriter.finish();
+            }
+        }
 
         Ok(())
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum StreamWriterError {
-    #[error("Arrow writer failed: {0}")]
-    Writer(arrow::error::ArrowError),
-    #[error("Io Error when creating new file: {0}")]
-    Io(std::io::Error),
-    #[error("RwLock was poisoned")]
-    RwPoisoned,
-    #[error("Mutex was poisoned")]
-    MutexPoisoned,
-}
+fn init_new_stream_writer_file(
+    stream_name: &str,
+    record: &RecordBatch,
+) -> Result<StreamWriter<std::fs::File>, StreamWriterError> {
+    let dir = StorageDir::new(stream_name);
+    let path = dir.path_by_current_time();
 
-fn data_file_path(stream_name: &str) -> String {
-    format!(
-        "{}/{}",
-        CONFIG
-            .parseable
-            .local_stream_data_path(stream_name)
-            .to_string_lossy(),
-        "data.records"
-    )
+    std::fs::create_dir_all(dir.data_path)?;
+
+    let file = OpenOptions::new()
+        .create_new(true)
+        .append(true)
+        .open(path)?;
+
+    let mut stream_writer = StreamWriter::try_new(file, &record.schema())
+        .expect("File and RecordBatch both are checked");
+
+    stream_writer
+        .write(record)
+        .map_err(StreamWriterError::Writer)?;
+
+    Ok(stream_writer)
 }
 
 #[derive(Clone)]
@@ -309,7 +287,7 @@ impl Event {
         infer_json_schema(&mut buf_reader, None)
     }
 
-    fn get_reader(&self, arrow_schema: arrow::datatypes::Schema) -> json::Reader<&[u8]> {
+    fn get_reader(&self, arrow_schema: Schema) -> json::Reader<&[u8]> {
         json::Reader::new(
             self.body.as_bytes(),
             Arc::new(arrow_schema),
@@ -348,8 +326,6 @@ pub mod error {
     use crate::storage::ObjectStorageError;
     use datafusion::arrow::error::ArrowError;
 
-    use super::StreamWriterError;
-
     #[derive(Debug, thiserror::Error)]
     pub enum EventError {
         #[error("Missing Record from event body")]
@@ -364,5 +340,17 @@ pub mod error {
         SchemaMismatch(String),
         #[error("Schema Mismatch: {0}")]
         ObjectStorage(#[from] ObjectStorageError),
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum StreamWriterError {
+        #[error("Arrow writer failed: {0}")]
+        Writer(#[from] ArrowError),
+        #[error("Io Error when creating new file: {0}")]
+        Io(#[from] std::io::Error),
+        #[error("RwLock was poisoned")]
+        RwPoisoned,
+        #[error("Mutex was poisoned")]
+        MutexPoisoned,
     }
 }

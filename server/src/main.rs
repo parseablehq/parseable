@@ -22,9 +22,7 @@ use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web_static_files::ResourceFiles;
-use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
-use filetime::FileTime;
 use log::warn;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
@@ -33,7 +31,7 @@ use thread_priority::{ThreadBuilder, ThreadPriority};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::BufReader;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread::{self, JoinHandle};
@@ -57,7 +55,7 @@ mod validator;
 
 use option::CONFIG;
 use s3::S3;
-use storage::{ObjectStorage, StorageDir};
+use storage::ObjectStorage;
 
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 1024000;
@@ -74,10 +72,6 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
         warn!("could not populate local metadata. {:?}", e);
     }
-
-    // Move all exiting data.records file to their respective tmp directory
-    // they will be synced to object store on next s3 sync cycle
-    startup_sync();
 
     let (localsync_handler, mut localsync_outbox, localsync_inbox) = run_local_sync();
     let (mut s3sync_handler, mut s3sync_outbox, mut s3sync_inbox) = s3_sync();
@@ -105,59 +99,6 @@ async fn main() -> anyhow::Result<()> {
                 (s3sync_handler, s3sync_outbox, s3sync_inbox) = s3_sync();
             }
         };
-    }
-}
-
-fn startup_sync() {
-    for stream in metadata::STREAM_INFO.list_streams() {
-        let dir = StorageDir::new(stream.clone());
-
-        dir.create_temp_dir()
-            .expect("Could not create temporary directory. Please check if Parseable is running with correct permissions.");
-
-        // if data.records file is not present then skip this stream
-        if !dir.local_data_exists() {
-            continue;
-        }
-
-        // create prefix for this file from its last modified time
-        let path = dir.data_path.join("data.records");
-
-        // metadata.modified gives us system time
-        // This may not work on all platforms
-        let metadata = match fs::metadata(&path) {
-            Ok(meta) => meta,
-            Err(err) => {
-                log::warn!(
-                    "Failed to get file metadata for {} due to {:?}. Skipping!",
-                    path.display(),
-                    err
-                );
-                continue;
-            }
-        };
-
-        let last_modified = FileTime::from_last_modification_time(&metadata);
-        let last_modified = NaiveDateTime::from_timestamp_opt(last_modified.unix_seconds(), 0);
-        let last_modified: DateTime<Utc> = DateTime::from_utc(last_modified.unwrap(), Utc);
-
-        let uri = utils::date_to_prefix(last_modified.date_naive())
-            + &utils::hour_to_prefix(last_modified.hour())
-            + &utils::minute_to_prefix(
-                last_modified.minute(),
-                storage::OBJECT_STORE_DATA_GRANULARITY,
-            )
-            .unwrap();
-        let local_uri = str::replace(&uri, "/", ".");
-        let hostname = utils::hostname_unchecked();
-        let parquet_file_local = format!("{}{}.data.parquet", local_uri, hostname);
-        if let Err(err) = dir.move_local_to_temp(parquet_file_local) {
-            panic!(
-                "Failed to move parquet file at {} to tmp directory due to error {}",
-                path.display(),
-                err
-            )
-        }
     }
 }
 
@@ -218,7 +159,7 @@ fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<(
                 scheduler
                     .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
                     .run(move || {
-                        if let Err(e) = S3::new().local_sync() {
+                        if let Err(e) = crate::event::STREAM_WRITERS::unset_all() {
                             warn!("failed to sync local data. {:?}", e);
                         }
                     });

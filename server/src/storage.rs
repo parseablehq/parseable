@@ -21,10 +21,10 @@ use crate::metadata::{LOCK_EXPECT, STREAM_INFO};
 use crate::option::CONFIG;
 use crate::query::Query;
 use crate::stats::Stats;
-use crate::{event, utils};
+use crate::utils;
 
 use async_trait::async_trait;
-use chrono::{Duration, Timelike, Utc};
+use chrono::{NaiveDateTime, Timelike, Utc};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::StreamReader;
@@ -37,12 +37,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::{self, File};
-use std::io;
 use std::iter::Iterator;
 use std::path::{Path, PathBuf};
-
-extern crate walkdir;
-use walkdir::WalkDir;
 
 /// local sync interval to move data.records to /tmp dir of that stream.
 /// 60 sec is a reasonable value.
@@ -80,46 +76,6 @@ pub trait ObjectStorage: Sync + 'static {
         query: &Query,
         results: &mut Vec<RecordBatch>,
     ) -> Result<(), ObjectStorageError>;
-    fn local_sync(&self) -> io::Result<()> {
-        // If the local data path doesn't exist yet, return early.
-        // This method will be called again after next ticker interval
-        if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
-            return Ok(());
-        }
-
-        let streams = STREAM_INFO.list_streams();
-
-        // entries here means all the streams present on local disk
-        for stream in streams {
-            let sync = StorageSync::new(stream.clone());
-
-            // if data.records file not present, skip this stream
-            if !sync.dir.local_data_exists() {
-                continue;
-            }
-
-            if let Err(e) = sync.dir.create_temp_dir() {
-                log::error!(
-                    "Error creating tmp directory for {} due to error [{}]",
-                    &stream,
-                    e
-                );
-                continue;
-            }
-
-            if let Err(e) = sync.move_local_to_temp() {
-                log::error!(
-                    "Error copying parquet from stream directory in [{}] to tmp directory [{}] due to error [{}]",
-                    sync.dir.data_path.to_string_lossy(),
-                    sync.dir.temp_dir.to_string_lossy(),
-                    e
-                );
-                continue;
-            }
-        }
-
-        Ok(())
-    }
 
     async fn s3_sync(&self) -> Result<(), MoveDataError> {
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
@@ -132,27 +88,11 @@ pub trait ObjectStorage: Sync + 'static {
 
         for stream in &streams {
             // get dir
-            let dir = StorageDir::new(stream.clone());
-            // walk dir, find all .tmp files and convert to parquet
-            for file in WalkDir::new(&dir.temp_dir)
-                .min_depth(1)
-                .max_depth(1)
-                .into_iter()
-                .filter_map(|file| file.ok())
-                .map(|file| file.path().to_path_buf())
-                .filter(|file| file.is_file())
-                .filter(|file| {
-                    let is_tmp = match file.extension() {
-                        Some(ext) => ext.eq_ignore_ascii_case("tmp"),
-                        None => false,
-                    };
-
-                    is_tmp
-                })
-            {
-                let record_tmp_file = file.file_name().unwrap().to_str().unwrap();
-                let file = File::open(&file).map_err(|_| MoveDataError::Open)?;
-                let reader = StreamReader::try_new(file, None)?;
+            let dir = StorageDir::new(stream);
+            // walk dir, find all .arrows files and convert to parquet
+            for file in dir.arrow_files() {
+                let arrow_file = File::open(&file).map_err(|_| MoveDataError::Open)?;
+                let reader = StreamReader::try_new(arrow_file, None)?;
                 let schema = reader.schema();
                 let records = reader.filter_map(|record| match record {
                     Ok(record) => Some(record),
@@ -162,11 +102,9 @@ pub trait ObjectStorage: Sync + 'static {
                     }
                 });
 
-                let parquet_path = dir.temp_dir.join(
-                    record_tmp_file
-                        .strip_suffix(".tmp")
-                        .expect("file has a .tmp extention"),
-                );
+                let mut parquet_path = file.clone();
+                parquet_path.set_extension("parquet");
+
                 let parquet_file =
                     fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
                 let props = WriterProperties::builder().build();
@@ -178,27 +116,15 @@ pub trait ObjectStorage: Sync + 'static {
 
                 writer.close()?;
 
-                fs::remove_file(dir.temp_dir.join(record_tmp_file))
-                    .map_err(|_| MoveDataError::Delete)?;
+                fs::remove_file(file).map_err(|_| MoveDataError::Delete)?;
             }
 
-            for file in WalkDir::new(dir.temp_dir)
-                .min_depth(1)
-                .max_depth(1)
-                .into_iter()
-                .filter_map(|file| file.ok())
-                .map(|file| file.path().to_path_buf())
-                .filter(|file| file.is_file())
-                .filter(|file| {
-                    let is_parquet = match file.extension() {
-                        Some(ext) => ext.eq_ignore_ascii_case("parquet"),
-                        None => false,
-                    };
-
-                    is_parquet
-                })
-            {
-                let filename = file.file_name().unwrap().to_str().unwrap();
+            for file in dir.parquet_files() {
+                let filename = file
+                    .file_name()
+                    .expect("only parquet files are returned by iterator")
+                    .to_str()
+                    .expect("filename is valid string");
                 let file_suffix = str::replacen(filename, ".", "/", 3);
                 let s3_path = format!("{}/{}", stream, file_suffix);
 
@@ -206,8 +132,8 @@ pub trait ObjectStorage: Sync + 'static {
 
                 stream_stats
                     .entry(stream)
-                    .and_modify(|size| *size += file.metadata().map(|meta| meta.len()).unwrap_or(0))
-                    .or_insert_with(|| file.metadata().map(|meta| meta.len()).unwrap_or(0));
+                    .and_modify(|size| *size += file.metadata().map_or(0, |meta| meta.len()))
+                    .or_insert_with(|| file.metadata().map_or(0, |meta| meta.len()));
 
                 if let Err(e) = fs::remove_file(&file) {
                     log::error!(
@@ -247,38 +173,66 @@ pub struct LogStream {
 
 #[derive(Debug)]
 pub struct StorageDir {
-    pub stream_name: String,
     pub data_path: PathBuf,
-    pub temp_dir: PathBuf,
 }
 
-// Storage Dir is a type which can move files form datapath to temp dir
 impl StorageDir {
-    pub fn new(stream_name: String) -> Self {
-        let data_path = CONFIG.parseable.local_stream_data_path(&stream_name);
-        let temp_dir = data_path.join("tmp");
+    pub fn new(stream_name: &str) -> Self {
+        let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
 
-        Self {
-            stream_name,
-            data_path,
-            temp_dir,
-        }
+        Self { data_path }
     }
 
-    // create tmp dir if it does not exist
-    pub fn create_temp_dir(&self) -> io::Result<()> {
-        fs::create_dir_all(&self.temp_dir)
+    fn filename_by_time(time: NaiveDateTime) -> String {
+        let uri = utils::date_to_prefix(time.date())
+            + &utils::hour_to_prefix(time.hour())
+            + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
+        let local_uri = str::replace(&uri, "/", ".");
+        let hostname = utils::hostname_unchecked();
+        format!("{}{}.data.arrows", local_uri, hostname)
     }
 
-    pub fn move_local_to_temp(&self, filename: String) -> io::Result<()> {
-        let record_tmp_file_path = self.temp_dir.join(filename + ".tmp");
-        fs::rename(self.data_path.join("data.records"), &record_tmp_file_path)?;
-        event::STREAM_WRITERS::unset_entry(&self.stream_name).unwrap();
-        Ok(())
+    fn filename_by_current_time() -> String {
+        let datetime = Utc::now();
+        Self::filename_by_time(datetime.naive_utc())
     }
 
-    pub fn local_data_exists(&self) -> bool {
-        self.data_path.join("data.records").exists()
+    pub fn path_by_current_time(&self) -> PathBuf {
+        self.data_path.join(Self::filename_by_current_time())
+    }
+
+    pub fn arrow_files(&self) -> Vec<PathBuf> {
+        let Ok(dir) = self.data_path
+            .read_dir() else { return vec![] };
+
+        let mut paths: Vec<PathBuf> = dir
+            .flatten()
+            .map(|file| file.path())
+            .filter(|file| file.extension().map_or(false, |ext| ext.eq("arrows")))
+            .collect();
+
+        // Do not include file which is being written to
+        let hot_file = self.path_by_current_time();
+        let hot_filename = hot_file.file_name().expect("is a not none filename");
+
+        paths.retain(|file| {
+            !file
+                .file_name()
+                .expect("is a not none filename")
+                .eq(hot_filename)
+        });
+
+        paths
+    }
+
+    pub fn parquet_files(&self) -> Vec<PathBuf> {
+        let Ok(dir) = self.data_path
+            .read_dir() else { return vec![] };
+
+        dir.flatten()
+            .map(|file| file.path())
+            .filter(|file| file.extension().map_or(false, |ext| ext.eq("parquet")))
+            .collect()
     }
 }
 
@@ -296,30 +250,6 @@ pub enum MoveDataError {
     Create,
     #[error("Could not delete temp arrow file")]
     Delete,
-}
-
-struct StorageSync {
-    pub dir: StorageDir,
-    time: chrono::DateTime<Utc>,
-}
-
-impl StorageSync {
-    fn new(stream_name: String) -> Self {
-        let dir = StorageDir::new(stream_name);
-        let time = Utc::now();
-        Self { dir, time }
-    }
-
-    fn move_local_to_temp(&self) -> io::Result<()> {
-        let time = self.time - Duration::minutes(OBJECT_STORE_DATA_GRANULARITY as i64);
-        let uri = utils::date_to_prefix(time.date_naive())
-            + &utils::hour_to_prefix(time.hour())
-            + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
-        let local_uri = str::replace(&uri, "/", ".");
-        let hostname = utils::hostname_unchecked();
-        let parquet_file_local = format!("{}{}.data.parquet", local_uri, hostname);
-        self.dir.move_local_to_temp(parquet_file_local)
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
