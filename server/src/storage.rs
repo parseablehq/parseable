@@ -97,7 +97,7 @@ pub trait ObjectStorage: Sync + 'static {
                 let records = reader.filter_map(|record| match record {
                     Ok(record) => Some(record),
                     Err(e) => {
-                        log::warn!("error when reading from arrow stream {:?}", e);
+                        log::warn!("warning from arrow stream {:?}", e);
                         None
                     }
                 });

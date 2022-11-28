@@ -147,10 +147,7 @@ fn init_new_stream_writer_file(
 
     std::fs::create_dir_all(dir.data_path)?;
 
-    let file = OpenOptions::new()
-        .create_new(true)
-        .append(true)
-        .open(path)?;
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
 
     let mut stream_writer = StreamWriter::try_new(file, &record.schema())
         .expect("File and RecordBatch both are checked");
