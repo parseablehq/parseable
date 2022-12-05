@@ -15,6 +15,8 @@
 </h4>
 
 ## :wave: Introduction
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fparseablehq%2Fparseable.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fparseablehq%2Fparseable?ref=badge_shield)
+
 
 Parseable is a open source log observability platform. Written in Rust, it is designed for simplicity of deployment and use. It is compatible with standard logging agents via their HTTP output. Parseable also offers a builtin GUI for log query and analysis.
 
@@ -114,3 +116,7 @@ Refer to the contributing guide [here](https://www.parseable.io/docs/contributin
 #### Supported by
 
 <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fparseablehq%2Fparseable.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fparseablehq%2Fparseable?ref=badge_large)
