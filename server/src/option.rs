@@ -245,10 +245,6 @@ impl<S> Server<S>
 where
     S: Clone + clap::Args + StorageOpt,
 {
-    pub fn get_cache_path(&self, stream_name: &str) -> PathBuf {
-        self.local_disk_path.join(stream_name)
-    }
-
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_disk_path.join(stream_name)
     }

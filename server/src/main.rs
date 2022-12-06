@@ -72,6 +72,8 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
         warn!("could not populate local metadata. {:?}", e);
     }
+    // track all parquet files already in the data directory
+    storage::CACHED_FILES.track_parquet();
 
     let (localsync_handler, mut localsync_outbox, localsync_inbox) = run_local_sync();
     let (mut s3sync_handler, mut s3sync_outbox, mut s3sync_inbox) = s3_sync();
