@@ -332,7 +332,7 @@ mod tests {
     fn test_time_from_parquet_path() {
         let path = PathBuf::from("date=2022-01-01.hour=00.minute=00.hostname.data.parquet");
         let time = time_from_path(path.as_path());
-        assert_eq!(time.timestamp(), 100);
+        assert_eq!(time.timestamp(), 1640995200);
     }
 
     // Query prefix generation tests
