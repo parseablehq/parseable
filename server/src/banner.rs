@@ -70,7 +70,7 @@ pub mod version {
         // print current version
         let current = current();
 
-        match current {
+        match current.0 {
             ParseableVersion::Version(current_version) => {
                 // not eprintln because if it is old release then time passed with be displayed beside it
                 eprint!(
@@ -118,9 +118,9 @@ pub mod version {
         }
     }
 
-    pub fn current() -> ParseableVersion {
+    pub fn current() -> (ParseableVersion, String) {
         let build_semver = env!("VERGEN_BUILD_SEMVER");
-
+        let sha_hash = env!("VERGEN_GIT_SHA_SHORT");
         let mut git_semver = env!("VERGEN_GIT_SEMVER");
 
         if &git_semver[..1] == "v" {
@@ -128,15 +128,15 @@ pub mod version {
         }
 
         if build_semver == git_semver {
-            ParseableVersion::Version(
+            (ParseableVersion::Version(
                 semver::Version::parse(build_semver)
                     .expect("VERGEN_BUILD_SEMVER is always valid semver"),
-            )
+            ), sha_hash.to_string())
         } else {
-            ParseableVersion::Prerelease(
+           ( ParseableVersion::Prerelease(
                 semver::Prerelease::new(git_semver)
                     .expect("VERGEN_GIT_SEMVER is always valid semver"),
-            )
+            ), sha_hash.to_string())
         }
     }
 
