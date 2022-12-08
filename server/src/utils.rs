@@ -137,7 +137,7 @@ pub mod uuid {
 
 pub mod update {
     use crate::banner::version::current;
-    use std::path::Path;
+    use std::{path::Path, time::Duration};
 
     use anyhow::anyhow;
     use chrono::{DateTime, Utc};
@@ -168,7 +168,10 @@ pub mod update {
     }
 
     pub fn get_latest() -> Result<LatestRelease, anyhow::Error> {
-        let agent = ureq::builder().user_agent(user_agent().as_str()).build();
+        let agent = ureq::builder()
+            .user_agent(user_agent().as_str())
+            .timeout(Duration::from_secs(8))
+            .build();
 
         let json: serde_json::Value = agent
             .get("https://download.parseable.io/latest-version")
