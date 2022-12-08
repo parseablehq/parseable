@@ -59,7 +59,7 @@ static-files = "0.2.1"
 cargo_toml = "0.12.4"
 ureq = "2.5.0"
 sha1_smol = { version = "1.0.0", features = ["std"] }
-vergen = { version = "7.4.2", features = ["build", "git"] }
+vergen = { version = "7.4.2", features = ["build", "git", "cargo"] }
 zip = { version = "0.6.3", default_features = false, features = ["deflate"] }
 
 [dev-dependencies]

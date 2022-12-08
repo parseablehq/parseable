@@ -95,7 +95,7 @@ pub mod header_parsing {
     pub enum ParseHeaderError {
         #[error("Too many headers received. Limit is of 5 headers")]
         MaxHeadersLimitExceeded,
-        #[error("A value passed in header is not formattable to plain visible ASCII")]
+        #[error("A value passed in header can't be formatted to plain visible ASCII")]
         InvalidValue,
         #[error("Invalid Key was passed which terminated just after the end of prefix")]
         Emptykey,
@@ -154,13 +154,14 @@ pub mod update {
         "Native".to_string()
     }
 
-    // User Agent for Github API call
-    // Format: Parseable/<version> (OS; Platform)
+    // User Agent for Download API call
+    // Format: Parseable/<version>/<commit_hash> (OS; Platform)
     fn user_agent() -> String {
         let info = os_info::get();
         format!(
-            "Parseable/{} ({}; {})",
-            current(),
+            "Parseable/{}/{} ({}; {})",
+            current().0,
+            current().1,
             info.os_type(),
             is_docker()
         )
@@ -170,7 +171,7 @@ pub mod update {
         let agent = ureq::builder().user_agent(user_agent().as_str()).build();
 
         let json: serde_json::Value = agent
-            .get("https://api.github.com/repos/parseablehq/parseable/releases/latest")
+            .get("https://download.parseable.io/latest-version")
             .call()?
             .into_json()?;
 
@@ -178,11 +179,11 @@ pub mod update {
             .as_str()
             .and_then(|ver| ver.strip_prefix('v'))
             .and_then(|ver| semver::Version::parse(ver).ok())
-            .ok_or_else(|| anyhow!("Bad parse when parsing verison"))?;
+            .ok_or_else(|| anyhow!("Failed parsing version"))?;
 
         let date = json["published_at"]
             .as_str()
-            .ok_or_else(|| anyhow!("Bad parse when parsing published date"))?;
+            .ok_or_else(|| anyhow!("Failed parsing published date"))?;
 
         let date = chrono::DateTime::parse_from_rfc3339(date)
             .expect("date-time from github is in rfc3339 format")
