@@ -16,7 +16,7 @@
  *
  */
 
-use vergen::{vergen, Config, ShaKind,};
+use vergen::{vergen, Config, ShaKind};
 
 fn main() {
     // Init vergen

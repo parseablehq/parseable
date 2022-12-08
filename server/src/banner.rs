@@ -128,15 +128,21 @@ pub mod version {
         }
 
         if build_semver == git_semver {
-            (ParseableVersion::Version(
-                semver::Version::parse(build_semver)
-                    .expect("VERGEN_BUILD_SEMVER is always valid semver"),
-            ), sha_hash.to_string())
+            (
+                ParseableVersion::Version(
+                    semver::Version::parse(build_semver)
+                        .expect("VERGEN_BUILD_SEMVER is always valid semver"),
+                ),
+                sha_hash.to_string(),
+            )
         } else {
-           ( ParseableVersion::Prerelease(
-                semver::Prerelease::new(git_semver)
-                    .expect("VERGEN_GIT_SEMVER is always valid semver"),
-            ), sha_hash.to_string())
+            (
+                ParseableVersion::Prerelease(
+                    semver::Prerelease::new(git_semver)
+                        .expect("VERGEN_GIT_SEMVER is always valid semver"),
+                ),
+                sha_hash.to_string(),
+            )
         }
     }
 
