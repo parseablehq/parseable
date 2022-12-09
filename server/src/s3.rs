@@ -9,14 +9,12 @@ use aws_smithy_async::rt::sleep::default_async_sleep;
 use bytes::Bytes;
 use clap::builder::ArgPredicate;
 use datafusion::arrow::datatypes::Schema;
-use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
 use datafusion::datasource::object_store::ObjectStoreRegistry;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::StreamExt;
 use http::Uri;
 use object_store::aws::AmazonS3Builder;
@@ -422,6 +420,19 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
+    async fn put_stats(&self, stream_name: &str, stats: &Stats) -> Result<(), ObjectStorageError> {
+        let stats = serde_json::to_value(stats).expect("stats are perfectly serializable");
+        let parseable_metadata = self._get_parseable_config(stream_name).await?;
+        let mut parseable_metadata: Value =
+            serde_json::from_slice(&parseable_metadata).expect("parseable config is valid json");
+
+        parseable_metadata["stats"] = stats;
+
+        self._put_parseable_config(stream_name, parseable_metadata.to_string().into_bytes())
+            .await?;
+        Ok(())
+    }
+
     async fn get_schema(&self, stream_name: &str) -> Result<Option<Schema>, ObjectStorageError> {
         let body_bytes = self._get_schema(stream_name).await?;
         let schema = serde_json::from_slice(&body_bytes).ok();
@@ -452,19 +463,6 @@ impl ObjectStorage for S3 {
         Ok(stats)
     }
 
-    async fn put_stats(&self, stream_name: &str, stats: &Stats) -> Result<(), ObjectStorageError> {
-        let stats = serde_json::to_value(stats).expect("stats are perfectly serializable");
-        let parseable_metadata = self._get_parseable_config(stream_name).await?;
-        let mut parseable_metadata: Value =
-            serde_json::from_slice(&parseable_metadata).expect("parseable config is valid json");
-
-        parseable_metadata["stats"] = stats;
-
-        self._put_parseable_config(stream_name, parseable_metadata.to_string().into_bytes())
-            .await?;
-        Ok(())
-    }
-
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
         let streams = self._list_streams().await?;
 
@@ -477,14 +475,7 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn query(
-        &self,
-        query: &Query,
-        results: &mut Vec<RecordBatch>,
-    ) -> Result<(), ObjectStorageError> {
-        let ctx =
-            SessionContext::with_config_rt(SessionConfig::default(), Arc::clone(&STORAGE_RUNTIME));
-
+    fn query_table(&self, query: &Query) -> Result<ListingTable, ObjectStorageError> {
         // Get all prefix paths and convert them into futures which yeilds ListingTableUrl
         let prefixes = query
             .get_prefixes()
@@ -508,14 +499,11 @@ impl ObjectStorage for S3 {
             .with_listing_options(listing_options)
             .with_schema(Arc::clone(&query.schema));
 
-        let table = ListingTable::try_new(config)?;
-        ctx.register_table(query.stream_name.as_str(), Arc::new(table))?;
+        Ok(ListingTable::try_new(config)?)
+    }
 
-        // execute the query and collect results
-        let df = ctx.sql(&query.query).await?;
-        results.extend(df.collect().await?);
-
-        Ok(())
+    fn query_runtime_env(&self) -> Arc<RuntimeEnv> {
+        Arc::clone(&STORAGE_RUNTIME)
     }
 }
 

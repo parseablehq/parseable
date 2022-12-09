@@ -29,7 +29,8 @@ use chrono::{NaiveDateTime, Timelike, Utc};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::StreamReader;
-use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::datasource::listing::ListingTable;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::parquet::arrow::ArrowWriter;
 use datafusion::parquet::errors::ParquetError;
 use datafusion::parquet::file::properties::WriterProperties;
@@ -41,7 +42,7 @@ use std::fmt::Debug;
 use std::fs::{self, File};
 use std::iter::Iterator;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use self::file_link::CacheState;
 
@@ -91,11 +92,8 @@ pub trait ObjectStorage: Sync + 'static {
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &str) -> Result<(), ObjectStorageError>;
-    async fn query(
-        &self,
-        query: &Query,
-        results: &mut Vec<RecordBatch>,
-    ) -> Result<(), ObjectStorageError>;
+    fn query_table(&self, query: &Query) -> Result<ListingTable, ObjectStorageError>;
+    fn query_runtime_env(&self) -> Arc<RuntimeEnv>;
 
     async fn s3_sync(&self) -> Result<(), MoveDataError> {
         if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
