@@ -61,14 +61,14 @@ const DEFAULT_S3_SECRET_KEY: &str = "minioadmin";
 // max concurrent request allowed for datafusion object store
 const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
     #[serde(rename = "objectstore-format")]
     pub version: String,
 }
 
-impl ObjectStoreFormat {
-    pub fn new() -> Self {
+impl Default for ObjectStoreFormat {
+    fn default() -> Self {
         Self {
             version: "v1".to_string(),
         }
@@ -414,7 +414,7 @@ impl ObjectStorage for S3 {
     }
 
     async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
-        let format = ObjectStoreFormat::new();
+        let format = ObjectStoreFormat::default();
         let body = serde_json::to_vec(&format)?;
         self._create_stream(stream_name, body).await?;
 
