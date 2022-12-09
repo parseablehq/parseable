@@ -1,7 +1,7 @@
 parseable:
   image:
     repository: parseable/parseable
-    tag: v0.0.6
+    tag: v0.0.7
     pullPolicy: Always
   demo: false
   secrets: 
