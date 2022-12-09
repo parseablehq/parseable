@@ -1,3 +1,21 @@
+/*
+ * Parseable Server (C) 2022 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use async_trait::async_trait;
 use aws_sdk_s3::error::{HeadBucketError, HeadBucketErrorKind};
 use aws_sdk_s3::model::{CommonPrefix, Delete, ObjectIdentifier};
@@ -9,14 +27,12 @@ use aws_smithy_async::rt::sleep::default_async_sleep;
 use bytes::Bytes;
 use clap::builder::ArgPredicate;
 use datafusion::arrow::datatypes::Schema;
-use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
 use datafusion::datasource::object_store::ObjectStoreRegistry;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::StreamExt;
 use http::Uri;
 use object_store::aws::AmazonS3Builder;
@@ -45,14 +61,14 @@ const DEFAULT_S3_SECRET_KEY: &str = "minioadmin";
 // max concurrent request allowed for datafusion object store
 const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
     #[serde(rename = "objectstore-format")]
     pub version: String,
 }
 
-impl ObjectStoreFormat {
-    pub fn new() -> Self {
+impl Default for ObjectStoreFormat {
+    fn default() -> Self {
         Self {
             version: "v1".to_string(),
         }
@@ -398,7 +414,7 @@ impl ObjectStorage for S3 {
     }
 
     async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
-        let format = ObjectStoreFormat::new();
+        let format = ObjectStoreFormat::default();
         let body = serde_json::to_vec(&format)?;
         self._create_stream(stream_name, body).await?;
 
@@ -419,6 +435,19 @@ impl ObjectStorage for S3 {
         let body = serde_json::to_vec(alerts)?;
         self._put_alerts(stream_name, body).await?;
 
+        Ok(())
+    }
+
+    async fn put_stats(&self, stream_name: &str, stats: &Stats) -> Result<(), ObjectStorageError> {
+        let stats = serde_json::to_value(stats).expect("stats are perfectly serializable");
+        let parseable_metadata = self._get_parseable_config(stream_name).await?;
+        let mut parseable_metadata: Value =
+            serde_json::from_slice(&parseable_metadata).expect("parseable config is valid json");
+
+        parseable_metadata["stats"] = stats;
+
+        self._put_parseable_config(stream_name, parseable_metadata.to_string().into_bytes())
+            .await?;
         Ok(())
     }
 
@@ -452,19 +481,6 @@ impl ObjectStorage for S3 {
         Ok(stats)
     }
 
-    async fn put_stats(&self, stream_name: &str, stats: &Stats) -> Result<(), ObjectStorageError> {
-        let stats = serde_json::to_value(stats).expect("stats are perfectly serializable");
-        let parseable_metadata = self._get_parseable_config(stream_name).await?;
-        let mut parseable_metadata: Value =
-            serde_json::from_slice(&parseable_metadata).expect("parseable config is valid json");
-
-        parseable_metadata["stats"] = stats;
-
-        self._put_parseable_config(stream_name, parseable_metadata.to_string().into_bytes())
-            .await?;
-        Ok(())
-    }
-
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
         let streams = self._list_streams().await?;
 
@@ -477,14 +493,7 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn query(
-        &self,
-        query: &Query,
-        results: &mut Vec<RecordBatch>,
-    ) -> Result<(), ObjectStorageError> {
-        let ctx =
-            SessionContext::with_config_rt(SessionConfig::default(), Arc::clone(&STORAGE_RUNTIME));
-
+    fn query_table(&self, query: &Query) -> Result<ListingTable, ObjectStorageError> {
         // Get all prefix paths and convert them into futures which yeilds ListingTableUrl
         let prefixes = query
             .get_prefixes()
@@ -508,14 +517,11 @@ impl ObjectStorage for S3 {
             .with_listing_options(listing_options)
             .with_schema(Arc::clone(&query.schema));
 
-        let table = ListingTable::try_new(config)?;
-        ctx.register_table(query.stream_name.as_str(), Arc::new(table))?;
+        Ok(ListingTable::try_new(config)?)
+    }
 
-        // execute the query and collect results
-        let df = ctx.sql(&query.query).await?;
-        results.extend(df.collect().await?);
-
-        Ok(())
+    fn query_runtime_env(&self) -> Arc<RuntimeEnv> {
+        Arc::clone(&STORAGE_RUNTIME)
     }
 }
 
