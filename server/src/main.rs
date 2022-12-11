@@ -259,6 +259,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::scope(&base_path())
             // POST "/query" ==> Get results of the SQL query passed in request body
             .service(web::resource(query_path()).route(web::post().to(handlers::event::query)))
+            // POST "/ingest" ==> Post logs to given log stream based on header
+            .service(web::resource(ingest_path()).route(web::post().to(handlers::event::ingest)))
             .service(
                 // logstream API
                 web::resource(logstream_path("{logstream}"))
@@ -339,6 +341,10 @@ fn liveness_path() -> String {
 
 fn query_path() -> String {
     "/query".to_string()
+}
+
+fn ingest_path() -> String {
+    "/ingest".to_string()
 }
 
 fn alert_path(stream_name: &str) -> String {
