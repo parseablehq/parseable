@@ -25,13 +25,14 @@ use crate::event;
 use crate::query::Query;
 use crate::response::QueryResponse;
 use crate::s3::S3;
-use crate::utils::header_parsing::collect_labelled_headers;
+use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use crate::utils::{self, flatten_json_body, merge};
 
 use self::error::{PostError, QueryError};
 
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
+const STREAM_NAME_HEADER_KEY: &str = "x-p-stream-name";
 const SEPARATOR: char = '^';
 
 pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResponse, QueryError> {
@@ -48,12 +49,38 @@ pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResp
         .map_err(|e| e.into())
 }
 
+pub async fn ingest(
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> Result<HttpResponse, PostError> {
+    if let Some((_, stream_name)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
+    {
+        push_logs(stream_name.to_str().unwrap().to_owned(), req, body).await?;
+
+        Ok(HttpResponse::Ok().finish())
+    } else {
+        Err(PostError::Header(ParseHeaderError::MissingStreamName))
+    }
+}
+
 pub async fn post_event(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    push_logs(stream_name, req, body).await?;
 
+    Ok(HttpResponse::Ok().finish())
+}
+
+async fn push_logs(
+    stream_name: String,
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> Result<(), PostError> {
     let tags = HashMap::from([(
         "p_tags".to_string(),
         collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?,
@@ -89,7 +116,7 @@ pub async fn post_event(
         event.process().await?;
     }
 
-    Ok(HttpResponse::Ok().finish())
+    Ok(())
 }
 
 pub mod error {
