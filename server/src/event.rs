@@ -172,7 +172,6 @@ impl Event {
         let inferred_schema = self.infer_schema()?;
 
         let event = self.get_reader(inferred_schema.clone());
-
         let stream_schema = metadata::STREAM_INFO.schema(&self.stream_name)?;
 
         if let Some(existing_schema) = stream_schema {
@@ -211,7 +210,7 @@ impl Event {
         // note for functions _schema_with_map and _set_schema_with_map,
         // these are to be called while holding a write lock specifically.
         // this guarantees two things
-        // - no other metadata operation can happen inbetween
+        // - no other metadata operation can happen in between
         // - map always have an entry for this stream
 
         let stream_name = &self.stream_name;

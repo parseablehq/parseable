@@ -80,6 +80,11 @@ impl STREAM_INFO {
             })
     }
 
+    pub fn stream_exists(&self, stream_name: &str) -> bool {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.contains_key(stream_name)
+    }
+
     pub fn schema(&self, stream_name: &str) -> Result<Option<Schema>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         map.get(stream_name)
@@ -112,7 +117,7 @@ impl STREAM_INFO {
     }
 
     pub async fn load(&self, storage: &impl ObjectStorage) -> Result<(), LoadError> {
-        // When loading streams this funtion will assume list_streams only returns valid streams.
+        // When loading streams this function will assume list_streams only returns valid streams.
         // a valid stream would have a .schema file.
         // .schema file could be empty in that case it will be treated as an uninitialized stream.
         // return error in case of an error from object storage itself.
