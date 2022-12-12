@@ -35,7 +35,7 @@ pub fn merge(value: Value, fields: HashMap<String, String>) -> Value {
             for (k, v) in fields {
                 match m.get_mut(&k) {
                     Some(val) => {
-                        let mut final_val = String::new();
+                        let mut final_val = String::default();
                         final_val.push_str(val.as_str().unwrap());
                         final_val.push(',');
                         final_val.push_str(&v);
