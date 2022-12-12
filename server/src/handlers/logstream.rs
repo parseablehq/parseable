@@ -164,50 +164,9 @@ pub async fn get_alert(req: HttpRequest) -> HttpResponse {
     .to_http()
 }
 
-pub async fn put(req: HttpRequest) -> HttpResponse {
+pub async fn put_stream(req: HttpRequest) -> HttpResponse {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    // fail to proceed if there is an error in log stream name validation
-    if let Err(e) = validator::stream_name(&stream_name) {
-        return response::ServerResponse {
-            msg: format!("failed to create log stream due to err: {}", e),
-            code: StatusCode::BAD_REQUEST,
-        }
-        .to_http();
-    }
-
-    let s3 = S3::new();
-
-    // Proceed to create log stream if it doesn't exist
-    if s3.get_schema(&stream_name).await.is_err() {
-        // Fail if unable to create log stream on object store backend
-        if let Err(e) = s3.create_stream(&stream_name).await {
-            return response::ServerResponse {
-                msg: format!(
-                    "failed to create log stream {} due to err: {}",
-                    stream_name, e
-                ),
-                code: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-            .to_http();
-        }
-        metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Alerts::default());
-        return response::ServerResponse {
-            msg: format!("created log stream {}", stream_name),
-            code: StatusCode::OK,
-        }
-        .to_http();
-    }
-
-    // Error if the log stream already exists
-    response::ServerResponse {
-        msg: format!(
-            "log stream {} already exists, please create a new log stream with unique name",
-            stream_name
-        ),
-        code: StatusCode::BAD_REQUEST,
-    }
-    .to_http()
+    create_stream_if_not_exists(stream_name).await
 }
 
 pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
@@ -348,4 +307,48 @@ fn remove_id_from_alerts(value: &mut Value) {
                 map.remove("id");
             });
     }
+}
+
+// Check if the stream exists and create a new stream if doesn't exist
+pub async fn create_stream_if_not_exists(stream_name: String) -> HttpResponse {
+    if metadata::STREAM_INFO.stream_exists(stream_name.as_str()) {
+        // Error if the log stream already exists
+        response::ServerResponse {
+            msg: format!(
+                "log stream {} already exists, please create a new log stream with unique name",
+                stream_name
+            ),
+            code: StatusCode::BAD_REQUEST,
+        }
+        .to_http();
+    }
+
+    // fail to proceed if invalid stream name
+    if let Err(e) = validator::stream_name(&stream_name) {
+        response::ServerResponse {
+            msg: format!("failed to create log stream due to err: {}", e),
+            code: StatusCode::BAD_REQUEST,
+        }
+        .to_http();
+    }
+
+    // Proceed to create log stream if it doesn't exist
+    let s3 = S3::new();
+    if let Err(e) = s3.create_stream(&stream_name).await {
+        // Fail if unable to create log stream on object store backend
+        response::ServerResponse {
+            msg: format!(
+                "failed to create log stream {} due to err: {}",
+                stream_name, e
+            ),
+            code: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+        .to_http();
+    }
+    metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Alerts::default());
+    response::ServerResponse {
+        msg: format!("created log stream {}", stream_name),
+        code: StatusCode::OK,
+    }
+    .to_http()
 }

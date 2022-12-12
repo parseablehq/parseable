@@ -32,7 +32,7 @@ use self::error::{PostError, QueryError};
 
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
-const STREAM_NAME_HEADER_KEY: &str = "x-p-stream-name";
+const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const SEPARATOR: char = '^';
 
 pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResponse, QueryError> {
@@ -49,6 +49,9 @@ pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResp
         .map_err(|e| e.into())
 }
 
+// Handler for POST /api/v1/ingest
+// ingests events into the specified logstream in the header
+// if the logstream does not exist, it is created
 pub async fn ingest(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
@@ -58,21 +61,24 @@ pub async fn ingest(
         .iter()
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
-        push_logs(stream_name.to_str().unwrap().to_owned(), req, body).await?;
-
+        let str_name = stream_name.to_str().unwrap().to_owned();
+        super::logstream::create_stream_if_not_exists(str_name.clone()).await;
+        push_logs(str_name, req, body).await?;
         Ok(HttpResponse::Ok().finish())
     } else {
         Err(PostError::Header(ParseHeaderError::MissingStreamName))
     }
 }
 
+// Handler for POST /api/v1/logstream/{logstream}
+// only ingests events into the specified logstream
+// fails if the logstream does not exist
 pub async fn post_event(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     push_logs(stream_name, req, body).await?;
-
     Ok(HttpResponse::Ok().finish())
 }
 

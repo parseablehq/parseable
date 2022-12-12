@@ -265,7 +265,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 // logstream API
                 web::resource(logstream_path("{logstream}"))
                     // PUT "/logstream/{logstream}" ==> Create log stream
-                    .route(web::put().to(handlers::logstream::put))
+                    .route(web::put().to(handlers::logstream::put_stream))
                     // POST "/logstream/{logstream}" ==> Post logs to given log stream
                     .route(web::post().to(handlers::event::post_event))
                     // DELETE "/logstream/{logstream}" ==> Delete log stream

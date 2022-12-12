@@ -103,7 +103,7 @@ pub mod header_parsing {
         SeperatorInKey(char),
         #[error("A value passed in header contains reserved char {0}")]
         SeperatorInValue(char),
-        #[error("Stream name not found in header")]
+        #[error("Stream name not found in header [x-p-stream]")]
         MissingStreamName,
     }
 
