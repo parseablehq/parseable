@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "0.0.7"
+version = "0.0.8"
 authors = ["Parseable Team <hi@parseable.io>"]
 edition = "2021"
 categories = ["olap", "logging", "analytics-store"]
