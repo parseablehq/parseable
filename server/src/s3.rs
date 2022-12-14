@@ -25,8 +25,8 @@ use aws_sdk_s3::RetryConfig;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use aws_smithy_async::rt::sleep::default_async_sleep;
 use bytes::Bytes;
-use clap::builder::ArgPredicate;
 use chrono::Local;
+use clap::builder::ArgPredicate;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
@@ -82,7 +82,7 @@ pub struct ObjectStoreFormat {
     #[serde(rename = "created-at")]
     pub created_at: String,
     pub owner: Owner,
-    pub access: Access
+    pub access: Access,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -317,11 +317,7 @@ impl S3 {
         Ok(())
     }
 
-    async fn _put_stream_meta(
-        &self,
-        stream_name: &str,
-        body: Vec<u8>,
-    ) -> Result<(), AwsSdkError> {
+    async fn _put_stream_meta(&self, stream_name: &str, body: Vec<u8>) -> Result<(), AwsSdkError> {
         let _resp = self
             .client
             .put_object()
