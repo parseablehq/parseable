@@ -139,7 +139,7 @@ impl Default for ObjectStoreFormat {
 
 impl ObjectStoreFormat {
     fn set_id(&mut self, id: String) {
-        self.owner.id = id.clone_from()();
+        self.owner.id.clone_from(&id);
         self.owner.group = id;
     }
     fn set_access(&mut self, access: Vec<AccessObject>) {
