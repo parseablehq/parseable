@@ -35,8 +35,8 @@ use std::sync::RwLock;
 
 use crate::metadata;
 use crate::metadata::LOCK_EXPECT;
-use crate::s3;
-use crate::storage::{ObjectStorage, StorageDir};
+use crate::option::CONFIG;
+use crate::storage::{ObjectStorageProvider, StorageDir};
 
 use self::error::{EventError, StreamWriterError};
 
@@ -184,7 +184,7 @@ impl Event {
         } else {
             // if stream schema is none then it is first event,
             // process first event and store schema in obect store
-            self.process_first_event::<s3::S3, _>(event, inferred_schema)?
+            self.process_first_event(event, inferred_schema)?
         };
 
         metadata::STREAM_INFO.update_stats(
@@ -202,7 +202,7 @@ impl Event {
     // This is called when the first event of a log stream is received. The first event is
     // special because we parse this event to generate the schema for the log stream. This
     // schema is then enforced on rest of the events sent to this log stream.
-    fn process_first_event<S: ObjectStorage, R: std::io::Read>(
+    fn process_first_event<R: std::io::Read>(
         &self,
         event: json::Reader<R>,
         schema: Schema,
@@ -241,13 +241,13 @@ impl Event {
                 "setting schema on objectstore for logstream {}",
                 stream_name
             );
-            let storage = S::new();
+            let storage = CONFIG.storage().get_object_store();
 
             let stream_name = stream_name.clone();
             spawn(async move {
-                if let Err(e) = storage.put_schema(stream_name.clone(), &schema).await {
+                if let Err(e) = storage.put_schema(&stream_name, &schema).await {
                     // If this call has failed then currently there is no right way to make local state consistent
-                    // this needs a fix after more constraints are safety guarentee is provided by localwriter and s3_sync.
+                    // this needs a fix after more constraints are safety guarentee is provided by localwriter and objectstore_sync.
                     // Reasoning -
                     // - After dropping lock many events may process through
                     // - Processed events may sync before metadata deletion

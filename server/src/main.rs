@@ -47,15 +47,14 @@ mod metadata;
 mod option;
 mod query;
 mod response;
-mod s3;
 mod stats;
 mod storage;
 mod utils;
 mod validator;
 
 use option::CONFIG;
-use s3::S3;
-use storage::ObjectStorage;
+
+use crate::storage::ObjectStorageProvider;
 
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 1024000;
@@ -67,16 +66,17 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     CONFIG.print();
     CONFIG.validate();
-    let storage = S3::new();
-    CONFIG.validate_storage(&storage).await;
-    if let Err(e) = metadata::STREAM_INFO.load(&storage).await {
+    let storage = CONFIG.storage().get_object_store();
+    CONFIG.validate_storage(&*storage).await;
+    if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
         warn!("could not populate local metadata. {:?}", e);
     }
     // track all parquet files already in the data directory
     storage::CACHED_FILES.track_parquet();
 
     let (localsync_handler, mut localsync_outbox, localsync_inbox) = run_local_sync();
-    let (mut s3sync_handler, mut s3sync_outbox, mut s3sync_inbox) = s3_sync();
+    let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
+        object_store_sync();
 
     let app = run_http();
     tokio::pin!(app);
@@ -84,10 +84,10 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             e = &mut app => {
                 // actix server finished .. stop other threads and stop the server
-                s3sync_inbox.send(()).unwrap_or(());
+                remote_sync_inbox.send(()).unwrap_or(());
                 localsync_inbox.send(()).unwrap_or(());
                 localsync_handler.join().unwrap_or(());
-                s3sync_handler.join().unwrap_or(());
+                remote_sync_handler.join().unwrap_or(());
                 return e
             },
             _ = &mut localsync_outbox => {
@@ -95,16 +95,16 @@ async fn main() -> anyhow::Result<()> {
                 // panic!("Local Sync thread died. Server will fail now!")
                 return Err(anyhow::Error::msg("Failed to sync local data to disc. This can happen due to critical error in disc or environment. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
             },
-            _ = &mut s3sync_outbox => {
-                // s3sync failed, this is recoverable by just starting s3sync thread again
-                s3sync_handler.join().unwrap_or(());
-                (s3sync_handler, s3sync_outbox, s3sync_inbox) = s3_sync();
+            _ = &mut remote_sync_outbox => {
+                // remote_sync failed, this is recoverable by just starting remote_sync thread again
+                remote_sync_handler.join().unwrap_or(());
+                (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = object_store_sync();
             }
         };
     }
 }
 
-fn s3_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
     let mut inbox_rx = AssertUnwindSafe(inbox_rx);
@@ -116,7 +116,7 @@ fn s3_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
                 scheduler
                     .every((CONFIG.parseable.upload_interval as u32).seconds())
                     .run(|| async {
-                        if let Err(e) = S3::new().s3_sync().await {
+                        if let Err(e) = CONFIG.storage().get_object_store().sync().await {
                             warn!("failed to sync local data with object store. {:?}", e);
                         }
                     });

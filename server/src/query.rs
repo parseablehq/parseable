@@ -29,10 +29,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::storage;
+use crate::option::CONFIG;
 use crate::storage::ObjectStorage;
 use crate::storage::ObjectStorageError;
 use crate::storage::StorageDir;
+use crate::storage::{self, ObjectStorageProvider};
 use crate::utils::TimePeriod;
 use crate::validator;
 
@@ -75,7 +76,7 @@ impl Query {
     /// TODO: find a way to query all selected parquet files together in a single context.
     pub async fn execute(
         &self,
-        storage: &impl ObjectStorage,
+        storage: &(impl ObjectStorage + ?Sized),
     ) -> Result<Vec<RecordBatch>, ExecuteError> {
         let dir = StorageDir::new(&self.stream_name);
 
@@ -98,8 +99,10 @@ impl Query {
 
         let parquet_files: Vec<PathBuf> = possible_parquet_files.chain(parquet_files).collect();
 
-        let ctx =
-            SessionContext::with_config_rt(SessionConfig::default(), storage.query_runtime_env());
+        let ctx = SessionContext::with_config_rt(
+            SessionConfig::default(),
+            CONFIG.storage().get_datafusion_runtime(),
+        );
         let table = Arc::new(QueryTableProvider::new(
             arrow_files,
             parquet_files,

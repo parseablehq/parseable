@@ -40,7 +40,7 @@ use std::sync::Arc;
 pub struct QueryTableProvider {
     arrow_files: Vec<PathBuf>,
     parquet_files: Vec<PathBuf>,
-    storage: ListingTable,
+    storage: Option<ListingTable>,
     schema: Arc<Schema>,
 }
 
@@ -48,7 +48,7 @@ impl QueryTableProvider {
     pub fn new(
         arrow_files: Vec<PathBuf>,
         parquet_files: Vec<PathBuf>,
-        storage: ListingTable,
+        storage: Option<ListingTable>,
         schema: Arc<Schema>,
     ) -> Self {
         // By the time this query executes the arrow files could be converted to parquet files
@@ -97,9 +97,17 @@ impl QueryTableProvider {
             let listexec = listtable.scan(ctx, projection, filters, limit).await?;
             Arc::new(UnionExec::new(vec![memexec, listexec]))
         };
-        let storage_exec = self.storage.scan(ctx, projection, filters, limit).await?;
 
-        Ok(Arc::new(UnionExec::new(vec![cache_exec, storage_exec])))
+        let mut exec = vec![cache_exec];
+        if let Some(ref storage_listing) = self.storage {
+            exec.push(
+                storage_listing
+                    .scan(ctx, projection, filters, limit)
+                    .await?,
+            );
+        }
+
+        Ok(Arc::new(UnionExec::new(exec)))
     }
 }
 

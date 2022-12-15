@@ -22,9 +22,10 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use serde_json::Value;
 
 use crate::event;
+use crate::option::CONFIG;
 use crate::query::Query;
 use crate::response::QueryResponse;
-use crate::s3::S3;
+use crate::storage::ObjectStorageProvider;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use crate::utils::{self, flatten_json_body, merge};
 
@@ -39,9 +40,9 @@ pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResp
     let json = json.into_inner();
     let query = Query::parse(json)?;
 
-    let storage = S3::new();
+    let storage = CONFIG.storage().get_object_store();
 
-    let query_result = query.execute(&storage).await;
+    let query_result = query.execute(&*storage).await;
 
     query_result
         .map(Into::<QueryResponse>::into)
