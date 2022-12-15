@@ -293,7 +293,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 web::resource(stats_path("{logstream}"))
                     .route(web::get().to(handlers::logstream::get_stats)),
             )
-            // GET "/liveness" ==> Livenss check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
+            // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
             .service(web::resource(liveness_path()).route(web::get().to(handlers::liveness)))
             // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
             .service(web::resource(readiness_path()).route(web::get().to(handlers::readiness)))
