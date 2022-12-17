@@ -24,8 +24,8 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::alerts::Alerts;
-use crate::s3::S3;
-use crate::storage::{ObjectStorage, StorageDir};
+use crate::option::CONFIG;
+use crate::storage::{ObjectStorageProvider, StorageDir};
 use crate::{event, response};
 use crate::{metadata, validator};
 
@@ -40,9 +40,9 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    let s3 = S3::new();
+    let objectstore = CONFIG.storage().get_object_store();
 
-    if s3.get_schema(&stream_name).await.is_err() {
+    if objectstore.get_schema(&stream_name).await.is_err() {
         return response::ServerResponse {
             msg: format!("log stream {} does not exist", stream_name),
             code: StatusCode::BAD_REQUEST,
@@ -50,7 +50,7 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
         .to_http();
     }
 
-    if let Err(e) = s3.delete_stream(&stream_name).await {
+    if let Err(e) = objectstore.delete_stream(&stream_name).await {
         return response::ServerResponse {
             msg: format!(
                 "failed to delete log stream {} due to err: {}",
@@ -87,7 +87,14 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
 }
 
 pub async fn list(_: HttpRequest) -> impl Responder {
-    response::list_response(S3::new().list_streams().await.unwrap())
+    response::list_response(
+        CONFIG
+            .storage()
+            .get_object_store()
+            .list_streams()
+            .await
+            .unwrap(),
+    )
 }
 
 pub async fn schema(req: HttpRequest) -> HttpResponse {
@@ -101,7 +108,12 @@ pub async fn schema(req: HttpRequest) -> HttpResponse {
             code: StatusCode::OK,
         }
         .to_http(),
-        Err(_) => match S3::new().get_schema(&stream_name).await {
+        Err(_) => match CONFIG
+            .storage()
+            .get_object_store()
+            .get_schema(&stream_name)
+            .await
+        {
             Ok(None) => response::ServerResponse {
                 msg: "log stream is not initialized, please post an event before fetching schema"
                     .to_string(),
@@ -136,7 +148,12 @@ pub async fn get_alert(req: HttpRequest) -> HttpResponse {
 
     let mut alerts = match alerts {
         Some(alerts) => alerts,
-        None => match S3::new().get_alerts(&stream_name).await {
+        None => match CONFIG
+            .storage()
+            .get_object_store()
+            .get_alerts(&stream_name)
+            .await
+        {
             Ok(alerts) if alerts.alerts.is_empty() => {
                 return response::ServerResponse {
                     msg: "alert configuration not set for log stream {}".to_string(),
@@ -233,7 +250,12 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
         }
     }
 
-    if let Err(e) = S3::new().put_alerts(&stream_name, &alerts).await {
+    if let Err(e) = CONFIG
+        .storage()
+        .get_object_store()
+        .put_alerts(&stream_name, &alerts)
+        .await
+    {
         return response::ServerResponse {
             msg: format!(
                 "failed to set alert configuration for log stream {} due to err: {}",
@@ -333,8 +355,8 @@ pub async fn create_stream_if_not_exists(stream_name: String) -> HttpResponse {
     }
 
     // Proceed to create log stream if it doesn't exist
-    let s3 = S3::new();
-    if let Err(e) = s3.create_stream(&stream_name).await {
+    let storage = CONFIG.storage().get_object_store();
+    if let Err(e) = storage.create_stream(&stream_name).await {
         // Fail if unable to create log stream on object store backend
         response::ServerResponse {
             msg: format!(

@@ -23,8 +23,7 @@ use actix_web::http::StatusCode;
 use actix_web::HttpResponse;
 use sysinfo::{System, SystemExt};
 
-use crate::s3::S3;
-use crate::storage::ObjectStorage;
+use crate::{option::CONFIG, storage::ObjectStorageProvider};
 
 pub async fn liveness() -> HttpResponse {
     // If the available memory is less than 100MiB, return a 503 error.
@@ -37,7 +36,7 @@ pub async fn liveness() -> HttpResponse {
 }
 
 pub async fn readiness() -> HttpResponse {
-    if let Ok(()) = S3::new().check().await {
+    if CONFIG.storage().get_object_store().check().await.is_ok() {
         return HttpResponse::new(StatusCode::OK);
     }
 

@@ -17,18 +17,20 @@
  */
 
 use clap::builder::ArgPredicate;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::banner;
-use crate::s3::S3Config;
-use crate::storage::{ObjectStorage, ObjectStorageError, LOCAL_SYNC_INTERVAL};
+use crate::storage::{
+    FSConfig, ObjectStorage, ObjectStorageError, ObjectStorageProvider, S3Config,
+    LOCAL_SYNC_INTERVAL,
+};
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
-    pub static ref CONFIG: Arc<Config<S3Config>> = Arc::new(Config::new());
+    pub static ref CONFIG: Arc<Config> = Arc::new(Config::new());
 }
 
 pub const USERNAME_ENV: &str = "P_USERNAME";
@@ -36,34 +38,19 @@ pub const PASSWORD_ENV: &str = "P_PASSWORD";
 pub const DEFAULT_USERNAME: &str = "parseable";
 pub const DEFAULT_PASSWORD: &str = "parseable";
 
-pub trait StorageOpt: Sync + Send {
-    fn bucket_name(&self) -> &str;
-    fn endpoint_url(&self) -> &str;
+pub struct Config {
+    pub parseable: Server,
 }
 
-pub struct Config<S>
-where
-    S: Clone + clap::Args + StorageOpt,
-{
-    pub parseable: Server<S>,
-}
-
-impl<S> Config<S>
-where
-    S: Clone + clap::Args + StorageOpt,
-{
+impl Config {
     fn new() -> Self {
-        let Cli::Server::<S>(args) = match Cli::<S>::try_parse() {
+        let Cli::Server(args) = match Cli::try_parse() {
             Ok(s) => s,
             Err(e) => {
                 e.exit();
             }
         };
         Config { parseable: args }
-    }
-
-    pub fn storage(&self) -> &S {
-        &self.parseable.objectstore_config
     }
 
     pub fn print(&self) {
@@ -82,24 +69,21 @@ where
         }
     }
 
-    pub async fn validate_storage(&self, storage: &impl ObjectStorage) {
+    pub async fn validate_storage(&self, storage: &(impl ObjectStorage + ?Sized)) {
         match storage.check().await {
             Ok(_) => (),
-            Err(ObjectStorageError::NoSuchBucket(name)) => panic!(
-                "Could not start because the bucket doesn't exist. Please ensure bucket {bucket} exists on {url}",
-                bucket = name,
-                url = self.storage().endpoint_url()
-            ),
             Err(ObjectStorageError::ConnectionError(inner)) => panic!(
                 "Failed to connect to the Object Storage Service on {url}\nCaused by: {cause}",
-                url = self.storage().endpoint_url(),
+                url = self.storage().get_endpoint(),
                 cause = inner
             ),
             Err(ObjectStorageError::AuthenticationError(inner)) => panic!(
                 "Failed to authenticate. Please ensure credentials are valid\n Caused by: {cause}",
                 cause = inner
             ),
-            Err(error) => { panic!("{error}") }
+            Err(error) => {
+                panic!("{error}")
+            }
         }
     }
 
@@ -121,11 +105,10 @@ where
             "
     {}
         Local Data Path: {}
-        Object Storage: {}/{}",
+        Object Storage: {}",
             "Storage:".to_string().blue().bold(),
             self.parseable.local_disk_path.to_string_lossy(),
-            self.storage().endpoint_url(),
-            self.storage().bucket_name()
+            self.parseable.object_store.get_endpoint(),
         )
     }
 
@@ -145,6 +128,10 @@ where
     fn is_demo(&self) -> bool {
         self.parseable.demo
     }
+
+    pub fn storage(&self) -> &impl ObjectStorageProvider {
+        &self.parseable.object_store
+    }
 }
 
 #[derive(Parser)] // requires `derive` feature
@@ -154,19 +141,13 @@ where
     about = "Parseable is a log storage and observability platform.",
     version
 )]
-enum Cli<S>
-where
-    S: Clone + clap::Args + StorageOpt,
-{
-    Server(Server<S>),
+enum Cli {
+    Server(Server),
 }
 
 #[derive(clap::Args, Debug, Clone)]
 #[clap(name = "server", about = "Start the Parseable server")]
-pub struct Server<S>
-where
-    S: Clone + clap::Args + StorageOpt,
-{
+pub struct Server {
     /// The location of TLS Cert file
     #[arg(
         long,
@@ -233,18 +214,44 @@ where
     )]
     pub password: String,
 
-    #[clap(flatten)]
-    pub objectstore_config: S,
+    #[command(subcommand)]
+    pub object_store: ObjectStore,
 
     /// Run Parseable in demo mode with default credentials and open object store
     #[arg(short, long, exclusive = true)]
     pub demo: bool,
 }
 
-impl<S> Server<S>
-where
-    S: Clone + clap::Args + StorageOpt,
-{
+#[derive(Debug, Clone, Subcommand)]
+pub enum ObjectStore {
+    Drive(FSConfig),
+    S3(S3Config),
+}
+
+impl ObjectStorageProvider for ObjectStore {
+    fn get_datafusion_runtime(&self) -> Arc<datafusion::execution::runtime_env::RuntimeEnv> {
+        match self {
+            ObjectStore::Drive(x) => x.get_datafusion_runtime(),
+            ObjectStore::S3(x) => x.get_datafusion_runtime(),
+        }
+    }
+
+    fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
+        match self {
+            ObjectStore::Drive(x) => x.get_object_store(),
+            ObjectStore::S3(x) => x.get_object_store(),
+        }
+    }
+
+    fn get_endpoint(&self) -> String {
+        match self {
+            ObjectStore::Drive(x) => x.get_endpoint(),
+            ObjectStore::S3(x) => x.get_endpoint(),
+        }
+    }
+}
+
+impl Server {
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_disk_path.join(stream_name)
     }

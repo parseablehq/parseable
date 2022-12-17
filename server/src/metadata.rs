@@ -116,8 +116,8 @@ impl STREAM_INFO {
         map.remove(stream_name);
     }
 
-    pub async fn load(&self, storage: &impl ObjectStorage) -> Result<(), LoadError> {
-        // When loading streams this function will assume list_streams only returns valid streams.
+    pub async fn load(&self, storage: &(impl ObjectStorage + ?Sized)) -> Result<(), LoadError> {
+        // When loading streams this funtion will assume list_streams only returns valid streams.
         // a valid stream would have a .schema file.
         // .schema file could be empty in that case it will be treated as an uninitialized stream.
         // return error in case of an error from object storage itself.
