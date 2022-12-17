@@ -24,6 +24,7 @@ use aws_sdk_s3::Error as AwsSdkError;
 use aws_sdk_s3::RetryConfig;
 use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use aws_smithy_async::rt::sleep::default_async_sleep;
+use base64::encode;
 use bytes::Bytes;
 use clap::builder::ArgPredicate;
 
@@ -35,6 +36,7 @@ use datafusion::datasource::object_store::ObjectStoreRegistry;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use futures::StreamExt;
 use http::Uri;
+use md5::{Digest, Md5};
 use object_store::aws::AmazonS3Builder;
 use object_store::limit::LimitStore;
 use relative_path::RelativePath;
@@ -105,6 +107,15 @@ pub struct S3Config {
         default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_BUCKET)
     )]
     pub s3_bucket_name: String,
+
+    /// Set client to send content_md5 header on every put request
+    #[arg(
+        long,
+        env = "P_S3_SET_CONTENT_MD5",
+        value_name = "bool",
+        default_value = "false"
+    )]
+    pub content_md5: bool,
 }
 
 impl ObjectStorageProvider for S3Config {
@@ -153,6 +164,7 @@ impl ObjectStorageProvider for S3Config {
         Arc::new(S3 {
             client,
             bucket: self.s3_bucket_name.clone(),
+            set_content_md5: self.content_md5,
         })
     }
 
@@ -164,6 +176,7 @@ impl ObjectStorageProvider for S3Config {
 pub struct S3 {
     client: aws_sdk_s3::Client,
     bucket: String,
+    set_content_md5: bool,
 }
 
 impl S3 {
@@ -233,16 +246,24 @@ impl S3 {
         Ok(logstreams)
     }
 
-    async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), AwsSdkError> {
-        let body = ByteStream::from_path(path).await.unwrap();
+    async fn _upload_file(
+        &self,
+        key: &str,
+        path: &Path,
+        md5: Option<String>,
+    ) -> Result<(), AwsSdkError> {
+        let body = ByteStream::from_path(&path).await.unwrap();
+
         let resp = self
             .client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
             .body(body)
+            .set_content_md5(md5)
             .send()
             .await?;
+
         log::trace!("{:?}", resp);
 
         Ok(())
@@ -260,12 +281,18 @@ impl ObjectStorage for S3 {
         path: &RelativePath,
         resource: Bytes,
     ) -> Result<(), ObjectStorageError> {
-        let _resp = self
-            .client
+        let hash = self.set_content_md5.then(|| {
+            let mut hash = Md5::new();
+            hash.update(&resource);
+            encode(hash.finalize())
+        });
+
+        self.client
             .put_object()
             .bucket(&self.bucket)
             .key(path.as_str())
             .body(resource.into())
+            .set_content_md5(hash)
             .send()
             .await
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
@@ -296,7 +323,16 @@ impl ObjectStorage for S3 {
     }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        self._upload_file(key, path).await?;
+        let hash = if self.set_content_md5 {
+            let mut file = std::fs::File::open(path)?;
+            let mut digest = Md5::new();
+            std::io::copy(&mut file, &mut digest)?;
+            Some(encode(digest.finalize()))
+        } else {
+            None
+        };
+
+        self._upload_file(key, path, hash).await?;
 
         Ok(())
     }
