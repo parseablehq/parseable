@@ -16,7 +16,6 @@
  *
  */
 
-use clap::builder::ArgPredicate;
 use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 use std::path::PathBuf;
@@ -60,7 +59,6 @@ impl Config {
         let scheme = CONFIG.parseable.get_scheme();
         self.status_info(&scheme);
         banner::version::print();
-        self.demo();
         self.storage_info();
         banner::system_info();
         println!();
@@ -113,23 +111,6 @@ impl Config {
             self.parseable.local_disk_path.to_string_lossy(),
             self.storage().get_endpoint(),
         )
-    }
-
-    fn demo(&self) {
-        if self.is_demo() {
-            banner::warning_line();
-            eprintln!(
-                "
-        {}",
-                "Parseable is in demo mode with default credentials and open object store. Please use this for demo purposes only."
-                    .to_string()
-                    .red(),
-                )
-        }
-    }
-
-    fn is_demo(&self) -> bool {
-        self.parseable.demo
     }
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {

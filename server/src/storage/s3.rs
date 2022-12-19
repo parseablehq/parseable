@@ -26,7 +26,6 @@ use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use aws_smithy_async::rt::sleep::default_async_sleep;
 use base64::encode;
 use bytes::Bytes;
-use clap::builder::ArgPredicate;
 
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
