@@ -35,8 +35,6 @@ lazy_static::lazy_static! {
 
 pub const USERNAME_ENV: &str = "P_USERNAME";
 pub const PASSWORD_ENV: &str = "P_PASSWORD";
-pub const DEFAULT_USERNAME: &str = "parseable";
-pub const DEFAULT_PASSWORD: &str = "parseable";
 
 pub struct Config {
     pub parseable: Server,
@@ -231,7 +229,6 @@ pub struct Server {
         long,
         env = USERNAME_ENV,
         value_name = "username",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_USERNAME)
     )]
     pub username: String,
 
@@ -240,13 +237,8 @@ pub struct Server {
         long,
         env = PASSWORD_ENV,
         value_name = "password",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_PASSWORD)
     )]
     pub password: String,
-
-    /// Run Parseable in demo mode with default credentials and open object store
-    #[arg(short, long, exclusive = true)]
-    pub demo: bool,
 }
 
 impl Server {

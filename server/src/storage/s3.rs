@@ -51,61 +51,27 @@ use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
 use super::ObjectStorageProvider;
 
-// Default object storage currently is DO Spaces bucket
-// Any user who starts the Parseable server with default configuration
-// will point to this bucket and will see any data present on this bucket
-const DEFAULT_S3_URL: &str = "https://minio.parseable.io:9000";
-const DEFAULT_S3_REGION: &str = "us-east-1";
-const DEFAULT_S3_BUCKET: &str = "parseable";
-const DEFAULT_S3_ACCESS_KEY: &str = "minioadmin";
-const DEFAULT_S3_SECRET_KEY: &str = "minioadmin";
-
 #[derive(Debug, Clone, clap::Args)]
 #[command(name = "S3 config", about = "configuration for AWS S3 SDK")]
 pub struct S3Config {
     /// The endpoint to AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_URL",
-        value_name = "url",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_URL)
-    )]
+    #[arg(long, env = "P_S3_URL", value_name = "url")]
     pub s3_endpoint_url: String,
 
     /// The access key for AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_ACCESS_KEY",
-        value_name = "access-key",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_ACCESS_KEY)
-    )]
+    #[arg(long, env = "P_S3_ACCESS_KEY", value_name = "access-key")]
     pub s3_access_key_id: String,
 
     /// The secret key for AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_SECRET_KEY",
-        value_name = "secret-key",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_SECRET_KEY)
-    )]
+    #[arg(long, env = "P_S3_SECRET_KEY", value_name = "secret-key")]
     pub s3_secret_key: String,
 
     /// The region for AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_REGION",
-        value_name = "region",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_REGION)
-    )]
+    #[arg(long, env = "P_S3_REGION", value_name = "region")]
     pub s3_region: String,
 
     /// The AWS S3 or compatible object storage bucket to be used for storage
-    #[arg(
-        long,
-        env = "P_S3_BUCKET",
-        value_name = "bucket-name",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_BUCKET)
-    )]
+    #[arg(long, env = "P_S3_BUCKET", value_name = "bucket-name")]
     pub s3_bucket_name: String,
 
     /// Set client to send content_md5 header on every put request
