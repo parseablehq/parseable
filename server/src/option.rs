@@ -210,7 +210,7 @@ pub struct Server {
     /// from object storage backend
     #[arg(
         long,
-        env = "P_LOCAL_STORAGE",
+        env = "P_LOCAL_STAGE_PATH",
         default_value = "./data",
         value_name = "path"
     )]
