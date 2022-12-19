@@ -40,17 +40,22 @@ pub const DEFAULT_PASSWORD: &str = "parseable";
 
 pub struct Config {
     pub parseable: Server,
+    storage: Arc<dyn ObjectStorageProvider + Send + Sync>,
 }
 
 impl Config {
     fn new() -> Self {
-        let Cli::Server(args) = match Cli::try_parse() {
-            Ok(s) => s,
-            Err(e) => {
-                e.exit();
-            }
-        };
-        Config { parseable: args }
+        let cli = Cli::parse();
+        match cli.command {
+            SubCmd::ServerS3 { server, storage } => Config {
+                parseable: server,
+                storage: Arc::new(storage),
+            },
+            SubCmd::ServerDrive { server, storage } => Config {
+                parseable: server,
+                storage: Arc::new(storage),
+            },
+        }
     }
 
     pub fn print(&self) {
@@ -108,7 +113,7 @@ impl Config {
         Object Storage: {}",
             "Storage:".to_string().blue().bold(),
             self.parseable.local_disk_path.to_string_lossy(),
-            self.parseable.object_store.get_endpoint(),
+            self.storage().get_endpoint(),
         )
     }
 
@@ -129,8 +134,14 @@ impl Config {
         self.parseable.demo
     }
 
-    pub fn storage(&self) -> &impl ObjectStorageProvider {
-        &self.parseable.object_store
+    pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
+        self.storage.clone()
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -141,8 +152,27 @@ impl Config {
     about = "Parseable is a log storage and observability platform.",
     version
 )]
-enum Cli {
-    Server(Server),
+struct Cli {
+    #[command(subcommand)]
+    command: SubCmd,
+}
+
+#[derive(Subcommand, Clone)]
+enum SubCmd {
+    #[command(name = "--s3")]
+    ServerS3 {
+        #[command(flatten)]
+        server: Server,
+        #[command(flatten)]
+        storage: S3Config,
+    },
+    #[command(name = "--drive")]
+    ServerDrive {
+        #[command(flatten)]
+        server: Server,
+        #[command(flatten)]
+        storage: FSConfig,
+    },
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -214,41 +244,9 @@ pub struct Server {
     )]
     pub password: String,
 
-    #[command(subcommand)]
-    pub object_store: ObjectStore,
-
     /// Run Parseable in demo mode with default credentials and open object store
     #[arg(short, long, exclusive = true)]
     pub demo: bool,
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum ObjectStore {
-    Drive(FSConfig),
-    S3(S3Config),
-}
-
-impl ObjectStorageProvider for ObjectStore {
-    fn get_datafusion_runtime(&self) -> Arc<datafusion::execution::runtime_env::RuntimeEnv> {
-        match self {
-            ObjectStore::Drive(x) => x.get_datafusion_runtime(),
-            ObjectStore::S3(x) => x.get_datafusion_runtime(),
-        }
-    }
-
-    fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
-        match self {
-            ObjectStore::Drive(x) => x.get_object_store(),
-            ObjectStore::S3(x) => x.get_object_store(),
-        }
-    }
-
-    fn get_endpoint(&self) -> String {
-        match self {
-            ObjectStore::Drive(x) => x.get_endpoint(),
-            ObjectStore::S3(x) => x.get_endpoint(),
-        }
-    }
 }
 
 impl Server {

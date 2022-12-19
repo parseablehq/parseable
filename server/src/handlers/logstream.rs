@@ -25,7 +25,7 @@ use serde_json::Value;
 
 use crate::alerts::Alerts;
 use crate::option::CONFIG;
-use crate::storage::{ObjectStorageProvider, StorageDir};
+use crate::storage::StorageDir;
 use crate::{event, response};
 use crate::{metadata, validator};
 
