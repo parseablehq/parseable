@@ -30,10 +30,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::option::CONFIG;
-use crate::storage::ObjectStorage;
 use crate::storage::ObjectStorageError;
 use crate::storage::StorageDir;
-use crate::storage::{self, ObjectStorageProvider};
+use crate::storage::{ObjectStorage, OBJECT_STORE_DATA_GRANULARITY};
 use crate::utils::TimePeriod;
 use crate::validator;
 
@@ -68,7 +67,7 @@ impl Query {
 
     /// Return prefixes, each per day/hour/minutes as necessary
     pub fn get_prefixes(&self) -> Vec<String> {
-        TimePeriod::new(self.start, self.end, storage::OBJECT_STORE_DATA_GRANULARITY)
+        TimePeriod::new(self.start, self.end, OBJECT_STORE_DATA_GRANULARITY)
             .generate_prefixes(&self.stream_name)
     }
 

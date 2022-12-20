@@ -26,7 +26,6 @@ use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
 use aws_smithy_async::rt::sleep::default_async_sleep;
 use base64::encode;
 use bytes::Bytes;
-use clap::builder::ArgPredicate;
 
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
@@ -51,62 +50,28 @@ use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
 use super::ObjectStorageProvider;
 
-// Default object storage currently is DO Spaces bucket
-// Any user who starts the Parseable server with default configuration
-// will point to this bucket and will see any data present on this bucket
-const DEFAULT_S3_URL: &str = "https://minio.parseable.io:9000";
-const DEFAULT_S3_REGION: &str = "us-east-1";
-const DEFAULT_S3_BUCKET: &str = "parseable";
-const DEFAULT_S3_ACCESS_KEY: &str = "minioadmin";
-const DEFAULT_S3_SECRET_KEY: &str = "minioadmin";
-
 #[derive(Debug, Clone, clap::Args)]
 #[command(name = "S3 config", about = "configuration for AWS S3 SDK")]
 pub struct S3Config {
     /// The endpoint to AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_URL",
-        value_name = "url",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_URL)
-    )]
-    pub s3_endpoint_url: String,
+    #[arg(long, env = "P_S3_URL", value_name = "url")]
+    pub endpoint_url: String,
 
     /// The access key for AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_ACCESS_KEY",
-        value_name = "access-key",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_ACCESS_KEY)
-    )]
-    pub s3_access_key_id: String,
+    #[arg(long, env = "P_S3_ACCESS_KEY", value_name = "access-key")]
+    pub access_key_id: String,
 
     /// The secret key for AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_SECRET_KEY",
-        value_name = "secret-key",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_SECRET_KEY)
-    )]
-    pub s3_secret_key: String,
+    #[arg(long, env = "P_S3_SECRET_KEY", value_name = "secret-key")]
+    pub secret_key: String,
 
     /// The region for AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_REGION",
-        value_name = "region",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_REGION)
-    )]
-    pub s3_region: String,
+    #[arg(long, env = "P_S3_REGION", value_name = "region")]
+    pub region: String,
 
     /// The AWS S3 or compatible object storage bucket to be used for storage
-    #[arg(
-        long,
-        env = "P_S3_BUCKET",
-        value_name = "bucket-name",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_S3_BUCKET)
-    )]
-    pub s3_bucket_name: String,
+    #[arg(long, env = "P_S3_BUCKET", value_name = "bucket-name")]
+    pub bucket_name: String,
 
     /// Set client to send content_md5 header on every put request
     #[arg(
@@ -121,11 +86,11 @@ pub struct S3Config {
 impl ObjectStorageProvider for S3Config {
     fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv> {
         let s3 = AmazonS3Builder::new()
-            .with_region(&self.s3_region)
-            .with_endpoint(&self.s3_endpoint_url)
-            .with_bucket_name(&self.s3_bucket_name)
-            .with_access_key_id(&self.s3_access_key_id)
-            .with_secret_access_key(&self.s3_secret_key)
+            .with_region(&self.region)
+            .with_endpoint(&self.endpoint_url)
+            .with_bucket_name(&self.bucket_name)
+            .with_access_key_id(&self.access_key_id)
+            .with_secret_access_key(&self.secret_key)
             // allow http for local instances
             .with_allow_http(true)
             .build()
@@ -135,7 +100,7 @@ impl ObjectStorageProvider for S3Config {
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
 
         let object_store_registry = ObjectStoreRegistry::new();
-        object_store_registry.register_store("s3", &self.s3_bucket_name, Arc::new(s3));
+        object_store_registry.register_store("s3", &self.bucket_name, Arc::new(s3));
 
         let config =
             RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry));
@@ -146,10 +111,10 @@ impl ObjectStorageProvider for S3Config {
     }
 
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
-        let uri = self.s3_endpoint_url.parse::<Uri>().unwrap();
+        let uri = self.endpoint_url.parse::<Uri>().unwrap();
         let endpoint = Endpoint::immutable(uri);
-        let region = Region::new(self.s3_region.clone());
-        let creds = Credentials::new(&self.s3_access_key_id, &self.s3_secret_key, None, None, "");
+        let region = Region::new(self.region.clone());
+        let creds = Credentials::new(&self.access_key_id, &self.secret_key, None, None, "");
 
         let config = aws_sdk_s3::Config::builder()
             .region(region)
@@ -163,13 +128,13 @@ impl ObjectStorageProvider for S3Config {
 
         Arc::new(S3 {
             client,
-            bucket: self.s3_bucket_name.clone(),
+            bucket: self.bucket_name.clone(),
             set_content_md5: self.content_md5,
         })
     }
 
     fn get_endpoint(&self) -> String {
-        format!("{}/{}", self.s3_endpoint_url, self.s3_bucket_name)
+        format!("{}/{}", self.endpoint_url, self.bucket_name)
     }
 }
 

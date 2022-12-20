@@ -54,8 +54,6 @@ mod validator;
 
 use option::CONFIG;
 
-use crate::storage::ObjectStorageProvider;
-
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 1024000;
 const API_BASE_PATH: &str = "/api";

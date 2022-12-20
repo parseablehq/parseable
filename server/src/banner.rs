@@ -36,6 +36,7 @@ pub fn system_info() {
     )
 }
 
+#[allow(dead_code)]
 pub fn warning_line() {
     eprint!(
         "

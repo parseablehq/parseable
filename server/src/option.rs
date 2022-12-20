@@ -16,10 +16,9 @@
  *
  */
 
-use clap::builder::ArgPredicate;
 use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::banner;
@@ -35,29 +34,31 @@ lazy_static::lazy_static! {
 
 pub const USERNAME_ENV: &str = "P_USERNAME";
 pub const PASSWORD_ENV: &str = "P_PASSWORD";
-pub const DEFAULT_USERNAME: &str = "parseable";
-pub const DEFAULT_PASSWORD: &str = "parseable";
 
 pub struct Config {
     pub parseable: Server,
+    storage: Arc<dyn ObjectStorageProvider + Send + Sync>,
 }
 
 impl Config {
     fn new() -> Self {
-        let Cli::Server(args) = match Cli::try_parse() {
-            Ok(s) => s,
-            Err(e) => {
-                e.exit();
-            }
-        };
-        Config { parseable: args }
+        let cli = Cli::parse();
+        match cli.command {
+            SubCmd::ServerS3 { server, storage } => Config {
+                parseable: server,
+                storage: Arc::new(storage),
+            },
+            SubCmd::ServerDrive { server, storage } => Config {
+                parseable: server,
+                storage: Arc::new(storage),
+            },
+        }
     }
 
     pub fn print(&self) {
         let scheme = CONFIG.parseable.get_scheme();
         self.status_info(&scheme);
         banner::version::print();
-        self.demo();
         self.storage_info();
         banner::system_info();
         println!();
@@ -107,30 +108,23 @@ impl Config {
         Local Data Path: {}
         Object Storage: {}",
             "Storage:".to_string().blue().bold(),
-            self.parseable.local_disk_path.to_string_lossy(),
-            self.parseable.object_store.get_endpoint(),
+            self.staging_dir().to_string_lossy(),
+            self.storage().get_endpoint(),
         )
     }
 
-    fn demo(&self) {
-        if self.is_demo() {
-            banner::warning_line();
-            eprintln!(
-                "
-        {}",
-                "Parseable is in demo mode with default credentials and open object store. Please use this for demo purposes only."
-                    .to_string()
-                    .red(),
-                )
-        }
+    pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
+        self.storage.clone()
     }
 
-    fn is_demo(&self) -> bool {
-        self.parseable.demo
+    pub fn staging_dir(&self) -> &Path {
+        &self.parseable.local_staging_path
     }
+}
 
-    pub fn storage(&self) -> &impl ObjectStorageProvider {
-        &self.parseable.object_store
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -141,8 +135,27 @@ impl Config {
     about = "Parseable is a log storage and observability platform.",
     version
 )]
-enum Cli {
-    Server(Server),
+struct Cli {
+    #[command(subcommand)]
+    command: SubCmd,
+}
+
+#[derive(Subcommand, Clone)]
+enum SubCmd {
+    #[command(name = "--s3")]
+    ServerS3 {
+        #[command(flatten)]
+        server: Server,
+        #[command(flatten)]
+        storage: S3Config,
+    },
+    #[command(name = "--drive")]
+    ServerDrive {
+        #[command(flatten)]
+        server: Server,
+        #[command(flatten)]
+        storage: FSConfig,
+    },
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -175,19 +188,18 @@ pub struct Server {
     )]
     pub address: String,
 
-    /// The local storage path is used as temporary landing point
-    /// for incoming events and local cache while querying data pulled
-    /// from object storage backend
+    /// The local staging path is used as a temporary landing point
+    /// for incoming events and local cache
     #[arg(
         long,
-        env = "P_LOCAL_STORAGE",
+        env = "P_STAGING_DIR",
         default_value = "./data",
         value_name = "path"
     )]
-    pub local_disk_path: PathBuf,
+    pub local_staging_path: PathBuf,
 
-    /// Optional interval after which server would upload uncommited data to
-    /// remote object storage platform. Defaults to 1min.
+    /// Interval in seconds after which uncommited data would be
+    /// uploaded to the storage platform.
     #[arg(
         long,
         env = "P_STORAGE_UPLOAD_INTERVAL",
@@ -196,64 +208,26 @@ pub struct Server {
     )]
     pub upload_interval: u64,
 
-    /// Optional username to enable basic auth on the server
+    /// Username for the basic authentication on the server
     #[arg(
         long,
         env = USERNAME_ENV,
         value_name = "username",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_USERNAME)
     )]
     pub username: String,
 
-    /// Optional password to enable basic auth on the server
+    /// Password for the basic authentication on the server
     #[arg(
         long,
         env = PASSWORD_ENV,
         value_name = "password",
-        default_value_if("demo", ArgPredicate::IsPresent, DEFAULT_PASSWORD)
     )]
     pub password: String,
-
-    #[command(subcommand)]
-    pub object_store: ObjectStore,
-
-    /// Run Parseable in demo mode with default credentials and open object store
-    #[arg(short, long, exclusive = true)]
-    pub demo: bool,
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum ObjectStore {
-    Drive(FSConfig),
-    S3(S3Config),
-}
-
-impl ObjectStorageProvider for ObjectStore {
-    fn get_datafusion_runtime(&self) -> Arc<datafusion::execution::runtime_env::RuntimeEnv> {
-        match self {
-            ObjectStore::Drive(x) => x.get_datafusion_runtime(),
-            ObjectStore::S3(x) => x.get_datafusion_runtime(),
-        }
-    }
-
-    fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
-        match self {
-            ObjectStore::Drive(x) => x.get_object_store(),
-            ObjectStore::S3(x) => x.get_object_store(),
-        }
-    }
-
-    fn get_endpoint(&self) -> String {
-        match self {
-            ObjectStore::Drive(x) => x.get_endpoint(),
-            ObjectStore::S3(x) => x.get_endpoint(),
-        }
-    }
 }
 
 impl Server {
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
-        self.local_disk_path.join(stream_name)
+        self.local_staging_path.join(stream_name)
     }
 
     pub fn get_scheme(&self) -> String {

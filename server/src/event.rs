@@ -36,7 +36,7 @@ use std::sync::RwLock;
 use crate::metadata;
 use crate::metadata::LOCK_EXPECT;
 use crate::option::CONFIG;
-use crate::storage::{ObjectStorageProvider, StorageDir};
+use crate::storage::StorageDir;
 
 use self::error::{EventError, StreamWriterError};
 

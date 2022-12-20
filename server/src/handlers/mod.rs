@@ -22,7 +22,7 @@ pub mod logstream;
 use actix_web::http::StatusCode;
 use actix_web::HttpResponse;
 
-use crate::{option::CONFIG, storage::ObjectStorageProvider};
+use crate::option::CONFIG;
 
 pub async fn liveness() -> HttpResponse {
     HttpResponse::new(StatusCode::OK)

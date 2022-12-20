@@ -25,7 +25,6 @@ use crate::event;
 use crate::option::CONFIG;
 use crate::query::Query;
 use crate::response::QueryResponse;
-use crate::storage::ObjectStorageProvider;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use crate::utils::{self, flatten_json_body, merge};
 
