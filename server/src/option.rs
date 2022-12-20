@@ -18,7 +18,7 @@
 
 use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::banner;
@@ -108,13 +108,17 @@ impl Config {
         Local Data Path: {}
         Object Storage: {}",
             "Storage:".to_string().blue().bold(),
-            self.parseable.local_disk_path.to_string_lossy(),
+            self.staging_dir().to_string_lossy(),
             self.storage().get_endpoint(),
         )
     }
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
         self.storage.clone()
+    }
+
+    pub fn staging_dir(&self) -> &Path {
+        &self.parseable.local_staging_path
     }
 }
 
@@ -184,19 +188,18 @@ pub struct Server {
     )]
     pub address: String,
 
-    /// The local storage path is used as temporary landing point
-    /// for incoming events and local cache while querying data pulled
-    /// from object storage backend
+    /// The local staging path is used as a temporary landing point
+    /// for incoming events and local cache
     #[arg(
         long,
         env = "P_STAGING_DIR",
         default_value = "./data",
         value_name = "path"
     )]
-    pub local_disk_path: PathBuf,
+    pub local_staging_path: PathBuf,
 
-    /// Optional interval after which server would upload uncommited data to
-    /// remote object storage platform. Defaults to 1min.
+    /// Interval in seconds after which uncommited data would be
+    /// uploaded to the storage platform.
     #[arg(
         long,
         env = "P_STORAGE_UPLOAD_INTERVAL",
@@ -205,7 +208,7 @@ pub struct Server {
     )]
     pub upload_interval: u64,
 
-    /// Optional username to enable basic auth on the server
+    /// Username for the basic authentication on the server
     #[arg(
         long,
         env = USERNAME_ENV,
@@ -213,7 +216,7 @@ pub struct Server {
     )]
     pub username: String,
 
-    /// Optional password to enable basic auth on the server
+    /// Password for the basic authentication on the server
     #[arg(
         long,
         env = PASSWORD_ENV,
@@ -224,7 +227,7 @@ pub struct Server {
 
 impl Server {
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
-        self.local_disk_path.join(stream_name)
+        self.local_staging_path.join(stream_name)
     }
 
     pub fn get_scheme(&self) -> String {

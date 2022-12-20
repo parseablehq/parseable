@@ -145,7 +145,7 @@ pub trait ObjectStorage: Sync + 'static {
     }
 
     async fn sync(&self) -> Result<(), MoveDataError> {
-        if !Path::new(&CONFIG.parseable.local_disk_path).exists() {
+        if !Path::new(&CONFIG.staging_dir()).exists() {
             return Ok(());
         }
 
