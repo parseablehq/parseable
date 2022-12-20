@@ -46,7 +46,7 @@ use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider}
     about = "configuration for using local filesystem for storage"
 )]
 pub struct FSConfig {
-    #[arg(long, env = "P_FS_PATH", value_name = "path")]
+    #[arg(env = "P_FS_PATH", value_name = "filesystem path")]
     root: PathBuf,
 }
 
