@@ -54,6 +54,8 @@ mod validator;
 
 use option::CONFIG;
 
+use crate::storage::resolve_parseable_metadata;
+
 // Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 1024000;
 const API_BASE_PATH: &str = "/api";
@@ -69,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
         warn!("could not populate local metadata. {:?}", e);
     }
+    resolve_parseable_metadata().await?;
     // track all parquet files already in the data directory
     storage::CACHED_FILES.track_parquet();
 

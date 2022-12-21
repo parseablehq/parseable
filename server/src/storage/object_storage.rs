@@ -18,7 +18,7 @@
 
 use super::{
     file_link::CacheState, AccessObject, LogStream, MoveDataError, ObjectStorageError,
-    ObjectStoreFormat, StorageDir, CACHED_FILES,
+    ObjectStoreFormat, StorageDir, StorageMetadata, CACHED_FILES,
 };
 use crate::{alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, query::Query, stats::Stats};
 
@@ -44,7 +44,8 @@ use std::{
 };
 
 // metadata file names in a Stream prefix
-const METADATA_FILE_NAME: &str = ".metadata.json";
+const STREAM_METADATA_FILE_NAME: &str = ".metadata.json";
+pub(super) const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 const SCHEMA_FILE_NAME: &str = ".schema";
 const ALERT_FILE_NAME: &str = ".alert.json";
 
@@ -89,7 +90,7 @@ pub trait ObjectStorage: Sync + 'static {
 
         self.put_object(&schema_path(stream_name), "".into())
             .await?;
-        self.put_object(&metadata_json_path(stream_name), format_json)
+        self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
 
         Ok(())
@@ -105,15 +106,23 @@ pub trait ObjectStorage: Sync + 'static {
     }
 
     async fn put_stats(&self, stream_name: &str, stats: &Stats) -> Result<(), ObjectStorageError> {
-        let path = metadata_json_path(stream_name);
-        let parseable_metadata = self.get_object(&path).await?;
+        let path = stream_json_path(stream_name);
+        let stream_metadata = self.get_object(&path).await?;
         let stats = serde_json::to_value(stats).expect("stats are perfectly serializable");
-        let mut parseable_metadata: serde_json::Value =
-            serde_json::from_slice(&parseable_metadata).expect("parseable config is valid json");
+        let mut stream_metadata: serde_json::Value =
+            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
 
-        parseable_metadata["stats"] = stats;
+        stream_metadata["stats"] = stats;
 
-        self.put_object(&path, to_bytes(&parseable_metadata)).await
+        self.put_object(&path, to_bytes(&stream_metadata)).await
+    }
+
+    async fn put_metadata(
+        &self,
+        parseable_metadata: &StorageMetadata,
+    ) -> Result<(), ObjectStorageError> {
+        self.put_object(&parseable_json_path(), to_bytes(parseable_metadata))
+            .await
     }
 
     async fn get_schema(&self, stream_name: &str) -> Result<Option<Schema>, ObjectStorageError> {
@@ -133,15 +142,33 @@ pub trait ObjectStorage: Sync + 'static {
     }
 
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
-        let parseable_metadata = self.get_object(&metadata_json_path(stream_name)).await?;
-        let parseable_metadata: Value =
-            serde_json::from_slice(&parseable_metadata).expect("parseable config is valid json");
+        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
+        let stream_metadata: Value =
+            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
 
-        let stats = &parseable_metadata["stats"];
+        let stats = &stream_metadata["stats"];
 
         let stats = serde_json::from_value(stats.clone()).unwrap_or_default();
 
         Ok(stats)
+    }
+
+    async fn get_metadata(&self) -> Result<Option<StorageMetadata>, ObjectStorageError> {
+        let parseable_metadata: Option<StorageMetadata> =
+            match self.get_object(&parseable_json_path()).await {
+                Ok(bytes) => {
+                    Some(serde_json::from_slice(&bytes).expect("parseable config is valid json"))
+                }
+                Err(err) => {
+                    if let ObjectStorageError::NoSuchKey(_) = err {
+                        None
+                    } else {
+                        return Err(err);
+                    }
+                }
+            };
+
+        Ok(parseable_metadata)
     }
 
     async fn sync(&self) -> Result<(), MoveDataError> {
@@ -265,8 +292,13 @@ fn schema_path(stream_name: &str) -> RelativePathBuf {
 }
 
 #[inline(always)]
-fn metadata_json_path(stream_name: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([stream_name, METADATA_FILE_NAME])
+fn stream_json_path(stream_name: &str) -> RelativePathBuf {
+    RelativePathBuf::from_iter([stream_name, STREAM_METADATA_FILE_NAME])
+}
+
+#[inline(always)]
+fn parseable_json_path() -> RelativePathBuf {
+    RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME)
 }
 
 #[inline(always)]

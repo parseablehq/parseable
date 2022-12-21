@@ -36,7 +36,7 @@ md-5 = "0.10.5"
 os_info = "3.0.7"
 hostname = "0.3"
 rand = "0.8.4"
-relative-path = "1.7.2"
+relative-path = { version = "1.7.2", features = ["serde"] }
 rustls = "0.20.6"
 rustls-pemfile = "1.0.1"
 rust-flatten-json = "0.2.0"
