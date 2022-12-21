@@ -129,6 +129,10 @@ pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
 }
 
+pub fn capitalize_ascii(s: &str) -> String {
+    s[0..1].to_uppercase() + &s[1..]
+}
+
 pub mod uuid {
     use uuid::Uuid;
 
