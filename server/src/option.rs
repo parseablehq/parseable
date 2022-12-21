@@ -26,6 +26,7 @@ use crate::storage::{
     FSConfig, ObjectStorage, ObjectStorageError, ObjectStorageProvider, S3Config,
     LOCAL_SYNC_INTERVAL,
 };
+use crate::utils::capitalize_ascii;
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -38,6 +39,7 @@ pub const PASSWORD_ENV: &str = "P_PASSWORD";
 pub struct Config {
     pub parseable: Server,
     storage: Arc<dyn ObjectStorageProvider + Send + Sync>,
+    pub storage_name: &'static str,
 }
 
 impl Config {
@@ -47,10 +49,12 @@ impl Config {
             SubCmd::ServerS3 { server, storage } => Config {
                 parseable: server,
                 storage: Arc::new(storage),
+                storage_name: "s3",
             },
             SubCmd::ServerDrive { server, storage } => Config {
                 parseable: server,
                 storage: Arc::new(storage),
+                storage_name: "drive",
             },
         }
     }
@@ -105,10 +109,11 @@ impl Config {
         eprintln!(
             "
     {}
-        Local Data Path: {}
-        Object Storage: {}",
+        Local Staging Path: {}
+        {} Storage: {}",
             "Storage:".to_string().blue().bold(),
             self.staging_dir().to_string_lossy(),
+            capitalize_ascii(self.storage_name),
             self.storage().get_endpoint(),
         )
     }
