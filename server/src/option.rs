@@ -199,7 +199,8 @@ pub struct Server {
         long,
         env = "P_STAGING_DIR",
         default_value = "./data",
-        value_name = "path"
+        value_name = "path",
+        value_parser = validation::absolute_path
     )]
     pub local_staging_path: PathBuf,
 
@@ -259,5 +260,12 @@ pub(self) mod validation {
         }
 
         Ok(path)
+    }
+
+    pub fn absolute_path(s: &str) -> Result<PathBuf, String> {
+        std::fs::canonicalize(s).map_err(|_| {
+            "Could not construct absolute path from given path value for staging directory"
+                .to_string()
+        })
     }
 }
