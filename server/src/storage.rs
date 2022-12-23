@@ -29,6 +29,7 @@ use datafusion::parquet::errors::ParquetError;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 
+use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -36,10 +37,14 @@ mod file_link;
 mod localfs;
 mod object_storage;
 mod s3;
+mod store_metadata;
 
 pub use localfs::{FSConfig, LocalFS};
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::{S3Config, S3};
+pub use store_metadata::StorageMetadata;
+
+use self::store_metadata::{put_staging_metadata, startup_check, EnvChange};
 
 /// local sync interval to move data.records to /tmp dir of that stream.
 /// 60 sec is a reasonable value.
@@ -130,6 +135,50 @@ impl ObjectStoreFormat {
     fn set_access(&mut self, access: Vec<AccessObject>) {
         self.access.objects = access;
     }
+}
+
+pub async fn resolve_parseable_metadata() -> Result<(), ObjectStorageError> {
+    let check = startup_check().await?;
+    const MISMATCH: &str = "Could not start the server because metadata file found in staging directory does not match one in the storage";
+    let err: Option<&str> = match check {
+        EnvChange::None => None,
+        EnvChange::StagingMismatch => Some(MISMATCH),
+        EnvChange::StorageMismatch => Some(MISMATCH),
+        EnvChange::NewRemote => {
+            Some("Could not start the server because metadata not found in storage")
+        }
+        EnvChange::NewStaging => {
+            Some("Could not start the server becuase metadata not found in staging")
+        }
+        EnvChange::CreateBoth => {
+            create_staging_metadata()?;
+            create_remote_metadata().await?;
+            None
+        }
+    };
+
+    if let Some(err) = err {
+        let err = format!(
+            "{}. {}",
+            err,
+            "Join us on Parseable Slack to report this incident : https://launchpass.com/parseable"
+        );
+        let err: Box<dyn std::error::Error + Send + Sync + 'static> = err.into();
+        Err(ObjectStorageError::UnhandledError(err))
+    } else {
+        Ok(())
+    }
+}
+
+async fn create_remote_metadata() -> Result<(), ObjectStorageError> {
+    let client = CONFIG.storage().get_object_store();
+    client.put_metadata(&StorageMetadata::new()).await
+}
+
+fn create_staging_metadata() -> std::io::Result<()> {
+    create_dir_all(CONFIG.staging_dir())?;
+    let metadata = StorageMetadata::new();
+    put_staging_metadata(&metadata)
 }
 
 lazy_static! {
@@ -231,7 +280,7 @@ pub enum ObjectStorageError {
 
     // Could not connect to object storage
     #[error("Connection Error: {0}")]
-    ConnectionError(Box<dyn std::error::Error + Send + 'static>),
+    ConnectionError(Box<dyn std::error::Error + Send + Sync + 'static>),
 
     // IO Error when reading a file or listing path
     #[error("IO Error: {0}")]
@@ -242,8 +291,8 @@ pub enum ObjectStorageError {
     DataFusionError(#[from] datafusion::error::DataFusionError),
 
     #[error("Unhandled Error: {0}")]
-    UnhandledError(Box<dyn std::error::Error + Send + 'static>),
+    UnhandledError(Box<dyn std::error::Error + Send + Sync + 'static>),
 
     #[error("Authentication Error: {0}")]
-    AuthenticationError(Box<dyn std::error::Error + Send + 'static>),
+    AuthenticationError(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
