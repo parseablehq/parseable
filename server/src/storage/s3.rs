@@ -51,7 +51,10 @@ use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 use super::ObjectStorageProvider;
 
 #[derive(Debug, Clone, clap::Args)]
-#[command(name = "S3 config", about = "configuration for AWS S3 SDK")]
+#[command(
+    name = "S3 config",
+    about = "Start Parseable with AWS S3 or compatible as storage backend"
+)]
 pub struct S3Config {
     /// The endpoint to AWS S3 or compatible object storage platform
     #[arg(long, env = "P_S3_URL", value_name = "url")]

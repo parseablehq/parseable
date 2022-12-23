@@ -147,14 +147,14 @@ struct Cli {
 
 #[derive(Subcommand, Clone)]
 enum SubCmd {
-    #[command(name = "--s3")]
+    #[command(name = "--s3-store")]
     ServerS3 {
         #[command(flatten)]
         server: Server,
         #[command(flatten)]
         storage: S3Config,
     },
-    #[command(name = "--drive")]
+    #[command(name = "--local-store")]
     ServerDrive {
         #[command(flatten)]
         server: Server,
