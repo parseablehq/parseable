@@ -160,7 +160,7 @@ pub trait ObjectStorage: Sync + 'static {
                     Some(serde_json::from_slice(&bytes).expect("parseable config is valid json"))
                 }
                 Err(err) => {
-                    if let ObjectStorageError::NoSuchKey(_) = err {
+                    if matches!(err, ObjectStorageError::NoSuchKey(_)) {
                         None
                     } else {
                         return Err(err);
