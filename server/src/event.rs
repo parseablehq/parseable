@@ -40,12 +40,14 @@ use crate::metadata;
 use crate::metadata::LOCK_EXPECT;
 use crate::option::CONFIG;
 use crate::storage::StorageDir;
-use crate::utils::merge;
 
 use self::error::{EventError, StreamWriterError};
 
 type LocalWriter = Mutex<Option<StreamWriter<std::fs::File>>>;
 type LocalWriterGuard<'a> = MutexGuard<'a, Option<StreamWriter<std::fs::File>>>;
+
+const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
+const TIME_KEYS: &[&str] = &["time", "datetime", "timestamp"];
 
 lazy_static! {
     #[derive(Default)]
@@ -171,54 +173,52 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub async fn process(mut self) -> Result<(), EventError> {
+    pub async fn process(self) -> Result<(), EventError> {
         let stream_schema = metadata::STREAM_INFO.schema(&self.stream_name)?;
-
-        if let Some(existing_schema) = stream_schema {
+        if let Some(schema) = stream_schema {
+            let schema_ref = Arc::new(schema);
             // validate schema before processing the event
-            if existing_schema.column_with_name("p_datetime").is_some() {
-                let time = Utc::now();
-                merge(
-                    &mut self.body,
-                    std::iter::once((
-                        "p_datetime".to_string(),
-                        Value::from(time.timestamp_millis()),
-                    )),
-                )
-            }
-
-            let Ok(event) = self.get_record(existing_schema) else {
+            let Ok(mut event) = self.get_record(schema_ref.clone()) else {
                 return Err(EventError::SchemaMismatch(self.stream_name.clone()));
             };
+
+            if event
+                .schema()
+                .column_with_name(DEFAULT_TIMESTAMP_KEY)
+                .is_some()
+            {
+                let rows = event.num_rows();
+                let timestamp_array = Arc::new(get_timestamp_array(rows));
+                event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
+            }
+
             self.process_event(&event)?;
         } else {
             // if stream schema is none then it is first event,
             // process first event and store schema in obect store
-
-            let mut schema = self.infer_schema()?;
-            let mut event = self.get_record(schema.clone())?;
-
             // check for a possible datetime field
             let time_field = get_datetime_field(&self.body);
 
             if time_field.is_none() {
-                schema = Schema::try_merge(vec![
+                let schema = Schema::try_merge(vec![
                     Schema::new(vec![Field::new(
-                        "p_timestamp",
-                        DataType::Timestamp(TimeUnit::Millisecond, Some("+00:00".to_string())),
-                        false,
+                        DEFAULT_TIMESTAMP_KEY,
+                        DataType::Timestamp(TimeUnit::Millisecond, None),
+                        true,
                     )]),
-                    schema,
+                    self.infer_schema()?,
                 ])?;
-
-                let array: Vec<(&str, Arc<dyn Array + 'static>)> = vec![(
-                    "p_timestamp",
-                    Arc::new(get_timestamp_array(event.num_rows())),
-                )];
-                event = merge_records(Arc::new(schema.clone()), event, array);
+                let schema_ref = Arc::new(schema.clone());
+                let event = self.get_record(schema_ref.clone())?;
+                let timestamp_array = Arc::new(get_timestamp_array(event.num_rows()));
+                let event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
+                self.process_first_event(&event, schema)?;
+            } else {
+                let schema = self.infer_schema()?;
+                let schema_ref = Arc::new(schema.clone());
+                let event = self.get_record(schema_ref)?;
+                self.process_first_event(&event, schema)?;
             }
-
-            self.process_first_event(&event, schema)?
         };
 
         metadata::STREAM_INFO.update_stats(
@@ -310,42 +310,33 @@ impl Event {
         infer_json_schema_from_iterator(iter)
     }
 
-    fn get_record(&self, arrow_schema: Schema) -> Result<RecordBatch, EventError> {
+    fn get_record(&self, schema: Arc<Schema>) -> Result<RecordBatch, EventError> {
         let mut iter = std::iter::once(Ok(self.body.clone()));
-        let record =
-            Decoder::new(Arc::new(arrow_schema), DecoderOptions::new()).next_batch(&mut iter)?;
+        let record = Decoder::new(schema, DecoderOptions::new()).next_batch(&mut iter)?;
 
         record.ok_or(EventError::MissingRecord)
     }
 }
 
-fn merge_records(
+fn replace(
     schema: Arc<Schema>,
     batch: RecordBatch,
-    arrays: Vec<(&str, Arc<dyn Array + 'static>)>,
+    column: &str,
+    arr: Arc<dyn Array + 'static>,
 ) -> RecordBatch {
-    let mut new_batch: Vec<Arc<dyn Array>> = batch.columns().to_vec();
-    let arrays_iter: Vec<(usize, Arc<dyn Array>)> = arrays
-        .into_iter()
-        .map(|(s, v)| (schema.index_of(s).unwrap(), v))
-        .collect();
+    let index = schema.column_with_name(column).unwrap().0;
+    let mut arrays = batch.columns().to_vec();
+    arrays[index] = arr;
 
-    for (index, arr) in arrays_iter {
-        new_batch.insert(index, arr);
-    }
-
-    RecordBatch::try_new(schema, new_batch).unwrap()
+    RecordBatch::try_new(schema, arrays).unwrap()
 }
 
 fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
-    let time = Utc::now().naive_utc();
+    let time = Utc::now();
     TimestampMillisecondArray::from_value(time.timestamp_millis(), size)
-        .with_timezone("+00:00".to_string())
 }
 
 fn get_datetime_field(json: &Value) -> Option<&str> {
-    const TIME_KEYS: &[&str] = &["time", "datetime", "timestamp"];
-
     let Value::Object(object) = json else { panic!() };
     for (key, value) in object {
         if TIME_KEYS.contains(&key.as_str()) {
@@ -428,62 +419,34 @@ mod tests {
         record_batch::RecordBatch,
     };
 
-    use super::merge_records;
+    use crate::event::replace;
 
     #[test]
-    fn check_merge() {
+    fn check_replace() {
         let schema = Schema::new(vec![
             Field::new("a", arrow_schema::DataType::Int32, false),
             Field::new("b", arrow_schema::DataType::Int32, false),
+            Field::new("c", arrow_schema::DataType::Int32, false),
         ]);
 
+        let schema_ref = Arc::new(schema);
+
         let rb = RecordBatch::try_new(
-            Arc::new(schema.clone()),
+            schema_ref.clone(),
             vec![
+                Arc::new(Int32Array::from_value(0, 3)),
                 Arc::new(Int32Array::from_value(0, 3)),
                 Arc::new(Int32Array::from_value(0, 3)),
             ],
         )
         .unwrap();
 
-        let new_schema = Schema::try_merge(vec![
-            schema,
-            Schema::new(vec![Field::new("c", arrow_schema::DataType::Int32, false)]),
-        ])
-        .unwrap();
+        let arr: Arc<dyn Array + 'static> = Arc::new(Int32Array::from_value(0, 3));
 
-        let arr: Vec<(&str, Arc<dyn Array + 'static>)> =
-            vec![("c", Arc::new(Int32Array::from_value(0, 3)))];
+        let new_rb = replace(schema_ref.clone(), rb, "c", arr);
 
-        let new_rb = merge_records(Arc::new(new_schema.clone()), rb, arr);
-
-        assert_eq!((*new_rb.schema()).clone(), new_schema);
+        assert_eq!(new_rb.schema(), schema_ref);
         assert_eq!(new_rb.num_columns(), 3);
         assert_eq!(new_rb.num_rows(), 3)
-    }
-
-    #[test]
-    fn check_merge_empty_record() {
-        let schema = Schema::new(vec![
-            Field::new("a", arrow_schema::DataType::Int32, false),
-            Field::new("b", arrow_schema::DataType::Int32, false),
-        ]);
-
-        let rb = RecordBatch::new_empty(Arc::new(schema.clone()));
-
-        let new_schema = Schema::try_merge(vec![
-            schema,
-            Schema::new(vec![Field::new("c", arrow_schema::DataType::Int32, false)]),
-        ])
-        .unwrap();
-
-        let arr: Vec<(&str, Arc<dyn Array + 'static>)> =
-            vec![("c", Arc::new(Int32Array::from_value(0, 0)))];
-
-        let new_rb = merge_records(Arc::new(new_schema.clone()), rb, arr);
-
-        assert_eq!((*new_rb.schema()).clone(), new_schema);
-        assert_eq!(new_rb.num_columns(), 3);
-        assert_eq!(new_rb.num_rows(), 0)
     }
 }
