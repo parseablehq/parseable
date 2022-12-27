@@ -16,8 +16,6 @@
  *
  */
 
-use std::collections::HashMap;
-
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde_json::Value;
 
@@ -26,7 +24,7 @@ use crate::option::CONFIG;
 use crate::query::Query;
 use crate::response::QueryResponse;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
-use crate::utils::{self, flatten_json_body, merge};
+use crate::utils::{flatten_json_body, merge};
 
 use self::error::{PostError, QueryError};
 
@@ -87,39 +85,42 @@ async fn push_logs(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
 ) -> Result<(), PostError> {
-    let tags = HashMap::from([(
-        "p_tags".to_string(),
-        collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?,
-    )]);
+    let tags_n_metadata = [
+        (
+            "p_tags".to_string(),
+            Value::String(collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?),
+        ),
+        (
+            "p_metadata".to_string(),
+            Value::String(collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?),
+        ),
+    ];
 
-    let metadata = HashMap::from([(
-        "p_metadata".to_string(),
-        collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?,
-    )]);
+    match body.0 {
+        Value::Array(array) => {
+            for mut body in array {
+                merge(&mut body, tags_n_metadata.clone().into_iter());
+                let body = flatten_json_body(&body).unwrap();
 
-    if let Some(array) = body.as_array() {
-        for body in array {
-            let body = merge(body.clone(), metadata.clone());
-            let body = merge(body, tags.clone());
-            let body = flatten_json_body(web::Json(body)).unwrap();
+                let event = event::Event {
+                    body,
+                    stream_name: stream_name.clone(),
+                };
+
+                event.process().await?;
+            }
+        }
+        mut body @ Value::Object(_) => {
+            merge(&mut body, tags_n_metadata.into_iter());
 
             let event = event::Event {
-                body,
-                stream_name: stream_name.clone(),
+                body: flatten_json_body(&body).unwrap(),
+                stream_name,
             };
 
             event.process().await?;
         }
-    } else {
-        let body = merge(body.clone(), metadata);
-        let body = merge(body, tags);
-
-        let event = event::Event {
-            body: utils::flatten_json_body(web::Json(body)).unwrap(),
-            stream_name,
-        };
-
-        event.process().await?;
+        _ => return Err(PostError::Invalid),
     }
 
     Ok(())
@@ -164,6 +165,8 @@ pub mod error {
         Header(#[from] ParseHeaderError),
         #[error("Event Error: {0}")]
         Event(#[from] EventError),
+        #[error("Invalid Request")]
+        Invalid,
     }
 
     impl actix_web::ResponseError for PostError {
@@ -171,6 +174,7 @@ pub mod error {
             match self {
                 PostError::Header(_) => StatusCode::BAD_REQUEST,
                 PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                PostError::Invalid => StatusCode::BAD_REQUEST,
             }
         }
 

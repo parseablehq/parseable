@@ -16,39 +16,27 @@
  *
  */
 
-use actix_web::web;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
-pub fn flatten_json_body(body: web::Json<serde_json::Value>) -> Result<String, serde_json::Error> {
+pub fn flatten_json_body(body: &serde_json::Value) -> Result<Value, serde_json::Error> {
     let mut flat_value: Value = json!({});
-    flatten_json::flatten(&body, &mut flat_value, None, true, Some("_")).unwrap();
-    let flattened = serde_json::to_string(&flat_value)?;
-
-    Ok(flattened)
+    flatten_json::flatten(body, &mut flat_value, None, true, Some("_")).unwrap();
+    Ok(flat_value)
 }
 
-pub fn merge(value: Value, fields: HashMap<String, String>) -> Value {
-    match value {
-        Value::Object(mut m) => {
-            for (k, v) in fields {
-                match m.get_mut(&k) {
-                    Some(val) => {
-                        let mut final_val = String::default();
-                        final_val.push_str(val.as_str().unwrap());
-                        final_val.push(',');
-                        final_val.push_str(&v);
-                        *val = Value::String(final_val);
-                    }
-                    None => {
-                        m.insert(k, Value::String(v));
-                    }
+pub fn merge(value: &mut Value, fields: impl Iterator<Item = (String, Value)>) {
+    if let Value::Object(m) = value {
+        for (k, v) in fields {
+            match m.get_mut(&k) {
+                Some(val) => {
+                    *val = v;
+                }
+                None => {
+                    m.insert(k, v);
                 }
             }
-            Value::Object(m)
         }
-        value => value,
     }
 }
 
