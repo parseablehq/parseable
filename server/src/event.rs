@@ -47,7 +47,7 @@ type LocalWriter = Mutex<Option<StreamWriter<std::fs::File>>>;
 type LocalWriterGuard<'a> = MutexGuard<'a, Option<StreamWriter<std::fs::File>>>;
 
 const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
-const TIME_KEYS: &[&str] = &["time", "datetime", "timestamp"];
+const TIME_KEYS: &[&str] = &["time", "date", "datetime", "timestamp"];
 
 lazy_static! {
     #[derive(Default)]
