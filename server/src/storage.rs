@@ -62,7 +62,7 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 // const PERMISSIONS_WRITE: &str = "writeonly";
 // const PERMISSIONS_DELETE: &str = "delete";
 // const PERMISSIONS_READ_WRITE: &str = "readwrite";
-const PERMISSIONS_ALL: &str = "all";
+const ACCESS_ALL: &str = "all";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
@@ -72,7 +72,7 @@ pub struct ObjectStoreFormat {
     #[serde(rename = "created-at")]
     pub created_at: String,
     pub owner: Owner,
-    pub access: Access,
+    pub permissions: Vec<Permisssion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,29 +88,18 @@ impl Owner {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Access {
-    pub objects: Vec<AccessObject>,
-}
-
-impl Access {
-    pub fn new(objects: Vec<AccessObject>) -> Self {
-        Self { objects }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AccessObject {
+pub struct Permisssion {
     pub id: String,
     pub group: String,
-    pub permissions: Vec<String>,
+    pub access: Vec<String>,
 }
 
-impl AccessObject {
+impl Permisssion {
     pub fn new(id: String) -> Self {
         Self {
             id: id.clone(),
             group: id,
-            permissions: vec![PERMISSIONS_ALL.to_string()],
+            access: vec![ACCESS_ALL.to_string()],
         }
     }
 }
@@ -122,7 +111,7 @@ impl Default for ObjectStoreFormat {
             objectstore_format: "v1".to_string(),
             created_at: Local::now().to_rfc3339(),
             owner: Owner::new("".to_string(), "".to_string()),
-            access: Access::new(vec![]),
+            permissions: vec![Permisssion::new("parseable".to_string())],
         }
     }
 }
@@ -131,9 +120,6 @@ impl ObjectStoreFormat {
     fn set_id(&mut self, id: String) {
         self.owner.id.clone_from(&id);
         self.owner.group = id;
-    }
-    fn set_access(&mut self, access: Vec<AccessObject>) {
-        self.access.objects = access;
     }
 }
 
