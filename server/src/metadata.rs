@@ -61,10 +61,8 @@ impl STREAM_INFO {
                 event.stream_name.to_owned(),
             ))?;
 
-        let event_json: serde_json::Value = serde_json::from_str(&event.body)?;
-
         for alert in &meta.alerts.alerts {
-            alert.check_alert(event.stream_name.clone(), &event_json)
+            alert.check_alert(event.stream_name.clone(), &event.body)
         }
 
         Ok(())

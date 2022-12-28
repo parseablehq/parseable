@@ -17,16 +17,19 @@
  *
  */
 use actix_web::rt::spawn;
+use arrow_schema::{DataType, Field, TimeUnit};
+use chrono::{DateTime, Utc};
+use datafusion::arrow::array::{Array, TimestampMillisecondArray};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::writer::StreamWriter;
-use datafusion::arrow::json;
-use datafusion::arrow::json::reader::infer_json_schema;
+
+use datafusion::arrow::json::reader::{infer_json_schema_from_iterator, Decoder, DecoderOptions};
 use datafusion::arrow::record_batch::RecordBatch;
 use lazy_static::lazy_static;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::BufReader;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -42,6 +45,9 @@ use self::error::{EventError, StreamWriterError};
 
 type LocalWriter = Mutex<Option<StreamWriter<std::fs::File>>>;
 type LocalWriterGuard<'a> = MutexGuard<'a, Option<StreamWriter<std::fs::File>>>;
+
+const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
+const TIME_KEYS: &[&str] = &["time", "date", "datetime", "timestamp"];
 
 lazy_static! {
     #[derive(Default)]
@@ -161,38 +167,68 @@ fn init_new_stream_writer_file(
 
 #[derive(Clone)]
 pub struct Event {
-    pub body: String,
+    pub body: Value,
     pub stream_name: String,
 }
 
 // Events holds the schema related to a each event for a single log stream
-
 impl Event {
-    pub async fn process(&self) -> Result<(), EventError> {
-        let inferred_schema = self.infer_schema()?;
-
-        let event = self.get_reader(inferred_schema.clone());
+    pub async fn process(self) -> Result<(), EventError> {
         let stream_schema = metadata::STREAM_INFO.schema(&self.stream_name)?;
-
-        if let Some(existing_schema) = stream_schema {
+        if let Some(schema) = stream_schema {
+            let schema_ref = Arc::new(schema);
             // validate schema before processing the event
-            if existing_schema != inferred_schema {
+            let Ok(mut event) = self.get_record(schema_ref.clone()) else {
                 return Err(EventError::SchemaMismatch(self.stream_name.clone()));
-            } else {
-                self.process_event(event)?
+            };
+
+            if event
+                .schema()
+                .column_with_name(DEFAULT_TIMESTAMP_KEY)
+                .is_some()
+            {
+                let rows = event.num_rows();
+                let timestamp_array = Arc::new(get_timestamp_array(rows));
+                event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
             }
+
+            self.process_event(&event)?;
         } else {
             // if stream schema is none then it is first event,
             // process first event and store schema in obect store
-            self.process_first_event(event, inferred_schema)?
+            // check for a possible datetime field
+            let time_field = get_datetime_field(&self.body);
+
+            if time_field.is_none() {
+                let schema = Schema::try_merge(vec![
+                    Schema::new(vec![Field::new(
+                        DEFAULT_TIMESTAMP_KEY,
+                        DataType::Timestamp(TimeUnit::Millisecond, None),
+                        true,
+                    )]),
+                    self.infer_schema()?,
+                ])?;
+                let schema_ref = Arc::new(schema.clone());
+                let event = self.get_record(schema_ref.clone())?;
+                let timestamp_array = Arc::new(get_timestamp_array(event.num_rows()));
+                let event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
+                self.process_first_event(&event, schema)?;
+            } else {
+                let schema = self.infer_schema()?;
+                let schema_ref = Arc::new(schema.clone());
+                let event = self.get_record(schema_ref)?;
+                self.process_first_event(&event, schema)?;
+            }
         };
 
         metadata::STREAM_INFO.update_stats(
             &self.stream_name,
-            std::mem::size_of_val(self.body.as_bytes()) as u64,
+            serde_json::to_vec(&self.body)
+                .map(|v| std::mem::size_of_val(v.as_slice()))
+                .unwrap_or(0) as u64,
         )?;
 
-        if let Err(e) = metadata::STREAM_INFO.check_alerts(self).await {
+        if let Err(e) = metadata::STREAM_INFO.check_alerts(&self).await {
             log::error!("Error checking for alerts. {:?}", e);
         }
 
@@ -202,11 +238,7 @@ impl Event {
     // This is called when the first event of a log stream is received. The first event is
     // special because we parse this event to generate the schema for the log stream. This
     // schema is then enforced on rest of the events sent to this log stream.
-    fn process_first_event<R: std::io::Read>(
-        &self,
-        event: json::Reader<R>,
-        schema: Schema,
-    ) -> Result<(), EventError> {
+    fn process_first_event(&self, event: &RecordBatch, schema: Schema) -> Result<(), EventError> {
         // note for functions _schema_with_map and _set_schema_with_map,
         // these are to be called while holding a write lock specifically.
         // this guarantees two things
@@ -266,30 +298,56 @@ impl Event {
 
     // event process all events after the 1st event. Concatenates record batches
     // and puts them in memory store for each event.
-    fn process_event<R: std::io::Read>(
-        &self,
-        mut event: json::Reader<R>,
-    ) -> Result<(), EventError> {
-        let rb = event.next()?.ok_or(EventError::MissingRecord)?;
-        STREAM_WRITERS::append_to_local(&self.stream_name, &rb)?;
+    fn process_event(&self, rb: &RecordBatch) -> Result<(), EventError> {
+        STREAM_WRITERS::append_to_local(&self.stream_name, rb)?;
         Ok(())
     }
 
     // inferSchema is a constructor to Schema
     // returns raw arrow schema type and arrow schema to string type.
     fn infer_schema(&self) -> Result<Schema, ArrowError> {
-        let reader = self.body.as_bytes();
-        let mut buf_reader = BufReader::new(reader);
-        infer_json_schema(&mut buf_reader, None)
+        let iter = std::iter::once(Ok(self.body.clone()));
+        infer_json_schema_from_iterator(iter)
     }
 
-    fn get_reader(&self, arrow_schema: Schema) -> json::Reader<&[u8]> {
-        json::Reader::new(
-            self.body.as_bytes(),
-            Arc::new(arrow_schema),
-            json::reader::DecoderOptions::new().with_batch_size(1024),
-        )
+    fn get_record(&self, schema: Arc<Schema>) -> Result<RecordBatch, EventError> {
+        let mut iter = std::iter::once(Ok(self.body.clone()));
+        let record = Decoder::new(schema, DecoderOptions::new()).next_batch(&mut iter)?;
+
+        record.ok_or(EventError::MissingRecord)
     }
+}
+
+fn replace(
+    schema: Arc<Schema>,
+    batch: RecordBatch,
+    column: &str,
+    arr: Arc<dyn Array + 'static>,
+) -> RecordBatch {
+    let index = schema.column_with_name(column).unwrap().0;
+    let mut arrays = batch.columns().to_vec();
+    arrays[index] = arr;
+
+    RecordBatch::try_new(schema, arrays).unwrap()
+}
+
+fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
+    let time = Utc::now();
+    TimestampMillisecondArray::from_value(time.timestamp_millis(), size)
+}
+
+fn get_datetime_field(json: &Value) -> Option<&str> {
+    let Value::Object(object) = json else { panic!() };
+    for (key, value) in object {
+        if TIME_KEYS.contains(&key.as_str()) {
+            if let Value::String(maybe_datetime) = value {
+                if DateTime::parse_from_rfc3339(maybe_datetime).is_ok() {
+                    return Some(key);
+                }
+            }
+        }
+    }
+    None
 }
 
 //  Special functions which reads from metadata map while holding the lock
@@ -348,5 +406,47 @@ pub mod error {
         RwPoisoned,
         #[error("Mutex was poisoned")]
         MutexPoisoned,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_schema::{Field, Schema};
+    use datafusion::arrow::{
+        array::{Array, Int32Array},
+        record_batch::RecordBatch,
+    };
+
+    use crate::event::replace;
+
+    #[test]
+    fn check_replace() {
+        let schema = Schema::new(vec![
+            Field::new("a", arrow_schema::DataType::Int32, false),
+            Field::new("b", arrow_schema::DataType::Int32, false),
+            Field::new("c", arrow_schema::DataType::Int32, false),
+        ]);
+
+        let schema_ref = Arc::new(schema);
+
+        let rb = RecordBatch::try_new(
+            schema_ref.clone(),
+            vec![
+                Arc::new(Int32Array::from_value(0, 3)),
+                Arc::new(Int32Array::from_value(0, 3)),
+                Arc::new(Int32Array::from_value(0, 3)),
+            ],
+        )
+        .unwrap();
+
+        let arr: Arc<dyn Array + 'static> = Arc::new(Int32Array::from_value(0, 3));
+
+        let new_rb = replace(schema_ref.clone(), rb, "c", arr);
+
+        assert_eq!(new_rb.schema(), schema_ref);
+        assert_eq!(new_rb.num_columns(), 3);
+        assert_eq!(new_rb.num_rows(), 3)
     }
 }
