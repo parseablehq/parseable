@@ -175,7 +175,7 @@ async fn create_remote_metadata(metadata: &StorageMetadata) -> Result<(), Object
 
 fn create_staging_metadata(metadata: &StorageMetadata) -> std::io::Result<()> {
     create_dir_all(CONFIG.staging_dir())?;
-    put_staging_metadata(&metadata)
+    put_staging_metadata(metadata)
 }
 
 lazy_static! {
