@@ -17,8 +17,8 @@
  */
 
 use super::{
-    file_link::CacheState, AccessObject, LogStream, MoveDataError, ObjectStorageError,
-    ObjectStoreFormat, StorageDir, StorageMetadata, CACHED_FILES,
+    file_link::CacheState, LogStream, MoveDataError, ObjectStorageError, ObjectStoreFormat,
+    Permisssion, StorageDir, StorageMetadata, CACHED_FILES,
 };
 use crate::{alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, query::Query, stats::Stats};
 
@@ -44,7 +44,7 @@ use std::{
 };
 
 // metadata file names in a Stream prefix
-const STREAM_METADATA_FILE_NAME: &str = ".metadata.json";
+const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
 pub(super) const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 const SCHEMA_FILE_NAME: &str = ".schema";
 const ALERT_FILE_NAME: &str = ".alert.json";
@@ -83,8 +83,8 @@ pub trait ObjectStorage: Sync + 'static {
     async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
         format.set_id(CONFIG.parseable.username.clone());
-        let access_object = AccessObject::new(CONFIG.parseable.username.clone());
-        format.set_access(vec![access_object]);
+        let permission = Permisssion::new(CONFIG.parseable.username.clone());
+        format.permissions = vec![permission];
 
         let format_json = to_bytes(&format);
 
