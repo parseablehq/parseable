@@ -121,11 +121,13 @@ pub fn capitalize_ascii(s: &str) -> String {
     s[0..1].to_uppercase() + &s[1..]
 }
 
-pub mod uuid {
-    use uuid::Uuid;
+pub mod uid {
+    use ulid::Ulid;
 
-    pub fn gen() -> Uuid {
-        Uuid::new_v4()
+    pub type Uid = Ulid;
+
+    pub fn gen() -> Ulid {
+        Ulid::new()
     }
 }
 

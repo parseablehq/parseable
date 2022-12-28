@@ -24,7 +24,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use std::io;
 
-use crate::{option::CONFIG, utils::hostname_unchecked};
+use crate::{option::CONFIG, utils::uid};
 
 use super::{object_storage::PARSEABLE_METADATA_FILE_NAME, ObjectStorageError};
 
@@ -34,7 +34,8 @@ pub struct StorageMetadata {
     pub mode: String,
     pub staging: PathBuf,
     pub storage: String,
-    pub deployment_id: String,
+    #[serde(default = "crate::utils::uid::gen")]
+    pub deployment_id: uid::Uid,
     pub user: Vec<User>,
     pub stream: Vec<String>,
 }
@@ -53,7 +54,7 @@ impl StorageMetadata {
             mode: CONFIG.storage_name.to_owned(),
             staging: CONFIG.staging_dir().canonicalize().unwrap(),
             storage: CONFIG.storage().get_endpoint(),
-            deployment_id: hostname_unchecked(),
+            deployment_id: uid::gen(),
             user: Vec::new(),
             stream: Vec::new(),
         }
