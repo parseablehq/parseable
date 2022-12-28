@@ -17,10 +17,11 @@
  */
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 pub mod rule;
 pub mod target;
+
+use crate::utils::uid::Uid;
 
 pub use self::rule::Rule;
 use self::target::Target;
@@ -34,8 +35,8 @@ pub struct Alerts {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
-    #[serde(default = "crate::utils::uuid::gen")]
-    pub id: Uuid,
+    #[serde(default = "crate::utils::uid::gen")]
+    pub id: Uid,
     pub name: String,
     pub message: String,
     pub rule: Rule,

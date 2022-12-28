@@ -56,8 +56,8 @@ tokio = { version = "1.13.1", default-features = false, features = [
 clokwerk = "0.4.0-rc1"
 actix-web-static-files = "4.0"
 static-files = "0.2.1"
+ulid = { version = "1.0", features = ["serde"] }
 ureq = { version = "2.5.0", features = ["json"] }
-uuid = { version = "1.2.1", features = ["v4", "fast-rng", "serde"] }
 
 [build-dependencies]
 static-files = "0.2.1"
