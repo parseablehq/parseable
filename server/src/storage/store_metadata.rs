@@ -26,7 +26,7 @@ use std::io;
 
 use crate::{option::CONFIG, utils::uid};
 
-use super::{object_storage::PARSEABLE_METADATA_FILE_NAME, ObjectStorageError};
+use super::object_storage::PARSEABLE_METADATA_FILE_NAME;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageMetadata {
@@ -61,17 +61,9 @@ impl StorageMetadata {
     }
 }
 
-pub async fn startup_check() -> Result<EnvChange, ObjectStorageError> {
-    let staging_metadata = get_staging_metadata()?;
-    let storage = CONFIG.storage().get_object_store();
-    let remote_metadata = storage.get_metadata().await?;
-
-    Ok(check_metadata_conflict(staging_metadata, remote_metadata))
-}
-
-fn check_metadata_conflict(
-    staging_metadata: Option<StorageMetadata>,
-    remote_metadata: Option<StorageMetadata>,
+pub fn check_metadata_conflict(
+    staging_metadata: Option<&StorageMetadata>,
+    remote_metadata: Option<&StorageMetadata>,
 ) -> EnvChange {
     match (staging_metadata, remote_metadata) {
         (Some(staging), Some(remote)) if staging.mode == remote.mode => {
@@ -100,7 +92,7 @@ pub enum EnvChange {
     CreateBoth,
 }
 
-fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
+pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
     let path = CONFIG.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
