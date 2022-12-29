@@ -142,15 +142,20 @@ pub async fn resolve_parseable_metadata() -> Result<(), ObjectStorageError> {
             Some("Could not start the server because metadata not found in storage")
         }
         EnvChange::NewStaging => {
-            put_staging_metadata(remote_metadata.as_ref().expect("remote metadata exists"))?;
+            let mut remote_meta = remote_metadata.expect("remote metadata exists");
+            create_dir_all(CONFIG.staging_dir())?;
+            remote_meta.staging = CONFIG.staging_dir().canonicalize()?;
+            create_remote_metadata(&remote_meta).await?;
+            put_staging_metadata(&remote_meta)?;
 
-            // allow new staging directories
-            return Ok(());
+            None
         }
         EnvChange::CreateBoth => {
             let metadata = StorageMetadata::new();
             create_remote_metadata(&metadata).await?;
-            create_staging_metadata(&metadata)?;
+            create_dir_all(CONFIG.staging_dir())?;
+            put_staging_metadata(&metadata)?;
+
             None
         }
     };
@@ -171,11 +176,6 @@ pub async fn resolve_parseable_metadata() -> Result<(), ObjectStorageError> {
 async fn create_remote_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
     let client = CONFIG.storage().get_object_store();
     client.put_metadata(metadata).await
-}
-
-fn create_staging_metadata(metadata: &StorageMetadata) -> std::io::Result<()> {
-    create_dir_all(CONFIG.staging_dir())?;
-    put_staging_metadata(metadata)
 }
 
 lazy_static! {
