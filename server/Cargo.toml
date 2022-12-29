@@ -19,7 +19,15 @@ base64 = "0.20.0"
 bytes = "1"
 chrono = "0.4.19"
 chrono-humanize = "0.2.2"
-clap = { version = "4.0.8", features = ["derive", "env"] }
+clap = { version = "4.0.32", default-features = false, features = [
+    "std",
+    "color",
+    "help",
+    "derive",
+    "env",
+    "cargo",
+    "error-context",
+] }
 crossterm = "0.25"
 datafusion = "13.0"
 object_store = { version = "0.5.1", features = ["aws"] }

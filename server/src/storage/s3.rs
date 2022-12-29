@@ -53,27 +53,41 @@ use super::ObjectStorageProvider;
 #[derive(Debug, Clone, clap::Args)]
 #[command(
     name = "S3 config",
-    about = "Start Parseable with AWS S3 or compatible as storage backend"
+    about = "Start Parseable with AWS S3 or compatible as storage backend",
+    help_template = "\
+{about-section}
+{all-args}
+"
 )]
 pub struct S3Config {
     /// The endpoint to AWS S3 or compatible object storage platform
-    #[arg(long, env = "P_S3_URL", value_name = "url")]
+    #[arg(long, env = "P_S3_URL", value_name = "url", required = true)]
     pub endpoint_url: String,
 
     /// The access key for AWS S3 or compatible object storage platform
-    #[arg(long, env = "P_S3_ACCESS_KEY", value_name = "access-key")]
+    #[arg(
+        long,
+        env = "P_S3_ACCESS_KEY",
+        value_name = "access-key",
+        required = true
+    )]
     pub access_key_id: String,
 
     /// The secret key for AWS S3 or compatible object storage platform
-    #[arg(long, env = "P_S3_SECRET_KEY", value_name = "secret-key")]
+    #[arg(
+        long,
+        env = "P_S3_SECRET_KEY",
+        value_name = "secret-key",
+        required = true
+    )]
     pub secret_key: String,
 
     /// The region for AWS S3 or compatible object storage platform
-    #[arg(long, env = "P_S3_REGION", value_name = "region")]
+    #[arg(long, env = "P_S3_REGION", value_name = "region", required = true)]
     pub region: String,
 
     /// The AWS S3 or compatible object storage bucket to be used for storage
-    #[arg(long, env = "P_S3_BUCKET", value_name = "bucket-name")]
+    #[arg(long, env = "P_S3_BUCKET", value_name = "bucket-name", required = true)]
     pub bucket_name: String,
 
     /// Set client to send content_md5 header on every put request
