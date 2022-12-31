@@ -185,6 +185,7 @@ fn parseable_cli_command() -> Command {
         "#,
         )
         .after_help("Checkout https://parseable.io for documentation")
+        .subcommand_required(true)
         .subcommands([local, s3])
 }
 
