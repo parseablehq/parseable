@@ -64,7 +64,7 @@ const API_VERSION: &str = "v1";
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    CONFIG.print();
+    banner::print(&CONFIG);
     CONFIG.validate();
     let storage = CONFIG.storage().get_object_store();
     CONFIG.validate_storage(&*storage).await;

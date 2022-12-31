@@ -16,17 +16,16 @@
  *
  */
 
+use clap::error::ErrorKind;
 use clap::{command, value_parser, Arg, Args, Command, FromArgMatches};
-use crossterm::style::Stylize;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::banner;
 use crate::storage::{
     FSConfig, ObjectStorage, ObjectStorageError, ObjectStorageProvider, S3Config,
     LOCAL_SYNC_INTERVAL,
 };
-use crate::utils::capitalize_ascii;
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -54,6 +53,15 @@ impl Config {
                     Err(err) => err.exit(),
                 };
 
+                if server.local_staging_path == storage.root {
+                    parseable_cli_command()
+                        .error(
+                            ErrorKind::ValueValidation,
+                            "Cannot use same path for storage and staging",
+                        )
+                        .exit()
+                }
+
                 Config {
                     parseable: server,
                     storage: Arc::new(storage),
@@ -80,15 +88,6 @@ impl Config {
         }
     }
 
-    pub fn print(&self) {
-        let scheme = CONFIG.parseable.get_scheme();
-        self.status_info(&scheme);
-        banner::version::print();
-        self.storage_info();
-        banner::system_info();
-        println!();
-    }
-
     pub fn validate(&self) {
         if CONFIG.parseable.upload_interval < LOCAL_SYNC_INTERVAL {
             panic!("object storage upload_interval (P_STORAGE_UPLOAD_INTERVAL) must be 60 seconds or more");
@@ -113,38 +112,17 @@ impl Config {
         }
     }
 
-    fn status_info(&self, scheme: &str) {
-        let url = format!("{}://{}", scheme, self.parseable.address).underlined();
-        eprintln!(
-            "
-    {}
-    {}
-    {}",
-            format!("Parseable server started at: {}", url).bold(),
-            format!("Username: {}", self.parseable.username).bold(),
-            format!("Password: {}", self.parseable.password).bold(),
-        )
-    }
-
-    fn storage_info(&self) {
-        eprintln!(
-            "
-    {}
-        Local Staging Path: {}
-        {} Storage: {}",
-            "Storage:".to_string().blue().bold(),
-            self.staging_dir().to_string_lossy(),
-            capitalize_ascii(self.storage_name),
-            self.storage().get_endpoint(),
-        )
-    }
-
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
         self.storage.clone()
     }
 
     pub fn staging_dir(&self) -> &Path {
         &self.parseable.local_staging_path
+    }
+
+    pub fn is_default_creds(&self) -> bool {
+        self.parseable.username == Server::DEFAULT_USERNAME
+            && self.parseable.password == Server::DEFAULT_PASSWORD
     }
 }
 
@@ -160,10 +138,10 @@ fn parseable_cli_command() -> Command {
 
     let local = local
         .mut_arg(Server::USERNAME, |arg| {
-            arg.required(false).default_value("admin")
+            arg.required(false).default_value(Server::DEFAULT_USERNAME)
         })
         .mut_arg(Server::PASSWORD, |arg| {
-            arg.required(false).default_value("admin")
+            arg.required(false).default_value(Server::DEFAULT_PASSWORD)
         });
 
     let s3 = Server::get_clap_command("--s3-store");
@@ -259,6 +237,8 @@ impl Server {
     pub const UPLOAD_INTERVAL: &str = "upload-interval";
     pub const USERNAME: &str = "username";
     pub const PASSWORD: &str = "password";
+    pub const DEFAULT_USERNAME: &str = "admin";
+    pub const DEFAULT_PASSWORD: &str = "admin";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -305,7 +285,7 @@ impl Server {
                     .env("P_STAGING_DIR")
                     .value_name("DIR")
                     .default_value("./staging")
-                    .value_parser(value_parser!(PathBuf))
+                    .value_parser(validation::canonicalize_path)
                     .help("The local staging path is used as a temporary landing point for incoming events and local cache")
                     .next_line_help(true),
             )
@@ -339,7 +319,11 @@ impl Server {
 }
 
 pub mod validation {
-    use std::{net::ToSocketAddrs, path::PathBuf};
+    use std::{
+        fs::{canonicalize, create_dir_all},
+        net::ToSocketAddrs,
+        path::PathBuf,
+    };
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
@@ -353,6 +337,17 @@ pub mod validation {
         }
 
         Ok(path)
+    }
+
+    pub fn canonicalize_path(s: &str) -> Result<PathBuf, String> {
+        let path = PathBuf::from(s);
+
+        create_dir_all(&path)
+            .map_err(|err| err.to_string())
+            .and_then(|_| {
+                canonicalize(&path)
+                    .map_err(|_| "Cannot use the path provided as an absolute path".to_string())
+            })
     }
 
     pub fn socket_addr(s: &str) -> Result<String, String> {

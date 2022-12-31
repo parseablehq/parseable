@@ -36,7 +36,7 @@ use relative_path::RelativePath;
 use tokio::fs;
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::query::Query;
+use crate::{option::validation, query::Query};
 
 use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
 
@@ -53,9 +53,10 @@ pub struct FSConfig {
     #[arg(
         env = "P_FS_PATH",
         value_name = "filesystem path",
-        default_value = "./data"
+        default_value = "./data",
+        value_parser = validation::canonicalize_path
     )]
-    root: PathBuf,
+    pub root: PathBuf,
 }
 
 impl ObjectStorageProvider for FSConfig {
