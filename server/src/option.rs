@@ -18,16 +18,14 @@
 
 use clap::error::ErrorKind;
 use clap::{command, value_parser, Arg, Args, Command, FromArgMatches};
-use crossterm::style::Stylize;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::banner::{self, warning_line};
 use crate::storage::{
     FSConfig, ObjectStorage, ObjectStorageError, ObjectStorageProvider, S3Config,
     LOCAL_SYNC_INTERVAL,
 };
-use crate::utils::capitalize_ascii;
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -90,15 +88,6 @@ impl Config {
         }
     }
 
-    pub fn print(&self) {
-        let scheme = CONFIG.parseable.get_scheme();
-        self.status_info(&scheme);
-        banner::version::print();
-        self.storage_info();
-        banner::system_info();
-        println!();
-    }
-
     pub fn validate(&self) {
         if CONFIG.parseable.upload_interval < LOCAL_SYNC_INTERVAL {
             panic!("object storage upload_interval (P_STORAGE_UPLOAD_INTERVAL) must be 60 seconds or more");
@@ -123,49 +112,17 @@ impl Config {
         }
     }
 
-    fn status_info(&self, scheme: &str) {
-        let url = format!("{}://{}", scheme, self.parseable.address).underlined();
-        eprintln!(
-            "
-    {}
-    {}
-    {}",
-            format!("Parseable server started at: {}", url).bold(),
-            format!("Username: {}", self.parseable.username).bold(),
-            format!("Password: {}", self.parseable.password).bold(),
-        );
-
-        if self.parseable.username == Server::DEFAULT_USERNAME
-            && self.parseable.password == Server::DEFAULT_PASSWORD
-        {
-            warning_line();
-            eprintln!(
-                "
-        {}",
-                "Using default credentials for Parseable server".red()
-            )
-        }
-    }
-
-    fn storage_info(&self) {
-        eprintln!(
-            "
-    {}
-        Local Staging Path: {}
-        {} Storage: {}",
-            "Storage:".to_string().blue().bold(),
-            self.staging_dir().to_string_lossy(),
-            capitalize_ascii(self.storage_name),
-            self.storage().get_endpoint(),
-        )
-    }
-
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
         self.storage.clone()
     }
 
     pub fn staging_dir(&self) -> &Path {
         &self.parseable.local_staging_path
+    }
+
+    pub fn is_default_creds(&self) -> bool {
+        self.parseable.username == Server::DEFAULT_USERNAME
+            && self.parseable.password == Server::DEFAULT_PASSWORD
     }
 }
 

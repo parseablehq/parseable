@@ -20,6 +20,52 @@
 use crossterm::style::Stylize;
 use sysinfo::{System, SystemExt};
 
+use crate::{option::Config, utils::capitalize_ascii};
+
+pub fn print(config: &Config) {
+    let scheme = config.parseable.get_scheme();
+    status_info(config, &scheme);
+    version::print();
+    storage_info(config);
+    system_info();
+    println!();
+}
+
+fn status_info(config: &Config, scheme: &str) {
+    let url = format!("{}://{}", scheme, config.parseable.address).underlined();
+    eprintln!(
+        "
+    {}
+    {}
+    {}",
+        format!("Parseable server started at: {}", url).bold(),
+        format!("Username: {}", config.parseable.username).bold(),
+        format!("Password: {}", config.parseable.password).bold(),
+    );
+
+    if config.is_default_creds() {
+        warning_line();
+        eprintln!(
+            "
+        {}",
+            "Using default credentials for Parseable server".red()
+        )
+    }
+}
+
+fn storage_info(config: &Config) {
+    eprintln!(
+        "
+    {}
+        Local Staging Path: {}
+        {} Storage: {}",
+        "Storage:".to_string().blue().bold(),
+        config.staging_dir().to_string_lossy(),
+        capitalize_ascii(config.storage_name),
+        config.storage().get_endpoint(),
+    )
+}
+
 pub fn system_info() {
     let system = System::new_all();
     eprintln!(
@@ -81,9 +127,9 @@ pub mod version {
                 );
 
                 // check for latest release
-                let Ok(latest_release) = update::get_latest() else { 
+                let Ok(latest_release) = update::get_latest() else {
                     eprintln!();
-                    return 
+                    return
                 };
 
                 if latest_release.version > current_version {
