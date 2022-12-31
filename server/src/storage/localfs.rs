@@ -43,10 +43,18 @@ use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider}
 #[derive(Debug, Clone, clap::Args)]
 #[command(
     name = "Local filesystem config",
-    about = "Start Parseable with local filesystem as storage backend (non production use only)"
+    about = "Start Parseable with local filesystem as storage backend (non production use only)",
+    help_template = "\
+{about-section}
+{all-args}
+"
 )]
 pub struct FSConfig {
-    #[arg(env = "P_FS_PATH", value_name = "filesystem path")]
+    #[arg(
+        env = "P_FS_PATH",
+        value_name = "filesystem path",
+        default_value = "./data"
+    )]
     root: PathBuf,
 }
 
