@@ -18,16 +18,14 @@
  */
 
 use crossterm::style::Stylize;
-use sysinfo::{System, SystemExt};
 
-use crate::{option::Config, utils::capitalize_ascii};
+use crate::option::Config;
 
 pub fn print(config: &Config) {
     let scheme = config.parseable.get_scheme();
     status_info(config, &scheme);
-    version::print();
     storage_info(config);
-    system_info();
+    version::print();
     println!();
 }
 
@@ -57,28 +55,13 @@ fn storage_info(config: &Config) {
     eprintln!(
         "
     {}
-        Local Staging Path: {}
-        {} Storage: {}",
+        Mode:           {}
+        Staging path:   {}
+        Store path:     {}",
         "Storage:".to_string().blue().bold(),
+        config.storage_name,
         config.staging_dir().to_string_lossy(),
-        capitalize_ascii(config.storage_name),
         config.storage().get_endpoint(),
-    )
-}
-
-pub fn system_info() {
-    let system = System::new_all();
-    eprintln!(
-        "
-    {}
-        OS: {}
-        Processor: {} logical, {} physical
-        Memory: {:.2} GiB total",
-        "System:".to_string().blue().bold(),
-        os_info::get(),
-        num_cpus::get(),
-        num_cpus::get_physical(),
-        system.total_memory() as f32 / (1024 * 1024 * 1024) as f32
     )
 }
 
@@ -112,24 +95,34 @@ pub mod version {
         }
     }
 
+    pub fn print_version(current_version: semver::Version, commit_hash: String) {
+        eprint!(
+            "
+    {}
+        Version:        {}
+        Commit hash:    {}
+        GitHub:         https://github.com/parseablehq/parseable
+        Docs:           https://www.parseable.io/docs/introduction",
+            "About:".to_string().blue().bold(),
+            current_version,
+            commit_hash
+        );
+    }
+
     pub fn print() {
         // print current version
         let current = current();
 
         match current.0 {
             ParseableVersion::Version(current_version) => {
-                // not eprintln because if it is old release then time passed with be displayed beside it
-                eprint!(
-                    "
-    {} {} ",
-                    "Current Version:".to_string().blue().bold(),
-                    current_version
-                );
-
-                // check for latest release
-                let Ok(latest_release) = update::get_latest() else {
-                    eprintln!();
-                    return
+                print_version(current_version.clone(), current.1);
+                // check for latest release, if it cannot be fetched then print error as warn and return
+                let latest_release = match update::get_latest() {
+                    Ok(latest_release) => latest_release,
+                    Err(e) => {
+                        log::warn!("{}", e);
+                        return;
+                    }
                 };
 
                 if latest_release.version > current_version {

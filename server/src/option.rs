@@ -43,7 +43,7 @@ impl Config {
         let cli = parseable_cli_command().get_matches();
 
         match cli.subcommand() {
-            Some(("--local-store", m)) => {
+            Some(("local-store", m)) => {
                 let server = match Server::from_arg_matches(m) {
                     Ok(server) => server,
                     Err(err) => err.exit(),
@@ -68,7 +68,7 @@ impl Config {
                     storage_name: "drive",
                 }
             }
-            Some(("--s3-store", m)) => {
+            Some(("s3-store", m)) => {
                 let server = match Server::from_arg_matches(m) {
                     Ok(server) => server,
                     Err(err) => err.exit(),
@@ -133,7 +133,7 @@ impl Default for Config {
 }
 
 fn parseable_cli_command() -> Command {
-    let local = Server::get_clap_command("--local-store");
+    let local = Server::get_clap_command("local-store");
     let local = <FSConfig as Args>::augment_args_for_update(local);
 
     let local = local
@@ -143,8 +143,7 @@ fn parseable_cli_command() -> Command {
         .mut_arg(Server::PASSWORD, |arg| {
             arg.required(false).default_value(Server::DEFAULT_PASSWORD)
         });
-
-    let s3 = Server::get_clap_command("--s3-store");
+    let s3 = Server::get_clap_command("s3-store");
     let s3 = <S3Config as Args>::augment_args_for_update(s3);
 
     command!()
@@ -155,14 +154,11 @@ fn parseable_cli_command() -> Command {
         .next_line_help(false)
         .help_template(
             r#"
-{name} - v{version}
-{about-with-newline}
+{about} Join the community at https://launchpass.com/parseable.
+
 {all-args}
-{after-help}
-{author}
         "#,
         )
-        .after_help("Checkout https://parseable.io for documentation")
         .subcommand_required(true)
         .subcommands([local, s3])
 }
@@ -296,7 +292,7 @@ impl Server {
                     .value_name("SECONDS")
                     .default_value("60")
                     .value_parser(value_parser!(u64))
-                    .help("Interval in seconds after which uncommited data would be uploaded to the storage platform.")
+                    .help("Interval in seconds after which un-committed data would be sent to the storage")
                     .next_line_help(true),
             )
             .arg(
