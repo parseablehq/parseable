@@ -135,7 +135,9 @@ impl Config {
             format!("Password: {}", self.parseable.password).bold(),
         );
 
-        if self.parseable.username == "admin" && self.parseable.password == "admin" {
+        if self.parseable.username == Server::DEFAULT_USERNAME
+            && self.parseable.password == Server::DEFAULT_PASSWORD
+        {
             warning_line();
             eprintln!(
                 "
@@ -179,10 +181,10 @@ fn parseable_cli_command() -> Command {
 
     let local = local
         .mut_arg(Server::USERNAME, |arg| {
-            arg.required(false).default_value("admin")
+            arg.required(false).default_value(Server::DEFAULT_USERNAME)
         })
         .mut_arg(Server::PASSWORD, |arg| {
-            arg.required(false).default_value("admin")
+            arg.required(false).default_value(Server::DEFAULT_PASSWORD)
         });
 
     let s3 = Server::get_clap_command("--s3-store");
@@ -278,6 +280,8 @@ impl Server {
     pub const UPLOAD_INTERVAL: &str = "upload-interval";
     pub const USERNAME: &str = "username";
     pub const PASSWORD: &str = "password";
+    pub const DEFAULT_USERNAME: &str = "admin";
+    pub const DEFAULT_PASSWORD: &str = "admin";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
