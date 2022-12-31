@@ -43,7 +43,7 @@ use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider}
 #[derive(Debug, Clone, clap::Args)]
 #[command(
     name = "Local filesystem config",
-    about = "Start Parseable with local filesystem as storage backend (non production use only)",
+    about = "Start Parseable with a drive as storage",
     help_template = "\
 {about-section}
 {all-args}

@@ -117,6 +117,7 @@ pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
 }
 
+#[allow(dead_code)]
 pub fn capitalize_ascii(s: &str) -> String {
     s[0..1].to_uppercase() + &s[1..]
 }

@@ -53,7 +53,7 @@ use super::ObjectStorageProvider;
 #[derive(Debug, Clone, clap::Args)]
 #[command(
     name = "S3 config",
-    about = "Start Parseable with AWS S3 or compatible as storage backend",
+    about = "Start Parseable with S3 or compatible as storage",
     help_template = "\
 {about-section}
 {all-args}
