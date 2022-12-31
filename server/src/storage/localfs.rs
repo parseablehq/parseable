@@ -50,7 +50,11 @@ use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider}
 "
 )]
 pub struct FSConfig {
-    #[arg(env = "P_FS_PATH", value_name = "filesystem path", required = true)]
+    #[arg(
+        env = "P_FS_PATH",
+        value_name = "filesystem path",
+        default_value = "./data"
+    )]
     root: PathBuf,
 }
 
