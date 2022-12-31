@@ -57,7 +57,7 @@ impl Config {
                 Config {
                     parseable: server,
                     storage: Arc::new(storage),
-                    storage_name: "s3",
+                    storage_name: "drive",
                 }
             }
             Some(("--s3-store", m)) => {
