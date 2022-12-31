@@ -139,8 +139,7 @@ impl Config {
             warning_line();
             eprintln!(
                 "
-        {}
-            ",
+        {}",
                 "Using default credentials for Parseable server".red()
             )
         }

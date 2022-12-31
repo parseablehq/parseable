@@ -80,13 +80,10 @@ pub mod version {
                     current_version
                 );
 
-                // check for latest release, if it cannot be fetched then print error as warn and return
-                let latest_release = match update::get_latest() {
-                    Ok(latest_release) => latest_release,
-                    Err(e) => {
-                        log::warn!("{}", e);
-                        return;
-                    }
+                // check for latest release
+                let Ok(latest_release) = update::get_latest() else { 
+                    eprintln!();
+                    return 
                 };
 
                 if latest_release.version > current_version {
@@ -108,7 +105,7 @@ pub mod version {
                 }
             }
             ParseableVersion::Prerelease(current_prerelease) => {
-                eprint!(
+                eprintln!(
                     "
     {} {} ",
                     "Current Version:".to_string().blue().bold(),
