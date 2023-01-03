@@ -20,34 +20,41 @@
 use crossterm::style::Stylize;
 
 use crate::{option::Config, storage::StorageMetadata};
+use crate::utils::{uid::Uid};
 
 pub fn print(config: &Config, meta: StorageMetadata) {
     let scheme = config.parseable.get_scheme();
-    status_info(config, &scheme);
+    status_info(config, &scheme, meta.deployment_id);
     storage_info(config);
-    version::print(meta.deployment_id);
+    about::print();
     println!();
 }
 
-fn status_info(config: &Config, scheme: &str) {
+fn status_info(config: &Config, scheme: &str, id: Uid) {
     let url = format!("{}://{}", scheme, config.parseable.address).underlined();
-    eprintln!(
-        "
-    {}
-    {}
-    {}",
-        format!("Parseable server started at: {}", url).bold(),
-        format!("Username: {}", config.parseable.username).bold(),
-        format!("Password: {}", config.parseable.password).bold(),
-    );
-
     if config.is_default_creds() {
-        warning_line();
         eprintln!(
             "
-        {}",
-            "Using default credentials for Parseable server".red()
-        )
+    {}
+        Running at:         \"{}\"
+        Credentials:        {}
+        Deployment UID:     \"{}\"",
+        "Parseable Server".to_string().bold(),
+        url,
+        "\"Using default creds admin, admin. Please set credentials with P_USERNAME and P_PASSWORD.\"".to_string().red(),
+        id.to_string()
+    );    
+    } else {
+        eprintln!(
+            "
+    {}
+        Running at:         \"{}\"
+        Credentials:        \"As set in P_USERNAME and P_PASSWORD environment variables\"
+        Deployment UID:     \"{}\"",
+        "Parseable Server".to_string().bold(),
+        url,
+        id.to_string(),
+    );
     }
 }
 
@@ -55,31 +62,23 @@ fn storage_info(config: &Config) {
     eprintln!(
         "
     {}
-        Mode:           {}
-        Staging path:   {}
-        Store path:     {}",
-        "Storage:".to_string().blue().bold(),
+        Mode:               \"{}\"
+        Staging:            \"{}\"
+        Store:              \"{}\"",
+        "Storage:".to_string().cyan().bold(),
         config.storage_name,
         config.staging_dir().to_string_lossy(),
         config.storage().get_endpoint(),
     )
 }
 
-pub fn warning_line() {
-    eprint!(
-        "
-    {}",
-        "Warning:".to_string().red().bold(),
-    );
-}
-
-pub mod version {
+pub mod about {
     use chrono::Duration;
     use chrono_humanize::{Accuracy, Tense};
     use crossterm::style::Stylize;
     use std::fmt;
 
-    use crate::utils::{uid::Uid, update};
+    use crate::utils::update;
 
     pub enum ParseableVersion {
         Version(semver::Version),
@@ -95,29 +94,26 @@ pub mod version {
         }
     }
 
-    pub fn print_version(current_version: semver::Version, commit_hash: String, id: Uid) {
+    pub fn print_version(current_version: semver::Version, commit_hash: String) {
         eprint!(
             "
     {}
-        Deployment ID:  {}    
-        Version:        {}
-        Commit hash:    {}
-        GitHub:         https://github.com/parseablehq/parseable
-        Docs:           https://www.parseable.io/docs/introduction",
+        Version:            \"{}\"
+        Commit:             \"{}\"   
+        Docs:               \"https://www.parseable.io/docs/introduction\"",
             "About:".to_string().blue().bold(),
-            id.to_string(),
             current_version,
             commit_hash
         );
     }
 
-    pub fn print(id: Uid) {
+    pub fn print() {
         // print current version
         let current = current();
 
         match current.0 {
             ParseableVersion::Version(current_version) => {
-                print_version(current_version.clone(), current.1, id);
+                print_version(current_version.clone(), current.1);
                 // check for latest release, if it cannot be fetched then print error as warn and return
                 let latest_release = match update::get_latest() {
                     Ok(latest_release) => latest_release,

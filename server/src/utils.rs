@@ -133,7 +133,7 @@ pub mod uid {
 }
 
 pub mod update {
-    use crate::banner::version::current;
+    use crate::banner::about::current;
     use std::{path::Path, time::Duration};
 
     use anyhow::anyhow;
