@@ -19,13 +19,13 @@
 
 use crossterm::style::Stylize;
 
-use crate::option::Config;
+use crate::{option::Config, storage::StorageMetadata};
 
-pub fn print(config: &Config) {
+pub fn print(config: &Config, meta: StorageMetadata) {
     let scheme = config.parseable.get_scheme();
     status_info(config, &scheme);
     storage_info(config);
-    version::print();
+    version::print(meta.deployment_id);
     println!();
 }
 
@@ -79,7 +79,7 @@ pub mod version {
     use crossterm::style::Stylize;
     use std::fmt;
 
-    use crate::utils::update;
+    use crate::utils::{uid::Uid, update};
 
     pub enum ParseableVersion {
         Version(semver::Version),
@@ -95,32 +95,33 @@ pub mod version {
         }
     }
 
-    pub fn print_version(current_version: semver::Version, commit_hash: String) {
+    pub fn print_version(current_version: semver::Version, commit_hash: String, id: Uid) {
         eprint!(
             "
     {}
+        Deployment ID:  {}    
         Version:        {}
         Commit hash:    {}
         GitHub:         https://github.com/parseablehq/parseable
         Docs:           https://www.parseable.io/docs/introduction",
             "About:".to_string().blue().bold(),
+            id.to_string(),
             current_version,
             commit_hash
         );
     }
 
-    pub fn print() {
+    pub fn print(id: Uid) {
         // print current version
         let current = current();
 
         match current.0 {
             ParseableVersion::Version(current_version) => {
-                print_version(current_version.clone(), current.1);
+                print_version(current_version.clone(), current.1, id);
                 // check for latest release, if it cannot be fetched then print error as warn and return
                 let latest_release = match update::get_latest() {
                     Ok(latest_release) => latest_release,
-                    Err(e) => {
-                        log::warn!("{}", e);
+                    Err(_) => {
                         return;
                     }
                 };

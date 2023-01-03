@@ -123,32 +123,28 @@ impl ObjectStoreFormat {
     }
 }
 
-pub async fn resolve_parseable_metadata() -> Result<(), ObjectStorageError> {
+pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStorageError> {
     let staging_metadata = store_metadata::get_staging_metadata()?;
     let storage = CONFIG.storage().get_object_store();
     let remote_metadata = storage.get_metadata().await?;
 
-    let check = store_metadata::check_metadata_conflict(
-        staging_metadata.as_ref(),
-        remote_metadata.as_ref(),
-    );
+    let check = store_metadata::check_metadata_conflict(staging_metadata, remote_metadata);
 
     const MISMATCH: &str = "Could not start the server because metadata file found in staging directory does not match one in the storage";
-    let err: Option<&str> = match check {
-        EnvChange::None => None,
-        EnvChange::StagingMismatch => Some(MISMATCH),
-        EnvChange::StorageMismatch => Some(MISMATCH),
+    let res: Result<StorageMetadata, &str> = match check {
+        EnvChange::None(metadata) => Ok(metadata),
+        EnvChange::StagingMismatch => Err(MISMATCH),
+        EnvChange::StorageMismatch => Err(MISMATCH),
         EnvChange::NewRemote => {
-            Some("Could not start the server because metadata not found in storage")
+            Err("Could not start the server because metadata not found in storage")
         }
-        EnvChange::NewStaging => {
+        EnvChange::NewStaging(mut metadata) => {
             create_dir_all(CONFIG.staging_dir())?;
-            let mut remote_meta = remote_metadata.expect("remote metadata exists");
-            remote_meta.staging = CONFIG.staging_dir().canonicalize()?;
-            create_remote_metadata(&remote_meta).await?;
-            put_staging_metadata(&remote_meta)?;
+            metadata.staging = CONFIG.staging_dir().canonicalize()?;
+            create_remote_metadata(&metadata).await?;
+            put_staging_metadata(&metadata)?;
 
-            None
+            Ok(metadata)
         }
         EnvChange::CreateBoth => {
             create_dir_all(CONFIG.staging_dir())?;
@@ -156,21 +152,19 @@ pub async fn resolve_parseable_metadata() -> Result<(), ObjectStorageError> {
             create_remote_metadata(&metadata).await?;
             put_staging_metadata(&metadata)?;
 
-            None
+            Ok(metadata)
         }
     };
 
-    if let Some(err) = err {
+    res.map_err(|err| {
         let err = format!(
             "{}. {}",
             err,
             "Join us on Parseable Slack to report this incident : https://launchpass.com/parseable"
         );
         let err: Box<dyn std::error::Error + Send + Sync + 'static> = err.into();
-        Err(ObjectStorageError::UnhandledError(err))
-    } else {
-        Ok(())
-    }
+        ObjectStorageError::UnhandledError(err)
+    })
 }
 
 async fn create_remote_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
