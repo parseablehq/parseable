@@ -19,8 +19,8 @@
 
 use crossterm::style::Stylize;
 
+use crate::utils::uid::Uid;
 use crate::{option::Config, storage::StorageMetadata};
-use crate::utils::{uid::Uid};
 
 pub fn print(config: &Config, meta: StorageMetadata) {
     let scheme = config.parseable.get_scheme();
@@ -43,7 +43,7 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
         url,
         "\"Using default creds admin, admin. Please set credentials with P_USERNAME and P_PASSWORD.\"".to_string().red(),
         id.to_string()
-    );    
+    );
     } else {
         eprintln!(
             "
@@ -51,14 +51,18 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
         Running at:         \"{}\"
         Credentials:        \"As set in P_USERNAME and P_PASSWORD environment variables\"
         Deployment UID:     \"{}\"",
-        "Parseable Server".to_string().bold(),
-        url,
-        id.to_string(),
-    );
+            "Parseable Server".to_string().bold(),
+            url,
+            id.to_string(),
+        );
     }
 }
 
 fn storage_info(config: &Config) {
+    let mut mode = "S3 bucket";
+    if config.storage_name == "drive" {
+        mode = "Local drive";
+    }
     eprintln!(
         "
     {}
@@ -66,7 +70,7 @@ fn storage_info(config: &Config) {
         Staging:            \"{}\"
         Store:              \"{}\"",
         "Storage:".to_string().cyan().bold(),
-        config.storage_name,
+        mode,
         config.staging_dir().to_string_lossy(),
         config.storage().get_endpoint(),
     )
