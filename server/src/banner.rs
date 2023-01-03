@@ -31,8 +31,7 @@ pub fn print(config: &Config, meta: StorageMetadata) {
 }
 
 fn status_info(config: &Config, scheme: &str, id: Uid) {
-    let url = format!("\"{}://{}\"", scheme, config.parseable.address)
-        .underlined();
+    let url = format!("\"{}://{}\"", scheme, config.parseable.address).underlined();
     let mut credentials =
         String::from("\"As set in P_USERNAME and P_PASSWORD environment variables\"");
 
