@@ -19,67 +19,64 @@
 
 use crossterm::style::Stylize;
 
+use crate::utils::uid::Uid;
 use crate::{option::Config, storage::StorageMetadata};
 
 pub fn print(config: &Config, meta: StorageMetadata) {
     let scheme = config.parseable.get_scheme();
-    status_info(config, &scheme);
+    status_info(config, &scheme, meta.deployment_id);
     storage_info(config);
-    version::print(meta.deployment_id);
+    about::print();
     println!();
 }
 
-fn status_info(config: &Config, scheme: &str) {
-    let url = format!("{}://{}", scheme, config.parseable.address).underlined();
+fn status_info(config: &Config, scheme: &str, id: Uid) {
+    let url = format!("\"{}://{}\"", scheme, config.parseable.address).underlined();
+    let mut credentials =
+        String::from("\"As set in P_USERNAME and P_PASSWORD environment variables\"");
+
+    if config.is_default_creds() {
+        credentials = "\"Using default creds admin, admin. Please set credentials with P_USERNAME and P_PASSWORD.\"".red().to_string();
+    }
+
     eprintln!(
         "
     {}
-    {}
-    {}",
-        format!("Parseable server started at: {}", url).bold(),
-        format!("Username: {}", config.parseable.username).bold(),
-        format!("Password: {}", config.parseable.password).bold(),
+        Running at:         {}
+        Credentials:        {}
+        Deployment UID:     \"{}\"",
+        "Parseable Server".to_string().bold(),
+        url,
+        credentials,
+        id.to_string(),
     );
-
-    if config.is_default_creds() {
-        warning_line();
-        eprintln!(
-            "
-        {}",
-            "Using default credentials for Parseable server".red()
-        )
-    }
 }
 
 fn storage_info(config: &Config) {
+    let mut mode = "S3 bucket";
+    if config.storage_name == "drive" {
+        mode = "Local drive";
+    }
     eprintln!(
         "
     {}
-        Mode:           {}
-        Staging path:   {}
-        Store path:     {}",
-        "Storage:".to_string().blue().bold(),
-        config.storage_name,
+        Mode:               \"{}\"
+        Staging:            \"{}\"
+        Store:              \"{}\"",
+        "Storage:".to_string().cyan().bold(),
+        mode,
         config.staging_dir().to_string_lossy(),
         config.storage().get_endpoint(),
     )
 }
 
-pub fn warning_line() {
-    eprint!(
-        "
-    {}",
-        "Warning:".to_string().red().bold(),
-    );
-}
-
-pub mod version {
+pub mod about {
     use chrono::Duration;
     use chrono_humanize::{Accuracy, Tense};
     use crossterm::style::Stylize;
     use std::fmt;
 
-    use crate::utils::{uid::Uid, update};
+    use crate::utils::update;
 
     pub enum ParseableVersion {
         Version(semver::Version),
@@ -95,29 +92,26 @@ pub mod version {
         }
     }
 
-    pub fn print_version(current_version: semver::Version, commit_hash: String, id: Uid) {
+    pub fn print_version(current_version: semver::Version, commit_hash: String) {
         eprint!(
             "
     {}
-        Deployment ID:  {}    
-        Version:        {}
-        Commit hash:    {}
-        GitHub:         https://github.com/parseablehq/parseable
-        Docs:           https://www.parseable.io/docs/introduction",
-            "About:".to_string().blue().bold(),
-            id.to_string(),
+        Version:            \"{}\"
+        Commit:             \"{}\"   
+        Docs:               \"https://www.parseable.io/docs/introduction\"",
+            "About:".to_string().bold(),
             current_version,
             commit_hash
         );
     }
 
-    pub fn print(id: Uid) {
+    pub fn print() {
         // print current version
         let current = current();
 
         match current.0 {
             ParseableVersion::Version(current_version) => {
-                print_version(current_version.clone(), current.1, id);
+                print_version(current_version.clone(), current.1);
                 // check for latest release, if it cannot be fetched then print error as warn and return
                 let latest_release = match update::get_latest() {
                     Ok(latest_release) => latest_release,
