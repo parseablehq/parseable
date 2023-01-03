@@ -59,9 +59,11 @@ pub async fn ingest(
         .iter()
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
-        let str_name = stream_name.to_str().unwrap().to_owned();
-        super::logstream::create_stream_if_not_exists(str_name.clone()).await;
-        push_logs(str_name, req, body).await?;
+        let stream_name = stream_name.to_str().unwrap().to_owned();
+        if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
+            return Err(PostError::CreateStream(e.into()));
+        }
+        push_logs(stream_name, req, body).await?;
         Ok(HttpResponse::Ok().finish())
     } else {
         Err(PostError::Header(ParseHeaderError::MissingStreamName))
@@ -167,6 +169,8 @@ pub mod error {
         Event(#[from] EventError),
         #[error("Invalid Request")]
         Invalid,
+        #[error("Failed to create stream due to {0}")]
+        CreateStream(Box<dyn std::error::Error + Send + Sync>),
     }
 
     impl actix_web::ResponseError for PostError {
@@ -175,6 +179,7 @@ pub mod error {
                 PostError::Header(_) => StatusCode::BAD_REQUEST,
                 PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 PostError::Invalid => StatusCode::BAD_REQUEST,
+                PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
             }
         }
 
