@@ -62,8 +62,8 @@ impl StorageMetadata {
 }
 
 pub fn check_metadata_conflict(
-    staging_metadata: Option<&StorageMetadata>,
-    remote_metadata: Option<&StorageMetadata>,
+    staging_metadata: Option<StorageMetadata>,
+    remote_metadata: Option<StorageMetadata>,
 ) -> EnvChange {
     match (staging_metadata, remote_metadata) {
         (Some(staging), Some(remote)) if staging.mode == remote.mode => {
@@ -72,23 +72,23 @@ pub fn check_metadata_conflict(
             } else if staging.staging != remote.staging {
                 EnvChange::StagingMismatch
             } else {
-                EnvChange::None
+                EnvChange::None(staging)
             }
         }
         (Some(staging), Some(remote)) if staging.mode != remote.mode => EnvChange::StorageMismatch,
         (None, None) => EnvChange::CreateBoth,
-        (None, Some(_)) => EnvChange::NewStaging,
+        (None, Some(remote)) => EnvChange::NewStaging(remote),
         (Some(_), None) => EnvChange::NewRemote,
         _ => unreachable!(),
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvChange {
-    None,
+    None(StorageMetadata),
     StagingMismatch,
     StorageMismatch,
     NewRemote,
-    NewStaging,
+    NewStaging(StorageMetadata),
     CreateBoth,
 }
 
