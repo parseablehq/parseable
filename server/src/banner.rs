@@ -92,15 +92,39 @@ pub mod about {
         }
     }
 
-    pub fn print_version(current_version: semver::Version, commit_hash: String) {
+    pub fn print_about(current_version: semver::Version, commit_hash: String) {
         eprint!(
             "
     {}
-        Version:            \"{}\"
-        Commit:             \"{}\"   
-        Docs:               \"https://www.parseable.io/docs/introduction\"",
+        Version:            \"v{}\"",
             "About:".to_string().bold(),
             current_version,
+        );
+
+        // check for latest release, if it cannot be fetched then print error as warn and return
+        let latest_release = match update::get_latest() {
+            Ok(latest_release) => latest_release,
+            Err(_) => {
+                return;
+            }
+        };
+
+        if latest_release.version > current_version {
+            let time_since_latest_release = chrono::Utc::now() - latest_release.date;
+            let time_since_latest_release = humanize_time(time_since_latest_release);
+
+            let fmt_latest_version = format!(
+                " ( v{} released {} ago. Download new release from https://github.com/parseablehq/parseable/releases/latest )",
+                latest_release.version, time_since_latest_release
+            );
+
+            eprint!("{}", fmt_latest_version.red());
+        }
+
+        eprintln!(
+            "
+        Commit:             \"{}\"
+        Docs:               \"https://www.parseable.io/docs/introduction\"",
             commit_hash
         );
     }
@@ -111,32 +135,7 @@ pub mod about {
 
         match current.0 {
             ParseableVersion::Version(current_version) => {
-                print_version(current_version.clone(), current.1);
-                // check for latest release, if it cannot be fetched then print error as warn and return
-                let latest_release = match update::get_latest() {
-                    Ok(latest_release) => latest_release,
-                    Err(_) => {
-                        return;
-                    }
-                };
-
-                if latest_release.version > current_version {
-                    let time_since_latest_release = chrono::Utc::now() - latest_release.date;
-                    let time_since_latest_release = humanize_time(time_since_latest_release);
-
-                    let fmt_latest_version = format!(
-                        "( v{} released {} ago )",
-                        latest_release.version, time_since_latest_release
-                    );
-
-                    eprint!("{}", fmt_latest_version.yellow().bold());
-                    eprintln!(
-                        "
-    Download latest version from https://github.com/parseablehq/parseable/releases/latest"
-                    );
-                } else {
-                    eprintln!();
-                }
+                print_about(current_version, current.1);
             }
             ParseableVersion::Prerelease(current_prerelease) => {
                 eprintln!(
