@@ -271,7 +271,7 @@ impl Server {
                     .long(Self::ADDRESS)
                     .env("P_ADDR")
                     .value_name("ADDR:PORT")
-                    .default_value("0.0.0.0:8000")
+                    .default_value("127.0.0.1:8000")
                     .value_parser(validation::socket_addr)
                     .help("The address on which the http server will listen."),
             )

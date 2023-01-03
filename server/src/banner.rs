@@ -31,31 +31,26 @@ pub fn print(config: &Config, meta: StorageMetadata) {
 }
 
 fn status_info(config: &Config, scheme: &str, id: Uid) {
-    let url = format!("{}://{}", scheme, config.parseable.address).underlined();
+    let url = format!("\"{}://{}\"", scheme, config.parseable.address)
+        .underlined();
+    let mut credentials =
+        String::from("\"As set in P_USERNAME and P_PASSWORD environment variables\"");
+
     if config.is_default_creds() {
-        eprintln!(
-            "
+        credentials = "\"Using default creds admin, admin. Please set credentials with P_USERNAME and P_PASSWORD.\"".red().to_string();
+    }
+
+    eprintln!(
+        "
     {}
-        Running at:         \"{}\"
+        Running at:         {}
         Credentials:        {}
         Deployment UID:     \"{}\"",
         "Parseable Server".to_string().bold(),
         url,
-        "\"Using default creds admin, admin. Please set credentials with P_USERNAME and P_PASSWORD.\"".to_string().red(),
-        id.to_string()
+        credentials,
+        id.to_string(),
     );
-    } else {
-        eprintln!(
-            "
-    {}
-        Running at:         \"{}\"
-        Credentials:        \"As set in P_USERNAME and P_PASSWORD environment variables\"
-        Deployment UID:     \"{}\"",
-            "Parseable Server".to_string().bold(),
-            url,
-            id.to_string(),
-        );
-    }
 }
 
 fn storage_info(config: &Config) {
@@ -105,7 +100,7 @@ pub mod about {
         Version:            \"{}\"
         Commit:             \"{}\"   
         Docs:               \"https://www.parseable.io/docs/introduction\"",
-            "About:".to_string().blue().bold(),
+            "About:".to_string().bold(),
             current_version,
             commit_hash
         );
