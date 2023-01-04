@@ -246,6 +246,9 @@ pub trait ObjectStorage: Sync + 'static {
                     .unwrap()
                     .get_mut(&file)
                     .set_metadata(CacheState::Uploading);
+
+                let compressed_size = file.metadata().map_or(0, |meta| meta.len());
+
                 let _put_parquet_file = self.upload_file(&objectstore_path, &file).await?;
                 CACHED_FILES
                     .lock()
@@ -255,8 +258,8 @@ pub trait ObjectStorage: Sync + 'static {
 
                 stream_stats
                     .entry(stream)
-                    .and_modify(|size| *size += file.metadata().map_or(0, |meta| meta.len()))
-                    .or_insert_with(|| file.metadata().map_or(0, |meta| meta.len()));
+                    .and_modify(|size| *size += compressed_size)
+                    .or_insert_with(|| compressed_size);
 
                 CACHED_FILES.lock().unwrap().remove(&file);
             }
