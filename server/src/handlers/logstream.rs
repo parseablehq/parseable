@@ -19,48 +19,29 @@
 use std::fs;
 
 use actix_web::http::StatusCode;
-use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use actix_web::{web, HttpRequest, Responder};
 use chrono::Utc;
 use serde_json::Value;
 
 use crate::alerts::Alerts;
+use crate::event;
 use crate::option::CONFIG;
-use crate::storage::StorageDir;
-use crate::{event, response};
+use crate::storage::{ObjectStorageError, StorageDir};
 use crate::{metadata, validator};
 
-pub async fn delete(req: HttpRequest) -> HttpResponse {
+use self::error::StreamError;
+
+pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    if let Err(e) = validator::stream_name(&stream_name) {
-        // fail to proceed if there is an error in log stream name validation
-        return response::ServerResponse {
-            msg: format!("failed to get log stream schema due to err: {}", e),
-            code: StatusCode::BAD_REQUEST,
-        }
-        .to_http();
-    }
+    validator::stream_name(&stream_name)?;
 
     let objectstore = CONFIG.storage().get_object_store();
 
     if objectstore.get_schema(&stream_name).await.is_err() {
-        return response::ServerResponse {
-            msg: format!("log stream {} does not exist", stream_name),
-            code: StatusCode::BAD_REQUEST,
-        }
-        .to_http();
+        return Err(StreamError::StreamNotFound(stream_name.to_string()));
     }
 
-    if let Err(e) = objectstore.delete_stream(&stream_name).await {
-        return response::ServerResponse {
-            msg: format!(
-                "failed to delete log stream {} due to err: {}",
-                stream_name, e
-            ),
-            code: StatusCode::INTERNAL_SERVER_ERROR,
-        }
-        .to_http();
-    }
-
+    objectstore.delete_stream(&stream_name).await?;
     metadata::STREAM_INFO.delete_stream(&stream_name);
 
     if event::STREAM_WRITERS::delete_entry(&stream_name).is_err() {
@@ -79,63 +60,42 @@ pub async fn delete(req: HttpRequest) -> HttpResponse {
         )
     }
 
-    response::ServerResponse {
-        msg: format!("log stream {} deleted", stream_name),
-        code: StatusCode::OK,
-    }
-    .to_http()
+    Ok((
+        format!("log stream {} deleted", stream_name),
+        StatusCode::OK,
+    ))
 }
 
 pub async fn list(_: HttpRequest) -> impl Responder {
-    response::list_response(
-        CONFIG
-            .storage()
-            .get_object_store()
-            .list_streams()
-            .await
-            .unwrap(),
-    )
+    let body = CONFIG
+        .storage()
+        .get_object_store()
+        .list_streams()
+        .await
+        .unwrap();
+    web::Json(body)
 }
 
-pub async fn schema(req: HttpRequest) -> HttpResponse {
+pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     match metadata::STREAM_INFO.schema(&stream_name) {
-        Ok(schema) => response::ServerResponse {
-            msg: schema
-                .and_then(|ref schema| serde_json::to_string(schema).ok())
-                .unwrap_or_default(),
-            code: StatusCode::OK,
-        }
-        .to_http(),
+        Ok(schema) => Ok((web::Json(schema), StatusCode::OK)),
         Err(_) => match CONFIG
             .storage()
             .get_object_store()
             .get_schema(&stream_name)
             .await
         {
-            Ok(None) => response::ServerResponse {
-                msg: "log stream is not initialized, please post an event before fetching schema"
-                    .to_string(),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http(),
-            Ok(Some(ref schema)) => response::ServerResponse {
-                msg: serde_json::to_string(schema).unwrap(),
-                code: StatusCode::OK,
-            }
-            .to_http(),
-            Err(_) => response::ServerResponse {
-                msg: "failed to get log stream schema, because log stream doesn't exist"
-                    .to_string(),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http(),
+            Ok(Some(schema)) => Ok((web::Json(Some(schema)), StatusCode::OK)),
+            Ok(None) => Err(StreamError::UninitializedLogstream),
+            Err(ObjectStorageError::NoSuchKey(_)) => Err(StreamError::StreamNotFound(stream_name)),
+            Err(err) => Err(err.into()),
         },
     }
 }
 
-pub async fn get_alert(req: HttpRequest) -> HttpResponse {
+pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     let alerts = metadata::STREAM_INFO
@@ -148,45 +108,49 @@ pub async fn get_alert(req: HttpRequest) -> HttpResponse {
 
     let mut alerts = match alerts {
         Some(alerts) => alerts,
-        None => match CONFIG
-            .storage()
-            .get_object_store()
-            .get_alerts(&stream_name)
-            .await
-        {
-            Ok(alerts) if alerts.alerts.is_empty() => {
-                return response::ServerResponse {
-                    msg: "alert configuration not set for log stream {}".to_string(),
-                    code: StatusCode::BAD_REQUEST,
-                }
-                .to_http()
+        None => {
+            let alerts = CONFIG
+                .storage()
+                .get_object_store()
+                .get_alerts(&stream_name)
+                .await?;
+
+            if alerts.alerts.is_empty() {
+                return Err(StreamError::NoAlertsSet);
             }
-            Ok(alerts) => serde_json::to_value(alerts).expect("alerts can serialize to valid json"),
-            Err(_) => {
-                return response::ServerResponse {
-                    msg: "alert doesn't exist".to_string(),
-                    code: StatusCode::BAD_REQUEST,
-                }
-                .to_http()
-            }
-        },
+
+            serde_json::to_value(alerts).expect("alerts can serialize to valid json")
+        }
     };
 
     remove_id_from_alerts(&mut alerts);
 
-    response::ServerResponse {
-        msg: alerts.to_string(),
-        code: StatusCode::OK,
-    }
-    .to_http()
+    Ok((web::Json(alerts), StatusCode::OK))
 }
 
-pub async fn put_stream(req: HttpRequest) -> HttpResponse {
+pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    create_stream_if_not_exists(stream_name).await
+
+    if metadata::STREAM_INFO.stream_exists(&stream_name) {
+        // Error if the log stream already exists
+        return Err(StreamError::Custom {
+            msg: format!(
+                "log stream {} already exists, please create a new log stream with unique name",
+                stream_name
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
+    } else {
+        create_stream(stream_name).await?;
+    }
+
+    Ok(("log stream created", StatusCode::OK))
 }
 
-pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> HttpResponse {
+pub async fn put_alert(
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     let mut body = body.into_inner();
@@ -194,28 +158,15 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
 
     let alerts: Alerts = match serde_json::from_value(body) {
         Ok(alerts) => alerts,
-        Err(e) => {
-            return response::ServerResponse {
-                msg: format!(
-                    "failed to set alert configuration for log stream {} due to err: {}",
-                    stream_name, e
-                ),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http()
+        Err(err) => {
+            return Err(StreamError::BadAlertJson {
+                stream: stream_name,
+                err,
+            })
         }
     };
 
-    if let Err(e) = validator::alert(&alerts) {
-        return response::ServerResponse {
-            msg: format!(
-                "failed to set alert configuration for log stream {} due to err: {}",
-                stream_name, e
-            ),
-            code: StatusCode::BAD_REQUEST,
-        }
-        .to_http();
-    }
+    validator::alert(&alerts)?;
 
     match metadata::STREAM_INFO.schema(&stream_name) {
         Ok(Some(schema)) => {
@@ -225,77 +176,35 @@ pub async fn put_alert(req: HttpRequest, body: web::Json<serde_json::Value>) -> 
                 .find(|alert| !alert.rule.valid_for_schema(&schema));
 
             if let Some(alert) = invalid_alert {
-                return response::ServerResponse {
-                    msg:
-                        format!("alert - \"{}\" is invalid, please check if alert is valid according to this stream's schema and try again", alert.name),
-                    code: StatusCode::BAD_REQUEST,
-                }
-                .to_http();
+                return Err(StreamError::InvalidAlert(alert.name.to_string()));
             }
         }
-        Ok(None) => {
-            return response::ServerResponse {
-                msg: "log stream is not initialized, please post an event before setting up alerts"
-                    .to_string(),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http()
-        }
-        Err(_) => {
-            return response::ServerResponse {
-                msg: "log stream is not found".to_string(),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http()
-        }
+        Ok(None) => return Err(StreamError::UninitializedLogstream),
+        Err(_) => return Err(StreamError::StreamNotFound(stream_name)),
     }
 
-    if let Err(e) = CONFIG
+    CONFIG
         .storage()
         .get_object_store()
         .put_alerts(&stream_name, &alerts)
-        .await
-    {
-        return response::ServerResponse {
-            msg: format!(
-                "failed to set alert configuration for log stream {} due to err: {}",
-                stream_name, e
-            ),
-            code: StatusCode::INTERNAL_SERVER_ERROR,
-        }
-        .to_http();
-    }
+        .await?;
 
-    if let Err(e) = metadata::STREAM_INFO.set_alert(&stream_name, alerts) {
-        return response::ServerResponse {
-            msg: format!(
-                "failed to set alert configuration for log stream {} due to err: {}",
-                stream_name, e
-            ),
-            code: StatusCode::INTERNAL_SERVER_ERROR,
-        }
-        .to_http();
-    }
+    metadata::STREAM_INFO
+        .set_alert(&stream_name, alerts)
+        .expect("alerts set on existing stream");
 
-    response::ServerResponse {
-        msg: format!("set alert configuration for log stream {}", stream_name),
-        code: StatusCode::OK,
-    }
-    .to_http()
+    Ok((
+        format!("set alert configuration for log stream {}", stream_name),
+        StatusCode::OK,
+    ))
 }
 
-pub async fn get_stats(req: HttpRequest) -> HttpResponse {
+pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     let stats = match metadata::STREAM_INFO.get_stats(&stream_name) {
         Ok(stats) => stats,
-        Err(e) => {
-            return response::ServerResponse {
-                msg: format!("Could not return stats due to error: {}", e),
-                code: StatusCode::BAD_REQUEST,
-            }
-            .to_http()
-        }
+        Err(_) => return Err(StreamError::StreamNotFound(stream_name)),
     };
 
     let time = Utc::now();
@@ -313,11 +222,7 @@ pub async fn get_stats(req: HttpRequest) -> HttpResponse {
         }
     });
 
-    response::ServerResponse {
-        msg: stats.to_string(),
-        code: StatusCode::OK,
-    }
-    .to_http()
+    Ok((web::Json(stats), StatusCode::OK))
 }
 
 fn remove_id_from_alerts(value: &mut Value) {
@@ -332,45 +237,89 @@ fn remove_id_from_alerts(value: &mut Value) {
 }
 
 // Check if the stream exists and create a new stream if doesn't exist
-pub async fn create_stream_if_not_exists(stream_name: String) -> HttpResponse {
-    if metadata::STREAM_INFO.stream_exists(stream_name.as_str()) {
-        // Error if the log stream already exists
-        response::ServerResponse {
-            msg: format!(
-                "log stream {} already exists, please create a new log stream with unique name",
-                stream_name
-            ),
-            code: StatusCode::BAD_REQUEST,
-        }
-        .to_http();
+pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), StreamError> {
+    if metadata::STREAM_INFO.stream_exists(stream_name) {
+        return Ok(());
     }
 
+    create_stream(stream_name.to_string()).await
+}
+
+pub async fn create_stream(stream_name: String) -> Result<(), StreamError> {
     // fail to proceed if invalid stream name
-    if let Err(e) = validator::stream_name(&stream_name) {
-        response::ServerResponse {
-            msg: format!("failed to create log stream due to err: {}", e),
-            code: StatusCode::BAD_REQUEST,
-        }
-        .to_http();
-    }
+    validator::stream_name(&stream_name)?;
 
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
     if let Err(e) = storage.create_stream(&stream_name).await {
         // Fail if unable to create log stream on object store backend
-        response::ServerResponse {
+        return Err(StreamError::Custom {
             msg: format!(
                 "failed to create log stream {} due to err: {}",
                 stream_name, e
             ),
-            code: StatusCode::INTERNAL_SERVER_ERROR,
-        }
-        .to_http();
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        });
     }
     metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Alerts::default());
-    response::ServerResponse {
-        msg: format!("created log stream {}", stream_name),
-        code: StatusCode::OK,
+
+    Ok(())
+}
+
+pub mod error {
+
+    use actix_web::http::header::ContentType;
+    use http::StatusCode;
+
+    use crate::{
+        storage::ObjectStorageError,
+        validator::error::{AlertValidationError, StreamNameValidationError},
+    };
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum StreamError {
+        #[error("Stream name validation failed due to {0}")]
+        StreamNameValidation(#[from] StreamNameValidationError),
+        #[error("Log stream {0} does not exist")]
+        StreamNotFound(String),
+        #[error("Log stream is not initialized, send an event to this logstream and try again")]
+        UninitializedLogstream,
+        #[error("Storage Error {0}")]
+        Storage(#[from] ObjectStorageError),
+        #[error("No alerts configured for this stream")]
+        NoAlertsSet,
+        #[error("failed to set alert configuration for log stream {stream} due to err: {err}")]
+        BadAlertJson {
+            stream: String,
+            err: serde_json::Error,
+        },
+        #[error("Alert validation failed due to {0}")]
+        AlertValidation(#[from] AlertValidationError),
+        #[error("alert - \"{0}\" is invalid, please check if alert is valid according to this stream's schema and try again")]
+        InvalidAlert(String),
+        #[error("{msg}")]
+        Custom { msg: String, status: StatusCode },
     }
-    .to_http()
+
+    impl actix_web::ResponseError for StreamError {
+        fn status_code(&self) -> http::StatusCode {
+            match self {
+                StreamError::StreamNameValidation(_) => StatusCode::BAD_REQUEST,
+                StreamError::StreamNotFound(_) => StatusCode::NOT_FOUND,
+                StreamError::Custom { status, .. } => *status,
+                StreamError::UninitializedLogstream => StatusCode::METHOD_NOT_ALLOWED,
+                StreamError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                StreamError::NoAlertsSet => StatusCode::NOT_FOUND,
+                StreamError::BadAlertJson { .. } => StatusCode::BAD_REQUEST,
+                StreamError::AlertValidation(_) => StatusCode::BAD_REQUEST,
+                StreamError::InvalidAlert(_) => StatusCode::BAD_REQUEST,
+            }
+        }
+
+        fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
+            actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string())
+        }
+    }
 }

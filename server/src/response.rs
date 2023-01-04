@@ -17,31 +17,9 @@
  */
 
 use actix_web::http::StatusCode;
-use actix_web::{error, web, HttpResponse, HttpResponseBuilder, Responder};
+use actix_web::{HttpResponse, HttpResponseBuilder};
 use datafusion::arrow::json;
 use datafusion::arrow::record_batch::RecordBatch;
-use derive_more::{Display, Error};
-
-use crate::storage;
-
-pub struct ServerResponse {
-    pub code: StatusCode,
-    pub msg: String,
-}
-
-impl ServerResponse {
-    pub fn to_http(&self) -> HttpResponse {
-        log::info!("{}", self.msg);
-
-        HttpResponseBuilder::new(self.code)
-            .content_type("text")
-            .body(self.msg.to_string())
-    }
-}
-
-pub fn list_response(body: Vec<storage::LogStream>) -> impl Responder {
-    web::Json(body)
-}
 
 pub struct QueryResponse {
     pub code: StatusCode,
@@ -70,10 +48,3 @@ impl From<Vec<RecordBatch>> for QueryResponse {
         }
     }
 }
-
-#[derive(Debug, Display, Error)]
-pub struct EventError {
-    pub msg: String,
-}
-
-impl error::ResponseError for EventError {}
