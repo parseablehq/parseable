@@ -144,7 +144,7 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
         create_stream(stream_name).await?;
     }
 
-    Ok((format!("log stream created"), StatusCode::OK))
+    Ok(("log stream created", StatusCode::OK))
 }
 
 pub async fn put_alert(
@@ -256,8 +256,7 @@ pub async fn create_stream(stream_name: String) -> Result<(), StreamError> {
         return Err(StreamError::Custom {
             msg: format!(
                 "failed to create log stream {} due to err: {}",
-                stream_name,
-                e.to_string()
+                stream_name, e
             ),
             status: StatusCode::INTERNAL_SERVER_ERROR,
         });
