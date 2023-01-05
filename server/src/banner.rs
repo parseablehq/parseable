@@ -41,10 +41,12 @@ fn print_ascii_art() {
       MM       8M   MM    MM     L.   I8 YM.    , 8M   MM   MM.   ,M9   MM  YM.    , 
     .JMML.     `Moo9^Yo..JMML.   M9mmmP'  `Mbmmd' `Moo9^Yo. P^YbmdP'  .JMML. `Mbmmd'       
     "#;
- 
-eprint!("{}", ascii_name);
-eprintln!("
-    Welcome to Parseable Server!");
+
+    eprint!("{}", ascii_name);
+    eprintln!(
+        "
+    Welcome to Parseable Server!"
+    );
 }
 
 fn status_info(config: &Config, scheme: &str, id: Uid) {
