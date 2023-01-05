@@ -1,9 +1,9 @@
 parseable:
   image:
     repository: parseable/parseable
-    tag: v0.0.8
+    tag: v0.1.0
     pullPolicy: Always
-  demo: false
+  local: false
   secrets: 
   - type: env
     name: parseable-env-secret
@@ -14,14 +14,15 @@ parseable:
     # - tls.key.path
     # - storage.upload.interval
     - addr
+    - username
+    - password
+    - staging.dir
     - s3.url
     - s3.access.key
     - s3.secret.key
     - s3.bucket
     - s3.region
-    - local.storage
-    - username
-    - password
+    - fs.dir
   replicaCount: 1
   env:
     RUST_LOG: "parseable=info"

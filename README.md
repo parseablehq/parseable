@@ -43,22 +43,26 @@ Parseable exposes REST API to ingest and query log data. Under the hood, it uses
 
 ## :white_check_mark: Installing
 
-Run the below command to deploy Parseable in demo mode with Docker.
+Run the below command to deploy Parseable in local storage mode with Docker.
 
 ```sh
-mkdir -p /tmp/data
-docker run \
-  -p 8000:8000 \
-  -v /tmp/data:/data \
+mkdir -p /tmp/parseable/data
+mkdir -p /tmp/parseable/staging
+
+docker run -p 8000:8000 \
+  -v /tmp/parseable/data:/parseable/data \
+  -v /tmp/parseable/staging:/parseable/staging \
+  -e P_FS_DIR=/parseable/data \
+  -e P_STAGING_DIR=/parseable/staging \
   parseable/parseable:latest \
-  parseable server --demo
+  parseable local-store
 ```
 
-Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard with `parseable`, `parseable` as the credentials. Please make sure not to post any important data while in demo mode.
+Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
 Prefer other platforms? Check out installation options (Kubernetes, bare-metal), in the [documentation](https://www.parseable.io/docs/category/installation).
 
-#### Live demo 
+#### Live demo
 
 Instead of installing locally, you can also try out Parseable on our [Demo instance](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
 
