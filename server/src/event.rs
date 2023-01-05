@@ -28,7 +28,7 @@ use datafusion::arrow::json::reader::{infer_json_schema_from_iterator, Decoder, 
 use datafusion::arrow::record_batch::RecordBatch;
 use lazy_static::lazy_static;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -179,7 +179,7 @@ impl Event {
             let schema_ref = Arc::new(schema);
             // validate schema before processing the event
             let Ok(mut event) = self.get_record(schema_ref.clone()) else {
-                return Err(EventError::SchemaMismatch(self.stream_name.clone()));
+                return Err(EventError::SchemaMismatch);
             };
 
             if event
@@ -312,10 +312,26 @@ impl Event {
 
     fn get_record(&self, schema: Arc<Schema>) -> Result<RecordBatch, EventError> {
         let mut iter = std::iter::once(Ok(self.body.clone()));
+        if fields_mismatch(&schema, &self.body) {
+            return Err(EventError::SchemaMismatch);
+        }
         let record = Decoder::new(schema, DecoderOptions::new()).next_batch(&mut iter)?;
 
         record.ok_or(EventError::MissingRecord)
     }
+}
+
+fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
+    let field: HashSet<&str> = schema
+        .fields()
+        .into_iter()
+        .map(|f| f.name().as_str())
+        .collect();
+
+    body.as_object()
+        .expect("body is of object variant")
+        .keys()
+        .any(|key| !field.contains(key.as_str()))
 }
 
 fn replace(
@@ -390,8 +406,8 @@ pub mod error {
         Metadata(#[from] MetadataError),
         #[error("Stream Writer Failed: {0}")]
         Arrow(#[from] ArrowError),
-        #[error("Schema Mismatch: {0}")]
-        SchemaMismatch(String),
+        #[error("Schema Mismatch")]
+        SchemaMismatch,
         #[error("Schema Mismatch: {0}")]
         ObjectStorage(#[from] ObjectStorageError),
     }
