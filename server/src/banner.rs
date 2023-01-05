@@ -23,11 +23,30 @@ use crate::utils::uid::Uid;
 use crate::{option::Config, storage::StorageMetadata};
 
 pub fn print(config: &Config, meta: StorageMetadata) {
+    print_ascii_art();
     let scheme = config.parseable.get_scheme();
     status_info(config, &scheme, meta.deployment_id);
     storage_info(config);
     about::print();
     println!();
+}
+
+fn print_ascii_art() {
+    let ascii_name = r#"
+    `7MM"""Mq.                                             *MM        `7MM           
+      MM   `MM.                                             MM          MM           
+      MM   ,M9  ,6"Yb.  `7Mb,od8 ,pP"Ybd  .gP"Ya   ,6"Yb.   MM,dMMb.    MM   .gP"Ya  
+      MMmmdM9  8)   MM    MM' "' 8I   `" ,M'   Yb 8)   MM   MM    `Mb   MM  ,M'   Yb 
+      MM        ,pm9MM    MM     `YMMMa. 8M""""""  ,pm9MM   MM     M8   MM  8M"""""" 
+      MM       8M   MM    MM     L.   I8 YM.    , 8M   MM   MM.   ,M9   MM  YM.    , 
+    .JMML.     `Moo9^Yo..JMML.   M9mmmP'  `Mbmmd' `Moo9^Yo. P^YbmdP'  .JMML. `Mbmmd'       
+    "#;
+
+    eprint!("{}", ascii_name);
+    eprintln!(
+        "
+    Welcome to Parseable Server!"
+    );
 }
 
 fn status_info(config: &Config, scheme: &str, id: Uid) {
@@ -42,10 +61,10 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     eprintln!(
         "
     {}
-        Running at:         {}
+        URL:                {}
         Credentials:        {}
         Deployment UID:     \"{}\"",
-        "Parseable Server".to_string().bold(),
+        "Server:".to_string().bold(),
         url,
         credentials,
         id.to_string(),
