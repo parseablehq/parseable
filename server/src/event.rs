@@ -322,11 +322,7 @@ impl Event {
 }
 
 fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
-    let field: HashSet<&str> = schema
-        .fields()
-        .into_iter()
-        .map(|f| f.name().as_str())
-        .collect();
+    let field: HashSet<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
 
     body.as_object()
         .expect("body is of object variant")
