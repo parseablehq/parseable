@@ -323,7 +323,7 @@ impl Event {
 
 fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
     for (name, val) in body.as_object().expect("body is of object variant") {
-        let Ok(field) = schema.field_with_name(name) else { return false };
+        let Ok(field) = schema.field_with_name(name) else { return true };
 
         // datatype check only some basic cases
         let valid_datatype = match field.data_type() {
