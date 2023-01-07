@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 pub fn flatten_json_body(body: &serde_json::Value) -> Result<Value, serde_json::Error> {
     let mut flat_value: Value = json!({});
-    flatten_json::flatten(body, &mut flat_value, None, true, Some("_")).unwrap();
+    flatten_json::flatten(body, &mut flat_value, None, false, Some("_")).unwrap();
     Ok(flat_value)
 }
 

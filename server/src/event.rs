@@ -28,7 +28,7 @@ use datafusion::arrow::json::reader::{infer_json_schema_from_iterator, Decoder, 
 use datafusion::arrow::record_batch::RecordBatch;
 use lazy_static::lazy_static;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -322,12 +322,27 @@ impl Event {
 }
 
 fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
-    let field: HashSet<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+    for (name, val) in body.as_object().expect("body is of object variant") {
+        let Ok( field) = schema.field_with_name(&name) else { return false };
 
-    body.as_object()
-        .expect("body is of object variant")
-        .keys()
-        .any(|key| !field.contains(key.as_str()))
+        // datatype check only some basic cases
+        let valid_datatype = match field.data_type() {
+            DataType::Boolean => val.is_boolean(),
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => val.is_i64(),
+            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
+                val.is_u64()
+            }
+            DataType::Float16 | DataType::Float32 | DataType::Float64 => val.is_f64(),
+            DataType::Utf8 => val.is_string(),
+            _ => false,
+        };
+
+        if !valid_datatype {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn replace(
