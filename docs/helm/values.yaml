@@ -1,0 +1,52 @@
+parseable:
+  image:
+    repository: parseable/parseable
+    tag: v0.1.0
+    pullPolicy: Always
+  local: false
+  secrets: 
+  - type: env
+    name: parseable-env-secret
+    prefix: P_
+    keys:
+    ## Comment / uncomment the following lines as required
+    # - tls.cert.path
+    # - tls.key.path
+    # - storage.upload.interval
+    - addr
+    - username
+    - password
+    - staging.dir
+    - s3.url
+    - s3.access.key
+    - s3.secret.key
+    - s3.bucket
+    - s3.region
+    - fs.dir
+  replicaCount: 1
+  env:
+    RUST_LOG: "parseable=info"
+  nameOverride: ""
+  fullnameOverride: ""  
+  serviceAccount:
+    create: true
+    name: "parseable"
+    annotations: {}
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  securityContext:
+   runAsUser: 10001
+   allowPrivilegeEscalation: false
+  podAnnotations: {}
+  podSecurityContext: {}
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
