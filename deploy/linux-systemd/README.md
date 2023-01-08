@@ -1,8 +1,6 @@
 ## Installation
 
-This document explains the steps required to setup systemd service for Parseable server. This configuration is for local store based setup for testing purposes. For production setup, we recommend using a object store like S3.
-
-For S3 or compatible object store based setup, please refer to [S3 setup guide](https://github.com/parseablehq/parseable/tree/main/deploy/linux-systemd/s3.md).
+This document explains the steps required to setup systemd service for Parseable server, in local store mode. For production setup, we recommend using a object store like S3, please refer to [S3 setup guide](https://github.com/parseablehq/parseable/tree/main/deploy/linux-systemd/s3.md).
 
 ## Prerequisites
 
@@ -36,11 +34,13 @@ WorkingDirectory=/usr/local/
 ```
 
 ## Enable startup on boot
+
 ```
-systemctl enable parseable.service
+systemctl enable parseable.local.service
 ```
 
 ## Disable Parseable service
+
 ```
-systemctl disable parseable.service
+systemctl disable parseable.local.service
 ```
