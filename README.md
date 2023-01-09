@@ -33,7 +33,9 @@
 
 Parseable is a lightweight, cloud native log storage and analysis engine. It can use either local drive or S3 (and compatible stores) for long term data storage.
 
-Parseable is written in Rust, and uses Apache Arrow and Parquet as underlying data structures. Additionally, With a simpler mechanism to organize data, Parseable avoids indexing altogether to making it low latency. In our testing, we have observed Parseable consumes up to _~90% lower memory_ and _~75% lower CPU_ than Elastic for similar ingestion throughput.  
+Parseable is written in Rust, and uses Apache Arrow and Parquet as underlying data structures. Additionally, With a simpler mechanism to organize data, Parseable avoids indexing altogether to making it low latency.
+
+In our testing, we have observed Parseable consumes up to _~90% lower memory_ and _~75% lower CPU_ than Elastic for similar ingestion throughput.  
 
 - Ingestion:
 - Query & Visualization:
