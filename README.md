@@ -11,11 +11,12 @@
 
 <div align="center">
 
+[![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
+[![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yaml?branch=main&color=%23FA9BFA&label=Build)](https://github.com/parseablehq/parseable/actions)
+[![License](https://img.shields.io/github/license/parseablehq/parseable?color=%23F9A9A9&label=License)](https://github.com/parseablehq/parseable/blob/main/LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?logo=docker&label=Docker%20Pulls)](https://hub.docker.com/r/parseable/parseable)
-[![Docs](https://img.shields.io/badge/stable%20parseable.io%2Fdocs%2Fbrightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
 [![Twitter](https://img.shields.io/twitter/follow/parseableio?logo=twitter&style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
 [![Slack](https://img.shields.io/badge/slack-brightgreen.svg?logo=slack&label=Community)](https://launchpass.com/parseable)
-[![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yaml?branch=main&color=%23FA9BFA&label=Build)](https://github.com/parseablehq/parseable/actions)
 
 </div>
 
