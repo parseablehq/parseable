@@ -83,6 +83,8 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/demo' \
 
 ### Query the stream
 
+You can see the events in Parseable UI, or use the below curl command to see the query response on CLI.
+
 NOTE: Please change the `startTime` and `endTime` to the time range corresponding to the event you sent in the previous step.
 
 ```sh
@@ -99,7 +101,8 @@ curl --location --request POST 'http://localhost:8000/api/v1/query' \
 ## :books: Documentation
 
 - [Roadmap ↗︎](https://github.com/orgs/parseablehq/projects/4)
-- [Complete documentation ↗︎](https://www.parseable.io/docs/category/installation).
+- [Complete documentation ↗︎](https://www.parseable.io/docs/category/installation)
+- [FAQ ↗︎](https://www.parseable.io/docs/faq)
 
 ## :dart: Motivation
 
