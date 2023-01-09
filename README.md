@@ -10,15 +10,18 @@
 
 <div align="center">
 
-[![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
-[![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yaml?branch=main&label=Build)](https://github.com/parseablehq/parseable/actions)
 [![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?logo=docker&label=Docker%20Pulls)](https://hub.docker.com/r/parseable/parseable)
-[![Twitter](https://img.shields.io/twitter/Follow/parseableio?logo=twitter&style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
+[![Twitter](https://img.shields.io/twitter/follow/parseableio?logo=twitter&style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
 [![Slack](https://img.shields.io/badge/slack-brightgreen.svg?logo=slack&label=Community)](https://launchpass.com/parseable)
 
 </div>
 
-Parseable is a log storage and query engine. It is designed to fit into the existing cloud native infrastructure with no friction. Think of Parseable as a lightweight, low latency, cloud native alternative to logging engines like Elasticsearch.
+<div align="center">
+
+[![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
+[![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yaml?branch=main&label=Build)](https://github.com/parseablehq/parseable/actions)
+
+</div>
 
 <h4 align="center">
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
@@ -28,14 +31,13 @@ Parseable is a log storage and query engine. It is designed to fit into the exis
 
 ## :wave: Introduction
 
-Parseable is a open source log observability platform. Written in Rust, it is designed for simplicity of deployment and use. It is compatible with standard logging agents via their HTTP output. Parseable also offers a builtin GUI for log query and analysis.
+Parseable is a lightweight, cloud native log storage and analysis engine. It can use either local drive or S3 (and compatible stores) for long term data storage.
 
-We're focussed on 
+Parseable is written in Rust, and uses Apache Arrow and Parquet as underlying data structures. Additionally, With a simpler mechanism to organize data, Parseable avoids indexing altogether to making it low latency. In our testing, we have observed Parseable consumes up to _~90% lower memory_ and _~75% lower CPU_ than Elastic for similar ingestion throughput.  
 
-* Simplicity - ease of deployment and use. 
-* Efficiency - lesser CPU, Memory usage. 
-* Extensibility - freedom to do more with event data. 
-* Performance - lower latency, higher throughput.
+- Ingestion:
+- Query & Visualization:
+- Alerting:
 
 ## :dart: Motivation
 
