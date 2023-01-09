@@ -13,11 +13,6 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?logo=docker&label=Docker%20Pulls)](https://hub.docker.com/r/parseable/parseable)
 [![Twitter](https://img.shields.io/twitter/follow/parseableio?logo=twitter&style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
 [![Slack](https://img.shields.io/badge/slack-brightgreen.svg?logo=slack&label=Community)](https://launchpass.com/parseable)
-
-</div>
-
-<div align="center">
-
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
 [![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yaml?branch=main&label=Build)](https://github.com/parseablehq/parseable/actions)
 
@@ -31,15 +26,11 @@
 
 ## :wave: Introduction
 
-Parseable is a lightweight, cloud native log storage and analysis engine. It can use either local drive or S3 (and compatible stores) for long term data storage.
+Parseable is a lightweight, cloud-native log storage and analysis engine. It can use either a local drive or S3 (and compatible stores) for long-term data storage.
 
-Parseable is written in Rust, and uses Apache Arrow and Parquet as underlying data structures. Additionally, With a simpler mechanism to organize data, Parseable avoids indexing altogether to making it low latency.
+Parseable is written in Rust and uses Apache Arrow and Parquet as underlying data structures. Additionally, it uses a simple, index-free mechanism to organize and query data allowing low latency, and high throughput ingestion and query.
 
-In our testing, we have observed Parseable consumes up to _~90% lower memory_ and _~75% lower CPU_ than Elastic for similar ingestion throughput.  
-
-- Ingestion:
-- Query & Visualization:
-- Alerting:
+In our testing, we have observed Parseable consumes up to _~90% lower memory_ and _~75% lower CPU_ than Elastic for similar ingestion throughput.
 
 ## :dart: Motivation
 
