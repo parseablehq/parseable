@@ -1,15 +1,25 @@
-<p align="center">
-  <span">
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="400" height="80" />
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="400" height="80" />
-  </a> 
-</p>
+<h2 align="center">
+    <a href="https://parseable.io" target="blank_">
+        <img height="80" width="400" alt="Parseable" src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" />
+        <img height="80" width="400" alt="Parseable" src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" />
+    </a>
+    <br>
+    Cloud native log observability
+</h2>
+
+<div align="center">
+
+[![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?label=DockerPulls)](https://hub.docker.com/r/parseable/parseable)
+[![Twitter](https://img.shields.io/twitter/follow/parseableio?style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
+[![Docs](https://img.shields.io/badge/stable/docs-httpie.io/docs/cli-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
+[![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yml?branch=master&color=%23FA9BFA&label=Build)](https://github.com/parseablehq/parseable/actions)
+
+</div>
 
 <h4 align="center">
-  <p> Cloud native log observability </p>
   <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png" />
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
-  <a href="https://www.parseable.io/docs/introduction" target="_blank">Documentation</a> |
+  <a href="https://www.parseable.io/docs" target="_blank">Documentation</a> |
   <a href="https://launchpass.com/parseable" target="_blank">Community</a> |
   <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
 </h4>
