@@ -22,15 +22,19 @@ Parseable is a lightweight, cloud-native log storage and analysis engine. It can
 
 Parseable is written in Rust and uses Apache Arrow and Parquet as underlying data structures. Additionally, it uses a simple, index-free mechanism to organize and query data allowing low latency, and high throughput ingestion and query.
 
-Parseable consumes up to _~90% lower memory_ and _~75% lower CPU_ than Elastic for similar ingestion throughput.
+Parseable consumes up to _~80% lower memory_ and _~50% lower CPU_ than Elastic for similar ingestion throughput.
 
-## :dart: Motivation
+## :rocket: Features
 
-Traditionally, logging has been seen as a text search problem. Log volumes were not high, and data ingestion or storage were not really issues. This led us to today, where all the logging platforms are primarily text search engines.
+- Choose your own storage backend - local drive or S3 (or compatible) object store.
+- Ingestion API, compatible with HTTP + JSON output of log agents - [Fluentbit](https://fluentbit.io/), [Vector](http://vector.dev/), [Logstash](https://www.elastic.co/logstash/) etc.
+- Query log data with PostgreSQL compatible SQL.
+- Parseable UI or [Grafana ↗︎](https://github.com/parseablehq/parseable-datasource) for visualization.
+- Auto schema inference (schema evolution [coming soon](https://github.com/parseablehq/parseable/issues/195)).
+- [Send alerts](https://www.parseable.io/docs/api/alerts) to webhook targets including Slack.
+- [Stats API](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3) to track ingestion and compressed data.
 
-But with log data growing exponentially, today's log data challenges involve whole lot more – Data ingestion, storage, and observation, all at scale. We are building Parseable to address these challenges.
-
-## :white_check_mark: Get Started
+## :white_check_mark: Getting Started
 
 Run the below command to deploy Parseable in local storage mode with Docker.
 
@@ -49,30 +53,20 @@ docker run -p 8000:8000 \
 
 Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
-Prefer other platforms? Check out installation options (Kubernetes, bare-metal), in the [documentation](https://www.parseable.io/docs/category/installation).
-
-#### Live demo
-
-Instead of installing locally, you can also try out Parseable on our [Demo instance](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
-
-### :100: Usage
-
-If you've already deployed Parseable using the above Docker command, use below commands to create stream and post event(s) to the stream.
-
-#### Create a stream
+### Create a stream
 
 ```sh
 curl --location --request PUT 'http://localhost:8000/api/v1/logstream/demo' \
 --header 'Authorization: Basic YWRtaW46YWRtaW4='
 ```
 
-#### Send events to the stream
+### Send events to the stream
 
 ```sh
 curl --location --request POST 'http://localhost:8000/api/v1/logstream/demo' \
 --header 'X-P-META-meta1: value1' \
 --header 'X-P-TAG-tag1: value1' \
---header 'Authorization: Basic cYWRtaW46YWRtaW4=' \
+--header 'Authorization: Basic YWRtaW46YWRtaW4=' \
 --header 'Content-Type: application/json' \
 --data-raw '[
     {
@@ -87,9 +81,31 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/demo' \
 ]'
 ```
 
-- For complete Parseable API documentation, refer to [Parseable API Docs ↗︎](https://www.parseable.io/docs/category/api).
-- To configure Parseable with popular logging agents, please refer to the [agent documentation ↗︎](https://www.parseable.io/docs/category/log-agents).
-- To integrate Parseable with your applications directly, please refer to the [integration documentation ↗︎](https://www.parseable.io/docs/category/application-integration).
+### Query the stream
+
+NOTE: Please change the `startTime` and `endTime` to the time range corresponding to the event you sent in the previous step.
+
+```sh
+curl --location --request POST 'http://localhost:8000/api/v1/query' \
+--header 'Authorization: Basic YWRtaW46YWRtaW4=' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "query":"select * from demo",
+    "startTime":"2023-01-09T00:00:00+00:00",
+    "endTime":"2023-01-09T23:59:00+00:00"
+}'
+```
+
+- [Complete documentation ↗︎](https://www.parseable.io/docs/category/installation).
+- [Complete Parseable API documentation ↗︎](https://www.parseable.io/docs/category/api).
+- [Configure logging agents ↗︎](https://www.parseable.io/docs/category/log-agents).
+- [Application integration documentation ↗︎](https://www.parseable.io/docs/category/application-integration).
+
+## :dart: Motivation
+
+Traditionally, logging has been seen as a text search problem. Log volumes were not high, and data ingestion or storage were not really issues. This led us to today, where all the logging platforms are primarily text search engines.
+
+But with log data growing exponentially, today's log data challenges involve whole lot more – Data ingestion, storage, and observation, all at scale. We are building Parseable to address these challenges.
 
 ## :stethoscope: Support
 
