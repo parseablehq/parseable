@@ -33,7 +33,7 @@ Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than E
 - Auto schema inference (schema evolution [coming soon ↗︎](https://github.com/parseablehq/parseable/issues/195)).
 - [Send alerts ↗︎](https://www.parseable.io/docs/api/alerts) to webhook targets including Slack.
 - [Stats API ↗︎](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3) to track ingestion and compressed data.
-- Single binary includes all components - ingestion, query, and storage. Built-in UI.
+- Single binary includes all components - ingestion, store and query. Built-in UI.
 
 ## :white_check_mark: Getting Started
 
