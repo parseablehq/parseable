@@ -27,12 +27,12 @@ Parseable consumes up to _~80% lower memory_ and _~50% lower CPU_ than Elastic f
 ## :rocket: Features
 
 - Choose your own storage backend - local drive or S3 (or compatible) object store.
-- Ingestion API, compatible with HTTP + JSON output of log agents - [Fluentbit](https://fluentbit.io/), [Vector](http://vector.dev/), [Logstash](https://www.elastic.co/logstash/) etc.
+- Ingestion API, compatible with HTTP + JSON output of log agents - [Fluentbit ↗︎](https://fluentbit.io/), [Vector ↗︎](http://vector.dev/), [Logstash ↗︎](https://www.elastic.co/logstash/) etc.
 - Query log data with PostgreSQL compatible SQL.
 - Parseable UI or [Grafana ↗︎](https://github.com/parseablehq/parseable-datasource) for visualization.
-- Auto schema inference (schema evolution [coming soon](https://github.com/parseablehq/parseable/issues/195)).
-- [Send alerts](https://www.parseable.io/docs/api/alerts) to webhook targets including Slack.
-- [Stats API](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3) to track ingestion and compressed data.
+- Auto schema inference (schema evolution [coming soon ↗︎](https://github.com/parseablehq/parseable/issues/195)).
+- [Send alerts ↗︎](https://www.parseable.io/docs/api/alerts) to webhook targets including Slack.
+- [Stats API ↗︎](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3) to track ingestion and compressed data.
 
 ## :white_check_mark: Getting Started
 
@@ -96,10 +96,10 @@ curl --location --request POST 'http://localhost:8000/api/v1/query' \
 }'
 ```
 
+## :books: Documentation
+
+- [Roadmap ↗︎](https://github.com/orgs/parseablehq/projects/4)
 - [Complete documentation ↗︎](https://www.parseable.io/docs/category/installation).
-- [Complete Parseable API documentation ↗︎](https://www.parseable.io/docs/category/api).
-- [Configure logging agents ↗︎](https://www.parseable.io/docs/category/log-agents).
-- [Application integration documentation ↗︎](https://www.parseable.io/docs/category/application-integration).
 
 ## :dart: Motivation
 
@@ -115,7 +115,7 @@ But with log data growing exponentially, today's log data challenges involve who
 
 ## :trophy: Contributing
 
-Refer to the contributing guide [here](https://www.parseable.io/docs/contributing).
+Refer to the contributing guide [here ↗︎](https://www.parseable.io/docs/contributing).
 
 #### Contributors
 
