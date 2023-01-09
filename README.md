@@ -12,19 +12,18 @@
 
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
 [![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yaml?branch=main&label=Build)](https://github.com/parseablehq/parseable/actions)
-[![License](https://img.shields.io/github/license/parseablehq/parseable?color=%23F9A9A9&label=License)](https://github.com/parseablehq/parseable/blob/main/LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?logo=docker&label=Docker%20Pulls)](https://hub.docker.com/r/parseable/parseable)
-[![Twitter](https://img.shields.io/twitter/follow/parseableio?logo=twitter&style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
+[![Twitter](https://img.shields.io/twitter/Follow/parseableio?logo=twitter&style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
 [![Slack](https://img.shields.io/badge/slack-brightgreen.svg?logo=slack&label=Community)](https://launchpass.com/parseable)
 
 </div>
 
+Parseable is a log storage and query engine. It is designed to fit into the existing cloud native infrastructure with no friction. Think of Parseable as a lightweight, low latency, cloud native alternative to logging engines like Elasticsearch.
+
 <h4 align="center">
-  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png" />
   <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
   <a href="https://www.parseable.io/docs" target="_blank">Documentation</a> |
-  <a href="https://launchpass.com/parseable" target="_blank">Community</a> |
-  <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
+  <a href="https://launchpass.com/parseable" target="_blank">Community</a>
 </h4>
 
 ## :wave: Introduction
