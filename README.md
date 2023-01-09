@@ -1,10 +1,9 @@
 <h2 align="center">
-    <a href="https://parseable.io" target="blank_">
-      <img height="80" width="400" alt="Parseable" src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" />
-    </a>
-    <a href="https://parseable.io" target="blank_">
-      <img height="80" width="400" alt="Parseable" src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" />
-    </a>
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.png">
+      <img alt="Parseable Logo" src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.png">
+    </picture>
     <br>
     Cloud native log observability
 </h2>
@@ -12,7 +11,7 @@
 <div align="center">
 
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
-[![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yaml?branch=main&color=%23FA9BFA&label=Build)](https://github.com/parseablehq/parseable/actions)
+[![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yaml?branch=main&label=Build)](https://github.com/parseablehq/parseable/actions)
 [![License](https://img.shields.io/github/license/parseablehq/parseable?color=%23F9A9A9&label=License)](https://github.com/parseablehq/parseable/blob/main/LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?logo=docker&label=Docker%20Pulls)](https://hub.docker.com/r/parseable/parseable)
 [![Twitter](https://img.shields.io/twitter/follow/parseableio?logo=twitter&style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
