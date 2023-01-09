@@ -18,7 +18,7 @@
 
 </div>
 
-Parseable is a lightweight, cloud-native log storage and analysis engine. It can use either a local drive or S3 (and compatible stores) for long-term data storage.
+Parseable is a lightweight, cloud native log observability engine. It can use either a local drive or S3 (and compatible stores) for backend data storage.
 
 Parseable is written in Rust and uses Apache Arrow and Parquet as underlying data structures. Additionally, it uses a simple, index-free mechanism to organize and query data allowing low latency, and high throughput ingestion and query.
 
