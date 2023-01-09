@@ -26,21 +26,11 @@ Parseable consumes up to _~90% lower memory_ and _~75% lower CPU_ than Elastic f
 
 ## :dart: Motivation
 
-Given the analytical nature of log data, columnar formats like Parquet are the best way to store and analyze. Parquet offers compression and inherent analytical capabilities. However, indexing based text search engines are _still_ prevalent. We are building Parseable to take full advantage of advanced data formats like Apache Parquet and Arrow. This approach is simpler, efficient and much more scalable.
+Traditionally, logging has been seen as a text search problem. Log volumes were not high, and data ingestion or storage were not really issues. This led us to today, where all the logging platforms are primarily text search engines.
 
-Parseable is developer friendly, cloud native, logging platforms today that is simple to deploy and run - while offering a rich set of features.
+But with log data growing exponentially, today's log data challenges involve whole lot more – Data ingestion, storage, and observation, all at scale. We are building Parseable to address these challenges.
 
-## :question: How it works
-
-Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to handle and compress high volume log data. All data is stored in S3 (or compatible systems). Parseable also has a bundled web console to visualize and query log data. 
-
-- Written in Rust. Low CPU & memory footprint, with low latency, high throughput.
-- Open data format (Parquet). Complete ownership of data. Wide range of possibilities for data analysis.
-- Single binary / container based deployment (including UI). Deploy in minutes if not seconds.
-- Indexing free design. Lower CPU and storage overhead. Similar levels of performance as indexing based systems.
-- Kubernetes and Cloud native design, build ground up for cloud native environments.
-
-## :white_check_mark: Installing
+## :white_check_mark: Get Started
 
 Run the below command to deploy Parseable in local storage mode with Docker.
 
@@ -65,23 +55,24 @@ Prefer other platforms? Check out installation options (Kubernetes, bare-metal),
 
 Instead of installing locally, you can also try out Parseable on our [Demo instance](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
 
-## :100: Usage
+### :100: Usage
 
-If you've already deployed Parseable using the above Docker command, use below commands to create stream and post event(s) to the stream. Make sure to replace `<stream-name>` with the name of the stream you want to create and post events (e.g. `my-stream`).
+If you've already deployed Parseable using the above Docker command, use below commands to create stream and post event(s) to the stream.
+
 #### Create a stream
 
 ```sh
-curl --location --request PUT 'http://localhost:8000/api/v1/logstream/<stream-name>' \
---header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ=='
+curl --location --request PUT 'http://localhost:8000/api/v1/logstream/demo' \
+--header 'Authorization: Basic YWRtaW46YWRtaW4='
 ```
 
 #### Send events to the stream
 
 ```sh
-curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-name>' \
+curl --location --request POST 'http://localhost:8000/api/v1/logstream/demo' \
 --header 'X-P-META-meta1: value1' \
 --header 'X-P-TAG-tag1: value1' \
---header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' \
+--header 'Authorization: Basic cYWRtaW46YWRtaW4=' \
 --header 'Content-Type: application/json' \
 --data-raw '[
     {
@@ -96,15 +87,15 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-n
 ]'
 ```
 
-- For complete Parseable API documentation, refer to [Parseable API Docs](https://www.parseable.io/docs/category/api).
-- To configure Parseable with popular logging agents, please refer to the [agent documentation](https://www.parseable.io/docs/category/log-agents).
-- To integrate Parseable with your applications directly, please refer to the [integration documentation](https://www.parseable.io/docs/category/application-integration).
+- For complete Parseable API documentation, refer to [Parseable API Docs ↗︎](https://www.parseable.io/docs/category/api).
+- To configure Parseable with popular logging agents, please refer to the [agent documentation ↗︎](https://www.parseable.io/docs/category/log-agents).
+- To integrate Parseable with your applications directly, please refer to the [integration documentation ↗︎](https://www.parseable.io/docs/category/application-integration).
 
 ## :stethoscope: Support
 
-For questions and feedback please feel free to reach out to us on [Slack](https://launchpass.com/parseable). For bugs, please create issue on [GitHub](https://github.com/parseablehq/parseable/issues). 
-
-For commercial support and consultation, please reach out to us at [`hi@parseable.io`](mailto:hi@parseable.io).
+- For questions and feedback please feel free to reach out to us on [Slack ↗︎](https://launchpass.com/parseable).
+- For bugs, please create issue on [GitHub ↗︎](https://github.com/parseablehq/parseable/issues).
+- For commercial support and consultation, please reach out to us at [`hi@parseable.io` ↗︎](mailto:hi@parseable.io).
 
 ## :trophy: Contributing
 
