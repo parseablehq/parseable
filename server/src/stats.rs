@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub struct StatsCounter {
+    events_ingested: AtomicU64,
     ingestion_size: AtomicU64,
     storage_size: AtomicU64,
 }
@@ -29,6 +30,7 @@ pub struct StatsCounter {
 impl Default for StatsCounter {
     fn default() -> Self {
         Self {
+            events_ingested: AtomicU64::new(0),
             ingestion_size: AtomicU64::new(0),
             storage_size: AtomicU64::new(0),
         }
@@ -43,11 +45,16 @@ impl PartialEq for StatsCounter {
 }
 
 impl StatsCounter {
-    pub fn new(ingestion_size: u64, storage_size: u64) -> Self {
+    pub fn new(ingestion_size: u64, storage_size: u64, event_ingested: u64) -> Self {
         Self {
-            ingestion_size: AtomicU64::new(ingestion_size),
-            storage_size: AtomicU64::new(storage_size),
+            ingestion_size: ingestion_size.into(),
+            storage_size: storage_size.into(),
+            events_ingested: event_ingested.into(),
         }
+    }
+
+    pub fn events_ingested(&self) -> u64 {
+        self.events_ingested.load(Ordering::Relaxed)
     }
 
     pub fn ingestion_size(&self) -> u64 {
@@ -65,11 +72,16 @@ impl StatsCounter {
     pub fn add_storage_size(&self, size: u64) {
         self.storage_size.fetch_add(size, Ordering::AcqRel);
     }
+
+    pub fn increase_event_by_one(&self) {
+        self.events_ingested.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Helper struct type created by copying stats values from metadata
 #[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
+    pub events: u64,
     pub ingestion: u64,
     pub storage: u64,
 }
@@ -77,6 +89,7 @@ pub struct Stats {
 impl From<&StatsCounter> for Stats {
     fn from(stats: &StatsCounter) -> Self {
         Self {
+            events: stats.events_ingested(),
             ingestion: stats.ingestion_size(),
             storage: stats.storage_size(),
         }
@@ -85,6 +98,6 @@ impl From<&StatsCounter> for Stats {
 
 impl From<Stats> for StatsCounter {
     fn from(stats: Stats) -> Self {
-        StatsCounter::new(stats.ingestion, stats.storage)
+        StatsCounter::new(stats.ingestion, stats.storage, stats.events)
     }
 }
