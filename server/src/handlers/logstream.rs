@@ -213,6 +213,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         "stream": stream_name,
         "time": time,
         "ingestion": {
+            "count": stats.events,
             "size": format!("{} {}", stats.ingestion, "Bytes"),
             "format": "json"
         },

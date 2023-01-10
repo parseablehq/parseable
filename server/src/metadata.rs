@@ -154,6 +154,7 @@ impl STREAM_INFO {
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))?;
 
         stream.stats.add_ingestion_size(size);
+        stream.stats.increase_event_by_one();
 
         Ok(())
     }
