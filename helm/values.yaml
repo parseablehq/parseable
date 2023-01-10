@@ -13,6 +13,7 @@ parseable:
     # - tls.cert.path
     # - tls.key.path
     # - storage.upload.interval
+    # - fs.dir --> Set if running in local drive mode
     - addr
     - username
     - password
@@ -22,7 +23,6 @@ parseable:
     - s3.secret.key
     - s3.bucket
     - s3.region
-    - fs.dir
   replicaCount: 1
   env:
     RUST_LOG: "parseable=info"
