@@ -12,7 +12,7 @@ Group=parseable-user
 ProtectProc=invisible
 
 EnvironmentFile=/etc/default/parseable
-ExecStart=/usr/local/bin/parseable
+ExecStart=/usr/local/bin/parseable s3-store
 
 # Let systemd restart this service always
 Restart=always

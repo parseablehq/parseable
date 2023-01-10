@@ -33,10 +33,10 @@ spec:
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
           # Uncomment to debug
           # command: [ "/bin/sh", "-c", "sleep 1000000" ]
-          {{- if .Values.parseable.demo }}
-          args: ["parseable", "server", "--demo"]
+          {{- if .Values.parseable.local }}
+          args: ["parseable", "local-store"]
           {{- else }}
-          args: ["parseable", "server"]
+          args: ["parseable", "s3-store"]
           {{- end }}
           env:
             {{- range $key, $value :=  .Values.parseable.env }}

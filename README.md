@@ -1,84 +1,73 @@
-<p align="center">
-  <span">
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg#gh-light-mode-only" alt="Parseable" width="400" height="80" />
-    <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png#gh-dark-mode-only" alt="Parseable" width="400" height="80" />
-  </a> 
-</p>
+<h2 align="center">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg">
+      <img alt="Parseable Logo" src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg">
+    </picture>
+    <br>
+    Cloud native log observability
+</h2>
 
-<h4 align="center">
-  <p> Cloud native log observability </p>
-  <img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png" />
-  <a href="https://www.parseable.io/docs/quick-start" target="_blank">Quick Start</a> |
-  <a href="https://www.parseable.io/docs/introduction" target="_blank">Documentation</a> |
-  <a href="https://launchpass.com/parseable" target="_blank">Community</a> |
-  <a href="https://demo.parseable.io" target="_blank">Live Demo</a>
-</h4>
+<div align="center">
 
-## :wave: Introduction
+[![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?logo=docker&label=Docker%20Pulls)](https://hub.docker.com/r/parseable/parseable)
+[![Twitter](https://img.shields.io/twitter/follow/parseableio?logo=twitter&style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
+[![Slack](https://img.shields.io/badge/slack-brightgreen.svg?logo=slack&label=Community)](https://launchpass.com/parseable)
+[![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
+[![Build](https://img.shields.io/github/actions/workflow/status/parseablehq/parseable/build.yaml?branch=main&label=Build)](https://github.com/parseablehq/parseable/actions)
 
-Parseable is a open source log observability platform. Written in Rust, it is designed for simplicity of deployment and use. It is compatible with standard logging agents via their HTTP output. Parseable also offers a builtin GUI for log query and analysis.
+</div>
 
-We're focussed on 
+Parseable is a lightweight, cloud native log observability engine. It can use either a local drive or S3 (and compatible stores) for backend data storage.
 
-* Simplicity - ease of deployment and use. 
-* Efficiency - lesser CPU, Memory usage. 
-* Extensibility - freedom to do more with event data. 
-* Performance - lower latency, higher throughput.
+Parseable is written in Rust and uses Apache Arrow and Parquet as underlying data structures. Additionally, it uses a simple, index-free mechanism to organize and query data allowing low latency, and high throughput ingestion and query.
 
-## :dart: Motivation
+Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput.
 
-Given the analytical nature of log data, columnar formats like Parquet are the best way to store and analyze. Parquet offers compression and inherent analytical capabilities. However, indexing based text search engines are _still_ prevalent. We are building Parseable to take full advantage of advanced data formats like Apache Parquet and Arrow. This approach is simpler, efficient and much more scalable.
+## :rocket: Features
 
-Parseable is developer friendly, cloud native, logging platforms today that is simple to deploy and run - while offering a rich set of features.
+- Choose your own storage backend - local drive or S3 (or compatible) object store.
+- Ingestion API compatible with HTTP + JSON output of log agents - [Fluentbit ↗︎](https://fluentbit.io/), [Vector ↗︎](http://vector.dev/), [Logstash ↗︎](https://www.elastic.co/logstash/) and others.
+- Query log data with PostgreSQL compatible SQL.
+- [Grafana ↗︎](https://github.com/parseablehq/parseable-datasource) for visualization.
+- Auto schema inference (schema evolution [coming soon ↗︎](https://github.com/parseablehq/parseable/issues/195)).
+- [Send alerts ↗︎](https://www.parseable.io/docs/api/alerts) to webhook targets including Slack.
+- [Stats API ↗︎](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3) to track ingestion and compressed data.
+- Single binary includes all components - ingestion, store and query. Built-in UI.
 
-## :question: How it works
+## :white_check_mark: Getting Started
 
-Parseable exposes REST API to ingest and query log data. Under the hood, it uses Apache Arrow and Parquet to handle and compress high volume log data. All data is stored in S3 (or compatible systems). Parseable also has a bundled web console to visualize and query log data. 
-
-- Written in Rust. Low CPU & memory footprint, with low latency, high throughput.
-- Open data format (Parquet). Complete ownership of data. Wide range of possibilities for data analysis.
-- Single binary / container based deployment (including UI). Deploy in minutes if not seconds.
-- Indexing free design. Lower CPU and storage overhead. Similar levels of performance as indexing based systems.
-- Kubernetes and Cloud native design, build ground up for cloud native environments.
-
-## :white_check_mark: Installing
-
-Run the below command to deploy Parseable in demo mode with Docker.
+Run the below command to deploy Parseable in local storage mode with Docker.
 
 ```sh
-mkdir -p /tmp/data
-docker run \
-  -p 8000:8000 \
-  -v /tmp/data:/data \
+mkdir -p /tmp/parseable/data
+mkdir -p /tmp/parseable/staging
+
+docker run -p 8000:8000 \
+  -v /tmp/parseable/data:/parseable/data \
+  -v /tmp/parseable/staging:/parseable/staging \
+  -e P_FS_DIR=/parseable/data \
+  -e P_STAGING_DIR=/parseable/staging \
   parseable/parseable:latest \
-  parseable server --demo
+  parseable local-store
 ```
 
-Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard with `parseable`, `parseable` as the credentials. Please make sure not to post any important data while in demo mode.
+Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
-Prefer other platforms? Check out installation options (Kubernetes, bare-metal), in the [documentation](https://www.parseable.io/docs/category/installation).
-
-#### Live demo 
-
-Instead of installing locally, you can also try out Parseable on our [Demo instance](https://demo.parseable.io). Credentials to login to the dashboard are `parseable` / `parseable`.
-
-## :100: Usage
-
-If you've already deployed Parseable using the above Docker command, use below commands to create stream and post event(s) to the stream. Make sure to replace `<stream-name>` with the name of the stream you want to create and post events (e.g. `my-stream`).
-#### Create a stream
+### Create a stream
 
 ```sh
-curl --location --request PUT 'http://localhost:8000/api/v1/logstream/<stream-name>' \
---header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ=='
+curl --location --request PUT 'http://localhost:8000/api/v1/logstream/demo' \
+--header 'Authorization: Basic YWRtaW46YWRtaW4='
 ```
 
-#### Send events to the stream
+### Send events to the stream
 
 ```sh
-curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-name>' \
+curl --location --request POST 'http://localhost:8000/api/v1/logstream/demo' \
 --header 'X-P-META-meta1: value1' \
 --header 'X-P-TAG-tag1: value1' \
---header 'Authorization: Basic cGFyc2VhYmxlOnBhcnNlYWJsZQ==' \
+--header 'Authorization: Basic YWRtaW46YWRtaW4=' \
 --header 'Content-Type: application/json' \
 --data-raw '[
     {
@@ -93,19 +82,44 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/<stream-n
 ]'
 ```
 
-- For complete Parseable API documentation, refer to [Parseable API Docs](https://www.parseable.io/docs/category/api).
-- To configure Parseable with popular logging agents, please refer to the [agent documentation](https://www.parseable.io/docs/category/log-agents).
-- To integrate Parseable with your applications directly, please refer to the [integration documentation](https://www.parseable.io/docs/category/application-integration).
+### Query the stream
+
+You can see the events in Parseable UI, or use the below curl command to see the query response on CLI.
+
+NOTE: Please change the `startTime` and `endTime` to the time range corresponding to the event you sent in the previous step.
+
+```sh
+curl --location --request POST 'http://localhost:8000/api/v1/query' \
+--header 'Authorization: Basic YWRtaW46YWRtaW4=' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "query":"select * from demo",
+    "startTime":"2023-01-09T00:00:00+00:00",
+    "endTime":"2023-01-09T23:59:00+00:00"
+}'
+```
+
+## :books: Documentation
+
+- [Roadmap ↗︎](https://github.com/orgs/parseablehq/projects/4)
+- [Complete documentation ↗︎](https://www.parseable.io/docs/category/installation)
+- [FAQ ↗︎](https://www.parseable.io/docs/faq)
+
+## :dart: Motivation
+
+Traditionally, logging has been seen as a text search problem. Log volumes were not high, and data ingestion or storage were not really issues. This led us to today, where all the logging platforms are primarily text search engines.
+
+But with log data growing exponentially, today's log data challenges involve whole lot more – Data ingestion, storage, and observation, all at scale. We are building Parseable to address these challenges.
 
 ## :stethoscope: Support
 
-For questions and feedback please feel free to reach out to us on [Slack](https://launchpass.com/parseable). For bugs, please create issue on [GitHub](https://github.com/parseablehq/parseable/issues). 
-
-For commercial support and consultation, please reach out to us at [`hi@parseable.io`](mailto:hi@parseable.io).
+- For questions and feedback please feel free to reach out to us on [Slack ↗︎](https://launchpass.com/parseable).
+- For bugs, please create issue on [GitHub ↗︎](https://github.com/parseablehq/parseable/issues).
+- For commercial support and consultation, please reach out to us at [`hi@parseable.io` ↗︎](mailto:hi@parseable.io).
 
 ## :trophy: Contributing
 
-Refer to the contributing guide [here](https://www.parseable.io/docs/contributing).
+Refer to the contributing guide [here ↗︎](https://www.parseable.io/docs/contributing).
 
 #### Contributors
 

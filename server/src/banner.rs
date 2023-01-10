@@ -129,7 +129,7 @@ pub mod about {
         eprintln!(
             "
         Commit:             \"{}\"
-        Docs:               \"https://www.parseable.io/docs/introduction\"",
+        Docs:               \"https://www.parseable.io/docs\"",
             commit_hash
         );
     }
