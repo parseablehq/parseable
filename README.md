@@ -14,7 +14,7 @@
 [![Twitter](https://img.shields.io/twitter/follow/parseableio?logo=twitter&style=flat&color=%234B78E6&logoColor=%234B78E6)](https://twitter.com/parseableio)
 [![Slack](https://img.shields.io/badge/slack-brightgreen.svg?logo=slack&label=Community)](https://launchpass.com/parseable)
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
-[![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main&label=Build)](https://github.com/parseablehq/parseable/actions)
+[![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?label=Checks)](https://github.com/parseablehq/parseable/actions)
 
 </div>
 
