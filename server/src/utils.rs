@@ -143,6 +143,8 @@ pub mod update {
 
     use crate::storage::StorageMetadata;
 
+    static K8S_ENV_TO_CHECK: &str = "KUBERNETES_SERVICE_HOST";
+
     pub struct LatestRelease {
         pub version: semver::Version,
         pub date: DateTime<Utc>,
@@ -156,10 +158,10 @@ pub mod update {
     }
 
     fn is_k8s() -> String {
-        if env::var("KUBERNETES_SERVICE_HOST").is_ok() {
+        if env::var(K8S_ENV_TO_CHECK).is_ok() {
             return "Kubernetes".to_string();
         }
-        String::new()
+        "".to_string()
     }
 
     fn platform() -> String {
