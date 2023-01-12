@@ -24,6 +24,12 @@ Parseable is written in Rust and uses Apache Arrow and Parquet as underlying dat
 
 Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput.
 
+<kbd> [Parseable UI ↗︎][ParseableLink] </kbd>
+<kbd> [Grafana Sample Dashboard ↗︎][GrafanaLink] </kbd>
+
+[ParseableLink]: https://demo.parseable.io/ 'Checkout the Parseable builtin UI (login with parseable,parseable)'
+[GrafanaLink]: https://demo.parseable.io:3000 'Checkout the Parseable log data visualization with Grafana'
+
 ## :rocket: Features
 
 - Choose your own storage backend - local drive or S3 (or compatible) object store.
