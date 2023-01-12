@@ -134,10 +134,16 @@ pub mod uid {
 
 pub mod update {
     use crate::banner::about::current;
+    use std::env;
     use std::{path::Path, time::Duration};
 
     use anyhow::anyhow;
     use chrono::{DateTime, Utc};
+    use ulid::Ulid;
+
+    use crate::storage::StorageMetadata;
+
+    static K8S_ENV_TO_CHECK: &str = "KUBERNETES_SERVICE_HOST";
 
     pub struct LatestRelease {
         pub version: semver::Version,
@@ -151,22 +157,38 @@ pub mod update {
         "Native".to_string()
     }
 
+    fn is_k8s() -> String {
+        if env::var(K8S_ENV_TO_CHECK).is_ok() {
+            return "Kubernetes".to_string();
+        }
+        "".to_string()
+    }
+
+    fn platform() -> String {
+        let mut platform = is_k8s();
+        if platform.is_empty() {
+            platform = is_docker();
+        }
+        platform
+    }
+
     // User Agent for Download API call
-    // Format: Parseable/<version>/<commit_hash> (OS; Platform)
-    fn user_agent() -> String {
+    // Format: Parseable/<UID>/<version>/<commit_hash> (<OS>; <Platform>)
+    fn user_agent(uid: Ulid) -> String {
         let info = os_info::get();
         format!(
-            "Parseable/{}/{} ({}; {})",
+            "Parseable/{}/{}/{} ({}; {})",
+            uid,
             current().0,
             current().1,
             info.os_type(),
-            is_docker()
+            platform()
         )
     }
 
-    pub fn get_latest() -> Result<LatestRelease, anyhow::Error> {
+    pub fn get_latest(meta: StorageMetadata) -> Result<LatestRelease, anyhow::Error> {
         let agent = ureq::builder()
-            .user_agent(user_agent().as_str())
+            .user_agent(user_agent(meta.deployment_id).as_str())
             .timeout(Duration::from_secs(8))
             .build();
 
