@@ -27,7 +27,7 @@ pub fn print(config: &Config, meta: StorageMetadata) {
     let scheme = config.parseable.get_scheme();
     status_info(config, &scheme, meta.deployment_id);
     storage_info(config);
-    about::print();
+    about::print(meta);
     println!();
 }
 
@@ -95,6 +95,7 @@ pub mod about {
     use crossterm::style::Stylize;
     use std::fmt;
 
+    use crate::storage::StorageMetadata;
     use crate::utils::update;
 
     pub enum ParseableVersion {
@@ -111,7 +112,11 @@ pub mod about {
         }
     }
 
-    pub fn print_about(current_version: semver::Version, commit_hash: String) {
+    pub fn print_about(
+        current_version: semver::Version,
+        commit_hash: String,
+        meta: StorageMetadata,
+    ) {
         eprint!(
             "
     {}
@@ -120,7 +125,7 @@ pub mod about {
             current_version,
         );
 
-        if let Ok(latest_release) = update::get_latest() {
+        if let Ok(latest_release) = update::get_latest(meta) {
             if latest_release.version > current_version {
                 print_latest_release(latest_release);
             }
@@ -144,13 +149,13 @@ pub mod about {
         eprint!("{}", fmt_latest_version.red());
     }
 
-    pub fn print() {
+    pub fn print(meta: StorageMetadata) {
         // print current version
         let current = current();
 
         match current.0 {
             ParseableVersion::Version(current_version) => {
-                print_about(current_version, current.1);
+                print_about(current_version, current.1, meta);
             }
             ParseableVersion::Prerelease(current_prerelease) => {
                 eprintln!(
