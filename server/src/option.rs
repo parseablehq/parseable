@@ -187,6 +187,9 @@ pub struct Server {
 
     /// Password for the basic authentication on the server
     pub password: String,
+
+    /// Server should check for update or not
+    pub check_update: bool,
 }
 
 impl FromArgMatches for Server {
@@ -219,6 +222,10 @@ impl FromArgMatches for Server {
             .get_one::<String>(Self::PASSWORD)
             .cloned()
             .expect("default for password");
+        self.check_update = m
+            .get_one::<bool>(Self::CHECK_UPDATE)
+            .cloned()
+            .expect("default for check update");
 
         Ok(())
     }
@@ -233,6 +240,7 @@ impl Server {
     pub const UPLOAD_INTERVAL: &str = "upload-interval";
     pub const USERNAME: &str = "username";
     pub const PASSWORD: &str = "password";
+    pub const CHECK_UPDATE: &str = "check-update";
     pub const DEFAULT_USERNAME: &str = "admin";
     pub const DEFAULT_PASSWORD: &str = "admin";
 
@@ -309,6 +317,16 @@ impl Server {
                     .env("P_PASSWORD")
                     .value_name("STRING")
                     .required(true)
+                    .help("Password for the basic authentication on the server"),
+            )
+            .arg(
+                Arg::new(Self::CHECK_UPDATE)
+                    .long(Self::CHECK_UPDATE)
+                    .env("P_CHECK_UPDATE")
+                    .value_name("BOOL")
+                    .required(false)
+                    .default_value("true")
+                    .value_parser(value_parser!(bool))
                     .help("Password for the basic authentication on the server"),
             )
     }
