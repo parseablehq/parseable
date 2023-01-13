@@ -229,7 +229,12 @@ pub trait ObjectStorage: Sync + 'static {
             }
 
             for file in dir.parquet_files() {
-                let metadata = CACHED_FILES.lock().unwrap().get_mut(&file).metadata;
+                let Some(metadata) = CACHED_FILES
+                    .lock()
+                    .unwrap()
+                    .get_mut(&file)
+                    .map(|fl| fl.metadata) else { continue };
+
                 if metadata != CacheState::Idle {
                     continue;
                 }
@@ -241,20 +246,36 @@ pub trait ObjectStorage: Sync + 'static {
                     .expect("filename is valid string");
                 let file_suffix = str::replacen(filename, ".", "/", 3);
                 let objectstore_path = format!("{}/{}", stream, file_suffix);
+
                 CACHED_FILES
                     .lock()
                     .unwrap()
                     .get_mut(&file)
+                    .expect("entry checked at the start")
                     .set_metadata(CacheState::Uploading);
 
                 let compressed_size = file.metadata().map_or(0, |meta| meta.len());
 
-                let _put_parquet_file = self.upload_file(&objectstore_path, &file).await?;
-                CACHED_FILES
-                    .lock()
-                    .unwrap()
-                    .get_mut(&file)
-                    .set_metadata(CacheState::Uploaded);
+                match self.upload_file(&objectstore_path, &file).await {
+                    Ok(()) => {
+                        CACHED_FILES
+                            .lock()
+                            .unwrap()
+                            .get_mut(&file)
+                            .expect("entry checked at the start")
+                            .set_metadata(CacheState::Uploaded);
+                    }
+                    Err(e) => {
+                        CACHED_FILES
+                            .lock()
+                            .unwrap()
+                            .get_mut(&file)
+                            .expect("entry checked at the start")
+                            .set_metadata(CacheState::Idle);
+
+                        return Err(e.into());
+                    }
+                }
 
                 stream_stats
                     .entry(stream)
