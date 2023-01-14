@@ -16,6 +16,8 @@
  *
  */
 
+use std::path::Path;
+
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use serde_json::{json, Value};
 
@@ -120,6 +122,15 @@ pub fn hostname_unchecked() -> String {
 #[allow(dead_code)]
 pub fn capitalize_ascii(s: &str) -> String {
     s[0..1].to_uppercase() + &s[1..]
+}
+
+pub fn validate_path_is_writeable(path: &Path) -> anyhow::Result<()> {
+    let Ok(md) = std::fs::metadata(path) else { anyhow::bail!("Could not read metadata for staging dir") };
+    let permissions = md.permissions();
+    if permissions.readonly() {
+        anyhow::bail!("Staging directory {} is unwritable", path.display())
+    }
+    Ok(())
 }
 
 pub mod uid {

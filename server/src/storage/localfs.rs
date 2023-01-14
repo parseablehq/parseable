@@ -36,7 +36,7 @@ use relative_path::RelativePath;
 use tokio::fs;
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::{option::validation, query::Query};
+use crate::{option::validation, query::Query, utils::validate_path_is_writeable};
 
 use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
 
@@ -117,7 +117,9 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
-        Ok(fs::create_dir_all(&self.root).await?)
+        fs::create_dir_all(&self.root).await?;
+        validate_path_is_writeable(&self.root)
+            .map_err(|e| ObjectStorageError::UnhandledError(e.into()))
     }
 
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
