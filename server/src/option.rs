@@ -26,6 +26,7 @@ use crate::storage::{
     FSConfig, ObjectStorage, ObjectStorageError, ObjectStorageProvider, S3Config,
     LOCAL_SYNC_INTERVAL,
 };
+use crate::utils::validate_path_is_writeable;
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -110,6 +111,11 @@ impl Config {
                 panic!("{error}")
             }
         }
+    }
+
+    pub fn validate_staging(&self) -> anyhow::Result<()> {
+        let staging_path = self.staging_dir();
+        validate_path_is_writeable(staging_path)
     }
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
