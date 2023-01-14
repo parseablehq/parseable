@@ -25,6 +25,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::*;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -86,7 +87,7 @@ impl Query {
             .filter(|path| path_intersects_query(path, self.start, self.end))
             .collect();
 
-        let possible_parquet_files = arrow_files.clone().into_iter().map(|mut path| {
+        let possible_parquet_files = arrow_files.iter().cloned().map(|mut path| {
             path.set_extension("parquet");
             path
         });
@@ -96,12 +97,14 @@ impl Query {
             .into_iter()
             .filter(|path| path_intersects_query(path, self.start, self.end));
 
-        let parquet_files: Vec<PathBuf> = possible_parquet_files.chain(parquet_files).collect();
+        let parquet_files: HashSet<PathBuf> = possible_parquet_files.chain(parquet_files).collect();
+        let parquet_files = Vec::from_iter(parquet_files.into_iter());
 
         let ctx = SessionContext::with_config_rt(
             SessionConfig::default(),
             CONFIG.storage().get_datafusion_runtime(),
         );
+
         let table = Arc::new(QueryTableProvider::new(
             arrow_files,
             parquet_files,
@@ -116,7 +119,6 @@ impl Query {
         // execute the query and collect results
         let df = ctx.sql(self.query.as_str()).await?;
         let results = df.collect().await?;
-        table.remove_preserve();
         Ok(results)
     }
 }

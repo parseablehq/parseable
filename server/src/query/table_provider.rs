@@ -67,13 +67,6 @@ impl QueryTableProvider {
         }
     }
 
-    pub fn remove_preserve(&self) {
-        let mut parquet_cached = crate::storage::CACHED_FILES.lock().expect("no poisoning");
-        for file in &self.parquet_files {
-            parquet_cached.remove(file)
-        }
-    }
-
     async fn create_physical_plan(
         &self,
         ctx: &SessionState,
@@ -108,6 +101,15 @@ impl QueryTableProvider {
         }
 
         Ok(Arc::new(UnionExec::new(exec)))
+    }
+}
+
+impl Drop for QueryTableProvider {
+    fn drop(&mut self) {
+        let mut parquet_cached = crate::storage::CACHED_FILES.lock().expect("no poisoning");
+        for file in &self.parquet_files {
+            parquet_cached.remove(file)
+        }
     }
 }
 

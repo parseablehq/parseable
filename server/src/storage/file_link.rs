@@ -97,7 +97,7 @@ impl<L: Link + Default> FileTable<L> {
         }
     }
 
-    pub fn get_mut(&mut self, path: &Path) -> &mut L {
-        self.inner.get_mut(path).unwrap()
+    pub fn get_mut(&mut self, path: &Path) -> Option<&mut L> {
+        self.inner.get_mut(path)
     }
 }
