@@ -19,6 +19,7 @@
 use clap::error::ErrorKind;
 use clap::{command, value_parser, Arg, Args, Command, FromArgMatches};
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -109,6 +110,15 @@ impl Config {
             Err(error) => {
                 panic!("{error}")
             }
+        }
+    }
+
+    pub fn validate_staging(&self) {
+        let staging_path = self.staging_dir();
+        let Ok(md) = fs::metadata(staging_path) else { panic!("Could not read metadata for staging dir") };
+        let permissions = md.permissions();
+        if permissions.readonly() {
+            panic!("Staging directory {} is unwritable", staging_path.display())
         }
     }
 

@@ -64,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     CONFIG.validate();
     let storage = CONFIG.storage().get_object_store();
+    CONFIG.validate_staging();
     CONFIG.validate_storage(&*storage).await;
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, metadata);
