@@ -24,6 +24,9 @@ Parseable is written in Rust and uses Apache Arrow and Parquet as underlying dat
 
 Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput.
 
+- [Parseable UI Demo (Credentials: parseable,parseable) ↗︎](https://www.parseable.io/docs/)
+- [Grafana Dashboard Demo ↗︎](http://demo.parseable.io:3000/d/ojonXSp4zas/parseable-demo-data-test?orgId=1&refresh=30m)
+
 ## :rocket: Features
 
 - Choose your own storage backend - local drive or S3 (or compatible) object store.
@@ -101,8 +104,8 @@ curl --location --request POST 'http://localhost:8000/api/v1/query' \
 
 ## :books: Documentation
 
+- [Complete documentation ↗︎](https://www.parseable.io/docs/)
 - [Roadmap ↗︎](https://github.com/orgs/parseablehq/projects/4)
-- [Complete documentation ↗︎](https://www.parseable.io/docs/category/installation)
 - [FAQ ↗︎](https://www.parseable.io/docs/faq)
 
 ## :dart: Motivation
