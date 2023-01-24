@@ -28,18 +28,19 @@ use crate::storage::ObjectStorage;
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 
-#[derive(Debug, Default)]
-pub struct LogStreamMetadata {
-    pub schema: Option<Schema>,
-    pub alerts: Alerts,
-    pub stats: StatsCounter,
-}
-
+// TODO: make return type be of 'static lifetime instead of cloning
 lazy_static! {
     #[derive(Debug)]
     // A read-write lock to allow multiple reads while and isolated write
     pub static ref STREAM_INFO: RwLock<HashMap<String, LogStreamMetadata>> =
         RwLock::new(HashMap::new());
+}
+
+#[derive(Debug, Default)]
+pub struct LogStreamMetadata {
+    pub schema: HashMap<String, Schema>,
+    pub alerts: Alerts,
+    pub stats: StatsCounter,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -68,26 +69,33 @@ impl STREAM_INFO {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn set_schema(&self, stream_name: &str, schema: Schema) -> Result<(), MetadataError> {
-        let mut map = self.write().expect(LOCK_EXPECT);
-        map.get_mut(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| {
-                metadata.schema.replace(schema);
-            })
-    }
-
     pub fn stream_exists(&self, stream_name: &str) -> bool {
         let map = self.read().expect(LOCK_EXPECT);
         map.contains_key(stream_name)
     }
 
-    pub fn schema(&self, stream_name: &str) -> Result<Option<Schema>, MetadataError> {
+    pub fn schema(
+        &self,
+        stream_name: &str,
+        schema_key: &str,
+    ) -> Result<Option<Schema>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
-        map.get(stream_name)
+        let schemas = map
+            .get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.schema.to_owned())
+            .map(|metadata| &metadata.schema)?;
+
+        Ok(schemas.get(schema_key).cloned())
+    }
+
+    pub fn schema_map(&self, stream_name: &str) -> Result<HashMap<String, Schema>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let schemas = map
+            .get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.schema.clone())?;
+
+        Ok(schemas)
     }
 
     pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {
@@ -99,11 +107,9 @@ impl STREAM_INFO {
             })
     }
 
-    pub fn add_stream(&self, stream_name: String, schema: Option<Schema>, alerts: Alerts) {
+    pub fn add_stream(&self, stream_name: String) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
-            schema,
-            alerts,
             ..Default::default()
         };
         map.insert(stream_name, metadata);
@@ -122,7 +128,7 @@ impl STREAM_INFO {
 
         for stream in storage.list_streams().await? {
             let alerts = storage.get_alerts(&stream.name).await?;
-            let schema = storage.get_schema(&stream.name).await?;
+            let schema = storage.get_schema_map(&stream.name).await?;
             let stats = storage.get_stats(&stream.name).await?;
 
             let metadata = LogStreamMetadata {

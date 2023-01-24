@@ -174,7 +174,7 @@ pub mod error {
 #[cfg(test)]
 mod tests {
     use super::{time_from_path, Query};
-    use crate::{alerts::Alerts, metadata::STREAM_INFO};
+    use crate::metadata::STREAM_INFO;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::arrow::datatypes::{DataType, Field};
     use rstest::*;
@@ -222,7 +222,7 @@ mod tests {
     #[serial_test::serial]
     fn query_parse_prefix_with_some_schema(#[case] prefix: &str, #[case] right: &[&str]) {
         clear_map();
-        STREAM_INFO.add_stream("stream_name".to_string(), Some(schema()), Alerts::default());
+        STREAM_INFO.add_stream("stream_name".to_string());
 
         let query = Value::from_str(prefix).unwrap();
         let query = Query::parse(query).unwrap();
@@ -244,7 +244,7 @@ mod tests {
     #[serial_test::serial]
     fn query_parse_prefix_with_no_schema(#[case] prefix: &str) {
         clear_map();
-        STREAM_INFO.add_stream("stream_name".to_string(), None, Alerts::default());
+        STREAM_INFO.add_stream("stream_name".to_string());
 
         let query = Value::from_str(prefix).unwrap();
         assert!(Query::parse(query).is_err());

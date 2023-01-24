@@ -25,8 +25,9 @@ use serde_json::Value;
 
 use crate::alerts::Alerts;
 use crate::event;
+use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
-use crate::storage::{ObjectStorageError, StorageDir};
+use crate::storage::StorageDir;
 use crate::{metadata, validator};
 
 use self::error::StreamError;
@@ -37,19 +38,13 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     let objectstore = CONFIG.storage().get_object_store();
 
-    if objectstore.get_schema(&stream_name).await.is_err() {
+    if !objectstore.stream_exists(&stream_name).await? {
         return Err(StreamError::StreamNotFound(stream_name.to_string()));
     }
 
     objectstore.delete_stream(&stream_name).await?;
     metadata::STREAM_INFO.delete_stream(&stream_name);
-
-    if event::STREAM_WRITERS::delete_entry(&stream_name).is_err() {
-        log::warn!(
-            "failed to delete log stream event writers for stream {}",
-            stream_name
-        )
-    }
+    event::STREAM_WRITERS::delete_stream(&stream_name);
 
     let stream_dir = StorageDir::new(&stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
@@ -76,20 +71,11 @@ pub async fn list(_: HttpRequest) -> impl Responder {
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    match metadata::STREAM_INFO.schema(&stream_name) {
-        Ok(schema) => Ok((web::Json(schema), StatusCode::OK)),
-        Err(_) => match CONFIG
-            .storage()
-            .get_object_store()
-            .get_schema(&stream_name)
-            .await
-        {
-            Ok(Some(schema)) => Ok((web::Json(Some(schema)), StatusCode::OK)),
-            Ok(None) => Err(StreamError::UninitializedLogstream),
-            Err(ObjectStorageError::NoSuchKey(_)) => Err(StreamError::StreamNotFound(stream_name)),
-            Err(err) => Err(err.into()),
-        },
-    }
+    let schemas = STREAM_INFO
+        .schema_map(&stream_name)
+        .map_err(|_| StreamError::StreamNotFound(stream_name.to_owned()))?;
+
+    Ok((web::Json(schemas), StatusCode::OK))
 }
 
 pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> {
@@ -164,19 +150,21 @@ pub async fn put_alert(
 
     validator::alert(&alerts)?;
 
-    match metadata::STREAM_INFO.schema(&stream_name) {
-        Ok(Some(schema)) => {
-            let invalid_alert = alerts
-                .alerts
-                .iter()
-                .find(|alert| !alert.rule.valid_for_schema(&schema));
+    let schemas = STREAM_INFO
+        .schema_map(&stream_name)
+        .map_err(|_| StreamError::StreamNotFound(stream_name.to_owned()))?;
 
-            if let Some(alert) = invalid_alert {
-                return Err(StreamError::InvalidAlert(alert.name.to_string()));
-            }
+    if schemas.len() == 0 {
+        return Err(StreamError::UninitializedLogstream);
+    }
+
+    for alert in &alerts.alerts {
+        if !schemas
+            .values()
+            .any(|schema| alert.rule.valid_for_schema(schema))
+        {
+            return Err(StreamError::InvalidAlert(alert.name.to_owned()));
         }
-        Ok(None) => return Err(StreamError::UninitializedLogstream),
-        Err(_) => return Err(StreamError::StreamNotFound(stream_name)),
     }
 
     CONFIG
@@ -255,7 +243,7 @@ pub async fn create_stream(stream_name: String) -> Result<(), StreamError> {
             status: StatusCode::INTERNAL_SERVER_ERROR,
         });
     }
-    metadata::STREAM_INFO.add_stream(stream_name.to_string(), None, Alerts::default());
+    metadata::STREAM_INFO.add_stream(stream_name.to_string());
 
     Ok(())
 }

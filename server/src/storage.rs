@@ -205,7 +205,7 @@ impl StorageDir {
         Self { data_path }
     }
 
-    fn filename_by_time(time: NaiveDateTime) -> String {
+    fn file_time_suffix(time: NaiveDateTime) -> String {
         let uri = utils::date_to_prefix(time.date())
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
@@ -214,13 +214,18 @@ impl StorageDir {
         format!("{local_uri}{hostname}.data.arrows")
     }
 
-    fn filename_by_current_time() -> String {
-        let datetime = Utc::now();
-        Self::filename_by_time(datetime.naive_utc())
+    fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
+        format!("{}.{}", stream_hash, Self::file_time_suffix(time))
     }
 
-    pub fn path_by_current_time(&self) -> PathBuf {
-        self.data_path.join(Self::filename_by_current_time())
+    fn filename_by_current_time(stream_hash: &str) -> String {
+        let datetime = Utc::now();
+        Self::filename_by_time(stream_hash, datetime.naive_utc())
+    }
+
+    pub fn path_by_current_time(&self, stream_hash: &str) -> PathBuf {
+        self.data_path
+            .join(Self::filename_by_current_time(stream_hash))
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {

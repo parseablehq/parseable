@@ -69,13 +69,16 @@ pub trait ObjectStorage: Sync + 'static {
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
     fn query_table(&self, query: &Query) -> Result<Option<ListingTable>, ObjectStorageError>;
 
-    async fn put_schema(
+    async fn put_schema_map(
         &self,
         stream_name: &str,
-        schema: &Schema,
+        schema_map: &str,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(&schema_path(stream_name), to_bytes(schema))
-            .await?;
+        self.put_object(
+            &schema_path(stream_name),
+            Bytes::copy_from_slice(schema_map.as_bytes()),
+        )
+        .await?;
 
         Ok(())
     }
@@ -88,8 +91,12 @@ pub trait ObjectStorage: Sync + 'static {
 
         let format_json = to_bytes(&format);
 
-        self.put_object(&schema_path(stream_name), "".into())
-            .await?;
+        self.put_object(
+            &schema_path(stream_name),
+            to_bytes(&HashMap::<String, Schema>::new()),
+        )
+        .await?;
+
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
 
@@ -125,9 +132,12 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
-    async fn get_schema(&self, stream_name: &str) -> Result<Option<Schema>, ObjectStorageError> {
+    async fn get_schema_map(
+        &self,
+        stream_name: &str,
+    ) -> Result<HashMap<String, Schema>, ObjectStorageError> {
         let schema = self.get_object(&schema_path(stream_name)).await?;
-        let schema = serde_json::from_slice(&schema).ok();
+        let schema = serde_json::from_slice(&schema).expect("schema map is valid json");
         Ok(schema)
     }
 
@@ -171,6 +181,16 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(parseable_metadata)
     }
 
+    async fn stream_exists(&self, stream_name: &str) -> Result<bool, ObjectStorageError> {
+        let res = self.get_object(&stream_json_path(stream_name)).await;
+
+        match res {
+            Ok(_) => Ok(true),
+            Err(ObjectStorageError::NoSuchKey(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     async fn sync(&self) -> Result<(), MoveDataError> {
         if !Path::new(&CONFIG.staging_dir()).exists() {
             return Ok(());
@@ -187,14 +207,16 @@ pub trait ObjectStorage: Sync + 'static {
 
             let mut arrow_files = dir.arrow_files();
             // Do not include file which is being written to
-            let hot_file = dir.path_by_current_time();
-            let hot_filename = hot_file.file_name().expect("is a not none filename");
+            let time = chrono::Utc::now().naive_utc();
+            let hot_filename = StorageDir::file_time_suffix(time);
 
             arrow_files.retain(|file| {
                 !file
                     .file_name()
                     .expect("is a not none filename")
-                    .eq(hot_filename)
+                    .to_str()
+                    .unwrap()
+                    .ends_with(&hot_filename)
             });
 
             for file in arrow_files {
