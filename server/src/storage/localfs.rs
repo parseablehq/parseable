@@ -191,7 +191,7 @@ impl ObjectStorage for LocalFS {
 
         let config = ListingTableConfig::new_with_multi_paths(prefixes)
             .with_listing_options(listing_options)
-            .with_schema(Arc::clone(&query.schema));
+            .with_schema(Arc::new(query.get_schema()));
 
         Ok(Some(ListingTable::try_new(config)?))
     }

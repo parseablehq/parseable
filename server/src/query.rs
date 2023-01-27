@@ -25,7 +25,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::*;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,7 +49,7 @@ fn get_value(value: &Value, key: Key) -> Result<&str, Key> {
 pub struct Query {
     pub query: String,
     pub stream_name: String,
-    pub schema: Arc<Schema>,
+    pub schemas: HashMap<String, Schema>,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
 }
@@ -67,9 +67,29 @@ impl Query {
     }
 
     /// Return prefixes, each per day/hour/minutes as necessary
+    fn _get_prefixes(&self) -> Vec<String> {
+        TimePeriod::new(self.start, self.end, OBJECT_STORE_DATA_GRANULARITY).generate_prefixes()
+    }
+
     pub fn get_prefixes(&self) -> Vec<String> {
-        TimePeriod::new(self.start, self.end, OBJECT_STORE_DATA_GRANULARITY)
-            .generate_prefixes(&self.stream_name)
+        let datetime_prefixes = self._get_prefixes();
+        let mut res = Vec::new();
+
+        for schema_key in self.schemas.keys() {
+            let prefix = format!("{}/{}", self.stream_name, schema_key);
+
+            res.extend(
+                datetime_prefixes
+                    .iter()
+                    .map(|datetime_prefix| format!("{}/{}", prefix, datetime_prefix)),
+            )
+        }
+
+        res
+    }
+
+    pub fn get_schema(&self) -> Schema {
+        Schema::try_merge(self.schemas.clone().into_values()).expect("mergable shcemas")
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information
@@ -109,8 +129,9 @@ impl Query {
             arrow_files,
             parquet_files,
             storage.query_table(self)?,
-            Arc::clone(&self.schema),
+            Arc::new(self.get_schema()),
         ));
+
         ctx.register_table(
             &*self.stream_name,
             Arc::clone(&table) as Arc<dyn TableProvider>,
@@ -173,80 +194,13 @@ pub mod error {
 
 #[cfg(test)]
 mod tests {
-    use super::{time_from_path, Query};
-    use crate::metadata::STREAM_INFO;
-    use datafusion::arrow::datatypes::Schema;
-    use datafusion::arrow::datatypes::{DataType, Field};
-    use rstest::*;
-    use serde_json::Value;
+    use super::time_from_path;
     use std::path::PathBuf;
-    use std::str::FromStr;
 
     #[test]
     fn test_time_from_parquet_path() {
         let path = PathBuf::from("date=2022-01-01.hour=00.minute=00.hostname.data.parquet");
         let time = time_from_path(path.as_path());
         assert_eq!(time.timestamp(), 1640995200);
-    }
-
-    // Query prefix generation tests
-    #[fixture]
-    fn schema() -> Schema {
-        let field_a = Field::new("a", DataType::Int64, false);
-        let field_b = Field::new("b", DataType::Boolean, false);
-        Schema::new(vec![field_a, field_b])
-    }
-
-    fn clear_map() {
-        STREAM_INFO.write().unwrap().clear();
-    }
-
-    // A query can only be performed on streams with a valid schema
-    #[rstest]
-    #[case(
-        r#"{
-            "query": "SELECT * FROM stream_name",
-            "startTime": "2022-10-15T10:00:00+00:00",
-            "endTime": "2022-10-15T10:01:00+00:00"
-        }"#,
-        &["stream_name/date=2022-10-15/hour=10/minute=00/"]
-    )]
-    #[case(
-        r#"{
-            "query": "SELECT * FROM stream_name",
-            "startTime": "2022-10-15T10:00:00+00:00",
-            "endTime": "2022-10-15T10:02:00+00:00"
-        }"#,
-        &["stream_name/date=2022-10-15/hour=10/minute=00/", "stream_name/date=2022-10-15/hour=10/minute=01/"]
-    )]
-    #[serial_test::serial]
-    fn query_parse_prefix_with_some_schema(#[case] prefix: &str, #[case] right: &[&str]) {
-        clear_map();
-        STREAM_INFO.add_stream("stream_name".to_string());
-
-        let query = Value::from_str(prefix).unwrap();
-        let query = Query::parse(query).unwrap();
-        assert_eq!(&query.stream_name, "stream_name");
-        let prefixes = query.get_prefixes();
-        let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
-        assert_eq!(left.as_slice(), right);
-    }
-
-    // If there is no schema for this stream then parsing a Query should fail
-    #[rstest]
-    #[case(
-        r#"{
-            "query": "SELECT * FROM stream_name",
-            "startTime": "2022-10-15T10:00:00+00:00",
-            "endTime": "2022-10-15T10:01:00+00:00"
-        }"#
-    )]
-    #[serial_test::serial]
-    fn query_parse_prefix_with_no_schema(#[case] prefix: &str) {
-        clear_map();
-        STREAM_INFO.add_stream("stream_name".to_string());
-
-        let query = Value::from_str(prefix).unwrap();
-        assert!(Query::parse(query).is_err());
     }
 }

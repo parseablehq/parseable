@@ -271,13 +271,9 @@ impl TimePeriod {
         }
     }
 
-    pub fn generate_prefixes(&self, prefix: &str) -> Vec<String> {
-        let prefix = format!("{prefix}/");
-
+    pub fn generate_prefixes(&self) -> Vec<String> {
         let end_minute = self.end.minute() + u32::from(self.end.second() > 0);
-
         self.generate_date_prefixes(
-            &prefix,
             self.start.date_naive(),
             self.end.date_naive(),
             (self.start.hour(), self.start.minute()),
@@ -371,7 +367,6 @@ impl TimePeriod {
 
     pub fn generate_date_prefixes(
         &self,
-        prefix: &str,
         start_date: NaiveDate,
         end_date: NaiveDate,
         start_time: (u32, u32),
@@ -381,7 +376,7 @@ impl TimePeriod {
         let mut date = start_date;
 
         while date <= end_date {
-            let prefix = prefix.to_owned() + &date_to_prefix(date);
+            let prefix = date_to_prefix(date);
             let is_start = date == start_date;
             let is_end = date == end_date;
 
@@ -426,66 +421,66 @@ mod tests {
     #[rstest]
     #[case::same_minute(
         "2022-06-11T16:30:00+00:00", "2022-06-11T16:30:59+00:00",
-        &["stream_name/date=2022-06-11/hour=16/minute=30/"]
+        &["date=2022-06-11/hour=16/minute=30/"]
     )]
     #[case::same_hour_different_minute(
         "2022-06-11T16:57:00+00:00", "2022-06-11T16:59:00+00:00",
         &[
-            "stream_name/date=2022-06-11/hour=16/minute=57/",
-            "stream_name/date=2022-06-11/hour=16/minute=58/"
+            "date=2022-06-11/hour=16/minute=57/",
+            "date=2022-06-11/hour=16/minute=58/"
         ]
     )]
     #[case::same_hour_with_00_to_59_minute_block(
         "2022-06-11T16:00:00+00:00", "2022-06-11T16:59:59+00:00",   
-        &["stream_name/date=2022-06-11/hour=16/"]
+        &["date=2022-06-11/hour=16/"]
     )]
     #[case::same_date_different_hours_coherent_minute(
         "2022-06-11T15:00:00+00:00", "2022-06-11T17:00:00+00:00",
        &[
-            "stream_name/date=2022-06-11/hour=15/",
-            "stream_name/date=2022-06-11/hour=16/"
+            "date=2022-06-11/hour=15/",
+            "date=2022-06-11/hour=16/"
         ]
     )]
     #[case::same_date_different_hours_incoherent_minutes(
         "2022-06-11T15:59:00+00:00", "2022-06-11T16:01:00+00:00", 
         &[
-            "stream_name/date=2022-06-11/hour=15/minute=59/",
-            "stream_name/date=2022-06-11/hour=16/minute=00/"
+            "date=2022-06-11/hour=15/minute=59/",
+            "date=2022-06-11/hour=16/minute=00/"
         ]
     )]
     #[case::same_date_different_hours_whole_hours_between_incoherent_minutes(
         "2022-06-11T15:59:00+00:00", "2022-06-11T17:01:00+00:00", 
         &[
-            "stream_name/date=2022-06-11/hour=15/minute=59/",
-            "stream_name/date=2022-06-11/hour=16/",
-            "stream_name/date=2022-06-11/hour=17/minute=00/"
+            "date=2022-06-11/hour=15/minute=59/",
+            "date=2022-06-11/hour=16/",
+            "date=2022-06-11/hour=17/minute=00/"
         ]
     )]
     #[case::different_date_coherent_hours_and_minutes(
         "2022-06-11T00:00:00+00:00", "2022-06-13T00:00:00+00:00", 
         &[
-            "stream_name/date=2022-06-11/",
-            "stream_name/date=2022-06-12/"
+            "date=2022-06-11/",
+            "date=2022-06-12/"
         ]
     )]
     #[case::different_date_incoherent_hours_coherent_minutes(
         "2022-06-11T23:00:01+00:00", "2022-06-12T01:59:59+00:00", 
         &[
-            "stream_name/date=2022-06-11/hour=23/",
-            "stream_name/date=2022-06-12/hour=00/",
-            "stream_name/date=2022-06-12/hour=01/"
+            "date=2022-06-11/hour=23/",
+            "date=2022-06-12/hour=00/",
+            "date=2022-06-12/hour=01/"
         ]
     )]
     #[case::different_date_incoherent_hours_incoherent_minutes(
         "2022-06-11T23:59:59+00:00", "2022-06-12T00:01:00+00:00", 
         &[
-            "stream_name/date=2022-06-11/hour=23/minute=59/",
-            "stream_name/date=2022-06-12/hour=00/minute=00/"
+            "date=2022-06-11/hour=23/minute=59/",
+            "date=2022-06-12/hour=00/minute=00/"
         ]
     )]
     fn prefix_generation(#[case] start: &str, #[case] end: &str, #[case] right: &[&str]) {
         let time_period = time_period_from_str(start, end);
-        let prefixes = time_period.generate_prefixes("stream_name");
+        let prefixes = time_period.generate_prefixes();
         let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
         assert_eq!(left.as_slice(), right);
     }

@@ -164,15 +164,13 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Que
         return Err(QueryValidationError::UninitializedStream);
     }
 
-    // Ok(Query {
-    //     stream_name: tokens[stream_name_index].to_string(),
-    //     start,
-    //     end,
-    //     query: query.to_string(),
-    //     schema,
-    // });
-
-    todo!();
+    Ok(Query {
+        stream_name: tokens[stream_name_index].to_string(),
+        start,
+        end,
+        query: query.to_string(),
+        schemas,
+    })
 }
 
 pub mod error {
