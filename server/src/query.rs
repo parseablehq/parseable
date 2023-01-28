@@ -156,10 +156,22 @@ fn time_from_path(path: &Path) -> DateTime<Utc> {
         .to_str()
         .expect("filename is valid");
 
-    // substring of filename i.e date=xxxx.hour=xx.minute=xx
-    let prefix = &prefix[..33];
-    Utc.datetime_from_str(prefix, "date=%F.hour=%H.minute=%M")
-        .expect("valid prefix is parsed")
+    // split by . and skip first part because that is schema key.
+    // Next three in order will be date, hour and minute
+    let mut components = prefix.splitn(4, '.').skip(1);
+
+    let date = components.next().expect("date=xxxx-xx-xx");
+    let hour = components.next().expect("hour=xx");
+    let minute = components.next().expect("minute=xx");
+
+    let year = date[5..9].parse().unwrap();
+    let month = date[10..12].parse().unwrap();
+    let day = date[13..15].parse().unwrap();
+    let hour = hour[5..7].parse().unwrap();
+    let minute = minute[7..9].parse().unwrap();
+
+    Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
+        .unwrap()
 }
 
 pub mod error {
@@ -199,7 +211,9 @@ mod tests {
 
     #[test]
     fn test_time_from_parquet_path() {
-        let path = PathBuf::from("date=2022-01-01.hour=00.minute=00.hostname.data.parquet");
+        let path = PathBuf::from(
+            "schema_key_rlength.date=2022-01-01.hour=00.minute=00.hostname.data.parquet",
+        );
         let time = time_from_path(path.as_path());
         assert_eq!(time.timestamp(), 1640995200);
     }
