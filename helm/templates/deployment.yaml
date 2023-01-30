@@ -60,9 +60,13 @@ spec:
             {{- toYaml .Values.parseable.resources | nindent 12 }}
           volumeMounts:
           - mountPath: "/parseable/data"
-            name: cache-volume
+            name: data-volume
+          - mountPath: "/parseable/staging"
+            name: stage-volume
       volumes:
-      - name: cache-volume
+      - name: data-volume
+        emptyDir: {}
+      - name: stage-volume
         emptyDir: {}
       {{- with .Values.parseable.nodeSelector }}
       nodeSelector:
