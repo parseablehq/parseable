@@ -55,7 +55,7 @@ mod validator;
 use option::CONFIG;
 
 // Global configurations
-const MAX_EVENT_PAYLOAD_SIZE: usize = 1024000;
+const MAX_EVENT_PAYLOAD_SIZE: usize = 10240000;
 const API_BASE_PATH: &str = "/api";
 const API_VERSION: &str = "v1";
 
@@ -261,7 +261,11 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             // POST "/query" ==> Get results of the SQL query passed in request body
             .service(web::resource(query_path()).route(web::post().to(handlers::event::query)))
             // POST "/ingest" ==> Post logs to given log stream based on header
-            .service(web::resource(ingest_path()).route(web::post().to(handlers::event::ingest)))
+            .service(
+                web::resource(ingest_path())
+                    .route(web::post().to(handlers::event::ingest))
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+            )
             .service(
                 // logstream API
                 web::resource(logstream_path("{logstream}"))
