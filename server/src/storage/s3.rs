@@ -334,9 +334,11 @@ impl ObjectStorage for S3 {
             return Ok(None);
         }
 
-        let file_format = ParquetFormat::default().with_enable_pruning(true);
+        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
         let listing_options = ListingOptions {
             file_extension: ".parquet".to_string(),
+            file_sort_order: None,
+            infinite_source: false,
             format: Arc::new(file_format),
             table_partition_cols: vec![],
             collect_stat: true,

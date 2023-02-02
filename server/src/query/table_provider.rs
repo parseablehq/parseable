@@ -16,9 +16,8 @@
  *
  */
 
-use arrow_schema::Schema;
-use arrow_schema::SchemaRef;
 use async_trait::async_trait;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
@@ -81,13 +80,17 @@ impl QueryTableProvider {
         }
 
         let memtable = MemTable::try_new(Arc::clone(&self.schema), mem_records)?;
-        let memexec = memtable.scan(ctx, projection, filters, limit).await?;
+        let memexec = memtable
+            .scan(ctx, projection.as_ref(), filters, limit)
+            .await?;
 
         let cache_exec = if parquet_files.is_empty() {
             memexec
         } else {
             let listtable = local_parquet_table(&parquet_files, &self.schema)?;
-            let listexec = listtable.scan(ctx, projection, filters, limit).await?;
+            let listexec = listtable
+                .scan(ctx, projection.as_ref(), filters, limit)
+                .await?;
             Arc::new(UnionExec::new(vec![memexec, listexec]))
         };
 
@@ -95,7 +98,7 @@ impl QueryTableProvider {
         if let Some(ref storage_listing) = self.storage {
             exec.push(
                 storage_listing
-                    .scan(ctx, projection, filters, limit)
+                    .scan(ctx, projection.as_ref(), filters, limit)
                     .await?,
             );
         }
@@ -134,7 +137,7 @@ impl TableProvider for QueryTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        self.create_physical_plan(ctx, projection, filters, limit)
+        self.create_physical_plan(ctx, &projection, filters, limit)
             .await
     }
 }
@@ -145,7 +148,9 @@ fn local_parquet_table(
 ) -> Result<ListingTable, DataFusionError> {
     let listing_options = ListingOptions {
         file_extension: ".parquet".to_owned(),
-        format: Arc::new(ParquetFormat::default().with_enable_pruning(true)),
+        format: Arc::new(ParquetFormat::default().with_enable_pruning(Some(true))),
+        file_sort_order: None,
+        infinite_source: false,
         table_partition_cols: vec![],
         collect_stat: true,
         target_partitions: 1,

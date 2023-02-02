@@ -22,9 +22,9 @@ use super::{
 };
 use crate::{alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, query::Query, stats::Stats};
 
-use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::{
     arrow::ipc::reader::StreamReader,
     datasource::listing::ListingTable,

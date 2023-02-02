@@ -22,17 +22,20 @@ pub mod rule;
 pub mod target;
 
 use crate::utils::uid::Uid;
+use datafusion::arrow::datatypes;
+use serde::Serializer;
 
 pub use self::rule::Rule;
 use self::target::Target;
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
     pub alerts: Vec<Alert>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+// #[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
     #[serde(default = "crate::utils::uid::gen")]
@@ -42,6 +45,21 @@ pub struct Alert {
     pub rule: Rule,
     pub targets: Vec<Target>,
 }
+
+// fn serialize_datatype<S>(x: &datatypes::DataType, s: S) -> Result<S::Ok, S::Error>
+// where
+//     S: Serializer,
+// {
+//     match x {
+//         datatypes::DataType::Binary => s.serialize_str("binary"),
+//         _ => s.serialize_str(""),
+//     }
+// }
+// impl serde::Deserialize for Alert {
+//     fn deserialize() -> u8 {
+//         0
+//     }
+// }
 
 impl Alert {
     pub fn check_alert(&self, stream_name: String, event_json: &serde_json::Value) {

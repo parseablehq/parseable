@@ -16,6 +16,7 @@
  *
  */
 
+use datafusion::arrow::datatypes::{DataType, Schema};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -40,7 +41,7 @@ impl Rule {
         }
     }
 
-    pub fn valid_for_schema(&self, schema: &arrow_schema::Schema) -> bool {
+    pub fn valid_for_schema(&self, schema: &Schema) -> bool {
         match self {
             Rule::Column(rule) => rule.valid_for_schema(schema),
         }
@@ -68,31 +69,31 @@ impl ColumnRule {
         }
     }
 
-    fn valid_for_schema(&self, schema: &arrow_schema::Schema) -> bool {
+    fn valid_for_schema(&self, schema: &Schema) -> bool {
         match self {
             Self::ConsecutiveNumeric(ConsecutiveNumericRule {
                 base_rule: rule, ..
             }) => match schema.column_with_name(&rule.column) {
                 Some((_, column)) => matches!(
                     column.data_type(),
-                    arrow_schema::DataType::Int8
-                        | arrow_schema::DataType::Int16
-                        | arrow_schema::DataType::Int32
-                        | arrow_schema::DataType::Int64
-                        | arrow_schema::DataType::UInt8
-                        | arrow_schema::DataType::UInt16
-                        | arrow_schema::DataType::UInt32
-                        | arrow_schema::DataType::UInt64
-                        | arrow_schema::DataType::Float16
-                        | arrow_schema::DataType::Float32
-                        | arrow_schema::DataType::Float64
+                    DataType::Int8
+                        | DataType::Int16
+                        | DataType::Int32
+                        | DataType::Int64
+                        | DataType::UInt8
+                        | DataType::UInt16
+                        | DataType::UInt32
+                        | DataType::UInt64
+                        | DataType::Float16
+                        | DataType::Float32
+                        | DataType::Float64
                 ),
                 None => false,
             },
             Self::ConsecutiveString(ConsecutiveStringRule {
                 base_rule: rule, ..
             }) => match schema.column_with_name(&rule.column) {
-                Some((_, column)) => matches!(column.data_type(), arrow_schema::DataType::Utf8),
+                Some((_, column)) => matches!(column.data_type(), DataType::Utf8),
                 None => false,
             },
         }
