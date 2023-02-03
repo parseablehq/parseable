@@ -55,7 +55,7 @@ mod validator;
 use option::CONFIG;
 
 // Global configurations
-const MAX_EVENT_PAYLOAD_SIZE: usize = 10240000;
+const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 const API_BASE_PATH: &str = "/api";
 const API_VERSION: &str = "v1";
 
