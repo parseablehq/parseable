@@ -19,7 +19,7 @@
 use datafusion::arrow::datatypes::Schema;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use crate::alerts::Alerts;
 use crate::event::Event;
@@ -38,7 +38,7 @@ lazy_static! {
 
 #[derive(Debug, Default)]
 pub struct LogStreamMetadata {
-    pub schema: HashMap<String, Schema>,
+    pub schema: HashMap<String, Arc<Schema>>,
     pub alerts: Alerts,
     pub stats: StatsCounter,
 }
@@ -78,7 +78,7 @@ impl STREAM_INFO {
         &self,
         stream_name: &str,
         schema_key: &str,
-    ) -> Result<Option<Schema>, MetadataError> {
+    ) -> Result<Option<Arc<Schema>>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         let schemas = map
             .get(stream_name)
@@ -88,7 +88,10 @@ impl STREAM_INFO {
         Ok(schemas.get(schema_key).cloned())
     }
 
-    pub fn schema_map(&self, stream_name: &str) -> Result<HashMap<String, Schema>, MetadataError> {
+    pub fn schema_map(
+        &self,
+        stream_name: &str,
+    ) -> Result<HashMap<String, Arc<Schema>>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         let schemas = map
             .get(stream_name)

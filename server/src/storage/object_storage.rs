@@ -135,7 +135,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn get_schema_map(
         &self,
         stream_name: &str,
-    ) -> Result<HashMap<String, Schema>, ObjectStorageError> {
+    ) -> Result<HashMap<String, Arc<Schema>>, ObjectStorageError> {
         let schema = self.get_object(&schema_path(stream_name)).await?;
         let schema = serde_json::from_slice(&schema).expect("schema map is valid json");
         Ok(schema)

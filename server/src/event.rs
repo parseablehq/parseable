@@ -18,7 +18,6 @@ mod writer;
  *
  *
  */
-use actix_web::rt::spawn;
 use arrow_schema::{DataType, Field, TimeUnit};
 use chrono::{DateTime, Utc};
 use datafusion::arrow::array::{Array, TimestampMillisecondArray};
@@ -30,7 +29,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use md5::Digest;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
+use std::ops::DerefMut;
 use std::sync::Arc;
 
 use crate::metadata;
@@ -55,9 +54,8 @@ impl Event {
     pub async fn process(self) -> Result<(), EventError> {
         let stream_schema = metadata::STREAM_INFO.schema(&self.stream_name, &self.schema_key)?;
         if let Some(schema) = stream_schema {
-            let schema_ref = Arc::new(schema);
             // validate schema before processing the event
-            let Ok(mut event) = self.get_record(Arc::clone(&schema_ref)) else {
+            let Ok(mut event) = self.get_record(Arc::clone(&schema)) else {
                 return Err(EventError::SchemaMismatch);
             };
 
@@ -68,7 +66,7 @@ impl Event {
             {
                 let rows = event.num_rows();
                 let timestamp_array = Arc::new(get_timestamp_array(rows));
-                event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
+                event = replace(schema, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
             }
 
             self.process_event(&event)?;
@@ -79,14 +77,7 @@ impl Event {
             let time_field = get_datetime_field(&self.body);
 
             if time_field.is_none() {
-                let schema = Schema::try_merge(vec![
-                    Schema::new(vec![Field::new(
-                        DEFAULT_TIMESTAMP_KEY,
-                        DataType::Timestamp(TimeUnit::Millisecond, None),
-                        true,
-                    )]),
-                    self.infer_schema()?,
-                ])?;
+                let schema = add_default_timestamp_field(self.infer_schema()?)?;
                 let schema_ref = Arc::new(schema.clone());
                 let event = self.get_record(schema_ref.clone())?;
                 let timestamp_array = Arc::new(get_timestamp_array(event.num_rows()));
@@ -127,61 +118,8 @@ impl Event {
         let stream_name = &self.stream_name;
         let schema_key = &self.schema_key;
 
-        let mut stream_metadata = metadata::STREAM_INFO.write().expect(LOCK_EXPECT);
-        // if the metadata is not none after acquiring lock
-        // then some other thread has already completed this function.
-        if _schema_with_map(stream_name, schema_key, &stream_metadata).is_some() {
-            // drop the lock
-            drop(stream_metadata);
-            // Try to post event usual way
-            log::info!("first event is redirected to process_event");
-            self.process_event(event)
-        } else {
-            // stream metadata is still none,
-            // this means this execution should be considered as first event.
-
-            // Store record batch on local cache
-            log::info!("creating local writer for this first event");
-            self.process_event(event)?;
-
-            log::info!("schema is set in memory map for logstream {}", stream_name);
-            _set_schema_with_map(stream_name, schema_key, schema, &mut stream_metadata);
-
-            let schema_map = serde_json::to_string(
-                &stream_metadata
-                    .get(stream_name)
-                    .expect("map has entry for this stream name")
-                    .schema,
-            )
-            .expect("map of schemas is serializable");
-            // drop mutex before going across await point
-            drop(stream_metadata);
-
-            log::info!(
-                "setting schema on objectstore for logstream {}",
-                stream_name
-            );
-            let storage = CONFIG.storage().get_object_store();
-
-            let stream_name = stream_name.clone();
-            spawn(async move {
-                if let Err(e) = storage.put_schema_map(&stream_name, &schema_map).await {
-                    // If this call has failed then currently there is no right way to make local state consistent
-                    // this needs a fix after more constraints are safety guarentee is provided by localwriter and objectstore_sync.
-                    // Reasoning -
-                    // - After dropping lock many events may process through
-                    // - Processed events may sync before metadata deletion
-                    log::error!(
-                        "Parseable failed to upload schema to objectstore due to error {}",
-                        e
-                    );
-                    log::error!("Please manually delete this logstream and create a new one.");
-                    metadata::STREAM_INFO.delete_stream(&stream_name);
-                }
-            });
-
-            Ok(())
-        }
+        commit_schema(stream_name, schema_key, Arc::new(schema))?;
+        self.process_event(event)
     }
 
     // event process all events after the 1st event. Concatenates record batches
@@ -207,6 +145,19 @@ impl Event {
 
         record.ok_or(EventError::MissingRecord)
     }
+}
+
+fn add_default_timestamp_field(schema: Schema) -> Result<Schema, ArrowError> {
+    let schema = Schema::try_merge(vec![
+        Schema::new(vec![Field::new(
+            DEFAULT_TIMESTAMP_KEY,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        )]),
+        schema,
+    ])?;
+
+    Ok(schema)
 }
 
 pub fn get_schema_key(body: &Value) -> String {
@@ -244,6 +195,45 @@ fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
     false
 }
 
+fn commit_schema(
+    stream_name: &str,
+    schema_key: &str,
+    schema: Arc<Schema>,
+) -> Result<(), EventError> {
+    // note for methods .get_unchecked and .set_unchecked,
+    // these are to be called while holding a write lock specifically.
+    // this guarantees two things
+    // - no other metadata operation can happen in between
+    // - map always have an entry for this stream
+
+    let mut stream_metadata = metadata::STREAM_INFO.write().expect(LOCK_EXPECT);
+    // if the metadata is not none after acquiring lock
+    // then some other thread has already completed this function.
+    if stream_metadata
+        .get_unchecked(stream_name, schema_key)
+        .is_some()
+    {
+        // drop the lock
+        drop(stream_metadata);
+        // Nothing to do
+        return Ok(());
+    } else {
+        let schema_map = serde_json::to_string(
+            &stream_metadata
+                .get(stream_name)
+                .expect("map has entry for this stream name")
+                .schema,
+        )
+        .expect("map of schemas is serializable");
+
+        let storage = CONFIG.storage().get_object_store();
+        futures::executor::block_on(storage.put_schema_map(&stream_name, &schema_map))?;
+        stream_metadata.set_unchecked(stream_name, schema_key, schema);
+    }
+
+    Ok(())
+}
+
 fn replace(
     schema: Arc<Schema>,
     batch: RecordBatch,
@@ -276,33 +266,26 @@ fn get_datetime_field(json: &Value) -> Option<&str> {
     None
 }
 
-//  Special functions which reads from metadata map while holding the lock
-#[inline]
-pub fn _schema_with_map(
-    stream_name: &str,
-    schema_key: &str,
-    map: &impl Deref<Target = HashMap<String, metadata::LogStreamMetadata>>,
-) -> Option<Schema> {
-    map.get(stream_name)
-        .expect("map has entry for this stream name")
-        .schema
-        .get(schema_key)
-        .cloned()
+trait UncheckedOp: DerefMut<Target = HashMap<String, metadata::LogStreamMetadata>> {
+    fn get_unchecked(&self, stream_name: &str, schema_key: &str) -> Option<Arc<Schema>> {
+        self.get(stream_name)
+            .expect("map has entry for this stream name")
+            .schema
+            .get(schema_key)
+            .cloned()
+    }
+
+    fn set_unchecked(&mut self, stream_name: &str, schema_key: &str, schema: Arc<Schema>) {
+        self.get_mut(stream_name)
+            .expect("map has entry for this stream name")
+            .schema
+            .insert(schema_key.to_string(), schema)
+            .is_some()
+            .then(|| panic!("collision"));
+    }
 }
 
-#[inline]
-//  Special functions which writes to metadata map while holding the lock
-pub fn _set_schema_with_map(
-    stream_name: &str,
-    schema_key: &str,
-    schema: Schema,
-    map: &mut impl DerefMut<Target = HashMap<String, metadata::LogStreamMetadata>>,
-) {
-    map.get_mut(stream_name)
-        .expect("map has entry for this stream name")
-        .schema
-        .insert(schema_key.to_string(), schema);
-}
+impl<T: DerefMut<Target = HashMap<String, metadata::LogStreamMetadata>>> UncheckedOp for T {}
 
 pub mod error {
     use crate::metadata::error::stream_info::MetadataError;
