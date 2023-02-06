@@ -26,11 +26,15 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{
-    arrow::ipc::reader::StreamReader,
+    arrow::{
+        array::TimestampMillisecondArray, ipc::reader::StreamReader, record_batch::RecordBatch,
+    },
     datasource::listing::ListingTable,
     execution::runtime_env::RuntimeEnv,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
 };
+use itertools::kmerge_by;
+use lazy_static::__Deref;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
@@ -39,7 +43,7 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     fs::{self, File},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -205,10 +209,11 @@ pub trait ObjectStorage: Sync + 'static {
             let dir = StorageDir::new(stream);
             // walk dir, find all .arrows files and convert to parquet
 
-            let mut arrow_files = dir.arrow_files();
             // Do not include file which is being written to
             let time = chrono::Utc::now().naive_utc();
             let hot_filename = StorageDir::file_time_suffix(time);
+
+            let mut arrow_files = dir.arrow_files();
 
             arrow_files.retain(|file| {
                 !file
@@ -219,35 +224,48 @@ pub trait ObjectStorage: Sync + 'static {
                     .ends_with(&hot_filename)
             });
 
-            for file in arrow_files {
-                let arrow_file = File::open(&file).map_err(|_| MoveDataError::Open)?;
-                let reader = StreamReader::try_new(arrow_file, None)?;
-                let schema = reader.schema();
-                let records = reader.filter_map(|record| match record {
-                    Ok(record) => Some(record),
-                    Err(e) => {
-                        log::warn!("warning from arrow stream {:?}", e);
-                        None
-                    }
-                });
+            // hashmap time = vec[paths]
+            let mut grouped_arrow_file: HashMap<&str, Vec<&Path>> = HashMap::new();
 
-                let mut parquet_path = file.clone();
-                parquet_path.set_extension("parquet");
+            for file in &arrow_files {
+                let key = file
+                    .file_name()
+                    .expect("is a not none filename")
+                    .to_str()
+                    .unwrap();
+
+                let (_, key) = key.split_once('.').unwrap();
+
+                let key = key.strip_suffix("data.arrows").unwrap();
+
+                grouped_arrow_file.entry(key).or_default().push(file);
+            }
+
+            for files in grouped_arrow_file.values() {
+                let parquet_path = get_parquet_path(files[0]);
+                let record_reader = MergedRecordReader::try_new(files).unwrap();
+
                 let mut parquet_table = CACHED_FILES.lock().unwrap();
                 let parquet_file =
                     fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
                 parquet_table.upsert(&parquet_path);
 
                 let props = WriterProperties::builder().build();
-                let mut writer = ArrowWriter::try_new(parquet_file, schema, Some(props))?;
+                let mut writer = ArrowWriter::try_new(
+                    parquet_file,
+                    Arc::new(record_reader.merged_schema()),
+                    Some(props),
+                )?;
 
-                for ref record in records {
+                for ref record in record_reader.merged_iter() {
                     writer.write(record)?;
                 }
 
                 writer.close()?;
 
-                fs::remove_file(file).map_err(|_| MoveDataError::Delete)?;
+                for file in files {
+                    let _ = fs::remove_file(file);
+                }
             }
 
             for file in dir.parquet_files() {
@@ -322,6 +340,65 @@ pub trait ObjectStorage: Sync + 'static {
         }
 
         Ok(())
+    }
+}
+
+fn get_parquet_path(file: &Path) -> PathBuf {
+    let filename = file.file_name().unwrap().to_str().unwrap();
+    let (_, filename) = filename.split_once('.').unwrap();
+
+    let mut parquet_path = file.to_owned();
+    parquet_path.set_file_name(filename);
+    parquet_path.set_extension("parquet");
+
+    parquet_path
+}
+
+#[derive(Debug)]
+struct MergedRecordReader {
+    readers: Vec<StreamReader<File>>,
+}
+
+impl MergedRecordReader {
+    fn try_new(files: &[&Path]) -> Result<Self, MoveDataError> {
+        let mut readers = Vec::with_capacity(files.len());
+
+        for file in files {
+            let reader = StreamReader::try_new(File::open(file).unwrap(), None)?;
+            readers.push(reader);
+        }
+
+        Ok(Self { readers })
+    }
+
+    fn merged_iter(self) -> impl Iterator<Item = RecordBatch> {
+        kmerge_by(
+            self.readers.into_iter().map(|reader| reader.flatten()),
+            |a: &RecordBatch, b: &RecordBatch| {
+                let a: &TimestampMillisecondArray = a
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<TimestampMillisecondArray>()
+                    .unwrap();
+
+                let b: &TimestampMillisecondArray = b
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<TimestampMillisecondArray>()
+                    .unwrap();
+
+                a.value(0) < b.value(0)
+            },
+        )
+    }
+
+    fn merged_schema(&self) -> Schema {
+        Schema::try_merge(
+            self.readers
+                .iter()
+                .map(|stream| stream.schema().deref().clone()),
+        )
+        .unwrap()
     }
 }
 
