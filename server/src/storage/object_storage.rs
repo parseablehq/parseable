@@ -27,7 +27,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{
     arrow::{
-        array::TimestampMillisecondArray, ipc::reader::StreamReader, record_batch::RecordBatch,
+        array::{new_null_array, ArrayRef, TimestampMillisecondArray},
+        ipc::reader::StreamReader,
+        record_batch::RecordBatch,
     },
     datasource::listing::ListingTable,
     execution::runtime_env::RuntimeEnv,
@@ -251,13 +253,10 @@ pub trait ObjectStorage: Sync + 'static {
                 parquet_table.upsert(&parquet_path);
 
                 let props = WriterProperties::builder().build();
-                let mut writer = ArrowWriter::try_new(
-                    parquet_file,
-                    Arc::new(record_reader.merged_schema()),
-                    Some(props),
-                )?;
+                let schema = Arc::new(record_reader.merged_schema());
+                let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
 
-                for ref record in record_reader.merged_iter() {
+                for ref record in record_reader.merged_iter(&schema) {
                     writer.write(record)?;
                 }
 
@@ -354,6 +353,33 @@ fn get_parquet_path(file: &Path) -> PathBuf {
     parquet_path
 }
 
+pub fn adapt_batch(table_schema: &Schema, batch: RecordBatch) -> RecordBatch {
+    if table_schema.eq(&batch.schema()) {
+        return batch;
+    }
+
+    let batch_rows = batch.num_rows();
+    let batch_schema = &*batch.schema();
+
+    let mut cols: Vec<ArrayRef> = Vec::with_capacity(batch.num_columns());
+    let batch_cols = batch.columns().to_vec();
+
+    for table_field in table_schema.fields() {
+        if let Some((batch_idx, _name)) = batch_schema.column_with_name(table_field.name().as_str())
+        {
+            cols.push(Arc::clone(&batch_cols[batch_idx]));
+        } else {
+            cols.push(new_null_array(table_field.data_type(), batch_rows))
+        }
+    }
+
+    let merged_schema = Arc::new(table_schema.clone());
+
+    let merged_batch = RecordBatch::try_new(merged_schema, cols).unwrap();
+
+    merged_batch
+}
+
 #[derive(Debug)]
 struct MergedRecordReader {
     readers: Vec<StreamReader<File>>,
@@ -371,25 +397,27 @@ impl MergedRecordReader {
         Ok(Self { readers })
     }
 
-    fn merged_iter(self) -> impl Iterator<Item = RecordBatch> {
-        kmerge_by(
-            self.readers.into_iter().map(|reader| reader.flatten()),
-            |a: &RecordBatch, b: &RecordBatch| {
-                let a: &TimestampMillisecondArray = a
-                    .column(0)
-                    .as_any()
-                    .downcast_ref::<TimestampMillisecondArray>()
-                    .unwrap();
+    fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
+        let adapted_readers = self
+            .readers
+            .into_iter()
+            .map(move |reader| reader.flatten().map(|batch| adapt_batch(schema, batch)));
 
-                let b: &TimestampMillisecondArray = b
-                    .column(0)
-                    .as_any()
-                    .downcast_ref::<TimestampMillisecondArray>()
-                    .unwrap();
+        kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
+            let a: &TimestampMillisecondArray = a
+                .column(0)
+                .as_any()
+                .downcast_ref::<TimestampMillisecondArray>()
+                .unwrap();
 
-                a.value(0) < b.value(0)
-            },
-        )
+            let b: &TimestampMillisecondArray = b
+                .column(0)
+                .as_any()
+                .downcast_ref::<TimestampMillisecondArray>()
+                .unwrap();
+
+            a.value(0) < b.value(0)
+        })
     }
 
     fn merged_schema(&self) -> Schema {
