@@ -74,6 +74,10 @@ impl STREAM_INFO {
         map.contains_key(stream_name)
     }
 
+    pub fn stream_initialized(&self, stream_name: &str) -> Result<bool, MetadataError> {
+        Ok(!self.schema_map(stream_name)?.is_empty())
+    }
+
     pub fn schema(
         &self,
         stream_name: &str,
@@ -99,6 +103,22 @@ impl STREAM_INFO {
             .map(|metadata| metadata.schema.clone())?;
 
         Ok(schemas)
+    }
+
+    pub fn merged_schema(&self, stream_name: &str) -> Result<Schema, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let schemas = map
+            .get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?
+            .schema;
+        let schema = Schema::try_merge(
+            schemas.values()
+                .map(|schema| &**schema)
+                .cloned(),
+        )
+        .expect("mergeable schemas"));
+
+        OK(schema)
     }
 
     pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {

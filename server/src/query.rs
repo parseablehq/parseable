@@ -49,7 +49,7 @@ fn get_value(value: &Value, key: Key) -> Result<&str, Key> {
 pub struct Query {
     pub query: String,
     pub stream_name: String,
-    pub schemas: HashMap<String, Arc<Schema>>,
+    pub merged_schema: Arc<Schema>,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
 }
@@ -88,9 +88,8 @@ impl Query {
         res
     }
 
-    pub fn get_schema(&self) -> Schema {
-        Schema::try_merge(self.schemas.values().map(|schema| schema.as_ref()).cloned())
-            .expect("mergable shcemas")
+    pub fn get_schema(&self) -> Arc<Schema> {
+        self.merged_schema
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information

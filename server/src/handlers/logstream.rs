@@ -20,6 +20,7 @@ use std::fs;
 
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
+use arrow_schema::Schema;
 use chrono::Utc;
 use serde_json::Value;
 
@@ -59,23 +60,13 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 }
 
 pub async fn list(_: HttpRequest) -> impl Responder {
-    let body = CONFIG
-        .storage()
-        .get_object_store()
-        .list_streams()
-        .await
-        .unwrap();
-    web::Json(body)
+    web::Json(STREAM_INFO.list_streams())
 }
 
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    let schemas = STREAM_INFO
-        .schema_map(&stream_name)
-        .map_err(|_| StreamError::StreamNotFound(stream_name.to_owned()))?;
-
-    Ok((web::Json(schemas), StatusCode::OK))
+    let schema = STREAM_INFO.merged_schemas(&stream_name)?;
+    Ok((web::Json(schema), StatusCode::OK))
 }
 
 pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> {
