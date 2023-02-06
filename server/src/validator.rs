@@ -160,7 +160,7 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Que
 
     let schemas = STREAM_INFO.schema_map(&stream_name)?;
 
-    if schemas.len() == 0 {
+    if schemas.is_empty() {
         return Err(QueryValidationError::UninitializedStream);
     }
 

@@ -108,7 +108,7 @@ async fn push_logs(
                 let event = event::Event {
                     body,
                     stream_name: stream_name.clone(),
-                    schema_key: schema_key,
+                    schema_key,
                 };
 
                 event.process().await?;

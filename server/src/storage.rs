@@ -254,8 +254,6 @@ impl StorageDir {
 
 #[derive(Debug, thiserror::Error)]
 pub enum MoveDataError {
-    #[error("Unable to Open file after moving")]
-    Open,
     #[error("Unable to create recordbatch stream")]
     Arrow(#[from] ArrowError),
     #[error("Could not generate parquet file")]
@@ -264,8 +262,6 @@ pub enum MoveDataError {
     ObjectStorage(#[from] ObjectStorageError),
     #[error("Could not generate parquet file")]
     Create,
-    #[error("Could not delete temp arrow file")]
-    Delete,
 }
 
 #[derive(Debug, thiserror::Error)]

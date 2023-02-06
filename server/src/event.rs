@@ -227,7 +227,7 @@ fn commit_schema(
         .expect("map of schemas is serializable");
 
         let storage = CONFIG.storage().get_object_store();
-        futures::executor::block_on(storage.put_schema_map(&stream_name, &schema_map))?;
+        futures::executor::block_on(storage.put_schema_map(stream_name, &schema_map))?;
         stream_metadata.set_unchecked(stream_name, schema_key, schema);
     }
 

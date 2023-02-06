@@ -67,6 +67,7 @@ ulid = { version = "1.0", features = ["serde"] }
 ureq = { version = "2.5.0", features = ["json"] }
 dashmap = "5.4.0"
 hex = "0.4.3"
+itertools = "0.10.5"
 
 [build-dependencies]
 static-files = "0.2.1"

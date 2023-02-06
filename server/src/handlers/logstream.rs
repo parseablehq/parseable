@@ -154,7 +154,7 @@ pub async fn put_alert(
         .schema_map(&stream_name)
         .map_err(|_| StreamError::StreamNotFound(stream_name.to_owned()))?;
 
-    if schemas.len() == 0 {
+    if schemas.is_empty() {
         return Err(StreamError::UninitializedLogstream);
     }
 
