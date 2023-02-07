@@ -44,7 +44,7 @@ pub fn collect_labelled_headers(
             return Err(ParseHeaderError::SeperatorInValue(kv_separator));
         }
 
-        labels.push(format!("{}={}", key, value));
+        labels.push(format!("{key}={value}"));
     }
 
     if labels.len() > MAX_HEADERS_ALLOWED {
