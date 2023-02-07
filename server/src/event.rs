@@ -199,8 +199,11 @@ fn commit_schema(
         // drop the lock
         drop(stream_metadata);
         // Nothing to do
-        return Ok(());
+        Ok(())
     } else {
+        // set to map
+        stream_metadata.set_unchecked(stream_name, schema_key, schema);
+        // serialize map
         let schema_map = serde_json::to_string(
             &stream_metadata
                 .get(stream_name)
@@ -208,13 +211,16 @@ fn commit_schema(
                 .schema,
         )
         .expect("map of schemas is serializable");
-
+        // try to put to storage
         let storage = CONFIG.storage().get_object_store();
-        futures::executor::block_on(storage.put_schema_map(stream_name, &schema_map))?;
-        stream_metadata.set_unchecked(stream_name, schema_key, schema);
+        let res = futures::executor::block_on(storage.put_schema_map(stream_name, &schema_map));
+        // revert if err
+        if res.is_err() {
+            stream_metadata.remove_unchecked(stream_name, schema_key)
+        }
+        // return result
+        res.map_err(|err| err.into())
     }
-
-    Ok(())
 }
 
 fn replace(
@@ -251,6 +257,13 @@ trait UncheckedOp: DerefMut<Target = HashMap<String, metadata::LogStreamMetadata
             .insert(schema_key.to_string(), schema)
             .is_some()
             .then(|| panic!("collision"));
+    }
+
+    fn remove_unchecked(&mut self, stream_name: &str, schema_key: &str) {
+        self.get_mut(stream_name)
+            .expect("map has entry for this stream name")
+            .schema
+            .remove(schema_key);
     }
 }
 
