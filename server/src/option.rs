@@ -104,8 +104,7 @@ impl Config {
                 cause = inner
             ),
             Err(ObjectStorageError::AuthenticationError(inner)) => panic!(
-                "Failed to authenticate. Please ensure credentials are valid\n Caused by: {cause}",
-                cause = inner
+                "Failed to authenticate. Please ensure credentials are valid\n Caused by: {inner}"
             ),
             Err(error) => {
                 panic!("{error}")

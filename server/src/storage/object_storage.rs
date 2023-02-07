@@ -245,7 +245,7 @@ pub trait ObjectStorage: Sync + 'static {
                     .to_str()
                     .expect("filename is valid string");
                 let file_suffix = str::replacen(filename, ".", "/", 3);
-                let objectstore_path = format!("{}/{}", stream, file_suffix);
+                let objectstore_path = format!("{stream}/{file_suffix}");
 
                 CACHED_FILES
                     .lock()

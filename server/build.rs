@@ -24,10 +24,7 @@ fn main() {
     *config.git_mut().sha_kind_mut() = ShaKind::Short;
 
     if let Err(e) = vergen(config) {
-        println!(
-            "cargo:warning=initializing vergen failed due to error: {}",
-            e
-        );
+        println!("cargo:warning=initializing vergen failed due to error: {e}",);
     }
 
     println!("cargo:rerun-if-changed=build.rs");

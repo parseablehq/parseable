@@ -29,10 +29,9 @@ Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than E
 ## :rocket: Features
 
 - Choose your own storage backend - local drive or S3 (or compatible) object store.
-- Ingestion API compatible with HTTP + JSON output of log agents - [Fluentbit ↗︎](https://fluentbit.io/), [Vector ↗︎](http://vector.dev/), [Logstash ↗︎](https://www.elastic.co/logstash/) and others.
+- Ingestion API compatible with HTTP + JSON output of log agents.
 - Query log data with PostgreSQL compatible SQL.
 - [Grafana ↗︎](https://github.com/parseablehq/parseable-datasource) for visualization.
-- Auto schema inference (schema evolution [coming soon ↗︎](https://github.com/parseablehq/parseable/issues/195)).
 - [Send alerts ↗︎](https://www.parseable.io/docs/api/alerts) to webhook targets including Slack.
 - [Stats API ↗︎](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3) to track ingestion and compressed data.
 - Single binary includes all components - ingestion, store and query. Built-in UI.
@@ -123,10 +122,10 @@ But with log data growing exponentially, today's log data challenges involve who
 
 Refer to the contributing guide [here ↗︎](https://www.parseable.io/docs/contributing).
 
-#### Contributors
+### Contributors
 
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
 
-#### Supported by
+### Supported by
 
 <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
