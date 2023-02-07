@@ -69,7 +69,7 @@ impl QueryTableProvider {
     async fn create_physical_plan(
         &self,
         ctx: &SessionState,
-        projection: &Option<Vec<usize>>,
+        projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
@@ -80,17 +80,13 @@ impl QueryTableProvider {
         }
 
         let memtable = MemTable::try_new(Arc::clone(&self.schema), mem_records)?;
-        let memexec = memtable
-            .scan(ctx, projection.as_ref(), filters, limit)
-            .await?;
+        let memexec = memtable.scan(ctx, projection, filters, limit).await?;
 
         let cache_exec = if parquet_files.is_empty() {
             memexec
         } else {
             let listtable = local_parquet_table(&parquet_files, &self.schema)?;
-            let listexec = listtable
-                .scan(ctx, projection.as_ref(), filters, limit)
-                .await?;
+            let listexec = listtable.scan(ctx, projection, filters, limit).await?;
             Arc::new(UnionExec::new(vec![memexec, listexec]))
         };
 
@@ -98,7 +94,7 @@ impl QueryTableProvider {
         if let Some(ref storage_listing) = self.storage {
             exec.push(
                 storage_listing
-                    .scan(ctx, projection.as_ref(), filters, limit)
+                    .scan(ctx, projection, filters, limit)
                     .await?,
             );
         }
@@ -133,11 +129,11 @@ impl TableProvider for QueryTableProvider {
     async fn scan(
         &self,
         ctx: &SessionState,
-        projection: &Option<Vec<usize>>,
+        projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        self.create_physical_plan(ctx, &projection, filters, limit)
+        self.create_physical_plan(ctx, projection, filters, limit)
             .await
     }
 }

@@ -2,7 +2,6 @@ target
 data
 staging
 examples
-Cargo.lock
 cert.pem
 key.pem
 .env*
