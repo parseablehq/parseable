@@ -211,7 +211,7 @@ impl StorageDir {
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");
         let hostname = utils::hostname_unchecked();
-        format!("{}{}.data.arrows", local_uri, hostname)
+        format!("{local_uri}{hostname}.data.arrows")
     }
 
     fn filename_by_current_time() -> String {

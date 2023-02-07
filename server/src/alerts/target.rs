@@ -106,7 +106,7 @@ impl Target {
             state.lock().unwrap().timed_out = false;
             let mut context = alert_context;
             context.message = format!(
-                "Triggering alert did not resolve itself after {} retries, This alert is paused until it resolves", RETRIES
+                "Triggering alert did not resolve itself after {RETRIES} retries, This alert is paused until it resolves",
             );
             // Send and exit this task.
             call_target(target, context);

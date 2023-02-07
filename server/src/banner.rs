@@ -42,7 +42,7 @@ fn print_ascii_art() {
     .JMML.     `Moo9^Yo..JMML.   M9mmmP'  `Mbmmd' `Moo9^Yo. P^YbmdP'  .JMML. `Mbmmd'       
     "#;
 
-    eprint!("{}", ascii_name);
+    eprint!("{ascii_name}");
     eprintln!(
         "
     Welcome to Parseable Server!"
@@ -107,8 +107,8 @@ pub mod about {
     impl fmt::Display for ParseableVersion {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                ParseableVersion::Version(v) => write!(f, "{}", v),
-                ParseableVersion::Prerelease(p) => write!(f, "{}", p),
+                ParseableVersion::Version(v) => write!(f, "{v}"),
+                ParseableVersion::Prerelease(p) => write!(f, "{p}"),
             }
         }
     }
@@ -134,9 +134,8 @@ pub mod about {
 
         eprintln!(
             "
-        Commit:             \"{}\"
-        Docs:               \"https://www.parseable.io/docs\"",
-            commit_hash
+        Commit:             \"{commit_hash}\"
+        Docs:               \"https://www.parseable.io/docs\""
         );
     }
 
