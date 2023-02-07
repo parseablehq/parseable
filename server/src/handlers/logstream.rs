@@ -60,10 +60,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
         )
     }
 
-    Ok((
-        format!("log stream {stream_name} deleted"),
-        StatusCode::OK,
-    ))
+    Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
 pub async fn list(_: HttpRequest) -> impl Responder {
@@ -254,9 +251,7 @@ pub async fn create_stream(stream_name: String) -> Result<(), StreamError> {
     if let Err(e) = storage.create_stream(&stream_name).await {
         // Fail if unable to create log stream on object store backend
         return Err(StreamError::Custom {
-            msg: format!(
-                "failed to create log stream {stream_name} due to err: {e}"
-            ),
+            msg: format!("failed to create log stream {stream_name} due to err: {e}"),
             status: StatusCode::INTERNAL_SERVER_ERROR,
         });
     }
