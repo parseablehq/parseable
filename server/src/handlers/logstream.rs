@@ -61,7 +61,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     }
 
     Ok((
-        format!("log stream {} deleted", stream_name),
+        format!("log stream {stream_name} deleted"),
         StatusCode::OK,
     ))
 }
@@ -135,8 +135,7 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
         // Error if the log stream already exists
         return Err(StreamError::Custom {
             msg: format!(
-                "log stream {} already exists, please create a new log stream with unique name",
-                stream_name
+                "log stream {stream_name} already exists, please create a new log stream with unique name"
             ),
             status: StatusCode::BAD_REQUEST,
         });
@@ -194,7 +193,7 @@ pub async fn put_alert(
         .expect("alerts set on existing stream");
 
     Ok((
-        format!("set alert configuration for log stream {}", stream_name),
+        format!("set alert configuration for log stream {stream_name}"),
         StatusCode::OK,
     ))
 }
@@ -256,8 +255,7 @@ pub async fn create_stream(stream_name: String) -> Result<(), StreamError> {
         // Fail if unable to create log stream on object store backend
         return Err(StreamError::Custom {
             msg: format!(
-                "failed to create log stream {} due to err: {}",
-                stream_name, e
+                "failed to create log stream {stream_name} due to err: {e}"
             ),
             status: StatusCode::INTERNAL_SERVER_ERROR,
         });

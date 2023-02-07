@@ -321,14 +321,14 @@ macro_rules! create_app {
 }
 
 fn base_path() -> String {
-    format!("{}/{}", API_BASE_PATH, API_VERSION)
+    format!("{API_BASE_PATH}/{API_VERSION}")
 }
 
 fn logstream_path(stream_name: &str) -> String {
     if stream_name.is_empty() {
         "/logstream".to_string()
     } else {
-        format!("/logstream/{}", stream_name)
+        format!("/logstream/{stream_name}")
     }
 }
 

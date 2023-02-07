@@ -180,7 +180,7 @@ impl S3 {
             .client
             .list_objects_v2()
             .bucket(&self.bucket)
-            .prefix(format!("{}/", stream_name))
+            .prefix(format!("{stream_name}/"))
             .into_paginator()
             .send();
 

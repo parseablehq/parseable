@@ -71,7 +71,7 @@ pub mod header_parsing {
                 return Err(ParseHeaderError::SeperatorInValue(kv_separator));
             }
 
-            labels.push(format!("{}={}", key, value));
+            labels.push(format!("{key}={value}"));
         }
 
         if labels.len() > MAX_HEADERS_ALLOWED {
@@ -233,20 +233,20 @@ pub fn minute_to_slot(minute: u32, data_granularity: u32) -> Option<String> {
     let block_n = minute / data_granularity;
     let block_start = block_n * data_granularity;
     if data_granularity == 1 {
-        return Some(format!("{:02}", block_start));
+        return Some(format!("{block_start:02}"));
     }
 
     let block_end = (block_n + 1) * data_granularity - 1;
-    Some(format!("{:02}-{:02}", block_start, block_end))
+    Some(format!("{block_start:02}-{block_end:02}"))
 }
 
 pub fn date_to_prefix(date: NaiveDate) -> String {
-    let date = format!("date={}/", date);
+    let date = format!("date={date}/");
     date.replace("UTC", "")
 }
 
 pub fn hour_to_prefix(hour: u32) -> String {
-    format!("hour={:02}/", hour)
+    format!("hour={hour:02}/")
 }
 
 pub fn minute_to_prefix(minute: u32, data_granularity: u32) -> Option<String> {
@@ -272,7 +272,7 @@ impl TimePeriod {
     }
 
     pub fn generate_prefixes(&self, prefix: &str) -> Vec<String> {
-        let prefix = format!("{}/", prefix);
+        let prefix = format!("{prefix}/");
 
         let end_minute = self.end.minute() + u32::from(self.end.second() > 0);
 
