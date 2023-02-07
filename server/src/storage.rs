@@ -107,7 +107,7 @@ impl Permisssion {
 impl Default for ObjectStoreFormat {
     fn default() -> Self {
         Self {
-            version: "v1".to_string(),
+            version: "v2".to_string(),
             objectstore_format: "v1".to_string(),
             created_at: Local::now().to_rfc3339(),
             owner: Owner::new("".to_string(), "".to_string()),
