@@ -27,7 +27,7 @@ use crate::alerts::Alerts;
 use crate::event;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
-use crate::storage::StorageDir;
+use crate::storage::{LogStream, StorageDir};
 use crate::{metadata, validator};
 
 use self::error::StreamError;
@@ -59,7 +59,13 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 }
 
 pub async fn list(_: HttpRequest) -> impl Responder {
-    web::Json(STREAM_INFO.list_streams())
+    let res: Vec<LogStream> = STREAM_INFO
+        .list_streams()
+        .into_iter()
+        .map(|stream| LogStream { name: stream })
+        .collect();
+
+    web::Json(res)
 }
 
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
