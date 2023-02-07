@@ -24,7 +24,7 @@ use crate::option::CONFIG;
 use crate::query::Query;
 use crate::response::QueryResponse;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
-use crate::utils::{flatten_json_body, merge};
+use crate::utils::json::{flatten_json_body, merge};
 
 use self::error::{PostError, QueryError};
 

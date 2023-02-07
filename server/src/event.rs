@@ -19,7 +19,7 @@ mod writer;
  *
  */
 use arrow_schema::{DataType, Field, TimeUnit};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use datafusion::arrow::array::{Array, TimestampMillisecondArray};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
@@ -40,7 +40,6 @@ use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
 
 const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
-const TIME_KEYS: &[&str] = &["time", "date", "datetime", "timestamp"];
 
 #[derive(Clone)]
 pub struct Event {
@@ -59,36 +58,20 @@ impl Event {
                 return Err(EventError::SchemaMismatch);
             };
 
-            if event
-                .schema()
-                .column_with_name(DEFAULT_TIMESTAMP_KEY)
-                .is_some()
-            {
-                let rows = event.num_rows();
-                let timestamp_array = Arc::new(get_timestamp_array(rows));
-                event = replace(schema, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
-            }
+            let rows = event.num_rows();
+            let timestamp_array = Arc::new(get_timestamp_array(rows));
+            event = replace(schema, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
 
             self.process_event(&event)?;
         } else {
             // if stream schema is none then it is first event,
             // process first event and store schema in obect store
-            // check for a possible datetime field
-            let time_field = get_datetime_field(&self.body);
-
-            if time_field.is_none() {
-                let schema = add_default_timestamp_field(self.infer_schema()?)?;
-                let schema_ref = Arc::new(schema.clone());
-                let event = self.get_record(schema_ref.clone())?;
-                let timestamp_array = Arc::new(get_timestamp_array(event.num_rows()));
-                let event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
-                self.process_first_event(&event, schema)?;
-            } else {
-                let schema = self.infer_schema()?;
-                let schema_ref = Arc::new(schema.clone());
-                let event = self.get_record(schema_ref)?;
-                self.process_first_event(&event, schema)?;
-            }
+            let schema = add_default_timestamp_field(self.infer_schema()?)?;
+            let schema_ref = Arc::new(schema.clone());
+            let event = self.get_record(schema_ref.clone())?;
+            let timestamp_array = Arc::new(get_timestamp_array(event.num_rows()));
+            let event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
+            self.process_first_event(&event, schema)?;
         };
 
         metadata::STREAM_INFO.update_stats(
@@ -240,7 +223,7 @@ fn replace(
     column: &str,
     arr: Arc<dyn Array + 'static>,
 ) -> RecordBatch {
-    let index = schema.column_with_name(column).unwrap().0;
+    let (index, _) = schema.column_with_name(column).unwrap();
     let mut arrays = batch.columns().to_vec();
     arrays[index] = arr;
 
@@ -250,20 +233,6 @@ fn replace(
 fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
     let time = Utc::now();
     TimestampMillisecondArray::from_value(time.timestamp_millis(), size)
-}
-
-fn get_datetime_field(json: &Value) -> Option<&str> {
-    let Value::Object(object) = json else { panic!() };
-    for (key, value) in object {
-        if TIME_KEYS.contains(&key.as_str()) {
-            if let Value::String(maybe_datetime) = value {
-                if DateTime::parse_from_rfc3339(maybe_datetime).is_ok() {
-                    return Some(key);
-                }
-            }
-        }
-    }
-    None
 }
 
 trait UncheckedOp: DerefMut<Target = HashMap<String, metadata::LogStreamMetadata>> {

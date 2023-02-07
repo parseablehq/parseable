@@ -25,7 +25,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::*;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,24 +72,14 @@ impl Query {
     }
 
     pub fn get_prefixes(&self) -> Vec<String> {
-        let datetime_prefixes = self._get_prefixes();
-        let mut res = Vec::new();
-
-        for schema_key in self.schemas.keys() {
-            let prefix = format!("{}/{}", self.stream_name, schema_key);
-
-            res.extend(
-                datetime_prefixes
-                    .iter()
-                    .map(|datetime_prefix| format!("{}/{}", prefix, datetime_prefix)),
-            )
-        }
-
-        res
+        self._get_prefixes()
+            .into_iter()
+            .map(|key| format!("{}/{}", self.stream_name, key))
+            .collect()
     }
 
-    pub fn get_schema(&self) -> Arc<Schema> {
-        self.merged_schema
+    pub fn get_schema(&self) -> &Schema {
+        &self.merged_schema
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information
@@ -129,7 +119,7 @@ impl Query {
             arrow_files,
             parquet_files,
             storage.query_table(self)?,
-            Arc::new(self.get_schema()),
+            Arc::new(self.get_schema().clone()),
         ));
 
         ctx.register_table(

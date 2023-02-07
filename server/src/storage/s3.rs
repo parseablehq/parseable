@@ -345,7 +345,7 @@ impl ObjectStorage for S3 {
 
         let config = ListingTableConfig::new_with_multi_paths(prefixes)
             .with_listing_options(listing_options)
-            .with_schema(Arc::new(query.get_schema()));
+            .with_schema(Arc::new(query.get_schema().clone()));
 
         Ok(Some(ListingTable::try_new(config)?))
     }

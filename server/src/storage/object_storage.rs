@@ -20,16 +20,17 @@ use super::{
     file_link::CacheState, LogStream, MoveDataError, ObjectStorageError, ObjectStoreFormat,
     Permisssion, StorageDir, StorageMetadata, CACHED_FILES,
 };
-use crate::{alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, query::Query, stats::Stats};
+use crate::{
+    alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, query::Query, stats::Stats,
+    utils::batch_adapter::adapt_batch,
+};
 
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{
     arrow::{
-        array::{new_null_array, ArrayRef, TimestampMillisecondArray},
-        ipc::reader::StreamReader,
-        record_batch::RecordBatch,
+        array::TimestampMillisecondArray, ipc::reader::StreamReader, record_batch::RecordBatch,
     },
     datasource::listing::ListingTable,
     execution::runtime_env::RuntimeEnv,
@@ -46,6 +47,7 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     path::{Path, PathBuf},
+    process,
     sync::Arc,
 };
 
@@ -207,39 +209,31 @@ pub trait ObjectStorage: Sync + 'static {
         let mut stream_stats = HashMap::new();
 
         for stream in &streams {
-            // get dir
             let dir = StorageDir::new(stream);
             // walk dir, find all .arrows files and convert to parquet
-
             // Do not include file which is being written to
             let time = chrono::Utc::now().naive_utc();
             let hot_filename = StorageDir::file_time_suffix(time);
 
             let mut arrow_files = dir.arrow_files();
-
             arrow_files.retain(|file| {
                 !file
                     .file_name()
                     .expect("is a not none filename")
                     .to_str()
-                    .unwrap()
+                    .expect("valid unicode")
                     .ends_with(&hot_filename)
             });
 
-            // hashmap time = vec[paths]
+            // hashmap <time, vec[paths]>
             let mut grouped_arrow_file: HashMap<&str, Vec<&Path>> = HashMap::new();
-
             for file in &arrow_files {
                 let key = file
                     .file_name()
                     .expect("is a not none filename")
                     .to_str()
                     .unwrap();
-
                 let (_, key) = key.split_once('.').unwrap();
-
-                let key = key.strip_suffix("data.arrows").unwrap();
-
                 grouped_arrow_file.entry(key).or_default().push(file);
             }
 
@@ -263,7 +257,10 @@ pub trait ObjectStorage: Sync + 'static {
                 writer.close()?;
 
                 for file in files {
-                    let _ = fs::remove_file(file);
+                    if fs::remove_file(file).is_err() {
+                        log::error!("Failed to delete file. Unstable state");
+                        process::abort()
+                    }
                 }
             }
 
@@ -351,33 +348,6 @@ fn get_parquet_path(file: &Path) -> PathBuf {
     parquet_path.set_extension("parquet");
 
     parquet_path
-}
-
-pub fn adapt_batch(table_schema: &Schema, batch: RecordBatch) -> RecordBatch {
-    if table_schema.eq(&batch.schema()) {
-        return batch;
-    }
-
-    let batch_rows = batch.num_rows();
-    let batch_schema = &*batch.schema();
-
-    let mut cols: Vec<ArrayRef> = Vec::with_capacity(batch.num_columns());
-    let batch_cols = batch.columns().to_vec();
-
-    for table_field in table_schema.fields() {
-        if let Some((batch_idx, _name)) = batch_schema.column_with_name(table_field.name().as_str())
-        {
-            cols.push(Arc::clone(&batch_cols[batch_idx]));
-        } else {
-            cols.push(new_null_array(table_field.data_type(), batch_rows))
-        }
-    }
-
-    let merged_schema = Arc::new(table_schema.clone());
-
-    let merged_batch = RecordBatch::try_new(merged_schema, cols).unwrap();
-
-    merged_batch
 }
 
 #[derive(Debug)]

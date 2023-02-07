@@ -37,6 +37,8 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::utils::batch_adapter::adapt_batch;
+
 pub struct QueryTableProvider {
     arrow_files: Vec<PathBuf>,
     parquet_files: Vec<PathBuf>,
@@ -77,7 +79,12 @@ impl QueryTableProvider {
         let mut mem_records: Vec<Vec<RecordBatch>> = Vec::new();
         let mut parquet_files = self.parquet_files.clone();
         for file in &self.arrow_files {
-            load_arrows(file, &mut mem_records, &mut parquet_files);
+            load_arrows(
+                file,
+                Some(&self.schema),
+                &mut mem_records,
+                &mut parquet_files,
+            );
         }
 
         let memtable = MemTable::try_new(Arc::clone(&self.schema), mem_records)?;
@@ -168,20 +175,24 @@ fn local_parquet_table(
 
 fn load_arrows(
     file: &PathBuf,
+    schema: Option<&Schema>,
     mem_records: &mut Vec<Vec<RecordBatch>>,
     parquet_files: &mut Vec<PathBuf>,
 ) {
     let Ok(arrow_file) = File::open(file) else { return; };
     let Ok(reader)= StreamReader::try_new(arrow_file, None) else { return; };
-    let records = reader
-        .filter_map(|record| match record {
-            Ok(record) => Some(record),
-            Err(e) => {
-                log::warn!("warning from arrow stream {:?}", e);
-                None
-            }
-        })
-        .collect();
+    let records = reader.filter_map(|record| match record {
+        Ok(record) => Some(record),
+        Err(e) => {
+            log::warn!("warning from arrow stream {:?}", e);
+            None
+        }
+    });
+    let records = match schema {
+        Some(schema) => records.map(|record| adapt_batch(schema, record)).collect(),
+        None => records.collect(),
+    };
+
     mem_records.push(records);
     let mut file = file.clone();
     file.set_extension("parquet");

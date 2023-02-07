@@ -20,7 +20,6 @@ use std::fs;
 
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
-use arrow_schema::Schema;
 use chrono::Utc;
 use serde_json::Value;
 
@@ -65,7 +64,7 @@ pub async fn list(_: HttpRequest) -> impl Responder {
 
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let schema = STREAM_INFO.merged_schemas(&stream_name)?;
+    let schema = STREAM_INFO.merged_schema(&stream_name)?;
     Ok((web::Json(schema), StatusCode::OK))
 }
 
@@ -141,19 +140,13 @@ pub async fn put_alert(
 
     validator::alert(&alerts)?;
 
-    let schemas = STREAM_INFO
-        .schema_map(&stream_name)
-        .map_err(|_| StreamError::StreamNotFound(stream_name.to_owned()))?;
-
-    if schemas.is_empty() {
+    if !STREAM_INFO.stream_initialized(&stream_name)? {
         return Err(StreamError::UninitializedLogstream);
     }
 
+    let schema = STREAM_INFO.merged_schema(&stream_name)?;
     for alert in &alerts.alerts {
-        if !schemas
-            .values()
-            .any(|schema| alert.rule.valid_for_schema(schema))
-        {
+        if !alert.rule.valid_for_schema(&schema) {
             return Err(StreamError::InvalidAlert(alert.name.to_owned()));
         }
     }
@@ -245,6 +238,7 @@ pub mod error {
     use http::StatusCode;
 
     use crate::{
+        metadata::error::stream_info::MetadataError,
         storage::ObjectStorageError,
         validator::error::{AlertValidationError, StreamNameValidationError},
     };
@@ -293,6 +287,14 @@ pub mod error {
             actix_web::HttpResponse::build(self.status_code())
                 .insert_header(ContentType::plaintext())
                 .body(self.to_string())
+        }
+    }
+
+    impl From<MetadataError> for StreamError {
+        fn from(value: MetadataError) -> Self {
+            match value {
+                MetadataError::StreamMetaNotFound(s) => StreamError::StreamNotFound(s),
+            }
         }
     }
 }
