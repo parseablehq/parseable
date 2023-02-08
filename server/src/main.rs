@@ -26,24 +26,25 @@ use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
 use log::warn;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use std::env;
 use thread_priority::{ThreadBuilder, ThreadPriority};
+use tokio::sync::oneshot;
+use tokio::sync::oneshot::error::TryRecvError;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
+use std::env;
 use std::fs::File;
 use std::io::BufReader;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use tokio::sync::oneshot;
-use tokio::sync::oneshot::error::TryRecvError;
 
 mod alerts;
 mod banner;
 mod event;
 mod handlers;
 mod metadata;
+mod migration;
 mod option;
 mod query;
 mod response;
@@ -54,7 +55,6 @@ mod validator;
 
 use option::CONFIG;
 
-// Global configurations
 const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 const API_BASE_PATH: &str = "/api";
 const API_VERSION: &str = "v1";
@@ -69,9 +69,12 @@ async fn main() -> anyhow::Result<()> {
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, metadata);
 
+    migration::run_migration(&CONFIG).await?;
+
     if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
         warn!("could not populate local metadata. {:?}", e);
     }
+
     // track all parquet files already in the data directory
     storage::CACHED_FILES.track_parquet();
 

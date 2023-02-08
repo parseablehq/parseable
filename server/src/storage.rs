@@ -19,6 +19,7 @@
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 
+use crate::stats::Stats;
 use crate::storage::file_link::{FileLink, FileTable};
 use crate::utils;
 
@@ -66,13 +67,16 @@ const ACCESS_ALL: &str = "all";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
+    /// Version of schema registry
     pub version: String,
+    /// Version for change in the way how parquet are generated/stored.
     #[serde(rename = "objectstore-format")]
     pub objectstore_format: String,
     #[serde(rename = "created-at")]
     pub created_at: String,
     pub owner: Owner,
     pub permissions: Vec<Permisssion>,
+    pub stats: Stats,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +116,7 @@ impl Default for ObjectStoreFormat {
             created_at: Local::now().to_rfc3339(),
             owner: Owner::new("".to_string(), "".to_string()),
             permissions: vec![Permisssion::new("parseable".to_string())],
+            stats: Stats::default(),
         }
     }
 }

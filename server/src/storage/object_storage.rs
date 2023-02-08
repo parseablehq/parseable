@@ -159,6 +159,14 @@ pub trait ObjectStorage: Sync + 'static {
         }
     }
 
+    async fn get_stream_metadata(
+        &self,
+        stream_name: &str,
+    ) -> Result<ObjectStoreFormat, ObjectStorageError> {
+        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
+        Ok(serde_json::from_slice(&stream_metadata).expect("parseable config is valid json"))
+    }
+
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
         let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
         let stream_metadata: Value =
