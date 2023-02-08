@@ -29,7 +29,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         .and_then(|meta| meta.get("version"))
         .and_then(|version| version.as_str());
 
-    if let Some("v1") = maybe_v1 {
+    if matches!(maybe_v1, Some("v1")) {
         let new_stream_metadata = stream_metadata_migration::v1_v2(stream_metadata);
         storage
             .put_object(&path, to_bytes(&new_stream_metadata))
