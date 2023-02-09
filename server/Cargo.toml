@@ -1,9 +1,10 @@
 [package]
 name = "parseable"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Parseable Team <hi@parseable.io>"]
 edition = "2021"
-categories = ["olap", "logging", "analytics-store"]
+rust-version = "1.67"
+categories = ["logging", "observability", "log analytics"] 
 
 [dependencies]
 actix-web-httpauth = "0.8"
