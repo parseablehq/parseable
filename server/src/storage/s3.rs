@@ -16,6 +16,7 @@
  *
  */
 
+use arrow_schema::Schema;
 use async_trait::async_trait;
 use aws_sdk_s3::error::{HeadBucketError, HeadBucketErrorKind};
 use aws_sdk_s3::model::{CommonPrefix, Delete, ObjectIdentifier};
@@ -32,6 +33,7 @@ use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
 use datafusion::datasource::object_store::ObjectStoreRegistry;
+use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use futures::StreamExt;
 use http::Uri;
@@ -43,8 +45,6 @@ use relative_path::RelativePath;
 use std::iter::Iterator;
 use std::path::Path;
 use std::sync::Arc;
-
-use crate::query::Query;
 
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
@@ -319,10 +319,13 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    fn query_table(&self, query: &Query) -> Result<Option<ListingTable>, ObjectStorageError> {
+    fn query_table(
+        &self,
+        prefixes: Vec<String>,
+        schema: Arc<Schema>,
+    ) -> Result<Option<ListingTable>, DataFusionError> {
         // Get all prefix paths and convert them into futures which yeilds ListingTableUrl
-        let prefixes: Vec<ListingTableUrl> = query
-            .get_prefixes()
+        let prefixes: Vec<ListingTableUrl> = prefixes
             .into_iter()
             .map(|prefix| {
                 let path = format!("s3://{}/{}", &self.bucket, prefix);
@@ -345,7 +348,7 @@ impl ObjectStorage for S3 {
 
         let config = ListingTableConfig::new_with_multi_paths(prefixes)
             .with_listing_options(listing_options)
-            .with_schema(Arc::new(query.get_schema().clone()));
+            .with_schema(schema);
 
         Ok(Some(ListingTable::try_new(config)?))
     }

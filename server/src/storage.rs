@@ -30,8 +30,9 @@ use datafusion::parquet::errors::ParquetError;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
 use std::fs::create_dir_all;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 mod file_link;
@@ -41,6 +42,7 @@ mod s3;
 mod store_metadata;
 
 pub use localfs::{FSConfig, LocalFS};
+pub use object_storage::MergedRecordReader;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::{S3Config, S3};
 pub use store_metadata::StorageMetadata;
@@ -246,6 +248,48 @@ impl StorageDir {
         paths
     }
 
+    pub fn arrow_files_grouped_by_time(&self) -> HashMap<PathBuf, Vec<PathBuf>> {
+        // hashmap <time, vec[paths]>
+        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        let arrow_files = self.arrow_files();
+        for arrow_file_path in arrow_files {
+            let key = Self::arrow_path_to_parquet(&arrow_file_path);
+            grouped_arrow_file
+                .entry(key)
+                .or_default()
+                .push(arrow_file_path);
+        }
+
+        grouped_arrow_file
+    }
+
+    pub fn arrow_files_grouped_exclude_time(
+        &self,
+        exclude: NaiveDateTime,
+    ) -> HashMap<PathBuf, Vec<PathBuf>> {
+        let hot_filename = StorageDir::file_time_suffix(exclude);
+        // hashmap <time, vec[paths]> but exclude where hotfilename matches
+        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        let mut arrow_files = self.arrow_files();
+        arrow_files.retain(|path| {
+            !path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with(&hot_filename)
+        });
+        for arrow_file_path in arrow_files {
+            let key = Self::arrow_path_to_parquet(&arrow_file_path);
+            grouped_arrow_file
+                .entry(key)
+                .or_default()
+                .push(arrow_file_path);
+        }
+
+        grouped_arrow_file
+    }
+
     pub fn parquet_files(&self) -> Vec<PathBuf> {
         let Ok(dir) = self.data_path
             .read_dir() else { return vec![] };
@@ -254,6 +298,15 @@ impl StorageDir {
             .map(|file| file.path())
             .filter(|file| file.extension().map_or(false, |ext| ext.eq("parquet")))
             .collect()
+    }
+
+    fn arrow_path_to_parquet(path: &Path) -> PathBuf {
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        let (_, filename) = filename.split_once('.').unwrap();
+        let mut parquet_path = path.to_owned();
+        parquet_path.set_file_name(filename);
+        parquet_path.set_extension("parquet");
+        parquet_path
     }
 }
 

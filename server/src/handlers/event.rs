@@ -39,7 +39,7 @@ pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResp
 
     let storage = CONFIG.storage().get_object_store();
 
-    let query_result = query.execute(&*storage).await;
+    let query_result = query.execute(storage).await;
 
     query_result
         .map(Into::<QueryResponse>::into)

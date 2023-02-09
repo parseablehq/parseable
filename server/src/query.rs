@@ -24,10 +24,11 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::*;
+use itertools::Itertools;
 use serde_json::Value;
+use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::option::CONFIG;
@@ -86,29 +87,26 @@ impl Query {
     /// TODO: find a way to query all selected parquet files together in a single context.
     pub async fn execute(
         &self,
-        storage: &(impl ObjectStorage + ?Sized),
+        storage: Arc<dyn ObjectStorage + Send>,
     ) -> Result<Vec<RecordBatch>, ExecuteError> {
         let dir = StorageDir::new(&self.stream_name);
-
         // take a look at local dir and figure out what local cache we could use for this query
-        let arrow_files: Vec<PathBuf> = dir
-            .arrow_files()
+        let staging_arrows = dir
+            .arrow_files_grouped_by_time()
             .into_iter()
-            .filter(|path| path_intersects_query(path, self.start, self.end))
-            .collect();
+            .filter(|(path, _)| path_intersects_query(path, self.start, self.end))
+            .sorted_by(|(a, _), (b, _)| Ord::cmp(a, b))
+            .collect_vec();
 
-        let possible_parquet_files = arrow_files.iter().cloned().map(|mut path| {
-            path.set_extension("parquet");
-            path
-        });
+        let staging_parquet_set: HashSet<&PathBuf, RandomState> =
+            HashSet::from_iter(staging_arrows.iter().map(|(p, _)| p));
 
-        let parquet_files = dir
+        let other_staging_parquet = dir
             .parquet_files()
             .into_iter()
-            .filter(|path| path_intersects_query(path, self.start, self.end));
-
-        let parquet_files: HashSet<PathBuf> = possible_parquet_files.chain(parquet_files).collect();
-        let parquet_files = Vec::from_iter(parquet_files.into_iter());
+            .filter(|path| path_intersects_query(path, self.start, self.end))
+            .filter(|path| !staging_parquet_set.contains(path))
+            .collect_vec();
 
         let ctx = SessionContext::with_config_rt(
             SessionConfig::default(),
@@ -116,9 +114,10 @@ impl Query {
         );
 
         let table = Arc::new(QueryTableProvider::new(
-            arrow_files,
-            parquet_files,
-            storage.query_table(self)?,
+            staging_arrows,
+            other_staging_parquet,
+            self.get_prefixes(),
+            storage,
             Arc::new(self.get_schema().clone()),
         ));
 
@@ -148,7 +147,7 @@ fn time_from_path(path: &Path) -> DateTime<Utc> {
 
     // split by . and skip first part because that is schema key.
     // Next three in order will be date, hour and minute
-    let mut components = prefix.splitn(4, '.').skip(1);
+    let mut components = prefix.splitn(3, '.');
 
     let date = components.next().expect("date=xxxx-xx-xx");
     let hour = components.next().expect("hour=xx");

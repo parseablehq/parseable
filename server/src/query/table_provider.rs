@@ -32,38 +32,47 @@ use datafusion::logical_expr::TableType;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::Expr;
+use itertools::Itertools;
 use std::any::Any;
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::utils::batch_adapter::adapt_batch;
+use crate::storage::ObjectStorage;
 
 pub struct QueryTableProvider {
-    arrow_files: Vec<PathBuf>,
-    parquet_files: Vec<PathBuf>,
-    storage: Option<ListingTable>,
+    // parquet - ( arrow files )
+    staging_arrows: Vec<(PathBuf, Vec<PathBuf>)>,
+    other_staging_parquet: Vec<PathBuf>,
+    storage_prefixes: Vec<String>,
+    storage: Arc<dyn ObjectStorage + Send>,
     schema: Arc<Schema>,
 }
 
 impl QueryTableProvider {
     pub fn new(
-        arrow_files: Vec<PathBuf>,
-        parquet_files: Vec<PathBuf>,
-        storage: Option<ListingTable>,
+        staging_arrows: Vec<(PathBuf, Vec<PathBuf>)>,
+        other_staging_parquet: Vec<PathBuf>,
+        storage_prefixes: Vec<String>,
+        storage: Arc<dyn ObjectStorage + Send>,
         schema: Arc<Schema>,
     ) -> Self {
         // By the time this query executes the arrow files could be converted to parquet files
         // we want to preserve these files as well in case
-
         let mut parquet_cached = crate::storage::CACHED_FILES.lock().expect("no poisoning");
-        for file in &parquet_files {
+
+        for file in staging_arrows
+            .iter()
+            .map(|(p, _)| p)
+            .chain(other_staging_parquet.iter())
+        {
             parquet_cached.upsert(file)
         }
 
         Self {
-            arrow_files,
-            parquet_files,
+            staging_arrows,
+            other_staging_parquet,
+            storage_prefixes,
             storage,
             schema,
         }
@@ -77,15 +86,14 @@ impl QueryTableProvider {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut mem_records: Vec<Vec<RecordBatch>> = Vec::new();
-        let mut parquet_files = self.parquet_files.clone();
-        for file in &self.arrow_files {
-            load_arrows(
-                file,
-                Some(&self.schema),
-                &mut mem_records,
-                &mut parquet_files,
-            );
+        let mut parquet_files = Vec::new();
+
+        for (staging_parquet, arrow_files) in &self.staging_arrows {
+            if !load_arrows(arrow_files, &self.schema, &mut mem_records) {
+                parquet_files.push(staging_parquet.clone())
+            }
         }
+        parquet_files.extend(self.other_staging_parquet.clone());
 
         let memtable = MemTable::try_new(Arc::clone(&self.schema), mem_records)?;
         let memexec = memtable.scan(ctx, projection, filters, limit).await?;
@@ -93,13 +101,22 @@ impl QueryTableProvider {
         let cache_exec = if parquet_files.is_empty() {
             memexec
         } else {
-            let listtable = local_parquet_table(&parquet_files, &self.schema)?;
-            let listexec = listtable.scan(ctx, projection, filters, limit).await?;
-            Arc::new(UnionExec::new(vec![memexec, listexec]))
+            match local_parquet_table(&parquet_files, &self.schema) {
+                Some(table) => {
+                    let listexec = table.scan(ctx, projection, filters, limit).await?;
+                    Arc::new(UnionExec::new(vec![memexec, listexec]))
+                }
+                None => memexec,
+            }
         };
 
         let mut exec = vec![cache_exec];
-        if let Some(ref storage_listing) = self.storage {
+
+        let table = self
+            .storage
+            .query_table(self.storage_prefixes.clone(), Arc::clone(&self.schema))?;
+
+        if let Some(ref storage_listing) = table {
             exec.push(
                 storage_listing
                     .scan(ctx, projection, filters, limit)
@@ -114,7 +131,12 @@ impl QueryTableProvider {
 impl Drop for QueryTableProvider {
     fn drop(&mut self) {
         let mut parquet_cached = crate::storage::CACHED_FILES.lock().expect("no poisoning");
-        for file in &self.parquet_files {
+        for file in self
+            .staging_arrows
+            .iter()
+            .map(|(p, _)| p)
+            .chain(self.other_staging_parquet.iter())
+        {
             parquet_cached.remove(file)
         }
     }
@@ -146,10 +168,7 @@ impl TableProvider for QueryTableProvider {
     }
 }
 
-fn local_parquet_table(
-    parquet_files: &[PathBuf],
-    schema: &SchemaRef,
-) -> Result<ListingTable, DataFusionError> {
+fn local_parquet_table(parquet_files: &[PathBuf], schema: &SchemaRef) -> Option<ListingTable> {
     let listing_options = ListingOptions {
         file_extension: ".parquet".to_owned(),
         format: Arc::new(ParquetFormat::default().with_enable_pruning(true)),
@@ -160,41 +179,45 @@ fn local_parquet_table(
 
     let paths = parquet_files
         .iter()
-        .map(|path| {
+        .flat_map(|path| {
             ListingTableUrl::parse(path.to_str().expect("path should is valid unicode"))
-                .expect("path is valid for filesystem listing")
         })
-        .collect();
+        .collect_vec();
+
+    if paths.is_empty() {
+        return None;
+    }
 
     let config = ListingTableConfig::new_with_multi_paths(paths)
         .with_listing_options(listing_options)
         .with_schema(Arc::clone(schema));
 
-    ListingTable::try_new(config)
+    match ListingTable::try_new(config) {
+        Ok(table) => Some(table),
+        Err(err) => {
+            log::error!("Local parquet query failed due to err: {err}");
+            None
+        }
+    }
 }
 
 fn load_arrows(
-    file: &PathBuf,
-    schema: Option<&Schema>,
+    files: &[PathBuf],
+    schema: &Schema,
     mem_records: &mut Vec<Vec<RecordBatch>>,
-    parquet_files: &mut Vec<PathBuf>,
-) {
-    let Ok(arrow_file) = File::open(file) else { return; };
-    let Ok(reader)= StreamReader::try_new(arrow_file, None) else { return; };
-    let records = reader.filter_map(|record| match record {
-        Ok(record) => Some(record),
-        Err(e) => {
-            log::warn!("warning from arrow stream {:?}", e);
-            None
-        }
-    });
-    let records = match schema {
-        Some(schema) => records.map(|record| adapt_batch(schema, record)).collect(),
-        None => records.collect(),
-    };
+) -> bool {
+    let mut stream_readers = Vec::with_capacity(files.len());
 
+    for file in files {
+        let Ok(arrow_file) = File::open(file) else { return false; };
+        let Ok(reader)= StreamReader::try_new(arrow_file, None) else { return false; };
+        stream_readers.push(reader);
+    }
+
+    let reader = crate::storage::MergedRecordReader {
+        readers: stream_readers,
+    };
+    let records = reader.merged_iter(schema).collect();
     mem_records.push(records);
-    let mut file = file.clone();
-    file.set_extension("parquet");
-    parquet_files.retain(|p| p != &file);
+    true
 }

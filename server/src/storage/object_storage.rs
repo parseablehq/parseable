@@ -21,7 +21,7 @@ use super::{
     Permisssion, StorageDir, StorageMetadata, CACHED_FILES,
 };
 use crate::{
-    alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, query::Query, stats::Stats,
+    alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, stats::Stats,
     utils::batch_adapter::adapt_batch,
 };
 
@@ -33,6 +33,7 @@ use datafusion::{
         array::TimestampMillisecondArray, ipc::reader::StreamReader, record_batch::RecordBatch,
     },
     datasource::listing::ListingTable,
+    error::DataFusionError,
     execution::runtime_env::RuntimeEnv,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
 };
@@ -75,7 +76,11 @@ pub trait ObjectStorage: Sync + 'static {
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
-    fn query_table(&self, query: &Query) -> Result<Option<ListingTable>, ObjectStorageError>;
+    fn query_table(
+        &self,
+        prefixes: Vec<String>,
+        schema: Arc<Schema>,
+    ) -> Result<Option<ListingTable>, DataFusionError>;
 
     async fn put_schema_map(
         &self,
@@ -221,33 +226,10 @@ pub trait ObjectStorage: Sync + 'static {
             // walk dir, find all .arrows files and convert to parquet
             // Do not include file which is being written to
             let time = chrono::Utc::now().naive_utc();
-            let hot_filename = StorageDir::file_time_suffix(time);
+            let staging_files = dir.arrow_files_grouped_exclude_time(time);
 
-            let mut arrow_files = dir.arrow_files();
-            arrow_files.retain(|file| {
-                !file
-                    .file_name()
-                    .expect("is a not none filename")
-                    .to_str()
-                    .expect("valid unicode")
-                    .ends_with(&hot_filename)
-            });
-
-            // hashmap <time, vec[paths]>
-            let mut grouped_arrow_file: HashMap<&str, Vec<&Path>> = HashMap::new();
-            for file in &arrow_files {
-                let key = file
-                    .file_name()
-                    .expect("is a not none filename")
-                    .to_str()
-                    .unwrap();
-                let (_, key) = key.split_once('.').unwrap();
-                grouped_arrow_file.entry(key).or_default().push(file);
-            }
-
-            for files in grouped_arrow_file.values() {
-                let parquet_path = get_parquet_path(files[0]);
-                let record_reader = MergedRecordReader::try_new(files).unwrap();
+            for (parquet_path, files) in staging_files {
+                let record_reader = MergedRecordReader::try_new(&files).unwrap();
 
                 let mut parquet_table = CACHED_FILES.lock().unwrap();
                 let parquet_file =
@@ -347,24 +329,13 @@ pub trait ObjectStorage: Sync + 'static {
     }
 }
 
-fn get_parquet_path(file: &Path) -> PathBuf {
-    let filename = file.file_name().unwrap().to_str().unwrap();
-    let (_, filename) = filename.split_once('.').unwrap();
-
-    let mut parquet_path = file.to_owned();
-    parquet_path.set_file_name(filename);
-    parquet_path.set_extension("parquet");
-
-    parquet_path
-}
-
 #[derive(Debug)]
-struct MergedRecordReader {
-    readers: Vec<StreamReader<File>>,
+pub struct MergedRecordReader {
+    pub readers: Vec<StreamReader<File>>,
 }
 
 impl MergedRecordReader {
-    fn try_new(files: &[&Path]) -> Result<Self, MoveDataError> {
+    pub fn try_new(files: &[PathBuf]) -> Result<Self, MoveDataError> {
         let mut readers = Vec::with_capacity(files.len());
 
         for file in files {
@@ -375,7 +346,7 @@ impl MergedRecordReader {
         Ok(Self { readers })
     }
 
-    fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
+    pub fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
         let adapted_readers = self
             .readers
             .into_iter()
@@ -398,7 +369,7 @@ impl MergedRecordReader {
         })
     }
 
-    fn merged_schema(&self) -> Schema {
+    pub fn merged_schema(&self) -> Schema {
         Schema::try_merge(
             self.readers
                 .iter()
