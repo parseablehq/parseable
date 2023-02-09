@@ -21,9 +21,9 @@ use std::{
     sync::Arc,
 };
 
-use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::{
     datasource::{
         file_format::parquet::ParquetFormat,

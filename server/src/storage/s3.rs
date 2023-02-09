@@ -16,7 +16,6 @@
  *
  */
 
-use arrow_schema::Schema;
 use async_trait::async_trait;
 use aws_sdk_s3::config::retry::RetryConfig;
 use aws_sdk_s3::error::{HeadBucketError, HeadBucketErrorKind};
@@ -28,6 +27,7 @@ use aws_smithy_async::rt::sleep::default_async_sleep;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::engine::Engine as _;
 use bytes::Bytes;
+use datafusion::arrow::datatypes::Schema;
 
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
@@ -128,13 +128,13 @@ impl ObjectStorageProvider for S3Config {
     }
 
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
-        let uri = self.endpoint_url.parse().unwrap();
+        let uri: String = self.endpoint_url.parse().unwrap();
         let region = Region::new(self.region.clone());
         let creds = Credentials::new(&self.access_key_id, &self.secret_key, None, None, "");
 
         let config = aws_sdk_s3::Config::builder()
             .region(region)
-            .endpoint_url(self.uri)
+            .endpoint_url(uri)
             .credentials_provider(creds)
             .retry_config(RetryConfig::standard().with_max_attempts(5))
             .sleep_impl(default_async_sleep().expect("sleep impl is provided for tokio rt"))

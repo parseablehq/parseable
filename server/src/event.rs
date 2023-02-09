@@ -19,7 +19,6 @@
 
 mod writer;
 
-use arrow_schema::{DataType, Field, TimeUnit};
 use chrono::Utc;
 use datafusion::arrow::array::{Array, TimestampMillisecondArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};

@@ -16,9 +16,9 @@
  *
  */
 
-use arrow_schema::Schema;
 use datafusion::arrow::array::new_null_array;
 use datafusion::arrow::array::ArrayRef;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 
 use std::sync::Arc;

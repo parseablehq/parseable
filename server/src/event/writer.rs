@@ -188,7 +188,7 @@ fn init_new_stream_writer_file(
 }
 
 pub mod errors {
-    use arrow_schema::ArrowError;
+    use datafusion::arrow::error::ArrowError;
 
     #[derive(Debug, thiserror::Error)]
     pub enum StreamWriterError {
