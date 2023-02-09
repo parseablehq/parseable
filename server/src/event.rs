@@ -26,7 +26,6 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::json::reader::{infer_json_schema_from_iterator, Decoder, DecoderOptions};
 use datafusion::arrow::record_batch::RecordBatch;
-use md5::Digest;
 use serde_json::Value;
 
 use std::collections::HashMap;
@@ -147,12 +146,12 @@ fn add_default_timestamp_field(schema: Schema) -> Result<Schema, ArrowError> {
 pub fn get_schema_key(body: &Value) -> String {
     let mut list_of_fields: Vec<_> = body.as_object().unwrap().keys().collect();
     list_of_fields.sort();
-    let mut hasher = md5::Md5::new();
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     for field in list_of_fields {
         hasher.update(field.as_bytes())
     }
-
-    hex::encode(hasher.finalize())
+    let hash = hasher.digest();
+    format!("{hash:x}")
 }
 
 fn fields_mismatch(schema: &Schema, body: &Value) -> bool {

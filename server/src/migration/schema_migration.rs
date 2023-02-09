@@ -21,7 +21,6 @@ use std::collections::HashMap;
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use itertools::Itertools;
-use md5::Digest;
 
 pub(super) fn v1_v2(schema: Option<Schema>) -> anyhow::Result<HashMap<String, Schema>> {
     let Some(schema) = schema else { return Ok(HashMap::new()) };
@@ -41,11 +40,13 @@ pub(super) fn v1_v2(schema: Option<Schema>) -> anyhow::Result<HashMap<String, Sc
         .skip(1)
         .map(|f| f.name())
         .sorted();
-    let mut hasher = md5::Md5::new();
+
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     list_of_fields.for_each(|field| hasher.update(field.as_bytes()));
-    let key = hex::encode(hasher.finalize());
+    let hash = hasher.digest();
+    let key = format!("{hash:x}");
+
     let mut map = HashMap::new();
     map.insert(key, schema);
-
     Ok(map)
 }
