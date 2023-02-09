@@ -1,222 +1,77 @@
 /*
- * Parseable Server (C) 2022 - 2023 Parseable, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- *
- */
-use actix_web::rt::spawn;
-use chrono::{DateTime, Utc};
+* Parseable Server (C) 2022 - 2023 Parseable, Inc.
+*
+* This program is free software: you can redistribute it and/or modify
+* it under the terms of the GNU Affero General Public License as
+* published by the Free Software Foundation, either version 3 of the
+* License, or (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU Affero General Public License for more details.
+*
+* You should have received a copy of the GNU Affero General Public License
+* along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*
+*
+*/
+
+mod writer;
+
+use arrow_schema::{DataType, Field, TimeUnit};
+use chrono::Utc;
 use datafusion::arrow::array::{Array, TimestampMillisecondArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::json::reader::{infer_json_schema_from_iterator, Decoder, DecoderOptions};
 use datafusion::arrow::record_batch::RecordBatch;
-use lazy_static::lazy_static;
 use serde_json::Value;
+
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::ops::{Deref, DerefMut};
+use std::ops::DerefMut;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::MutexGuard;
-use std::sync::RwLock;
 
 use crate::metadata;
 use crate::metadata::LOCK_EXPECT;
 use crate::option::CONFIG;
-use crate::storage::StorageDir;
 
-use self::error::{EventError, StreamWriterError};
-
-type LocalWriter = Mutex<Option<StreamWriter<std::fs::File>>>;
-type LocalWriterGuard<'a> = MutexGuard<'a, Option<StreamWriter<std::fs::File>>>;
+use self::error::EventError;
+pub use self::writer::STREAM_WRITERS;
 
 const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
-const TIME_KEYS: &[&str] = &["time", "date", "datetime", "timestamp"];
-
-lazy_static! {
-    #[derive(Default)]
-    pub static ref STREAM_WRITERS: RwLock<HashMap<String, LocalWriter>> = RwLock::new(HashMap::new());
-}
-
-impl STREAM_WRITERS {
-    // append to a existing stream
-    fn append_to_local(stream: &str, record: &RecordBatch) -> Result<(), StreamWriterError> {
-        let hashmap_guard = STREAM_WRITERS
-            .read()
-            .map_err(|_| StreamWriterError::RwPoisoned)?;
-
-        match hashmap_guard.get(stream) {
-            Some(localwriter) => {
-                let mut writer_guard = localwriter
-                    .lock()
-                    .map_err(|_| StreamWriterError::MutexPoisoned)?;
-
-                // if it's some writer then we write without dropping any lock
-                // hashmap cannot be brought mutably at any point until this finishes
-                if let Some(ref mut writer) = *writer_guard {
-                    writer.write(record).map_err(StreamWriterError::Writer)?;
-                } else {
-                    // pass on this mutex to set entry so that it can be reused
-                    // we have a guard for underlying entry thus
-                    // hashmap must not be availible as mutable to any other thread
-                    STREAM_WRITERS::set_entry(writer_guard, stream, record)?;
-                }
-            }
-            // entry is not present thus we create it
-            None => {
-                // this requires mutable borrow of the map so we drop this read lock and wait for write lock
-                drop(hashmap_guard);
-                STREAM_WRITERS::create_entry(stream.to_string(), record)?;
-            }
-        };
-        Ok(())
-    }
-
-    // create a new entry with new stream_writer
-    // Only create entry for valid streams
-    fn create_entry(stream: String, record: &RecordBatch) -> Result<(), StreamWriterError> {
-        let mut hashmap_guard = STREAM_WRITERS
-            .write()
-            .map_err(|_| StreamWriterError::RwPoisoned)?;
-
-        let stream_writer = init_new_stream_writer_file(&stream, record)?;
-
-        hashmap_guard.insert(stream, Mutex::new(Some(stream_writer)));
-
-        Ok(())
-    }
-
-    // Deleting a logstream requires that metadata is deleted first
-    pub fn delete_entry(stream: &str) -> Result<(), StreamWriterError> {
-        let mut hashmap_guard = STREAM_WRITERS
-            .write()
-            .map_err(|_| StreamWriterError::RwPoisoned)?;
-
-        hashmap_guard.remove(stream);
-
-        Ok(())
-    }
-
-    fn set_entry(
-        mut writer_guard: LocalWriterGuard,
-        stream: &str,
-        record: &RecordBatch,
-    ) -> Result<(), StreamWriterError> {
-        let stream_writer = init_new_stream_writer_file(stream, record)?;
-
-        writer_guard.replace(stream_writer); // replace the stream writer behind this mutex
-
-        Ok(())
-    }
-
-    pub fn unset_all() -> Result<(), StreamWriterError> {
-        let map = STREAM_WRITERS
-            .read()
-            .map_err(|_| StreamWriterError::RwPoisoned)?;
-
-        for writer in map.values() {
-            if let Some(mut streamwriter) = writer
-                .lock()
-                .map_err(|_| StreamWriterError::MutexPoisoned)?
-                .take()
-            {
-                let _ = streamwriter.finish();
-            }
-        }
-
-        Ok(())
-    }
-}
-
-fn init_new_stream_writer_file(
-    stream_name: &str,
-    record: &RecordBatch,
-) -> Result<StreamWriter<std::fs::File>, StreamWriterError> {
-    let dir = StorageDir::new(stream_name);
-    let path = dir.path_by_current_time();
-
-    std::fs::create_dir_all(dir.data_path)?;
-
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
-
-    let mut stream_writer = StreamWriter::try_new(file, &record.schema())
-        .expect("File and RecordBatch both are checked");
-
-    stream_writer
-        .write(record)
-        .map_err(StreamWriterError::Writer)?;
-
-    Ok(stream_writer)
-}
 
 #[derive(Clone)]
 pub struct Event {
     pub body: Value,
     pub stream_name: String,
+    pub schema_key: String,
 }
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
     pub async fn process(self) -> Result<(), EventError> {
-        let stream_schema = metadata::STREAM_INFO.schema(&self.stream_name)?;
+        let stream_schema = metadata::STREAM_INFO.schema(&self.stream_name, &self.schema_key)?;
         if let Some(schema) = stream_schema {
-            let schema_ref = Arc::new(schema);
             // validate schema before processing the event
-            let Ok(mut event) = self.get_record(schema_ref.clone()) else {
+            let Ok(mut event) = self.get_record(Arc::clone(&schema)) else {
                 return Err(EventError::SchemaMismatch);
             };
 
-            if event
-                .schema()
-                .column_with_name(DEFAULT_TIMESTAMP_KEY)
-                .is_some()
-            {
-                let rows = event.num_rows();
-                let timestamp_array = Arc::new(get_timestamp_array(rows));
-                event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
-            }
+            let rows = event.num_rows();
+            let timestamp_array = Arc::new(get_timestamp_array(rows));
+            event = replace(schema, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
 
             self.process_event(&event)?;
         } else {
             // if stream schema is none then it is first event,
             // process first event and store schema in obect store
-            // check for a possible datetime field
-            let time_field = get_datetime_field(&self.body);
-
-            if time_field.is_none() {
-                let schema = Schema::try_merge(vec![
-                    Schema::new(vec![Field::new(
-                        DEFAULT_TIMESTAMP_KEY,
-                        DataType::Timestamp(TimeUnit::Millisecond, None),
-                        true,
-                    )]),
-                    self.infer_schema()?,
-                ])?;
-                let schema_ref = Arc::new(schema.clone());
-                let event = self.get_record(schema_ref.clone())?;
-                let timestamp_array = Arc::new(get_timestamp_array(event.num_rows()));
-                let event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
-                self.process_first_event(&event, schema)?;
-            } else {
-                let schema = self.infer_schema()?;
-                let schema_ref = Arc::new(schema.clone());
-                let event = self.get_record(schema_ref)?;
-                self.process_first_event(&event, schema)?;
-            }
+            let schema = add_default_timestamp_field(self.infer_schema()?)?;
+            let schema_ref = Arc::new(schema.clone());
+            let event = self.get_record(schema_ref.clone())?;
+            let timestamp_array = Arc::new(get_timestamp_array(event.num_rows()));
+            let event = replace(schema_ref, event, DEFAULT_TIMESTAMP_KEY, timestamp_array);
+            self.process_first_event(&event, schema)?;
         };
 
         metadata::STREAM_INFO.update_stats(
@@ -244,60 +99,16 @@ impl Event {
         // - map always have an entry for this stream
 
         let stream_name = &self.stream_name;
+        let schema_key = &self.schema_key;
 
-        let mut stream_metadata = metadata::STREAM_INFO.write().expect(LOCK_EXPECT);
-        // if the metadata is not none after acquiring lock
-        // then some other thread has already completed this function.
-        if _schema_with_map(stream_name, &stream_metadata).is_some() {
-            // drop the lock
-            drop(stream_metadata);
-            // Try to post event usual way
-            log::info!("first event is redirected to process_event");
-            self.process_event(event)
-        } else {
-            // stream metadata is still none,
-            // this means this execution should be considered as first event.
-
-            // Store record batch on local cache
-            log::info!("creating local writer for this first event");
-            self.process_event(event)?;
-
-            log::info!("schema is set in memory map for logstream {}", stream_name);
-            _set_schema_with_map(stream_name, schema.clone(), &mut stream_metadata);
-            // drop mutex before going across await point
-            drop(stream_metadata);
-
-            log::info!(
-                "setting schema on objectstore for logstream {}",
-                stream_name
-            );
-            let storage = CONFIG.storage().get_object_store();
-
-            let stream_name = stream_name.clone();
-            spawn(async move {
-                if let Err(e) = storage.put_schema(&stream_name, &schema).await {
-                    // If this call has failed then currently there is no right way to make local state consistent
-                    // this needs a fix after more constraints are safety guarentee is provided by localwriter and objectstore_sync.
-                    // Reasoning -
-                    // - After dropping lock many events may process through
-                    // - Processed events may sync before metadata deletion
-                    log::error!(
-                        "Parseable failed to upload schema to objectstore due to error {}",
-                        e
-                    );
-                    log::error!("Please manually delete this logstream and create a new one.");
-                    metadata::STREAM_INFO.delete_stream(&stream_name);
-                }
-            });
-
-            Ok(())
-        }
+        commit_schema(stream_name, schema_key, Arc::new(schema))?;
+        self.process_event(event)
     }
 
     // event process all events after the 1st event. Concatenates record batches
     // and puts them in memory store for each event.
     fn process_event(&self, rb: &RecordBatch) -> Result<(), EventError> {
-        STREAM_WRITERS::append_to_local(&self.stream_name, rb)?;
+        STREAM_WRITERS::append_to_local(&self.stream_name, &self.schema_key, rb)?;
         Ok(())
     }
 
@@ -317,6 +128,30 @@ impl Event {
 
         record.ok_or(EventError::MissingRecord)
     }
+}
+
+fn add_default_timestamp_field(schema: Schema) -> Result<Schema, ArrowError> {
+    let schema = Schema::try_merge(vec![
+        Schema::new(vec![Field::new(
+            DEFAULT_TIMESTAMP_KEY,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        )]),
+        schema,
+    ])?;
+
+    Ok(schema)
+}
+
+pub fn get_schema_key(body: &Value) -> String {
+    let mut list_of_fields: Vec<_> = body.as_object().unwrap().keys().collect();
+    list_of_fields.sort();
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    for field in list_of_fields {
+        hasher.update(field.as_bytes())
+    }
+    let hash = hasher.digest();
+    format!("{hash:x}")
 }
 
 fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
@@ -343,13 +178,58 @@ fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
     false
 }
 
+fn commit_schema(
+    stream_name: &str,
+    schema_key: &str,
+    schema: Arc<Schema>,
+) -> Result<(), EventError> {
+    // note for methods .get_unchecked and .set_unchecked,
+    // these are to be called while holding a write lock specifically.
+    // this guarantees two things
+    // - no other metadata operation can happen in between
+    // - map always have an entry for this stream
+
+    let mut stream_metadata = metadata::STREAM_INFO.write().expect(LOCK_EXPECT);
+    // if the metadata is not none after acquiring lock
+    // then some other thread has already completed this function.
+    if stream_metadata
+        .get_unchecked(stream_name, schema_key)
+        .is_some()
+    {
+        // drop the lock
+        drop(stream_metadata);
+        // Nothing to do
+        Ok(())
+    } else {
+        // set to map
+        stream_metadata.set_unchecked(stream_name, schema_key, schema);
+        // serialize map
+        let schema_map = serde_json::to_string(
+            &stream_metadata
+                .get(stream_name)
+                .expect("map has entry for this stream name")
+                .schema,
+        )
+        .expect("map of schemas is serializable");
+        // try to put to storage
+        let storage = CONFIG.storage().get_object_store();
+        let res = futures::executor::block_on(storage.put_schema_map(stream_name, &schema_map));
+        // revert if err
+        if res.is_err() {
+            stream_metadata.remove_unchecked(stream_name, schema_key)
+        }
+        // return result
+        res.map_err(|err| err.into())
+    }
+}
+
 fn replace(
     schema: Arc<Schema>,
     batch: RecordBatch,
     column: &str,
     arr: Arc<dyn Array + 'static>,
 ) -> RecordBatch {
-    let index = schema.column_with_name(column).unwrap().0;
+    let (index, _) = schema.column_with_name(column).unwrap();
     let mut arrays = batch.columns().to_vec();
     arrays[index] = arr;
 
@@ -361,49 +241,40 @@ fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
     TimestampMillisecondArray::from_value(time.timestamp_millis(), size)
 }
 
-fn get_datetime_field(json: &Value) -> Option<&str> {
-    let Value::Object(object) = json else { panic!() };
-    for (key, value) in object {
-        if TIME_KEYS.contains(&key.as_str()) {
-            if let Value::String(maybe_datetime) = value {
-                if DateTime::parse_from_rfc3339(maybe_datetime).is_ok() {
-                    return Some(key);
-                }
-            }
-        }
+trait UncheckedOp: DerefMut<Target = HashMap<String, metadata::LogStreamMetadata>> {
+    fn get_unchecked(&self, stream_name: &str, schema_key: &str) -> Option<Arc<Schema>> {
+        self.get(stream_name)
+            .expect("map has entry for this stream name")
+            .schema
+            .get(schema_key)
+            .cloned()
     }
-    None
+
+    fn set_unchecked(&mut self, stream_name: &str, schema_key: &str, schema: Arc<Schema>) {
+        self.get_mut(stream_name)
+            .expect("map has entry for this stream name")
+            .schema
+            .insert(schema_key.to_string(), schema)
+            .is_some()
+            .then(|| panic!("collision"));
+    }
+
+    fn remove_unchecked(&mut self, stream_name: &str, schema_key: &str) {
+        self.get_mut(stream_name)
+            .expect("map has entry for this stream name")
+            .schema
+            .remove(schema_key);
+    }
 }
 
-//  Special functions which reads from metadata map while holding the lock
-#[inline]
-pub fn _schema_with_map(
-    stream_name: &str,
-    map: &impl Deref<Target = HashMap<String, metadata::LogStreamMetadata>>,
-) -> Option<Schema> {
-    map.get(stream_name)
-        .expect("map has entry for this stream name")
-        .schema
-        .to_owned()
-}
-
-#[inline]
-//  Special functions which writes to metadata map while holding the lock
-pub fn _set_schema_with_map(
-    stream_name: &str,
-    schema: Schema,
-    map: &mut impl DerefMut<Target = HashMap<String, metadata::LogStreamMetadata>>,
-) {
-    map.get_mut(stream_name)
-        .expect("map has entry for this stream name")
-        .schema
-        .replace(schema);
-}
+impl<T: DerefMut<Target = HashMap<String, metadata::LogStreamMetadata>>> UncheckedOp for T {}
 
 pub mod error {
     use crate::metadata::error::stream_info::MetadataError;
     use crate::storage::ObjectStorageError;
     use datafusion::arrow::error::ArrowError;
+
+    use super::writer::errors::StreamWriterError;
 
     #[derive(Debug, thiserror::Error)]
     pub enum EventError {
@@ -419,18 +290,6 @@ pub mod error {
         SchemaMismatch,
         #[error("Schema Mismatch: {0}")]
         ObjectStorage(#[from] ObjectStorageError),
-    }
-
-    #[derive(Debug, thiserror::Error)]
-    pub enum StreamWriterError {
-        #[error("Arrow writer failed: {0}")]
-        Writer(#[from] ArrowError),
-        #[error("Io Error when creating new file: {0}")]
-        Io(#[from] std::io::Error),
-        #[error("RwLock was poisoned")]
-        RwPoisoned,
-        #[error("Mutex was poisoned")]
-        MutexPoisoned,
     }
 }
 

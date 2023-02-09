@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # Compile
-FROM    rust:1.65-alpine AS compiler
+FROM    rust:1.67-alpine AS compiler
 
 WORKDIR /parseable
 

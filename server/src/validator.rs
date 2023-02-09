@@ -160,17 +160,18 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Que
 
     let stream_name = tokens[stream_name_index].to_string();
 
-    let schema = match STREAM_INFO.schema(&stream_name)? {
-        Some(schema) => Arc::new(schema),
-        None => return Err(QueryValidationError::UninitializedStream),
-    };
+    if !STREAM_INFO.stream_initialized(&stream_name)? {
+        return Err(QueryValidationError::UninitializedStream);
+    }
+
+    let merged_schema = Arc::new(STREAM_INFO.merged_schema(&stream_name)?);
 
     Ok(Query {
         stream_name: tokens[stream_name_index].to_string(),
         start,
         end,
         query: query.to_string(),
-        schema,
+        merged_schema,
     })
 }
 

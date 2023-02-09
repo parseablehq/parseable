@@ -21,6 +21,7 @@ use std::{
     sync::Arc,
 };
 
+use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{
@@ -28,6 +29,7 @@ use datafusion::{
         file_format::parquet::ParquetFormat,
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
+    error::DataFusionError,
     execution::runtime_env::{RuntimeConfig, RuntimeEnv},
 };
 use fs_extra::file::{move_file, CopyOptions};
@@ -36,7 +38,7 @@ use relative_path::RelativePath;
 use tokio::fs;
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::{option::validation, query::Query, utils::validate_path_is_writeable};
+use crate::{option::validation, utils::validate_path_is_writeable};
 
 use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
 
@@ -166,9 +168,12 @@ impl ObjectStorage for LocalFS {
         Ok(())
     }
 
-    fn query_table(&self, query: &Query) -> Result<Option<ListingTable>, ObjectStorageError> {
-        let prefixes: Vec<ListingTableUrl> = query
-            .get_prefixes()
+    fn query_table(
+        &self,
+        prefixes: Vec<String>,
+        schema: Arc<Schema>,
+    ) -> Result<Option<ListingTable>, DataFusionError> {
+        let prefixes: Vec<ListingTableUrl> = prefixes
             .into_iter()
             .filter_map(|prefix| {
                 let path = self.root.join(prefix);
@@ -193,7 +198,7 @@ impl ObjectStorage for LocalFS {
 
         let config = ListingTableConfig::new_with_multi_paths(prefixes)
             .with_listing_options(listing_options)
-            .with_schema(Arc::clone(&query.schema));
+            .with_schema(schema);
 
         Ok(Some(ListingTable::try_new(config)?))
     }

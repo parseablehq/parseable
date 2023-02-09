@@ -24,7 +24,7 @@ use crate::option::CONFIG;
 use crate::query::Query;
 use crate::response::QueryResponse;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
-use crate::utils::{flatten_json_body, merge};
+use crate::utils::json::{flatten_json_body, merge};
 
 use self::error::{PostError, QueryError};
 
@@ -39,7 +39,7 @@ pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResp
 
     let storage = CONFIG.storage().get_object_store();
 
-    let query_result = query.execute(&*storage).await;
+    let query_result = query.execute(storage).await;
 
     query_result
         .map(Into::<QueryResponse>::into)
@@ -103,10 +103,12 @@ async fn push_logs(
             for mut body in array {
                 merge(&mut body, tags_n_metadata.clone().into_iter());
                 let body = flatten_json_body(&body).unwrap();
+                let schema_key = event::get_schema_key(&body);
 
                 let event = event::Event {
                     body,
                     stream_name: stream_name.clone(),
+                    schema_key,
                 };
 
                 event.process().await?;
@@ -114,10 +116,12 @@ async fn push_logs(
         }
         mut body @ Value::Object(_) => {
             merge(&mut body, tags_n_metadata.into_iter());
-
+            let body = flatten_json_body(&body).unwrap();
+            let schema_key = event::get_schema_key(&body);
             let event = event::Event {
-                body: flatten_json_body(&body).unwrap(),
+                body,
                 stream_name,
+                schema_key,
             };
 
             event.process().await?;

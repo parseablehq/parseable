@@ -16,97 +16,15 @@
  *
  */
 
+pub mod batch_adapter;
+pub mod header_parsing;
+pub mod json;
+pub mod uid;
+pub mod update;
+
 use std::path::Path;
 
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
-use serde_json::{json, Value};
-
-pub fn flatten_json_body(body: &serde_json::Value) -> Result<Value, serde_json::Error> {
-    let mut flat_value: Value = json!({});
-    flatten_json::flatten(body, &mut flat_value, None, false, Some("_")).unwrap();
-    Ok(flat_value)
-}
-
-pub fn merge(value: &mut Value, fields: impl Iterator<Item = (String, Value)>) {
-    if let Value::Object(m) = value {
-        for (k, v) in fields {
-            match m.get_mut(&k) {
-                Some(val) => {
-                    *val = v;
-                }
-                None => {
-                    m.insert(k, v);
-                }
-            }
-        }
-    }
-}
-
-pub mod header_parsing {
-    const MAX_HEADERS_ALLOWED: usize = 10;
-    use actix_web::{HttpRequest, HttpResponse, ResponseError};
-
-    pub fn collect_labelled_headers(
-        req: &HttpRequest,
-        prefix: &str,
-        kv_separator: char,
-    ) -> Result<String, ParseHeaderError> {
-        // filter out headers which has right prefix label and convert them into str;
-        let headers = req.headers().iter().filter_map(|(key, value)| {
-            let key = key.as_str().strip_prefix(prefix)?;
-            Some((key, value))
-        });
-
-        let mut labels: Vec<String> = Vec::new();
-
-        for (key, value) in headers {
-            let value = value.to_str().map_err(|_| ParseHeaderError::InvalidValue)?;
-            if key.is_empty() {
-                return Err(ParseHeaderError::Emptykey);
-            }
-            if key.contains(kv_separator) {
-                return Err(ParseHeaderError::SeperatorInKey(kv_separator));
-            }
-            if value.contains(kv_separator) {
-                return Err(ParseHeaderError::SeperatorInValue(kv_separator));
-            }
-
-            labels.push(format!("{key}={value}"));
-        }
-
-        if labels.len() > MAX_HEADERS_ALLOWED {
-            return Err(ParseHeaderError::MaxHeadersLimitExceeded);
-        }
-
-        Ok(labels.join(&kv_separator.to_string()))
-    }
-
-    #[derive(Debug, thiserror::Error)]
-    pub enum ParseHeaderError {
-        #[error("Too many headers received. Limit is of 5 headers")]
-        MaxHeadersLimitExceeded,
-        #[error("A value passed in header can't be formatted to plain visible ASCII")]
-        InvalidValue,
-        #[error("Invalid Key was passed which terminated just after the end of prefix")]
-        Emptykey,
-        #[error("A key passed in header contains reserved char {0}")]
-        SeperatorInKey(char),
-        #[error("A value passed in header contains reserved char {0}")]
-        SeperatorInValue(char),
-        #[error("Stream name not found in header [x-p-stream]")]
-        MissingStreamName,
-    }
-
-    impl ResponseError for ParseHeaderError {
-        fn status_code(&self) -> http::StatusCode {
-            http::StatusCode::BAD_REQUEST
-        }
-
-        fn error_response(&self) -> HttpResponse {
-            HttpResponse::build(self.status_code()).body(self.to_string())
-        }
-    }
-}
 
 #[allow(dead_code)]
 pub fn hostname() -> Option<String> {
@@ -131,96 +49,6 @@ pub fn validate_path_is_writeable(path: &Path) -> anyhow::Result<()> {
         anyhow::bail!("Staging directory {} is unwritable", path.display())
     }
     Ok(())
-}
-
-pub mod uid {
-    use ulid::Ulid;
-
-    pub type Uid = Ulid;
-
-    pub fn gen() -> Ulid {
-        Ulid::new()
-    }
-}
-
-pub mod update {
-    use crate::banner::about::current;
-    use std::env;
-    use std::{path::Path, time::Duration};
-
-    use anyhow::anyhow;
-    use chrono::{DateTime, Utc};
-    use ulid::Ulid;
-
-    use crate::storage::StorageMetadata;
-
-    static K8S_ENV_TO_CHECK: &str = "KUBERNETES_SERVICE_HOST";
-
-    #[derive(Debug)]
-    pub struct LatestRelease {
-        pub version: semver::Version,
-        pub date: DateTime<Utc>,
-    }
-
-    fn is_docker() -> bool {
-        Path::new("/.dockerenv").exists()
-    }
-
-    fn is_k8s() -> bool {
-        env::var(K8S_ENV_TO_CHECK).is_ok()
-    }
-
-    fn platform() -> &'static str {
-        if is_k8s() {
-            "Kubernetes"
-        } else if is_docker() {
-            "Docker"
-        } else {
-            "Native"
-        }
-    }
-
-    // User Agent for Download API call
-    // Format: Parseable/<UID>/<version>/<commit_hash> (<OS>; <Platform>)
-    fn user_agent(uid: &Ulid) -> String {
-        let info = os_info::get();
-        format!(
-            "Parseable/{}/{}/{} ({}; {})",
-            uid,
-            current().0,
-            current().1,
-            info.os_type(),
-            platform()
-        )
-    }
-
-    pub fn get_latest(meta: &StorageMetadata) -> Result<LatestRelease, anyhow::Error> {
-        let agent = ureq::builder()
-            .user_agent(user_agent(&meta.deployment_id).as_str())
-            .timeout(Duration::from_secs(8))
-            .build();
-
-        let json: serde_json::Value = agent
-            .get("https://download.parseable.io/latest-version")
-            .call()?
-            .into_json()?;
-
-        let version = json["tag_name"]
-            .as_str()
-            .and_then(|ver| ver.strip_prefix('v'))
-            .and_then(|ver| semver::Version::parse(ver).ok())
-            .ok_or_else(|| anyhow!("Failed parsing version"))?;
-
-        let date = json["published_at"]
-            .as_str()
-            .ok_or_else(|| anyhow!("Failed parsing published date"))?;
-
-        let date = chrono::DateTime::parse_from_rfc3339(date)
-            .expect("date-time from github is in rfc3339 format")
-            .into();
-
-        Ok(LatestRelease { version, date })
-    }
 }
 
 /// Convert minutes to a slot range
@@ -271,13 +99,9 @@ impl TimePeriod {
         }
     }
 
-    pub fn generate_prefixes(&self, prefix: &str) -> Vec<String> {
-        let prefix = format!("{prefix}/");
-
+    pub fn generate_prefixes(&self) -> Vec<String> {
         let end_minute = self.end.minute() + u32::from(self.end.second() > 0);
-
         self.generate_date_prefixes(
-            &prefix,
             self.start.date_naive(),
             self.end.date_naive(),
             (self.start.hour(), self.start.minute()),
@@ -371,7 +195,6 @@ impl TimePeriod {
 
     pub fn generate_date_prefixes(
         &self,
-        prefix: &str,
         start_date: NaiveDate,
         end_date: NaiveDate,
         start_time: (u32, u32),
@@ -381,7 +204,7 @@ impl TimePeriod {
         let mut date = start_date;
 
         while date <= end_date {
-            let prefix = prefix.to_owned() + &date_to_prefix(date);
+            let prefix = date_to_prefix(date);
             let is_start = date == start_date;
             let is_end = date == end_date;
 
@@ -426,66 +249,66 @@ mod tests {
     #[rstest]
     #[case::same_minute(
         "2022-06-11T16:30:00+00:00", "2022-06-11T16:30:59+00:00",
-        &["stream_name/date=2022-06-11/hour=16/minute=30/"]
+        &["date=2022-06-11/hour=16/minute=30/"]
     )]
     #[case::same_hour_different_minute(
         "2022-06-11T16:57:00+00:00", "2022-06-11T16:59:00+00:00",
         &[
-            "stream_name/date=2022-06-11/hour=16/minute=57/",
-            "stream_name/date=2022-06-11/hour=16/minute=58/"
+            "date=2022-06-11/hour=16/minute=57/",
+            "date=2022-06-11/hour=16/minute=58/"
         ]
     )]
     #[case::same_hour_with_00_to_59_minute_block(
         "2022-06-11T16:00:00+00:00", "2022-06-11T16:59:59+00:00",   
-        &["stream_name/date=2022-06-11/hour=16/"]
+        &["date=2022-06-11/hour=16/"]
     )]
     #[case::same_date_different_hours_coherent_minute(
         "2022-06-11T15:00:00+00:00", "2022-06-11T17:00:00+00:00",
        &[
-            "stream_name/date=2022-06-11/hour=15/",
-            "stream_name/date=2022-06-11/hour=16/"
+            "date=2022-06-11/hour=15/",
+            "date=2022-06-11/hour=16/"
         ]
     )]
     #[case::same_date_different_hours_incoherent_minutes(
         "2022-06-11T15:59:00+00:00", "2022-06-11T16:01:00+00:00", 
         &[
-            "stream_name/date=2022-06-11/hour=15/minute=59/",
-            "stream_name/date=2022-06-11/hour=16/minute=00/"
+            "date=2022-06-11/hour=15/minute=59/",
+            "date=2022-06-11/hour=16/minute=00/"
         ]
     )]
     #[case::same_date_different_hours_whole_hours_between_incoherent_minutes(
         "2022-06-11T15:59:00+00:00", "2022-06-11T17:01:00+00:00", 
         &[
-            "stream_name/date=2022-06-11/hour=15/minute=59/",
-            "stream_name/date=2022-06-11/hour=16/",
-            "stream_name/date=2022-06-11/hour=17/minute=00/"
+            "date=2022-06-11/hour=15/minute=59/",
+            "date=2022-06-11/hour=16/",
+            "date=2022-06-11/hour=17/minute=00/"
         ]
     )]
     #[case::different_date_coherent_hours_and_minutes(
         "2022-06-11T00:00:00+00:00", "2022-06-13T00:00:00+00:00", 
         &[
-            "stream_name/date=2022-06-11/",
-            "stream_name/date=2022-06-12/"
+            "date=2022-06-11/",
+            "date=2022-06-12/"
         ]
     )]
     #[case::different_date_incoherent_hours_coherent_minutes(
         "2022-06-11T23:00:01+00:00", "2022-06-12T01:59:59+00:00", 
         &[
-            "stream_name/date=2022-06-11/hour=23/",
-            "stream_name/date=2022-06-12/hour=00/",
-            "stream_name/date=2022-06-12/hour=01/"
+            "date=2022-06-11/hour=23/",
+            "date=2022-06-12/hour=00/",
+            "date=2022-06-12/hour=01/"
         ]
     )]
     #[case::different_date_incoherent_hours_incoherent_minutes(
         "2022-06-11T23:59:59+00:00", "2022-06-12T00:01:00+00:00", 
         &[
-            "stream_name/date=2022-06-11/hour=23/minute=59/",
-            "stream_name/date=2022-06-12/hour=00/minute=00/"
+            "date=2022-06-11/hour=23/minute=59/",
+            "date=2022-06-12/hour=00/minute=00/"
         ]
     )]
     fn prefix_generation(#[case] start: &str, #[case] end: &str, #[case] right: &[&str]) {
         let time_period = time_period_from_str(start, end);
-        let prefixes = time_period.generate_prefixes("stream_name");
+        let prefixes = time_period.generate_prefixes();
         let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
         assert_eq!(left.as_slice(), right);
     }

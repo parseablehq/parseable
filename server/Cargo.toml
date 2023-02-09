@@ -1,9 +1,10 @@
 [package]
 name = "parseable"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Parseable Team <hi@parseable.io>"]
 edition = "2021"
-categories = ["olap", "logging", "analytics-store"]
+rust-version = "1.67"
+categories = ["logging", "observability", "log analytics"] 
 
 [dependencies]
 actix-web-httpauth = "0.8"
@@ -49,7 +50,7 @@ rustls = "0.20"
 rustls-pemfile = "1.0"
 rust-flatten-json = "0.2"
 semver = "1.0"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["rc"] }
 serde_json = "1.0"
 thiserror = "1"
 thread-priority = "0.10"
@@ -64,6 +65,9 @@ actix-web-static-files = "4.0"
 static-files = "0.2"
 ulid = { version = "1.0", features = ["serde"] }
 ureq = { version = "2.6", features = ["json"] }
+hex = "0.4.3"
+itertools = "0.10.5"
+xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
 
 [build-dependencies]
 static-files = "0.2"
@@ -76,7 +80,6 @@ zip = { version = "0.6", default_features = false, features = ["deflate"] }
 [dev-dependencies]
 maplit = "1.0"
 rstest = "0.16"
-serial_test = { version = "1.0", default-features = false }
 
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.0.8/build.zip"
