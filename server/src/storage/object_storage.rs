@@ -20,17 +20,25 @@ use super::{
     file_link::CacheState, LogStream, MoveDataError, ObjectStorageError, ObjectStoreFormat,
     Permisssion, StorageDir, StorageMetadata, CACHED_FILES,
 };
-use crate::{alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, query::Query, stats::Stats};
+use crate::{
+    alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, stats::Stats,
+    utils::batch_adapter::adapt_batch,
+};
 
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{
-    arrow::ipc::reader::StreamReader,
+    arrow::{
+        array::TimestampMillisecondArray, ipc::reader::StreamReader, record_batch::RecordBatch,
+    },
     datasource::listing::ListingTable,
+    error::DataFusionError,
     execution::runtime_env::RuntimeEnv,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
 };
+use itertools::kmerge_by;
+use lazy_static::__Deref;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
@@ -39,7 +47,8 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     fs::{self, File},
-    path::Path,
+    path::{Path, PathBuf},
+    process,
     sync::Arc,
 };
 
@@ -67,15 +76,22 @@ pub trait ObjectStorage: Sync + 'static {
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
-    fn query_table(&self, query: &Query) -> Result<Option<ListingTable>, ObjectStorageError>;
+    fn query_table(
+        &self,
+        prefixes: Vec<String>,
+        schema: Arc<Schema>,
+    ) -> Result<Option<ListingTable>, DataFusionError>;
 
-    async fn put_schema(
+    async fn put_schema_map(
         &self,
         stream_name: &str,
-        schema: &Schema,
+        schema_map: &str,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(&schema_path(stream_name), to_bytes(schema))
-            .await?;
+        self.put_object(
+            &schema_path(stream_name),
+            Bytes::copy_from_slice(schema_map.as_bytes()),
+        )
+        .await?;
 
         Ok(())
     }
@@ -88,8 +104,12 @@ pub trait ObjectStorage: Sync + 'static {
 
         let format_json = to_bytes(&format);
 
-        self.put_object(&schema_path(stream_name), "".into())
-            .await?;
+        self.put_object(
+            &schema_path(stream_name),
+            to_bytes(&HashMap::<String, Schema>::new()),
+        )
+        .await?;
+
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
 
@@ -125,9 +145,12 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
-    async fn get_schema(&self, stream_name: &str) -> Result<Option<Schema>, ObjectStorageError> {
+    async fn get_schema_map(
+        &self,
+        stream_name: &str,
+    ) -> Result<HashMap<String, Arc<Schema>>, ObjectStorageError> {
         let schema = self.get_object(&schema_path(stream_name)).await?;
-        let schema = serde_json::from_slice(&schema).ok();
+        let schema = serde_json::from_slice(&schema).expect("schema map is valid json");
         Ok(schema)
     }
 
@@ -139,6 +162,14 @@ pub trait ObjectStorage: Sync + 'static {
                 e => Err(e),
             },
         }
+    }
+
+    async fn get_stream_metadata(
+        &self,
+        stream_name: &str,
+    ) -> Result<ObjectStoreFormat, ObjectStorageError> {
+        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
+        Ok(serde_json::from_slice(&stream_metadata).expect("parseable config is valid json"))
     }
 
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
@@ -171,6 +202,16 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(parseable_metadata)
     }
 
+    async fn stream_exists(&self, stream_name: &str) -> Result<bool, ObjectStorageError> {
+        let res = self.get_object(&stream_json_path(stream_name)).await;
+
+        match res {
+            Ok(_) => Ok(true),
+            Err(ObjectStorageError::NoSuchKey(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     async fn sync(&self) -> Result<(), MoveDataError> {
         if !Path::new(&CONFIG.staging_dir()).exists() {
             return Ok(());
@@ -181,51 +222,36 @@ pub trait ObjectStorage: Sync + 'static {
         let mut stream_stats = HashMap::new();
 
         for stream in &streams {
-            // get dir
             let dir = StorageDir::new(stream);
             // walk dir, find all .arrows files and convert to parquet
-
-            let mut arrow_files = dir.arrow_files();
             // Do not include file which is being written to
-            let hot_file = dir.path_by_current_time();
-            let hot_filename = hot_file.file_name().expect("is a not none filename");
+            let time = chrono::Utc::now().naive_utc();
+            let staging_files = dir.arrow_files_grouped_exclude_time(time);
 
-            arrow_files.retain(|file| {
-                !file
-                    .file_name()
-                    .expect("is a not none filename")
-                    .eq(hot_filename)
-            });
+            for (parquet_path, files) in staging_files {
+                let record_reader = MergedRecordReader::try_new(&files).unwrap();
 
-            for file in arrow_files {
-                let arrow_file = File::open(&file).map_err(|_| MoveDataError::Open)?;
-                let reader = StreamReader::try_new(arrow_file, None)?;
-                let schema = reader.schema();
-                let records = reader.filter_map(|record| match record {
-                    Ok(record) => Some(record),
-                    Err(e) => {
-                        log::warn!("warning from arrow stream {:?}", e);
-                        None
-                    }
-                });
-
-                let mut parquet_path = file.clone();
-                parquet_path.set_extension("parquet");
                 let mut parquet_table = CACHED_FILES.lock().unwrap();
                 let parquet_file =
                     fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
                 parquet_table.upsert(&parquet_path);
 
                 let props = WriterProperties::builder().build();
-                let mut writer = ArrowWriter::try_new(parquet_file, schema, Some(props))?;
+                let schema = Arc::new(record_reader.merged_schema());
+                let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
 
-                for ref record in records {
+                for ref record in record_reader.merged_iter(&schema) {
                     writer.write(record)?;
                 }
 
                 writer.close()?;
 
-                fs::remove_file(file).map_err(|_| MoveDataError::Delete)?;
+                for file in files {
+                    if fs::remove_file(file).is_err() {
+                        log::error!("Failed to delete file. Unstable state");
+                        process::abort()
+                    }
+                }
             }
 
             for file in dir.parquet_files() {
@@ -300,6 +326,56 @@ pub trait ObjectStorage: Sync + 'static {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct MergedRecordReader {
+    pub readers: Vec<StreamReader<File>>,
+}
+
+impl MergedRecordReader {
+    pub fn try_new(files: &[PathBuf]) -> Result<Self, MoveDataError> {
+        let mut readers = Vec::with_capacity(files.len());
+
+        for file in files {
+            let reader = StreamReader::try_new(File::open(file).unwrap(), None)?;
+            readers.push(reader);
+        }
+
+        Ok(Self { readers })
+    }
+
+    pub fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
+        let adapted_readers = self
+            .readers
+            .into_iter()
+            .map(move |reader| reader.flatten().map(|batch| adapt_batch(schema, batch)));
+
+        kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
+            let a: &TimestampMillisecondArray = a
+                .column(0)
+                .as_any()
+                .downcast_ref::<TimestampMillisecondArray>()
+                .unwrap();
+
+            let b: &TimestampMillisecondArray = b
+                .column(0)
+                .as_any()
+                .downcast_ref::<TimestampMillisecondArray>()
+                .unwrap();
+
+            a.value(0) < b.value(0)
+        })
+    }
+
+    pub fn merged_schema(&self) -> Schema {
+        Schema::try_merge(
+            self.readers
+                .iter()
+                .map(|stream| stream.schema().deref().clone()),
+        )
+        .unwrap()
     }
 }
 

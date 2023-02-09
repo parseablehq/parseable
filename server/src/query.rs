@@ -24,10 +24,11 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::*;
+use itertools::Itertools;
 use serde_json::Value;
+use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::option::CONFIG;
@@ -49,7 +50,7 @@ fn get_value(value: &Value, key: Key) -> Result<&str, Key> {
 pub struct Query {
     pub query: String,
     pub stream_name: String,
-    pub schema: Arc<Schema>,
+    pub merged_schema: Arc<Schema>,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
 }
@@ -67,38 +68,45 @@ impl Query {
     }
 
     /// Return prefixes, each per day/hour/minutes as necessary
+    fn _get_prefixes(&self) -> Vec<String> {
+        TimePeriod::new(self.start, self.end, OBJECT_STORE_DATA_GRANULARITY).generate_prefixes()
+    }
+
     pub fn get_prefixes(&self) -> Vec<String> {
-        TimePeriod::new(self.start, self.end, OBJECT_STORE_DATA_GRANULARITY)
-            .generate_prefixes(&self.stream_name)
+        self._get_prefixes()
+            .into_iter()
+            .map(|key| format!("{}/{}", self.stream_name, key))
+            .collect()
+    }
+
+    pub fn get_schema(&self) -> &Schema {
+        &self.merged_schema
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information
     /// TODO: find a way to query all selected parquet files together in a single context.
     pub async fn execute(
         &self,
-        storage: &(impl ObjectStorage + ?Sized),
+        storage: Arc<dyn ObjectStorage + Send>,
     ) -> Result<Vec<RecordBatch>, ExecuteError> {
         let dir = StorageDir::new(&self.stream_name);
-
         // take a look at local dir and figure out what local cache we could use for this query
-        let arrow_files: Vec<PathBuf> = dir
-            .arrow_files()
+        let staging_arrows = dir
+            .arrow_files_grouped_by_time()
             .into_iter()
-            .filter(|path| path_intersects_query(path, self.start, self.end))
-            .collect();
+            .filter(|(path, _)| path_intersects_query(path, self.start, self.end))
+            .sorted_by(|(a, _), (b, _)| Ord::cmp(a, b))
+            .collect_vec();
 
-        let possible_parquet_files = arrow_files.iter().cloned().map(|mut path| {
-            path.set_extension("parquet");
-            path
-        });
+        let staging_parquet_set: HashSet<&PathBuf, RandomState> =
+            HashSet::from_iter(staging_arrows.iter().map(|(p, _)| p));
 
-        let parquet_files = dir
+        let other_staging_parquet = dir
             .parquet_files()
             .into_iter()
-            .filter(|path| path_intersects_query(path, self.start, self.end));
-
-        let parquet_files: HashSet<PathBuf> = possible_parquet_files.chain(parquet_files).collect();
-        let parquet_files = Vec::from_iter(parquet_files.into_iter());
+            .filter(|path| path_intersects_query(path, self.start, self.end))
+            .filter(|path| !staging_parquet_set.contains(path))
+            .collect_vec();
 
         let ctx = SessionContext::with_config_rt(
             SessionConfig::default(),
@@ -106,11 +114,13 @@ impl Query {
         );
 
         let table = Arc::new(QueryTableProvider::new(
-            arrow_files,
-            parquet_files,
-            storage.query_table(self)?,
-            Arc::clone(&self.schema),
+            staging_arrows,
+            other_staging_parquet,
+            self.get_prefixes(),
+            storage,
+            Arc::new(self.get_schema().clone()),
         ));
+
         ctx.register_table(
             &*self.stream_name,
             Arc::clone(&table) as Arc<dyn TableProvider>,
@@ -135,10 +145,21 @@ fn time_from_path(path: &Path) -> DateTime<Utc> {
         .to_str()
         .expect("filename is valid");
 
-    // substring of filename i.e date=xxxx.hour=xx.minute=xx
-    let prefix = &prefix[..33];
-    Utc.datetime_from_str(prefix, "date=%F.hour=%H.minute=%M")
-        .expect("valid prefix is parsed")
+    // Next three in order will be date, hour and minute
+    let mut components = prefix.splitn(3, '.');
+
+    let date = components.next().expect("date=xxxx-xx-xx");
+    let hour = components.next().expect("hour=xx");
+    let minute = components.next().expect("minute=xx");
+
+    let year = date[5..9].parse().unwrap();
+    let month = date[10..12].parse().unwrap();
+    let day = date[13..15].parse().unwrap();
+    let hour = hour[5..7].parse().unwrap();
+    let minute = minute[7..9].parse().unwrap();
+
+    Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
+        .unwrap()
 }
 
 pub mod error {
@@ -173,80 +194,13 @@ pub mod error {
 
 #[cfg(test)]
 mod tests {
-    use super::{time_from_path, Query};
-    use crate::{alerts::Alerts, metadata::STREAM_INFO};
-    use datafusion::arrow::datatypes::Schema;
-    use datafusion::arrow::datatypes::{DataType, Field};
-    use rstest::*;
-    use serde_json::Value;
+    use super::time_from_path;
     use std::path::PathBuf;
-    use std::str::FromStr;
 
     #[test]
     fn test_time_from_parquet_path() {
         let path = PathBuf::from("date=2022-01-01.hour=00.minute=00.hostname.data.parquet");
         let time = time_from_path(path.as_path());
         assert_eq!(time.timestamp(), 1640995200);
-    }
-
-    // Query prefix generation tests
-    #[fixture]
-    fn schema() -> Schema {
-        let field_a = Field::new("a", DataType::Int64, false);
-        let field_b = Field::new("b", DataType::Boolean, false);
-        Schema::new(vec![field_a, field_b])
-    }
-
-    fn clear_map() {
-        STREAM_INFO.write().unwrap().clear();
-    }
-
-    // A query can only be performed on streams with a valid schema
-    #[rstest]
-    #[case(
-        r#"{
-            "query": "SELECT * FROM stream_name",
-            "startTime": "2022-10-15T10:00:00+00:00",
-            "endTime": "2022-10-15T10:01:00+00:00"
-        }"#,
-        &["stream_name/date=2022-10-15/hour=10/minute=00/"]
-    )]
-    #[case(
-        r#"{
-            "query": "SELECT * FROM stream_name",
-            "startTime": "2022-10-15T10:00:00+00:00",
-            "endTime": "2022-10-15T10:02:00+00:00"
-        }"#,
-        &["stream_name/date=2022-10-15/hour=10/minute=00/", "stream_name/date=2022-10-15/hour=10/minute=01/"]
-    )]
-    #[serial_test::serial]
-    fn query_parse_prefix_with_some_schema(#[case] prefix: &str, #[case] right: &[&str]) {
-        clear_map();
-        STREAM_INFO.add_stream("stream_name".to_string(), Some(schema()), Alerts::default());
-
-        let query = Value::from_str(prefix).unwrap();
-        let query = Query::parse(query).unwrap();
-        assert_eq!(&query.stream_name, "stream_name");
-        let prefixes = query.get_prefixes();
-        let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
-        assert_eq!(left.as_slice(), right);
-    }
-
-    // If there is no schema for this stream then parsing a Query should fail
-    #[rstest]
-    #[case(
-        r#"{
-            "query": "SELECT * FROM stream_name",
-            "startTime": "2022-10-15T10:00:00+00:00",
-            "endTime": "2022-10-15T10:01:00+00:00"
-        }"#
-    )]
-    #[serial_test::serial]
-    fn query_parse_prefix_with_no_schema(#[case] prefix: &str) {
-        clear_map();
-        STREAM_INFO.add_stream("stream_name".to_string(), None, Alerts::default());
-
-        let query = Value::from_str(prefix).unwrap();
-        assert!(Query::parse(query).is_err());
     }
 }

@@ -19,7 +19,7 @@
 use datafusion::arrow::datatypes::Schema;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use crate::alerts::Alerts;
 use crate::event::Event;
@@ -28,18 +28,19 @@ use crate::storage::ObjectStorage;
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 
-#[derive(Debug, Default)]
-pub struct LogStreamMetadata {
-    pub schema: Option<Schema>,
-    pub alerts: Alerts,
-    pub stats: StatsCounter,
-}
-
+// TODO: make return type be of 'static lifetime instead of cloning
 lazy_static! {
     #[derive(Debug)]
     // A read-write lock to allow multiple reads while and isolated write
     pub static ref STREAM_INFO: RwLock<HashMap<String, LogStreamMetadata>> =
         RwLock::new(HashMap::new());
+}
+
+#[derive(Debug, Default)]
+pub struct LogStreamMetadata {
+    pub schema: HashMap<String, Arc<Schema>>,
+    pub alerts: Alerts,
+    pub stats: StatsCounter,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -68,26 +69,52 @@ impl STREAM_INFO {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn set_schema(&self, stream_name: &str, schema: Schema) -> Result<(), MetadataError> {
-        let mut map = self.write().expect(LOCK_EXPECT);
-        map.get_mut(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| {
-                metadata.schema.replace(schema);
-            })
-    }
-
     pub fn stream_exists(&self, stream_name: &str) -> bool {
         let map = self.read().expect(LOCK_EXPECT);
         map.contains_key(stream_name)
     }
 
-    pub fn schema(&self, stream_name: &str) -> Result<Option<Schema>, MetadataError> {
+    pub fn stream_initialized(&self, stream_name: &str) -> Result<bool, MetadataError> {
+        Ok(!self.schema_map(stream_name)?.is_empty())
+    }
+
+    pub fn schema(
+        &self,
+        stream_name: &str,
+        schema_key: &str,
+    ) -> Result<Option<Arc<Schema>>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
-        map.get(stream_name)
+        let schemas = map
+            .get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.schema.to_owned())
+            .map(|metadata| &metadata.schema)?;
+
+        Ok(schemas.get(schema_key).cloned())
+    }
+
+    pub fn schema_map(
+        &self,
+        stream_name: &str,
+    ) -> Result<HashMap<String, Arc<Schema>>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let schemas = map
+            .get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.schema.clone())?;
+
+        Ok(schemas)
+    }
+
+    pub fn merged_schema(&self, stream_name: &str) -> Result<Schema, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let schemas = &map
+            .get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?
+            .schema;
+        let schema = Schema::try_merge(schemas.values().map(|schema| &**schema).cloned())
+            .expect("mergeable schemas");
+
+        Ok(schema)
     }
 
     pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {
@@ -99,11 +126,9 @@ impl STREAM_INFO {
             })
     }
 
-    pub fn add_stream(&self, stream_name: String, schema: Option<Schema>, alerts: Alerts) {
+    pub fn add_stream(&self, stream_name: String) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
-            schema,
-            alerts,
             ..Default::default()
         };
         map.insert(stream_name, metadata);
@@ -122,7 +147,7 @@ impl STREAM_INFO {
 
         for stream in storage.list_streams().await? {
             let alerts = storage.get_alerts(&stream.name).await?;
-            let schema = storage.get_schema(&stream.name).await?;
+            let schema = storage.get_schema_map(&stream.name).await?;
             let stats = storage.get_stats(&stream.name).await?;
 
             let metadata = LogStreamMetadata {

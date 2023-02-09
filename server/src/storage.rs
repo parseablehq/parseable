@@ -19,6 +19,7 @@
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 
+use crate::stats::Stats;
 use crate::storage::file_link::{FileLink, FileTable};
 use crate::utils;
 
@@ -29,8 +30,9 @@ use datafusion::parquet::errors::ParquetError;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
 use std::fs::create_dir_all;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 mod file_link;
@@ -40,6 +42,7 @@ mod s3;
 mod store_metadata;
 
 pub use localfs::{FSConfig, LocalFS};
+pub use object_storage::MergedRecordReader;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::{S3Config, S3};
 pub use store_metadata::StorageMetadata;
@@ -66,13 +69,16 @@ const ACCESS_ALL: &str = "all";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
+    /// Version of schema registry
     pub version: String,
+    /// Version for change in the way how parquet are generated/stored.
     #[serde(rename = "objectstore-format")]
     pub objectstore_format: String,
     #[serde(rename = "created-at")]
     pub created_at: String,
     pub owner: Owner,
     pub permissions: Vec<Permisssion>,
+    pub stats: Stats,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,11 +113,12 @@ impl Permisssion {
 impl Default for ObjectStoreFormat {
     fn default() -> Self {
         Self {
-            version: "v1".to_string(),
+            version: "v2".to_string(),
             objectstore_format: "v1".to_string(),
             created_at: Local::now().to_rfc3339(),
             owner: Owner::new("".to_string(), "".to_string()),
             permissions: vec![Permisssion::new("parseable".to_string())],
+            stats: Stats::default(),
         }
     }
 }
@@ -205,7 +212,7 @@ impl StorageDir {
         Self { data_path }
     }
 
-    fn filename_by_time(time: NaiveDateTime) -> String {
+    fn file_time_suffix(time: NaiveDateTime) -> String {
         let uri = utils::date_to_prefix(time.date())
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
@@ -214,13 +221,18 @@ impl StorageDir {
         format!("{local_uri}{hostname}.data.arrows")
     }
 
-    fn filename_by_current_time() -> String {
-        let datetime = Utc::now();
-        Self::filename_by_time(datetime.naive_utc())
+    fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
+        format!("{}.{}", stream_hash, Self::file_time_suffix(time))
     }
 
-    pub fn path_by_current_time(&self) -> PathBuf {
-        self.data_path.join(Self::filename_by_current_time())
+    fn filename_by_current_time(stream_hash: &str) -> String {
+        let datetime = Utc::now();
+        Self::filename_by_time(stream_hash, datetime.naive_utc())
+    }
+
+    pub fn path_by_current_time(&self, stream_hash: &str) -> PathBuf {
+        self.data_path
+            .join(Self::filename_by_current_time(stream_hash))
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
@@ -236,6 +248,48 @@ impl StorageDir {
         paths
     }
 
+    pub fn arrow_files_grouped_by_time(&self) -> HashMap<PathBuf, Vec<PathBuf>> {
+        // hashmap <time, vec[paths]>
+        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        let arrow_files = self.arrow_files();
+        for arrow_file_path in arrow_files {
+            let key = Self::arrow_path_to_parquet(&arrow_file_path);
+            grouped_arrow_file
+                .entry(key)
+                .or_default()
+                .push(arrow_file_path);
+        }
+
+        grouped_arrow_file
+    }
+
+    pub fn arrow_files_grouped_exclude_time(
+        &self,
+        exclude: NaiveDateTime,
+    ) -> HashMap<PathBuf, Vec<PathBuf>> {
+        let hot_filename = StorageDir::file_time_suffix(exclude);
+        // hashmap <time, vec[paths]> but exclude where hotfilename matches
+        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        let mut arrow_files = self.arrow_files();
+        arrow_files.retain(|path| {
+            !path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with(&hot_filename)
+        });
+        for arrow_file_path in arrow_files {
+            let key = Self::arrow_path_to_parquet(&arrow_file_path);
+            grouped_arrow_file
+                .entry(key)
+                .or_default()
+                .push(arrow_file_path);
+        }
+
+        grouped_arrow_file
+    }
+
     pub fn parquet_files(&self) -> Vec<PathBuf> {
         let Ok(dir) = self.data_path
             .read_dir() else { return vec![] };
@@ -245,12 +299,19 @@ impl StorageDir {
             .filter(|file| file.extension().map_or(false, |ext| ext.eq("parquet")))
             .collect()
     }
+
+    fn arrow_path_to_parquet(path: &Path) -> PathBuf {
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        let (_, filename) = filename.split_once('.').unwrap();
+        let mut parquet_path = path.to_owned();
+        parquet_path.set_file_name(filename);
+        parquet_path.set_extension("parquet");
+        parquet_path
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum MoveDataError {
-    #[error("Unable to Open file after moving")]
-    Open,
     #[error("Unable to create recordbatch stream")]
     Arrow(#[from] ArrowError),
     #[error("Could not generate parquet file")]
@@ -259,8 +320,6 @@ pub enum MoveDataError {
     ObjectStorage(#[from] ObjectStorageError),
     #[error("Could not generate parquet file")]
     Create,
-    #[error("Could not delete temp arrow file")]
-    Delete,
 }
 
 #[derive(Debug, thiserror::Error)]
