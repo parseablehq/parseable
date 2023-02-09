@@ -65,9 +65,9 @@ actix-web-static-files = "4.0"
 static-files = "0.2.1"
 ulid = { version = "1.0", features = ["serde"] }
 ureq = { version = "2.5.0", features = ["json"] }
-dashmap = "5.4.0"
 hex = "0.4.3"
 itertools = "0.10.5"
+xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
 
 [build-dependencies]
 static-files = "0.2.1"
@@ -80,7 +80,6 @@ zip = { version = "0.6.3", default_features = false, features = ["deflate"] }
 [dev-dependencies]
 maplit = "1.0.2"
 rstest = "0.15.0"
-serial_test = { version = "0.9.0", default-features = false }
 
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.0.8/build.zip"
