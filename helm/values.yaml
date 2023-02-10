@@ -1,7 +1,7 @@
 parseable:
   image:
     repository: parseable/parseable
-    tag: v0.2.0
+    tag: v0.2.1
     pullPolicy: Always
   local: false
   secrets: 
@@ -25,7 +25,7 @@ parseable:
     - s3.region
   replicaCount: 1
   env:
-    RUST_LOG: "parseable=info"
+    RUST_LOG: "info"
   nameOverride: ""
   fullnameOverride: ""  
   serviceAccount:
@@ -37,11 +37,11 @@ parseable:
     port: 80
   resources:
     limits:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 1000m
+      memory: 8Gi
     requests:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 500m
+      memory: 1Gi
   securityContext:
    runAsUser: 10001
    allowPrivilegeEscalation: false
