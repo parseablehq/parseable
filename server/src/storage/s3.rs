@@ -370,16 +370,19 @@ impl From<AwsSdkError> for ObjectStorageError {
 impl From<SdkError<HeadBucketError>> for ObjectStorageError {
     fn from(error: SdkError<HeadBucketError>) -> Self {
         match error {
-            SdkError::ServiceError {
-                err:
-                    HeadBucketError {
-                        kind: HeadBucketErrorKind::Unhandled(err),
-                        ..
-                    },
-                ..
-            } => ObjectStorageError::AuthenticationError(err),
-            SdkError::DispatchFailure(err) => ObjectStorageError::ConnectionError(Box::new(err)),
-            SdkError::TimeoutError(err) => ObjectStorageError::ConnectionError(err),
+            SdkError::ServiceError(err) => {
+                let err = err.into_err();
+                let err_kind = &err.kind;
+                match err_kind {
+                    HeadBucketErrorKind::Unhandled(_) => {
+                        ObjectStorageError::AuthenticationError(err.into())
+                    }
+                    _ => ObjectStorageError::UnhandledError(err.into()),
+                }
+            }
+            err @ SdkError::DispatchFailure(_) | err @ SdkError::TimeoutError(_) => {
+                ObjectStorageError::ConnectionError(err.into())
+            }
             err => ObjectStorageError::UnhandledError(Box::new(err)),
         }
     }
