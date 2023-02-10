@@ -215,14 +215,13 @@ fn commit_schema(
         let storage = CONFIG.storage().get_object_store();
 
         let _stream_name = stream_name.to_owned();
-        let _schema_map = schema_map.to_owned();
         let handle = std::thread::spawn(move || {
             let rt = actix_web::rt::System::new();
-            rt.block_on(storage.put_schema_map(&_stream_name, &_schema_map))
+            rt.block_on(storage.put_schema_map(&_stream_name, &schema_map))
         });
 
         let res = match handle.join() {
-            Ok(res) => res.map_err(|err| EventError::ObjectStorage(err)),
+            Ok(res) => res.map_err(EventError::ObjectStorage),
             Err(_) => {
                 log::error!("commit schema thread panicked");
                 Err(EventError::InternalError)
