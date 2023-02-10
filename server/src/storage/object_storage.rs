@@ -25,9 +25,9 @@ use crate::{
     utils::batch_adapter::adapt_batch,
 };
 
-use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::{
     arrow::{
         array::TimestampMillisecondArray, ipc::reader::StreamReader, record_batch::RecordBatch,

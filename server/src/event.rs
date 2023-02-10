@@ -19,10 +19,9 @@
 
 mod writer;
 
-use arrow_schema::{DataType, Field, TimeUnit};
 use chrono::Utc;
 use datafusion::arrow::array::{Array, TimestampMillisecondArray};
-use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::json::reader::{infer_json_schema_from_iterator, Decoder, DecoderOptions};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -316,7 +315,7 @@ pub mod error {
 mod tests {
     use std::sync::Arc;
 
-    use arrow_schema::{Field, Schema};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::{
         array::{Array, Int32Array},
         record_batch::RecordBatch,
@@ -327,9 +326,9 @@ mod tests {
     #[test]
     fn check_replace() {
         let schema = Schema::new(vec![
-            Field::new("a", arrow_schema::DataType::Int32, false),
-            Field::new("b", arrow_schema::DataType::Int32, false),
-            Field::new("c", arrow_schema::DataType::Int32, false),
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
         ]);
 
         let schema_ref = Arc::new(schema);

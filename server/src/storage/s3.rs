@@ -16,17 +16,18 @@
  *
  */
 
-use arrow_schema::Schema;
 use async_trait::async_trait;
+use aws_sdk_s3::config::retry::RetryConfig;
 use aws_sdk_s3::error::{HeadBucketError, HeadBucketErrorKind};
 use aws_sdk_s3::model::{CommonPrefix, Delete, ObjectIdentifier};
 use aws_sdk_s3::types::{ByteStream, SdkError};
 use aws_sdk_s3::Error as AwsSdkError;
-use aws_sdk_s3::RetryConfig;
-use aws_sdk_s3::{Client, Credentials, Endpoint, Region};
+use aws_sdk_s3::{Client, Credentials, Region};
 use aws_smithy_async::rt::sleep::default_async_sleep;
-use base64::encode;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::engine::Engine as _;
 use bytes::Bytes;
+use datafusion::arrow::datatypes::Schema;
 
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
@@ -36,7 +37,6 @@ use datafusion::datasource::object_store::ObjectStoreRegistry;
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use futures::StreamExt;
-use http::Uri;
 use md5::{Digest, Md5};
 use object_store::aws::AmazonS3Builder;
 use object_store::limit::LimitStore;
@@ -128,14 +128,13 @@ impl ObjectStorageProvider for S3Config {
     }
 
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
-        let uri = self.endpoint_url.parse::<Uri>().unwrap();
-        let endpoint = Endpoint::immutable(uri);
+        let uri: String = self.endpoint_url.parse().unwrap();
         let region = Region::new(self.region.clone());
         let creds = Credentials::new(&self.access_key_id, &self.secret_key, None, None, "");
 
         let config = aws_sdk_s3::Config::builder()
             .region(region)
-            .endpoint_resolver(endpoint)
+            .endpoint_url(uri)
             .credentials_provider(creds)
             .retry_config(RetryConfig::standard().with_max_attempts(5))
             .sleep_impl(default_async_sleep().expect("sleep impl is provided for tokio rt"))
@@ -266,7 +265,7 @@ impl ObjectStorage for S3 {
         let hash = self.set_content_md5.then(|| {
             let mut hash = Md5::new();
             hash.update(&resource);
-            encode(hash.finalize())
+            BASE64.encode(hash.finalize())
         });
 
         self.client
@@ -309,7 +308,7 @@ impl ObjectStorage for S3 {
             let mut file = std::fs::File::open(path)?;
             let mut digest = Md5::new();
             std::io::copy(&mut file, &mut digest)?;
-            Some(encode(digest.finalize()))
+            Some(BASE64.encode(digest.finalize()))
         } else {
             None
         };
@@ -337,9 +336,11 @@ impl ObjectStorage for S3 {
             return Ok(None);
         }
 
-        let file_format = ParquetFormat::default().with_enable_pruning(true);
+        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
         let listing_options = ListingOptions {
             file_extension: ".parquet".to_string(),
+            file_sort_order: None,
+            infinite_source: false,
             format: Arc::new(file_format),
             table_partition_cols: vec![],
             collect_stat: true,
@@ -365,19 +366,23 @@ impl From<AwsSdkError> for ObjectStorageError {
     }
 }
 
+// TODO: Needs to be adjusted https://github.com/awslabs/aws-sdk-rust/issues/657#issue-1436568853
 impl From<SdkError<HeadBucketError>> for ObjectStorageError {
     fn from(error: SdkError<HeadBucketError>) -> Self {
         match error {
-            SdkError::ServiceError {
-                err:
-                    HeadBucketError {
-                        kind: HeadBucketErrorKind::Unhandled(err),
-                        ..
-                    },
-                ..
-            } => ObjectStorageError::AuthenticationError(err),
-            SdkError::DispatchFailure(err) => ObjectStorageError::ConnectionError(Box::new(err)),
-            SdkError::TimeoutError(err) => ObjectStorageError::ConnectionError(err),
+            SdkError::ServiceError(err) => {
+                let err = err.into_err();
+                let err_kind = &err.kind;
+                match err_kind {
+                    HeadBucketErrorKind::Unhandled(_) => {
+                        ObjectStorageError::AuthenticationError(err.into())
+                    }
+                    _ => ObjectStorageError::UnhandledError(err.into()),
+                }
+            }
+            err @ SdkError::DispatchFailure(_) | err @ SdkError::TimeoutError(_) => {
+                ObjectStorageError::ConnectionError(err.into())
+            }
             err => ObjectStorageError::UnhandledError(Box::new(err)),
         }
     }

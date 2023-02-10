@@ -21,9 +21,9 @@ use std::{
     sync::Arc,
 };
 
-use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::{
     datasource::{
         file_format::parquet::ParquetFormat,
@@ -185,9 +185,11 @@ impl ObjectStorage for LocalFS {
             return Ok(None);
         }
 
-        let file_format = ParquetFormat::default().with_enable_pruning(true);
+        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
         let listing_options = ListingOptions {
             file_extension: ".parquet".to_string(),
+            file_sort_order: None,
+            infinite_source: false,
             format: Arc::new(file_format),
             table_partition_cols: vec![],
             collect_stat: true,

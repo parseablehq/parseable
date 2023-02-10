@@ -16,9 +16,8 @@
  *
  */
 
-use arrow_schema::Schema;
-use arrow_schema::SchemaRef;
 use async_trait::async_trait;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
@@ -81,7 +80,7 @@ impl QueryTableProvider {
     async fn create_physical_plan(
         &self,
         ctx: &SessionState,
-        projection: &Option<Vec<usize>>,
+        projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
@@ -159,7 +158,7 @@ impl TableProvider for QueryTableProvider {
     async fn scan(
         &self,
         ctx: &SessionState,
-        projection: &Option<Vec<usize>>,
+        projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
@@ -171,7 +170,9 @@ impl TableProvider for QueryTableProvider {
 fn local_parquet_table(parquet_files: &[PathBuf], schema: &SchemaRef) -> Option<ListingTable> {
     let listing_options = ListingOptions {
         file_extension: ".parquet".to_owned(),
-        format: Arc::new(ParquetFormat::default().with_enable_pruning(true)),
+        format: Arc::new(ParquetFormat::default().with_enable_pruning(Some(true))),
+        file_sort_order: None,
+        infinite_source: false,
         table_partition_cols: vec![],
         collect_stat: true,
         target_partitions: 1,
