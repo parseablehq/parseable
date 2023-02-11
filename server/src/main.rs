@@ -21,7 +21,7 @@ use actix_web::dev::ServiceRequest;
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
-use actix_web_prom::{PrometheusMetrics, PrometheusMetricsBuilder};
+use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use actix_web_static_files::ResourceFiles;
 use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
 use log::warn;
