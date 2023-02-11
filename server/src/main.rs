@@ -21,6 +21,7 @@ use actix_web::dev::ServiceRequest;
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
+use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use actix_web_static_files::ResourceFiles;
 use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
 use log::warn;
@@ -68,6 +69,11 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.validate_storage(&*storage).await;
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, metadata);
+    let prometheus = PrometheusMetricsBuilder::new(env!("CARGO_PKG_NAME"))
+        .registry(prometheus::default_registry().clone())
+        .endpoint("/metrics")
+        .build()
+        .unwrap();
 
     migration::run_migration(&CONFIG).await?;
 
@@ -82,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
     let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
         object_store_sync();
 
-    let app = run_http();
+    let app = run_http(prometheus);
     tokio::pin!(app);
     loop {
         tokio::select! {
@@ -206,7 +212,7 @@ async fn validator(
     Err((actix_web::error::ErrorUnauthorized("Unauthorized"), req))
 }
 
-async fn run_http() -> anyhow::Result<()> {
+async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
     let ssl_acceptor = match (
         &CONFIG.parseable.tls_cert_path,
         &CONFIG.parseable.tls_key_path,
@@ -242,7 +248,7 @@ async fn run_http() -> anyhow::Result<()> {
     };
 
     // concurrent workers equal to number of cores on the cpu
-    let http_server = HttpServer::new(move || create_app!()).workers(num_cpus::get());
+    let http_server = HttpServer::new(move || create_app!(prometheus)).workers(num_cpus::get());
     if let Some(config) = ssl_acceptor {
         http_server
             .bind_rustls(&CONFIG.parseable.address, config)?
@@ -313,8 +319,9 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
 
 #[macro_export]
 macro_rules! create_app {
-    () => {
+    ($prometheus: expr) => {
         App::new()
+            .wrap($prometheus.clone())
             .configure(|cfg| configure_routes(cfg))
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
