@@ -231,7 +231,7 @@ pub trait ObjectStorage: Sync + 'static {
             // Do not include file which is being written to
             let time = chrono::Utc::now().naive_utc();
             let staging_files = dir.arrow_files_grouped_exclude_time(time);
-            if staging_files.len() == 0 {
+            if staging_files.is_empty() {
                 STAGING_FILES.with_label_values(&[stream]).set(0);
             }
 
