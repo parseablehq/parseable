@@ -21,7 +21,7 @@ use actix_web::dev::ServiceRequest;
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
-use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
+use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
 use log::warn;
@@ -45,6 +45,7 @@ mod banner;
 mod event;
 mod handlers;
 mod metadata;
+mod metrics;
 mod migration;
 mod option;
 mod query;
@@ -69,11 +70,7 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.validate_storage(&*storage).await;
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, metadata);
-    let prometheus = PrometheusMetricsBuilder::new(env!("CARGO_PKG_NAME"))
-        .registry(prometheus::default_registry().clone())
-        .endpoint("/metrics")
-        .build()
-        .unwrap();
+    let prometheus = metrics::build_metrics_handler();
 
     migration::run_migration(&CONFIG).await?;
 

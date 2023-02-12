@@ -23,6 +23,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::alerts::Alerts;
 use crate::event::Event;
+use crate::metrics::{EVENTS_INGESTED, EVENTS_INGESTED_SIZE};
 use crate::stats::{Stats, StatsCounter};
 use crate::storage::ObjectStorage;
 
@@ -180,6 +181,12 @@ impl STREAM_INFO {
 
         stream.stats.add_ingestion_size(size);
         stream.stats.increase_event_by_one();
+        EVENTS_INGESTED
+            .with_label_values(&[stream_name.clone(), "json"])
+            .inc();
+        EVENTS_INGESTED_SIZE
+            .with_label_values(&[stream_name.clone(), "json"])
+            .set(size as i64);
 
         Ok(())
     }

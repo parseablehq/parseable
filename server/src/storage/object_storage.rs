@@ -21,7 +21,11 @@ use super::{
     Permisssion, StorageDir, StorageMetadata, CACHED_FILES,
 };
 use crate::{
-    alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, stats::Stats,
+    alerts::Alerts,
+    metadata::STREAM_INFO,
+    metrics::{STAGING_FILES, STORAGE_SIZE},
+    option::CONFIG,
+    stats::Stats,
     utils::batch_adapter::adapt_batch,
 };
 
@@ -227,8 +231,15 @@ pub trait ObjectStorage: Sync + 'static {
             // Do not include file which is being written to
             let time = chrono::Utc::now().naive_utc();
             let staging_files = dir.arrow_files_grouped_exclude_time(time);
+            if staging_files.len() == 0 {
+                STAGING_FILES.with_label_values(&[stream]).set(0);
+            }
 
             for (parquet_path, files) in staging_files {
+                STAGING_FILES
+                    .with_label_values(&[stream])
+                    .set(files.len() as i64);
+
                 let record_reader = MergedRecordReader::try_new(&files).unwrap();
 
                 let mut parquet_table = CACHED_FILES.lock().unwrap();
@@ -315,6 +326,9 @@ pub trait ObjectStorage: Sync + 'static {
         for (stream, compressed_size) in stream_stats {
             let stats = STREAM_INFO.read().unwrap().get(stream).map(|metadata| {
                 metadata.stats.add_storage_size(compressed_size);
+                STORAGE_SIZE
+                    .with_label_values(&[stream, "parquet"])
+                    .set(compressed_size as i64);
                 Stats::from(&metadata.stats)
             });
 
