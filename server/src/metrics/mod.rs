@@ -48,7 +48,7 @@ lazy_static! {
     .expect("metric can be created");
     pub static ref QUERY_EXECUTE_TIME: HistogramVec = HistogramVec::new(
         HistogramOpts::new("query_execute_time", "Query execute time").namespace(METRICS_NAMESPACE),
-        &[]
+        &["stream"]
     )
     .expect("metric can be created");
 }
