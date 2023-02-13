@@ -51,6 +51,11 @@ lazy_static! {
         &["stream"]
     )
     .expect("metric can be created");
+    pub static ref ALERTS_STATES: IntCounterVec = IntCounterVec::new(
+        Opts::new("alerts_states", "Alerts States").namespace(METRICS_NAMESPACE),
+        &["stream", "name", "state"]
+    )
+    .expect("metric can be created");
 }
 
 fn custom_metrics(registry: &Registry) {
@@ -68,6 +73,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(ALERTS_STATES.clone()))
         .expect("metric can be registered");
 }
 
