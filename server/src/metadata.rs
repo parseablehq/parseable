@@ -186,7 +186,7 @@ impl STREAM_INFO {
             .inc();
         EVENTS_INGESTED_SIZE
             .with_label_values(&[stream_name.clone(), "json"])
-            .set(size as i64);
+            .add(size as i64);
 
         Ok(())
     }

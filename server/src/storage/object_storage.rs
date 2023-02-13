@@ -330,7 +330,7 @@ pub trait ObjectStorage: Sync + 'static {
                 metadata.stats.add_storage_size(compressed_size);
                 STORAGE_SIZE
                     .with_label_values(&[stream, "parquet"])
-                    .set(compressed_size as i64);
+                    .add(compressed_size as i64);
                 Stats::from(&metadata.stats)
             });
 
