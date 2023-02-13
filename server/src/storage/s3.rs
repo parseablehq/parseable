@@ -37,18 +37,30 @@ use datafusion::datasource::object_store::ObjectStoreRegistry;
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use futures::StreamExt;
+use lazy_static::lazy_static;
 use md5::{Digest, Md5};
 use object_store::aws::AmazonS3Builder;
 use object_store::limit::LimitStore;
+use prometheus::{HistogramOpts, HistogramVec};
 use relative_path::RelativePath;
 
 use std::iter::Iterator;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
+use crate::metrics::METRICS_NAMESPACE;
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
 use super::ObjectStorageProvider;
+
+lazy_static! {
+    pub static ref REQUEST_RESPONSE_TIME: HistogramVec = HistogramVec::new(
+        HistogramOpts::new("s3_response_time", "S3 Request Latency").namespace(METRICS_NAMESPACE),
+        &["method", "status"]
+    )
+    .expect("metric can be created");
+}
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -152,6 +164,13 @@ impl ObjectStorageProvider for S3Config {
     fn get_endpoint(&self) -> String {
         format!("{}/{}", self.endpoint_url, self.bucket_name)
     }
+
+    fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
+        handler
+            .registry
+            .register(Box::new(REQUEST_RESPONSE_TIME.clone()))
+            .expect("metric can be registered");
+    }
 }
 
 pub struct S3 {
@@ -162,16 +181,58 @@ pub struct S3 {
 
 impl S3 {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, AwsSdkError> {
+        let instant = Instant::now();
+
         let resp = self
             .client
             .get_object()
             .bucket(&self.bucket)
             .key(path.as_str())
             .send()
-            .await?;
-        let body = resp.body.collect().await;
-        let body_bytes = body.unwrap().into_bytes();
-        Ok(body_bytes)
+            .await;
+
+        match resp {
+            Ok(resp) => {
+                let time = instant.elapsed().as_secs_f64();
+                REQUEST_RESPONSE_TIME
+                    .with_label_values(&["GET", "200"])
+                    .observe(time);
+                let body = resp.body.collect().await.unwrap().into_bytes();
+                Ok(body)
+            }
+            Err(err) => {
+                let time = instant.elapsed().as_secs_f64();
+                REQUEST_RESPONSE_TIME
+                    .with_label_values(&["GET", "400"])
+                    .observe(time);
+                Err(err.into())
+            }
+        }
+    }
+
+    async fn _put_object(
+        &self,
+        path: &RelativePath,
+        resource: Bytes,
+        md5: Option<String>,
+    ) -> Result<(), AwsSdkError> {
+        let time = Instant::now();
+        let resp = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(path.as_str())
+            .body(resource.into())
+            .set_content_md5(md5)
+            .send()
+            .await;
+        let status = if resp.is_ok() { "200" } else { "400" };
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["PUT", status])
+            .observe(time);
+
+        resp.map(|_| ()).map_err(|err| err.into())
     }
 
     async fn _delete_stream(&self, stream_name: &str) -> Result<(), AwsSdkError> {
@@ -235,6 +296,7 @@ impl S3 {
     ) -> Result<(), AwsSdkError> {
         let body = ByteStream::from_path(&path).await.unwrap();
 
+        let instant = Instant::now();
         let resp = self
             .client
             .put_object()
@@ -243,11 +305,16 @@ impl S3 {
             .body(body)
             .set_content_md5(md5)
             .send()
-            .await?;
+            .await;
+
+        let status = if resp.is_ok() { "200" } else { "400" };
+        let time = instant.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["UPLOAD_PARQUET", status])
+            .observe(time);
 
         log::trace!("{:?}", resp);
-
-        Ok(())
+        resp.map(|_| ()).map_err(|err| err.into())
     }
 }
 
@@ -268,13 +335,7 @@ impl ObjectStorage for S3 {
             BASE64.encode(hash.finalize())
         });
 
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(path.as_str())
-            .body(resource.into())
-            .set_content_md5(hash)
-            .send()
+        self._put_object(path, resource, hash)
             .await
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
 

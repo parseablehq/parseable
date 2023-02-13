@@ -19,6 +19,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use async_trait::async_trait;
@@ -34,13 +35,24 @@ use datafusion::{
 };
 use fs_extra::file::{move_file, CopyOptions};
 use futures::StreamExt;
+use lazy_static::lazy_static;
+use prometheus::{HistogramOpts, HistogramVec};
 use relative_path::RelativePath;
 use tokio::fs;
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::{option::validation, utils::validate_path_is_writeable};
+use crate::{metrics::METRICS_NAMESPACE, option::validation, utils::validate_path_is_writeable};
 
 use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
+
+lazy_static! {
+    pub static ref REQUEST_RESPONSE_TIME: HistogramVec = HistogramVec::new(
+        HistogramOpts::new("local_fs_response_time", "FileSystem Request Latency")
+            .namespace(METRICS_NAMESPACE),
+        &["method", "status"]
+    )
+    .expect("metric can be created");
+}
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -75,6 +87,13 @@ impl ObjectStorageProvider for FSConfig {
     fn get_endpoint(&self) -> String {
         self.root.to_str().unwrap().to_string()
     }
+
+    fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
+        handler
+            .registry
+            .register(Box::new(REQUEST_RESPONSE_TIME.clone()))
+            .expect("metric can be registered");
+    }
 }
 
 pub struct LocalFS {
@@ -94,8 +113,9 @@ impl LocalFS {
 #[async_trait]
 impl ObjectStorage for LocalFS {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
+        let time = Instant::now();
         let file_path = self.path_in_root(path);
-        match fs::read(file_path).await {
+        let res: Result<Bytes, ObjectStorageError> = match fs::read(file_path).await {
             Ok(x) => Ok(x.into()),
             Err(e) => match e.kind() {
                 std::io::ErrorKind::NotFound => {
@@ -103,7 +123,14 @@ impl ObjectStorage for LocalFS {
                 }
                 _ => Err(ObjectStorageError::UnhandledError(Box::new(e))),
             },
-        }
+        };
+
+        let status = if res.is_ok() { "200" } else { "400" };
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", status])
+            .observe(time);
+        res
     }
 
     async fn put_object(
@@ -111,11 +138,21 @@ impl ObjectStorage for LocalFS {
         path: &RelativePath,
         resource: Bytes,
     ) -> Result<(), ObjectStorageError> {
+        let time = Instant::now();
+
         let path = self.path_in_root(path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        Ok(fs::write(path, resource).await?)
+        let res = fs::write(path, resource).await;
+
+        let status = if res.is_ok() { "200" } else { "400" };
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["PUT", status])
+            .observe(time);
+
+        res.map_err(Into::into)
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {

@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, metadata);
     let prometheus = metrics::build_metrics_handler();
+    CONFIG.storage().register_store_metrics(&prometheus);
 
     migration::run_migration(&CONFIG).await?;
 

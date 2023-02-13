@@ -29,6 +29,7 @@ use crate::{
     utils::batch_adapter::adapt_batch,
 };
 
+use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
@@ -66,6 +67,7 @@ pub trait ObjectStorageProvider {
     fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv>;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send>;
     fn get_endpoint(&self) -> String;
+    fn register_store_metrics(&self, handler: &PrometheusMetrics);
 }
 
 #[async_trait]
