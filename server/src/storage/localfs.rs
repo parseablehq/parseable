@@ -35,24 +35,14 @@ use datafusion::{
 };
 use fs_extra::file::{move_file, CopyOptions};
 use futures::StreamExt;
-use lazy_static::lazy_static;
-use prometheus::{HistogramOpts, HistogramVec};
 use relative_path::RelativePath;
 use tokio::fs;
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::{metrics::METRICS_NAMESPACE, option::validation, utils::validate_path_is_writeable};
+use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
+use crate::{option::validation, utils::validate_path_is_writeable};
 
 use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
-
-lazy_static! {
-    pub static ref REQUEST_RESPONSE_TIME: HistogramVec = HistogramVec::new(
-        HistogramOpts::new("local_fs_response_time", "FileSystem Request Latency")
-            .namespace(METRICS_NAMESPACE),
-        &["method", "status"]
-    )
-    .expect("metric can be created");
-}
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -89,10 +79,7 @@ impl ObjectStorageProvider for FSConfig {
     }
 
     fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
-        handler
-            .registry
-            .register(Box::new(REQUEST_RESPONSE_TIME.clone()))
-            .expect("metric can be registered");
+        self.register_metrics(handler);
     }
 }
 

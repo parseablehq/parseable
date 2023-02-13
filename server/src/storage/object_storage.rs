@@ -23,7 +23,7 @@ use super::{
 use crate::{
     alerts::Alerts,
     metadata::STREAM_INFO,
-    metrics::{STAGING_FILES, STORAGE_SIZE},
+    metrics::{storage::StorageMetrics, STAGING_FILES, STORAGE_SIZE},
     option::CONFIG,
     stats::Stats,
     utils::batch_adapter::adapt_batch,
@@ -63,7 +63,7 @@ pub(super) const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 const SCHEMA_FILE_NAME: &str = ".schema";
 const ALERT_FILE_NAME: &str = ".alert.json";
 
-pub trait ObjectStorageProvider {
+pub trait ObjectStorageProvider: StorageMetrics {
     fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv>;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send>;
     fn get_endpoint(&self) -> String;

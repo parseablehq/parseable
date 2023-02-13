@@ -16,6 +16,8 @@
  *
  */
 
+pub mod storage;
+
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use lazy_static::lazy_static;
 use prometheus::{IntCounterVec, IntGaugeVec, Opts, Registry};

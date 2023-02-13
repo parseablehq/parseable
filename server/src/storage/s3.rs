@@ -37,11 +37,9 @@ use datafusion::datasource::object_store::ObjectStoreRegistry;
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use futures::StreamExt;
-use lazy_static::lazy_static;
 use md5::{Digest, Md5};
 use object_store::aws::AmazonS3Builder;
 use object_store::limit::LimitStore;
-use prometheus::{HistogramOpts, HistogramVec};
 use relative_path::RelativePath;
 
 use std::iter::Iterator;
@@ -49,18 +47,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::metrics::METRICS_NAMESPACE;
+use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
 use super::ObjectStorageProvider;
-
-lazy_static! {
-    pub static ref REQUEST_RESPONSE_TIME: HistogramVec = HistogramVec::new(
-        HistogramOpts::new("s3_response_time", "S3 Request Latency").namespace(METRICS_NAMESPACE),
-        &["method", "status"]
-    )
-    .expect("metric can be created");
-}
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -166,10 +156,7 @@ impl ObjectStorageProvider for S3Config {
     }
 
     fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
-        handler
-            .registry
-            .register(Box::new(REQUEST_RESPONSE_TIME.clone()))
-            .expect("metric can be registered");
+        self.register_metrics(handler)
     }
 }
 
