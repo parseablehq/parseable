@@ -20,7 +20,7 @@ pub mod storage;
 
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use lazy_static::lazy_static;
-use prometheus::{IntCounterVec, IntGaugeVec, Opts, Registry};
+use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
@@ -46,6 +46,11 @@ lazy_static! {
         &["stream"]
     )
     .expect("metric can be created");
+    pub static ref QUERY_EXECUTE_TIME: HistogramVec = HistogramVec::new(
+        HistogramOpts::new("query_execute_time", "Query execute time").namespace(METRICS_NAMESPACE),
+        &[]
+    )
+    .expect("metric can be created");
 }
 
 fn custom_metrics(registry: &Registry) {
@@ -60,6 +65,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(STAGING_FILES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(QUERY_EXECUTE_TIME.clone()))
         .expect("metric can be registered");
 }
 
