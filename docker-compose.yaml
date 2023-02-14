@@ -30,7 +30,9 @@ services:
       - parseable
 
   parseable:
-    image: parseable/parseable:v0.2.1
+    build:
+      context: .
+      dockerfile: Dockerfile
     command: ["parseable", "s3-store"]
     ports:
       - 8000
@@ -54,7 +56,7 @@ services:
       - minio
 
   quest-smoke:
-    image: parseable/quest:v0.1
+    image: ghcr.io/parseablehq/quest:main
     command: ["smoke", "http://parseable:8000", "admin", "admin"]
     networks:
       - parseable
@@ -66,15 +68,15 @@ services:
         delay: 10s
         max_attempts: 10
 
-  quest-load:
-    image: parseable/quest:v0.1
-    command: ["load", "http://parseable:8000", "admin", "admin"]
-    networks:
-      - parseable
-    depends_on:
-      - quest-smoke
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 10s
-        max_attempts: 10
+  # quest-load:
+  #   image: ghcr.io/parseablehq/quest:main
+  #   command: ["load", "http://parseable:8000", "admin", "admin"]
+  #   networks:
+  #     - parseable
+  #   depends_on:
+  #     - quest-smoke
+  #   deploy:
+  #     restart_policy:
+  #       condition: on-failure
+  #       delay: 10s
+  #       max_attempts: 10

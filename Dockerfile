@@ -25,6 +25,7 @@ FROM gcr.io/distroless/cc:latest
 
 WORKDIR /parseable
 
+COPY --from=builder /lib/x86_64-linux-gnu/liblzma.so* /lib/x86_64-linux-gnu/
 COPY --from=builder /parseable/target/release/parseable /usr/local/bin/parseable
 
 CMD ["/usr/local/bin/parseable"]
