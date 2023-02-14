@@ -45,6 +45,8 @@ services:
       - P_STAGING_DIR=/tmp/data
       - P_USERNAME=admin
       - P_PASSWORD=admin
+      - RUST_BACKTRACE=1
+      - RUST_LOG=info
     networks:
       - parseable
     healthcheck:
@@ -55,7 +57,7 @@ services:
     depends_on:
       - minio
 
-  quest-smoke:
+  quest:
     image: ghcr.io/parseablehq/quest:main
     command: ["smoke", "http://parseable:8000", "admin", "admin"]
     networks:
@@ -66,17 +68,4 @@ services:
       restart_policy:
         condition: on-failure
         delay: 10s
-        max_attempts: 10
-
-  # quest-load:
-  #   image: ghcr.io/parseablehq/quest:main
-  #   command: ["load", "http://parseable:8000", "admin", "admin"]
-  #   networks:
-  #     - parseable
-  #   depends_on:
-  #     - quest-smoke
-  #   deploy:
-  #     restart_policy:
-  #       condition: on-failure
-  #       delay: 10s
-  #       max_attempts: 10
+        max_attempts: 5
