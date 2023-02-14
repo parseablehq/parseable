@@ -18,8 +18,10 @@
 
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde_json::Value;
+use std::time::Instant;
 
 use crate::event;
+use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::CONFIG;
 use crate::query::Query;
 use crate::response::QueryResponse;
@@ -34,17 +36,23 @@ const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const SEPARATOR: char = '^';
 
 pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResponse, QueryError> {
+    let time = Instant::now();
     let json = json.into_inner();
     let query = Query::parse(json)?;
 
     let storage = CONFIG.storage().get_object_store();
-
     let query_result = query.execute(storage).await;
-
-    query_result
+    let query_result = query_result
         .map(Into::<QueryResponse>::into)
         .map(|response| response.to_http())
-        .map_err(|e| e.into())
+        .map_err(|e| e.into());
+
+    let time = time.elapsed().as_secs_f64();
+    QUERY_EXECUTE_TIME
+        .with_label_values(&[query.stream_name.as_str()])
+        .observe(time);
+
+    query_result
 }
 
 // Handler for POST /api/v1/ingest

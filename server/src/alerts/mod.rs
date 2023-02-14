@@ -17,10 +17,12 @@
  */
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 pub mod rule;
 pub mod target;
 
+use crate::metrics::ALERTS_STATES;
 use crate::utils::uid::Uid;
 
 pub use self::rule::Rule;
@@ -51,6 +53,13 @@ impl Alert {
             AlertState::Listening | AlertState::Firing => (),
             alert_state @ (AlertState::SetToFiring | AlertState::Resolved) => {
                 let context = self.get_context(stream_name, alert_state);
+                ALERTS_STATES
+                    .with_label_values(&[
+                        context.stream.as_str(),
+                        context.alert_name.as_str(),
+                        context.alert_state.to_string().as_str(),
+                    ])
+                    .inc();
                 for target in &self.targets {
                     target.call(context.clone());
                 }
@@ -122,5 +131,16 @@ pub enum AlertState {
 impl Default for AlertState {
     fn default() -> Self {
         Self::Listening
+    }
+}
+
+impl fmt::Display for AlertState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            AlertState::Listening => write!(f, "Listening"),
+            AlertState::SetToFiring => write!(f, "SetToFiring"),
+            AlertState::Firing => write!(f, "Firing"),
+            AlertState::Resolved => write!(f, "Resolved"),
+        }
     }
 }

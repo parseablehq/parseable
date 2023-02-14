@@ -21,10 +21,15 @@ use super::{
     Permisssion, StorageDir, StorageMetadata, CACHED_FILES,
 };
 use crate::{
-    alerts::Alerts, metadata::STREAM_INFO, option::CONFIG, stats::Stats,
+    alerts::Alerts,
+    metadata::STREAM_INFO,
+    metrics::{storage::StorageMetrics, STAGING_FILES, STORAGE_SIZE},
+    option::CONFIG,
+    stats::Stats,
     utils::batch_adapter::adapt_batch,
 };
 
+use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
@@ -57,10 +62,11 @@ pub(super) const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 const SCHEMA_FILE_NAME: &str = ".schema";
 const ALERT_FILE_NAME: &str = ".alert.json";
 
-pub trait ObjectStorageProvider {
+pub trait ObjectStorageProvider: StorageMetrics {
     fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv>;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send>;
     fn get_endpoint(&self) -> String;
+    fn register_store_metrics(&self, handler: &PrometheusMetrics);
 }
 
 #[async_trait]
@@ -246,8 +252,15 @@ pub trait ObjectStorage: Sync + 'static {
             // Do not include file which is being written to
             let time = chrono::Utc::now().naive_utc();
             let staging_files = dir.arrow_files_grouped_exclude_time(time);
+            if staging_files.is_empty() {
+                STAGING_FILES.with_label_values(&[stream]).set(0);
+            }
 
             for (parquet_path, files) in staging_files {
+                STAGING_FILES
+                    .with_label_values(&[stream])
+                    .set(files.len() as i64);
+
                 let record_reader = MergedRecordReader::try_new(&files).unwrap();
 
                 let mut parquet_table = CACHED_FILES.lock().unwrap();
@@ -334,6 +347,9 @@ pub trait ObjectStorage: Sync + 'static {
         for (stream, compressed_size) in stream_stats {
             let stats = STREAM_INFO.read().unwrap().get(stream).map(|metadata| {
                 metadata.stats.add_storage_size(compressed_size);
+                STORAGE_SIZE
+                    .with_label_values(&[stream, "parquet"])
+                    .add(compressed_size as i64);
                 Stats::from(&metadata.stats)
             });
 
