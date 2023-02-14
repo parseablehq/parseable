@@ -22,6 +22,8 @@ use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use lazy_static::lazy_static;
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
+use crate::metadata::STREAM_INFO;
+
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
 lazy_static! {
@@ -101,5 +103,21 @@ fn prom_process_metrics(metrics: &PrometheusMetrics) {
         .register(Box::new(ProcessCollector::for_self()))
         .expect("metric can be registered");
 }
+
 #[cfg(not(target_os = "linux"))]
 fn prom_process_metrics(_metrics: &PrometheusMetrics) {}
+
+pub fn load_from_global_stats() {
+    for stream_name in STREAM_INFO.list_streams() {
+        let stats = STREAM_INFO.get_stats(&stream_name).expect("stream exists");
+        EVENTS_INGESTED
+            .with_label_values(&[&stream_name, "json"])
+            .inc_by(stats.events);
+        EVENTS_INGESTED_SIZE
+            .with_label_values(&[&stream_name, "json"])
+            .set(stats.ingestion as i64);
+        STORAGE_SIZE
+            .with_label_values(&[&stream_name, "parquet"])
+            .set(stats.storage as i64)
+    }
+}

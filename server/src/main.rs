@@ -82,6 +82,9 @@ async fn main() -> anyhow::Result<()> {
     // track all parquet files already in the data directory
     storage::CACHED_FILES.track_parquet();
 
+    // load data from stats back to prometheus metrics
+    metrics::load_from_global_stats();
+
     let (localsync_handler, mut localsync_outbox, localsync_inbox) = run_local_sync();
     let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
         object_store_sync();
