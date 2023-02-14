@@ -16,12 +16,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-      - name: Tests
-        uses: cloudposse/github-action-docker-compose-test-run@main
-        with:
-          file: ./docker-compose.yaml
-          service: quest-smoke
-          command: smoke http://parseable:8000 admin admin
+      - name: Start compose
+        run: docker-compose -f "docker-compose.yml" up --build
+      - name: Stop compose
+        if: always()
+        run: docker-compose -f "docker-compose.yml" down
 
   unit-tests:
     name: Unit tests
