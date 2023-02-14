@@ -20,8 +20,8 @@ jobs:
         uses: cloudposse/github-action-docker-compose-test-run@main
         with:
           file: ./docker-compose.yaml
-          service: minio parseable quest-smoke
-          command: docker compose up --build
+          service: quest-smoke
+          command: smoke http://parseable:8000 admin admin
 
   unit-tests:
     name: Unit tests
