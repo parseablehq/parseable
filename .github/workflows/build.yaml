@@ -17,10 +17,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Start compose
-        run: docker-compose -f "docker-compose.yml" up --build
+        run: docker-compose -f "docker-compose.yaml" up --build
       - name: Stop compose
         if: always()
-        run: docker-compose -f "docker-compose.yml" down
+        run: docker-compose -f "docker-compose.yaml" down
 
   unit-tests:
     name: Unit tests
