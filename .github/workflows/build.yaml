@@ -17,10 +17,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Tests
-        uses: isbang/compose-action@v1.4.1
+        uses: cloudposse/github-action-docker-compose-test-run@main
         with:
-          compose-file: ./docker-compose.yaml
-          up-flag: --build
+          file: ./docker-compose.yaml
+          service: minio parseable quest-smoke
+          command: docker compose up --build
 
   unit-tests:
     name: Unit tests
