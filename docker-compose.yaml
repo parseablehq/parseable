@@ -42,7 +42,7 @@ services:
       - P_S3_SECRET_KEY="supersecret"
       - P_S3_REGION="us-east-1"
       - P_S3_BUCKET="parseable"
-      - P_STAGING_DIR"=/tmp/data"
+      - P_STAGING_DIR="/tmp/data"
       - P_USERNAME="admin"
       - P_PASSWORD="admin"
     networks:
@@ -66,4 +66,4 @@ services:
       restart_policy:
         condition: on-failure
         delay: 10s
-        max_attempts: 5
+        max_attempts: 3
