@@ -28,4 +28,4 @@ WORKDIR /parseable
 
 COPY --from=builder /parseable/target/release/parseable /usr/local/bin/parseable
 
-CMD ["/usr/local/bin/parseable"]
+CMD /usr/local/bin/parseable
