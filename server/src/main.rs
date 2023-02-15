@@ -364,7 +364,7 @@ fn ingest_path() -> String {
 }
 
 pub fn metrics_path() -> String {
-   format!("{}/metrics", base_path())
+    format!("{}/metrics", base_path())
 }
 
 fn alert_path(stream_name: &str) -> String {
