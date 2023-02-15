@@ -30,24 +30,21 @@ services:
       - parseable
 
   parseable:
-    image: parseable/parseable:v0.2.1
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile
     command: ["parseable", "s3-store"]
     ports:
       - 8000
     environment:
-      - P_S3_URL=http://minio:9000
-      - P_S3_ACCESS_KEY=parseable
-      - P_S3_SECRET_KEY=supersecret
-      - P_S3_REGION=us-east-1
-      - P_S3_BUCKET=parseable
-      - P_STAGING_DIR=/tmp/data
-      - P_USERNAME=admin
-      - P_PASSWORD=admin
-      - RUST_BACKTRACE=1
-      - RUST_LOG=info
+      - P_S3_URL="http://minio:9000"
+      - P_S3_ACCESS_KEY="parseable"
+      - P_S3_SECRET_KEY="supersecret"
+      - P_S3_REGION="us-east-1"
+      - P_S3_BUCKET="parseable"
+      - P_STAGING_DIR"=/tmp/data"
+      - P_USERNAME="admin"
+      - P_PASSWORD="admin"
     networks:
       - parseable
     healthcheck:
