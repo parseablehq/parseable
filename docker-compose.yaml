@@ -30,9 +30,10 @@ services:
       - parseable
 
   parseable:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: parseable/parseable:v0.2.1
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     command: ["parseable", "s3-store"]
     ports:
       - 8000
