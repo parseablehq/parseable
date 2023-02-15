@@ -16,9 +16,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-      - name: Clean compose volumes before running
-        if: always()
-        run: docker volume rm $(docker volume ls -q )
       - name: Start compose
         run: docker-compose -f "docker-compose.yaml" up --build
       - name: Stop compose
