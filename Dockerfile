@@ -22,7 +22,7 @@ COPY . .
 
 RUN cargo build --release
  
-FROM gcr.io/distroless/cc:latest
+FROM alpine:3.17
 
 WORKDIR /parseable
 
