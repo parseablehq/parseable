@@ -363,6 +363,10 @@ fn ingest_path() -> String {
     "/ingest".to_string()
 }
 
+pub fn metrics_path() -> String {
+    format!("{}/metrics", base_path())
+}
+
 fn alert_path(stream_name: &str) -> String {
     format!("{}/alert", logstream_path(stream_name))
 }

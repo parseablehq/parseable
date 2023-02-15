@@ -22,7 +22,7 @@ use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use lazy_static::lazy_static;
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
-use crate::metadata::STREAM_INFO;
+use crate::{metadata::STREAM_INFO, metrics_path};
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
@@ -87,7 +87,7 @@ pub fn build_metrics_handler() -> PrometheusMetrics {
 
     let prometheus = PrometheusMetricsBuilder::new(METRICS_NAMESPACE)
         .registry(registry)
-        .endpoint("/metrics")
+        .endpoint(metrics_path().as_str())
         .build()
         .expect("Prometheus initialization");
 
