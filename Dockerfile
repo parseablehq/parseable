@@ -13,19 +13,50 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-FROM rust:1.67.0 as builder
+
+# Compile
+FROM    rust:1.67-alpine AS compiler
 
 WORKDIR /parseable
+
+RUN     apk add --no-cache musl-dev
 
 COPY . .
 
-RUN cargo build --release
- 
-FROM gcr.io/distroless/cc:latest
+RUN     set -eux; \
+        apkArch="$(apk --print-arch)"; \
+        if [ "$apkArch" = "aarch64" ]; then \
+            export JEMALLOC_SYS_WITH_LG_PAGE=16; \
+        fi && \
+        cargo build --release
+
+# Run
+FROM    alpine:3.16
+
+RUN     apk update --quiet \
+        && apk add -q --no-cache tini
+
+# Create appuser
+ENV     USER=parseable
+ENV     UID=10001
+
+RUN     adduser \
+        --disabled-password \
+        --gecos "" \
+        --home "/nonexistent" \
+        --shell "/sbin/nologin" \
+        --no-create-home \
+        --uid "${UID}" \
+        "${USER}"
 
 WORKDIR /parseable
 
-COPY --from=builder /lib/x86_64-linux-gnu/liblzma.so* /lib/x86_64-linux-gnu/
-COPY --from=builder /parseable/target/release/parseable /usr/local/bin/parseable
+COPY    --from=compiler /parseable/target/release/parseable /bin/parseable
+RUN     chown -R parseable /parseable/
 
-CMD ["/usr/local/bin/parseable"]
+USER    parseable:parseable
+
+EXPOSE  8000/tcp
+
+ENTRYPOINT  ["tini", "--"]
+CMD     /bin/parseable
