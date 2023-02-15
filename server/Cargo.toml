@@ -70,6 +70,8 @@ ureq = { version = "2.6", features = ["json"] }
 hex = "0.4"
 itertools = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+xz2 = { version = "*", features=["static"] }
+bzip2 = { version = "*", features=["static"] }
 
 [build-dependencies]
 static-files = "0.2"
