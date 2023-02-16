@@ -1,7 +1,8 @@
 version: "3.7"
 
 networks:
-  parseable:
+  parseable-internal:
+    driver: bridge
 
 services:
 
@@ -27,11 +28,14 @@ services:
       timeout: 20s
       retries: 5
     networks:
-      - parseable
+      - parseable-internal
 
   parseable:
-    image: parseable/parseable:v0.2.1
-    command: ["parseable", "s3-store"]
+    image: parseablehq/parseable:v0.2.1
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    # command: ["parseable", "s3-store"]
     ports:
       - 8000
     environment:
@@ -44,7 +48,7 @@ services:
       - P_USERNAME=admin
       - P_PASSWORD=admin
     networks:
-      - parseable
+      - parseable-internal
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
       interval: 15s
@@ -53,28 +57,15 @@ services:
     depends_on:
       - minio
 
-  quest-smoke:
-    image: parseable/quest:v0.1
+  quest:
+    image: ghcr.io/parseablehq/quest:main
     command: ["smoke", "http://parseable:8000", "admin", "admin"]
     networks:
-      - parseable
+      - parseable-internal
     depends_on:
       - parseable
     deploy:
       restart_policy:
         condition: on-failure
         delay: 10s
-        max_attempts: 10
-
-  quest-load:
-    image: parseable/quest:v0.1
-    command: ["load", "http://parseable:8000", "admin", "admin"]
-    networks:
-      - parseable
-    depends_on:
-      - quest-smoke
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 10s
-        max_attempts: 10
+        max_attempts: 3

@@ -2785,6 +2785,7 @@ dependencies = [
  "aws-smithy-async",
  "base64 0.21.0",
  "bytes",
+ "bzip2",
  "cargo_toml",
  "chrono",
  "chrono-humanize",
@@ -2828,6 +2829,7 @@ dependencies = [
  "ureq",
  "vergen",
  "xxhash-rust",
+ "xz2",
  "zip",
 ]
 

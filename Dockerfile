@@ -13,18 +13,22 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-FROM rust:1.67.0 as builder
+
+FROM rust:slim-bullseye as builder
+
+LABEL org.opencontainers.image.title="Parseable"
+LABEL maintainer="Parseable Team <hi@parseable.io>"
+LABEL org.opencontainers.image.vendor="Cloudnatively Pvt Ltd"
+LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 WORKDIR /parseable
 
 COPY . .
-
 RUN cargo build --release
- 
-FROM gcr.io/distroless/cc:latest
+
+FROM gcr.io/distroless/cc-debian11:nonroot
 
 WORKDIR /parseable
+COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
 
-COPY --from=builder /parseable/target/release/parseable /usr/local/bin/parseable
-
-CMD ["/usr/local/bin/parseable"]
+CMD ["parseable"]
