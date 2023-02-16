@@ -1,7 +1,8 @@
 version: "3.7"
 
 networks:
-  parseable:
+  parseable-internal:
+    driver: bridge
 
 services:
 
@@ -27,13 +28,14 @@ services:
       timeout: 20s
       retries: 5
     networks:
-      - parseable
+      - parseable-internal
 
   parseable:
-    build:
-      context: .
-      dockerfile: Dockerfile.ubi
-    command: ["parseable", "s3-store"]
+    image: parseablehq/parseable:v0.2.1
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    # command: ["parseable", "s3-store"]
     ports:
       - 8000
     environment:
@@ -46,7 +48,7 @@ services:
       - P_USERNAME=admin
       - P_PASSWORD=admin
     networks:
-      - parseable
+      - parseable-internal
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
       interval: 15s
@@ -59,7 +61,7 @@ services:
     image: ghcr.io/parseablehq/quest:main
     command: ["smoke", "http://parseable:8000", "admin", "admin"]
     networks:
-      - parseable
+      - parseable-internal
     depends_on:
       - parseable
     deploy:

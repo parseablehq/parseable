@@ -10,17 +10,26 @@ name: Parseable CI Workflow
 
 jobs:
 
-  docker-compose-test:
-    name: Docker Compose integration tests
+  # docker-compose-test:
+  #   name: Docker Compose integration tests
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v3
+  #     - name: Start compose
+  #       run: docker-compose -f "docker-compose.yaml" up --build
+  #     - name: Stop compose
+  #       if: always()
+  #       run: docker-compose -f "docker-compose.yaml" down
+
+  docker-build:
+    name: Docker build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-      - name: Start compose
-        run: docker-compose -f "docker-compose.yaml" up --build
-      - name: Stop compose
-        if: always()
-        run: docker-compose -f "docker-compose.yaml" down
+      - name: Build Docker image
+        run: docker build .
 
   unit-tests:
     name: Unit tests

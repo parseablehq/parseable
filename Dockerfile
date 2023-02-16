@@ -14,18 +14,18 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-FROM rust:1.67.0 as builder
+FROM rust:slim-buster as builder
+
+LABEL org.opencontainers.image.title="Parseable"
+LABEL maintainer="Parseable Team <hi@parseable.io>"
+LABEL org.opencontainers.image.vendor="Cloudnatively Pvt Ltd"
+LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 WORKDIR /parseable
 
 COPY . .
 
-RUN cargo build --release
- 
-FROM alpine:3.17
+RUN cargo build --release \ 
+    && mv /parseable/target/release/parseable /usr/bin/parseable
 
-WORKDIR /parseable
-
-COPY --from=builder /parseable/target/release/parseable /usr/local/bin/parseable
-
-CMD /usr/local/bin/parseable
+CMD ["parseable"]
