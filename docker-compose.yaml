@@ -32,7 +32,7 @@ services:
   parseable:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.ubi
     command: ["parseable", "s3-store"]
     ports:
       - 8000
