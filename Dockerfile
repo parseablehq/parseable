@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-FROM rust:slim-buster as builder
+FROM rust:slim-bullseye as builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
@@ -24,8 +24,11 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0"
 WORKDIR /parseable
 
 COPY . .
+RUN cargo build --release
 
-RUN cargo build --release \ 
-    && mv /parseable/target/release/parseable /usr/bin/parseable
+FROM gcr.io/distroless/cc-debian11:nonroot
+
+WORKDIR /parseable
+COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
 
 CMD ["parseable"]
