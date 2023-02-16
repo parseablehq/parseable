@@ -22,7 +22,7 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 WORKDIR /parseable
 
-RUN yum install -y rust-toolset
+RUN yum install -y rust-toolset-1.67
 
 COPY . .
 
