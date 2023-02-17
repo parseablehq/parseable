@@ -17,34 +17,42 @@
  */
 
 use actix_web::http::StatusCode;
-use actix_web::{HttpResponse, HttpResponseBuilder};
-use datafusion::arrow::json;
+use actix_web::{web, Responder};
+use datafusion::arrow::json::writer::record_batches_to_json_rows;
 use datafusion::arrow::record_batch::RecordBatch;
+use itertools::Itertools;
+use serde_json::Value;
 
 pub struct QueryResponse {
     pub code: StatusCode,
-    pub body: Vec<RecordBatch>,
+    pub records: Vec<RecordBatch>,
+    pub fields: Vec<String>,
 }
 
 impl QueryResponse {
-    pub fn to_http(&self) -> HttpResponse {
+    pub fn to_http(&self) -> impl Responder {
         log::info!("{}", "Returning query results");
-        let buf = Vec::new();
-        let mut writer = json::ArrayWriter::new(buf);
-        writer.write_batches(&self.body).unwrap();
-        writer.finish().unwrap();
-
-        HttpResponseBuilder::new(self.code)
-            .content_type("json")
-            .body(writer.into_inner())
+        let mut json = record_batches_to_json_rows(&self.records).unwrap();
+        for map in &mut json {
+            for field in &self.fields {
+                if !map.contains_key(field) {
+                    map.insert(field.clone(), Value::Null);
+                }
+            }
+        }
+        let values = json.into_iter().map(|map| Value::Object(map)).collect_vec();
+        web::Json(values)
     }
 }
 
-impl From<Vec<RecordBatch>> for QueryResponse {
-    fn from(body: Vec<RecordBatch>) -> Self {
+impl From<(Vec<RecordBatch>, Vec<String>)> for QueryResponse {
+    fn from(body: (Vec<RecordBatch>, Vec<String>)) -> Self {
+        let (records, fields) = body;
+
         Self {
             code: StatusCode::OK,
-            body,
+            records,
+            fields,
         }
     }
 }

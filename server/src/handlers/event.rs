@@ -16,7 +16,7 @@
  *
  */
 
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use serde_json::Value;
 use std::time::Instant;
 
@@ -35,7 +35,10 @@ const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const SEPARATOR: char = '^';
 
-pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResponse, QueryError> {
+pub async fn query(
+    _req: HttpRequest,
+    json: web::Json<Value>,
+) -> Result<impl Responder, QueryError> {
     let time = Instant::now();
     let json = json.into_inner();
     let query = Query::parse(json)?;

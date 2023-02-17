@@ -88,7 +88,7 @@ impl Query {
     pub async fn execute(
         &self,
         storage: Arc<dyn ObjectStorage + Send>,
-    ) -> Result<Vec<RecordBatch>, ExecuteError> {
+    ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let dir = StorageDir::new(&self.stream_name);
         // take a look at local dir and figure out what local cache we could use for this query
         let staging_arrows = dir
@@ -128,8 +128,19 @@ impl Query {
         .map_err(ObjectStorageError::DataFusionError)?;
         // execute the query and collect results
         let df = ctx.sql(self.query.as_str()).await?;
+        // dataframe qualifies name by adding table name before columns. \
+        // For now this is just actual names
+        let fields = df
+            .schema()
+            .fields()
+            .into_iter()
+            .map(|f| f.name())
+            .cloned()
+            .collect_vec();
+
         let results = df.collect().await?;
-        Ok(results)
+
+        Ok((results, fields))
     }
 }
 
