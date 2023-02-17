@@ -16,7 +16,7 @@
  *
  */
 
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use serde_json::Value;
 use std::time::Instant;
 
@@ -33,17 +33,28 @@ use self::error::{PostError, QueryError};
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
+const FILL_NULL_OPTION_KEY: &str = "fill_null";
 const SEPARATOR: char = '^';
 
-pub async fn query(_req: HttpRequest, json: web::Json<Value>) -> Result<HttpResponse, QueryError> {
+pub async fn query(
+    _req: HttpRequest,
+    json: web::Json<Value>,
+) -> Result<impl Responder, QueryError> {
     let time = Instant::now();
     let json = json.into_inner();
+
+    let fill_null = json
+        .as_object()
+        .and_then(|map| map.get(FILL_NULL_OPTION_KEY))
+        .and_then(|value| value.as_bool())
+        .unwrap_or_default();
+
     let query = Query::parse(json)?;
 
     let storage = CONFIG.storage().get_object_store();
     let query_result = query.execute(storage).await;
     let query_result = query_result
-        .map(Into::<QueryResponse>::into)
+        .map(|(records, fields)| QueryResponse::new(records, fields, fill_null))
         .map(|response| response.to_http())
         .map_err(|e| e.into());
 
