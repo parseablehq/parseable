@@ -40,7 +40,7 @@ impl QueryResponse {
                 }
             }
         }
-        let values = json.into_iter().map(|map| Value::Object(map)).collect_vec();
+        let values = json.into_iter().map(Value::Object).collect_vec();
         web::Json(values)
     }
 }

@@ -133,7 +133,7 @@ impl Query {
         let fields = df
             .schema()
             .fields()
-            .into_iter()
+            .iter()
             .map(|f| f.name())
             .cloned()
             .collect_vec();
