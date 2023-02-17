@@ -33,7 +33,7 @@ use self::error::{PostError, QueryError};
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
-const FILL_NULL_OPTION_KEY: &str = "fill_null";
+const FILL_NULL_OPTION_KEY: &str = "send_null";
 const SEPARATOR: char = '^';
 
 pub async fn query(
