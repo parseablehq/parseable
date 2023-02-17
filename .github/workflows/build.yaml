@@ -8,6 +8,10 @@ on:
 
 name: Parseable CI Workflow
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
 
   # docker-compose-test:
@@ -32,6 +36,7 @@ jobs:
   #       run: docker build .
 
   build-and-push-image:
+    name: Build and push Docker image to GitHub Container Registry
     runs-on: ubuntu-latest
     permissions:
       contents: read
