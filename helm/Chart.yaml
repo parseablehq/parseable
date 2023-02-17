@@ -2,5 +2,5 @@ apiVersion: v2
 name: parseable
 description: Helm chart for Parseable Server
 type: application
-version: 0.2.1
-AppVersion: "v0.2.1"
+version: 0.2.2
+AppVersion: "v0.2.2"

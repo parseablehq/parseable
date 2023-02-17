@@ -1,0 +1,22 @@
+{{- if .Values.parseable.persistence.staging.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "parseable.fullname" . }}-staging-pvc
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.parseable.persistence.staging.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.parseable.persistence.staging.size | quote }}
+  {{- if .Values.parseable.persistence.storageClass }}
+  storageClassName: "{{ .Values.parseable.persistence.storageClass }}"
+  {{- else }}
+  storageClassName: ""
+  {{- end }}
+  {{- if .Values.parseable.persistence.VolumeName }}
+  volumeName: "{{ .Values.parseable.persistence.VolumeName }}"
+  {{- end }}
+{{- end }}

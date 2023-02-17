@@ -64,10 +64,22 @@ spec:
           - mountPath: "/parseable/staging"
             name: stage-volume
       volumes:
-      - name: data-volume
-        emptyDir: {}
+      {{- if .Values.parseable.persistence.staging.enabled }}
+      - name: stage-volume
+        persistentVolumeClaim:
+          claimName: {{ include "parseable.fullname" . }}-staging-pvc
+      {{- else }}
       - name: stage-volume
         emptyDir: {}
+      {{- end }}
+      {{- if .Values.parseable.persistence.data.enabled }}
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: {{ include "parseable.fullname" . }}-data-pvc
+      {{- else }}
+      - name: data-volume
+        emptyDir: {}
+      {{- end }}
       {{- with .Values.parseable.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
