@@ -1,0 +1,27 @@
+name: Integration tests
+
+on:
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'helm/**'
+      - 'assets/**'
+      - '**.md'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+
+  docker-compose-test:
+    name: Docker Compose integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Start compose
+        run: docker-compose up --build --exit-code-from quest quest
+      - name: Stop compose
+        if: always()
+        run: docker-compose down
