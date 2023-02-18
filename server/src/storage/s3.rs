@@ -137,6 +137,7 @@ impl ObjectStorageProvider for S3Config {
         let config = aws_sdk_s3::Config::builder()
             .region(region)
             .endpoint_url(uri)
+            .force_path_style(true)
             .credentials_provider(creds)
             .retry_config(RetryConfig::standard().with_max_attempts(5))
             .sleep_impl(default_async_sleep().expect("sleep impl is provided for tokio rt"))
