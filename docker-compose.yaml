@@ -30,7 +30,6 @@ services:
       - parseable-internal
 
   parseable:
-    # image: parseable/parseable:v0.2.2-stage
     build:
       context: .
       dockerfile: Dockerfile
@@ -67,4 +66,4 @@ services:
       restart_policy:
         condition: on-failure
         delay: 10s
-        max_attempts: 3
+        max_attempts: 1

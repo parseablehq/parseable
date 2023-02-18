@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # build stage
-FROM rust:1.67.0-bullseye as build
+FROM rust:1.67.0-bullseye as builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
@@ -22,22 +22,13 @@ LABEL org.opencontainers.image.vendor="Cloudnatively Pvt Ltd"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 WORKDIR /parseable
-
 COPY . .
 RUN cargo build --release
 
-RUN mkdir -p /app/lib
-RUN cp -LR $(ldd /parseable/target/release/parseable | grep "=>" | cut -d ' ' -f 3) /app/lib
-
-# run stage
+# final stage
 FROM gcr.io/distroless/cc-debian11:nonroot
 
-ENV LD_LIBRARY_PATH=/app/lib
-
 WORKDIR /parseable
-
-COPY --from=build   /app/lib /app/lib
-COPY --from=build   /lib64/ld-linux-x86-64.so.2 /app/lib/ld-linux-x86-64.so.2
-COPY --from=build   /parseable/target/release/parseable /usr/bin/parseable
+COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
 
 CMD ["parseable"]
