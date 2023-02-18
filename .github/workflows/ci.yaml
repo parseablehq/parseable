@@ -1,4 +1,4 @@
-name: Parseable CI Workflow
+name: Linter
 
 on:
   pull_request:

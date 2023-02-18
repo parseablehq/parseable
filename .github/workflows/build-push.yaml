@@ -1,4 +1,4 @@
-name: Parseable Docker build and push
+name: Integration tests
 
 on:
   pull_request:
