@@ -43,8 +43,8 @@ services:
       - P_S3_REGION=us-east-1
       - P_S3_BUCKET=parseable
       - P_STAGING_DIR=/tmp/data
-      - P_USERNAME=admin
-      - P_PASSWORD=admin
+      - P_USERNAME=parseableadmin
+      - P_PASSWORD=parseableadmin
     networks:
       - parseable-internal
     healthcheck:
@@ -57,7 +57,7 @@ services:
 
   quest:
     image: ghcr.io/parseablehq/quest:main
-    command: ["smoke", "http://parseable:8000", "admin", "admin"]
+    command: ["smoke", "http://parseable:8000", "parseableadmin", "parseableadmin"]
     networks:
       - parseable-internal
     depends_on:
@@ -66,4 +66,4 @@ services:
       restart_policy:
         condition: on-failure
         delay: 10s
-        max_attempts: 1
+        max_attempts: 3
