@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-FROM rust:slim-bullseye as builder
+FROM rust:slim-bullseye as build
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
@@ -26,9 +26,17 @@ WORKDIR /parseable
 COPY . .
 RUN cargo build --release
 
+RUN mkdir -p /app/lib && \
+    cp -LR $(ldd /parseable/target/release/router | grep "=>" | cut -d ' ' -f 3) /app/lib
+
 FROM gcr.io/distroless/cc-debian11:nonroot
 
 WORKDIR /parseable
-COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
 
+COPY --from=build   /app/lib /app/lib
+COPY --from=build   /lib64/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
+COPY --from=build   /app/target/release/router /app/router
+COPY --from=build   /parseable/target/release/parseable /usr/bin/parseable
+
+ENV LD_LIBRARY_PATH=/app/lib
 CMD ["parseable"]
