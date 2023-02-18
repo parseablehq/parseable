@@ -39,6 +39,4 @@ COPY --from=build   /app/lib /app/lib
 COPY --from=build   /lib64/ld-linux-x86-64.so.2 /app/lib/ld-linux-x86-64.so.2
 COPY --from=build   /parseable/target/release/parseable /usr/bin/parseable
 
-RUN ls -la /app/lib
-
 CMD ["parseable"]
