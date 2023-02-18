@@ -45,6 +45,7 @@ services:
       - P_STAGING_DIR=/tmp/data
       - P_USERNAME=parseableadmin
       - P_PASSWORD=parseableadmin
+      - P_CHECK_UPDATE=false
     networks:
       - parseable-internal
     healthcheck:
