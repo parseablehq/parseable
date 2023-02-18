@@ -5,7 +5,6 @@ networks:
     driver: bridge
 
 services:
-
   minio:
     image: minio/minio:RELEASE.2023-02-10T18-48-39Z
     entrypoint:
@@ -31,11 +30,10 @@ services:
       - parseable-internal
 
   parseable:
-    image: parseablehq/parseable:v0.2.1
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
-    # command: ["parseable", "s3-store"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["parseable", "s3-store"]
     ports:
       - 8000
     environment:
@@ -45,8 +43,9 @@ services:
       - P_S3_REGION=us-east-1
       - P_S3_BUCKET=parseable
       - P_STAGING_DIR=/tmp/data
-      - P_USERNAME=admin
-      - P_PASSWORD=admin
+      - P_USERNAME=parseableadmin
+      - P_PASSWORD=parseableadmin
+      - P_CHECK_UPDATE=false
     networks:
       - parseable-internal
     healthcheck:
@@ -59,7 +58,7 @@ services:
 
   quest:
     image: ghcr.io/parseablehq/quest:main
-    command: ["smoke", "http://parseable:8000", "admin", "admin"]
+    command: ["smoke", "http://parseable:8000", "parseableadmin", "parseableadmin"]
     networks:
       - parseable-internal
     depends_on:
