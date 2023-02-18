@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-
+# build stage
 FROM rust:1.67.0-bullseye as build
 
 LABEL org.opencontainers.image.title="Parseable"
@@ -28,9 +28,10 @@ RUN cargo build --release
 
 RUN mkdir -p /app/lib
 RUN cp -LR $(ldd /parseable/target/release/parseable | grep "=>" | cut -d ' ' -f 3) /app/lib
-RUN ls -la /app/lib
 
+# run stage
 FROM gcr.io/distroless/cc-debian11:nonroot
+
 ENV LD_LIBRARY_PATH=/app/lib
 
 WORKDIR /parseable
