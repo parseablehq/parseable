@@ -1,3 +1,5 @@
+name: Parseable CI Workflow
+
 on:
   pull_request:
     paths-ignore:
@@ -6,30 +8,11 @@ on:
       - 'assets/**'
       - '**.md'
 
-name: Parseable CI Workflow
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-
-  # docker-compose-test:
-  #   name: Docker Compose integration tests
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v3
-  #     - name: Start compose
-  #       run: docker-compose -f "docker-compose.yaml" up --build
-  #     - name: Stop compose
-  #       if: always()
-  #       run: docker-compose -f "docker-compose.yaml" down
-
-  docker-build:
-    name: Docker build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Build Docker image
-        run: docker build .
 
   unit-tests:
     name: Unit tests
