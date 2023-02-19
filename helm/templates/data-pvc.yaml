@@ -11,12 +11,9 @@ spec:
   resources:
     requests:
       storage: {{ .Values.parseable.persistence.data.size | quote }}
-  {{- if .Values.parseable.persistence.storageClass }}
+  {{- if .Values.parseable.persistence.data.storageClass }}
   storageClassName: "{{ .Values.parseable.persistence.storageClass }}"
   {{- else }}
   storageClassName: ""
-  {{- end }}
-  {{- if .Values.parseable.persistence.VolumeName }}
-  volumeName: "{{ .Values.parseable.persistence.VolumeName }}"
   {{- end }}
 {{- end }}
