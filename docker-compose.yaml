@@ -27,10 +27,9 @@ services:
       - parseable-internal
 
   parseable:
-    image: ghcr.io/parseablehq/parseable:main
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile
     command: ["parseable", "s3-store"]
     ports:
       - 8000
