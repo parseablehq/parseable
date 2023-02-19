@@ -8,10 +8,6 @@ on:
       - 'assets/**'
       - '**.md'
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-
 jobs:
 
   docker-compose-test:
