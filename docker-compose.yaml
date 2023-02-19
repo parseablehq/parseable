@@ -2,7 +2,6 @@ version: "3.7"
 
 networks:
   parseable-internal:
-    driver: bridge
 
 services:
   minio:
@@ -11,16 +10,14 @@ services:
       - sh
       - -euc
       - |
-        mkdir -p /data/parseable && \
-        minio server /data
+        mkdir -p /tmp/minio/parseable && \
+        minio server /tmp/minio
     environment:
       - MINIO_ROOT_USER=parseable
       - MINIO_ROOT_PASSWORD=supersecret
       - MINIO_UPDATE=off
     ports:
       - 9000
-    volumes:
-      - /tmp/data/minio:/data
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
       interval: 15s
