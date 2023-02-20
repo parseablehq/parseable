@@ -13,7 +13,7 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: |
-            parseable/collector
+            parseable/parseable
           tags: |
             type=sha
       - name: Set up QEMU
