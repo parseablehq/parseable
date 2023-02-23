@@ -48,6 +48,7 @@ os_info = "3.6"
 hostname = "0.3"
 rand = "0.8"
 relative-path = { version = "1.7", features = ["serde"] }
+reqwest = { version = "0.11", default_features=false, features=["rustls", "blocking", "json", "hyper-rustls", "tokio-rustls"]}
 rustls = "0.20"
 rustls-pemfile = "1.0"
 rust-flatten-json = "0.2"
@@ -66,7 +67,6 @@ clokwerk = "0.4"
 actix-web-static-files = "4.0"
 static-files = "0.2"
 ulid = { version = "1.0", features = ["serde"] }
-ureq = { version = "2.6", features = ["json"] }
 hex = "0.4"
 itertools = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

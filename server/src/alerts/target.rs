@@ -17,80 +17,77 @@
  */
 
 use std::{
-    ops::RangeTo,
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use humantime_serde::re::humantime;
+use reqwest::blocking::ClientBuilder;
 use serde::{Deserialize, Serialize};
 
 use super::{AlertState, CallableTarget, Context};
 
 enum Retry {
-    Infinity,
-    Range(RangeTo<usize>),
+    Infinite,
+    Finite(usize),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "lowercase")]
 #[serde(try_from = "TargetVerifier")]
 pub struct Target {
     #[serde(flatten)]
     pub target: TargetType,
-    #[serde(flatten)]
-    pub timeout: Option<Timeout>,
+    #[serde(default, rename = "repeat")]
+    pub timeout: Timeout,
 }
 
 impl Target {
     pub fn call(&self, context: Context) {
-        if let Some(ref timeout) = self.timeout {
-            let resolves = context.alert_state;
-            let mut state = timeout.state.lock().unwrap();
+        let timeout = &self.timeout;
+        let resolves = context.alert_state;
+        let mut state = timeout.state.lock().unwrap();
 
-            match resolves {
-                AlertState::SetToFiring => {
-                    state.alert_state = AlertState::Firing;
-                    if !state.timed_out {
-                        // set state
-                        state.timed_out = true;
-                        state.awaiting_resolve = true;
-                        drop(state);
+        match resolves {
+            AlertState::SetToFiring => {
+                state.alert_state = AlertState::Firing;
+                if !state.timed_out {
+                    // set state
+                    state.timed_out = true;
+                    state.awaiting_resolve = true;
+                    drop(state);
 
-                        let retry = match self.target {
-                            TargetType::AlertManager(_) => Retry::Infinity,
-                            _ => Retry::Range(..10),
-                        };
+                    let retry = match timeout.times {
+                        0 => Retry::Infinite,
+                        end => Retry::Finite(end),
+                    };
 
-                        self.spawn_timeout_task(timeout, context.clone(), retry);
-                        call_target(self.target.clone(), context)
-                    }
+                    self.spawn_timeout_task(timeout, context.clone(), retry);
+                    call_target(self.target.clone(), context)
                 }
-                AlertState::Resolved => {
-                    state.alert_state = AlertState::Listening;
-                    if state.timed_out {
-                        // if in timeout and resolve came in, only process if it's the first one ( awaiting resolve )
-                        if state.awaiting_resolve {
-                            state.awaiting_resolve = false;
-                        } else {
-                            // no further resolve will be considered in timeout period
-                            return;
-                        }
-                    }
-
-                    call_target(self.target.clone(), context);
-                }
-                _ => unreachable!(),
             }
-        } else {
-            // Without timeout there is no alert state to consider other than the one returned on `resolves`
-            call_target(self.target.clone(), context);
+            AlertState::Resolved => {
+                state.alert_state = AlertState::Listening;
+                if state.timed_out {
+                    // if in timeout and resolve came in, only process if it's the first one ( awaiting resolve )
+                    if state.awaiting_resolve {
+                        state.awaiting_resolve = false;
+                    } else {
+                        // no further resolve will be considered in timeout period
+                        return;
+                    }
+                }
+
+                call_target(self.target.clone(), context);
+            }
+            _ => unreachable!(),
         }
     }
 
     fn spawn_timeout_task(&self, timeout: &Timeout, alert_context: Context, retry: Retry) {
         let state = Arc::clone(&timeout.state);
-        let timeout = timeout.timeout;
+        let timeout = timeout.interval;
         let target = self.target.clone();
 
         let sleep_and_check_if_call = move |timeout_state: Arc<Mutex<TimeoutState>>| {
@@ -110,14 +107,14 @@ impl Target {
 
         actix_web::rt::spawn(async move {
             match retry {
-                Retry::Infinity => loop {
+                Retry::Infinite => loop {
                     let should_call = sleep_and_check_if_call(Arc::clone(&state)).await;
                     if should_call {
                         call_target(target.clone(), alert_context.clone())
                     }
                 },
-                Retry::Range(range) => {
-                    for _ in 0..range.end {
+                Retry::Finite(times) => {
+                    for _ in 0..times {
                         let should_call = sleep_and_check_if_call(Arc::clone(&state)).await;
                         if should_call {
                             call_target(target.clone(), alert_context.clone())
@@ -129,8 +126,7 @@ impl Target {
                     state.lock().unwrap().timed_out = false;
                     let mut context = alert_context;
                     context.message = format!(
-                        "Triggering alert did not resolve itself after {} retries, This alert is paused until it resolves",
-                     range.end);
+                        "Triggering alert did not resolve itself after {times} retries, This alert is paused until it resolves");
                     // Send and exit this task.
                     call_target(target, context);
                 }
@@ -146,36 +142,52 @@ fn call_target(target: TargetType, context: Context) {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+pub struct RepeatVerifier {
+    interval: Option<String>,
+    times: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub struct TargetVerifier {
     #[serde(flatten)]
     pub target: TargetType,
-    #[serde(alias = "repeat")]
-    pub timeout: Option<String>,
+    #[serde(default)]
+    pub repeat: Option<RepeatVerifier>,
 }
 
 impl TryFrom<TargetVerifier> for Target {
-    type Error = humantime::DurationError;
+    type Error = String;
 
     fn try_from(value: TargetVerifier) -> Result<Self, Self::Error> {
-        let timeout = value
-            .timeout
-            .map(|ref dur| humantime::parse_duration(dur))
-            .transpose()?;
+        let mut timeout = Timeout::default();
+
+        if let Some(repeat_config) = value.repeat {
+            let interval = repeat_config
+                .interval
+                .map(|ref interval| humantime::parse_duration(interval))
+                .transpose()
+                .map_err(|err| err.to_string())?;
+
+            if let Some(interval) = interval {
+                timeout.interval = interval
+            }
+
+            if let Some(times) = repeat_config.times {
+                timeout.times = times
+            }
+        }
 
         Ok(Target {
             target: value.target,
-            timeout: timeout.map(|duration| Timeout {
-                timeout: duration,
-                state: Default::default(),
-            }),
+            timeout,
         })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[serde(tag = "type", content = "config")]
+#[serde(rename_all = "lowercase")]
+#[serde(tag = "type")]
 #[serde(deny_unknown_fields)]
 pub enum TargetType {
     Slack(SlackWebHook),
@@ -194,60 +206,69 @@ impl TargetType {
     }
 }
 
+fn default_client_builder() -> ClientBuilder {
+    ClientBuilder::new()
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlackWebHook {
-    url: String,
+    endpoint: String,
 }
 
 impl CallableTarget for SlackWebHook {
     fn call(&self, payload: &Context) {
+        let client = default_client_builder()
+            .build()
+            .expect("Client can be constructed on this system");
+
         let alert = match payload.alert_state {
-            AlertState::SetToFiring => ureq::json!({ "text": payload.default_alert_string() }),
-            AlertState::Resolved => ureq::json!({ "text": payload.default_resolved_string() }),
+            AlertState::SetToFiring => {
+                serde_json::json!({ "text": payload.default_alert_string() })
+            }
+            AlertState::Resolved => {
+                serde_json::json!({ "text": payload.default_resolved_string() })
+            }
             _ => unreachable!(),
         };
 
-        if let Err(e) = ureq::post(&self.url)
-            .set("Content-Type", "application/json")
-            .send_json(alert)
-        {
+        if let Err(e) = client.post(&self.endpoint).json(&alert).send() {
             log::error!("Couldn't make call to webhook, error: {}", e)
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum OtherWebHook {
-    #[serde(rename_all = "camelCase")]
-    ApiKey {
-        url: String,
-        api_key: String,
-    },
-    Simple {
-        url: String,
-    },
+#[serde(rename_all = "snake_case")]
+pub struct OtherWebHook {
+    endpoint: String,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(default)]
+    skip_tls_check: bool,
 }
 
 impl CallableTarget for OtherWebHook {
     fn call(&self, payload: &Context) {
+        let mut builder = default_client_builder();
+        if self.skip_tls_check {
+            builder = builder.danger_accept_invalid_certs(true)
+        }
+
+        let client = builder
+            .build()
+            .expect("Client can be constructed on this system");
+
         let alert = match payload.alert_state {
             AlertState::SetToFiring => payload.default_alert_string(),
             AlertState::Resolved => payload.default_resolved_string(),
             _ => unreachable!(),
         };
 
-        let res = match self {
-            OtherWebHook::Simple { url } => ureq::post(url)
-                .set("Content-Type", "text/plain; charset=iso-8859-1")
-                .send_string(&alert),
-            OtherWebHook::ApiKey { url, api_key } => ureq::post(url)
-                .set("Content-Type", "text/plain; charset=iso-8859-1")
-                .set("X-API-Key", api_key)
-                .send_string(&alert),
-        };
+        let request = client
+            .post(&self.endpoint)
+            .headers((&self.headers).try_into().expect("valid_headers"));
 
-        if let Err(e) = res {
+        if let Err(e) = request.body(alert).send() {
             log::error!("Couldn't make call to webhook, error: {}", e)
         }
     }
@@ -255,41 +276,40 @@ impl CallableTarget for OtherWebHook {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlertManager {
-    url: String,
+    endpoint: String,
+    #[serde(default)]
+    skip_tls_check: bool,
 }
 
 impl CallableTarget for AlertManager {
     fn call(&self, payload: &Context) {
-        let alert = match payload.alert_state {
-            AlertState::SetToFiring => ureq::json!([{
-                "labels": {
-                "status": "firing",
-                "alertname": payload.alert_name,
-                "streamname": payload.stream
-              },
-              "annotations": {
-                "message": payload.message,
-                "reason": payload.reason
-              }
-            }]),
-            AlertState::Resolved => ureq::json!([{
-              "labels": {
-                "status": "resolved",
-                "alertname": payload.alert_name,
-                "streamname": payload.stream
-              },
-              "annotations": {
-                "message": payload.message,
-                "reason": payload.reason
-              }
-            }]),
+        let mut builder = default_client_builder();
+        if self.skip_tls_check {
+            builder = builder.danger_accept_invalid_certs(true)
+        }
+        let client = builder
+            .build()
+            .expect("Client can be constructed on this system");
+
+        let mut alert = serde_json::json!([{
+          "labels": {
+            "alertname": payload.alert_name,
+            "stream": payload.stream,
+            },
+          "annotations": {
+            "message": payload.message,
+            "reason": payload.reason
+          }
+        }]);
+
+        // fill in status label accordingly
+        match payload.alert_state {
+            AlertState::SetToFiring => alert["labels"]["status"] = "firing".into(),
+            AlertState::Resolved => alert["labels"]["status"] = "resolved".into(),
             _ => unreachable!(),
         };
 
-        if let Err(e) = ureq::post(&self.url)
-            .set("Content-Type", "application/json")
-            .send_json(alert)
-        {
+        if let Err(e) = client.post(&self.endpoint).json(&alert).send() {
             log::error!("Couldn't make call to alertmanager, error: {}", e)
         }
     }
@@ -298,10 +318,20 @@ impl CallableTarget for AlertManager {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Timeout {
     #[serde(with = "humantime_serde")]
-    #[serde(rename = "repeat")]
-    pub timeout: Duration,
+    pub interval: Duration,
+    pub times: usize,
     #[serde(skip)]
     pub state: Arc<Mutex<TimeoutState>>,
+}
+
+impl Default for Timeout {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(200),
+            times: 5,
+            state: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]

@@ -66,16 +66,19 @@ fn user_agent(uid: &Ulid) -> String {
     )
 }
 
-pub fn get_latest(meta: &StorageMetadata) -> Result<LatestRelease, anyhow::Error> {
-    let agent = ureq::builder()
-        .user_agent(user_agent(&meta.deployment_id).as_str())
+pub async fn get_latest(meta: &StorageMetadata) -> Result<LatestRelease, anyhow::Error> {
+    let agent = reqwest::ClientBuilder::new()
+        .user_agent(user_agent(&meta.deployment_id))
         .timeout(Duration::from_secs(8))
-        .build();
+        .build()
+        .expect("client can be built on this system");
 
     let json: serde_json::Value = agent
         .get("https://download.parseable.io/latest-version")
-        .call()?
-        .into_json()?;
+        .send()
+        .await?
+        .json()
+        .await?;
 
     let version = json["tag_name"]
         .as_str()
