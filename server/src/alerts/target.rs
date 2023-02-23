@@ -28,7 +28,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{AlertState, CallableTarget, Context};
 
-enum Retry {
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[serde(untagged)]
+pub enum Retry {
     Infinite,
     Finite(usize),
 }
@@ -57,13 +60,7 @@ impl Target {
                     state.timed_out = true;
                     state.awaiting_resolve = true;
                     drop(state);
-
-                    let retry = match timeout.times {
-                        0 => Retry::Infinite,
-                        end => Retry::Finite(end),
-                    };
-
-                    self.spawn_timeout_task(timeout, context.clone(), retry);
+                    self.spawn_timeout_task(timeout, context.clone());
                     call_target(self.target.clone(), context)
                 }
             }
@@ -85,9 +82,10 @@ impl Target {
         }
     }
 
-    fn spawn_timeout_task(&self, timeout: &Timeout, alert_context: Context, retry: Retry) {
-        let state = Arc::clone(&timeout.state);
-        let timeout = timeout.interval;
+    fn spawn_timeout_task(&self, repeat: &Timeout, alert_context: Context) {
+        let state = Arc::clone(&repeat.state);
+        let retry = repeat.times;
+        let timeout = repeat.interval;
         let target = self.target.clone();
 
         let sleep_and_check_if_call = move |timeout_state: Arc<Mutex<TimeoutState>>| {
@@ -162,6 +160,11 @@ impl TryFrom<TargetVerifier> for Target {
     fn try_from(value: TargetVerifier) -> Result<Self, Self::Error> {
         let mut timeout = Timeout::default();
 
+        // Default is Infinite in case of alertmanager
+        if matches!(value.target, TargetType::AlertManager(_)) {
+            timeout.times = Retry::Infinite
+        }
+
         if let Some(repeat_config) = value.repeat {
             let interval = repeat_config
                 .interval
@@ -174,7 +177,7 @@ impl TryFrom<TargetVerifier> for Target {
             }
 
             if let Some(times) = repeat_config.times {
-                timeout.times = times
+                timeout.times = Retry::Finite(times)
             }
         }
 
@@ -319,7 +322,7 @@ impl CallableTarget for AlertManager {
 pub struct Timeout {
     #[serde(with = "humantime_serde")]
     pub interval: Duration,
-    pub times: usize,
+    pub times: Retry,
     #[serde(skip)]
     pub state: Arc<Mutex<TimeoutState>>,
 }
@@ -328,7 +331,7 @@ impl Default for Timeout {
     fn default() -> Self {
         Self {
             interval: Duration::from_secs(200),
-            times: 5,
+            times: Retry::Finite(5),
             state: Arc::<Mutex<TimeoutState>>::default(),
         }
     }
