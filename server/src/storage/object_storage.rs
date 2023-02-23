@@ -181,7 +181,14 @@ pub trait ObjectStorage: Sync + 'static {
 
     async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError> {
         match self.get_object(&alert_json_path(stream_name)).await {
-            Ok(alerts) => Ok(serde_json::from_slice(&alerts).unwrap_or_default()),
+            Ok(alerts) => {
+                if let Ok(alerts) = serde_json::from_slice(&alerts) {
+                    Ok(alerts)
+                } else {
+                    log::error!("Incompatible alerts found for stream - {stream_name}. Refer https://www.parseable.io/docs/alerts for correct alert config.");
+                    Ok(Alerts::default())
+                }
+            }
             Err(e) => match e {
                 ObjectStorageError::NoSuchKey(_) => Ok(Alerts::default()),
                 e => Err(e),
