@@ -163,10 +163,14 @@ pub struct ConsecutiveNumericRule {
 
 impl ConsecutiveNumericRule {
     fn resolves(&self, event: &serde_json::Value) -> AlertState {
-        if self.base_rule.resolves(event) {
-            self.state.update_and_fetch_state()
+        if let Some(resolved) = self.base_rule.resolves(event) {
+            if resolved {
+                self.state.update_and_fetch_state()
+            } else {
+                self.state.fetch_state()
+            }
         } else {
-            self.state.fetch_state()
+            self.state.existing_state()
         }
     }
 }
@@ -182,10 +186,14 @@ pub struct ConsecutiveStringRule {
 
 impl ConsecutiveStringRule {
     fn resolves(&self, event: &serde_json::Value) -> AlertState {
-        if self.base_rule.resolves(event) {
-            self.state.update_and_fetch_state()
+        if let Some(resolved) = self.base_rule.resolves(event) {
+            if resolved {
+                self.state.update_and_fetch_state()
+            } else {
+                self.state.fetch_state()
+            }
         } else {
-            self.state.fetch_state()
+            self.state.existing_state()
         }
     }
 }
@@ -209,6 +217,15 @@ impl ConsecutiveRepeatState {
 
     fn fetch_state(&self) -> AlertState {
         self._fetch_state(false)
+    }
+
+    fn existing_state(&self) -> AlertState {
+        let repeated = self.repeated.load(Ordering::Acquire);
+        if repeated >= self.repeats {
+            AlertState::Firing
+        } else {
+            AlertState::Listening
+        }
     }
 
     fn _fetch_state(&self, update: bool) -> AlertState {
@@ -290,13 +307,13 @@ pub mod base {
     }
 
     impl NumericRule {
-        pub fn resolves(&self, event: &serde_json::Value) -> bool {
-            let number = match event.get(&self.column).expect("column exists") {
+        pub fn resolves(&self, event: &serde_json::Value) -> Option<bool> {
+            let number = match event.get(&self.column)? {
                 serde_json::Value::Number(number) => number,
                 _ => unreachable!("right rule is set for right column type"),
             };
 
-            match self.operator {
+            let res = match self.operator {
                 NumericOperator::EqualTo => number == &self.value,
                 NumericOperator::NotEqualTo => number != &self.value,
                 NumericOperator::GreaterThan => {
@@ -311,7 +328,9 @@ pub mod base {
                 NumericOperator::LessThanEquals => {
                     number.as_f64().unwrap() <= self.value.as_f64().unwrap()
                 }
-            }
+            };
+
+            Some(res)
         }
     }
 
@@ -326,13 +345,13 @@ pub mod base {
     }
 
     impl StringRule {
-        pub fn resolves(&self, event: &serde_json::Value) -> bool {
-            let string = match event.get(&self.column).expect("column exists") {
+        pub fn resolves(&self, event: &serde_json::Value) -> Option<bool> {
+            let string = match event.get(&self.column)? {
                 serde_json::Value::String(s) => s,
                 _ => unreachable!("right rule is set for right column type"),
             };
 
-            if self.ignore_case.unwrap_or_default() {
+            let res = if self.ignore_case.unwrap_or_default() {
                 match self.operator {
                     StringOperator::Exact => string.eq_ignore_ascii_case(&self.value),
                     StringOperator::NotExact => !string.eq_ignore_ascii_case(&self.value),
@@ -350,7 +369,9 @@ pub mod base {
                     StringOperator::Contains => string.contains(&self.value),
                     StringOperator::NotContains => !string.contains(&self.value),
                 }
-            }
+            };
+
+            Some(res)
         }
     }
 

@@ -17,6 +17,7 @@
  */
 
 use std::{
+    ops::RangeTo,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -25,6 +26,11 @@ use humantime_serde::re::humantime;
 use serde::{Deserialize, Serialize};
 
 use super::{AlertState, CallableTarget, Context};
+
+enum Retry {
+    Infinity,
+    Range(RangeTo<usize>),
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,14 +51,18 @@ impl Target {
             match resolves {
                 AlertState::SetToFiring => {
                     state.alert_state = AlertState::Firing;
-
                     if !state.timed_out {
                         // set state
                         state.timed_out = true;
                         state.awaiting_resolve = true;
                         drop(state);
 
-                        self.spawn_timeout_task(timeout, context.clone());
+                        let retry = match self.target {
+                            TargetType::AlertManager(_) => Retry::Infinity,
+                            _ => Retry::Range(..10),
+                        };
+
+                        self.spawn_timeout_task(timeout, context.clone(), retry);
                         call_target(self.target.clone(), context)
                     }
                 }
@@ -78,38 +88,53 @@ impl Target {
         }
     }
 
-    fn spawn_timeout_task(&self, timeout: &Timeout, alert_context: Context) {
+    fn spawn_timeout_task(&self, timeout: &Timeout, alert_context: Context, retry: Retry) {
         let state = Arc::clone(&timeout.state);
         let timeout = timeout.timeout;
         let target = self.target.clone();
 
-        actix_web::rt::spawn(async move {
-            const RETRIES: usize = 10;
-            // sleep for timeout period
-            for _ in 0..RETRIES {
+        let sleep_and_check_if_call = move |timeout_state: Arc<Mutex<TimeoutState>>| {
+            async move {
                 tokio::time::sleep(timeout).await;
-                let mut state = state.lock().unwrap();
+                let mut state = timeout_state.lock().unwrap();
                 if state.alert_state == AlertState::Firing {
                     // it is still firing .. sleep more and come back
                     state.awaiting_resolve = true;
-
-                    call_target(target.clone(), alert_context.clone())
+                    true
                 } else {
                     state.timed_out = false;
-                    return;
+                    false
                 }
             }
+        };
 
-            // fallback for if this task only observed FIRING on all RETRIES
-            // Stream might be dead and sending too many alerts is not great
-            // Send and alert stating that this alert will only work once it has seen a RESOLVE
-            state.lock().unwrap().timed_out = false;
-            let mut context = alert_context;
-            context.message = format!(
-                "Triggering alert did not resolve itself after {RETRIES} retries, This alert is paused until it resolves",
-            );
-            // Send and exit this task.
-            call_target(target, context);
+        actix_web::rt::spawn(async move {
+            match retry {
+                Retry::Infinity => loop {
+                    let should_call = sleep_and_check_if_call(Arc::clone(&state)).await;
+                    if should_call {
+                        call_target(target.clone(), alert_context.clone())
+                    }
+                },
+                Retry::Range(range) => {
+                    for _ in 0..range.end {
+                        let should_call = sleep_and_check_if_call(Arc::clone(&state)).await;
+                        if should_call {
+                            call_target(target.clone(), alert_context.clone())
+                        }
+                    }
+                    // fallback for if this task only observed FIRING on all RETRIES
+                    // Stream might be dead and sending too many alerts is not great
+                    // Send and alert stating that this alert will only work once it has seen a RESOLVE
+                    state.lock().unwrap().timed_out = false;
+                    let mut context = alert_context;
+                    context.message = format!(
+                        "Triggering alert did not resolve itself after {} retries, This alert is paused until it resolves",
+                     range.end);
+                    // Send and exit this task.
+                    call_target(target, context);
+                }
+            }
         });
     }
 }
@@ -156,6 +181,7 @@ pub enum TargetType {
     Slack(SlackWebHook),
     #[serde(rename = "webhook")]
     Other(OtherWebHook),
+    AlertManager(AlertManager),
 }
 
 impl TargetType {
@@ -163,6 +189,7 @@ impl TargetType {
         match self {
             TargetType::Slack(target) => target.call(payload),
             TargetType::Other(target) => target.call(payload),
+            TargetType::AlertManager(target) => target.call(payload),
         }
     }
 }
@@ -222,6 +249,48 @@ impl CallableTarget for OtherWebHook {
 
         if let Err(e) = res {
             log::error!("Couldn't make call to webhook, error: {}", e)
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlertManager {
+    url: String,
+}
+
+impl CallableTarget for AlertManager {
+    fn call(&self, payload: &Context) {
+        let alert = match payload.alert_state {
+            AlertState::SetToFiring => ureq::json!([{
+                "labels": {
+                "status": "firing",
+                "alertname": payload.alert_name,
+                "streamname": payload.stream
+              },
+              "annotations": {
+                "message": payload.message,
+                "reason": payload.reason
+              }
+            }]),
+            AlertState::Resolved => ureq::json!([{
+              "labels": {
+                "status": "resolved",
+                "alertname": payload.alert_name,
+                "streamname": payload.stream
+              },
+              "annotations": {
+                "message": payload.message,
+                "reason": payload.reason
+              }
+            }]),
+            _ => unreachable!(),
+        };
+
+        if let Err(e) = ureq::post(&self.url)
+            .set("Content-Type", "application/json")
+            .send_json(alert)
+        {
+            log::error!("Couldn't make call to alertmanager, error: {}", e)
         }
     }
 }
