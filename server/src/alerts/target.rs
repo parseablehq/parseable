@@ -329,7 +329,7 @@ impl Default for Timeout {
         Self {
             interval: Duration::from_secs(200),
             times: 5,
-            state: Default::default(),
+            state: Arc::<Mutex<TimeoutState>>::default(),
         }
     }
 }
