@@ -23,6 +23,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use chrono::Utc;
 use humantime_serde::re::humantime;
 use reqwest::ClientBuilder;
 use serde::{Deserialize, Serialize};
@@ -310,7 +311,13 @@ impl CallableTarget for AlertManager {
         // fill in status label accordingly
         match payload.alert_state {
             AlertState::SetToFiring => alert[0]["labels"]["status"] = "firing".into(),
-            AlertState::Resolved => alert[0]["labels"]["status"] = "resolved".into(),
+            AlertState::Resolved => {
+                let alert = &mut alert[0];
+                alert["labels"]["status"] = "resolved".into();
+                alert["endsAt"] = Utc::now()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                    .into();
+            }
             _ => unreachable!(),
         };
 
