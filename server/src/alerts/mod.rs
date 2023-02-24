@@ -16,6 +16,7 @@
  *
  */
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -77,9 +78,9 @@ impl Alert {
         )
     }
 }
-
+#[async_trait]
 pub trait CallableTarget {
-    fn call(&self, payload: &Context);
+    async fn call(&self, payload: &Context);
 }
 
 #[derive(Debug, Clone)]

@@ -22,8 +22,9 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use humantime_serde::re::humantime;
-use reqwest::blocking::ClientBuilder;
+use reqwest::ClientBuilder;
 use serde::{Deserialize, Serialize};
 
 use super::{AlertState, CallableTarget, Context};
@@ -134,9 +135,7 @@ impl Target {
 }
 
 fn call_target(target: TargetType, context: Context) {
-    actix_web::rt::spawn(async move {
-        target.call(&context);
-    });
+    actix_web::rt::spawn(async move { target.call(&context).await });
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,11 +199,11 @@ pub enum TargetType {
 }
 
 impl TargetType {
-    pub fn call(&self, payload: &Context) {
+    pub async fn call(&self, payload: &Context) {
         match self {
-            TargetType::Slack(target) => target.call(payload),
-            TargetType::Other(target) => target.call(payload),
-            TargetType::AlertManager(target) => target.call(payload),
+            TargetType::Slack(target) => target.call(payload).await,
+            TargetType::Other(target) => target.call(payload).await,
+            TargetType::AlertManager(target) => target.call(payload).await,
         }
     }
 }
@@ -218,8 +217,9 @@ pub struct SlackWebHook {
     endpoint: String,
 }
 
+#[async_trait]
 impl CallableTarget for SlackWebHook {
-    fn call(&self, payload: &Context) {
+    async fn call(&self, payload: &Context) {
         let client = default_client_builder()
             .build()
             .expect("Client can be constructed on this system");
@@ -234,7 +234,7 @@ impl CallableTarget for SlackWebHook {
             _ => unreachable!(),
         };
 
-        if let Err(e) = client.post(&self.endpoint).json(&alert).send() {
+        if let Err(e) = client.post(&self.endpoint).json(&alert).send().await {
             log::error!("Couldn't make call to webhook, error: {}", e)
         }
     }
@@ -250,8 +250,9 @@ pub struct OtherWebHook {
     skip_tls_check: bool,
 }
 
+#[async_trait]
 impl CallableTarget for OtherWebHook {
-    fn call(&self, payload: &Context) {
+    async fn call(&self, payload: &Context) {
         let mut builder = default_client_builder();
         if self.skip_tls_check {
             builder = builder.danger_accept_invalid_certs(true)
@@ -271,7 +272,7 @@ impl CallableTarget for OtherWebHook {
             .post(&self.endpoint)
             .headers((&self.headers).try_into().expect("valid_headers"));
 
-        if let Err(e) = request.body(alert).send() {
+        if let Err(e) = request.body(alert).send().await {
             log::error!("Couldn't make call to webhook, error: {}", e)
         }
     }
@@ -284,8 +285,9 @@ pub struct AlertManager {
     skip_tls_check: bool,
 }
 
+#[async_trait]
 impl CallableTarget for AlertManager {
-    fn call(&self, payload: &Context) {
+    async fn call(&self, payload: &Context) {
         let mut builder = default_client_builder();
         if self.skip_tls_check {
             builder = builder.danger_accept_invalid_certs(true)
@@ -307,12 +309,12 @@ impl CallableTarget for AlertManager {
 
         // fill in status label accordingly
         match payload.alert_state {
-            AlertState::SetToFiring => alert["labels"]["status"] = "firing".into(),
-            AlertState::Resolved => alert["labels"]["status"] = "resolved".into(),
+            AlertState::SetToFiring => alert[0]["labels"]["status"] = "firing".into(),
+            AlertState::Resolved => alert[0]["labels"]["status"] = "resolved".into(),
             _ => unreachable!(),
         };
 
-        if let Err(e) = client.post(&self.endpoint).json(&alert).send() {
+        if let Err(e) = client.post(&self.endpoint).json(&alert).send().await {
             log::error!("Couldn't make call to alertmanager, error: {}", e)
         }
     }
