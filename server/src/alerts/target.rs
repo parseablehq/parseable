@@ -23,7 +23,9 @@ use std::{
 };
 
 use async_trait::async_trait;
+use base64::Engine;
 use chrono::Utc;
+use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use humantime_serde::re::humantime;
 use reqwest::ClientBuilder;
 use serde::{Deserialize, Serialize};
@@ -284,15 +286,29 @@ pub struct AlertManager {
     endpoint: String,
     #[serde(default)]
     skip_tls_check: bool,
+    #[serde(flatten)]
+    auth: Option<Auth>,
 }
 
 #[async_trait]
 impl CallableTarget for AlertManager {
     async fn call(&self, payload: &Context) {
         let mut builder = default_client_builder();
+
         if self.skip_tls_check {
             builder = builder.danger_accept_invalid_certs(true)
         }
+
+        if let Some(Auth { username, password }) = &self.auth {
+            let basic_auth_value = "Basic ".to_string()
+                + &base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
+            let headers = HeaderMap::from_iter([(
+                AUTHORIZATION,
+                HeaderValue::try_from(basic_auth_value).expect("valid value"),
+            )]);
+            builder = builder.default_headers(headers)
+        }
+
         let client = builder
             .build()
             .expect("Client can be constructed on this system");
@@ -351,4 +367,10 @@ pub struct TimeoutState {
     pub alert_state: AlertState,
     pub timed_out: bool,
     pub awaiting_resolve: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Auth {
+    username: String,
+    password: String,
 }
