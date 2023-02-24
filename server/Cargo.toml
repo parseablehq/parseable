@@ -48,7 +48,7 @@ os_info = "3.6"
 hostname = "0.3"
 rand = "0.8"
 relative-path = { version = "1.7", features = ["serde"] }
-reqwest = { version = "0.11", default_features=false, features=["rustls", "blocking", "json", "hyper-rustls", "tokio-rustls"]}
+reqwest = { version = "0.11", default_features=false, features=["rustls", "json", "hyper-rustls", "tokio-rustls"]}
 rustls = "0.20"
 rustls-pemfile = "1.0"
 rust-flatten-json = "0.2"
