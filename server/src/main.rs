@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.validate_staging()?;
     CONFIG.validate_storage(&*storage).await;
     let metadata = storage::resolve_parseable_metadata().await?;
-    banner::print(&CONFIG, metadata);
+    banner::print(&CONFIG, metadata).await;
     let prometheus = metrics::build_metrics_handler();
     CONFIG.storage().register_store_metrics(&prometheus);
 

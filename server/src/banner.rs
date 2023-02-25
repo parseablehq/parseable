@@ -22,12 +22,12 @@ use crossterm::style::Stylize;
 use crate::utils::uid::Uid;
 use crate::{option::Config, storage::StorageMetadata};
 
-pub fn print(config: &Config, meta: StorageMetadata) {
+pub async fn print(config: &Config, meta: StorageMetadata) {
     print_ascii_art();
     let scheme = config.parseable.get_scheme();
     status_info(config, &scheme, meta.deployment_id);
     storage_info(config);
-    about::print(config, meta);
+    about::print(config, meta).await;
     println!();
 }
 
@@ -149,11 +149,11 @@ pub mod about {
         eprint!("{}", fmt_latest_version.red());
     }
 
-    pub fn print(config: &Config, meta: StorageMetadata) {
+    pub async fn print(config: &Config, meta: StorageMetadata) {
         // print current version
         let current = current();
         let latest_release = if config.parseable.check_update {
-            update::get_latest(&meta).ok()
+            update::get_latest(&meta).await.ok()
         } else {
             None
         };

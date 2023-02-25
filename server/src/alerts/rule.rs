@@ -113,7 +113,6 @@ impl ColumnRule {
             }) => format!(
                 "{} column was {} {}, {} times",
                 column,
-                value,
                 match operator {
                     NumericOperator::EqualTo => "equal to",
                     NumericOperator::NotEqualTo => " not equal to",
@@ -122,6 +121,7 @@ impl ColumnRule {
                     NumericOperator::LessThan => "less than",
                     NumericOperator::LessThanEquals => "less than or equal to",
                 },
+                value,
                 repeats
             ),
             Self::ConsecutiveString(ConsecutiveStringRule {
@@ -137,13 +137,13 @@ impl ColumnRule {
             }) => format!(
                 "{} column {} {}, {} times",
                 column,
-                value,
                 match operator {
                     StringOperator::Exact => "was equal to",
                     StringOperator::NotExact => "was not equal to",
                     StringOperator::Contains => "contained",
                     StringOperator::NotContains => "did not contain",
                 },
+                value,
                 repeats
             ),
         }
