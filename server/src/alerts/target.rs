@@ -331,6 +331,8 @@ impl CallableTarget for AlertManager {
             AlertState::Resolved => {
                 let alert = &mut alert[0];
                 alert["labels"]["status"] = "resolved".into();
+                alert["annotations"]["reason"] =
+                    serde_json::Value::String(payload.default_resolved_string());
                 alert["endsAt"] = Utc::now()
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     .into();
