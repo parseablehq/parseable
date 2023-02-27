@@ -408,8 +408,11 @@ pub mod base {
             Exact,
             #[serde(alias = "!=")]
             NotExact,
+            #[serde(alias = "=%")]
             Contains,
+            #[serde(alias = "!%")]
             NotContains,
+            // =~ and !~ reserved for regex
         }
 
         impl Default for StringOperator {
