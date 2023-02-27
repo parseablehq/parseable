@@ -67,8 +67,8 @@ impl Alert {
                 ALERTS_STATES
                     .with_label_values(&[
                         context.stream.as_str(),
-                        context.alert_name.as_str(),
-                        context.alert_state.to_string().as_str(),
+                        context.alert_info.alert_name.as_str(),
+                        context.alert_info.alert_state.to_string().as_str(),
                     ])
                     .inc();
                 for target in &self.targets {
@@ -100,13 +100,13 @@ impl Alert {
 
         Context::new(
             stream_name,
-            self.name.clone(),
-            self.message.clone(),
-            self.rule.trigger_reason(),
-            alert_state,
-            deployment_instance,
-            deployment_id,
-            deployment_mode,
+            AlertInfo::new(
+                self.name.clone(),
+                self.message.clone(),
+                rule.trigger_reason(),
+                alert_state,
+            ),
+            DeploymentInfo::new(deployment_instance, deployment_id, deployment_mode),
             flatten_additional_labels,
         )
     }
@@ -119,37 +119,22 @@ pub trait CallableTarget {
 #[derive(Debug, Clone)]
 pub struct Context {
     stream: String,
-    alert_name: String,
-    message: String,
-    reason: String,
-    alert_state: AlertState,
-    deployment_instance: String,
-    deployment_id: uid::Uid,
-    deployment_mode: String,
+    alert_info: AlertInfo,
+    deployment_info: DeploymentInfo,
     additional_labels: serde_json::Value,
 }
 
 impl Context {
     pub fn new(
         stream: String,
-        alert_name: String,
-        message: String,
-        reason: String,
-        alert_state: AlertState,
-        deployment_instance: String,
-        deployment_id: uid::Uid,
-        deployment_mode: String,
+        alert_info: AlertInfo,
+        deployment_info: DeploymentInfo,
         additional_labels: serde_json::Value,
     ) -> Self {
         Self {
             stream,
-            alert_name,
-            message,
-            reason,
-            alert_state,
-            deployment_instance,
-            deployment_id,
-            deployment_mode,
+            alert_info,
+            deployment_info,
             additional_labels,
         }
     }
@@ -157,12 +142,57 @@ impl Context {
     fn default_alert_string(&self) -> String {
         format!(
             "{} triggered on {}\nMessage: {}\nFailing Condition: {}",
-            self.alert_name, self.stream, self.message, self.reason
+            self.alert_info.alert_name, self.stream, self.alert_info.message, self.alert_info.reason
         )
     }
 
     fn default_resolved_string(&self) -> String {
-        format!("{} on {} is now resolved ", self.alert_name, self.stream)
+        format!("{} on {} is now resolved ", self.alert_info.alert_name, self.stream)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AlertInfo {
+    alert_name: String,
+    message: String,
+    reason: String,
+    alert_state: AlertState,
+}
+
+impl AlertInfo {
+    pub fn new(
+        alert_name: String,
+        message: String,
+        reason: String,
+        alert_state: AlertState,
+    ) -> Self {
+        Self {
+            alert_name,
+            message,
+            reason,
+            alert_state,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeploymentInfo {
+    deployment_instance: String,
+    deployment_id: uid::Uid,
+    deployment_mode: String,
+}
+
+impl DeploymentInfo {
+    pub fn new(
+        deployment_instance: String,
+        deployment_id: uid::Uid,
+        deployment_mode: String,
+    ) -> Self {
+        Self {
+            deployment_instance,
+            deployment_id,
+            deployment_mode,
+        }
     }
 }
 
