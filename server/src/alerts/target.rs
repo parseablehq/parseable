@@ -319,7 +319,9 @@ impl CallableTarget for AlertManager {
           "labels": {
             "alertname": payload.alert_name,
             "stream": payload.stream,
-            "deployment_id": payload.deployment_id
+            "deployment_instance": payload.deployment_instance,
+            "deployment_id": payload.deployment_id,
+            "deployment_mode": payload.deployment_mode
             },
           "annotations": {
             "message": payload.message,

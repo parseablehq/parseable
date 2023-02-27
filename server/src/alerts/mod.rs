@@ -26,6 +26,7 @@ pub mod target;
 use crate::metrics::ALERTS_STATES;
 use crate::storage;
 use crate::utils::uid;
+use crate::CONFIG;
 
 pub use self::rule::Rule;
 use self::target::Target;
@@ -78,7 +79,13 @@ impl Alert {
     }
 
     fn get_context(&self, stream_name: String, alert_state: AlertState, rule: &Rule) -> Context {
+        let deployment_instance = format!(
+            "{}://{}",
+            CONFIG.parseable.get_scheme(),
+            CONFIG.parseable.address
+        );
         let deployment_id = storage::StorageMetadata::global().deployment_id;
+        let deployment_mode = storage::StorageMetadata::global().mode.to_string();
         let additional_labels =
             serde_json::to_value(rule).expect("rule is perfectly deserializable");
         let mut flatten_additional_labels = serde_json::json!({});
@@ -97,7 +104,9 @@ impl Alert {
             self.message.clone(),
             self.rule.trigger_reason(),
             alert_state,
+            deployment_instance,
             deployment_id,
+            deployment_mode,
             flatten_additional_labels,
         )
     }
@@ -114,7 +123,9 @@ pub struct Context {
     message: String,
     reason: String,
     alert_state: AlertState,
+    deployment_instance: String,
     deployment_id: uid::Uid,
+    deployment_mode: String,
     additional_labels: serde_json::Value,
 }
 
@@ -125,7 +136,9 @@ impl Context {
         message: String,
         reason: String,
         alert_state: AlertState,
+        deployment_instance: String,
         deployment_id: uid::Uid,
+        deployment_mode: String,
         additional_labels: serde_json::Value,
     ) -> Self {
         Self {
@@ -134,7 +147,9 @@ impl Context {
             message,
             reason,
             alert_state,
+            deployment_instance,
             deployment_id,
+            deployment_mode,
             additional_labels,
         }
     }
