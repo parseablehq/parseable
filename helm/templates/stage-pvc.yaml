@@ -12,7 +12,7 @@ spec:
     requests:
       storage: {{ .Values.parseable.persistence.staging.size | quote }}
   {{- if .Values.parseable.persistence.staging.storageClass }}
-  storageClassName: "{{ .Values.parseable.persistence.storageClass }}"
+  storageClassName: "{{ .Values.parseable.persistence.staging.storageClass }}"
   {{- else }}
   storageClassName: ""
   {{- end }}
