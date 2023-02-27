@@ -21,12 +21,15 @@ use std::{
     path::PathBuf,
 };
 
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::io;
 
 use crate::{option::CONFIG, utils::uid};
 
 use super::object_storage::PARSEABLE_METADATA_FILE_NAME;
+
+pub static STORAGE_METADATA: OnceCell<StorageMetadata> = OnceCell::new();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageMetadata {
@@ -58,6 +61,16 @@ impl StorageMetadata {
             user: Vec::new(),
             stream: Vec::new(),
         }
+    }
+
+    pub fn global() -> &'static Self {
+        STORAGE_METADATA
+            .get()
+            .expect("gloabal static is initialized")
+    }
+
+    pub fn set_global(self) {
+        STORAGE_METADATA.set(self).expect("only set once")
     }
 }
 
