@@ -72,6 +72,7 @@ itertools = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 xz2 = { version = "*", features=["static"] }
 bzip2 = { version = "*", features=["static"] }
+once_cell = "1.17.1"
 
 [build-dependencies]
 static-files = "0.2"
