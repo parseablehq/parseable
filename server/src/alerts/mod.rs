@@ -33,7 +33,15 @@ use self::target::Target;
 #[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
+    pub version: AlertVerison,
     pub alerts: Vec<Alert>,
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AlertVerison {
+    #[default]
+    V1,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
