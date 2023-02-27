@@ -33,7 +33,15 @@ use self::target::Target;
 #[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
+    pub version: AlertVerison,
     pub alerts: Vec<Alert>,
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AlertVerison {
+    #[default]
+    V1,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,7 +62,7 @@ impl Alert {
         match resolves {
             AlertState::Listening | AlertState::Firing => (),
             alert_state @ (AlertState::SetToFiring | AlertState::Resolved) => {
-                let context = self.get_context(stream_name, alert_state);
+                let context = self.get_context(stream_name, alert_state, &self.rule);
                 ALERTS_STATES
                     .with_label_values(&[
                         context.stream.as_str(),
@@ -69,8 +77,20 @@ impl Alert {
         }
     }
 
-    fn get_context(&self, stream_name: String, alert_state: AlertState) -> Context {
+    fn get_context(&self, stream_name: String, alert_state: AlertState, rule: &Rule) -> Context {
         let deployment_id = storage::StorageMetadata::global().deployment_id;
+        let additional_labels =
+            serde_json::to_value(rule).expect("rule is perfectly deserializable");
+        let mut flatten_additional_labels = serde_json::json!({});
+        flatten_json::flatten(
+            &additional_labels,
+            &mut flatten_additional_labels,
+            Some("rule".to_string()),
+            false,
+            Some("_"),
+        )
+        .expect("can be flattened");
+
         Context::new(
             stream_name,
             self.name.clone(),
@@ -78,6 +98,7 @@ impl Alert {
             self.rule.trigger_reason(),
             alert_state,
             deployment_id,
+            flatten_additional_labels,
         )
     }
 }
@@ -94,6 +115,7 @@ pub struct Context {
     reason: String,
     alert_state: AlertState,
     deployment_id: uid::Uid,
+    additional_labels: serde_json::Value,
 }
 
 impl Context {
@@ -104,6 +126,7 @@ impl Context {
         reason: String,
         alert_state: AlertState,
         deployment_id: uid::Uid,
+        additional_labels: serde_json::Value,
     ) -> Self {
         Self {
             stream,
@@ -112,6 +135,7 @@ impl Context {
             reason,
             alert_state,
             deployment_id,
+            additional_labels,
         }
     }
 

@@ -30,6 +30,8 @@ use humantime_serde::re::humantime;
 use reqwest::ClientBuilder;
 use serde::{Deserialize, Serialize};
 
+use crate::utils::json;
+
 use super::{AlertState, CallableTarget, Context};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -313,7 +315,7 @@ impl CallableTarget for AlertManager {
             .build()
             .expect("Client can be constructed on this system");
 
-        let mut alert = serde_json::json!([{
+        let mut alerts = serde_json::json!([{
           "labels": {
             "alertname": payload.alert_name,
             "stream": payload.stream,
@@ -325,12 +327,26 @@ impl CallableTarget for AlertManager {
           }
         }]);
 
+        let alert = &mut alerts[0];
+
+        alert["labels"].as_object_mut().expect("is object").extend(
+            payload
+                .additional_labels
+                .as_object()
+                .expect("is object")
+                .iter()
+                // filter non null values for alertmanager and only pass strings
+                .filter(|(_, value)| !value.is_null())
+                .map(|(k, value)| (k.to_owned(), json::convert_to_string(value))),
+        );
+
         // fill in status label accordingly
         match payload.alert_state {
-            AlertState::SetToFiring => alert[0]["labels"]["status"] = "firing".into(),
+            AlertState::SetToFiring => alert["labels"]["status"] = "firing".into(),
             AlertState::Resolved => {
-                let alert = &mut alert[0];
                 alert["labels"]["status"] = "resolved".into();
+                alert["annotations"]["reason"] =
+                    serde_json::Value::String(payload.default_resolved_string());
                 alert["endsAt"] = Utc::now()
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     .into();
@@ -338,7 +354,7 @@ impl CallableTarget for AlertManager {
             _ => unreachable!(),
         };
 
-        if let Err(e) = client.post(&self.endpoint).json(&alert).send().await {
+        if let Err(e) = client.post(&self.endpoint).json(&alerts).send().await {
             log::error!("Couldn't make call to alertmanager, error: {}", e)
         }
     }
