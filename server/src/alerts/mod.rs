@@ -24,7 +24,8 @@ pub mod rule;
 pub mod target;
 
 use crate::metrics::ALERTS_STATES;
-use crate::utils::uid::Uid;
+use crate::storage;
+use crate::utils::uid;
 
 pub use self::rule::Rule;
 use self::target::Target;
@@ -39,7 +40,7 @@ pub struct Alerts {
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
     #[serde(default = "crate::utils::uid::gen")]
-    pub id: Uid,
+    pub id: uid::Uid,
     pub name: String,
     pub message: String,
     pub rule: Rule,
@@ -69,12 +70,14 @@ impl Alert {
     }
 
     fn get_context(&self, stream_name: String, alert_state: AlertState) -> Context {
+        let deployment_id = storage::StorageMetadata::global().deployment_id;
         Context::new(
             stream_name,
             self.name.clone(),
             self.message.clone(),
             self.rule.trigger_reason(),
             alert_state,
+            deployment_id,
         )
     }
 }
@@ -90,6 +93,7 @@ pub struct Context {
     message: String,
     reason: String,
     alert_state: AlertState,
+    deployment_id: uid::Uid,
 }
 
 impl Context {
@@ -99,6 +103,7 @@ impl Context {
         message: String,
         reason: String,
         alert_state: AlertState,
+        deployment_id: uid::Uid,
     ) -> Self {
         Self {
             stream,
@@ -106,6 +111,7 @@ impl Context {
             message,
             reason,
             alert_state,
+            deployment_id,
         }
     }
 
