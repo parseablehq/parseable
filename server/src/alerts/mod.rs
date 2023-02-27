@@ -142,12 +142,18 @@ impl Context {
     fn default_alert_string(&self) -> String {
         format!(
             "{} triggered on {}\nMessage: {}\nFailing Condition: {}",
-            self.alert_info.alert_name, self.stream, self.alert_info.message, self.alert_info.reason
+            self.alert_info.alert_name,
+            self.stream,
+            self.alert_info.message,
+            self.alert_info.reason
         )
     }
 
     fn default_resolved_string(&self) -> String {
-        format!("{} on {} is now resolved ", self.alert_info.alert_name, self.stream)
+        format!(
+            "{} on {} is now resolved ",
+            self.alert_info.alert_name, self.stream
+        )
     }
 }
 
