@@ -55,7 +55,7 @@ pub struct Target {
 impl Target {
     pub fn call(&self, context: Context) {
         let timeout = &self.timeout;
-        let resolves = context.alert_state;
+        let resolves = context.alert_info.alert_state;
         let mut state = timeout.state.lock().unwrap();
 
         match resolves {
@@ -129,7 +129,7 @@ impl Target {
                     // Send and alert stating that this alert will only work once it has seen a RESOLVE
                     state.lock().unwrap().timed_out = false;
                     let mut context = alert_context;
-                    context.message = format!(
+                    context.alert_info.message = format!(
                         "Triggering alert did not resolve itself after {times} retries, This alert is paused until it resolves");
                     // Send and exit this task.
                     call_target(target, context);
@@ -229,7 +229,7 @@ impl CallableTarget for SlackWebHook {
             .build()
             .expect("Client can be constructed on this system");
 
-        let alert = match payload.alert_state {
+        let alert = match payload.alert_info.alert_state {
             AlertState::SetToFiring => {
                 serde_json::json!({ "text": payload.default_alert_string() })
             }
@@ -267,7 +267,7 @@ impl CallableTarget for OtherWebHook {
             .build()
             .expect("Client can be constructed on this system");
 
-        let alert = match payload.alert_state {
+        let alert = match payload.alert_info.alert_state {
             AlertState::SetToFiring => payload.default_alert_string(),
             AlertState::Resolved => payload.default_resolved_string(),
             _ => unreachable!(),
@@ -317,13 +317,15 @@ impl CallableTarget for AlertManager {
 
         let mut alerts = serde_json::json!([{
           "labels": {
-            "alertname": payload.alert_name,
+            "alertname": payload.alert_info.alert_name,
             "stream": payload.stream,
-            "deployment_id": payload.deployment_id
+            "deployment_instance": payload.deployment_info.deployment_instance,
+            "deployment_id": payload.deployment_info.deployment_id,
+            "deployment_mode": payload.deployment_info.deployment_mode
             },
           "annotations": {
-            "message": payload.message,
-            "reason": payload.reason
+            "message": payload.alert_info.message,
+            "reason": payload.alert_info.reason
           }
         }]);
 
@@ -341,7 +343,7 @@ impl CallableTarget for AlertManager {
         );
 
         // fill in status label accordingly
-        match payload.alert_state {
+        match payload.alert_info.alert_state {
             AlertState::SetToFiring => alert["labels"]["status"] = "firing".into(),
             AlertState::Resolved => {
                 alert["labels"]["status"] = "resolved".into();
