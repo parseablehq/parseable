@@ -337,7 +337,7 @@ impl CallableTarget for AlertManager {
                 .iter()
                 // filter non null values for alertmanager and only pass strings
                 .filter(|(_, value)| !value.is_null())
-                .map(|(k, value)| (k.to_owned(), json::convert_to_string(&value))),
+                .map(|(k, value)| (k.to_owned(), json::convert_to_string(value))),
         );
 
         // fill in status label accordingly
