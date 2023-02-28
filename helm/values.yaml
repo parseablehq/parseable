@@ -15,7 +15,17 @@ parseable:
       storageClass: ""
       accessMode: ReadWriteOnce
       size: 1Gi
-  secrets: 
+  localModeSecret:
+  - type: env
+    name: parseable-env-secret
+    prefix: P_
+    keys:
+    - addr
+    - username
+    - password
+    - staging.dir
+    - fs.dir
+  s3ModeSecret:
   - type: env
     name: parseable-env-secret
     prefix: P_
@@ -52,7 +62,6 @@ parseable:
       cpu: 500m
       memory: 1Gi
   securityContext:
-   runAsUser: 10001
    allowPrivilegeEscalation: false
   podAnnotations: {}
   podSecurityContext: {}
