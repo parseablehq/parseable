@@ -57,7 +57,7 @@ use std::{
 };
 
 // metadata file names in a Stream prefix
-const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
+pub(super) const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
 pub(super) const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 const SCHEMA_FILE_NAME: &str = ".schema";
 const ALERT_FILE_NAME: &str = ".alert.json";
