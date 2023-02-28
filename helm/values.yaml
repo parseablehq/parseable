@@ -52,7 +52,6 @@ parseable:
       cpu: 500m
       memory: 1Gi
   securityContext:
-   runAsUser: 10001
    allowPrivilegeEscalation: false
   podAnnotations: {}
   podSecurityContext: {}

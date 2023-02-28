@@ -29,6 +29,8 @@ RUN cargo build --release
 FROM gcr.io/distroless/cc-debian11:nonroot
 
 WORKDIR /parseable
+
+COPY --from=busybox:1.35.0-uclibc /bin/sh /bin/sh
 COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
 
 CMD ["parseable"]
