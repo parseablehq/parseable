@@ -157,7 +157,7 @@ impl ObjectStorage for LocalFS {
         let directories = directories
             .filter_map(|res| async {
                 let entry = res.ok()?;
-                if entry.file_type().await.ok()?.is_dir() {
+                if entry.file_type().await.ok()?.is_dir() && entry.file_name() != "lost+found" {
                     Some(LogStream {
                         name: entry
                             .path()
