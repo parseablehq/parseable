@@ -154,36 +154,19 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let dir_with_stream = |entry: DirEntry| async {
-            if entry.file_type().await?.is_dir() {
-                let path = entry.path();
-                let stream_json_path = path.join(object_storage::STREAM_METADATA_FILE_NAME);
-                Ok(stream_json_path.exists().then_some(entry))
-            } else {
-                Ok(None)
-            }
-        };
-
+        let ignore_dir = &["lost+found"];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
-        let entries = entries.into_iter().map(|entry| dir_with_stream(entry));
-        let entries = FuturesUnordered::from_iter(entries);
+        let entries = entries
+            .into_iter()
+            .map(|entry| dir_with_stream(entry, ignore_dir));
 
-        let logstream_dirs: Result<Vec<Option<DirEntry>>, std::io::Error> =
-            entries.try_collect().await;
+        let logstream_dirs: Vec<Option<String>> =
+            FuturesUnordered::from_iter(entries).try_collect().await?;
 
-        let logstreams = logstream_dirs?
+        let logstreams = logstream_dirs
             .into_iter()
             .flatten()
-            .map(|entry| {
-                entry
-                    .path()
-                    .file_name()
-                    .expect("valid path")
-                    .to_str()
-                    .expect("valid unicode")
-                    .to_owned()
-            })
             .map(|name| LogStream { name })
             .collect();
 
@@ -238,6 +221,37 @@ impl ObjectStorage for LocalFS {
             .with_schema(schema);
 
         Ok(Some(ListingTable::try_new(config)?))
+    }
+}
+
+async fn dir_with_stream(
+    entry: DirEntry,
+    ignore_dirs: &[&str],
+) -> Result<Option<String>, ObjectStorageError> {
+    let dir_name = entry
+        .path()
+        .file_name()
+        .expect("valid path")
+        .to_str()
+        .expect("valid unicode")
+        .to_owned();
+
+    if ignore_dirs.contains(&dir_name.as_str()) {
+        return Ok(None);
+    }
+
+    if entry.file_type().await?.is_dir() {
+        let path = entry.path();
+        let stream_json_path = path.join(object_storage::STREAM_METADATA_FILE_NAME);
+        if stream_json_path.exists() {
+            Ok(Some(dir_name))
+        } else {
+            let err: Box<dyn std::error::Error + Send + Sync + 'static> =
+                format!("found {}", entry.path().display()).into();
+            Err(ObjectStorageError::UnhandledError(err))
+        }
+    } else {
+        Ok(None)
     }
 }
 
