@@ -36,7 +36,9 @@ use datafusion::datasource::listing::{
 use datafusion::datasource::object_store::ObjectStoreRegistry;
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use futures::StreamExt;
+use futures::stream::FuturesUnordered;
+use futures::{StreamExt, TryStreamExt};
+use itertools::Itertools;
 use md5::{Digest, Md5};
 use object_store::aws::AmazonS3Builder;
 use object_store::limit::LimitStore;
@@ -50,7 +52,7 @@ use std::time::Instant;
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
-use super::ObjectStorageProvider;
+use super::{object_storage, ObjectStorageProvider};
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -265,15 +267,36 @@ impl S3 {
         let common_prefixes = resp.common_prefixes().unwrap_or_default();
 
         // return prefixes at the root level
-        let logstreams: Vec<_> = common_prefixes
+        let dirs: Vec<_> = common_prefixes
             .iter()
             .filter_map(CommonPrefix::prefix)
             .filter_map(|name| name.strip_suffix('/'))
             .map(String::from)
-            .map(|name| LogStream { name })
             .collect();
 
-        Ok(logstreams)
+        let stream_json_check = FuturesUnordered::new();
+
+        for dir in &dirs {
+            let key = format!("{}/{}", dir, object_storage::STREAM_METADATA_FILE_NAME);
+            let task = async move {
+                self.client
+                    .head_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .send()
+                    .await
+                    .map(|_| ())
+            };
+
+            stream_json_check.push(task);
+        }
+
+        stream_json_check.try_collect().await?;
+
+        Ok(dirs
+            .into_iter()
+            .map(|name| LogStream { name })
+            .collect_vec())
     }
 
     async fn _upload_file(
