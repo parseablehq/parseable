@@ -34,15 +34,15 @@ use datafusion::{
     execution::runtime_env::{RuntimeConfig, RuntimeEnv},
 };
 use fs_extra::file::{move_file, CopyOptions};
-use futures::StreamExt;
+use futures::{stream::FuturesUnordered, TryStreamExt};
 use relative_path::RelativePath;
-use tokio::fs;
+use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
 use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::{option::validation, utils::validate_path_is_writeable};
 
-use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
+use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -152,29 +152,42 @@ impl ObjectStorage for LocalFS {
         let path = self.root.join(stream_name);
         Ok(fs::remove_dir_all(path).await?)
     }
-    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
-        let directories = directories
-            .filter_map(|res| async {
-                let entry = res.ok()?;
-                if entry.file_type().await.ok()?.is_dir() {
-                    Some(LogStream {
-                        name: entry
-                            .path()
-                            .file_name()
-                            .expect("valid path")
-                            .to_str()
-                            .expect("valid unicode")
-                            .to_string(),
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<LogStream>>()
-            .await;
 
-        Ok(directories)
+    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+        let dir_with_stream = |entry: DirEntry| async {
+            if entry.file_type().await?.is_dir() {
+                let path = entry.path();
+                let stream_json_path = path.join(object_storage::STREAM_METADATA_FILE_NAME);
+                Ok(stream_json_path.exists().then_some(entry))
+            } else {
+                Ok(None)
+            }
+        };
+
+        let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
+        let entries: Vec<DirEntry> = directories.try_collect().await?;
+        let entries = entries.into_iter().map(|entry| dir_with_stream(entry));
+        let entries = FuturesUnordered::from_iter(entries);
+
+        let logstream_dirs: Result<Vec<Option<DirEntry>>, std::io::Error> =
+            entries.try_collect().await;
+
+        let logstreams = logstream_dirs?
+            .into_iter()
+            .flatten()
+            .map(|entry| {
+                entry
+                    .path()
+                    .file_name()
+                    .expect("valid path")
+                    .to_str()
+                    .expect("valid unicode")
+                    .to_owned()
+            })
+            .map(|name| LogStream { name })
+            .collect();
+
+        Ok(logstreams)
     }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
