@@ -30,20 +30,18 @@ use crate::{
 };
 
 use actix_web_prometheus::PrometheusMetrics;
+use arrow_schema::ArrowError;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::{
-    arrow::{
-        array::TimestampMillisecondArray, ipc::reader::StreamReader, record_batch::RecordBatch,
-    },
+    arrow::{ipc::reader::StreamReader, record_batch::RecordBatch},
     datasource::listing::ListingTable,
     error::DataFusionError,
     execution::runtime_env::RuntimeEnv,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
 };
-use itertools::kmerge_by;
-use lazy_static::__Deref;
+use itertools::Itertools;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
@@ -268,7 +266,7 @@ pub trait ObjectStorage: Sync + 'static {
                     .with_label_values(&[stream])
                     .set(files.len() as i64);
 
-                let record_reader = MergedRecordReader::try_new(&files).unwrap();
+                let record_reader = MergedRecordReader::try_new(files.clone()).unwrap();
 
                 let mut parquet_table = CACHED_FILES.lock().unwrap();
                 let parquet_file =
@@ -276,10 +274,11 @@ pub trait ObjectStorage: Sync + 'static {
                 parquet_table.upsert(&parquet_path);
 
                 let props = WriterProperties::builder().build();
-                let schema = Arc::new(record_reader.merged_schema());
-                let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
+                let schema = record_reader.merged_schema()?;
+                let mut writer =
+                    ArrowWriter::try_new(parquet_file, Arc::clone(&schema), Some(props))?;
 
-                for ref record in record_reader.merged_iter(&schema) {
+                for ref record in record_reader.get_iterator(schema) {
                     writer.write(record)?;
                 }
 
@@ -373,51 +372,39 @@ pub trait ObjectStorage: Sync + 'static {
 
 #[derive(Debug)]
 pub struct MergedRecordReader {
-    pub readers: Vec<StreamReader<File>>,
+    pub files: Vec<PathBuf>,
 }
 
 impl MergedRecordReader {
-    pub fn try_new(files: &[PathBuf]) -> Result<Self, MoveDataError> {
-        let mut readers = Vec::with_capacity(files.len());
-
-        for file in files {
-            let reader = StreamReader::try_new(File::open(file).unwrap(), None)?;
-            readers.push(reader);
-        }
-
-        Ok(Self { readers })
+    pub fn try_new(mut files: Vec<PathBuf>) -> Result<Self, MoveDataError> {
+        files.sort_by(|file1, file2| file1.file_name().unwrap().cmp(file2.file_name().unwrap()));
+        Ok(Self { files })
     }
 
-    pub fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
-        let adapted_readers = self
-            .readers
+    pub fn merged_schema(&self) -> Result<Arc<Schema>, ArrowError> {
+        let last = StreamReader::try_new(File::open(self.files.last().unwrap()).unwrap(), None)?;
+        Ok(last.schema())
+    }
+
+    pub fn get_iterator(&self, schema: Arc<Schema>) -> impl Iterator<Item = RecordBatch> + '_ {
+        self.files
+            .iter()
+            .flat_map(|file| StreamReader::try_new(File::open(file).unwrap(), None).unwrap())
+            .flatten()
+            .map(move |batch| adapt_batch(&schema, batch))
+    }
+
+    pub fn get_owned_iterator(
+        &self,
+        schema: Arc<Schema>,
+    ) -> Result<impl Iterator<Item = RecordBatch>, std::io::Error> {
+        let iterators: Vec<_> = self.files.iter().map(File::open).try_collect()?;
+
+        Ok(iterators
             .into_iter()
-            .map(move |reader| reader.flatten().map(|batch| adapt_batch(schema, batch)));
-
-        kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
-            let a: &TimestampMillisecondArray = a
-                .column(0)
-                .as_any()
-                .downcast_ref::<TimestampMillisecondArray>()
-                .unwrap();
-
-            let b: &TimestampMillisecondArray = b
-                .column(0)
-                .as_any()
-                .downcast_ref::<TimestampMillisecondArray>()
-                .unwrap();
-
-            a.value(0) < b.value(0)
-        })
-    }
-
-    pub fn merged_schema(&self) -> Schema {
-        Schema::try_merge(
-            self.readers
-                .iter()
-                .map(|stream| stream.schema().deref().clone()),
-        )
-        .unwrap()
+            .flat_map(|file| StreamReader::try_new(file, None).unwrap())
+            .flatten()
+            .map(move |batch| adapt_batch(&schema, batch)))
     }
 }
 

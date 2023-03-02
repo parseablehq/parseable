@@ -18,7 +18,6 @@
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
-use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
@@ -33,11 +32,10 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::Expr;
 use itertools::Itertools;
 use std::any::Any;
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::storage::ObjectStorage;
+use crate::storage::{MergedRecordReader, ObjectStorage};
 
 pub struct QueryTableProvider {
     // parquet - ( arrow files )
@@ -88,7 +86,7 @@ impl QueryTableProvider {
         let mut parquet_files = Vec::new();
 
         for (staging_parquet, arrow_files) in &self.staging_arrows {
-            if !load_arrows(arrow_files, &self.schema, &mut mem_records) {
+            if !load_arrows(arrow_files, Arc::clone(&self.schema), &mut mem_records) {
                 parquet_files.push(staging_parquet.clone())
             }
         }
@@ -204,21 +202,11 @@ fn local_parquet_table(parquet_files: &[PathBuf], schema: &SchemaRef) -> Option<
 
 fn load_arrows(
     files: &[PathBuf],
-    schema: &Schema,
+    schema: Arc<Schema>,
     mem_records: &mut Vec<Vec<RecordBatch>>,
 ) -> bool {
-    let mut stream_readers = Vec::with_capacity(files.len());
-
-    for file in files {
-        let Ok(arrow_file) = File::open(file) else { return false; };
-        let Ok(reader)= StreamReader::try_new(arrow_file, None) else { return false; };
-        stream_readers.push(reader);
-    }
-
-    let reader = crate::storage::MergedRecordReader {
-        readers: stream_readers,
-    };
-    let records = reader.merged_iter(schema).collect();
-    mem_records.push(records);
+    let Ok(reader) = MergedRecordReader::try_new(files.to_owned()) else { return false };
+    let Ok(iter ) = reader.get_owned_iterator(schema) else { return false };
+    mem_records.push(iter.collect());
     true
 }

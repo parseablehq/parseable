@@ -221,18 +221,18 @@ impl StorageDir {
         format!("{local_uri}{hostname}.data.arrows")
     }
 
-    fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
-        format!("{}.{}", stream_hash, Self::file_time_suffix(time))
+    fn filename_by_time(order: usize, time: NaiveDateTime) -> String {
+        let order_prefix = format!("{order:03}");
+        format!("{}.{}", order_prefix, Self::file_time_suffix(time))
     }
 
-    fn filename_by_current_time(stream_hash: &str) -> String {
+    fn filename_by_current_time(order: usize) -> String {
         let datetime = Utc::now();
-        Self::filename_by_time(stream_hash, datetime.naive_utc())
+        Self::filename_by_time(order, datetime.naive_utc())
     }
 
-    pub fn path_by_current_time(&self, stream_hash: &str) -> PathBuf {
-        self.data_path
-            .join(Self::filename_by_current_time(stream_hash))
+    pub fn path_by_current_time(&self, order: usize) -> PathBuf {
+        self.data_path.join(Self::filename_by_current_time(order))
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
@@ -307,6 +307,25 @@ impl StorageDir {
         parquet_path.set_file_name(filename);
         parquet_path.set_extension("parquet");
         parquet_path
+    }
+
+    pub fn last_order_by_current_time(&self) -> Option<usize> {
+        let time = Utc::now().naive_utc();
+        let hot_filename = StorageDir::file_time_suffix(time);
+        let arrow_files = self.arrow_files();
+
+        arrow_files
+            .iter()
+            .filter_map(|path| {
+                let filename = path.file_name().unwrap().to_str().unwrap();
+                if filename.ends_with(&hot_filename) {
+                    let (number, _) = filename.split_once('.').unwrap();
+                    Some(number.parse().unwrap())
+                } else {
+                    None
+                }
+            })
+            .max()
     }
 }
 

@@ -30,7 +30,7 @@ use crate::storage::StorageDir;
 use self::errors::StreamWriterError;
 
 type ArrowWriter<T> = StreamWriter<T>;
-type LocalWriter<T> = Mutex<Option<ArrowWriter<T>>>;
+type LocalWriter<T, S> = Mutex<Option<(usize, Vec<S>, ArrowWriter<T>)>>;
 
 lazy_static! {
     #[derive(Default)]
@@ -41,14 +41,14 @@ impl STREAM_WRITERS {
     // append to a existing stream
     pub fn append_to_local(
         stream: &str,
-        schema_key: &str,
+        schema_key: &String,
         record: &RecordBatch,
     ) -> Result<(), StreamWriterError> {
         let hashmap_guard = STREAM_WRITERS
             .read()
             .map_err(|_| StreamWriterError::RwPoisoned)?;
 
-        match hashmap_guard.get(stream, schema_key) {
+        match hashmap_guard.get(stream) {
             Some(localwriter) => {
                 let mut writer_guard = localwriter
                     .lock()
@@ -56,14 +56,22 @@ impl STREAM_WRITERS {
 
                 // if it's some writer then we write without dropping any lock
                 // hashmap cannot be brought mutably at any point until this finishes
-                if let Some(ref mut writer) = *writer_guard {
-                    writer.write(record).map_err(StreamWriterError::Writer)?;
+                if let Some((ref mut order, ref mut hashes, ref mut writer)) = *writer_guard {
+                    if hashes.contains(schema_key) {
+                        writer.write(record).map_err(StreamWriterError::Writer)?;
+                    } else {
+                        *order += 1;
+                        hashes.push(schema_key.to_owned());
+                        *writer = init_new_stream_writer_file(stream, *order, record)?;
+                    }
                 } else {
                     // pass on this mutex to set entry so that it can be reused
                     // we have a guard for underlying entry thus
                     // hashmap must not be availible as mutable to any other thread
-                    let writer = init_new_stream_writer_file(stream, schema_key, record)?;
-                    writer_guard.replace(writer); // replace the stream writer behind this mutex
+                    let order = 0;
+                    let writer = init_new_stream_writer_file(stream, order, record)?;
+                    writer_guard.replace((order, vec![schema_key.to_owned()], writer));
+                    // replace the stream writer behind this mutex
                 }
             }
             // entry is not present thus we create it
@@ -87,9 +95,13 @@ impl STREAM_WRITERS {
             .write()
             .map_err(|_| StreamWriterError::RwPoisoned)?;
 
-        let writer = init_new_stream_writer_file(&stream, &schema_key, record)?;
+        let order = StorageDir::new(&stream)
+            .last_order_by_current_time()
+            .unwrap_or_default();
 
-        hashmap_guard.insert(stream, schema_key, Mutex::new(Some(writer)));
+        let writer = init_new_stream_writer_file(&stream, order, record)?;
+
+        hashmap_guard.insert(stream, Mutex::new(Some((order, vec![schema_key], writer))));
 
         Ok(())
     }
@@ -104,7 +116,7 @@ impl STREAM_WRITERS {
             .map_err(|_| StreamWriterError::RwPoisoned)?;
 
         for writer in table.iter() {
-            if let Some(mut streamwriter) = writer
+            if let Some((_, _, mut streamwriter)) = writer
                 .lock()
                 .map_err(|_| StreamWriterError::MutexPoisoned)?
                 .take()
@@ -120,16 +132,14 @@ impl STREAM_WRITERS {
 pub struct WriterTable<A, B, T>
 where
     A: Eq + std::hash::Hash,
-    B: Eq + std::hash::Hash,
     T: Write,
 {
-    table: HashMap<A, HashMap<B, LocalWriter<T>>>,
+    table: HashMap<A, LocalWriter<T, B>>,
 }
 
 impl<A, B, T> WriterTable<A, B, T>
 where
     A: Eq + std::hash::Hash,
-    B: Eq + std::hash::Hash,
     T: Write,
 {
     pub fn new() -> Self {
@@ -137,19 +147,16 @@ where
         Self { table }
     }
 
-    fn get<X, Y>(&self, a: &X, b: &Y) -> Option<&LocalWriter<T>>
+    fn get<X>(&self, a: &X) -> Option<&LocalWriter<T, B>>
     where
         A: Borrow<X>,
-        B: Borrow<Y>,
         X: Eq + std::hash::Hash + ?Sized,
-        Y: Eq + std::hash::Hash + ?Sized,
     {
-        self.table.get(a)?.get(b)
+        self.table.get(a)
     }
 
-    fn insert(&mut self, a: A, b: B, v: LocalWriter<T>) {
-        let inner = self.table.entry(a).or_default();
-        inner.insert(b, v);
+    fn insert(&mut self, a: A, v: LocalWriter<T, B>) {
+        self.table.insert(a, v);
     }
 
     pub fn delete_stream<X>(&mut self, stream: &X)
@@ -160,18 +167,18 @@ where
         self.table.remove(stream);
     }
 
-    fn iter(&self) -> impl Iterator<Item = &LocalWriter<T>> {
-        self.table.values().flat_map(|inner| inner.values())
+    fn iter(&self) -> impl Iterator<Item = &LocalWriter<T, B>> {
+        self.table.values()
     }
 }
 
 fn init_new_stream_writer_file(
     stream_name: &str,
-    schema_key: &str,
+    order: usize,
     record: &RecordBatch,
 ) -> Result<ArrowWriter<std::fs::File>, StreamWriterError> {
     let dir = StorageDir::new(stream_name);
-    let path = dir.path_by_current_time(schema_key);
+    let path = dir.path_by_current_time(order);
 
     std::fs::create_dir_all(dir.data_path)?;
 
