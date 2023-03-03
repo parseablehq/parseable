@@ -16,6 +16,8 @@
  *
  */
 
+#![allow(unused)]
+
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -90,6 +92,7 @@ impl QueryTableProvider {
                 parquet_files.push(staging_parquet.clone())
             }
         }
+
         parquet_files.extend(self.other_staging_parquet.clone());
 
         let memtable = MemTable::try_new(Arc::clone(&self.schema), mem_records)?;

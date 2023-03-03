@@ -248,6 +248,7 @@ impl StorageDir {
         paths
     }
 
+    #[allow(unused)]
     pub fn arrow_files_grouped_by_time(&self) -> HashMap<PathBuf, Vec<PathBuf>> {
         // hashmap <time, vec[paths]>
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
