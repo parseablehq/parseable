@@ -136,8 +136,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(feature = "debug")]
 fn start_profiling(url: String) {
-    let auth_token =
-        std::env::var(DEBUG_PYROSCOPE_TOKEN).unwrap_or_else(|_| "".to_string());
+    let auth_token = std::env::var(DEBUG_PYROSCOPE_TOKEN).unwrap_or_else(|_| "".to_string());
 
     // Configure Pyroscope client.
     let agent = PyroscopeAgent::builder(url, env!("CARGO_PKG_NAME").to_string())
