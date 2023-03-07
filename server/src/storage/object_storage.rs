@@ -389,10 +389,7 @@ impl MergedRecordReader {
     }
 
     pub fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
-        let adapted_readers = self
-            .readers
-            .into_iter()
-            .map(move |reader| reader.flatten().map(|batch| adapt_batch(schema, batch)));
+        let adapted_readers = self.readers.into_iter().map(move |reader| reader.flatten());
 
         kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
             let a: &TimestampMillisecondArray = a
@@ -409,6 +406,7 @@ impl MergedRecordReader {
 
             a.value(0) < b.value(0)
         })
+        .map(|batch| adapt_batch(schema, batch))
     }
 
     pub fn merged_schema(&self) -> Schema {

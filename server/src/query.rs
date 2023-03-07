@@ -26,20 +26,16 @@ use datafusion::datasource::TableProvider;
 use datafusion::prelude::*;
 use itertools::Itertools;
 use serde_json::Value;
-use std::collections::hash_map::RandomState;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::option::CONFIG;
 use crate::storage::ObjectStorageError;
-use crate::storage::StorageDir;
 use crate::storage::{ObjectStorage, OBJECT_STORE_DATA_GRANULARITY};
 use crate::utils::TimePeriod;
 use crate::validator;
 
 use self::error::{ExecuteError, ParseError};
-use table_provider::QueryTableProvider;
 
 type Key = &'static str;
 fn get_value(value: &Value, key: Key) -> Result<&str, Key> {
@@ -89,41 +85,18 @@ impl Query {
         &self,
         storage: Arc<dyn ObjectStorage + Send>,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let dir = StorageDir::new(&self.stream_name);
-        // take a look at local dir and figure out what local cache we could use for this query
-        let staging_arrows = dir
-            .arrow_files_grouped_by_time()
-            .into_iter()
-            .filter(|(path, _)| path_intersects_query(path, self.start, self.end))
-            .sorted_by(|(a, _), (b, _)| Ord::cmp(a, b))
-            .collect_vec();
-
-        let staging_parquet_set: HashSet<&PathBuf, RandomState> =
-            HashSet::from_iter(staging_arrows.iter().map(|(p, _)| p));
-
-        let other_staging_parquet = dir
-            .parquet_files()
-            .into_iter()
-            .filter(|path| path_intersects_query(path, self.start, self.end))
-            .filter(|path| !staging_parquet_set.contains(path))
-            .collect_vec();
-
         let ctx = SessionContext::with_config_rt(
             SessionConfig::default(),
             CONFIG.storage().get_datafusion_runtime(),
         );
 
-        let table = Arc::new(QueryTableProvider::new(
-            staging_arrows,
-            other_staging_parquet,
-            self.get_prefixes(),
-            storage,
-            Arc::new(self.get_schema().clone()),
-        ));
+        let Some(table) = storage.query_table(self.get_prefixes(), Arc::new(self.get_schema().clone()))? else {
+            return Ok((Vec::new(), Vec::new()));
+        };
 
         ctx.register_table(
             &*self.stream_name,
-            Arc::clone(&table) as Arc<dyn TableProvider>,
+            Arc::new(table) as Arc<dyn TableProvider>,
         )
         .map_err(ObjectStorageError::DataFusionError)?;
         // execute the query and collect results
@@ -144,11 +117,13 @@ impl Query {
     }
 }
 
+#[allow(unused)]
 fn path_intersects_query(path: &Path, starttime: DateTime<Utc>, endtime: DateTime<Utc>) -> bool {
     let time = time_from_path(path);
     starttime <= time && time <= endtime
 }
 
+#[allow(unused)]
 fn time_from_path(path: &Path) -> DateTime<Utc> {
     let prefix = path
         .file_name()
