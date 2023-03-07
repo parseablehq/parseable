@@ -26,10 +26,10 @@ COPY . .
 RUN cargo build --features debug
 
 # final stage
-FROM gcr.io/distroless/cc-debian11:debug-nonroot
+FROM docker.io/debian:bullseye-slim
 
 WORKDIR /parseable
 
-COPY --from=builder /parseable/debug/parseable /usr/bin/parseable
+COPY --from=builder /parseable/target/debug/parseable /usr/bin/parseable
 
 CMD ["parseable"]
