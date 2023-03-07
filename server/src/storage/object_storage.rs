@@ -268,6 +268,15 @@ pub trait ObjectStorage: Sync + 'static {
                     .with_label_values(&[stream])
                     .set(files.len() as i64);
 
+                for file in &files {
+                    let file_size = file.metadata().unwrap().len();
+                    let file_type = file.extension().unwrap().to_str().unwrap();
+
+                    STORAGE_SIZE
+                        .with_label_values(&["staging", stream, file_type])
+                        .add(file_size as i64);
+                }
+
                 let record_reader = MergedRecordReader::try_new(&files).unwrap();
 
                 let mut parquet_table = CACHED_FILES.lock().unwrap();
@@ -355,7 +364,7 @@ pub trait ObjectStorage: Sync + 'static {
             let stats = STREAM_INFO.read().unwrap().get(stream).map(|metadata| {
                 metadata.stats.add_storage_size(compressed_size);
                 STORAGE_SIZE
-                    .with_label_values(&[stream, "parquet"])
+                    .with_label_values(&["data", stream, "parquet"])
                     .add(compressed_size as i64);
                 Stats::from(&metadata.stats)
             });
