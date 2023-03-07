@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
 
     // track all parquet files already in the data directory
     storage::CACHED_FILES.track_parquet();
-
+    storage::retention::load_retention_from_global().await;
     // load data from stats back to prometheus metrics
     metrics::load_from_global_stats();
 
@@ -342,6 +342,11 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 web::resource(stats_path("{logstream}"))
                     .route(web::get().to(handlers::logstream::get_stats)),
             )
+            .service(
+                // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
+                web::resource(retention_path("{logstream}"))
+                    .route(web::put().to(handlers::logstream::put_retention)),
+            )
             // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
             .service(web::resource(liveness_path()).route(web::get().to(handlers::liveness)))
             // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
@@ -411,4 +416,8 @@ fn schema_path(stream_name: &str) -> String {
 
 fn stats_path(stream_name: &str) -> String {
     format!("{}/stats", logstream_path(stream_name))
+}
+
+fn retention_path(stream_name: &str) -> String {
+    format!("{}/retention", logstream_path(stream_name))
 }

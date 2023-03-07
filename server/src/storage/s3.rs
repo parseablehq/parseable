@@ -255,6 +255,36 @@ impl S3 {
         Ok(())
     }
 
+    async fn _delete_prefix(&self, path: &RelativePath) -> Result<(), AwsSdkError> {
+        let mut pages = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(path.as_str())
+            .into_paginator()
+            .send();
+
+        let mut delete_objects: Vec<ObjectIdentifier> = vec![];
+        while let Some(page) = pages.next().await {
+            let page = page?;
+            for obj in page.contents.unwrap() {
+                let obj_id = ObjectIdentifier::builder().set_key(obj.key).build();
+                delete_objects.push(obj_id);
+            }
+        }
+
+        let delete = Delete::builder().set_objects(Some(delete_objects)).build();
+
+        self.client
+            .delete_objects()
+            .bucket(&self.bucket)
+            .delete(delete)
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
     async fn _list_streams(&self) -> Result<Vec<LogStream>, AwsSdkError> {
         let resp = self
             .client
@@ -297,6 +327,33 @@ impl S3 {
             .into_iter()
             .map(|name| LogStream { name })
             .collect_vec())
+    }
+
+    async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, AwsSdkError> {
+        let prefix = format!("{stream}/");
+        let resp = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(&prefix)
+            .delimiter('/')
+            .send()
+            .await?;
+
+        let common_prefixes = resp.common_prefixes().unwrap_or_default();
+
+        // return prefixes at the root level
+        let dates: Vec<_> = common_prefixes
+            .iter()
+            .filter_map(CommonPrefix::prefix)
+            .filter_map(|name| {
+                name.strip_suffix('/')
+                    .and_then(|name| name.strip_prefix(&prefix))
+            })
+            .map(String::from)
+            .collect();
+
+        Ok(dates)
     }
 
     async fn _upload_file(
@@ -353,6 +410,12 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
+    async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
+        self._delete_prefix(path).await?;
+
+        Ok(())
+    }
+
     async fn check(&self) -> Result<(), ObjectStorageError> {
         self.client
             .head_bucket()
@@ -371,6 +434,12 @@ impl ObjectStorage for S3 {
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
         let streams = self._list_streams().await?;
+
+        Ok(streams)
+    }
+
+    async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
+        let streams = self._list_dates(stream_name).await?;
 
         Ok(streams)
     }

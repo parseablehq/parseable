@@ -142,6 +142,12 @@ impl ObjectStorage for LocalFS {
         res.map_err(Into::into)
     }
 
+    async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
+        let path = self.path_in_root(path);
+        tokio::fs::remove_dir_all(path).await?;
+        Ok(())
+    }
+
     async fn check(&self) -> Result<(), ObjectStorageError> {
         fs::create_dir_all(&self.root).await?;
         validate_path_is_writeable(&self.root)
@@ -171,6 +177,16 @@ impl ObjectStorage for LocalFS {
             .collect();
 
         Ok(logstreams)
+    }
+
+    async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
+        let path = self.root.join(stream_name);
+        let directories = ReadDirStream::new(fs::read_dir(&path).await?);
+        let entries: Vec<DirEntry> = directories.try_collect().await?;
+        let entries = entries.into_iter().map(dir_name);
+        let dates: Vec<_> = FuturesUnordered::from_iter(entries).try_collect().await?;
+
+        Ok(dates.into_iter().flatten().collect())
     }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
@@ -250,6 +266,21 @@ async fn dir_with_stream(
                 format!("found {}", entry.path().display()).into();
             Err(ObjectStorageError::UnhandledError(err))
         }
+    } else {
+        Ok(None)
+    }
+}
+
+async fn dir_name(entry: DirEntry) -> Result<Option<String>, ObjectStorageError> {
+    if entry.file_type().await?.is_dir() {
+        let dir_name = entry
+            .path()
+            .file_name()
+            .expect("valid path")
+            .to_str()
+            .expect("valid unicode")
+            .to_owned();
+        Ok(Some(dir_name))
     } else {
         Ok(None)
     }

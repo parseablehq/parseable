@@ -27,6 +27,7 @@ use crate::alerts::Alerts;
 use crate::event;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
+use crate::storage::retention::{self, Retention};
 use crate::storage::{LogStream, StorageDir};
 use crate::{metadata, validator};
 
@@ -173,6 +174,36 @@ pub async fn put_alert(
     ))
 }
 
+pub async fn put_retention(
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> Result<impl Responder, StreamError> {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let body = body.into_inner();
+
+    let retention: Retention = match serde_json::from_value(body) {
+        Ok(retention) => retention,
+        Err(err) => return Err(StreamError::InvalidRetentionConfig(err)),
+    };
+
+    if !STREAM_INFO.stream_initialized(&stream_name)? {
+        return Err(StreamError::UninitializedLogstream);
+    }
+
+    CONFIG
+        .storage()
+        .get_object_store()
+        .put_retention(&stream_name, &retention)
+        .await?;
+
+    retention::init_scheduler(&stream_name, retention);
+
+    Ok((
+        format!("set retention configuration for log stream {stream_name}"),
+        StatusCode::OK,
+    ))
+}
+
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
@@ -270,6 +301,8 @@ pub mod error {
         AlertValidation(#[from] AlertValidationError),
         #[error("alert - \"{0}\" is invalid, please check if alert is valid according to this stream's schema and try again")]
         InvalidAlert(String),
+        #[error("failed to set retention configuration due to err: {0}")]
+        InvalidRetentionConfig(serde_json::Error),
         #[error("{msg}")]
         Custom { msg: String, status: StatusCode },
     }
@@ -286,6 +319,7 @@ pub mod error {
                 StreamError::BadAlertJson { .. } => StatusCode::BAD_REQUEST,
                 StreamError::AlertValidation(_) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidAlert(_) => StatusCode::BAD_REQUEST,
+                StreamError::InvalidRetentionConfig(_) => StatusCode::BAD_REQUEST,
             }
         }
 
