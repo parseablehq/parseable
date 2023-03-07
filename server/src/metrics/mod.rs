@@ -40,7 +40,7 @@ lazy_static! {
     .expect("metric can be created");
     pub static ref STORAGE_SIZE: IntGaugeVec = IntGaugeVec::new(
         Opts::new("storage_size", "Storage size bytes").namespace(METRICS_NAMESPACE),
-        &["stream", "format"]
+        &["type", "stream", "format"]
     )
     .expect("metric can be created");
     pub static ref STAGING_FILES: IntGaugeVec = IntGaugeVec::new(
@@ -117,7 +117,7 @@ pub fn load_from_global_stats() {
             .with_label_values(&[&stream_name, "json"])
             .set(stats.ingestion as i64);
         STORAGE_SIZE
-            .with_label_values(&[&stream_name, "parquet"])
+            .with_label_values(&["data", &stream_name, "parquet"])
             .set(stats.storage as i64)
     }
 }
