@@ -73,6 +73,8 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 xz2 = { version = "*", features=["static"] }
 bzip2 = { version = "*", features=["static"] }
 once_cell = "1.17.1"
+pyroscope = { version = "0.5.3", optional = true }
+pyroscope_pprofrs = { version = "0.2", optional = true }
 
 [build-dependencies]
 static-files = "0.2"
@@ -89,3 +91,6 @@ rstest = "0.16"
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.0.9/build.zip"
 assets-sha1 = "c81dd1806d335ecbf7bab628977455bec254f209"
+
+[features]
+debug = ["pyroscope", "pyroscope_pprofrs"]

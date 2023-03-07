@@ -31,6 +31,11 @@ use thread_priority::{ThreadBuilder, ThreadPriority};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
 
+#[cfg(feature = "debug")]
+use pyroscope::PyroscopeAgent;
+#[cfg(feature = "debug")]
+use pyroscope_pprofrs::{pprof_backend, PprofConfig};
+
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 use std::env;
@@ -61,6 +66,11 @@ const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 const API_BASE_PATH: &str = "/api";
 const API_VERSION: &str = "v1";
 
+#[cfg(feature = "debug")]
+const DEBUG_PYROSCOPE_URL: &str = "P_PROFILE_PYROSCOPE_URL";
+#[cfg(feature = "debug")]
+const DEBUG_PYROSCOPE_TOKEN: &str = "P_PROFILE_PYROSCOPE_AUTH_TOKEN";
+
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -75,6 +85,14 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.storage().register_store_metrics(&prometheus);
 
     migration::run_migration(&CONFIG).await?;
+
+    #[cfg(feature = "debug")]
+    {
+        if std::env::var(DEBUG_PYROSCOPE_URL).is_ok() {
+            let url = std::env::var(DEBUG_PYROSCOPE_URL).ok();
+            Some(start_profiling(url.unwrap()));
+        }
+    }
 
     if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
         warn!("could not populate local metadata. {:?}", e);
@@ -114,6 +132,22 @@ async fn main() -> anyhow::Result<()> {
             }
         };
     }
+}
+
+#[cfg(feature = "debug")]
+fn start_profiling(url: String) {
+    let auth_token =
+        std::env::var(DEBUG_PYROSCOPE_TOKEN).unwrap_or_else(|_| "".to_string());
+
+    // Configure Pyroscope client.
+    let agent = PyroscopeAgent::builder(url, env!("CARGO_PKG_NAME").to_string())
+        .auth_token(auth_token)
+        .backend(pprof_backend(PprofConfig::new().sample_rate(100)))
+        .build()
+        .unwrap();
+
+    // Start the Pyroscope client.
+    agent.start().unwrap();
 }
 
 fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
