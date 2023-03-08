@@ -17,8 +17,8 @@
  */
 
 use super::{
-    file_link::CacheState, LogStream, MoveDataError, ObjectStorageError, ObjectStoreFormat,
-    Permisssion, StorageDir, StorageMetadata, CACHED_FILES,
+    file_link::CacheState, retention::Retention, LogStream, MoveDataError, ObjectStorageError,
+    ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata, CACHED_FILES,
 };
 use crate::{
     alerts::Alerts,
@@ -77,9 +77,11 @@ pub trait ObjectStorage: Sync + 'static {
         path: &RelativePath,
         resource: Bytes,
     ) -> Result<(), ObjectStorageError>;
+    async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError>;
     async fn check(&self) -> Result<(), ObjectStorageError>;
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
+    async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
     fn query_table(
         &self,
@@ -138,6 +140,23 @@ pub trait ObjectStorage: Sync + 'static {
             serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
 
         stream_metadata["stats"] = stats;
+
+        self.put_object(&path, to_bytes(&stream_metadata)).await
+    }
+
+    async fn put_retention(
+        &self,
+        stream_name: &str,
+        retention: &Retention,
+    ) -> Result<(), ObjectStorageError> {
+        let path = stream_json_path(stream_name);
+        let stream_metadata = self.get_object(&path).await?;
+        let stats =
+            serde_json::to_value(retention).expect("rentention tasks are perfectly serializable");
+        let mut stream_metadata: serde_json::Value =
+            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
+
+        stream_metadata["retention"] = stats;
 
         self.put_object(&path, to_bytes(&stream_metadata)).await
     }
@@ -214,6 +233,24 @@ pub trait ObjectStorage: Sync + 'static {
         let stats = serde_json::from_value(stats.clone()).unwrap_or_default();
 
         Ok(stats)
+    }
+
+    async fn get_retention(&self, stream_name: &str) -> Result<Retention, ObjectStorageError> {
+        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
+        let stream_metadata: Value =
+            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
+
+        let retention = stream_metadata
+            .as_object()
+            .expect("is object")
+            .get("retention")
+            .cloned();
+
+        if let Some(retention) = retention {
+            Ok(serde_json::from_value(retention).unwrap())
+        } else {
+            Ok(Retention::default())
+        }
     }
 
     async fn get_metadata(&self) -> Result<Option<StorageMetadata>, ObjectStorageError> {

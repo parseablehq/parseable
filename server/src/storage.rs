@@ -38,6 +38,7 @@ use std::sync::{Arc, Mutex};
 mod file_link;
 mod localfs;
 mod object_storage;
+pub mod retention;
 mod s3;
 mod store_metadata;
 
