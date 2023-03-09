@@ -32,7 +32,7 @@ use crate::{
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
-use datafusion::arrow::datatypes::Schema;
+use datafusion::{arrow::datatypes::Schema, parquet::basic::Compression};
 use datafusion::{
     arrow::{
         array::TimestampMillisecondArray, ipc::reader::StreamReader, record_batch::RecordBatch,
@@ -321,7 +321,11 @@ pub trait ObjectStorage: Sync + 'static {
                     fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
                 parquet_table.upsert(&parquet_path);
 
-                let props = WriterProperties::builder().build();
+                let props = WriterProperties::builder()
+                    .set_compression(Compression::SNAPPY)
+                    .set_max_row_group_size(1024 * 256)
+                    .build();
+
                 let schema = Arc::new(record_reader.merged_schema());
                 let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
 
