@@ -75,10 +75,7 @@ pub fn init_scheduler(stream: &str, config: Retention) {
             }
         };
 
-        scheduler
-            .every(u32::from(days).days())
-            .at("00:00")
-            .run(func);
+        scheduler.every(1.day()).at("00:00").run(func);
     }
 
     let handler = thread::spawn(|| {
