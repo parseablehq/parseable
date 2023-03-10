@@ -9,7 +9,7 @@ on:
       - '**.md'
 
 jobs:
-  docker:
+  docker-pr-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
