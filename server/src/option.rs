@@ -363,7 +363,7 @@ impl Server {
             .arg(
                 Arg::new(Self::ROW_GROUP_SIZE)
                     .long(Self::ROW_GROUP_SIZE)
-                    .env("P_ROW_GROUP_SIZE")
+                    .env("P_PARQUET_ROW_GROUP_SIZE")
                     .value_name("NUMBER")
                     .required(false)
                     .default_value("16384")
