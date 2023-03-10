@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     {
         if std::env::var(DEBUG_PYROSCOPE_URL).is_ok() {
             let url = std::env::var(DEBUG_PYROSCOPE_URL).ok();
-            Some(start_profiling(url.unwrap()));
+            start_profiling(url.unwrap());
         }
     }
 
