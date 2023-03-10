@@ -1,4 +1,4 @@
-name: Build and push edge debug tag
+name: Docker Hub
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
       - '**.md'
 
 jobs:
-  docker-edge-debug:
+  docker-edge-debug-build-push:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

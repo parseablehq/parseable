@@ -1,4 +1,4 @@
-name: Push PR image to GHCR
+name: GitHub Container Registry
 
 on:
   pull_request:
@@ -15,6 +15,9 @@ env:
 jobs:
   docker-pr-build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v3
