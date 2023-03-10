@@ -321,7 +321,10 @@ pub trait ObjectStorage: Sync + 'static {
                     fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
                 parquet_table.upsert(&parquet_path);
 
-                let props = WriterProperties::builder().build();
+                let props = WriterProperties::builder()
+                    .set_max_row_group_size(CONFIG.parseable.row_group_size)
+                    .set_compression(CONFIG.parseable.parquet_compression.into())
+                    .build();
                 let schema = Arc::new(record_reader.merged_schema());
                 let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
 
