@@ -27,7 +27,7 @@ services:
       - parseable-internal
 
   parseable:
-    image: ghcr.io/parseablehq/parseable:main
+    image: ghcr.io/parseablehq/parseable:pr
     command: ["parseable", "s3-store"]
     ports:
       - 8000
