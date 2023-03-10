@@ -1,4 +1,4 @@
-name: Build and push edge debug tag to DockerHub
+name: Build and push edge debug tag
 
 on:
   push:

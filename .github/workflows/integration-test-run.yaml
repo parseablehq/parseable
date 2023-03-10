@@ -1,4 +1,4 @@
-name: Run integration tests with image on GHCR
+name: Run integration tests
 
 on:
   pull_request:

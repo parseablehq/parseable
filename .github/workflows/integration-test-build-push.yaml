@@ -1,4 +1,4 @@
-name: Build and push PR code to GHCR
+name: Push PR image to GHCR
 
 on:
   pull_request:
