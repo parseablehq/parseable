@@ -1,9 +1,7 @@
-name: Build and push edge tag
+name: Build and push PR code to GHCR
 
 on:
-  push:
-    branches:
-      - 'main'
+  pull_request:
     paths-ignore:
       - 'docs/**'
       - 'helm/**'

@@ -1,4 +1,4 @@
-name: Build and push edge tag
+name: Build and push edge tag to Docker Hub
 
 on:
   push:
