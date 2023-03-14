@@ -100,6 +100,10 @@ curl --location --request POST 'http://localhost:8000/api/v1/query' \
 }'
 ```
 
+## :chart_with_upwards_trend: Benchmarking
+
+Parseable is benchmarked with [K6](https://k6.io). Please find the results and details on how to run the benchmark in your environment in the [benchmarks directory](./benchmarks/).
+
 ## :books: Documentation
 
 - [Complete documentation ↗︎](https://www.parseable.io/docs/)
