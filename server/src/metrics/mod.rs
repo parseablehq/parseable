@@ -22,7 +22,7 @@ use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use lazy_static::lazy_static;
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
-use crate::{metadata::STREAM_INFO, metrics_path};
+use crate::{handlers::transport::http::metrics_path, metadata::STREAM_INFO};
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
