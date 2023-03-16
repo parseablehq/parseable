@@ -16,7 +16,7 @@
  *
  */
 
-pub mod transport;
+pub mod http;
 
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";

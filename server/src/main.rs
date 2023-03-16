@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
     let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
         object_store_sync();
 
-    let app = handlers::transport::http::run_http(prometheus);
+    let app = handlers::http::run_http(prometheus);
     tokio::pin!(app);
     loop {
         tokio::select! {
