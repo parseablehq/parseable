@@ -16,22 +16,10 @@
  *
  */
 
-pub mod event;
-pub mod logstream;
+pub mod http;
 
-use actix_web::http::StatusCode;
-use actix_web::HttpResponse;
-
-use crate::option::CONFIG;
-
-pub async fn liveness() -> HttpResponse {
-    HttpResponse::new(StatusCode::OK)
-}
-
-pub async fn readiness() -> HttpResponse {
-    if CONFIG.storage().get_object_store().check().await.is_ok() {
-        return HttpResponse::new(StatusCode::OK);
-    }
-
-    HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE)
-}
+const PREFIX_TAGS: &str = "x-p-tag-";
+const PREFIX_META: &str = "x-p-meta-";
+const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
+const FILL_NULL_OPTION_KEY: &str = "send_null";
+const SEPARATOR: char = '^';
