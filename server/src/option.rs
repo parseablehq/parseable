@@ -431,16 +431,16 @@ pub enum Compression {
     ZSTD,
 }
 
-impl From<Compression> for datafusion::parquet::basic::Compression {
+impl From<Compression> for parquet::basic::Compression {
     fn from(value: Compression) -> Self {
         match value {
-            Compression::UNCOMPRESSED => datafusion::parquet::basic::Compression::UNCOMPRESSED,
-            Compression::SNAPPY => datafusion::parquet::basic::Compression::SNAPPY,
-            Compression::GZIP => datafusion::parquet::basic::Compression::GZIP,
-            Compression::LZO => datafusion::parquet::basic::Compression::LZO,
-            Compression::BROTLI => datafusion::parquet::basic::Compression::BROTLI,
-            Compression::LZ4 => datafusion::parquet::basic::Compression::LZ4,
-            Compression::ZSTD => datafusion::parquet::basic::Compression::ZSTD,
+            Compression::UNCOMPRESSED => parquet::basic::Compression::UNCOMPRESSED,
+            Compression::SNAPPY => parquet::basic::Compression::SNAPPY,
+            Compression::GZIP => parquet::basic::Compression::GZIP,
+            Compression::LZO => parquet::basic::Compression::LZO,
+            Compression::BROTLI => parquet::basic::Compression::BROTLI,
+            Compression::LZ4 => parquet::basic::Compression::LZ4,
+            Compression::ZSTD => parquet::basic::Compression::ZSTD,
         }
     }
 }

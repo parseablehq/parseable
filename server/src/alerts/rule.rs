@@ -16,8 +16,8 @@
  *
  */
 
+use arrow_array::{cast::as_string_array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Schema};
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use self::base::{
@@ -27,7 +27,7 @@ use self::base::{
 
 use super::AlertState;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "config")]
 #[serde(rename_all = "camelCase")]
 pub enum Rule {
@@ -35,7 +35,7 @@ pub enum Rule {
 }
 
 impl Rule {
-    pub fn resolves(&self, event: &serde_json::Value) -> AlertState {
+    pub fn resolves(&self, event: RecordBatch) -> Vec<AlertState> {
         match self {
             Rule::Column(rule) => rule.resolves(event),
         }
@@ -54,7 +54,7 @@ impl Rule {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum ColumnRule {
     ConsecutiveNumeric(ConsecutiveNumericRule),
@@ -62,7 +62,7 @@ pub enum ColumnRule {
 }
 
 impl ColumnRule {
-    fn resolves(&self, event: &serde_json::Value) -> AlertState {
+    fn resolves(&self, event: RecordBatch) -> Vec<AlertState> {
         match self {
             Self::ConsecutiveNumeric(rule) => rule.resolves(event),
             Self::ConsecutiveString(rule) => rule.resolves(event),
@@ -120,7 +120,6 @@ impl ColumnRule {
                     NumericOperator::GreaterThanEquals => "greater than or equal to",
                     NumericOperator::LessThan => "less than",
                     NumericOperator::LessThanEquals => "less than or equal to",
-                    NumericOperator::Regex => "matches regex",
                 },
                 value,
                 repeats
@@ -154,7 +153,7 @@ impl ColumnRule {
 
 // Rules for alerts
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsecutiveNumericRule {
     #[serde(flatten)]
@@ -164,20 +163,27 @@ pub struct ConsecutiveNumericRule {
 }
 
 impl ConsecutiveNumericRule {
-    fn resolves(&self, event: &serde_json::Value) -> AlertState {
-        if let Some(resolved) = self.base_rule.resolves(event) {
-            if resolved {
-                self.state.update_and_fetch_state()
-            } else {
-                self.state.fetch_state()
-            }
-        } else {
-            self.state.existing_state()
-        }
+    fn resolves(&self, event: RecordBatch) -> Vec<AlertState> {
+        let Some(column) = event.column_by_name(&self.base_rule.column) else {
+            return Vec::new();
+        };
+
+        let base_matches = self.base_rule.resolves(column);
+
+        base_matches
+            .into_iter()
+            .map(|matches| {
+                if matches {
+                    self.state.update_and_fetch_state()
+                } else {
+                    self.state.fetch_state()
+                }
+            })
+            .collect()
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsecutiveStringRule {
     #[serde(flatten)]
@@ -187,16 +193,23 @@ pub struct ConsecutiveStringRule {
 }
 
 impl ConsecutiveStringRule {
-    fn resolves(&self, event: &serde_json::Value) -> AlertState {
-        if let Some(resolved) = self.base_rule.resolves(event) {
-            if resolved {
-                self.state.update_and_fetch_state()
-            } else {
-                self.state.fetch_state()
-            }
-        } else {
-            self.state.existing_state()
-        }
+    fn resolves(&self, event: RecordBatch) -> Vec<AlertState> {
+        let Some(column) = event.column_by_name(&self.base_rule.column) else {
+            return Vec::new();
+        };
+
+        let base_matches = self.base_rule.resolves(as_string_array(column));
+
+        base_matches
+            .into_iter()
+            .map(|matches| {
+                if matches {
+                    self.state.update_and_fetch_state()
+                } else {
+                    self.state.fetch_state()
+                }
+            })
+            .collect()
     }
 }
 
@@ -204,7 +217,7 @@ fn one() -> u32 {
     1
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConsecutiveRepeatState {
     #[serde(default = "one")]
     pub repeats: u32,
@@ -219,15 +232,6 @@ impl ConsecutiveRepeatState {
 
     fn fetch_state(&self) -> AlertState {
         self._fetch_state(false)
-    }
-
-    fn existing_state(&self) -> AlertState {
-        let repeated = self.repeated.load(Ordering::Acquire);
-        if repeated >= self.repeats {
-            AlertState::Firing
-        } else {
-            AlertState::Listening
-        }
     }
 
     fn _fetch_state(&self, update: bool) -> AlertState {
@@ -294,11 +298,17 @@ mod tests {
 }
 
 pub mod base {
+    use arrow_array::{
+        cast::as_primitive_array,
+        types::{Float64Type, Int64Type, UInt64Type},
+        Array, ArrowPrimitiveType, PrimitiveArray, StringArray,
+    };
+    use itertools::Itertools;
+
     use self::ops::{NumericOperator, StringOperator};
     use regex::Regex;
-    use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct NumericRule {
         pub column: String,
@@ -309,38 +319,50 @@ pub mod base {
     }
 
     impl NumericRule {
-        pub fn resolves(&self, event: &serde_json::Value) -> Option<bool> {
-            let number = match event.get(&self.column)? {
-                serde_json::Value::Number(number) => number,
-                _ => unreachable!("right rule is set for right column type"),
-            };
+        pub fn resolves(&self, event: &dyn Array) -> Vec<bool> {
+            let datatype = event.data_type();
+            match datatype {
+                arrow_schema::DataType::Int64 => Self::eval_op(
+                    self.operator,
+                    self.value.as_i64().unwrap(),
+                    as_primitive_array::<Int64Type>(event),
+                ),
+                arrow_schema::DataType::UInt64 => Self::eval_op(
+                    self.operator,
+                    self.value.as_u64().unwrap(),
+                    as_primitive_array::<UInt64Type>(event),
+                ),
+                arrow_schema::DataType::Float64 => Self::eval_op(
+                    self.operator,
+                    self.value.as_f64().unwrap(),
+                    as_primitive_array::<Float64Type>(event),
+                ),
+                _ => unreachable!(),
+            }
+        }
 
-            let res = match self.operator {
-                NumericOperator::EqualTo => number == &self.value,
-                NumericOperator::NotEqualTo => number != &self.value,
-                NumericOperator::GreaterThan => {
-                    number.as_f64().unwrap() > self.value.as_f64().unwrap()
-                }
-                NumericOperator::GreaterThanEquals => {
-                    number.as_f64().unwrap() >= self.value.as_f64().unwrap()
-                }
-                NumericOperator::LessThan => {
-                    number.as_f64().unwrap() < self.value.as_f64().unwrap()
-                }
-                NumericOperator::LessThanEquals => {
-                    number.as_f64().unwrap() <= self.value.as_f64().unwrap()
-                }
-                NumericOperator::Regex => {
-                    let re: Regex = regex::Regex::new(&self.value.to_string()).unwrap();
-                    re.is_match(&number.to_string())
-                }
-            };
-
-            Some(res)
+        fn eval_op<T: ArrowPrimitiveType>(
+            op: NumericOperator,
+            value: T::Native,
+            arr: &PrimitiveArray<T>,
+        ) -> Vec<bool> {
+            arr.iter()
+                .map(|number| {
+                    let Some(number) = number else { return false };
+                    match op {
+                        NumericOperator::EqualTo => number == value,
+                        NumericOperator::NotEqualTo => number != value,
+                        NumericOperator::GreaterThan => number > value,
+                        NumericOperator::GreaterThanEquals => number >= value,
+                        NumericOperator::LessThan => number < value,
+                        NumericOperator::LessThanEquals => number <= value,
+                    }
+                })
+                .collect()
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct StringRule {
         pub column: String,
@@ -351,48 +373,54 @@ pub mod base {
     }
 
     impl StringRule {
-        pub fn resolves(&self, event: &serde_json::Value) -> Option<bool> {
-            let string = match event.get(&self.column)? {
-                serde_json::Value::String(s) => s,
-                _ => unreachable!("right rule is set for right column type"),
-            };
+        pub fn resolves(&self, event: &StringArray) -> Vec<bool> {
+            event
+                .iter()
+                .map(|string| {
+                    let Some(string) = string else { return false };
+                    Self::matches(
+                        self.operator,
+                        string,
+                        &self.value,
+                        self.ignore_case.unwrap_or_default(),
+                    )
+                })
+                .collect_vec()
+        }
 
-            let res = if self.ignore_case.unwrap_or_default() {
-                match self.operator {
-                    StringOperator::Exact => string.eq_ignore_ascii_case(&self.value),
-                    StringOperator::NotExact => !string.eq_ignore_ascii_case(&self.value),
+        fn matches(op: StringOperator, string: &str, value: &str, ignore_case: bool) -> bool {
+            if ignore_case {
+                match op {
+                    StringOperator::Exact => string.eq_ignore_ascii_case(value),
+                    StringOperator::NotExact => !string.eq_ignore_ascii_case(value),
                     StringOperator::Contains => string
                         .to_ascii_lowercase()
-                        .contains(&self.value.to_ascii_lowercase()),
+                        .contains(&value.to_ascii_lowercase()),
                     StringOperator::NotContains => !string
                         .to_ascii_lowercase()
-                        .contains(&self.value.to_ascii_lowercase()),
+                        .contains(&value.to_ascii_lowercase()),
                     StringOperator::Regex => {
-                        let re: Regex = regex::Regex::new(&self.value).unwrap();
+                        let re: Regex = regex::Regex::new(value).unwrap();
                         re.is_match(string)
                     }
                 }
             } else {
-                match self.operator {
-                    StringOperator::Exact => string.eq(&self.value),
-                    StringOperator::NotExact => !string.eq(&self.value),
-                    StringOperator::Contains => string.contains(&self.value),
-                    StringOperator::NotContains => !string.contains(&self.value),
+                match op {
+                    StringOperator::Exact => string.eq(value),
+                    StringOperator::NotExact => !string.eq(value),
+                    StringOperator::Contains => string.contains(value),
+                    StringOperator::NotContains => !string.contains(value),
                     StringOperator::Regex => {
-                        let re: Regex = regex::Regex::new(&self.value).unwrap();
+                        let re: Regex = regex::Regex::new(value).unwrap();
                         re.is_match(string)
                     }
                 }
-            };
-
-            Some(res)
+            }
         }
     }
 
     pub mod ops {
-        use serde::{Deserialize, Serialize};
-
-        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         pub enum NumericOperator {
             #[serde(alias = "=")]
@@ -407,8 +435,6 @@ pub mod base {
             LessThan,
             #[serde(alias = "<=")]
             LessThanEquals,
-            #[serde(alias = "~")]
-            Regex,
         }
 
         impl Default for NumericOperator {
@@ -417,7 +443,7 @@ pub mod base {
             }
         }
 
-        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         pub enum StringOperator {
             #[serde(alias = "=")]

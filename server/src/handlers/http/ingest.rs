@@ -17,20 +17,21 @@
  */
 
 use actix_web::http::header::ContentType;
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{HttpRequest, HttpResponse};
+use bytes::Bytes;
 use http::StatusCode;
 use serde_json::Value;
 
-use crate::event;
 use crate::event::error::EventError;
+use crate::event::format::EventFormat;
+use crate::event::{self, format};
 use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
-use crate::utils::json::{flatten_json_body, merge};
 
-pub async fn ingest(
-    req: HttpRequest,
-    body: web::Json<serde_json::Value>,
-) -> Result<HttpResponse, PostError> {
+// Handler for POST /api/v1/ingest
+// ingests events by extacting stream name from header
+// creates if stream does not exist
+pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     if let Some((_, stream_name)) = req
         .headers()
         .iter()
@@ -50,75 +51,57 @@ pub async fn ingest(
 // Handler for POST /api/v1/logstream/{logstream}
 // only ingests events into the specified logstream
 // fails if the logstream does not exist
-pub async fn post_event(
-    req: HttpRequest,
-    body: web::Json<serde_json::Value>,
-) -> Result<HttpResponse, PostError> {
+pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     push_logs(stream_name, req, body).await?;
     Ok(HttpResponse::Ok().finish())
 }
 
-async fn push_logs(
-    stream_name: String,
-    req: HttpRequest,
-    body: web::Json<serde_json::Value>,
-) -> Result<(), PostError> {
-    let tags_n_metadata = [
-        (
-            "p_tags".to_string(),
-            Value::String(collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?),
-        ),
-        (
-            "p_metadata".to_string(),
-            Value::String(collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?),
-        ),
-    ];
+async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
+    let (size, rb) = into_event_batch(req, body, stream_name.clone())?;
 
-    match body.0 {
-        Value::Array(array) => {
-            for mut body in array {
-                merge(&mut body, tags_n_metadata.clone().into_iter());
-                let body = flatten_json_body(body).map_err(|_| PostError::FlattenError)?;
-                let schema_key = event::get_schema_key(&body);
-
-                let event = event::Event {
-                    body,
-                    stream_name: stream_name.clone(),
-                    schema_key,
-                };
-
-                event.process().await?;
-            }
-        }
-        mut body @ Value::Object(_) => {
-            merge(&mut body, tags_n_metadata.into_iter());
-            let body = flatten_json_body(body).map_err(|_| PostError::FlattenError)?;
-            let schema_key = event::get_schema_key(&body);
-            let event = event::Event {
-                body,
-                stream_name,
-                schema_key,
-            };
-
-            event.process().await?;
-        }
-        _ => return Err(PostError::Invalid),
+    event::Event {
+        rb,
+        stream_name,
+        origin_format: "json",
+        origin_size: size as u64,
     }
+    .process()
+    .await?;
 
     Ok(())
 }
 
+// This function is decoupled from handler itself for testing purpose
+fn into_event_batch(
+    req: HttpRequest,
+    body: Bytes,
+    stream_name: String,
+) -> Result<(usize, arrow_array::RecordBatch), PostError> {
+    let tags = collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?;
+    let metadata = collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?;
+    let size = body.len();
+    let body: Value = serde_json::from_slice(&body)?;
+    let event = format::json::Event {
+        stream_name,
+        data: body,
+        tags,
+        metadata,
+    };
+    let rb = event.into_recordbatch()?;
+    Ok((size, rb))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PostError {
+    #[error("Could not deserialize into JSON object, {0}")]
+    SerdeError(#[from] serde_json::Error),
     #[error("Header Error: {0}")]
     Header(#[from] ParseHeaderError),
     #[error("Event Error: {0}")]
     Event(#[from] EventError),
-    #[error("Invalid Request")]
-    Invalid,
-    #[error("failed to flatten the json object")]
-    FlattenError,
+    #[error("Invalid Request: {0}")]
+    Invalid(#[from] anyhow::Error),
     #[error("Failed to create stream due to {0}")]
     CreateStream(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -126,11 +109,11 @@ pub enum PostError {
 impl actix_web::ResponseError for PostError {
     fn status_code(&self) -> http::StatusCode {
         match self {
+            PostError::SerdeError(_) => StatusCode::BAD_REQUEST,
             PostError::Header(_) => StatusCode::BAD_REQUEST,
             PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::Invalid => StatusCode::BAD_REQUEST,
+            PostError::Invalid(_) => StatusCode::BAD_REQUEST,
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::FlattenError => StatusCode::BAD_REQUEST,
         }
     }
 

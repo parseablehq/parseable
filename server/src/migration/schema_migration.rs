@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use itertools::Itertools;
 
 pub(super) fn v1_v2(schema: Option<Schema>) -> anyhow::Result<HashMap<String, Schema>> {

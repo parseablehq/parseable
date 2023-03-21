@@ -33,7 +33,9 @@ use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
-use datafusion::datasource::object_store::ObjectStoreRegistry;
+use datafusion::datasource::object_store::{
+    DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
+};
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use futures::stream::FuturesUnordered;
@@ -120,8 +122,9 @@ impl ObjectStorageProvider for S3Config {
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
 
-        let object_store_registry = ObjectStoreRegistry::new();
-        object_store_registry.register_store("s3", &self.bucket_name, Arc::new(s3));
+        let object_store_registry = DefaultObjectStoreRegistry::new();
+        let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
+        object_store_registry.register_store(url.as_ref(), Arc::new(s3));
 
         let config =
             RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry));

@@ -18,8 +18,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::{Deserialize, Serialize};
-
 #[derive(Debug)]
 pub struct StatsCounter {
     pub events_ingested: AtomicU64,
@@ -73,13 +71,13 @@ impl StatsCounter {
         self.storage_size.fetch_add(size, Ordering::AcqRel);
     }
 
-    pub fn increase_event_by_one(&self) {
-        self.events_ingested.fetch_add(1, Ordering::Relaxed);
+    pub fn increase_event_by_n(&self, n: u64) {
+        self.events_ingested.fetch_add(n, Ordering::Relaxed);
     }
 }
 
 /// Helper struct type created by copying stats values from metadata
-#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
     pub events: u64,
     pub ingestion: u64,

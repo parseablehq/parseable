@@ -21,6 +21,7 @@ pub mod header_parsing;
 pub mod json;
 pub mod uid;
 pub mod update;
+pub mod arrow;
 
 use std::path::Path;
 

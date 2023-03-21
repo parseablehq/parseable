@@ -133,7 +133,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route(web::post().to(ingest::post_event))
                 // DELETE "/logstream/{logstream}" ==> Delete log stream
                 .route(web::delete().to(logstream::delete))
-                .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
         )
         .service(
             web::resource("/alert")
@@ -167,7 +167,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             .service(
                 web::resource("/ingest")
                     .route(web::post().to(ingest::ingest))
-                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
             .service(web::resource("/liveness").route(web::get().to(health_check::liveness)))

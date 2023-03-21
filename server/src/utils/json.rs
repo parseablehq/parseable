@@ -21,23 +21,8 @@ use serde_json::Value;
 
 pub mod flatten;
 
-pub fn flatten_json_body(body: Value) -> Result<Value, ()> {
+pub fn flatten_json_body(body: serde_json::Value) -> Result<Value, anyhow::Error> {
     flatten::flatten(body, "_")
-}
-
-pub fn merge(value: &mut Value, fields: impl Iterator<Item = (String, Value)>) {
-    if let Value::Object(m) = value {
-        for (k, v) in fields {
-            match m.get_mut(&k) {
-                Some(val) => {
-                    *val = v;
-                }
-                None => {
-                    m.insert(k, v);
-                }
-            }
-        }
-    }
 }
 
 pub fn convert_to_string(value: &Value) -> Value {

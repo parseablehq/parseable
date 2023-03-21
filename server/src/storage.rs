@@ -28,7 +28,6 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::parquet::errors::ParquetError;
 use lazy_static::lazy_static;
-use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
 use std::fs::create_dir_all;
@@ -68,7 +67,7 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 // const PERMISSIONS_READ_WRITE: &str = "readwrite";
 const ACCESS_ALL: &str = "all";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ObjectStoreFormat {
     /// Version of schema registry
     pub version: String,
@@ -82,7 +81,7 @@ pub struct ObjectStoreFormat {
     pub stats: Stats,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Owner {
     pub id: String,
     pub group: String,
@@ -94,7 +93,7 @@ impl Owner {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Permisssion {
     pub id: String,
     pub group: String,
@@ -196,7 +195,7 @@ impl CACHED_FILES {
     }
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct LogStream {
     pub name: String,
 }
