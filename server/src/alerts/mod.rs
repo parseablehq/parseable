@@ -26,9 +26,9 @@ pub mod rule;
 pub mod target;
 
 use crate::metrics::ALERTS_STATES;
-use crate::storage;
 use crate::utils::uid;
 use crate::CONFIG;
+use crate::{storage, utils};
 
 pub use self::rule::Rule;
 use self::target::Target;
@@ -97,16 +97,9 @@ impl Alert {
         let deployment_mode = storage::StorageMetadata::global().mode.to_string();
         let additional_labels =
             serde_json::to_value(rule).expect("rule is perfectly deserializable");
-        let mut flatten_additional_labels = serde_json::json!({});
-        flatten_json::flatten(
-            &additional_labels,
-            &mut flatten_additional_labels,
-            Some("rule".to_string()),
-            false,
-            Some("_"),
-        )
-        .expect("can be flattened");
-
+        let flatten_additional_labels =
+            utils::json::flatten::flatten_with_parent_prefix(additional_labels, "rule", "_")
+                .expect("can be flattened");
         Context::new(
             stream_name,
             AlertInfo::new(
