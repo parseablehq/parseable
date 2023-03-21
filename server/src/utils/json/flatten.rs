@@ -50,9 +50,10 @@ pub fn flatten_object(
     separator: &str,
 ) -> Result<(), ()> {
     for (key, value) in nested_dict.into_iter() {
-        let new_key = parent_key
-            .map(|parent_key| format!("{}{}{}", parent_key, separator, key))
-            .unwrap_or(key);
+        let new_key = parent_key.map_or_else(
+            || key.clone(),
+            |parent_key| format!("{}{}{}", parent_key, separator, key),
+        );
         match value {
             Value::Object(obj) => flatten_object(map, Some(&new_key), obj, separator)?,
             Value::Array(arr) => {
@@ -83,9 +84,10 @@ fn flatten_object_disallow_array(
     separator: &str,
 ) -> Result<(), ()> {
     for (key, value) in object.into_iter() {
-        let new_key = parent_key
-            .map(|parent_key| format!("{}{}{}", parent_key, separator, key))
-            .unwrap_or(key);
+        let new_key = parent_key.map_or_else(
+            || key.clone(),
+            |parent_key| format!("{}{}{}", parent_key, separator, key),
+        );
         match value {
             Value::Object(obj) => {
                 flatten_object_disallow_array(map, Some(&new_key), obj, separator)?;
