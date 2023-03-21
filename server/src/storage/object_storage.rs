@@ -194,6 +194,17 @@ pub trait ObjectStorage: Sync + 'static {
                     "metadata".to_string(),
                     Value::Object(serde_json::Map::new()),
                 );
+
+                for field in schema["fields"]
+                    .as_array_mut()
+                    .expect("fields is json array")
+                {
+                    let map = field.as_object_mut().unwrap();
+                    map.insert(
+                        "metadata".to_string(),
+                        Value::Object(serde_json::Map::new()),
+                    );
+                }
             }
 
             Ok(serde_json::from_value(schema_map)
