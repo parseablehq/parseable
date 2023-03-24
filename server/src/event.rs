@@ -100,6 +100,11 @@ impl Event {
         let stream_name = &self.stream_name;
         let schema_key = &self.schema_key;
 
+        let old = metadata::STREAM_INFO.merged_schema(stream_name)?;
+        if Schema::try_merge(vec![old, schema.clone()]).is_err() {
+            return Err(EventError::SchemaMismatch);
+        };
+
         commit_schema(stream_name, schema_key, Arc::new(schema))?;
         self.process_event(event)
     }
