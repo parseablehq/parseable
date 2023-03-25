@@ -29,7 +29,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 use ulid::Ulid;
-use uptime_lib;
+
 
 const ANALYTICS_SERVER_URL: &str = "https://webhook.site/8d522b54-2d38-4796-86d3-82612948fe3d";
 const ANALYTICS_SEND_INTERVAL_SECONDS: Interval = clokwerk::Interval::Seconds(20);
@@ -56,11 +56,8 @@ pub struct Report {
 impl Report {
     pub fn new(metrics: HashMap<String, Value>) -> Self {
         let mut upt: f64 = 0.0;
-        match uptime_lib::get() {
-            Ok(uptime) => {
-                upt = uptime.as_secs_f64();
-            }
-            Err(_) => {}
+        if let Ok(uptime) = uptime_lib::get() {
+            upt = uptime.as_secs_f64();
         }
         Self {
             deployment_id: storage::StorageMetadata::global().deployment_id,
