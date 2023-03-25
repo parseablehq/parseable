@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub struct StatsCounter {
-    events_ingested: AtomicU64,
+    pub events_ingested: AtomicU64,
     ingestion_size: AtomicU64,
     storage_size: AtomicU64,
 }

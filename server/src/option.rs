@@ -129,6 +129,17 @@ impl Config {
         self.parseable.username == Server::DEFAULT_USERNAME
             && self.parseable.password == Server::DEFAULT_PASSWORD
     }
+
+    // returns the string representation of the storage mode
+    // drive --> Local drive
+    // s3 --> S3 bucket
+    pub fn mode_string(&self) -> &str {
+        let mut mode = "S3 bucket";
+        if self.storage_name == "drive" {
+            mode = "Local drive";
+        }
+        mode
+    }
 }
 
 impl Default for Config {

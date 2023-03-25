@@ -16,17 +16,13 @@
  *
  */
 
-use crate::banner::about::current;
-use std::env;
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
-use ulid::Ulid;
 
+use crate::about;
 use crate::storage::StorageMetadata;
-
-static K8S_ENV_TO_CHECK: &str = "KUBERNETES_SERVICE_HOST";
 
 #[derive(Debug)]
 pub struct LatestRelease {
@@ -34,41 +30,9 @@ pub struct LatestRelease {
     pub date: DateTime<Utc>,
 }
 
-fn is_docker() -> bool {
-    Path::new("/.dockerenv").exists()
-}
-
-fn is_k8s() -> bool {
-    env::var(K8S_ENV_TO_CHECK).is_ok()
-}
-
-fn platform() -> &'static str {
-    if is_k8s() {
-        "Kubernetes"
-    } else if is_docker() {
-        "Docker"
-    } else {
-        "Native"
-    }
-}
-
-// User Agent for Download API call
-// Format: Parseable/<UID>/<version>/<commit_hash> (<OS>; <Platform>)
-fn user_agent(uid: &Ulid) -> String {
-    let info = os_info::get();
-    format!(
-        "Parseable/{}/{}/{} ({}; {})",
-        uid,
-        current().0,
-        current().1,
-        info.os_type(),
-        platform()
-    )
-}
-
 pub async fn get_latest(meta: &StorageMetadata) -> Result<LatestRelease, anyhow::Error> {
     let agent = reqwest::ClientBuilder::new()
-        .user_agent(user_agent(&meta.deployment_id))
+        .user_agent(about::user_agent(&meta.deployment_id))
         .timeout(Duration::from_secs(8))
         .build()
         .expect("client can be built on this system");

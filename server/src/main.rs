@@ -30,7 +30,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+mod about;
 mod alerts;
+mod analytics;
 mod banner;
 mod event;
 mod handlers;
@@ -74,6 +76,8 @@ async fn main() -> anyhow::Result<()> {
             start_profiling(url.unwrap());
         }
     }
+
+    analytics::init_analytics_scheduler().await;
 
     if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
         log::warn!("could not populate local metadata. {:?}", e);
