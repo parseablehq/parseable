@@ -29,10 +29,21 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 use ulid::Ulid;
-
+use sysinfo::{System, SystemExt, CpuExt};
+use lazy_static::lazy_static;
+use std::sync::Mutex;
 
 const ANALYTICS_SERVER_URL: &str = "https://webhook.site/8d522b54-2d38-4796-86d3-82612948fe3d";
 const ANALYTICS_SEND_INTERVAL_SECONDS: Interval = clokwerk::Interval::Seconds(20);
+
+lazy_static! {
+    pub static ref SYS_INFO: Mutex<System> = Mutex::new(System::new_all());
+}
+
+pub fn refresh_sys_info() {
+    let mut sys_info = SYS_INFO.lock().unwrap();
+    sys_info.refresh_all();
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct Report {
@@ -40,12 +51,12 @@ pub struct Report {
     report_created_at: DateTime<Utc>,
     #[serde(rename = "uptime_secs")]
     uptime: f64,
-    #[serde(rename = "os_type")]
-    operating_system_type: String,
+    #[serde(rename = "os_name")]
+    operating_system_name: String,
     #[serde(rename = "os_version")]
     operating_system_version: String,
-    #[serde(rename = "os_bitness")]
-    operating_system_bitness: String,
+    cpu_count: usize,
+    memory_total_bytes: u64,
     platform: String,
     mode: String,
     version: String,
@@ -54,23 +65,37 @@ pub struct Report {
 }
 
 impl Report {
-    pub fn new(metrics: HashMap<String, Value>) -> Self {
+    pub fn new() -> Self {
         let mut upt: f64 = 0.0;
         if let Ok(uptime) = uptime_lib::get() {
             upt = uptime.as_secs_f64();
         }
+        
+        refresh_sys_info();
+        let mut os_version = "Unknown".to_string();
+        let mut os_name = "Unknown".to_string();
+        let mut cpu_count = 0;
+        let mut mem_total = 0;
+        if let Ok(info) = SYS_INFO.lock() {
+            os_version = info.os_version().unwrap_or_default();
+            os_name = info.name().unwrap_or_default();
+            cpu_count = info.cpus().len();
+            mem_total = info.total_memory();
+        }
+
         Self {
             deployment_id: storage::StorageMetadata::global().deployment_id,
             uptime: upt,
             report_created_at: Utc::now(),
-            operating_system_type: os_info::get().os_type().to_string(),
-            operating_system_version: os_info::get().version().to_string(),
-            operating_system_bitness: os_info::get().bitness().to_string(),
+            operating_system_name: os_name,
+            operating_system_version: os_version,
+            cpu_count: cpu_count,
+            memory_total_bytes: mem_total,
             platform: platform().to_string(),
             mode: CONFIG.mode_string().to_string(),
             version: current().released_version.to_string(),
             commit_hash: current().commit_hash,
-            metrics,
+            metrics: build_metrics(),
         }
     }
 
@@ -94,9 +119,21 @@ fn total_events() -> u64 {
 }
 
 fn build_metrics() -> HashMap<String, Value> {
+    // sysinfo refreshed in previous function 
+    // so no need to refresh again
+    let sys = SYS_INFO.lock().unwrap();
+
     let mut metrics = HashMap::new();
-    metrics.insert("total_stream_count".to_string(), total_streams().into());
-    metrics.insert("total_events_ingested".to_string(), total_events().into());
+    metrics.insert("stream_count".to_string(), total_streams().into());
+    metrics.insert("total_events_count".to_string(), total_events().into());
+    metrics.insert("total_json_bytes".to_string(), 0.into());
+    metrics.insert("total_parquet_bytes".to_string(), 0.into());
+    metrics.insert("memory_in_use_bytes".to_string(), sys.used_memory().into());
+    metrics.insert("memory_free_bytes".to_string(), sys.free_memory().into());
+
+    for cpu in sys.cpus() {
+        metrics.insert(format!("cpu_{}_usage_percent", cpu.name()), cpu.cpu_usage().into());
+    }
 
     metrics
 }
@@ -108,7 +145,7 @@ pub async fn init_analytics_scheduler() {
     scheduler
         .every(ANALYTICS_SEND_INTERVAL_SECONDS)
         .run(move || async {
-            Report::new(build_metrics()).send().await;
+            Report::new().send().await;
         });
 
     tokio::spawn(async move {

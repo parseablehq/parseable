@@ -23,13 +23,14 @@ use crossterm::style::Stylize;
 use std::path::Path;
 use std::{env, fmt};
 use ulid::Ulid;
+use sysinfo::SystemExt;
 
 use crate::option::Config;
 use crate::storage::StorageMetadata;
 use crate::utils::update;
+use crate::analytics;
 
 static K8S_ENV_TO_CHECK: &str = "KUBERNETES_SERVICE_HOST";
-
 pub enum ParseableVersion {
     Version(semver::Version),
     Prerelease(semver::Prerelease),
@@ -56,13 +57,13 @@ pub fn platform() -> &'static str {
 // User Agent for Download API call
 // Format: Parseable/<UID>/<version>/<commit_hash> (<OS>; <Platform>)
 pub fn user_agent(uid: &Ulid) -> String {
-    let info = os_info::get();
+    analytics::refresh_sys_info();
     format!(
-        "Parseable/{}/{}/{} ({}; {})",
+        "Parseable/{}/{}/{} ({:?}; {})",
         uid,
         current().released_version,
         current().commit_hash,
-        info.os_type(),
+        analytics::SYS_INFO.lock().unwrap().name().unwrap_or_default(),
         platform()
     )
 }
