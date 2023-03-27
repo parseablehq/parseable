@@ -22,13 +22,13 @@ use chrono_humanize::{Accuracy, Tense};
 use crossterm::style::Stylize;
 use std::path::Path;
 use std::{env, fmt};
-use ulid::Ulid;
 use sysinfo::SystemExt;
+use ulid::Ulid;
 
+use crate::analytics;
 use crate::option::Config;
 use crate::storage::StorageMetadata;
 use crate::utils::update;
-use crate::analytics;
 
 static K8S_ENV_TO_CHECK: &str = "KUBERNETES_SERVICE_HOST";
 pub enum ParseableVersion {
@@ -63,7 +63,11 @@ pub fn user_agent(uid: &Ulid) -> String {
         uid,
         current().released_version,
         current().commit_hash,
-        analytics::SYS_INFO.lock().unwrap().name().unwrap_or_default(),
+        analytics::SYS_INFO
+            .lock()
+            .unwrap()
+            .name()
+            .unwrap_or_default(),
         platform()
     )
 }

@@ -24,14 +24,14 @@ use crate::storage;
 
 use chrono::{DateTime, Utc};
 use clokwerk::{AsyncScheduler, Interval};
+use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::time::Duration;
-use ulid::Ulid;
-use sysinfo::{System, SystemExt, CpuExt};
-use lazy_static::lazy_static;
 use std::sync::Mutex;
+use std::time::Duration;
+use sysinfo::{CpuExt, System, SystemExt};
+use ulid::Ulid;
 
 const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io/";
 const ANALYTICS_SEND_INTERVAL_SECONDS: Interval = clokwerk::Interval::Hours(1);
@@ -70,7 +70,7 @@ impl Report {
         if let Ok(uptime) = uptime_lib::get() {
             upt = uptime.as_secs_f64();
         }
-        
+
         refresh_sys_info();
         let mut os_version = "Unknown".to_string();
         let mut os_name = "Unknown".to_string();
@@ -89,7 +89,7 @@ impl Report {
             report_created_at: Utc::now(),
             operating_system_name: os_name,
             operating_system_version: os_version,
-            cpu_count: cpu_count,
+            cpu_count,
             memory_total_bytes: mem_total,
             platform: platform().to_string(),
             mode: CONFIG.mode_string().to_string(),
@@ -124,7 +124,7 @@ fn total_event_stats() -> (u64, u64, u64) {
 }
 
 fn build_metrics() -> HashMap<String, Value> {
-    // sysinfo refreshed in previous function 
+    // sysinfo refreshed in previous function
     // so no need to refresh again
     let sys = SYS_INFO.lock().unwrap();
 
@@ -132,15 +132,24 @@ fn build_metrics() -> HashMap<String, Value> {
     metrics.insert("stream_count".to_string(), total_streams().into());
 
     // total_event_stats returns event count, json bytes, parquet bytes in that order
-    metrics.insert("total_events_count".to_string(), total_event_stats().0.into());
+    metrics.insert(
+        "total_events_count".to_string(),
+        total_event_stats().0.into(),
+    );
     metrics.insert("total_json_bytes".to_string(), total_event_stats().1.into());
-    metrics.insert("total_parquet_bytes".to_string(), total_event_stats().2.into());
+    metrics.insert(
+        "total_parquet_bytes".to_string(),
+        total_event_stats().2.into(),
+    );
 
     metrics.insert("memory_in_use_bytes".to_string(), sys.used_memory().into());
     metrics.insert("memory_free_bytes".to_string(), sys.free_memory().into());
 
     for cpu in sys.cpus() {
-        metrics.insert(format!("cpu_{}_usage_percent", cpu.name()), cpu.cpu_usage().into());
+        metrics.insert(
+            format!("cpu_{}_usage_percent", cpu.name()),
+            cpu.cpu_usage().into(),
+        );
     }
 
     metrics

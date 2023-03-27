@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
         object_store_sync();
 
-    // all internal data structures populated now. 
+    // all internal data structures populated now.
     // start the analytics scheduler if enabled
     if CONFIG.parseable.send_analytics {
         analytics::init_analytics_scheduler().await;
