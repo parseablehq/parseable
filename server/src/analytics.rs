@@ -33,7 +33,7 @@ use std::time::Duration;
 use sysinfo::{CpuExt, System, SystemExt};
 use ulid::Ulid;
 
-const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io/";
+const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io:80";
 const ANALYTICS_SEND_INTERVAL_SECONDS: Interval = clokwerk::Interval::Hours(1);
 
 lazy_static! {
