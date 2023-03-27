@@ -30,7 +30,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+mod about;
 mod alerts;
+mod analytics;
 mod banner;
 mod event;
 mod handlers;
@@ -88,6 +90,12 @@ async fn main() -> anyhow::Result<()> {
     let (localsync_handler, mut localsync_outbox, localsync_inbox) = run_local_sync();
     let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
         object_store_sync();
+
+    // all internal data structures populated now.
+    // start the analytics scheduler if enabled
+    if CONFIG.parseable.send_analytics {
+        analytics::init_analytics_scheduler().await;
+    }
 
     let app = handlers::http::run_http(prometheus);
     tokio::pin!(app);

@@ -19,6 +19,7 @@
 
 use crossterm::style::Stylize;
 
+use crate::about;
 use crate::utils::uid::Uid;
 use crate::{option::Config, storage::StorageMetadata};
 
@@ -72,10 +73,6 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
 }
 
 fn storage_info(config: &Config) {
-    let mut mode = "S3 bucket";
-    if config.storage_name == "drive" {
-        mode = "Local drive";
-    }
     eprintln!(
         "
     {}
@@ -83,125 +80,8 @@ fn storage_info(config: &Config) {
         Staging:            \"{}\"
         Store:              \"{}\"",
         "Storage:".to_string().cyan().bold(),
-        mode,
+        config.mode_string(),
         config.staging_dir().to_string_lossy(),
         config.storage().get_endpoint(),
     )
-}
-
-pub mod about {
-    use chrono::Duration;
-    use chrono_humanize::{Accuracy, Tense};
-    use crossterm::style::Stylize;
-    use std::fmt;
-
-    use crate::option::Config;
-    use crate::storage::StorageMetadata;
-    use crate::utils::update;
-
-    pub enum ParseableVersion {
-        Version(semver::Version),
-        Prerelease(semver::Prerelease),
-    }
-
-    impl fmt::Display for ParseableVersion {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                ParseableVersion::Version(v) => write!(f, "{v}"),
-                ParseableVersion::Prerelease(p) => write!(f, "{p}"),
-            }
-        }
-    }
-
-    pub fn print_about(
-        current_version: semver::Version,
-        latest_release: Option<update::LatestRelease>,
-        commit_hash: String,
-    ) {
-        eprint!(
-            "
-    {}
-        Version:            \"v{}\"",
-            "About:".to_string().bold(),
-            current_version,
-        );
-
-        if let Some(latest_release) = latest_release {
-            if latest_release.version > current_version {
-                print_latest_release(latest_release);
-            }
-        }
-
-        eprintln!(
-            "
-        Commit:             \"{commit_hash}\"
-        Docs:               \"https://www.parseable.io/docs\""
-        );
-    }
-
-    fn print_latest_release(latest_release: update::LatestRelease) {
-        let time_since_latest_release = chrono::Utc::now() - latest_release.date;
-        let time_since_latest_release = humanize_time(time_since_latest_release);
-        let fmt_latest_version = format!(
-            " ( v{} released {} ago. Download new release from https://github.com/parseablehq/parseable/releases/latest )",
-            latest_release.version, time_since_latest_release
-        );
-        eprint!("{}", fmt_latest_version.red());
-    }
-
-    pub async fn print(config: &Config, meta: &StorageMetadata) {
-        // print current version
-        let current = current();
-        let latest_release = if config.parseable.check_update {
-            update::get_latest(meta).await.ok()
-        } else {
-            None
-        };
-
-        match current.0 {
-            ParseableVersion::Version(current_version) => {
-                print_about(current_version, latest_release, current.1);
-            }
-            ParseableVersion::Prerelease(current_prerelease) => {
-                eprintln!(
-                    "
-    {} {} ",
-                    "Current Version:".to_string().blue().bold(),
-                    current_prerelease
-                );
-            }
-        }
-    }
-
-    pub fn current() -> (ParseableVersion, String) {
-        let build_semver = env!("VERGEN_BUILD_SEMVER");
-        let sha_hash = env!("VERGEN_GIT_SHA_SHORT");
-        let mut git_semver = env!("VERGEN_GIT_SEMVER");
-
-        if &git_semver[..1] == "v" {
-            git_semver = &git_semver[1..];
-        }
-
-        if build_semver == git_semver {
-            (
-                ParseableVersion::Version(
-                    semver::Version::parse(build_semver)
-                        .expect("VERGEN_BUILD_SEMVER is always valid semver"),
-                ),
-                sha_hash.to_string(),
-            )
-        } else {
-            (
-                ParseableVersion::Prerelease(
-                    semver::Prerelease::new(git_semver)
-                        .expect("VERGEN_GIT_SEMVER is always valid semver"),
-                ),
-                sha_hash.to_string(),
-            )
-        }
-    }
-
-    fn humanize_time(time_passed: Duration) -> String {
-        chrono_humanize::HumanTime::from(time_passed).to_text_en(Accuracy::Rough, Tense::Present)
-    }
 }
