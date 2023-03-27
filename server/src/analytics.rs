@@ -33,8 +33,8 @@ use sysinfo::{System, SystemExt, CpuExt};
 use lazy_static::lazy_static;
 use std::sync::Mutex;
 
-const ANALYTICS_SERVER_URL: &str = "https://webhook.site/8d522b54-2d38-4796-86d3-82612948fe3d";
-const ANALYTICS_SEND_INTERVAL_SECONDS: Interval = clokwerk::Interval::Seconds(20);
+const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io/";
+const ANALYTICS_SEND_INTERVAL_SECONDS: Interval = clokwerk::Interval::Hours(1);
 
 lazy_static! {
     pub static ref SYS_INFO: Mutex<System> = Mutex::new(System::new_all());
@@ -109,13 +109,18 @@ fn total_streams() -> usize {
     metadata::STREAM_INFO.list_streams().len()
 }
 
-fn total_events() -> u64 {
+fn total_event_stats() -> (u64, u64, u64) {
     let mut total_events: u64 = 0;
+    let mut total_parquet_bytes: u64 = 0;
+    let mut total_json_bytes: u64 = 0;
+
     for stream in metadata::STREAM_INFO.list_streams() {
         let stats = metadata::STREAM_INFO.get_stats(&stream).unwrap();
         total_events += stats.events;
+        total_parquet_bytes += stats.storage;
+        total_json_bytes += stats.ingestion;
     }
-    total_events
+    (total_events, total_json_bytes, total_parquet_bytes)
 }
 
 fn build_metrics() -> HashMap<String, Value> {
@@ -125,9 +130,12 @@ fn build_metrics() -> HashMap<String, Value> {
 
     let mut metrics = HashMap::new();
     metrics.insert("stream_count".to_string(), total_streams().into());
-    metrics.insert("total_events_count".to_string(), total_events().into());
-    metrics.insert("total_json_bytes".to_string(), 0.into());
-    metrics.insert("total_parquet_bytes".to_string(), 0.into());
+
+    // total_event_stats returns event count, json bytes, parquet bytes in that order
+    metrics.insert("total_events_count".to_string(), total_event_stats().0.into());
+    metrics.insert("total_json_bytes".to_string(), total_event_stats().1.into());
+    metrics.insert("total_parquet_bytes".to_string(), total_event_stats().2.into());
+
     metrics.insert("memory_in_use_bytes".to_string(), sys.used_memory().into());
     metrics.insert("memory_free_bytes".to_string(), sys.free_memory().into());
 

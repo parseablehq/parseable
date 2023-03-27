@@ -207,6 +207,9 @@ pub struct Server {
     /// Server should check for update or not
     pub check_update: bool,
 
+    /// Server should send anonymous analytics or not
+    pub send_analytics: bool,
+
     /// Rows in Parquet Rowgroup
     pub row_group_size: usize,
 
@@ -248,6 +251,10 @@ impl FromArgMatches for Server {
             .get_one::<bool>(Self::CHECK_UPDATE)
             .cloned()
             .expect("default for check update");
+        self.send_analytics = m
+            .get_one::<bool>(Self::SEND_ANALYTICS)
+            .cloned()
+            .expect("default for send analytics");
         self.row_group_size = m
             .get_one::<usize>(Self::ROW_GROUP_SIZE)
             .cloned()
@@ -281,6 +288,7 @@ impl Server {
     pub const USERNAME: &str = "username";
     pub const PASSWORD: &str = "password";
     pub const CHECK_UPDATE: &str = "check-update";
+    pub const SEND_ANALYTICS: &str = "send-analytics";
     pub const ROW_GROUP_SIZE: &str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &str = "compression-algo";
     pub const DEFAULT_USERNAME: &str = "admin";
@@ -294,7 +302,6 @@ impl Server {
         if self.tls_cert_path.is_some() && self.tls_key_path.is_some() {
             return "https".to_string();
         }
-
         "http".to_string()
     }
 
@@ -369,7 +376,7 @@ impl Server {
                     .required(false)
                     .default_value("true")
                     .value_parser(value_parser!(bool))
-                    .help("Password for the basic authentication on the server"),
+                    .help("Disable/Enable checking for updates"),
             )
             .arg(
                 Arg::new(Self::ROW_GROUP_SIZE)
@@ -380,6 +387,16 @@ impl Server {
                     .default_value("16384")
                     .value_parser(value_parser!(usize))
                     .help("Number of rows in a row groups"),
+            )
+            .arg(
+                Arg::new(Self::SEND_ANALYTICS)
+                    .long(Self::SEND_ANALYTICS)
+                    .env("P_SEND_ANONYMOUS_USAGE_DATA")
+                    .value_name("BOOL")
+                    .required(false)
+                    .default_value("true")
+                    .value_parser(value_parser!(bool))
+                    .help("Disable/Enable sending anonymous user data"),
             )
             .arg(
                 Arg::new(Self::PARQUET_COMPRESSION_ALGO)
