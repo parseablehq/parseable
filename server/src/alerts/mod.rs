@@ -128,15 +128,10 @@ pub struct Message {
 }
 
 impl Message {
-
     // checks if message (with a column name) is valid (i.e. the column name is present in the schema)
     pub fn valid(&self, schema: &Schema, column: Option<&str>) -> bool {
         if let Some(col) = column {
-            if schema.field_with_name(col).is_ok() {
-                return true;
-            } else {
-                return false;
-            }
+            return schema.field_with_name(col).is_ok();
         }
         true
     }

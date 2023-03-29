@@ -154,7 +154,7 @@ pub async fn put_alert(
     let schema = STREAM_INFO.merged_schema(&stream_name)?;
     for alert in &alerts.alerts {
         let column = alert.message.extract_column_name();
-        let is_valid= alert.message.valid(&schema, column);
+        let is_valid = alert.message.valid(&schema, column);
         if !is_valid {
             let col = column.unwrap_or("");
             return Err(StreamError::InvalidAlertMessage(
