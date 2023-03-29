@@ -17,6 +17,8 @@
  */
 
 use async_trait::async_trait;
+use datafusion::arrow::datatypes::Schema;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -51,7 +53,8 @@ pub struct Alert {
     #[serde(default = "crate::utils::uid::gen")]
     pub id: uid::Uid,
     pub name: String,
-    pub message: String,
+    #[serde(flatten)]
+    pub message: Message,
     pub rule: Rule,
     pub targets: Vec<Target>,
 }
@@ -63,7 +66,7 @@ impl Alert {
         match resolves {
             AlertState::Listening | AlertState::Firing => (),
             alert_state @ (AlertState::SetToFiring | AlertState::Resolved) => {
-                let context = self.get_context(stream_name, alert_state, &self.rule);
+                let context = self.get_context(stream_name, alert_state, &self.rule, event_json);
                 ALERTS_STATES
                     .with_label_values(&[
                         context.stream.as_str(),
@@ -78,7 +81,13 @@ impl Alert {
         }
     }
 
-    fn get_context(&self, stream_name: String, alert_state: AlertState, rule: &Rule) -> Context {
+    fn get_context(
+        &self,
+        stream_name: String,
+        alert_state: AlertState,
+        rule: &Rule,
+        event_json: &serde_json::Value,
+    ) -> Context {
         let deployment_instance = format!(
             "{}://{}",
             CONFIG.parseable.get_scheme(),
@@ -102,7 +111,7 @@ impl Alert {
             stream_name,
             AlertInfo::new(
                 self.name.clone(),
-                self.message.clone(),
+                self.message.get(event_json),
                 rule.trigger_reason(),
                 alert_state,
             ),
@@ -111,6 +120,49 @@ impl Alert {
         )
     }
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    pub message: String,
+}
+
+impl Message {
+    // checks if message (with a column name) is valid (i.e. the column name is present in the schema)
+    pub fn valid(&self, schema: &Schema, column: Option<&str>) -> bool {
+        if let Some(col) = column {
+            return schema.field_with_name(col).is_ok();
+        }
+        true
+    }
+
+    pub fn extract_column_name(&self) -> Option<&str> {
+        let re = Regex::new(r"\{(.*?)\}").unwrap();
+        let tokens: Vec<&str> = re
+            .captures_iter(self.message.as_str())
+            .map(|cap| cap.get(1).unwrap().as_str())
+            .collect();
+        // the message can have either no column name ({column_name} not present) or one column name
+        // return Some only if there is exactly one column name present
+        if tokens.len() == 1 {
+            return Some(tokens[0]);
+        }
+        None
+    }
+
+    // returns the message with the column name replaced with the value of the column
+    fn get(&self, event_json: &serde_json::Value) -> String {
+        if let Some(column) = self.extract_column_name() {
+            if let Some(value) = event_json.get(column) {
+                return self
+                    .message
+                    .replace(&format!("{{{column}}}"), value.to_string().as_str());
+            }
+        }
+        self.message.clone()
+    }
+}
+
 #[async_trait]
 pub trait CallableTarget {
     async fn call(&self, payload: &Context);
