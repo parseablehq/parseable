@@ -37,7 +37,7 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
         if alert.name.is_empty() {
             return Err(AlertValidationError::EmptyName);
         }
-        if alert.message.is_empty() {
+        if alert.message.message.is_empty() {
             return Err(AlertValidationError::EmptyMessage);
         }
         if alert.targets.is_empty() {

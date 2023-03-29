@@ -153,6 +153,15 @@ pub async fn put_alert(
 
     let schema = STREAM_INFO.merged_schema(&stream_name)?;
     for alert in &alerts.alerts {
+        let column = alert.message.extract_column_name();
+        let is_valid= alert.message.valid(&schema, column);
+        if !is_valid {
+            let col = column.unwrap_or("");
+            return Err(StreamError::InvalidAlertMessage(
+                alert.name.to_owned(),
+                col.to_string(),
+            ));
+        }
         if !alert.rule.valid_for_schema(&schema) {
             return Err(StreamError::InvalidAlert(alert.name.to_owned()));
         }
@@ -301,6 +310,10 @@ pub mod error {
         AlertValidation(#[from] AlertValidationError),
         #[error("alert - \"{0}\" is invalid, please check if alert is valid according to this stream's schema and try again")]
         InvalidAlert(String),
+        #[error(
+            "alert - \"{0}\" is invalid, column \"{1}\" does not exist in this stream's schema"
+        )]
+        InvalidAlertMessage(String, String),
         #[error("failed to set retention configuration due to err: {0}")]
         InvalidRetentionConfig(serde_json::Error),
         #[error("{msg}")]
@@ -319,6 +332,7 @@ pub mod error {
                 StreamError::BadAlertJson { .. } => StatusCode::BAD_REQUEST,
                 StreamError::AlertValidation(_) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidAlert(_) => StatusCode::BAD_REQUEST,
+                StreamError::InvalidAlertMessage(_, _) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidRetentionConfig(_) => StatusCode::BAD_REQUEST,
             }
         }
