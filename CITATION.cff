@@ -1,10 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 authors:
-- family-names: "Team"
+- family-names: "Maintainers"
   given-names: "Parseable"
 title: "parseable"
-version: 1.0.0
-doi: 10.5281/zenodo.1234
 date-released: 2023-03-30
 url: "https://github.com/parseablehq/parseable"
