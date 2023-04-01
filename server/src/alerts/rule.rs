@@ -369,7 +369,7 @@ pub mod base {
                         .contains(&self.value.to_ascii_lowercase()),
                     StringOperator::Regex => {
                         let re: Regex = regex::Regex::new(&self.value).unwrap();
-                        re.is_match(&string)
+                        re.is_match(string)
                     }
                 }
             } else {
@@ -380,7 +380,7 @@ pub mod base {
                     StringOperator::NotContains => !string.contains(&self.value),
                     StringOperator::Regex => {
                         let re: Regex = regex::Regex::new(&self.value).unwrap();
-                        re.is_match(&string)
+                        re.is_match(string)
                     }
                 }
             };
