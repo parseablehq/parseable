@@ -120,6 +120,7 @@ impl ColumnRule {
                     NumericOperator::GreaterThanEquals => "greater than or equal to",
                     NumericOperator::LessThan => "less than",
                     NumericOperator::LessThanEquals => "less than or equal to",
+                    NumericOperator::Regex => "matches regex",
                 },
                 value,
                 repeats
@@ -138,10 +139,11 @@ impl ColumnRule {
                 "{} column {} {}, {} times",
                 column,
                 match operator {
-                    StringOperator::Exact => "was equal to",
-                    StringOperator::NotExact => "was not equal to",
-                    StringOperator::Contains => "contained",
-                    StringOperator::NotContains => "did not contain",
+                    StringOperator::Exact => "equal to",
+                    StringOperator::NotExact => "not equal to",
+                    StringOperator::Contains => "contains",
+                    StringOperator::NotContains => "does not contain",
+                    StringOperator::Regex => "matches regex",
                 },
                 value,
                 repeats
@@ -292,9 +294,9 @@ mod tests {
 }
 
 pub mod base {
-    use serde::{Deserialize, Serialize};
-
     use self::ops::{NumericOperator, StringOperator};
+    use regex::Regex;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -327,6 +329,10 @@ pub mod base {
                 }
                 NumericOperator::LessThanEquals => {
                     number.as_f64().unwrap() <= self.value.as_f64().unwrap()
+                }
+                NumericOperator::Regex => {
+                    let re: Regex = regex::Regex::new(&self.value.to_string()).unwrap();
+                    re.is_match(&number.to_string())
                 }
             };
 
@@ -361,6 +367,10 @@ pub mod base {
                     StringOperator::NotContains => !string
                         .to_ascii_lowercase()
                         .contains(&self.value.to_ascii_lowercase()),
+                    StringOperator::Regex => {
+                        let re: Regex = regex::Regex::new(&self.value).unwrap();
+                        re.is_match(string)
+                    }
                 }
             } else {
                 match self.operator {
@@ -368,6 +378,10 @@ pub mod base {
                     StringOperator::NotExact => !string.eq(&self.value),
                     StringOperator::Contains => string.contains(&self.value),
                     StringOperator::NotContains => !string.contains(&self.value),
+                    StringOperator::Regex => {
+                        let re: Regex = regex::Regex::new(&self.value).unwrap();
+                        re.is_match(string)
+                    }
                 }
             };
 
@@ -393,6 +407,8 @@ pub mod base {
             LessThan,
             #[serde(alias = "<=")]
             LessThanEquals,
+            #[serde(alias = "~")]
+            Regex,
         }
 
         impl Default for NumericOperator {
@@ -412,7 +428,8 @@ pub mod base {
             Contains,
             #[serde(alias = "!%")]
             NotContains,
-            // =~ and !~ reserved for regex
+            #[serde(alias = "~")]
+            Regex,
         }
 
         impl Default for StringOperator {
