@@ -294,9 +294,9 @@ mod tests {
 }
 
 pub mod base {
-    use serde::{Deserialize, Serialize};
-    use regex::Regex;
     use self::ops::{NumericOperator, StringOperator};
+    use regex::Regex;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
