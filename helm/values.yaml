@@ -1,7 +1,7 @@
 parseable:
   image:
     repository: parseable/parseable
-    tag: v0.3.0
+    tag: v0.3.1
     pullPolicy: Always
   local: false
   persistence:
@@ -68,3 +68,108 @@ parseable:
   nodeSelector: {}
   affinity: {}
   tolerations: []
+
+vector:
+  enabled: false
+  # customConfig -- Override Vector's default configs, if used **all** options need to be specified. This section supports
+  # using helm templates to populate dynamic values. See Vector's [configuration documentation](https://vector.dev/docs/reference/configuration/)
+  # for all options.
+  customConfig:
+    data_dir: /vector-data-dir
+    api:
+      enabled: true
+      address: 127.0.0.1:8686
+      playground: false
+    sources:
+      kubernetes_logs:
+        type: kubernetes_logs
+    sinks:
+      parseable:
+        type: http
+        batch:
+          max_bytes: 10485760
+          max_events: 1000
+          timeout_secs: 10
+        compression: gzip
+        inputs: 
+          - kubernetes_logs
+        encoding:
+          codec: json
+        uri: 'http://parseable.parseable.svc.cluster.local/api/v1/ingest'
+        auth:
+          strategy: basic
+          user: admin
+          password: admin
+        request:
+          headers:
+            X-P-Stream: vectordemo
+        healthcheck:
+          enabled: true
+          path: 'http://parseable.parseable.svc.cluster.local/api/v1/liveness'
+          port: 80
+
+
+fluent-bit:
+  enabled: false
+  ## https://docs.fluentbit.io/manual/administration/configuring-fluent-bit/classic-mode/configuration-file
+  config:
+    service: |
+      [SERVICE]
+          Daemon Off
+          Flush {{ .Values.flush }}
+          Log_Level {{ .Values.logLevel }}
+          Parsers_File parsers.conf
+          Parsers_File custom_parsers.conf
+          HTTP_Server On
+          HTTP_Listen 0.0.0.0
+          HTTP_Port {{ .Values.metricsPort }}
+          Health_Check On
+
+    ## https://docs.fluentbit.io/manual/pipeline/inputs
+    inputs: |
+      [INPUT]
+          Name mem
+          Tag kube.*
+          Mem_Buf_Limit 5MB
+          Skip_Long_Lines On
+
+    ## https://docs.fluentbit.io/manual/pipeline/filters
+    filters: |
+      [FILTER]
+          Name                kubernetes
+          Match               kube.*
+          Merge_Log           On
+          Keep_Log            Off
+          K8S-Logging.Parser  On
+          K8S-Logging.Exclude On
+
+    ## https://docs.fluentbit.io/manual/pipeline/outputs
+    outputs: |
+      [OUTPUT]
+          Name http
+          Match kube.*
+          host parseable.parseable.svc.cluster.local
+          http_User admin
+          http_Passwd admin
+          format json
+          port 80
+          header Content-Type application/json
+          header X-P-META-meta1 value1
+          header X-P-TAG-tag1 value1
+          header X-P-Stream fluentbitdemo
+          uri /api/v1/ingest
+          json_date_key timestamp
+          json_date_format iso8601
+
+    ## https://docs.fluentbit.io/manual/administration/configuring-fluent-bit/classic-mode/upstream-servers
+    ## This configuration is deprecated, please use `extraFiles` instead.
+    upstream: {}
+
+    ## https://docs.fluentbit.io/manual/pipeline/parsers
+    customParsers: |
+      # [PARSER]
+      #     Name docker_no_time
+      #     Format json
+      #     Time_Keep Off
+      #     Time_Key time
+      #     Time_Format %Y-%m-%dT%H:%M:%S.%L
