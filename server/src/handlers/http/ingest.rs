@@ -79,7 +79,7 @@ async fn push_logs(
         Value::Array(array) => {
             for mut body in array {
                 merge(&mut body, tags_n_metadata.clone().into_iter());
-                let body = flatten_json_body(&body).unwrap();
+                let body = flatten_json_body(body).map_err(|_| PostError::FlattenError)?;
                 let schema_key = event::get_schema_key(&body);
 
                 let event = event::Event {
@@ -93,7 +93,7 @@ async fn push_logs(
         }
         mut body @ Value::Object(_) => {
             merge(&mut body, tags_n_metadata.into_iter());
-            let body = flatten_json_body(&body).unwrap();
+            let body = flatten_json_body(body).map_err(|_| PostError::FlattenError)?;
             let schema_key = event::get_schema_key(&body);
             let event = event::Event {
                 body,
@@ -117,6 +117,8 @@ pub enum PostError {
     Event(#[from] EventError),
     #[error("Invalid Request")]
     Invalid,
+    #[error("failed to flatten the json object")]
+    FlattenError,
     #[error("Failed to create stream due to {0}")]
     CreateStream(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -128,6 +130,7 @@ impl actix_web::ResponseError for PostError {
             PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::Invalid => StatusCode::BAD_REQUEST,
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::FlattenError => StatusCode::BAD_REQUEST,
         }
     }
 

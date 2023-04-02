@@ -100,6 +100,11 @@ impl Event {
         let stream_name = &self.stream_name;
         let schema_key = &self.schema_key;
 
+        let old = metadata::STREAM_INFO.merged_schema(stream_name)?;
+        if Schema::try_merge(vec![old, schema.clone()]).is_err() {
+            return Err(EventError::SchemaMismatch);
+        };
+
         commit_schema(stream_name, schema_key, Arc::new(schema))?;
         self.process_event(event)
     }
@@ -156,25 +161,53 @@ pub fn get_schema_key(body: &Value) -> String {
 fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
     for (name, val) in body.as_object().expect("body is of object variant") {
         let Ok(field) = schema.field_with_name(name) else { return true };
-
-        // datatype check only some basic cases
-        let valid_datatype = match field.data_type() {
-            DataType::Boolean => val.is_boolean(),
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => val.is_i64(),
-            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
-                val.is_u64()
-            }
-            DataType::Float16 | DataType::Float32 | DataType::Float64 => val.is_f64(),
-            DataType::Utf8 => val.is_string(),
-            _ => false,
-        };
-
-        if !valid_datatype {
+        if !valid_type(field.data_type(), val) {
             return true;
         }
     }
-
     false
+}
+
+fn valid_type(data_type: &DataType, value: &Value) -> bool {
+    match data_type {
+        DataType::Boolean => value.is_boolean(),
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => value.is_i64(),
+        DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => value.is_u64(),
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => value.is_f64(),
+        DataType::Utf8 => value.is_string(),
+        DataType::List(field) => {
+            let data_type = field.data_type();
+            if let Value::Array(arr) = value {
+                for elem in arr {
+                    if !valid_type(data_type, elem) {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        DataType::Struct(fields) => {
+            if let Value::Object(val) = value {
+                for (key, value) in val {
+                    let field = (0..fields.len())
+                        .find(|idx| fields[*idx].name() == key)
+                        .map(|idx| &fields[idx]);
+
+                    if let Some(field) = field {
+                        if !valid_type(field.data_type(), value) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }
+        _ => unreachable!(),
+    }
 }
 
 fn commit_schema(

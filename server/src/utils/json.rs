@@ -17,13 +17,12 @@
  */
 
 use serde_json;
-use serde_json::json;
 use serde_json::Value;
 
-pub fn flatten_json_body(body: &serde_json::Value) -> Result<Value, serde_json::Error> {
-    let mut flat_value: Value = json!({});
-    flatten_json::flatten(body, &mut flat_value, None, false, Some("_")).unwrap();
-    Ok(flat_value)
+pub mod flatten;
+
+pub fn flatten_json_body(body: Value) -> Result<Value, ()> {
+    flatten::flatten(body, "_")
 }
 
 pub fn merge(value: &mut Value, fields: impl Iterator<Item = (String, Value)>) {
