@@ -4,6 +4,8 @@ parseable:
     tag: v0.3.1
     pullPolicy: Always
   local: false
+  # env:
+  #   RUST_LOG: info
   persistence:
     staging:
       enabled: false
@@ -56,24 +58,68 @@ parseable:
     port: 80
   resources:
     limits:
-      cpu: 1000m
-      memory: 8Gi
-    requests:
       cpu: 500m
+      memory: 4Gi
+    requests:
+      cpu: 250m
       memory: 1Gi
-  securityContext:
-   allowPrivilegeEscalation: false
+  securityContext: {}
   podAnnotations: {}
-  podSecurityContext: {}
+  podSecurityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: "Always"
+    allowPrivilegeEscalation: false
   nodeSelector: {}
   affinity: {}
   tolerations: []
 
+# Default values for Vector
+# See Vector helm documentation to learn more:
+# https://vector.dev/docs/setup/installation/package-managers/helm/
 vector:
   enabled: false
-  # customConfig -- Override Vector's default configs, if used **all** options need to be specified. This section supports
-  # using helm templates to populate dynamic values. See Vector's [configuration documentation](https://vector.dev/docs/reference/configuration/)
-  # for all options.
+  role: "Agent"
+  rollWorkload: true
+  image:
+    repository: timberio/vector
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+    tag: ""
+    sha: ""
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+    maxUnavailable:
+  rbac:
+    create: true
+  serviceAccount:
+    create: true
+    annotations: {}
+    name:
+    automountToken: true
+  podLabels:
+    vector.dev/exclude: "true"
+  args:
+    - --config-dir
+    - "/etc/vector/"
+  terminationGracePeriodSeconds: 60
+  service:
+    enabled: true
+    type: "ClusterIP"
+    annotations: {}
+    topologyKeys: []
+    ports: []
+    externalTrafficPolicy: ""
+    loadBalancerIP: ""
+    ipFamilyPolicy: ""
+    ipFamilies: []
+  serviceHeadless:
+    enabled: true
+  dnsPolicy: ClusterFirst
   customConfig:
     data_dir: /vector-data-dir
     api:
@@ -86,6 +132,7 @@ vector:
     sinks:
       parseable:
         type: http
+        method: post
         batch:
           max_bytes: 10485760
           max_events: 1000
@@ -108,9 +155,47 @@ vector:
           path: 'http://parseable.parseable.svc.cluster.local/api/v1/liveness'
           port: 80
 
-
+# Default values for fluent-bit.
+# See fluent-bit helm documentation to learn more:
+# https://github.com/fluent/helm-charts/tree/main/charts/fluent-bit
 fluent-bit:
   enabled: false
+  kind: DaemonSet
+  replicaCount: 1
+  image:
+    repository: cr.fluentbit.io/fluent/fluent-bit
+    tag: ""
+    pullPolicy: Always
+  testFramework:
+    enabled: true
+    image:
+      repository: busybox
+      pullPolicy: Always
+      tag: latest
+  serviceAccount:
+    create: true
+    annotations: {}
+    name:
+  rbac:
+    create: true
+    nodeAccess: false
+  dnsPolicy: ClusterFirst
+  service:
+    type: ClusterIP
+    port: 2020
+    loadBalancerClass:
+    loadBalancerSourceRanges: []
+    labels: {}
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+  readinessProbe:
+    httpGet:
+      path: /api/v1/health
+      port: http
+  flush: 1
+  metricsPort: 2020
   ## https://docs.fluentbit.io/manual/administration/configuring-fluent-bit/classic-mode/configuration-file
   config:
     service: |
@@ -128,7 +213,9 @@ fluent-bit:
     ## https://docs.fluentbit.io/manual/pipeline/inputs
     inputs: |
       [INPUT]
-          Name mem
+          Name tail
+          Path /var/log/containers/*.log
+          multiline.parser docker, cri
           Tag kube.*
           Mem_Buf_Limit 5MB
           Skip_Long_Lines On
@@ -160,16 +247,42 @@ fluent-bit:
           uri /api/v1/ingest
           json_date_key timestamp
           json_date_format iso8601
-
-    ## https://docs.fluentbit.io/manual/administration/configuring-fluent-bit/classic-mode/upstream-servers
-    ## This configuration is deprecated, please use `extraFiles` instead.
+    
     upstream: {}
-
-    ## https://docs.fluentbit.io/manual/pipeline/parsers
+    
     customParsers: |
-      # [PARSER]
-      #     Name docker_no_time
-      #     Format json
-      #     Time_Keep Off
-      #     Time_Key time
-      #     Time_Format %Y-%m-%dT%H:%M:%S.%L
+      [PARSER]
+          Name docker_no_time
+          Format json
+          Time_Keep Off
+          Time_Key time
+          Time_Format %Y-%m-%dT%H:%M:%S.%L
+  # The config volume is mounted by default, either to the existingConfigMap value, or the default of "fluent-bit.fullname"
+  volumeMounts:
+    - name: config
+      mountPath: /fluent-bit/etc/fluent-bit.conf
+      subPath: fluent-bit.conf
+    - name: config
+      mountPath: /fluent-bit/etc/custom_parsers.conf
+      subPath: custom_parsers.conf
+  daemonSetVolumes:
+    - name: varlog
+      hostPath:
+        path: /var/log
+    - name: varlibdockercontainers
+      hostPath:
+        path: /var/lib/docker/containers
+    - name: etcmachineid
+      hostPath:
+        path: /etc/machine-id
+        type: File
+  daemonSetVolumeMounts:
+    - name: varlog
+      mountPath: /var/log
+    - name: varlibdockercontainers
+      mountPath: /var/lib/docker/containers
+      readOnly: true
+    - name: etcmachineid
+      mountPath: /etc/machine-id
+      readOnly: true
+  logLevel: info
