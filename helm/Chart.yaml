@@ -3,7 +3,11 @@ name: parseable
 description: Helm chart for Parseable Server
 type: application
 version: 0.3.1
-AppVersion: "v0.3.1"
+appVersion: "v0.3.1"
+maintainers:
+  - name: Parseable
+    email: hi@parseable.io
+    url: https://parseable.io
 
 dependencies:
 - name: vector
