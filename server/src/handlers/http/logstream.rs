@@ -183,6 +183,23 @@ pub async fn put_alert(
     ))
 }
 
+pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let objectstore = CONFIG.storage().get_object_store();
+
+    if !objectstore.stream_exists(&stream_name).await? {
+        return Err(StreamError::StreamNotFound(stream_name.to_string()));
+    }
+
+    let retention = CONFIG
+        .storage()
+        .get_object_store()
+        .get_retention(&stream_name)
+        .await?;
+
+    Ok((web::Json(retention), StatusCode::OK))
+}
+
 pub async fn put_retention(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
