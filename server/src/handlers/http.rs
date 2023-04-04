@@ -151,8 +151,11 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::resource("/stats").route(web::get().to(logstream::get_stats)),
         )
         .service(
-            // GET "/logstream/{logstream}/retention" ==> Set retention for given logstream
-            web::resource("/retention").route(web::put().to(logstream::put_retention)),
+            web::resource("/retention")
+                // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
+                .route(web::put().to(logstream::put_retention))
+                // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
+                .route(web::get().to(logstream::get_retention)),
         );
 
     cfg.service(
