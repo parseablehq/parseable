@@ -16,8 +16,11 @@
  *
  */
 
+use std::sync::Arc;
+
 use actix_web::http::header::ContentType;
 use actix_web::{HttpRequest, HttpResponse};
+use arrow_schema::Schema;
 use bytes::Bytes;
 use http::StatusCode;
 use serde_json::Value;
@@ -26,6 +29,7 @@ use crate::event::error::EventError;
 use crate::event::format::EventFormat;
 use crate::event::{self, format};
 use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
+use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
 // Handler for POST /api/v1/ingest
@@ -58,7 +62,7 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
 }
 
 async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
-    let (size, rb) = into_event_batch(req, body, stream_name.clone())?;
+    let (size, rb) = into_event_batch(req, body, &get_stream_schema(&stream_name))?;
 
     event::Event {
         rb,
@@ -76,20 +80,23 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
 fn into_event_batch(
     req: HttpRequest,
     body: Bytes,
-    stream_name: String,
+    schema: &Schema,
 ) -> Result<(usize, arrow_array::RecordBatch), PostError> {
     let tags = collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?;
     let size = body.len();
     let body: Value = serde_json::from_slice(&body)?;
     let event = format::json::Event {
-        stream_name,
         data: body,
         tags,
         metadata,
     };
-    let rb = event.into_recordbatch()?;
+    let rb = event.into_recordbatch(schema)?;
     Ok((size, rb))
+}
+
+fn get_stream_schema(stream_name: &str) -> Arc<Schema> {
+    STREAM_INFO.schema(stream_name).unwrap()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -121,5 +128,154 @@ impl actix_web::ResponseError for PostError {
         actix_web::HttpResponse::build(self.status_code())
             .insert_header(ContentType::plaintext())
             .body(self.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use actix_web::test::TestRequest;
+    use arrow_array::{cast::as_string_array, Float64Array, Int64Array, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use bytes::Bytes;
+    use datafusion::common::cast::{as_float64_array, as_int64_array};
+    use serde_json::json;
+
+    use crate::{
+        event,
+        handlers::{PREFIX_META, PREFIX_TAGS},
+    };
+
+    use super::into_event_batch;
+
+    #[test]
+    fn test_basic_object_into_rb() {
+        let json = json!({
+            "a": 1,
+            "b": "hello",
+            "c": 4.23
+        });
+
+        let req = TestRequest::default()
+            .append_header((PREFIX_TAGS.to_string() + "A", "tag1"))
+            .append_header((PREFIX_TAGS.to_string() + "B", "tag2"))
+            .append_header((PREFIX_META.to_string() + "C", "meta1"))
+            .to_http_request();
+
+        let (size, rb) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &Schema::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(size, 28);
+        assert_eq!(rb.num_rows(), 1);
+        assert_eq!(rb.num_columns(), 6);
+        assert_eq!(
+            as_int64_array(rb.column(0)).unwrap(),
+            &Int64Array::from_iter([1])
+        );
+        assert_eq!(
+            as_string_array(rb.column(1)),
+            &StringArray::from_iter_values(["hello"])
+        );
+        assert_eq!(
+            as_float64_array(rb.column(2)).unwrap(),
+            &Float64Array::from_iter([4.23])
+        );
+        assert_eq!(
+            as_string_array(rb.column_by_name(event::DEFAULT_TAGS_KEY).unwrap()),
+            &StringArray::from_iter_values(["a=tag1^b=tag2"])
+        );
+        assert_eq!(
+            as_string_array(rb.column_by_name(event::DEFAULT_METADATA_KEY).unwrap()),
+            &StringArray::from_iter_values(["c=meta1"])
+        );
+    }
+
+    #[test]
+    fn test_basic_object_with_null_into_rb() {
+        let json = json!({
+            "a": 1,
+            "b": "hello",
+            "c": null
+        });
+
+        let req = TestRequest::default().to_http_request();
+
+        let (_, rb) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &Schema::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(rb.num_rows(), 1);
+        assert_eq!(rb.num_columns(), 5);
+        assert_eq!(
+            as_int64_array(rb.column(0)).unwrap(),
+            &Int64Array::from_iter([1])
+        );
+        assert_eq!(
+            as_string_array(rb.column(1)),
+            &StringArray::from_iter_values(["hello"])
+        );
+    }
+
+    #[test]
+    fn test_basic_object_derive_schema_into_rb() {
+        let json = json!({
+            "a": 1,
+            "b": "hello",
+        });
+
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Utf8, true),
+            Field::new("c", DataType::Float64, true),
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        let (_, rb) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &schema,
+        )
+        .unwrap();
+
+        assert_eq!(rb.num_rows(), 1);
+        assert_eq!(rb.num_columns(), 5);
+        assert_eq!(
+            as_int64_array(rb.column(0)).unwrap(),
+            &Int64Array::from_iter([1])
+        );
+        assert_eq!(
+            as_string_array(rb.column(1)),
+            &StringArray::from_iter_values(["hello"])
+        );
+    }
+
+    #[test]
+    fn test_basic_object_schema_mismatch() {
+        let json = json!({
+            "a": 1,
+            "b": 1, // type mismatch
+        });
+
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Utf8, true),
+            Field::new("c", DataType::Float64, true),
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        dbg!(into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &schema,
+        ));
     }
 }

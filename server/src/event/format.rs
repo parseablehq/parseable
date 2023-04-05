@@ -18,10 +18,10 @@ type Metadata = String;
 
 pub trait EventFormat: Sized {
     type Data;
-    fn to_data(self) -> Result<(Self::Data, Schema, Tags, Metadata), AnyError>;
+    fn to_data(self, schema: &Schema) -> Result<(Self::Data, Schema, Tags, Metadata), AnyError>;
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
-    fn into_recordbatch(self) -> Result<RecordBatch, AnyError> {
-        let (data, mut schema, tags, metadata) = self.to_data()?;
+    fn into_recordbatch(self, schema: &Schema) -> Result<RecordBatch, AnyError> {
+        let (data, mut schema, tags, metadata) = self.to_data(schema)?;
 
         match tags_index(&schema) {
             Ok(_) => return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY)),

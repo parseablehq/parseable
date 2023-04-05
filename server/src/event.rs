@@ -32,9 +32,9 @@ use crate::metadata;
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
 
-const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
-const DEFAULT_TAGS_KEY: &str = "p_tags";
-const DEFAULT_METADATA_KEY: &str = "p_metadata";
+pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
+pub const DEFAULT_TAGS_KEY: &str = "p_tags";
+pub const DEFAULT_METADATA_KEY: &str = "p_metadata";
 
 #[derive(Clone)]
 pub struct Event {

@@ -9,10 +9,9 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use super::EventFormat;
-use crate::{metadata::STREAM_INFO, utils::json::flatten_json_body};
+use crate::utils::json::flatten_json_body;
 
 pub struct Event {
-    pub stream_name: String,
     pub data: Value,
     pub tags: String,
     pub metadata: String,
@@ -21,10 +20,13 @@ pub struct Event {
 impl EventFormat for Event {
     type Data = Vec<Value>;
 
-    fn to_data(self) -> Result<(Self::Data, Schema, String, String), anyhow::Error> {
+    fn to_data(
+        self,
+        schema: &Schema,
+    ) -> Result<(Self::Data, Schema, String, String), anyhow::Error> {
         let data = flatten_json_body(self.data)?;
 
-        let stream_schema = get_stream_schema(&self.stream_name);
+        let stream_schema = schema;
 
         let value_arr = match data {
             Value::Array(arr) => arr,
@@ -35,7 +37,7 @@ impl EventFormat for Event {
         let fields =
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
-        let schema = match derive_sub_schema(stream_schema, fields) {
+        let schema = match derive_sub_schema(stream_schema.clone(), fields) {
             Ok(schema) => schema,
             Err(_) => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
                 Ok(mut infer_schema) => {
@@ -43,10 +45,9 @@ impl EventFormat for Event {
                         .fields
                         .sort_by(|field1, field2| Ord::cmp(field1.name(), field2.name()));
 
-                    if let Err(err) = Schema::try_merge(vec![
-                        get_stream_schema(&self.stream_name),
-                        infer_schema.clone(),
-                    ]) {
+                    if let Err(err) =
+                        Schema::try_merge(vec![stream_schema.clone(), infer_schema.clone()])
+                    {
                         return Err(anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err));
                     }
                     infer_schema
@@ -77,10 +78,6 @@ impl EventFormat for Event {
             Ok(None) => unreachable!("all records are added to one rb"),
         }
     }
-}
-
-fn get_stream_schema(stream_name: &str) -> Schema {
-    STREAM_INFO.schema(stream_name).unwrap().as_ref().clone()
 }
 
 // invariants for this to work.
