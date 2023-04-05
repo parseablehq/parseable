@@ -3,7 +3,7 @@
 use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, Decoder, DecoderOptions};
-use arrow_schema::{Field, Schema};
+use arrow_schema::{DataType, Field, Schema};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use serde_json::Value;
 use std::sync::Arc;
@@ -60,6 +60,15 @@ impl EventFormat for Event {
                 }
             },
         };
+
+        if value_arr
+            .iter()
+            .any(|value| fields_mismatch(&schema, value))
+        {
+            return Err(anyhow!(
+                "Could not process this event due to mismatch in datatype"
+            ));
+        }
 
         Ok((value_arr, schema, self.tags, self.metadata))
     }
@@ -132,4 +141,60 @@ fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a s
         }
     }
     Ok(sorted_keys)
+}
+
+fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
+    for (name, val) in body.as_object().expect("body is of object variant") {
+        if val.is_null() {
+            continue;
+        }
+
+        let Ok(field) = schema.field_with_name(name) else { return true };
+        if !valid_type(field.data_type(), val) {
+            return true;
+        }
+    }
+    false
+}
+
+fn valid_type(data_type: &DataType, value: &Value) -> bool {
+    match data_type {
+        DataType::Boolean => value.is_boolean(),
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => value.is_i64(),
+        DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => value.is_u64(),
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => value.is_f64(),
+        DataType::Utf8 => value.is_string(),
+        DataType::List(field) => {
+            let data_type = field.data_type();
+            if let Value::Array(arr) = value {
+                for elem in arr {
+                    if !valid_type(data_type, elem) {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        DataType::Struct(fields) => {
+            if let Value::Object(val) = value {
+                for (key, value) in val {
+                    let field = (0..fields.len())
+                        .find(|idx| fields[*idx].name() == key)
+                        .map(|idx| &fields[idx]);
+
+                    if let Some(field) = field {
+                        if !valid_type(field.data_type(), value) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }
+        _ => unreachable!(),
+    }
 }
