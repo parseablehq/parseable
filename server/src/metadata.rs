@@ -63,7 +63,6 @@ pub const LOCK_EXPECT: &str = "no method in metadata should panic while holding 
 // 3. When a stream is deleted (remove the entry from the map)
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
-#[allow(clippy::all)]
 impl STREAM_INFO {
     pub async fn check_alerts(&self, event: &Event) -> Result<(), CheckAlertError> {
         let map = self.read().expect(LOCK_EXPECT);
@@ -171,10 +170,10 @@ impl STREAM_INFO {
         stream.stats.add_ingestion_size(size);
         stream.stats.increase_event_by_n(num_rows);
         EVENTS_INGESTED
-            .with_label_values(&[stream_name.clone(), origin])
+            .with_label_values(&[stream_name, origin])
             .inc();
         EVENTS_INGESTED_SIZE
-            .with_label_values(&[stream_name.clone(), origin])
+            .with_label_values(&[stream_name, origin])
             .add(size as i64);
 
         Ok(())

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use anyhow::{anyhow, Error as AnyError};
