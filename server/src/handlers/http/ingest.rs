@@ -135,10 +135,11 @@ impl actix_web::ResponseError for PostError {
 mod tests {
 
     use actix_web::test::TestRequest;
-    use arrow_array::{cast::as_string_array, Float64Array, Int64Array, StringArray};
+    use arrow_array::{
+        types::Int64Type, ArrayRef, Float64Array, Int64Array, ListArray, StringArray,
+    };
     use arrow_schema::{DataType, Field, Schema};
     use bytes::Bytes;
-    use datafusion::common::cast::{as_float64_array, as_int64_array};
     use serde_json::json;
 
     use crate::{
@@ -148,8 +149,28 @@ mod tests {
 
     use super::into_event_batch;
 
+    trait TestExt {
+        fn as_int64_arr(&self) -> &Int64Array;
+        fn as_float64_arr(&self) -> &Float64Array;
+        fn as_utf8_arr(&self) -> &StringArray;
+    }
+
+    impl TestExt for ArrayRef {
+        fn as_int64_arr(&self) -> &Int64Array {
+            self.as_any().downcast_ref().unwrap()
+        }
+
+        fn as_float64_arr(&self) -> &Float64Array {
+            self.as_any().downcast_ref().unwrap()
+        }
+
+        fn as_utf8_arr(&self) -> &StringArray {
+            self.as_any().downcast_ref().unwrap()
+        }
+    }
+
     #[test]
-    fn test_basic_object_into_rb() {
+    fn basic_object_into_rb() {
         let json = json!({
             "a": 1,
             "b": "hello",
@@ -172,30 +193,31 @@ mod tests {
         assert_eq!(size, 28);
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 6);
+        assert_eq!(rb.column(0).as_int64_arr(), &Int64Array::from_iter([1]));
         assert_eq!(
-            as_int64_array(rb.column(0)).unwrap(),
-            &Int64Array::from_iter([1])
-        );
-        assert_eq!(
-            as_string_array(rb.column(1)),
+            rb.column(1).as_utf8_arr(),
             &StringArray::from_iter_values(["hello"])
         );
         assert_eq!(
-            as_float64_array(rb.column(2)).unwrap(),
+            rb.column(2).as_float64_arr(),
             &Float64Array::from_iter([4.23])
         );
         assert_eq!(
-            as_string_array(rb.column_by_name(event::DEFAULT_TAGS_KEY).unwrap()),
+            rb.column_by_name(event::DEFAULT_TAGS_KEY)
+                .unwrap()
+                .as_utf8_arr(),
             &StringArray::from_iter_values(["a=tag1^b=tag2"])
         );
         assert_eq!(
-            as_string_array(rb.column_by_name(event::DEFAULT_METADATA_KEY).unwrap()),
+            rb.column_by_name(event::DEFAULT_METADATA_KEY)
+                .unwrap()
+                .as_utf8_arr(),
             &StringArray::from_iter_values(["c=meta1"])
         );
     }
 
     #[test]
-    fn test_basic_object_with_null_into_rb() {
+    fn basic_object_with_null_into_rb() {
         let json = json!({
             "a": 1,
             "b": "hello",
@@ -213,18 +235,15 @@ mod tests {
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
+        assert_eq!(rb.column(0).as_int64_arr(), &Int64Array::from_iter([1]));
         assert_eq!(
-            as_int64_array(rb.column(0)).unwrap(),
-            &Int64Array::from_iter([1])
-        );
-        assert_eq!(
-            as_string_array(rb.column(1)),
+            rb.column(1).as_utf8_arr(),
             &StringArray::from_iter_values(["hello"])
         );
     }
 
     #[test]
-    fn test_basic_object_derive_schema_into_rb() {
+    fn basic_object_derive_schema_into_rb() {
         let json = json!({
             "a": 1,
             "b": "hello",
@@ -247,18 +266,15 @@ mod tests {
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
+        assert_eq!(rb.column(0).as_int64_arr(), &Int64Array::from_iter([1]));
         assert_eq!(
-            as_int64_array(rb.column(0)).unwrap(),
-            &Int64Array::from_iter([1])
-        );
-        assert_eq!(
-            as_string_array(rb.column(1)),
+            rb.column(1).as_utf8_arr(),
             &StringArray::from_iter_values(["hello"])
         );
     }
 
     #[test]
-    fn test_basic_object_schema_mismatch() {
+    fn basic_object_schema_mismatch() {
         let json = json!({
             "a": 1,
             "b": 1, // type mismatch
@@ -272,10 +288,283 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        dbg!(into_event_batch(
+        assert!(into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             &schema,
-        ));
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn empty_object() {
+        let json = json!({});
+
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Float64, true),
+            Field::new("c", DataType::Float64, true),
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        let (_, rb) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &schema,
+        )
+        .unwrap();
+
+        assert_eq!(rb.num_rows(), 1);
+        assert_eq!(rb.num_columns(), 3);
+    }
+
+    #[test]
+    fn non_object_arr_is_err() {
+        let json = json!([1]);
+
+        let req = TestRequest::default().to_http_request();
+
+        assert!(into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &Schema::empty(),
+        )
+        .is_err())
+    }
+
+    #[test]
+    fn arr_with_null_into_rb() {
+        let json = json!([
+            {
+                "c": null,
+                "b": "hello",
+                "a": null
+            },
+            {
+                "a": 1,
+                "c": 1.22,
+                "b": "hello"
+            },
+            {
+                "b": "hello",
+                "a": 1,
+                "c": null
+            },
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        let (_, rb) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &Schema::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(rb.num_rows(), 3);
+        assert_eq!(rb.num_columns(), 6);
+        assert_eq!(
+            rb.column(0).as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), Some(1)])
+        );
+        assert_eq!(
+            rb.column(1).as_utf8_arr(),
+            &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
+        );
+        assert_eq!(
+            rb.column(2).as_float64_arr(),
+            &Float64Array::from(vec![None, Some(1.22), None,])
+        );
+    }
+
+    #[test]
+    fn arr_with_null_derive_schema_into_rb() {
+        let json = json!([
+            {
+                "c": null,
+                "b": "hello",
+                "a": null
+            },
+            {
+                "a": 1,
+                "c": 1.22,
+                "b": "hello"
+            },
+            {
+                "b": "hello",
+                "a": 1,
+                "c": null
+            },
+        ]);
+
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Utf8, true),
+            Field::new("c", DataType::Float64, true),
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        let (_, rb) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &schema,
+        )
+        .unwrap();
+
+        assert_eq!(rb.num_rows(), 3);
+        assert_eq!(rb.num_columns(), 6);
+        assert_eq!(
+            rb.column(0).as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), Some(1)])
+        );
+        assert_eq!(
+            rb.column(1).as_utf8_arr(),
+            &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
+        );
+        assert_eq!(
+            rb.column(2).as_float64_arr(),
+            &Float64Array::from(vec![None, Some(1.22), None,])
+        );
+    }
+
+    #[test]
+    fn arr_obj_ignore_all_null_field() {
+        let json = json!([
+            {
+                "a": 1,
+                "b": "hello",
+                "c": null
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": null
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": null
+            },
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        let (_, rb) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &Schema::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(rb.num_rows(), 3);
+        assert_eq!(rb.num_columns(), 5);
+        assert_eq!(
+            rb.column(0).as_int64_arr(),
+            &Int64Array::from(vec![Some(1), Some(1), Some(1)])
+        );
+        assert_eq!(
+            rb.column(1).as_utf8_arr(),
+            &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
+        );
+    }
+
+    #[test]
+    fn arr_schema_mismatch() {
+        let json = json!([
+            {
+                "a": null,
+                "b": "hello",
+                "c": 1.24
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": 1
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": null
+            },
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Utf8, true),
+            Field::new("c", DataType::Float64, true),
+        ]);
+
+        assert!(into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &schema,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn arr_obj_with_nested_type() {
+        let json = json!([
+            {
+                "a": 1,
+                "b": "hello",
+            },
+            {
+                "a": 1,
+                "b": "hello",
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": [{"a": 1}]
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": [{"a": 1, "b": 2}]
+            },
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        let (_, rb) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            &Schema::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(rb.num_rows(), 4);
+        assert_eq!(rb.num_columns(), 7);
+        assert_eq!(
+            rb.column(0).as_int64_arr(),
+            &Int64Array::from(vec![Some(1), Some(1), Some(1), Some(1)])
+        );
+        assert_eq!(
+            rb.column(1).as_utf8_arr(),
+            &StringArray::from(vec![
+                Some("hello"),
+                Some("hello"),
+                Some("hello"),
+                Some("hello")
+            ])
+        );
+
+        let c_a = vec![None, None, Some(vec![Some(1i64)]), Some(vec![Some(1)])];
+        let c_b = vec![None, None, None, Some(vec![Some(2i64)])];
+
+        assert_eq!(
+            rb.column(2).as_any().downcast_ref::<ListArray>().unwrap(),
+            &ListArray::from_iter_primitive::<Int64Type, _, _>(c_a)
+        );
+
+        assert_eq!(
+            rb.column(3).as_any().downcast_ref::<ListArray>().unwrap(),
+            &ListArray::from_iter_primitive::<Int64Type, _, _>(c_b)
+        );
     }
 }
