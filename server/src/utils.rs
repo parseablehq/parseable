@@ -16,12 +16,12 @@
  *
  */
 
+pub mod arrow;
 pub mod batch_adapter;
 pub mod header_parsing;
 pub mod json;
 pub mod uid;
 pub mod update;
-pub mod arrow;
 
 use std::path::Path;
 
