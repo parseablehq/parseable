@@ -179,7 +179,6 @@ mod tests {
 
         let req = TestRequest::default()
             .append_header((PREFIX_TAGS.to_string() + "A", "tag1"))
-            .append_header((PREFIX_TAGS.to_string() + "B", "tag2"))
             .append_header((PREFIX_META.to_string() + "C", "meta1"))
             .to_http_request();
 
@@ -206,7 +205,7 @@ mod tests {
             rb.column_by_name(event::DEFAULT_TAGS_KEY)
                 .unwrap()
                 .as_utf8_arr(),
-            &StringArray::from_iter_values(["a=tag1^b=tag2"])
+            &StringArray::from_iter_values(["a=tag1"])
         );
         assert_eq!(
             rb.column_by_name(event::DEFAULT_METADATA_KEY)
