@@ -72,8 +72,6 @@ pub async fn list(_: HttpRequest) -> impl Responder {
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let schema = STREAM_INFO.schema(&stream_name)?;
-    let schema = serde_json::to_value(&schema).unwrap();
-
     Ok((web::Json(schema), StatusCode::OK))
 }
 
