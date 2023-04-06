@@ -19,34 +19,50 @@
 
 use std::collections::HashMap;
 
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use itertools::Itertools;
+use arrow_schema::{DataType, Field, Schema};
+use serde_json::Value;
 
-pub(super) fn v1_v2(schema: Option<Schema>) -> anyhow::Result<HashMap<String, Schema>> {
-    let Some(schema) = schema else { return Ok(HashMap::new()) };
-    let schema = Schema::try_merge(vec![
-        Schema::new(vec![Field::new(
-            "p_timestamp",
-            DataType::Timestamp(TimeUnit::Millisecond, None),
-            true,
-        )]),
-        schema,
-    ])?;
+pub(super) fn v1_v3(schema: Option<Value>) -> anyhow::Result<Schema> {
+    if let Some(schema) = schema {
+        value_to_schema(schema)
+    } else {
+        Ok(Schema::empty())
+    }
+}
 
-    let list_of_fields = schema
-        .fields()
-        .iter()
-        // skip p_timestamp
-        .skip(1)
-        .map(|f| f.name())
-        .sorted();
+pub(super) fn v2_v3(schemas: HashMap<String, Value>) -> anyhow::Result<Schema> {
+    let mut derived_schemas = Vec::new();
 
-    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
-    list_of_fields.for_each(|field| hasher.update(field.as_bytes()));
-    let hash = hasher.digest();
-    let key = format!("{hash:x}");
+    for value in schemas.into_values() {
+        let schema = value_to_schema(value)?;
+        derived_schemas.push(schema);
+    }
 
-    let mut map = HashMap::new();
-    map.insert(key, schema);
-    Ok(map)
+    let mut schema = Schema::try_merge(derived_schemas)?;
+    schema.fields.sort_by(|a, b| a.name().cmp(b.name()));
+    Ok(schema)
+}
+
+fn value_to_schema(schema: Value) -> Result<Schema, anyhow::Error> {
+    let fields = schema
+        .as_object()
+        .expect("schema is an object")
+        .get("fields")
+        .expect("fields exists")
+        .as_array()
+        .expect("fields is an array");
+
+    let mut new_fields = Vec::new();
+
+    for field in fields {
+        let field = field.as_object().unwrap();
+        let field_name: String =
+            serde_json::from_value(field.get("name").unwrap().clone()).unwrap();
+        let field_dt: DataType =
+            serde_json::from_value(field.get("datatype").unwrap().clone()).unwrap();
+        new_fields.push(Field::new(field_name, field_dt, true));
+    }
+    new_fields.sort();
+
+    Ok(Schema::new(new_fields))
 }
