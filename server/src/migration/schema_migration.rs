@@ -59,10 +59,10 @@ fn value_to_schema(schema: Value) -> Result<Schema, anyhow::Error> {
         let field_name: String =
             serde_json::from_value(field.get("name").unwrap().clone()).unwrap();
         let field_dt: DataType =
-            serde_json::from_value(field.get("datatype").unwrap().clone()).unwrap();
+            serde_json::from_value(field.get("data_type").unwrap().clone()).unwrap();
         new_fields.push(Field::new(field_name, field_dt, true));
     }
-    new_fields.sort();
+    new_fields.sort_by(|a, b| a.name().cmp(b.name()));
 
     Ok(Schema::new(new_fields))
 }
