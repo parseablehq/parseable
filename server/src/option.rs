@@ -142,12 +142,6 @@ impl Config {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 fn parseable_cli_command() -> Command {
     let local = Server::get_clap_command("local-store");
     let local = <FSConfig as Args>::augment_args_for_update(local);
