@@ -32,7 +32,7 @@ use futures::{StreamExt, TryStreamExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, Checksum};
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
-use object_store::ObjectStore;
+use object_store::{ClientOptions, ObjectStore};
 use relative_path::RelativePath;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -40,7 +40,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::iter::Iterator;
 use std::path::Path as StdPath;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
@@ -49,6 +49,7 @@ use super::{object_storage, ObjectStorageProvider};
 
 // in bytes
 const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
+const CONNECT_TIMEOUT_SECS: u64 = 5;
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -90,7 +91,7 @@ pub struct S3Config {
     #[arg(long, env = "P_S3_BUCKET", value_name = "bucket-name", required = true)]
     pub bucket_name: String,
 
-    /// Set client to send content_md5 header on every put request
+    /// Set client to send checksum header on every put request
     #[arg(
         long,
         env = "P_S3_CHECKSUM",
@@ -98,20 +99,56 @@ pub struct S3Config {
         default_value = "false"
     )]
     pub set_checksum: bool,
+
+    /// Set client to use virtual hosted style acess
+    #[arg(
+        long,
+        env = "P_S3_PATH_STYLE",
+        value_name = "bool",
+        default_value = "false"
+    )]
+    pub use_path_style: bool,
+
+    /// Set client to skip tls verification
+    #[arg(
+        long,
+        env = "P_S3_TLS_SKIP_VERIFY",
+        value_name = "bool",
+        default_value = "false"
+    )]
+    pub skip_tls: bool,
 }
 
-impl ObjectStorageProvider for S3Config {
-    fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv> {
-        let s3 = AmazonS3Builder::new()
+impl S3Config {
+    fn get_default_builder(&self) -> AmazonS3Builder {
+        let mut client_options = ClientOptions::default()
+            .with_allow_http(true)
+            .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS));
+
+        if self.skip_tls {
+            client_options = client_options.with_allow_invalid_certificates(true)
+        }
+
+        let mut builder = AmazonS3Builder::new()
             .with_region(&self.region)
             .with_endpoint(&self.endpoint_url)
             .with_bucket_name(&self.bucket_name)
             .with_access_key_id(&self.access_key_id)
             .with_secret_access_key(&self.secret_key)
-            // allow http for local instances
-            .with_allow_http(true)
-            .build()
-            .unwrap();
+            .with_virtual_hosted_style_request(!self.use_path_style)
+            .with_allow_http(true);
+
+        if self.set_checksum {
+            builder = builder.with_checksum_algorithm(Checksum::SHA256)
+        }
+
+        builder.with_client_options(client_options)
+    }
+}
+
+impl ObjectStorageProvider for S3Config {
+    fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv> {
+        let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
@@ -128,20 +165,7 @@ impl ObjectStorageProvider for S3Config {
     }
 
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
-        let mut s3 = AmazonS3Builder::new()
-            .with_region(&self.region)
-            .with_endpoint(&self.endpoint_url)
-            .with_bucket_name(&self.bucket_name)
-            .with_access_key_id(&self.access_key_id)
-            .with_secret_access_key(&self.secret_key)
-            // allow http for local instances
-            .with_allow_http(true);
-
-        if self.set_checksum {
-            s3 = s3.with_checksum_algorithm(Checksum::SHA256);
-        }
-
-        let s3 = s3.build().unwrap();
+        let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
