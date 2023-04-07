@@ -389,7 +389,11 @@ impl ObjectStorage for S3 {
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
-        Ok(self.client.head(&"".into()).await.map(|_| ())?)
+        Ok(self
+            .client
+            .head(&object_storage::PARSEABLE_METADATA_FILE_NAME.into())
+            .await
+            .map(|_| ())?)
     }
 
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
