@@ -105,7 +105,7 @@ pub struct S3Config {
         long,
         env = "P_S3_PATH_STYLE",
         value_name = "bool",
-        default_value = "false"
+        default_value = "true"
     )]
     pub use_path_style: bool,
 
