@@ -324,7 +324,7 @@ impl S3 {
     }
 
     async fn _upload_multipart(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
-        let mut buf = [0u8; MULTIPART_UPLOAD_SIZE / 2];
+        let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
         let mut file = OpenOptions::new().read(true).open(path).await?;
 
         let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
