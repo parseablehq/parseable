@@ -109,11 +109,12 @@ pub fn get_schema_key(fields: &Vec<Field>) -> String {
 pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), EventError> {
     let mut stream_metadata = metadata::STREAM_INFO.write().expect("lock poisoned");
 
-    let schema = Schema::try_merge(vec![
+    let mut schema = Schema::try_merge(vec![
         schema.as_ref().clone(),
         stream_metadata.get_unchecked(stream_name).as_ref().clone(),
     ])
     .unwrap();
+    schema.fields.sort_by(|a, b| a.name().cmp(b.name()));
 
     stream_metadata.set_unchecked(stream_name, Arc::new(schema));
     Ok(())
@@ -156,5 +157,59 @@ pub mod error {
         Arrow(#[from] ArrowError),
         #[error("ObjectStorage Error: {0}")]
         ObjectStorage(#[from] ObjectStorageError),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_array::RecordBatch;
+    use arrow_schema::{DataType, Field, Schema};
+
+    use super::Event;
+
+    fn test_rb(fields: Vec<Field>) -> RecordBatch {
+        RecordBatch::new_empty(Arc::new(Schema::new(fields)))
+    }
+
+    fn test_event(fields: Vec<Field>) -> Event {
+        Event {
+            stream_name: "".to_string(),
+            rb: test_rb(fields),
+            origin_format: "none",
+            origin_size: 0,
+        }
+    }
+
+    #[test]
+    fn new_field_is_new_event() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Int64, true),
+        ]);
+
+        let new_event = test_event(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("c", DataType::Int64, true),
+        ]);
+
+        assert!(new_event.is_first_event(&schema));
+    }
+
+    #[test]
+    fn same_field_not_is_new_event() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Int64, true),
+            Field::new("c", DataType::Int64, true),
+        ]);
+
+        let new_event = test_event(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("c", DataType::Int64, true),
+        ]);
+
+        assert!(!new_event.is_first_event(&schema));
     }
 }

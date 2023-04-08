@@ -172,9 +172,9 @@ mod tests {
     #[test]
     fn basic_object_into_rb() {
         let json = json!({
+            "c": 4.23,
             "a": 1,
             "b": "hello",
-            "c": 4.23
         });
 
         let req = TestRequest::default()
