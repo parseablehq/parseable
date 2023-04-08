@@ -22,10 +22,7 @@ use clap::{command, value_parser, Arg, Args, Command, FromArgMatches};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::storage::{
-    FSConfig, ObjectStorage, ObjectStorageError, ObjectStorageProvider, S3Config,
-    LOCAL_SYNC_INTERVAL,
-};
+use crate::storage::{FSConfig, ObjectStorageProvider, S3Config, LOCAL_SYNC_INTERVAL};
 use crate::utils::validate_path_is_writeable;
 
 lazy_static::lazy_static! {
@@ -95,23 +92,6 @@ impl Config {
         }
     }
 
-    pub async fn validate_storage(&self, storage: &(impl ObjectStorage + ?Sized)) {
-        match storage.check().await {
-            Ok(_) => (),
-            Err(ObjectStorageError::ConnectionError(inner)) => panic!(
-                "Failed to connect to the Object Storage Service on {url}\nCaused by: {cause}",
-                url = self.storage().get_endpoint(),
-                cause = inner
-            ),
-            Err(ObjectStorageError::AuthenticationError(inner)) => panic!(
-                "Failed to authenticate. Please ensure credentials are valid\n Caused by: {inner}"
-            ),
-            Err(error) => {
-                panic!("{error}")
-            }
-        }
-    }
-
     pub fn validate_staging(&self) -> anyhow::Result<()> {
         let staging_path = self.staging_dir();
         validate_path_is_writeable(staging_path)
@@ -139,12 +119,6 @@ impl Config {
             mode = "Local drive";
         }
         mode
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
