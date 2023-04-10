@@ -10,7 +10,6 @@ categories = ["logging", "observability", "log analytics"]
 actix-web-httpauth = "0.8"
 actix-web = { version = "4.3", features = ["rustls"] }
 actix-cors = "0.6"
-actix-files = "0.6"
 actix-web-prometheus = { version = "0.1" }
 prometheus = { version = "0.13", features = ["process"] }
 anyhow = { version = "1.0", features = ["backtrace"] }
@@ -19,8 +18,6 @@ arrow-array = { version = "34.0.0" }
 arrow-json = "34.0.0"
 arrow-ipc = "34.0.0"
 async-trait = "0.1"
-aws-sdk-s3 = "0.24"
-aws-smithy-async = { version = "0.54", features = ["rt-tokio"] }
 base64 = "0.21"
 bytes = "1.4"
 chrono = "0.4"
@@ -36,7 +33,7 @@ clap = { version = "4.1", default-features = false, features = [
 ] }
 crossterm = "0.26"
 datafusion = "21.0.0"
-object_store = { version = "0.5", features = ["aws"] }
+object_store = { version = "0.5.6", features = ["aws", "aws_profile"] }
 derive_more = "0.99"
 env_logger = "0.10"
 futures = "0.3"
@@ -46,7 +43,6 @@ humantime-serde = "1.1"
 lazy_static = "1.4"
 log = "0.4"
 num_cpus = "1.15"
-md-5 = "0.10"
 sysinfo = "0.28.4"
 hostname = "0.3"
 rand = "0.8"

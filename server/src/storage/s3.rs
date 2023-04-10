@@ -17,15 +17,6 @@
  */
 
 use async_trait::async_trait;
-use aws_sdk_s3::config::retry::RetryConfig;
-use aws_sdk_s3::error::{HeadBucketError, HeadBucketErrorKind};
-use aws_sdk_s3::model::{CommonPrefix, Delete, ObjectIdentifier};
-use aws_sdk_s3::types::{ByteStream, SdkError};
-use aws_sdk_s3::Error as AwsSdkError;
-use aws_sdk_s3::{Client, Credentials, Region};
-use aws_smithy_async::rt::sleep::default_async_sleep;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::engine::Engine as _;
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 
@@ -40,21 +31,27 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
-use itertools::Itertools;
-use md5::{Digest, Md5};
-use object_store::aws::AmazonS3Builder;
+use object_store::aws::{AmazonS3, AmazonS3Builder, Checksum};
 use object_store::limit::LimitStore;
+use object_store::path::Path as StorePath;
+use object_store::{ClientOptions, ObjectStore};
 use relative_path::RelativePath;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use std::iter::Iterator;
-use std::path::Path;
+use std::path::Path as StdPath;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
 use super::{object_storage, ObjectStorageProvider};
+
+// in bytes
+const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
+const CONNECT_TIMEOUT_SECS: u64 = 5;
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -96,28 +93,64 @@ pub struct S3Config {
     #[arg(long, env = "P_S3_BUCKET", value_name = "bucket-name", required = true)]
     pub bucket_name: String,
 
-    /// Set client to send content_md5 header on every put request
+    /// Set client to send checksum header on every put request
     #[arg(
         long,
-        env = "P_S3_SET_CONTENT_MD5",
+        env = "P_S3_CHECKSUM",
         value_name = "bool",
         default_value = "false"
     )]
-    pub content_md5: bool,
+    pub set_checksum: bool,
+
+    /// Set client to use virtual hosted style acess
+    #[arg(
+        long,
+        env = "P_S3_PATH_STYLE",
+        value_name = "bool",
+        default_value = "true"
+    )]
+    pub use_path_style: bool,
+
+    /// Set client to skip tls verification
+    #[arg(
+        long,
+        env = "P_S3_TLS_SKIP_VERIFY",
+        value_name = "bool",
+        default_value = "false"
+    )]
+    pub skip_tls: bool,
 }
 
-impl ObjectStorageProvider for S3Config {
-    fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv> {
-        let s3 = AmazonS3Builder::new()
+impl S3Config {
+    fn get_default_builder(&self) -> AmazonS3Builder {
+        let mut client_options = ClientOptions::default()
+            .with_allow_http(true)
+            .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS));
+
+        if self.skip_tls {
+            client_options = client_options.with_allow_invalid_certificates(true)
+        }
+
+        let mut builder = AmazonS3Builder::new()
             .with_region(&self.region)
             .with_endpoint(&self.endpoint_url)
             .with_bucket_name(&self.bucket_name)
             .with_access_key_id(&self.access_key_id)
             .with_secret_access_key(&self.secret_key)
-            // allow http for local instances
-            .with_allow_http(true)
-            .build()
-            .unwrap();
+            .with_virtual_hosted_style_request(!self.use_path_style)
+            .with_allow_http(true);
+
+        if self.set_checksum {
+            builder = builder.with_checksum_algorithm(Checksum::SHA256)
+        }
+
+        builder.with_client_options(client_options)
+    }
+}
+
+impl ObjectStorageProvider for S3Config {
+    fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv> {
+        let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
@@ -135,25 +168,14 @@ impl ObjectStorageProvider for S3Config {
     }
 
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
-        let uri: String = self.endpoint_url.parse().unwrap();
-        let region = Region::new(self.region.clone());
-        let creds = Credentials::new(&self.access_key_id, &self.secret_key, None, None, "");
+        let s3 = self.get_default_builder().build().unwrap();
 
-        let config = aws_sdk_s3::Config::builder()
-            .region(region)
-            .endpoint_url(uri)
-            .force_path_style(true)
-            .credentials_provider(creds)
-            .retry_config(RetryConfig::standard().with_max_attempts(5))
-            .sleep_impl(default_async_sleep().expect("sleep impl is provided for tokio rt"))
-            .build();
-
-        let client = Client::from_conf(config);
+        // limit objectstore to a concurrent request limit
+        let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
 
         Arc::new(S3 {
-            client,
+            client: s3,
             bucket: self.bucket_name.clone(),
-            set_content_md5: self.content_md5,
         })
     }
 
@@ -166,23 +188,20 @@ impl ObjectStorageProvider for S3Config {
     }
 }
 
+fn to_path(path: &RelativePath) -> StorePath {
+    StorePath::from(path.as_str())
+}
+
 pub struct S3 {
-    client: aws_sdk_s3::Client,
+    client: LimitStore<AmazonS3>,
     bucket: String,
-    set_content_md5: bool,
 }
 
 impl S3 {
-    async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, AwsSdkError> {
+    async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let instant = Instant::now();
 
-        let resp = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(path.as_str())
-            .send()
-            .await;
+        let resp = self.client.get(&to_path(path)).await;
 
         match resp {
             Ok(resp) => {
@@ -190,7 +209,7 @@ impl S3 {
                 REQUEST_RESPONSE_TIME
                     .with_label_values(&["GET", "200"])
                     .observe(time);
-                let body = resp.body.collect().await.unwrap().into_bytes();
+                let body = resp.bytes().await.unwrap();
                 Ok(body)
             }
             Err(err) => {
@@ -207,18 +226,9 @@ impl S3 {
         &self,
         path: &RelativePath,
         resource: Bytes,
-        md5: Option<String>,
-    ) -> Result<(), AwsSdkError> {
+    ) -> Result<(), ObjectStorageError> {
         let time = Instant::now();
-        let resp = self
-            .client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(path.as_str())
-            .body(resource.into())
-            .set_content_md5(md5)
-            .send()
-            .await;
+        let resp = self.client.put(&to_path(path), resource).await;
         let status = if resp.is_ok() { "200" } else { "400" };
         let time = time.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME
@@ -228,164 +238,132 @@ impl S3 {
         resp.map(|_| ()).map_err(|err| err.into())
     }
 
-    async fn _delete_stream(&self, stream_name: &str) -> Result<(), AwsSdkError> {
-        let mut pages = self
-            .client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix(format!("{stream_name}/"))
-            .into_paginator()
-            .send();
+    async fn _delete_prefix(&self, key: &str) -> Result<(), ObjectStorageError> {
+        let object_stream = self.client.list(Some(&(key.into()))).await?;
 
-        let mut delete_objects: Vec<ObjectIdentifier> = vec![];
-        while let Some(page) = pages.next().await {
-            let page = page?;
-            for obj in page.contents.unwrap() {
-                let obj_id = ObjectIdentifier::builder().set_key(obj.key).build();
-                delete_objects.push(obj_id);
-            }
-        }
-
-        let delete = Delete::builder().set_objects(Some(delete_objects)).build();
-
-        self.client
-            .delete_objects()
-            .bucket(&self.bucket)
-            .delete(delete)
-            .send()
-            .await?;
+        object_stream
+            .for_each_concurrent(None, |x| async {
+                match x {
+                    Ok(obj) => {
+                        if (self.client.delete(&obj.location).await).is_err() {
+                            log::error!("Failed to fetch object during delete stream");
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("Failed to fetch object during delete stream");
+                    }
+                };
+            })
+            .await;
 
         Ok(())
     }
 
-    async fn _delete_prefix(&self, path: &RelativePath) -> Result<(), AwsSdkError> {
-        let mut pages = self
-            .client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix(path.as_str())
-            .into_paginator()
-            .send();
+    async fn _list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+        let resp = self.client.list_with_delimiter(None).await?;
 
-        let mut delete_objects: Vec<ObjectIdentifier> = vec![];
-        while let Some(page) = pages.next().await {
-            let page = page?;
-            for obj in page.contents.unwrap() {
-                let obj_id = ObjectIdentifier::builder().set_key(obj.key).build();
-                delete_objects.push(obj_id);
-            }
-        }
-
-        let delete = Delete::builder().set_objects(Some(delete_objects)).build();
-
-        self.client
-            .delete_objects()
-            .bucket(&self.bucket)
-            .delete(delete)
-            .send()
-            .await?;
-
-        Ok(())
-    }
-
-    async fn _list_streams(&self) -> Result<Vec<LogStream>, AwsSdkError> {
-        let resp = self
-            .client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .delimiter('/')
-            .send()
-            .await?;
-
-        let common_prefixes = resp.common_prefixes().unwrap_or_default();
+        let common_prefixes = resp.common_prefixes;
 
         // return prefixes at the root level
         let dirs: Vec<_> = common_prefixes
             .iter()
-            .filter_map(CommonPrefix::prefix)
-            .filter_map(|name| name.strip_suffix('/'))
-            .map(String::from)
+            .filter_map(|path| path.parts().next())
+            .map(|name| name.as_ref().to_string())
             .collect();
 
         let stream_json_check = FuturesUnordered::new();
 
         for dir in &dirs {
             let key = format!("{}/{}", dir, object_storage::STREAM_METADATA_FILE_NAME);
-            let task = async move {
-                self.client
-                    .head_object()
-                    .bucket(&self.bucket)
-                    .key(key)
-                    .send()
-                    .await
-                    .map(|_| ())
-            };
-
+            let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
             stream_json_check.push(task);
         }
 
         stream_json_check.try_collect().await?;
 
-        Ok(dirs
-            .into_iter()
-            .map(|name| LogStream { name })
-            .collect_vec())
+        Ok(dirs.into_iter().map(|name| LogStream { name }).collect())
     }
 
-    async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, AwsSdkError> {
-        let prefix = format!("{stream}/");
+    async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
         let resp = self
             .client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix(&prefix)
-            .delimiter('/')
-            .send()
+            .list_with_delimiter(Some(&(stream.into())))
             .await?;
 
-        let common_prefixes = resp.common_prefixes().unwrap_or_default();
+        let common_prefixes = resp.common_prefixes;
 
         // return prefixes at the root level
         let dates: Vec<_> = common_prefixes
             .iter()
-            .filter_map(CommonPrefix::prefix)
-            .filter_map(|name| {
-                name.strip_suffix('/')
-                    .and_then(|name| name.strip_prefix(&prefix))
-            })
+            .filter_map(|path| path.as_ref().strip_prefix(&format!("{stream}/")))
             .map(String::from)
             .collect();
 
         Ok(dates)
     }
 
-    async fn _upload_file(
-        &self,
-        key: &str,
-        path: &Path,
-        md5: Option<String>,
-    ) -> Result<(), AwsSdkError> {
-        let body = ByteStream::from_path(&path).await.unwrap();
-
+    async fn _upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
-        let resp = self
-            .client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .body(body)
-            .set_content_md5(md5)
-            .send()
-            .await;
 
-        let status = if resp.is_ok() { "200" } else { "400" };
+        let should_multipart = std::fs::metadata(path)?.len() > MULTIPART_UPLOAD_SIZE as u64;
+
+        let res = if should_multipart {
+            self._upload_multipart(key, path).await
+        } else {
+            let bytes = tokio::fs::read(path).await?;
+            self.client
+                .put(&key.into(), bytes.into())
+                .await
+                .map_err(|err| err.into())
+        };
+
+        let status = if res.is_ok() { "200" } else { "400" };
         let time = instant.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME
             .with_label_values(&["UPLOAD_PARQUET", status])
             .observe(time);
 
-        log::trace!("{:?}", resp);
-        resp.map(|_| ()).map_err(|err| err.into())
+        res
+    }
+
+    async fn _upload_multipart(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+        let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
+        let mut file = OpenOptions::new().read(true).open(path).await?;
+
+        let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
+
+        let close_multipart = |err| async move {
+            log::error!("multipart upload failed. {:?}", err);
+            self.client
+                .abort_multipart(&key.into(), &multipart_id)
+                .await
+        };
+
+        loop {
+            match file.read(&mut buf).await {
+                Ok(len) => {
+                    if len == 0 {
+                        break;
+                    }
+                    if let Err(err) = async_writer.write_all(&buf[0..len]).await {
+                        close_multipart(err).await?;
+                        break;
+                    }
+                    if let Err(err) = async_writer.flush().await {
+                        close_multipart(err).await?;
+                        break;
+                    }
+                }
+                Err(err) => {
+                    close_multipart(err).await?;
+                    break;
+                }
+            }
+        }
+
+        async_writer.shutdown().await?;
+
+        Ok(())
     }
 }
 
@@ -400,13 +378,7 @@ impl ObjectStorage for S3 {
         path: &RelativePath,
         resource: Bytes,
     ) -> Result<(), ObjectStorageError> {
-        let hash = self.set_content_md5.then(|| {
-            let mut hash = Md5::new();
-            hash.update(&resource);
-            BASE64.encode(hash.finalize())
-        });
-
-        self._put_object(path, resource, hash)
+        self._put_object(path, resource)
             .await
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
 
@@ -414,23 +386,21 @@ impl ObjectStorage for S3 {
     }
 
     async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
-        self._delete_prefix(path).await?;
+        self._delete_prefix(path.as_ref()).await?;
 
         Ok(())
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
-        self.client
-            .head_bucket()
-            .bucket(&self.bucket)
-            .send()
+        Ok(self
+            .client
+            .head(&object_storage::PARSEABLE_METADATA_FILE_NAME.into())
             .await
-            .map(|_| ())
-            .map_err(|err| err.into())
+            .map(|_| ())?)
     }
 
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
-        self._delete_stream(stream_name).await?;
+        self._delete_prefix(stream_name).await?;
 
         Ok(())
     }
@@ -447,17 +417,8 @@ impl ObjectStorage for S3 {
         Ok(streams)
     }
 
-    async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        let hash = if self.set_content_md5 {
-            let mut file = std::fs::File::open(path)?;
-            let mut digest = Md5::new();
-            std::io::copy(&mut file, &mut digest)?;
-            Some(BASE64.encode(digest.finalize()))
-        } else {
-            None
-        };
-
-        self._upload_file(key, path, hash).await?;
+    async fn upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+        self._upload_file(key, path).await?;
 
         Ok(())
     }
@@ -499,34 +460,13 @@ impl ObjectStorage for S3 {
     }
 }
 
-impl From<AwsSdkError> for ObjectStorageError {
-    fn from(error: AwsSdkError) -> Self {
+impl From<object_store::Error> for ObjectStorageError {
+    fn from(error: object_store::Error) -> Self {
         match error {
-            AwsSdkError::NotFound(_) | AwsSdkError::NoSuchKey(_) => {
-                ObjectStorageError::NoSuchKey("".to_string())
+            object_store::Error::Generic { source, .. } => {
+                ObjectStorageError::UnhandledError(source)
             }
-            e => ObjectStorageError::UnhandledError(Box::new(e)),
-        }
-    }
-}
-
-// TODO: Needs to be adjusted https://github.com/awslabs/aws-sdk-rust/issues/657#issue-1436568853
-impl From<SdkError<HeadBucketError>> for ObjectStorageError {
-    fn from(error: SdkError<HeadBucketError>) -> Self {
-        match error {
-            SdkError::ServiceError(err) => {
-                let err = err.into_err();
-                let err_kind = &err.kind;
-                match err_kind {
-                    HeadBucketErrorKind::Unhandled(_) => {
-                        ObjectStorageError::AuthenticationError(err.into())
-                    }
-                    _ => ObjectStorageError::UnhandledError(err.into()),
-                }
-            }
-            err @ SdkError::DispatchFailure(_) | err @ SdkError::TimeoutError(_) => {
-                ObjectStorageError::ConnectionError(err.into())
-            }
+            object_store::Error::NotFound { path, .. } => ObjectStorageError::NoSuchKey(path),
             err => ObjectStorageError::UnhandledError(Box::new(err)),
         }
     }
