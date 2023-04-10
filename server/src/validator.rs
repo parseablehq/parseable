@@ -16,8 +16,6 @@
  *
  */
 
-use std::sync::Arc;
-
 use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
@@ -164,14 +162,14 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Que
         return Err(QueryValidationError::UninitializedStream);
     }
 
-    let merged_schema = Arc::new(STREAM_INFO.merged_schema(&stream_name)?);
+    let schema = STREAM_INFO.schema(&stream_name)?;
 
     Ok(Query {
         stream_name: tokens[stream_name_index].to_string(),
         start,
         end,
         query: query.to_string(),
-        merged_schema,
+        schema,
     })
 }
 

@@ -215,7 +215,7 @@ fn load_arrows(
     for file in files {
         let Ok(arrow_file) = File::open(file) else { return false; };
         let Ok(reader)= StreamReader::try_new(arrow_file, None) else { return false; };
-        stream_readers.push(reader);
+        stream_readers.push(reader.into());
     }
 
     let reader = crate::storage::MergedRecordReader {

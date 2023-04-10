@@ -30,23 +30,19 @@ use crate::{
 };
 
 use actix_web_prometheus::PrometheusMetrics;
+use arrow_array::{RecordBatch, TimestampMillisecondArray};
+use arrow_ipc::reader::StreamReader;
+use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{
-    arrow::datatypes::Schema,
-    parquet::{basic::Encoding, schema::types::ColumnPath},
-};
-use datafusion::{
-    arrow::{
-        array::TimestampMillisecondArray, ipc::reader::StreamReader, record_batch::RecordBatch,
-    },
-    datasource::listing::ListingTable,
-    error::DataFusionError,
-    execution::runtime_env::RuntimeEnv,
-    parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
+    datasource::listing::ListingTable, error::DataFusionError, execution::runtime_env::RuntimeEnv,
 };
 use itertools::kmerge_by;
-use lazy_static::__Deref;
+use parquet::{
+    arrow::ArrowWriter, basic::Encoding, file::properties::WriterProperties,
+    schema::types::ColumnPath,
+};
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
@@ -92,16 +88,13 @@ pub trait ObjectStorage: Sync + 'static {
         schema: Arc<Schema>,
     ) -> Result<Option<ListingTable>, DataFusionError>;
 
-    async fn put_schema_map(
+    async fn put_schema(
         &self,
         stream_name: &str,
-        schema_map: &str,
+        schema: &Schema,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(
-            &schema_path(stream_name),
-            Bytes::copy_from_slice(schema_map.as_bytes()),
-        )
-        .await?;
+        self.put_object(&schema_path(stream_name), to_bytes(schema))
+            .await?;
 
         Ok(())
     }
@@ -114,11 +107,8 @@ pub trait ObjectStorage: Sync + 'static {
 
         let format_json = to_bytes(&format);
 
-        self.put_object(
-            &schema_path(stream_name),
-            to_bytes(&HashMap::<String, Schema>::new()),
-        )
-        .await?;
+        self.put_object(&schema_path(stream_name), to_bytes(&Schema::empty()))
+            .await?;
 
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
@@ -172,44 +162,9 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
-    async fn get_schema_map(
-        &self,
-        stream_name: &str,
-    ) -> Result<HashMap<String, Arc<Schema>>, ObjectStorageError> {
+    async fn get_schema(&self, stream_name: &str) -> Result<Schema, ObjectStorageError> {
         let schema_map = self.get_object(&schema_path(stream_name)).await?;
-        if let Ok(schema_map) = serde_json::from_slice(&schema_map) {
-            Ok(schema_map)
-        } else {
-            // fix for schema metadata serialize
-            let mut schema_map: serde_json::Value =
-                serde_json::from_slice(&schema_map).expect("valid json");
-
-            for schema in schema_map
-                .as_object_mut()
-                .expect("schema map is json object")
-                .values_mut()
-            {
-                let map = schema.as_object_mut().unwrap();
-                map.insert(
-                    "metadata".to_string(),
-                    Value::Object(serde_json::Map::new()),
-                );
-
-                for field in schema["fields"]
-                    .as_array_mut()
-                    .expect("fields is json array")
-                {
-                    let map = field.as_object_mut().unwrap();
-                    map.insert(
-                        "metadata".to_string(),
-                        Value::Object(serde_json::Map::new()),
-                    );
-                }
-            }
-
-            Ok(serde_json::from_value(schema_map)
-                .expect("should be deserializable after alteration"))
-        }
+        Ok(serde_json::from_slice(&schema_map)?)
     }
 
     async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError> {
@@ -329,12 +284,13 @@ pub trait ObjectStorage: Sync + 'static {
                 }
 
                 let record_reader = MergedRecordReader::try_new(&files).unwrap();
-
-                let mut parquet_table = CACHED_FILES.lock().unwrap();
-                let parquet_file =
-                    fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
-                parquet_table.upsert(&parquet_path);
-
+                let parquet_file = {
+                    let mut parquet_table = CACHED_FILES.lock().unwrap();
+                    let parquet_file =
+                        fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
+                    parquet_table.upsert(&parquet_path);
+                    parquet_file
+                };
                 let props = WriterProperties::builder()
                     .set_max_row_group_size(CONFIG.parseable.row_group_size)
                     .set_compression(CONFIG.parseable.parquet_compression.into())
@@ -343,7 +299,9 @@ pub trait ObjectStorage: Sync + 'static {
                         Encoding::DELTA_BINARY_PACKED,
                     )
                     .build();
-                let schema = Arc::new(record_reader.merged_schema());
+                let merged_schema = record_reader.merged_schema();
+                commit_schema_to_storage(stream, merged_schema.clone()).await?;
+                let schema = Arc::new(merged_schema);
                 let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
 
                 for ref record in record_reader.merged_iter(&schema) {
@@ -438,9 +396,40 @@ pub trait ObjectStorage: Sync + 'static {
     }
 }
 
+async fn commit_schema_to_storage(
+    stream_name: &str,
+    schema: Schema,
+) -> Result<(), ObjectStorageError> {
+    let storage = CONFIG.storage().get_object_store();
+    let stream_schema = storage.get_schema(stream_name).await?;
+    let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
+    storage.put_schema(stream_name, &new_schema).await
+}
+
+#[derive(Debug)]
+pub struct Reader {
+    reader: StreamReader<File>,
+    timestamp_col_index: usize,
+}
+
+impl From<StreamReader<File>> for Reader {
+    fn from(reader: StreamReader<File>) -> Self {
+        let timestamp_col_index = reader
+            .schema()
+            .all_fields()
+            .binary_search_by(|field| field.name().as_str().cmp("p_timestamp"))
+            .expect("schema should have this field");
+
+        Self {
+            reader,
+            timestamp_col_index,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct MergedRecordReader {
-    pub readers: Vec<StreamReader<File>>,
+    pub readers: Vec<Reader>,
 }
 
 impl MergedRecordReader {
@@ -449,38 +438,46 @@ impl MergedRecordReader {
 
         for file in files {
             let reader = StreamReader::try_new(File::open(file).unwrap(), None)?;
-            readers.push(reader);
+            readers.push(reader.into());
         }
 
         Ok(Self { readers })
     }
 
     pub fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
-        let adapted_readers = self.readers.into_iter().map(move |reader| reader.flatten());
+        let adapted_readers = self.readers.into_iter().map(move |reader| {
+            reader
+                .reader
+                .flatten()
+                .zip(std::iter::repeat(reader.timestamp_col_index))
+        });
 
-        kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
-            let a: &TimestampMillisecondArray = a
-                .column(0)
-                .as_any()
-                .downcast_ref::<TimestampMillisecondArray>()
-                .unwrap();
+        kmerge_by(
+            adapted_readers,
+            |(a, a_col): &(RecordBatch, usize), (b, b_col): &(RecordBatch, usize)| {
+                let a: &TimestampMillisecondArray = a
+                    .column(*a_col)
+                    .as_any()
+                    .downcast_ref::<TimestampMillisecondArray>()
+                    .unwrap();
 
-            let b: &TimestampMillisecondArray = b
-                .column(0)
-                .as_any()
-                .downcast_ref::<TimestampMillisecondArray>()
-                .unwrap();
+                let b: &TimestampMillisecondArray = b
+                    .column(*b_col)
+                    .as_any()
+                    .downcast_ref::<TimestampMillisecondArray>()
+                    .unwrap();
 
-            a.value(0) < b.value(0)
-        })
-        .map(|batch| adapt_batch(schema, batch))
+                a.value(0) < b.value(0)
+            },
+        )
+        .map(|(batch, _)| adapt_batch(schema, batch))
     }
 
     pub fn merged_schema(&self) -> Schema {
         Schema::try_merge(
             self.readers
                 .iter()
-                .map(|stream| stream.schema().deref().clone()),
+                .map(|reader| reader.reader.schema().as_ref().clone()),
         )
         .unwrap()
     }

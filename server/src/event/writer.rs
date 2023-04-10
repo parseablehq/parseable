@@ -17,7 +17,8 @@
  *
  */
 
-use datafusion::arrow::{ipc::writer::StreamWriter, record_batch::RecordBatch};
+use arrow_array::RecordBatch;
+use arrow_ipc::writer::StreamWriter;
 use lazy_static::lazy_static;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -188,7 +189,7 @@ fn init_new_stream_writer_file(
 }
 
 pub mod errors {
-    use datafusion::arrow::error::ArrowError;
+    use arrow_schema::ArrowError;
 
     #[derive(Debug, thiserror::Error)]
     pub enum StreamWriterError {

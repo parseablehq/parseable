@@ -16,7 +16,7 @@
  *
  */
 
-use datafusion::arrow::datatypes::Schema;
+use arrow_schema::Schema;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -25,7 +25,7 @@ use crate::alerts::Alerts;
 use crate::event::Event;
 use crate::metrics::{EVENTS_INGESTED, EVENTS_INGESTED_SIZE};
 use crate::stats::{Stats, StatsCounter};
-use crate::storage::ObjectStorage;
+use crate::storage::{MergedRecordReader, ObjectStorage, StorageDir};
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 
@@ -37,11 +37,21 @@ lazy_static! {
         RwLock::new(HashMap::new());
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LogStreamMetadata {
-    pub schema: HashMap<String, Arc<Schema>>,
+    pub schema: Arc<Schema>,
     pub alerts: Alerts,
     pub stats: StatsCounter,
+}
+
+impl Default for LogStreamMetadata {
+    fn default() -> Self {
+        Self {
+            schema: Arc::new(Schema::empty()),
+            alerts: Alerts::default(),
+            stats: StatsCounter::default(),
+        }
+    }
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -53,7 +63,6 @@ pub const LOCK_EXPECT: &str = "no method in metadata should panic while holding 
 // 3. When a stream is deleted (remove the entry from the map)
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
-#[allow(clippy::all)]
 impl STREAM_INFO {
     pub async fn check_alerts(&self, event: &Event) -> Result<(), CheckAlertError> {
         let map = self.read().expect(LOCK_EXPECT);
@@ -64,7 +73,7 @@ impl STREAM_INFO {
             ))?;
 
         for alert in &meta.alerts.alerts {
-            alert.check_alert(event.stream_name.clone(), &event.body)
+            alert.check_alert(event.stream_name.clone(), event.rb.clone())
         }
 
         Ok(())
@@ -76,46 +85,17 @@ impl STREAM_INFO {
     }
 
     pub fn stream_initialized(&self, stream_name: &str) -> Result<bool, MetadataError> {
-        Ok(!self.schema_map(stream_name)?.is_empty())
+        Ok(!self.schema(stream_name)?.fields.is_empty())
     }
 
-    pub fn schema(
-        &self,
-        stream_name: &str,
-        schema_key: &str,
-    ) -> Result<Option<Arc<Schema>>, MetadataError> {
+    pub fn schema(&self, stream_name: &str) -> Result<Arc<Schema>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
-        let schemas = map
+        let schema = map
             .get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| &metadata.schema)?;
 
-        Ok(schemas.get(schema_key).cloned())
-    }
-
-    pub fn schema_map(
-        &self,
-        stream_name: &str,
-    ) -> Result<HashMap<String, Arc<Schema>>, MetadataError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let schemas = map
-            .get(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.schema.clone())?;
-
-        Ok(schemas)
-    }
-
-    pub fn merged_schema(&self, stream_name: &str) -> Result<Schema, MetadataError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let schemas = &map
-            .get(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?
-            .schema;
-        let schema = Schema::try_merge(schemas.values().map(|schema| &**schema).cloned())
-            .expect("mergeable schemas");
-
-        Ok(schema)
+        Ok(Arc::clone(schema))
     }
 
     pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {
@@ -148,8 +128,10 @@ impl STREAM_INFO {
 
         for stream in storage.list_streams().await? {
             let alerts = storage.get_alerts(&stream.name).await?;
-            let schema = storage.get_schema_map(&stream.name).await?;
+            let schema = storage.get_schema(&stream.name).await?;
             let stats = storage.get_stats(&stream.name).await?;
+
+            let schema = Arc::new(update_schema_from_staging(&stream.name, schema));
 
             let metadata = LogStreamMetadata {
                 schema,
@@ -173,19 +155,25 @@ impl STREAM_INFO {
             .collect()
     }
 
-    pub fn update_stats(&self, stream_name: &str, size: u64) -> Result<(), MetadataError> {
+    pub fn update_stats(
+        &self,
+        stream_name: &str,
+        origin: &'static str,
+        size: u64,
+        num_rows: u64,
+    ) -> Result<(), MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         let stream = map
             .get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))?;
 
         stream.stats.add_ingestion_size(size);
-        stream.stats.increase_event_by_one();
+        stream.stats.increase_event_by_n(num_rows);
         EVENTS_INGESTED
-            .with_label_values(&[stream_name.clone(), "json"])
+            .with_label_values(&[stream_name, origin])
             .inc();
         EVENTS_INGESTED_SIZE
-            .with_label_values(&[stream_name.clone(), "json"])
+            .with_label_values(&[stream_name, origin])
             .add(size as i64);
 
         Ok(())
@@ -198,6 +186,15 @@ impl STREAM_INFO {
             .map(|metadata| Stats::from(&metadata.stats))
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))
     }
+}
+
+fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Schema {
+    let staging_files = StorageDir::new(stream_name).arrow_files();
+    let schema = MergedRecordReader::try_new(&staging_files)
+        .unwrap()
+        .merged_schema();
+
+    Schema::try_merge(vec![schema, current_schema]).unwrap()
 }
 
 pub mod error {

@@ -16,7 +16,11 @@
  *
  */
 
+use arrow_array::cast::as_string_array;
+use arrow_array::RecordBatch;
+use arrow_schema::DataType;
 use async_trait::async_trait;
+use datafusion::arrow::compute::kernels::cast;
 use datafusion::arrow::datatypes::Schema;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -33,21 +37,21 @@ use crate::{storage, utils};
 pub use self::rule::Rule;
 use self::target::Target;
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
     pub version: AlertVerison,
     pub alerts: Vec<Alert>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AlertVerison {
     #[default]
     V1,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
     #[serde(default = "crate::utils::uid::gen")]
@@ -60,22 +64,29 @@ pub struct Alert {
 }
 
 impl Alert {
-    pub fn check_alert(&self, stream_name: String, event_json: &serde_json::Value) {
-        let resolves = self.rule.resolves(event_json);
+    pub fn check_alert(&self, stream_name: String, events: RecordBatch) {
+        let resolves = self.rule.resolves(events.clone());
 
-        match resolves {
-            AlertState::Listening | AlertState::Firing => (),
-            alert_state @ (AlertState::SetToFiring | AlertState::Resolved) => {
-                let context = self.get_context(stream_name, alert_state, &self.rule, event_json);
-                ALERTS_STATES
-                    .with_label_values(&[
-                        context.stream.as_str(),
-                        context.alert_info.alert_name.as_str(),
-                        context.alert_info.alert_state.to_string().as_str(),
-                    ])
-                    .inc();
-                for target in &self.targets {
-                    target.call(context.clone());
+        for (index, state) in resolves.into_iter().enumerate() {
+            match state {
+                AlertState::Listening | AlertState::Firing => (),
+                alert_state @ (AlertState::SetToFiring | AlertState::Resolved) => {
+                    let context = self.get_context(
+                        stream_name.clone(),
+                        alert_state,
+                        &self.rule,
+                        events.slice(index, 1),
+                    );
+                    ALERTS_STATES
+                        .with_label_values(&[
+                            context.stream.as_str(),
+                            context.alert_info.alert_name.as_str(),
+                            context.alert_info.alert_state.to_string().as_str(),
+                        ])
+                        .inc();
+                    for target in &self.targets {
+                        target.call(context.clone());
+                    }
                 }
             }
         }
@@ -86,7 +97,7 @@ impl Alert {
         stream_name: String,
         alert_state: AlertState,
         rule: &Rule,
-        event_json: &serde_json::Value,
+        event_row: RecordBatch,
     ) -> Context {
         let deployment_instance = format!(
             "{}://{}",
@@ -104,7 +115,7 @@ impl Alert {
             stream_name,
             AlertInfo::new(
                 self.name.clone(),
-                self.message.get(event_json),
+                self.message.get(event_row),
                 rule.trigger_reason(),
                 alert_state,
             ),
@@ -144,9 +155,12 @@ impl Message {
     }
 
     // returns the message with the column name replaced with the value of the column
-    fn get(&self, event_json: &serde_json::Value) -> String {
+    fn get(&self, event: RecordBatch) -> String {
         if let Some(column) = self.extract_column_name() {
-            if let Some(value) = event_json.get(column) {
+            if let Some(value) = event.column_by_name(column) {
+                let arr = cast(value, &DataType::Utf8).unwrap();
+                let value = as_string_array(&arr).value(0);
+
                 return self
                     .message
                     .replace(&format!("{{{column}}}"), value.to_string().as_str());

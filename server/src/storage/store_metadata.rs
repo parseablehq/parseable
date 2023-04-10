@@ -22,7 +22,6 @@ use std::{
 };
 
 use once_cell::sync::OnceCell;
-use serde::{Deserialize, Serialize};
 use std::io;
 
 use crate::{option::CONFIG, utils::uid};
@@ -31,7 +30,7 @@ use super::object_storage::PARSEABLE_METADATA_FILE_NAME;
 
 pub static STORAGE_METADATA: OnceCell<StorageMetadata> = OnceCell::new();
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StorageMetadata {
     pub version: String,
     pub mode: String,
@@ -43,7 +42,7 @@ pub struct StorageMetadata {
     pub stream: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct User {
     username: String,
     password: String,

@@ -46,7 +46,7 @@ fn get_value(value: &Value, key: Key) -> Result<&str, Key> {
 pub struct Query {
     pub query: String,
     pub stream_name: String,
-    pub merged_schema: Arc<Schema>,
+    pub schema: Arc<Schema>,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
 }
@@ -76,7 +76,7 @@ impl Query {
     }
 
     pub fn get_schema(&self) -> &Schema {
-        &self.merged_schema
+        &self.schema
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information

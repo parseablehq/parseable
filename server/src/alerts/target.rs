@@ -28,13 +28,12 @@ use chrono::Utc;
 use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use humantime_serde::re::humantime;
 use reqwest::ClientBuilder;
-use serde::{Deserialize, Serialize};
 
 use crate::utils::json;
 
 use super::{AlertState, CallableTarget, Context};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[serde(untagged)]
 pub enum Retry {
@@ -42,7 +41,7 @@ pub enum Retry {
     Finite(usize),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[serde(try_from = "TargetVerifier")]
 pub struct Target {
@@ -143,13 +142,13 @@ fn call_target(target: TargetType, context: Context) {
     actix_web::rt::spawn(async move { target.call(&context).await });
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 pub struct RepeatVerifier {
     interval: Option<String>,
     times: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct TargetVerifier {
     #[serde(flatten)]
@@ -192,7 +191,7 @@ impl TryFrom<TargetVerifier> for Target {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[serde(tag = "type")]
 #[serde(deny_unknown_fields)]
@@ -217,7 +216,7 @@ fn default_client_builder() -> ClientBuilder {
     ClientBuilder::new()
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlackWebHook {
     endpoint: String,
 }
@@ -245,7 +244,7 @@ impl CallableTarget for SlackWebHook {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct OtherWebHook {
     endpoint: String,
@@ -283,7 +282,7 @@ impl CallableTarget for OtherWebHook {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AlertManager {
     endpoint: String,
     #[serde(default)]
@@ -362,7 +361,7 @@ impl CallableTarget for AlertManager {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Timeout {
     #[serde(with = "humantime_serde")]
     pub interval: Duration,
@@ -388,7 +387,7 @@ pub struct TimeoutState {
     pub awaiting_resolve: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Auth {
     username: String,
     password: String,

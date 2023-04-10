@@ -71,7 +71,7 @@ pub async fn list(_: HttpRequest) -> impl Responder {
 
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let schema = STREAM_INFO.merged_schema(&stream_name)?;
+    let schema = STREAM_INFO.schema(&stream_name)?;
     Ok((web::Json(schema), StatusCode::OK))
 }
 
@@ -151,7 +151,7 @@ pub async fn put_alert(
         return Err(StreamError::UninitializedLogstream);
     }
 
-    let schema = STREAM_INFO.merged_schema(&stream_name)?;
+    let schema = STREAM_INFO.schema(&stream_name)?;
     for alert in &alerts.alerts {
         let column = alert.message.extract_column_name();
         let is_valid = alert.message.valid(&schema, column);

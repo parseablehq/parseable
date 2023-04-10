@@ -16,30 +16,42 @@
  *
  */
 
+use anyhow::anyhow;
 use itertools::Itertools;
 use serde_json::map::Map;
 use serde_json::value::Value;
 
-pub fn flatten(nested_value: Value, separator: &str) -> Result<Value, ()> {
-    let mut map = Map::new();
-    if let Value::Object(nested_dict) = nested_value {
-        flatten_object(&mut map, None, nested_dict, separator)?;
-    } else {
-        return Err(());
+pub fn flatten(nested_value: Value, separator: &str) -> Result<Value, anyhow::Error> {
+    match nested_value {
+        Value::Object(nested_dict) => {
+            let mut map = Map::new();
+            flatten_object(&mut map, None, nested_dict, separator)?;
+            Ok(Value::Object(map))
+        }
+        Value::Array(mut arr) => {
+            for _value in &mut arr {
+                let value = std::mem::replace(_value, Value::Null);
+                let mut map = Map::new();
+                let Value::Object(obj) = value else { return Err(anyhow!("Expected object in array of objects")) };
+                flatten_object(&mut map, None, obj, separator)?;
+                *_value = Value::Object(map);
+            }
+            Ok(Value::Array(arr))
+        }
+        _ => Err(anyhow!("Cannot flatten this JSON")),
     }
-    Ok(Value::Object(map))
 }
 
 pub fn flatten_with_parent_prefix(
     nested_value: Value,
     prefix: &str,
     separator: &str,
-) -> Result<Value, ()> {
+) -> Result<Value, anyhow::Error> {
     let mut map = Map::new();
     if let Value::Object(nested_dict) = nested_value {
         flatten_object(&mut map, Some(prefix), nested_dict, separator)?;
     } else {
-        return Err(());
+        return Err(anyhow!("Must be an object"));
     }
     Ok(Value::Object(map))
 }
@@ -49,7 +61,7 @@ pub fn flatten_object(
     parent_key: Option<&str>,
     nested_dict: Map<String, Value>,
     separator: &str,
-) -> Result<(), ()> {
+) -> Result<(), anyhow::Error> {
     for (key, value) in nested_dict.into_iter() {
         let new_key = parent_key.map_or_else(
             || key.clone(),
@@ -78,7 +90,7 @@ pub fn flatten_array_objects(
     parent_key: &str,
     arr: Vec<Value>,
     separator: &str,
-) -> Result<(), ()> {
+) -> Result<(), anyhow::Error> {
     let mut columns: Vec<(String, Vec<Value>)> = Vec::new();
     let mut len = 0;
     for value in arr {
@@ -119,7 +131,9 @@ pub fn flatten_array_objects(
                 column.push(Value::Null)
             }
         } else {
-            return Err(());
+            return Err(anyhow!(
+                "Found non object element while flattening array of object(s)",
+            ));
         }
         len += 1;
     }
