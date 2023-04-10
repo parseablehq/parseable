@@ -48,7 +48,7 @@ parseable:
     - s3.region
   replicaCount: 1
   nameOverride: ""
-  fullnameOverride: ""  
+  fullnameOverride: ""
   serviceAccount:
     create: true
     name: "parseable"
@@ -63,14 +63,14 @@ parseable:
     requests:
       cpu: 250m
       memory: 1Gi
-  securityContext: {}
+  securityContext:
+    allowPrivilegeEscalation: false
   podAnnotations: {}
   podSecurityContext:
     runAsUser: 1000
     runAsGroup: 1000
     fsGroup: 1000
     fsGroupChangePolicy: "Always"
-    allowPrivilegeEscalation: false
   nodeSelector: {}
   affinity: {}
   tolerations: []
@@ -138,7 +138,7 @@ vector:
           max_events: 1000
           timeout_secs: 10
         compression: gzip
-        inputs: 
+        inputs:
           - kubernetes_logs
         encoding:
           codec: json
@@ -247,9 +247,9 @@ fluent-bit:
           uri /api/v1/ingest
           json_date_key timestamp
           json_date_format iso8601
-    
+
     upstream: {}
-    
+
     customParsers: |
       [PARSER]
           Name docker_no_time
