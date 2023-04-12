@@ -91,7 +91,7 @@ impl Event {
     // event process all events after the 1st event. Concatenates record batches
     // and puts them in memory store for each event.
     fn process_event(&self, schema_key: &str) -> Result<(), EventError> {
-        STREAM_WRITERS::append_to_local(&self.stream_name, schema_key, &self.rb)?;
+        STREAM_WRITERS.append_to_local(&self.stream_name, schema_key, &self.rb)?;
         Ok(())
     }
 }

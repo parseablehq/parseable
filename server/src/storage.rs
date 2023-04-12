@@ -25,14 +25,15 @@ use crate::utils;
 
 use chrono::{Local, NaiveDateTime, Timelike, Utc};
 use datafusion::arrow::error::ArrowError;
-use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::parquet::errors::ParquetError;
-use lazy_static::lazy_static;
+use derive_more::{Deref, DerefMut};
+use once_cell::sync::Lazy;
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 mod file_link;
 mod localfs;
@@ -182,12 +183,13 @@ async fn create_remote_metadata(metadata: &StorageMetadata) -> Result<(), Object
     client.put_metadata(metadata).await
 }
 
-lazy_static! {
-    pub static ref CACHED_FILES: Mutex<FileTable<FileLink>> = Mutex::new(FileTable::new());
-    pub static ref STORAGE_RUNTIME: Arc<RuntimeEnv> = CONFIG.storage().get_datafusion_runtime();
-}
+pub static CACHED_FILES: Lazy<CachedFiles> =
+    Lazy::new(|| CachedFiles(Mutex::new(FileTable::new())));
 
-impl CACHED_FILES {
+#[derive(Debug, Deref, DerefMut)]
+pub struct CachedFiles(Mutex<FileTable<FileLink>>);
+
+impl CachedFiles {
     pub fn track_parquet(&self) {
         let mut table = self.lock().expect("no poisoning");
         STREAM_INFO

@@ -24,7 +24,7 @@ use crate::storage;
 
 use chrono::{DateTime, Utc};
 use clokwerk::{AsyncScheduler, Interval};
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -36,9 +36,7 @@ use ulid::Ulid;
 const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io:80";
 const ANALYTICS_SEND_INTERVAL_SECONDS: Interval = clokwerk::Interval::Hours(1);
 
-lazy_static! {
-    pub static ref SYS_INFO: Mutex<System> = Mutex::new(System::new_all());
-}
+pub static SYS_INFO: Lazy<Mutex<System>> = Lazy::new(|| Mutex::new(System::new_all()));
 
 pub fn refresh_sys_info() {
     let mut sys_info = SYS_INFO.lock().unwrap();

@@ -194,7 +194,7 @@ fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<(
                 scheduler
                     .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
                     .run(move || {
-                        if let Err(e) = crate::event::STREAM_WRITERS::unset_all() {
+                        if let Err(e) = crate::event::STREAM_WRITERS.unset_all() {
                             log::warn!("failed to sync local data. {:?}", e);
                         }
                     });
