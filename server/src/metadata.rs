@@ -19,7 +19,6 @@
 use arrow_schema::Schema;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, RwLock};
 
 use crate::alerts::Alerts;
@@ -29,25 +28,14 @@ use crate::stats::{Stats, StatsCounter};
 use crate::storage::{MergedRecordReader, ObjectStorage, StorageDir};
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
+use derive_more::{Deref, DerefMut};
 
 // TODO: make return type be of 'static lifetime instead of cloning
 // A read-write lock to allow multiple reads while and isolated write
-pub static STREAM_INFO: Lazy<StreamType> = Lazy::new(|| StreamType(RwLock::new(HashMap::new())));
+pub static STREAM_INFO: Lazy<StreamInfo> = Lazy::new(StreamInfo::default);
 
-#[derive(Debug)]
-pub struct StreamType(RwLock<HashMap<String, LogStreamMetadata>>);
-
-impl Deref for StreamType {
-    type Target = RwLock<HashMap<String, LogStreamMetadata>>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl DerefMut for StreamType {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
+#[derive(Debug, Deref, DerefMut, Default)]
+pub struct StreamInfo(RwLock<HashMap<String, LogStreamMetadata>>);
 
 #[derive(Debug)]
 pub struct LogStreamMetadata {
@@ -75,7 +63,7 @@ pub const LOCK_EXPECT: &str = "no method in metadata should panic while holding 
 // 3. When a stream is deleted (remove the entry from the map)
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
-impl StreamType {
+impl StreamInfo {
     pub async fn check_alerts(&self, event: &Event) -> Result<(), CheckAlertError> {
         let map = self.read().expect(LOCK_EXPECT);
         let meta = map
