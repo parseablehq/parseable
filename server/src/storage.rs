@@ -25,7 +25,6 @@ use crate::utils;
 
 use chrono::{Local, NaiveDateTime, Timelike, Utc};
 use datafusion::arrow::error::ArrowError;
-use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::parquet::errors::ParquetError;
 use once_cell::sync::Lazy;
 
@@ -34,7 +33,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::fs::create_dir_all;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 mod file_link;
 mod localfs;
@@ -208,9 +207,6 @@ impl Debug for CachedFilesInnerType {
         f.write_str("CachedFilesInnerType { __private_field: () }")
     }
 }
-
-pub static STORAGE_RUNTIME: Lazy<Arc<RuntimeEnv>> =
-    Lazy::new(|| CONFIG.storage().get_datafusion_runtime());
 
 impl CachedFilesInnerType {
     pub fn track_parquet(&self) {
