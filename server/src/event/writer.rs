@@ -19,12 +19,14 @@
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::{Mutex, RwLock};
+use std::ops::{Deref, DerefMut};
+use std::fmt::{self, Debug, Formatter};
 
 use crate::storage::StorageDir;
 
@@ -33,19 +35,43 @@ use self::errors::StreamWriterError;
 type ArrowWriter<T> = StreamWriter<T>;
 type LocalWriter<T> = Mutex<Option<ArrowWriter<T>>>;
 
-lazy_static! {
-    #[derive(Default)]
-    pub static ref STREAM_WRITERS: RwLock<WriterTable<String, String, File>> = RwLock::new(WriterTable::new());
+pub static STREAM_WRITERS: Lazy<InnerStreamWriter> = Lazy::new( || InnerStreamWriter(RwLock::new(WriterTable::new())));
+
+/*
+    A wrapper type for global struct to implement methods over 
+*/
+pub struct InnerStreamWriter(RwLock<WriterTable<String, String, File>>);
+
+impl Deref for InnerStreamWriter {
+    type Target = RwLock<WriterTable<String, String, File>>;
+    fn deref(&self)  -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for InnerStreamWriter {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+/*
+    Manually implmenting for the Type 
+    since it depends on the types which are missing it
+ */
+impl Debug for InnerStreamWriter {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("InnerStreamWriter { __private_field: () }")
+    }
 }
 
-impl STREAM_WRITERS {
+impl InnerStreamWriter {
     // append to a existing stream
     pub fn append_to_local(
+        &self,
         stream: &str,
         schema_key: &str,
         record: &RecordBatch,
     ) -> Result<(), StreamWriterError> {
-        let hashmap_guard = STREAM_WRITERS
+        let hashmap_guard = self
             .read()
             .map_err(|_| StreamWriterError::RwPoisoned)?;
 
@@ -71,7 +97,7 @@ impl STREAM_WRITERS {
             None => {
                 // this requires mutable borrow of the map so we drop this read lock and wait for write lock
                 drop(hashmap_guard);
-                STREAM_WRITERS::create_entry(stream.to_owned(), schema_key.to_owned(), record)?;
+                self.create_entry(stream.to_owned(), schema_key.to_owned(), record)?;
             }
         };
         Ok(())
@@ -80,11 +106,12 @@ impl STREAM_WRITERS {
     // create a new entry with new stream_writer
     // Only create entry for valid streams
     fn create_entry(
+        &self,
         stream: String,
         schema_key: String,
         record: &RecordBatch,
     ) -> Result<(), StreamWriterError> {
-        let mut hashmap_guard = STREAM_WRITERS
+        let mut hashmap_guard = self
             .write()
             .map_err(|_| StreamWriterError::RwPoisoned)?;
 
@@ -95,12 +122,12 @@ impl STREAM_WRITERS {
         Ok(())
     }
 
-    pub fn delete_stream(stream: &str) {
-        STREAM_WRITERS.write().unwrap().delete_stream(stream);
+    pub fn delete_stream(&self, stream: &str) {
+        self.write().unwrap().delete_stream(stream);
     }
 
-    pub fn unset_all() -> Result<(), StreamWriterError> {
-        let table = STREAM_WRITERS
+    pub fn unset_all(&self) -> Result<(), StreamWriterError> {
+        let table = self
             .read()
             .map_err(|_| StreamWriterError::RwPoisoned)?;
 

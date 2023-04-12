@@ -27,12 +27,14 @@ use chrono::{Local, NaiveDateTime, Timelike, Utc};
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::parquet::errors::ParquetError;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 
 use std::collections::HashMap;
+use std::fmt::Formatter;
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::ops::{Deref, DerefMut};
 
 mod file_link;
 mod localfs;
@@ -182,12 +184,34 @@ async fn create_remote_metadata(metadata: &StorageMetadata) -> Result<(), Object
     client.put_metadata(metadata).await
 }
 
-lazy_static! {
-    pub static ref CACHED_FILES: Mutex<FileTable<FileLink>> = Mutex::new(FileTable::new());
-    pub static ref STORAGE_RUNTIME: Arc<RuntimeEnv> = CONFIG.storage().get_datafusion_runtime();
+pub static CACHED_FILES: Lazy<CachedFilesInnerType> = Lazy::new(|| CachedFilesInnerType(Mutex::new(FileTable::new())) );
+
+pub struct CachedFilesInnerType(Mutex<FileTable<FileLink>>);
+
+impl Deref for CachedFilesInnerType {
+
+    type Target = Mutex<FileTable<FileLink>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-impl CACHED_FILES {
+impl DerefMut for CachedFilesInnerType {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Debug for CachedFilesInnerType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("CachedFilesInnerType { __private_field: () }")
+    }
+}
+
+pub static STORAGE_RUNTIME: Lazy<Arc<RuntimeEnv>> = Lazy::new( || CONFIG.storage().get_datafusion_runtime());
+
+impl CachedFilesInnerType {
     pub fn track_parquet(&self) {
         let mut table = self.lock().expect("no poisoning");
         STREAM_INFO

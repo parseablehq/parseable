@@ -21,15 +21,14 @@ use clap::{command, value_parser, Arg, Args, Command, FromArgMatches};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use once_cell::sync::Lazy;
 
 use crate::storage::{FSConfig, ObjectStorageProvider, S3Config, LOCAL_SYNC_INTERVAL};
 use crate::utils::validate_path_is_writeable;
 
-lazy_static::lazy_static! {
-    #[derive(Debug)]
-    pub static ref CONFIG: Arc<Config> = Arc::new(Config::new());
-}
+pub static CONFIG: Lazy<Arc<Config>> = Lazy::new( || Arc::new(Config::new()));
 
+#[derive(Debug)]
 pub struct Config {
     pub parseable: Server,
     storage: Arc<dyn ObjectStorageProvider + Send + Sync>,

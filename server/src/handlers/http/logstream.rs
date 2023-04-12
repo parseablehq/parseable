@@ -45,7 +45,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     objectstore.delete_stream(&stream_name).await?;
     metadata::STREAM_INFO.delete_stream(&stream_name);
-    event::STREAM_WRITERS::delete_stream(&stream_name);
+    event::STREAM_WRITERS.delete_stream(&stream_name);
 
     let stream_dir = StorageDir::new(&stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
