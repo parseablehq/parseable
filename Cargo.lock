@@ -3043,7 +3043,6 @@ dependencies = [
  "http",
  "humantime-serde",
  "itertools",
- "lazy_static",
  "log",
  "maplit",
  "num_cpus",
