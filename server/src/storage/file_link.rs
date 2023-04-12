@@ -70,6 +70,7 @@ impl Link for FileLink {
     }
 }
 
+#[derive(Debug)]
 pub struct FileTable<L: Link + Default> {
     inner: HashMap<PathBuf, L>,
 }
