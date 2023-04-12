@@ -30,7 +30,7 @@ use datafusion::parquet::errors::ParquetError;
 use once_cell::sync::Lazy;
 
 use std::collections::HashMap;
-use std::fmt::Formatter;
+use std::fmt::{self, Debug, Formatter};
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
