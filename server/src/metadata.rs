@@ -17,10 +17,10 @@
  */
 
 use arrow_schema::Schema;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, RwLock};
-use once_cell::sync::Lazy;
 
 use crate::alerts::Alerts;
 use crate::event::Event;
@@ -32,19 +32,18 @@ use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 
 // TODO: make return type be of 'static lifetime instead of cloning
 // A read-write lock to allow multiple reads while and isolated write
-pub static STREAM_INFO: Lazy<StreamType> =
-    Lazy::new( || StreamType(RwLock::new(HashMap::new())));
+pub static STREAM_INFO: Lazy<StreamType> = Lazy::new(|| StreamType(RwLock::new(HashMap::new())));
 
 #[derive(Debug)]
 pub struct StreamType(RwLock<HashMap<String, LogStreamMetadata>>);
 
-impl Deref for StreamType { 
+impl Deref for StreamType {
     type Target = RwLock<HashMap<String, LogStreamMetadata>>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
-impl DerefMut for StreamType { 
+impl DerefMut for StreamType {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }

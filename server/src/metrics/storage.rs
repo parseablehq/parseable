@@ -29,13 +29,14 @@ pub mod localfs {
 
     use super::StorageMetrics;
 
-    pub static REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new( || HistogramVec::new(
-        HistogramOpts::new("local_fs_response_time", "FileSystem Request Latency")
-            .namespace(METRICS_NAMESPACE),
-        &["method", "status"]
-    )
-    .expect("metric can be created"));
-
+    pub static REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new("local_fs_response_time", "FileSystem Request Latency")
+                .namespace(METRICS_NAMESPACE),
+            &["method", "status"],
+        )
+        .expect("metric can be created")
+    });
 
     impl StorageMetrics for FSConfig {
         fn register_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
@@ -54,13 +55,14 @@ pub mod s3 {
 
     use super::StorageMetrics;
 
-    pub static REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new( || HistogramVec::new(
-        HistogramOpts::new("s3_response_time", "S3 Request Latency")
-            .namespace(METRICS_NAMESPACE),
-        &["method", "status"]
-    )
-    .expect("metric can be created"));
-
+    pub static REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new("s3_response_time", "S3 Request Latency")
+                .namespace(METRICS_NAMESPACE),
+            &["method", "status"],
+        )
+        .expect("metric can be created")
+    });
 
     impl StorageMetrics for S3Config {
         fn register_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {

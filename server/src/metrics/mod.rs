@@ -26,42 +26,54 @@ use crate::{handlers::http::metrics_path, metadata::STREAM_INFO};
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
-pub static EVENTS_INGESTED: Lazy<IntCounterVec> = Lazy::new( || IntCounterVec::new(
-    Opts::new("events_ingested", "Events ingested").namespace(METRICS_NAMESPACE),
-    &["stream", "format"]
-)
-.expect("metric can be created"));
+pub static EVENTS_INGESTED: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new("events_ingested", "Events ingested").namespace(METRICS_NAMESPACE),
+        &["stream", "format"],
+    )
+    .expect("metric can be created")
+});
 
-pub static EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| IntGaugeVec::new(
-    Opts::new("events_ingested_size", "Events ingested size bytes")
-        .namespace(METRICS_NAMESPACE),
-    &["stream", "format"]
-)
-.expect("metric can be created"));
+pub static EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("events_ingested_size", "Events ingested size bytes")
+            .namespace(METRICS_NAMESPACE),
+        &["stream", "format"],
+    )
+    .expect("metric can be created")
+});
 
-pub static STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| IntGaugeVec::new(
-    Opts::new("storage_size", "Storage size bytes").namespace(METRICS_NAMESPACE),
-    &["type", "stream", "format"]
-)
-.expect("metric can be created"));
+pub static STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("storage_size", "Storage size bytes").namespace(METRICS_NAMESPACE),
+        &["type", "stream", "format"],
+    )
+    .expect("metric can be created")
+});
 
-pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| IntGaugeVec::new(
-    Opts::new("staging_files", "Active Staging files").namespace(METRICS_NAMESPACE),
-    &["stream"]
-)
-.expect("metric can be created"));
+pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("staging_files", "Active Staging files").namespace(METRICS_NAMESPACE),
+        &["stream"],
+    )
+    .expect("metric can be created")
+});
 
-pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| HistogramVec::new(
-    HistogramOpts::new("query_execute_time", "Query execute time").namespace(METRICS_NAMESPACE),
-    &["stream"]
-)
-.expect("metric can be created"));
+pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new("query_execute_time", "Query execute time").namespace(METRICS_NAMESPACE),
+        &["stream"],
+    )
+    .expect("metric can be created")
+});
 
-pub static ALERTS_STATES: Lazy<IntCounterVec> = Lazy::new( || IntCounterVec::new(
-    Opts::new("alerts_states", "Alerts States").namespace(METRICS_NAMESPACE),
-    &["stream", "name", "state"]
-)
-.expect("metric can be created"));
+pub static ALERTS_STATES: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new("alerts_states", "Alerts States").namespace(METRICS_NAMESPACE),
+        &["stream", "name", "state"],
+    )
+    .expect("metric can be created")
+});
 
 fn custom_metrics(registry: &Registry) {
     registry

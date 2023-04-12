@@ -19,14 +19,14 @@
 use clap::error::ErrorKind;
 use clap::{command, value_parser, Arg, Args, Command, FromArgMatches};
 
+use once_cell::sync::Lazy;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use once_cell::sync::Lazy;
 
 use crate::storage::{FSConfig, ObjectStorageProvider, S3Config, LOCAL_SYNC_INTERVAL};
 use crate::utils::validate_path_is_writeable;
 
-pub static CONFIG: Lazy<Arc<Config>> = Lazy::new( || Arc::new(Config::new()));
+pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
 
 #[derive(Debug)]
 pub struct Config {

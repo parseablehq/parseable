@@ -22,11 +22,11 @@ use arrow_ipc::writer::StreamWriter;
 use once_cell::sync::Lazy;
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::fmt::{self, Debug, Formatter};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::sync::{Mutex, RwLock};
 use std::ops::{Deref, DerefMut};
-use std::fmt::{self, Debug, Formatter};
+use std::sync::{Mutex, RwLock};
 
 use crate::storage::StorageDir;
 
@@ -35,16 +35,17 @@ use self::errors::StreamWriterError;
 type ArrowWriter<T> = StreamWriter<T>;
 type LocalWriter<T> = Mutex<Option<ArrowWriter<T>>>;
 
-pub static STREAM_WRITERS: Lazy<InnerStreamWriter> = Lazy::new( || InnerStreamWriter(RwLock::new(WriterTable::new())));
+pub static STREAM_WRITERS: Lazy<InnerStreamWriter> =
+    Lazy::new(|| InnerStreamWriter(RwLock::new(WriterTable::new())));
 
 /*
-    A wrapper type for global struct to implement methods over 
+    A wrapper type for global struct to implement methods over
 */
 pub struct InnerStreamWriter(RwLock<WriterTable<String, String, File>>);
 
 impl Deref for InnerStreamWriter {
     type Target = RwLock<WriterTable<String, String, File>>;
-    fn deref(&self)  -> &Self::Target {
+    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
@@ -54,9 +55,9 @@ impl DerefMut for InnerStreamWriter {
     }
 }
 /*
-    Manually implmenting for the Type 
-    since it depends on the types which are missing it
- */
+   Manually implmenting for the Type
+   since it depends on the types which are missing it
+*/
 impl Debug for InnerStreamWriter {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str("InnerStreamWriter { __private_field: () }")
@@ -71,9 +72,7 @@ impl InnerStreamWriter {
         schema_key: &str,
         record: &RecordBatch,
     ) -> Result<(), StreamWriterError> {
-        let hashmap_guard = self
-            .read()
-            .map_err(|_| StreamWriterError::RwPoisoned)?;
+        let hashmap_guard = self.read().map_err(|_| StreamWriterError::RwPoisoned)?;
 
         match hashmap_guard.get(stream, schema_key) {
             Some(localwriter) => {
@@ -111,9 +110,7 @@ impl InnerStreamWriter {
         schema_key: String,
         record: &RecordBatch,
     ) -> Result<(), StreamWriterError> {
-        let mut hashmap_guard = self
-            .write()
-            .map_err(|_| StreamWriterError::RwPoisoned)?;
+        let mut hashmap_guard = self.write().map_err(|_| StreamWriterError::RwPoisoned)?;
 
         let writer = init_new_stream_writer_file(&stream, &schema_key, record)?;
 
@@ -127,9 +124,7 @@ impl InnerStreamWriter {
     }
 
     pub fn unset_all(&self) -> Result<(), StreamWriterError> {
-        let table = self
-            .read()
-            .map_err(|_| StreamWriterError::RwPoisoned)?;
+        let table = self.read().map_err(|_| StreamWriterError::RwPoisoned)?;
 
         for writer in table.iter() {
             if let Some(mut streamwriter) = writer

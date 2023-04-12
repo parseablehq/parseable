@@ -32,9 +32,9 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fmt::{self, Debug, Formatter};
 use std::fs::create_dir_all;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::ops::{Deref, DerefMut};
 
 mod file_link;
 mod localfs;
@@ -184,12 +184,12 @@ async fn create_remote_metadata(metadata: &StorageMetadata) -> Result<(), Object
     client.put_metadata(metadata).await
 }
 
-pub static CACHED_FILES: Lazy<CachedFilesInnerType> = Lazy::new(|| CachedFilesInnerType(Mutex::new(FileTable::new())) );
+pub static CACHED_FILES: Lazy<CachedFilesInnerType> =
+    Lazy::new(|| CachedFilesInnerType(Mutex::new(FileTable::new())));
 
 pub struct CachedFilesInnerType(Mutex<FileTable<FileLink>>);
 
 impl Deref for CachedFilesInnerType {
-
     type Target = Mutex<FileTable<FileLink>>;
 
     fn deref(&self) -> &Self::Target {
@@ -209,7 +209,8 @@ impl Debug for CachedFilesInnerType {
     }
 }
 
-pub static STORAGE_RUNTIME: Lazy<Arc<RuntimeEnv>> = Lazy::new( || CONFIG.storage().get_datafusion_runtime());
+pub static STORAGE_RUNTIME: Lazy<Arc<RuntimeEnv>> =
+    Lazy::new(|| CONFIG.storage().get_datafusion_runtime());
 
 impl CachedFilesInnerType {
     pub fn track_parquet(&self) {
