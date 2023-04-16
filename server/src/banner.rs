@@ -79,7 +79,7 @@ fn storage_info(config: &Config) {
         Mode:               \"{}\"
         Staging:            \"{}\"
         Store:              \"{}\"",
-        "Storage:".to_string().cyan().bold(),
+        "Storage:".to_string().bold(),
         config.mode_string(),
         config.staging_dir().to_string_lossy(),
         config.storage().get_endpoint(),
