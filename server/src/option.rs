@@ -20,6 +20,7 @@ use clap::error::ErrorKind;
 use clap::{command, value_parser, Arg, Args, Command, FromArgMatches};
 
 use once_cell::sync::Lazy;
+use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -409,11 +410,11 @@ impl From<Compression> for parquet::basic::Compression {
         match value {
             Compression::UNCOMPRESSED => parquet::basic::Compression::UNCOMPRESSED,
             Compression::SNAPPY => parquet::basic::Compression::SNAPPY,
-            Compression::GZIP => parquet::basic::Compression::GZIP,
+            Compression::GZIP => parquet::basic::Compression::GZIP(GzipLevel::default()),
             Compression::LZO => parquet::basic::Compression::LZO,
-            Compression::BROTLI => parquet::basic::Compression::BROTLI,
+            Compression::BROTLI => parquet::basic::Compression::BROTLI(BrotliLevel::default()),
             Compression::LZ4 => parquet::basic::Compression::LZ4,
-            Compression::ZSTD => parquet::basic::Compression::ZSTD,
+            Compression::ZSTD => parquet::basic::Compression::ZSTD(ZstdLevel::default()),
         }
     }
 }

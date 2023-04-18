@@ -81,7 +81,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // track all parquet files already in the data directory
-    storage::CACHED_FILES.track_parquet();
     storage::retention::load_retention_from_global().await;
     // load data from stats back to prometheus metrics
     metrics::load_from_global_stats();
@@ -193,11 +192,7 @@ fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<(
                 let mut scheduler = Scheduler::new();
                 scheduler
                     .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
-                    .run(move || {
-                        if let Err(e) = crate::event::STREAM_WRITERS.unset_all() {
-                            log::warn!("failed to sync local data. {:?}", e);
-                        }
-                    });
+                    .run(move || crate::event::STREAM_WRITERS.unset_all());
 
                 loop {
                     thread::sleep(Duration::from_millis(50));

@@ -17,211 +17,150 @@
  *
  */
 
+mod file_writer;
+mod mem_writer;
+mod mutable;
+
+use std::{
+    collections::HashMap,
+    sync::{Mutex, RwLock},
+};
+
+use crate::storage::staging::{self, ReadBuf};
+
+use self::{errors::StreamWriterError, file_writer::FileWriter};
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
+use chrono::{NaiveDateTime, Utc};
+use derive_more::{Deref, DerefMut};
+use mem_writer::MemWriter;
 use once_cell::sync::Lazy;
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::fmt::{self, Debug, Formatter};
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::ops::{Deref, DerefMut};
-use std::sync::{Mutex, RwLock};
 
-use crate::storage::StorageDir;
+type InMemWriter = MemWriter<8192>;
 
-use self::errors::StreamWriterError;
+pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 
-type ArrowWriter<T> = StreamWriter<T>;
-type LocalWriter<T> = Mutex<Option<ArrowWriter<T>>>;
-
-pub static STREAM_WRITERS: Lazy<InnerStreamWriter> =
-    Lazy::new(|| InnerStreamWriter(RwLock::new(WriterTable::new())));
-
-/*
-    A wrapper type for global struct to implement methods over
-*/
-pub struct InnerStreamWriter(RwLock<WriterTable<String, String, File>>);
-
-impl Deref for InnerStreamWriter {
-    type Target = RwLock<WriterTable<String, String, File>>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+pub enum StreamWriter {
+    Mem(InMemWriter),
+    Disk(FileWriter),
 }
-impl DerefMut for InnerStreamWriter {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-/*
-   Manually implmenting for the Type
-   since it depends on the types which are missing it
-*/
-impl Debug for InnerStreamWriter {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("InnerStreamWriter { __private_field: () }")
+
+impl Default for StreamWriter {
+    fn default() -> Self {
+        StreamWriter::Mem(MemWriter::default())
     }
 }
 
-impl InnerStreamWriter {
+impl StreamWriter {
+    pub fn push(
+        &mut self,
+        stream_name: &str,
+        schema_key: &str,
+        rb: RecordBatch,
+    ) -> Result<(), StreamWriterError> {
+        match self {
+            StreamWriter::Mem(mem) => {
+                mem.push(rb);
+            }
+            StreamWriter::Disk(disk) => {
+                disk.push(stream_name, schema_key, &rb)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+// Each entry in writer table is initialized with some context
+// This is helpful for generating prefix when writer is finalized
+pub struct WriterContext {
+    stream_name: String,
+    time: NaiveDateTime,
+}
+
+#[derive(Deref, DerefMut, Default)]
+pub struct WriterTable(RwLock<HashMap<String, (Mutex<StreamWriter>, WriterContext)>>);
+
+impl WriterTable {
     // append to a existing stream
     pub fn append_to_local(
         &self,
-        stream: &str,
+        stream_name: &str,
         schema_key: &str,
-        record: &RecordBatch,
+        record: RecordBatch,
     ) -> Result<(), StreamWriterError> {
-        let hashmap_guard = self.read().map_err(|_| StreamWriterError::RwPoisoned)?;
+        let hashmap_guard = self.read().unwrap();
 
-        match hashmap_guard.get(stream, schema_key) {
-            Some(localwriter) => {
-                let mut writer_guard = localwriter
+        match hashmap_guard.get(stream_name) {
+            Some((stream_writer, _)) => {
+                stream_writer
                     .lock()
-                    .map_err(|_| StreamWriterError::MutexPoisoned)?;
-
-                // if it's some writer then we write without dropping any lock
-                // hashmap cannot be brought mutably at any point until this finishes
-                if let Some(ref mut writer) = *writer_guard {
-                    writer.write(record).map_err(StreamWriterError::Writer)?;
-                } else {
-                    // pass on this mutex to set entry so that it can be reused
-                    // we have a guard for underlying entry thus
-                    // hashmap must not be availible as mutable to any other thread
-                    let writer = init_new_stream_writer_file(stream, schema_key, record)?;
-                    writer_guard.replace(writer); // replace the stream writer behind this mutex
-                }
+                    .unwrap()
+                    .push(stream_name, schema_key, record)?;
             }
-            // entry is not present thus we create it
             None => {
-                // this requires mutable borrow of the map so we drop this read lock and wait for write lock
                 drop(hashmap_guard);
-                self.create_entry(stream.to_owned(), schema_key.to_owned(), record)?;
+                let mut map = self.write().unwrap();
+                // check for race condition
+                // if map contains entry then just
+                if let Some((writer, _)) = map.get(stream_name) {
+                    writer
+                        .lock()
+                        .unwrap()
+                        .push(stream_name, schema_key, record)?;
+                } else {
+                    // there is no entry so this can be inserted safely
+                    let context = WriterContext {
+                        stream_name: stream_name.to_owned(),
+                        time: Utc::now().naive_utc(),
+                    };
+                    let mut writer = StreamWriter::default();
+                    writer.push(stream_name, schema_key, record)?;
+                    map.insert(stream_name.to_owned(), (Mutex::new(writer), context));
+                }
             }
         };
         Ok(())
     }
 
-    // create a new entry with new stream_writer
-    // Only create entry for valid streams
-    fn create_entry(
-        &self,
-        stream: String,
-        schema_key: String,
-        record: &RecordBatch,
-    ) -> Result<(), StreamWriterError> {
-        let mut hashmap_guard = self.write().map_err(|_| StreamWriterError::RwPoisoned)?;
-
-        let writer = init_new_stream_writer_file(&stream, &schema_key, record)?;
-
-        hashmap_guard.insert(stream, schema_key, Mutex::new(Some(writer)));
-
-        Ok(())
+    pub fn delete_stream(&self, stream_name: &str) {
+        self.write().unwrap().remove(stream_name);
     }
 
-    pub fn delete_stream(&self, stream: &str) {
-        self.write().unwrap().delete_stream(stream);
-    }
+    pub fn unset_all(&self) {
+        let mut table = self.write().unwrap();
+        let map = std::mem::take(&mut *table);
+        drop(table);
+        dbg!(map.len());
+        for (writer, context) in map.into_values() {
+            let writer = writer.into_inner().unwrap();
+            match writer {
+                StreamWriter::Mem(mem) => {
+                    let rb = mem.finalize();
+                    dbg!(rb.len());
+                    let mut read_bufs = staging::MEMORY_READ_BUFFERS.write().unwrap();
 
-    pub fn unset_all(&self) -> Result<(), StreamWriterError> {
-        let table = self.read().map_err(|_| StreamWriterError::RwPoisoned)?;
+                    read_bufs
+                        .entry(context.stream_name)
+                        .or_insert(Vec::default())
+                        .push(ReadBuf {
+                            time: context.time,
+                            buf: rb,
+                        });
 
-        for writer in table.iter() {
-            if let Some(mut streamwriter) = writer
-                .lock()
-                .map_err(|_| StreamWriterError::MutexPoisoned)?
-                .take()
-            {
-                let _ = streamwriter.finish();
+                    dbg!(read_bufs.len());
+                }
+                StreamWriter::Disk(disk) => disk.close_all(),
             }
         }
-
-        Ok(())
     }
-}
-
-pub struct WriterTable<A, B, T>
-where
-    A: Eq + std::hash::Hash,
-    B: Eq + std::hash::Hash,
-    T: Write,
-{
-    table: HashMap<A, HashMap<B, LocalWriter<T>>>,
-}
-
-impl<A, B, T> WriterTable<A, B, T>
-where
-    A: Eq + std::hash::Hash,
-    B: Eq + std::hash::Hash,
-    T: Write,
-{
-    pub fn new() -> Self {
-        let table = HashMap::new();
-        Self { table }
-    }
-
-    fn get<X, Y>(&self, a: &X, b: &Y) -> Option<&LocalWriter<T>>
-    where
-        A: Borrow<X>,
-        B: Borrow<Y>,
-        X: Eq + std::hash::Hash + ?Sized,
-        Y: Eq + std::hash::Hash + ?Sized,
-    {
-        self.table.get(a)?.get(b)
-    }
-
-    fn insert(&mut self, a: A, b: B, v: LocalWriter<T>) {
-        let inner = self.table.entry(a).or_default();
-        inner.insert(b, v);
-    }
-
-    pub fn delete_stream<X>(&mut self, stream: &X)
-    where
-        A: Borrow<X>,
-        X: Eq + std::hash::Hash + ?Sized,
-    {
-        self.table.remove(stream);
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &LocalWriter<T>> {
-        self.table.values().flat_map(|inner| inner.values())
-    }
-}
-
-fn init_new_stream_writer_file(
-    stream_name: &str,
-    schema_key: &str,
-    record: &RecordBatch,
-) -> Result<ArrowWriter<std::fs::File>, StreamWriterError> {
-    let dir = StorageDir::new(stream_name);
-    let path = dir.path_by_current_time(schema_key);
-
-    std::fs::create_dir_all(dir.data_path)?;
-
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
-
-    let mut stream_writer = StreamWriter::try_new(file, &record.schema())
-        .expect("File and RecordBatch both are checked");
-
-    stream_writer
-        .write(record)
-        .map_err(StreamWriterError::Writer)?;
-
-    Ok(stream_writer)
 }
 
 pub mod errors {
-    use arrow_schema::ArrowError;
 
     #[derive(Debug, thiserror::Error)]
     pub enum StreamWriterError {
         #[error("Arrow writer failed: {0}")]
-        Writer(#[from] ArrowError),
+        Writer(#[from] arrow_schema::ArrowError),
         #[error("Io Error when creating new file: {0}")]
         Io(#[from] std::io::Error),
-        #[error("RwLock was poisoned")]
-        RwPoisoned,
-        #[error("Mutex was poisoned")]
-        MutexPoisoned,
     }
 }

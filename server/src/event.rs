@@ -48,21 +48,25 @@ pub struct Event {
 impl Event {
     pub async fn process(self) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
+        let num_rows = self.rb.num_rows() as u64;
 
         if self.is_first_event(metadata::STREAM_INFO.schema(&self.stream_name)?.as_ref()) {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        self.process_event(&key)?;
+        Self::process_event(&self.stream_name, &key, self.rb.clone())?;
 
         metadata::STREAM_INFO.update_stats(
             &self.stream_name,
             self.origin_format,
             self.origin_size,
-            self.rb.num_rows() as u64,
+            num_rows,
         )?;
 
-        if let Err(e) = metadata::STREAM_INFO.check_alerts(&self).await {
+        if let Err(e) = metadata::STREAM_INFO
+            .check_alerts(&self.stream_name, self.rb)
+            .await
+        {
             log::error!("Error checking for alerts. {:?}", e);
         }
 
@@ -90,8 +94,12 @@ impl Event {
 
     // event process all events after the 1st event. Concatenates record batches
     // and puts them in memory store for each event.
-    fn process_event(&self, schema_key: &str) -> Result<(), EventError> {
-        STREAM_WRITERS.append_to_local(&self.stream_name, schema_key, &self.rb)?;
+    fn process_event(
+        stream_name: &str,
+        schema_key: &str,
+        rb: RecordBatch,
+    ) -> Result<(), EventError> {
+        STREAM_WRITERS.append_to_local(stream_name, schema_key, rb)?;
         Ok(())
     }
 }

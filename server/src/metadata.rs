@@ -16,16 +16,17 @@
  *
  */
 
+use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::alerts::Alerts;
-use crate::event::Event;
 use crate::metrics::{EVENTS_INGESTED, EVENTS_INGESTED_SIZE};
 use crate::stats::{Stats, StatsCounter};
-use crate::storage::{MergedRecordReader, ObjectStorage, StorageDir};
+use crate::storage::{ObjectStorage, StorageDir};
+use crate::utils::arrow::MergedRecordReader;
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 use derive_more::{Deref, DerefMut};
@@ -64,16 +65,18 @@ pub const LOCK_EXPECT: &str = "no method in metadata should panic while holding 
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
 impl StreamInfo {
-    pub async fn check_alerts(&self, event: &Event) -> Result<(), CheckAlertError> {
+    pub async fn check_alerts(
+        &self,
+        stream_name: &str,
+        rb: RecordBatch,
+    ) -> Result<(), CheckAlertError> {
         let map = self.read().expect(LOCK_EXPECT);
         let meta = map
-            .get(&event.stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(
-                event.stream_name.to_owned(),
-            ))?;
+            .get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))?;
 
         for alert in &meta.alerts.alerts {
-            alert.check_alert(event.stream_name.clone(), event.rb.clone())
+            alert.check_alert(stream_name, rb.clone())
         }
 
         Ok(())
