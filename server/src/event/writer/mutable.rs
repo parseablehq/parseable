@@ -544,9 +544,65 @@ mod tests {
     use std::sync::Arc;
 
     use arrow_array::{BooleanArray, RecordBatch};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
 
     use super::{MutableColumnArray, MutableColumns};
+
+    macro_rules! check_array_builder {
+        ($t:expr) => {
+            assert_eq!(MutableColumnArray::new(&$t).data_type(), $t)
+        };
+    }
+
+    macro_rules! check_unit_list_builder {
+        ($t:expr) => {
+            assert_eq!(
+                MutableColumnArray::new(&DataType::List(Box::new(Field::new("item", $t, true))))
+                    .data_type(),
+                DataType::List(Box::new(Field::new("item", $t, true)))
+            )
+        };
+    }
+
+    macro_rules! check_nested_list_builder {
+        ($t:expr) => {
+            assert_eq!(
+                MutableColumnArray::new(&DataType::List(Box::new(Field::new(
+                    "item",
+                    DataType::List(Box::new(Field::new("item", $t, true))),
+                    true
+                ))))
+                .data_type(),
+                DataType::List(Box::new(Field::new(
+                    "item",
+                    DataType::List(Box::new(Field::new("item", $t, true))),
+                    true
+                )))
+            )
+        };
+    }
+
+    #[test]
+    fn create_mutable_col_and_check_datatype() {
+        check_array_builder!(DataType::Boolean);
+        check_array_builder!(DataType::Int64);
+        check_array_builder!(DataType::UInt64);
+        check_array_builder!(DataType::Float64);
+        check_array_builder!(DataType::Utf8);
+        check_array_builder!(DataType::Timestamp(TimeUnit::Millisecond, None));
+        check_unit_list_builder!(DataType::Boolean);
+        check_unit_list_builder!(DataType::Int64);
+        check_unit_list_builder!(DataType::UInt64);
+        check_unit_list_builder!(DataType::Float64);
+        check_unit_list_builder!(DataType::Utf8);
+        check_unit_list_builder!(DataType::Timestamp(TimeUnit::Millisecond, None));
+        check_nested_list_builder!(DataType::Boolean);
+        check_nested_list_builder!(DataType::Int64);
+        check_nested_list_builder!(DataType::UInt64);
+        check_nested_list_builder!(DataType::Float64);
+        check_nested_list_builder!(DataType::Utf8);
+        check_nested_list_builder!(DataType::Timestamp(TimeUnit::Millisecond, None));
+    }
 
     #[test]
     fn empty_columns_push_single_col() {
@@ -811,6 +867,144 @@ mod tests {
             assert_eq!(
                 arr.iter().collect::<Vec<_>>(),
                 vec![None, None, None, Some(false), Some(false), Some(true)]
+            )
+        }
+    }
+
+    #[test]
+    fn two_empty_column_push_new_column_before() {
+        let mut columns = MutableColumns::default();
+        let schema = Schema::new(vec![
+            Field::new("b", DataType::Boolean, true),
+            Field::new("c", DataType::Boolean, true),
+        ]);
+        let rb = RecordBatch::new_empty(Arc::new(schema));
+        columns.push(rb);
+
+        assert_eq!(columns.columns.len(), 2);
+        assert_eq!(columns.len, 0);
+
+        let schema = Schema::new(vec![Field::new("a", DataType::Boolean, true)]);
+        let rb = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(BooleanArray::from(vec![true, false, false]))],
+        )
+        .unwrap();
+        columns.push(rb);
+
+        assert_eq!(columns.columns.len(), 3);
+        assert_eq!(columns.len, 3);
+
+        let MutableColumnArray::Boolean(builder) = &mut columns.columns[0].column else {unreachable!()};
+        {
+            let arr = builder.finish();
+            assert_eq!(
+                arr.iter().collect::<Vec<_>>(),
+                vec![Some(true), Some(false), Some(false)]
+            )
+        }
+
+        let MutableColumnArray::Boolean(builder) = &mut columns.columns[1].column else {unreachable!()};
+        {
+            let arr = builder.finish();
+            assert_eq!(arr.iter().collect::<Vec<_>>(), vec![None, None, None])
+        }
+
+        let MutableColumnArray::Boolean(builder) = &mut columns.columns[2].column else {unreachable!()};
+        {
+            let arr = builder.finish();
+            assert_eq!(arr.iter().collect::<Vec<_>>(), vec![None, None, None])
+        }
+    }
+
+    #[test]
+    fn two_empty_column_push_new_column_middle() {
+        let mut columns = MutableColumns::default();
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Boolean, true),
+            Field::new("c", DataType::Boolean, true),
+        ]);
+        let rb = RecordBatch::new_empty(Arc::new(schema));
+        columns.push(rb);
+
+        assert_eq!(columns.columns.len(), 2);
+        assert_eq!(columns.len, 0);
+
+        let schema = Schema::new(vec![Field::new("b", DataType::Boolean, true)]);
+        let rb = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(BooleanArray::from(vec![false, true, false]))],
+        )
+        .unwrap();
+        columns.push(rb);
+
+        assert_eq!(columns.columns.len(), 3);
+        assert_eq!(columns.len, 3);
+
+        let MutableColumnArray::Boolean(builder) = &mut columns.columns[0].column else {unreachable!()};
+        {
+            let arr = builder.finish();
+            assert_eq!(arr.iter().collect::<Vec<_>>(), vec![None, None, None])
+        }
+
+        let MutableColumnArray::Boolean(builder) = &mut columns.columns[1].column else {unreachable!()};
+        {
+            let arr = builder.finish();
+            assert_eq!(
+                arr.iter().collect::<Vec<_>>(),
+                vec![Some(false), Some(true), Some(false)]
+            )
+        }
+
+        let MutableColumnArray::Boolean(builder) = &mut columns.columns[2].column else {unreachable!()};
+        {
+            let arr = builder.finish();
+            assert_eq!(arr.iter().collect::<Vec<_>>(), vec![None, None, None])
+        }
+    }
+
+    #[test]
+    fn two_empty_column_push_new_column_after() {
+        let mut columns = MutableColumns::default();
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Boolean, true),
+            Field::new("b", DataType::Boolean, true),
+        ]);
+        let rb = RecordBatch::new_empty(Arc::new(schema));
+        columns.push(rb);
+
+        assert_eq!(columns.columns.len(), 2);
+        assert_eq!(columns.len, 0);
+
+        let schema = Schema::new(vec![Field::new("c", DataType::Boolean, true)]);
+        let rb = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(BooleanArray::from(vec![false, false, true]))],
+        )
+        .unwrap();
+        columns.push(rb);
+
+        assert_eq!(columns.columns.len(), 3);
+        assert_eq!(columns.len, 3);
+
+        let MutableColumnArray::Boolean(builder) = &mut columns.columns[0].column else {unreachable!()};
+        {
+            let arr = builder.finish();
+            assert_eq!(arr.iter().collect::<Vec<_>>(), vec![None, None, None])
+        }
+
+        let MutableColumnArray::Boolean(builder) = &mut columns.columns[1].column else {unreachable!()};
+        {
+            let arr = builder.finish();
+            assert_eq!(arr.iter().collect::<Vec<_>>(), vec![None, None, None])
+        }
+
+        let MutableColumnArray::Boolean(builder) = &mut columns.columns[2].column else {unreachable!()};
+        {
+            let arr = builder.finish();
+            assert_eq!(
+                arr.iter().collect::<Vec<_>>(),
+                vec![Some(false), Some(false), Some(true)]
             )
         }
     }
