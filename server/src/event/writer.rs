@@ -26,7 +26,10 @@ use std::{
     sync::{Mutex, RwLock},
 };
 
-use crate::storage::staging::{self, ReadBuf};
+use crate::{
+    option::CONFIG,
+    storage::staging::{self, ReadBuf},
+};
 
 use self::{errors::StreamWriterError, file_writer::FileWriter};
 use arrow_array::RecordBatch;
@@ -42,12 +45,6 @@ pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 pub enum StreamWriter {
     Mem(InMemWriter),
     Disk(FileWriter),
-}
-
-impl Default for StreamWriter {
-    fn default() -> Self {
-        StreamWriter::Mem(MemWriter::default())
-    }
 }
 
 impl StreamWriter {
@@ -112,7 +109,12 @@ impl WriterTable {
                         stream_name: stream_name.to_owned(),
                         time: Utc::now().naive_utc(),
                     };
-                    let mut writer = StreamWriter::default();
+                    let mut writer = if CONFIG.parseable.in_mem_ingestion {
+                        StreamWriter::Mem(InMemWriter::default())
+                    } else {
+                        StreamWriter::Disk(FileWriter::default())
+                    };
+
                     writer.push(stream_name, schema_key, record)?;
                     map.insert(stream_name.to_owned(), (Mutex::new(writer), context));
                 }
