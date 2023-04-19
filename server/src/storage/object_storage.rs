@@ -247,10 +247,8 @@ pub trait ObjectStorage: Sync + 'static {
         let mut stream_stats = HashMap::new();
 
         for (stream_name, bufs) in staging::take_all_read_bufs() {
-            dbg!(&stream_name, bufs.len());
             for buf in bufs {
-                dbg!(&buf.time);
-                let schema = dbg!(convert_mem_to_parquet(&stream_name, buf))
+                let schema = convert_mem_to_parquet(&stream_name, buf)
                     .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
                 if let Some(schema) = schema {
                     commit_schema_to_storage(&stream_name, schema).await?;

@@ -252,15 +252,15 @@ pub fn convert_mem_to_parquet(
 ) -> Result<Option<Schema>, MoveDataError> {
     let mut schemas = Vec::new();
     let ReadBuf { time, buf } = read_buf;
-    let Some(last_schema) = dbg!(buf.last().map(|last| last.schema())) else { return Ok(None) };
+    let Some(last_schema) = buf.last().map(|last| last.schema()) else { return Ok(None) };
     schemas.push(last_schema.as_ref().clone());
     let record_reader = buf.into_iter().map(|rb| adapt_batch(&last_schema, rb));
 
-    let parquet_path = dbg!(to_parquet_path(stream, time));
+    let parquet_path = to_parquet_path(stream, time);
     if let Some(path) = parquet_path.parent() {
         fs::create_dir_all(path)?;
     }
-    let parquet_file = dbg!(fs::File::create(&parquet_path)).map_err(|_| MoveDataError::Create)?;
+    let parquet_file = fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
 
     let props = parquet_writer_props().build();
     let mut writer = ArrowWriter::try_new(parquet_file, last_schema.clone(), Some(props))?;

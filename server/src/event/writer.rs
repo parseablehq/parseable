@@ -131,13 +131,11 @@ impl WriterTable {
         let mut table = self.write().unwrap();
         let map = std::mem::take(&mut *table);
         drop(table);
-        dbg!(map.len());
         for (writer, context) in map.into_values() {
             let writer = writer.into_inner().unwrap();
             match writer {
                 StreamWriter::Mem(mem) => {
                     let rb = mem.finalize();
-                    dbg!(rb.len());
                     let mut read_bufs = staging::MEMORY_READ_BUFFERS.write().unwrap();
 
                     read_bufs
@@ -147,8 +145,6 @@ impl WriterTable {
                             time: context.time,
                             buf: rb,
                         });
-
-                    dbg!(read_bufs.len());
                 }
                 StreamWriter::Disk(disk) => disk.close_all(),
             }
