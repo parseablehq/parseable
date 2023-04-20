@@ -33,16 +33,17 @@ pub struct MemWriter<const N: usize> {
 
 impl<const N: usize> MemWriter<N> {
     pub fn push(&mut self, rb: RecordBatch) {
-        if self.mutable_buffer.len() + rb.num_rows() < N {
-            self.mutable_buffer.push(rb)
-        } else {
+        if self.mutable_buffer.len() + rb.num_rows() > N {
+            // init new mutable columns with schema of current
             let schema = self.mutable_buffer.current_schema();
             let mut new_mutable_buffer = MutableColumns::default();
             new_mutable_buffer.push(RecordBatch::new_empty(Arc::new(schema)));
+            // replace new mutable buffer with current one as that is full
             let mutable_buffer = std::mem::replace(&mut self.mutable_buffer, new_mutable_buffer);
-            let rb = mutable_buffer.into_recordbatch();
-            self.read_buffer.push(rb);
+            let filled_rb = mutable_buffer.into_recordbatch();
+            self.read_buffer.push(filled_rb);
         }
+        self.mutable_buffer.push(rb)
     }
 
     #[allow(unused)]
@@ -67,7 +68,6 @@ impl<const N: usize> MemWriter<N> {
         if rb.num_rows() > 0 {
             read_buffer.push(rb)
         }
-
         read_buffer
             .into_iter()
             .map(|rb| adapt_batch(&schema, rb))

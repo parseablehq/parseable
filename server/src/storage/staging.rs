@@ -250,10 +250,8 @@ pub fn convert_mem_to_parquet(
     stream: &str,
     read_buf: ReadBuf,
 ) -> Result<Option<Schema>, MoveDataError> {
-    let mut schemas = Vec::new();
     let ReadBuf { time, buf } = read_buf;
     let Some(last_schema) = buf.last().map(|last| last.schema()) else { return Ok(None) };
-    schemas.push(last_schema.as_ref().clone());
     let record_reader = buf.into_iter().map(|rb| adapt_batch(&last_schema, rb));
 
     let parquet_path = to_parquet_path(stream, time);
@@ -271,11 +269,7 @@ pub fn convert_mem_to_parquet(
 
     writer.close()?;
 
-    if !schemas.is_empty() {
-        Ok(Some(Schema::try_merge(schemas).unwrap()))
-    } else {
-        Ok(None)
-    }
+    Ok(Some(last_schema.as_ref().clone()))
 }
 
 fn parquet_writer_props() -> WriterPropertiesBuilder {
