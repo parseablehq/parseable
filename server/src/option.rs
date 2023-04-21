@@ -353,12 +353,12 @@ impl Server {
             .arg(
                 Arg::new(Self::IN_MEM)
                     .long(Self::IN_MEM)
-                    .env("P_IN_MEMORY_INGESITON")
+                    .env("P_MEMORY_STAGING")
                     .value_name("BOOL")
                     .required(false)
                     .default_value("false")
                     .value_parser(value_parser!(bool))
-                    .help("Disable/Enable in memory ingestion strategy"),
+                    .help("Disable/Enable memory based data staging"),
             )
             .arg(
                 Arg::new(Self::CHECK_UPDATE)
