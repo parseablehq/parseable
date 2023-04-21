@@ -214,6 +214,7 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
                 false
             }
         }
+        DataType::Timestamp(_, _) => value.is_string() || value.is_number(),
         _ => unreachable!(),
     }
 }

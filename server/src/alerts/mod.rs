@@ -64,7 +64,7 @@ pub struct Alert {
 }
 
 impl Alert {
-    pub fn check_alert(&self, stream_name: String, events: RecordBatch) {
+    pub fn check_alert(&self, stream_name: &str, events: RecordBatch) {
         let resolves = self.rule.resolves(events.clone());
 
         for (index, state) in resolves.into_iter().enumerate() {
@@ -72,7 +72,7 @@ impl Alert {
                 AlertState::Listening | AlertState::Firing => (),
                 alert_state @ (AlertState::SetToFiring | AlertState::Resolved) => {
                     let context = self.get_context(
-                        stream_name.clone(),
+                        stream_name.to_owned(),
                         alert_state,
                         &self.rule,
                         events.slice(index, 1),

@@ -16,8 +16,6 @@
  *
  */
 
-mod table_provider;
-
 use chrono::TimeZone;
 use chrono::{DateTime, Utc};
 use datafusion::arrow::datatypes::Schema;

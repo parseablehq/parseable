@@ -72,7 +72,7 @@ impl StatsCounter {
     }
 
     pub fn increase_event_by_n(&self, n: u64) {
-        self.events_ingested.fetch_add(n, Ordering::Relaxed);
+        self.events_ingested.fetch_add(n, Ordering::AcqRel);
     }
 }
 

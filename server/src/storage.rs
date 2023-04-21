@@ -16,38 +16,27 @@
  *
  */
 
-use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
-
 use crate::stats::Stats;
-use crate::storage::file_link::{FileLink, FileTable};
-use crate::utils;
 
-use chrono::{Local, NaiveDateTime, Timelike, Utc};
-use datafusion::arrow::error::ArrowError;
-use datafusion::parquet::errors::ParquetError;
-use derive_more::{Deref, DerefMut};
-use once_cell::sync::Lazy;
+use chrono::Local;
 
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::create_dir_all;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
-mod file_link;
 mod localfs;
 mod object_storage;
 pub mod retention;
 mod s3;
+pub mod staging;
 mod store_metadata;
 
 pub use localfs::{FSConfig, LocalFS};
-pub use object_storage::MergedRecordReader;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::{S3Config, S3};
 pub use store_metadata::StorageMetadata;
 
+pub use self::staging::StorageDir;
 use self::store_metadata::{put_staging_metadata, EnvChange};
 
 /// local sync interval to move data.records to /tmp dir of that stream.
@@ -183,149 +172,9 @@ async fn create_remote_metadata(metadata: &StorageMetadata) -> Result<(), Object
     client.put_metadata(metadata).await
 }
 
-pub static CACHED_FILES: Lazy<CachedFiles> =
-    Lazy::new(|| CachedFiles(Mutex::new(FileTable::new())));
-
-#[derive(Debug, Deref, DerefMut)]
-pub struct CachedFiles(Mutex<FileTable<FileLink>>);
-
-impl CachedFiles {
-    pub fn track_parquet(&self) {
-        let mut table = self.lock().expect("no poisoning");
-        STREAM_INFO
-            .list_streams()
-            .into_iter()
-            .flat_map(|ref stream_name| StorageDir::new(stream_name).parquet_files().into_iter())
-            .for_each(|ref path| table.upsert(path))
-    }
-}
-
 #[derive(serde::Serialize)]
 pub struct LogStream {
     pub name: String,
-}
-
-#[derive(Debug)]
-pub struct StorageDir {
-    pub data_path: PathBuf,
-}
-
-impl StorageDir {
-    pub fn new(stream_name: &str) -> Self {
-        let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
-
-        Self { data_path }
-    }
-
-    fn file_time_suffix(time: NaiveDateTime) -> String {
-        let uri = utils::date_to_prefix(time.date())
-            + &utils::hour_to_prefix(time.hour())
-            + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
-        let local_uri = str::replace(&uri, "/", ".");
-        let hostname = utils::hostname_unchecked();
-        format!("{local_uri}{hostname}.data.arrows")
-    }
-
-    fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
-        format!("{}.{}", stream_hash, Self::file_time_suffix(time))
-    }
-
-    fn filename_by_current_time(stream_hash: &str) -> String {
-        let datetime = Utc::now();
-        Self::filename_by_time(stream_hash, datetime.naive_utc())
-    }
-
-    pub fn path_by_current_time(&self, stream_hash: &str) -> PathBuf {
-        self.data_path
-            .join(Self::filename_by_current_time(stream_hash))
-    }
-
-    pub fn arrow_files(&self) -> Vec<PathBuf> {
-        let Ok(dir) = self.data_path
-            .read_dir() else { return vec![] };
-
-        let paths: Vec<PathBuf> = dir
-            .flatten()
-            .map(|file| file.path())
-            .filter(|file| file.extension().map_or(false, |ext| ext.eq("arrows")))
-            .collect();
-
-        paths
-    }
-
-    #[allow(unused)]
-    pub fn arrow_files_grouped_by_time(&self) -> HashMap<PathBuf, Vec<PathBuf>> {
-        // hashmap <time, vec[paths]>
-        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-        let arrow_files = self.arrow_files();
-        for arrow_file_path in arrow_files {
-            let key = Self::arrow_path_to_parquet(&arrow_file_path);
-            grouped_arrow_file
-                .entry(key)
-                .or_default()
-                .push(arrow_file_path);
-        }
-
-        grouped_arrow_file
-    }
-
-    pub fn arrow_files_grouped_exclude_time(
-        &self,
-        exclude: NaiveDateTime,
-    ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let hot_filename = StorageDir::file_time_suffix(exclude);
-        // hashmap <time, vec[paths]> but exclude where hotfilename matches
-        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-        let mut arrow_files = self.arrow_files();
-        arrow_files.retain(|path| {
-            !path
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .ends_with(&hot_filename)
-        });
-        for arrow_file_path in arrow_files {
-            let key = Self::arrow_path_to_parquet(&arrow_file_path);
-            grouped_arrow_file
-                .entry(key)
-                .or_default()
-                .push(arrow_file_path);
-        }
-
-        grouped_arrow_file
-    }
-
-    pub fn parquet_files(&self) -> Vec<PathBuf> {
-        let Ok(dir) = self.data_path
-            .read_dir() else { return vec![] };
-
-        dir.flatten()
-            .map(|file| file.path())
-            .filter(|file| file.extension().map_or(false, |ext| ext.eq("parquet")))
-            .collect()
-    }
-
-    fn arrow_path_to_parquet(path: &Path) -> PathBuf {
-        let filename = path.file_name().unwrap().to_str().unwrap();
-        let (_, filename) = filename.split_once('.').unwrap();
-        let mut parquet_path = path.to_owned();
-        parquet_path.set_file_name(filename);
-        parquet_path.set_extension("parquet");
-        parquet_path
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum MoveDataError {
-    #[error("Unable to create recordbatch stream")]
-    Arrow(#[from] ArrowError),
-    #[error("Could not generate parquet file")]
-    Parquet(#[from] ParquetError),
-    #[error("Object Storage Error {0}")]
-    ObjectStorage(#[from] ObjectStorageError),
-    #[error("Could not generate parquet file")]
-    Create,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -17,43 +17,30 @@
  */
 
 use super::{
-    file_link::CacheState, retention::Retention, LogStream, MoveDataError, ObjectStorageError,
-    ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata, CACHED_FILES,
+    retention::Retention,
+    staging::{self, convert_disk_files_to_parquet, convert_mem_to_parquet},
+    LogStream, ObjectStorageError, ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use crate::{
     alerts::Alerts,
     metadata::STREAM_INFO,
-    metrics::{storage::StorageMetrics, STAGING_FILES, STORAGE_SIZE},
+    metrics::{storage::StorageMetrics, STORAGE_SIZE},
     option::CONFIG,
     stats::Stats,
-    utils::batch_adapter::adapt_batch,
 };
 
 use actix_web_prometheus::PrometheusMetrics;
-use arrow_array::{RecordBatch, TimestampMillisecondArray};
-use arrow_ipc::reader::StreamReader;
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{
     datasource::listing::ListingTable, error::DataFusionError, execution::runtime_env::RuntimeEnv,
 };
-use itertools::kmerge_by;
-use parquet::{
-    arrow::ArrowWriter, basic::Encoding, file::properties::WriterProperties,
-    schema::types::ColumnPath,
-};
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
 
-use std::{
-    collections::HashMap,
-    fs::{self, File},
-    path::{Path, PathBuf},
-    process,
-    sync::Arc,
-};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 // metadata file names in a Stream prefix
 pub(super) const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
@@ -250,7 +237,7 @@ pub trait ObjectStorage: Sync + 'static {
         }
     }
 
-    async fn sync(&self) -> Result<(), MoveDataError> {
+    async fn sync(&self) -> Result<(), ObjectStorageError> {
         if !Path::new(&CONFIG.staging_dir()).exists() {
             return Ok(());
         }
@@ -259,76 +246,26 @@ pub trait ObjectStorage: Sync + 'static {
 
         let mut stream_stats = HashMap::new();
 
+        for (stream_name, bufs) in staging::take_all_read_bufs() {
+            for buf in bufs {
+                let schema = convert_mem_to_parquet(&stream_name, buf)
+                    .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+                if let Some(schema) = schema {
+                    commit_schema_to_storage(&stream_name, schema).await?;
+                }
+            }
+        }
+
         for stream in &streams {
             let dir = StorageDir::new(stream);
-            // walk dir, find all .arrows files and convert to parquet
-            // Do not include file which is being written to
-            let time = chrono::Utc::now().naive_utc();
-            let staging_files = dir.arrow_files_grouped_exclude_time(time);
-            if staging_files.is_empty() {
-                STAGING_FILES.with_label_values(&[stream]).set(0);
-            }
+            let schema = convert_disk_files_to_parquet(stream, &dir)
+                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
-            for (parquet_path, files) in staging_files {
-                STAGING_FILES
-                    .with_label_values(&[stream])
-                    .set(files.len() as i64);
-
-                for file in &files {
-                    let file_size = file.metadata().unwrap().len();
-                    let file_type = file.extension().unwrap().to_str().unwrap();
-
-                    STORAGE_SIZE
-                        .with_label_values(&["staging", stream, file_type])
-                        .add(file_size as i64);
-                }
-
-                let record_reader = MergedRecordReader::try_new(&files).unwrap();
-                let parquet_file = {
-                    let mut parquet_table = CACHED_FILES.lock().unwrap();
-                    let parquet_file =
-                        fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
-                    parquet_table.upsert(&parquet_path);
-                    parquet_file
-                };
-                let props = WriterProperties::builder()
-                    .set_max_row_group_size(CONFIG.parseable.row_group_size)
-                    .set_compression(CONFIG.parseable.parquet_compression.into())
-                    .set_column_encoding(
-                        ColumnPath::new(vec!["p_timestamp".to_string()]),
-                        Encoding::DELTA_BINARY_PACKED,
-                    )
-                    .build();
-                let merged_schema = record_reader.merged_schema();
-                commit_schema_to_storage(stream, merged_schema.clone()).await?;
-                let schema = Arc::new(merged_schema);
-                let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
-
-                for ref record in record_reader.merged_iter(&schema) {
-                    writer.write(record)?;
-                }
-
-                writer.close()?;
-
-                for file in files {
-                    if fs::remove_file(file).is_err() {
-                        log::error!("Failed to delete file. Unstable state");
-                        process::abort()
-                    }
-                }
+            if let Some(schema) = schema {
+                commit_schema_to_storage(stream, schema).await?;
             }
 
             for file in dir.parquet_files() {
-                let Some(metadata) = CACHED_FILES
-                    .lock()
-                    .unwrap()
-                    .get_mut(&file)
-                    .map(|fl| fl.metadata) else { continue };
-
-                if metadata != CacheState::Idle {
-                    continue;
-                }
-
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")
@@ -337,42 +274,14 @@ pub trait ObjectStorage: Sync + 'static {
                 let file_suffix = str::replacen(filename, ".", "/", 3);
                 let objectstore_path = format!("{stream}/{file_suffix}");
 
-                CACHED_FILES
-                    .lock()
-                    .unwrap()
-                    .get_mut(&file)
-                    .expect("entry checked at the start")
-                    .set_metadata(CacheState::Uploading);
-
                 let compressed_size = file.metadata().map_or(0, |meta| meta.len());
 
-                match self.upload_file(&objectstore_path, &file).await {
-                    Ok(()) => {
-                        CACHED_FILES
-                            .lock()
-                            .unwrap()
-                            .get_mut(&file)
-                            .expect("entry checked at the start")
-                            .set_metadata(CacheState::Uploaded);
-                    }
-                    Err(e) => {
-                        CACHED_FILES
-                            .lock()
-                            .unwrap()
-                            .get_mut(&file)
-                            .expect("entry checked at the start")
-                            .set_metadata(CacheState::Idle);
-
-                        return Err(e.into());
-                    }
-                }
+                self.upload_file(&objectstore_path, &file).await?;
 
                 stream_stats
                     .entry(stream)
                     .and_modify(|size| *size += compressed_size)
                     .or_insert_with(|| compressed_size);
-
-                CACHED_FILES.lock().unwrap().remove(&file);
             }
         }
 
@@ -404,83 +313,6 @@ async fn commit_schema_to_storage(
     let stream_schema = storage.get_schema(stream_name).await?;
     let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
     storage.put_schema(stream_name, &new_schema).await
-}
-
-#[derive(Debug)]
-pub struct Reader {
-    reader: StreamReader<File>,
-    timestamp_col_index: usize,
-}
-
-impl From<StreamReader<File>> for Reader {
-    fn from(reader: StreamReader<File>) -> Self {
-        let timestamp_col_index = reader
-            .schema()
-            .all_fields()
-            .binary_search_by(|field| field.name().as_str().cmp("p_timestamp"))
-            .expect("schema should have this field");
-
-        Self {
-            reader,
-            timestamp_col_index,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct MergedRecordReader {
-    pub readers: Vec<Reader>,
-}
-
-impl MergedRecordReader {
-    pub fn try_new(files: &[PathBuf]) -> Result<Self, MoveDataError> {
-        let mut readers = Vec::with_capacity(files.len());
-
-        for file in files {
-            let reader = StreamReader::try_new(File::open(file).unwrap(), None)?;
-            readers.push(reader.into());
-        }
-
-        Ok(Self { readers })
-    }
-
-    pub fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
-        let adapted_readers = self.readers.into_iter().map(move |reader| {
-            reader
-                .reader
-                .flatten()
-                .zip(std::iter::repeat(reader.timestamp_col_index))
-        });
-
-        kmerge_by(
-            adapted_readers,
-            |(a, a_col): &(RecordBatch, usize), (b, b_col): &(RecordBatch, usize)| {
-                let a: &TimestampMillisecondArray = a
-                    .column(*a_col)
-                    .as_any()
-                    .downcast_ref::<TimestampMillisecondArray>()
-                    .unwrap();
-
-                let b: &TimestampMillisecondArray = b
-                    .column(*b_col)
-                    .as_any()
-                    .downcast_ref::<TimestampMillisecondArray>()
-                    .unwrap();
-
-                a.value(0) < b.value(0)
-            },
-        )
-        .map(|(batch, _)| adapt_batch(schema, batch))
-    }
-
-    pub fn merged_schema(&self) -> Schema {
-        Schema::try_merge(
-            self.readers
-                .iter()
-                .map(|reader| reader.reader.schema().as_ref().clone()),
-        )
-        .unwrap()
-    }
 }
 
 #[inline(always)]
