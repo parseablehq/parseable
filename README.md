@@ -23,7 +23,7 @@ Parseable is written in Rust and uses Apache Arrow and Parquet as underlying dat
 
 Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput.
 
-- [Parseable UI Demo (Credentials: admin,admin) ↗︎](https://www.parseable.io/docs/)
+- [Parseable UI Demo (Credentials: admin,admin) ↗︎](https://demo.parseable.io)
 - [Grafana Dashboard Demo ↗︎](http://demo.parseable.io:3000/dashboards)
 
 ## :rocket: Features
