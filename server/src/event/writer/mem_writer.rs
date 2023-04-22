@@ -46,7 +46,6 @@ impl<const N: usize> MemWriter<N> {
         self.mutable_buffer.push(rb)
     }
 
-    #[allow(unused)]
     pub fn recordbatch_cloned(&self) -> Vec<RecordBatch> {
         let mut read_buffer = self.read_buffer.clone();
         let rb = self.mutable_buffer.recordbatch_cloned();
