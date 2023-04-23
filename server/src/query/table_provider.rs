@@ -22,6 +22,7 @@ use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::TableType;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::Expr;
@@ -78,7 +79,12 @@ impl QueryTableProvider {
                     .await?,
             );
         }
-        Ok(Arc::new(UnionExec::new(exec)))
+
+        if exec.is_empty() {
+            Ok(Arc::new(EmptyExec::new(false, Arc::clone(&self.schema))))
+        } else {
+            Ok(Arc::new(UnionExec::new(exec)))
+        }
     }
 
     async fn get_mem_exec(
