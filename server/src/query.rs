@@ -181,19 +181,6 @@ pub mod error {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::time_from_path;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_time_from_parquet_path() {
-        let path = PathBuf::from("date=2022-01-01.hour=00.minute=00.hostname.data.parquet");
-        let time = time_from_path(path.as_path());
-        assert_eq!(time.timestamp(), 1640995200);
-    }
-}
-
 fn get_all_read_buf(stream_name: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<ReadBuf> {
     let now = Utc::now();
     let include_mutable = start <= now && now <= end;
@@ -216,4 +203,17 @@ fn get_all_read_buf(stream_name: &str, start: DateTime<Utc>, end: DateTime<Utc>)
     }
 
     queryable_read_buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::time_from_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_time_from_parquet_path() {
+        let path = PathBuf::from("date=2022-01-01.hour=00.minute=00.hostname.data.parquet");
+        let time = time_from_path(path.as_path());
+        assert_eq!(time.timestamp(), 1640995200);
+    }
 }
