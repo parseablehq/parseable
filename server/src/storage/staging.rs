@@ -62,6 +62,7 @@ pub fn take_all_read_bufs() -> Vec<(String, Vec<ReadBuf>)> {
     res
 }
 
+#[derive(Debug, Clone)]
 pub struct ReadBuf {
     pub time: NaiveDateTime,
     pub buf: Vec<RecordBatch>,

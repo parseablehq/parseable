@@ -150,6 +150,19 @@ impl WriterTable {
             }
         }
     }
+
+    pub fn clone_read_buf(&self, stream_name: &str) -> Option<ReadBuf> {
+        let hashmap_guard = self.read().unwrap();
+        let (writer, context) = hashmap_guard.get(stream_name)?;
+        let writer = writer.lock().unwrap();
+        match &*writer {
+            StreamWriter::Mem(mem) => Some(ReadBuf {
+                time: context.time,
+                buf: mem.recordbatch_cloned(),
+            }),
+            StreamWriter::Disk(_) => None,
+        }
+    }
 }
 
 pub mod errors {
