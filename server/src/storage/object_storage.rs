@@ -26,7 +26,7 @@ use crate::{
     metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
     option::CONFIG,
-    stats::Stats,
+    stats::{self, Stats},
 };
 
 use actix_web_prometheus::PrometheusMetrics;
@@ -286,14 +286,10 @@ pub trait ObjectStorage: Sync + 'static {
         }
 
         for (stream, compressed_size) in stream_stats {
-            let stats = STREAM_INFO.read().unwrap().get(stream).map(|metadata| {
-                metadata.stats.add_storage_size(compressed_size);
-                STORAGE_SIZE
-                    .with_label_values(&["data", stream, "parquet"])
-                    .add(compressed_size as i64);
-                Stats::from(&metadata.stats)
-            });
-
+            STORAGE_SIZE
+                .with_label_values(&["data", stream, "parquet"])
+                .add(compressed_size as i64);
+            let stats = stats::get_current_stats(stream, "json");
             if let Some(stats) = stats {
                 if let Err(e) = self.put_stats(stream, &stats).await {
                     log::warn!("Error updating stats to objectstore due to error [{}]", e);

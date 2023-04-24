@@ -22,7 +22,7 @@ use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use once_cell::sync::Lazy;
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
-use crate::{handlers::http::metrics_path, metadata::STREAM_INFO};
+use crate::{handlers::http::metrics_path, metadata::STREAM_INFO, option::CONFIG};
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
@@ -122,9 +122,15 @@ fn prom_process_metrics(metrics: &PrometheusMetrics) {
 #[cfg(not(target_os = "linux"))]
 fn prom_process_metrics(_metrics: &PrometheusMetrics) {}
 
-pub fn load_from_global_stats() {
+pub async fn load_from_stats_from_storage() {
     for stream_name in STREAM_INFO.list_streams() {
-        let stats = STREAM_INFO.get_stats(&stream_name).expect("stream exists");
+        let stats = CONFIG
+            .storage()
+            .get_object_store()
+            .get_stats(&stream_name)
+            .await
+            .expect("stats are loaded properly");
+
         EVENTS_INGESTED
             .with_label_values(&[&stream_name, "json"])
             .inc_by(stats.events);

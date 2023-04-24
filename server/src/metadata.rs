@@ -24,7 +24,6 @@ use std::sync::{Arc, RwLock};
 
 use crate::alerts::Alerts;
 use crate::metrics::{EVENTS_INGESTED, EVENTS_INGESTED_SIZE};
-use crate::stats::{Stats, StatsCounter};
 use crate::storage::{ObjectStorage, StorageDir};
 use crate::utils::arrow::MergedRecordReader;
 
@@ -42,7 +41,6 @@ pub struct StreamInfo(RwLock<HashMap<String, LogStreamMetadata>>);
 pub struct LogStreamMetadata {
     pub schema: Arc<Schema>,
     pub alerts: Alerts,
-    pub stats: StatsCounter,
 }
 
 impl Default for LogStreamMetadata {
@@ -50,7 +48,6 @@ impl Default for LogStreamMetadata {
         Self {
             schema: Arc::new(Schema::empty()),
             alerts: Alerts::default(),
-            stats: StatsCounter::default(),
         }
     }
 }
@@ -132,15 +129,10 @@ impl StreamInfo {
         for stream in storage.list_streams().await? {
             let alerts = storage.get_alerts(&stream.name).await?;
             let schema = storage.get_schema(&stream.name).await?;
-            let stats = storage.get_stats(&stream.name).await?;
 
             let schema = Arc::new(update_schema_from_staging(&stream.name, schema));
 
-            let metadata = LogStreamMetadata {
-                schema,
-                alerts,
-                stats: stats.into(),
-            };
+            let metadata = LogStreamMetadata { schema, alerts };
 
             let mut map = self.write().expect(LOCK_EXPECT);
 
@@ -165,29 +157,13 @@ impl StreamInfo {
         size: u64,
         num_rows: u64,
     ) -> Result<(), MetadataError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let stream = map
-            .get(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))?;
-
-        stream.stats.add_ingestion_size(size);
-        stream.stats.increase_event_by_n(num_rows);
         EVENTS_INGESTED
             .with_label_values(&[stream_name, origin])
-            .inc();
+            .inc_by(num_rows);
         EVENTS_INGESTED_SIZE
             .with_label_values(&[stream_name, origin])
             .add(size as i64);
-
         Ok(())
-    }
-
-    pub fn get_stats(&self, stream_name: &str) -> Result<Stats, MetadataError> {
-        self.read()
-            .expect(LOCK_EXPECT)
-            .get(stream_name)
-            .map(|metadata| Stats::from(&metadata.stats))
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))
     }
 }
 
