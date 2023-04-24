@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Parseable Team <hi@parseable.io>"]
 edition = "2021"
 rust-version = "1.67"
@@ -62,7 +62,7 @@ tokio = { version = "1.25", default-features = false, features = [
 ] }
 clokwerk = "0.4"
 actix-web-static-files = "4.0"
-static-files = "0.2" 
+static-files = "0.2"
 ulid = { version = "1.0", features = ["serde"] }
 hex = "0.4"
 itertools = "0.10"
