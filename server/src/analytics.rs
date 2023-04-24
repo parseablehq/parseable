@@ -18,9 +18,9 @@
  */
 
 use crate::about::{current, platform};
-use crate::metadata;
 use crate::option::CONFIG;
 use crate::storage;
+use crate::{metadata, stats};
 
 use chrono::{DateTime, Utc};
 use clokwerk::{AsyncScheduler, Interval};
@@ -113,7 +113,7 @@ fn total_event_stats() -> (u64, u64, u64) {
     let mut total_json_bytes: u64 = 0;
 
     for stream in metadata::STREAM_INFO.list_streams() {
-        let stats = metadata::STREAM_INFO.get_stats(&stream).unwrap();
+        let Some(stats) = stats::get_current_stats(&stream, "json") else {continue;};
         total_events += stats.events;
         total_parquet_bytes += stats.storage;
         total_json_bytes += stats.ingestion;

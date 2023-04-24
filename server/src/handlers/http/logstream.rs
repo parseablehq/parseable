@@ -24,11 +24,11 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::alerts::Alerts;
-use crate::event;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 use crate::storage::retention::{self, Retention};
 use crate::storage::{LogStream, StorageDir};
+use crate::{event, stats};
 use crate::{metadata, validator};
 
 use self::error::StreamError;
@@ -233,10 +233,8 @@ pub async fn put_retention(
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    let stats = match metadata::STREAM_INFO.get_stats(&stream_name) {
-        Ok(stats) => stats,
-        Err(_) => return Err(StreamError::StreamNotFound(stream_name)),
-    };
+    let stats = stats::get_current_stats(&stream_name, "json")
+        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
     let time = Utc::now();
 

@@ -16,65 +16,7 @@
  *
  */
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[derive(Debug)]
-pub struct StatsCounter {
-    pub events_ingested: AtomicU64,
-    ingestion_size: AtomicU64,
-    storage_size: AtomicU64,
-}
-
-impl Default for StatsCounter {
-    fn default() -> Self {
-        Self {
-            events_ingested: AtomicU64::new(0),
-            ingestion_size: AtomicU64::new(0),
-            storage_size: AtomicU64::new(0),
-        }
-    }
-}
-
-impl PartialEq for StatsCounter {
-    fn eq(&self, other: &Self) -> bool {
-        self.ingestion_size() == other.ingestion_size()
-            && self.storage_size() == other.storage_size()
-    }
-}
-
-impl StatsCounter {
-    pub fn new(ingestion_size: u64, storage_size: u64, event_ingested: u64) -> Self {
-        Self {
-            ingestion_size: ingestion_size.into(),
-            storage_size: storage_size.into(),
-            events_ingested: event_ingested.into(),
-        }
-    }
-
-    pub fn events_ingested(&self) -> u64 {
-        self.events_ingested.load(Ordering::Relaxed)
-    }
-
-    pub fn ingestion_size(&self) -> u64 {
-        self.ingestion_size.load(Ordering::Relaxed)
-    }
-
-    pub fn storage_size(&self) -> u64 {
-        self.storage_size.load(Ordering::Relaxed)
-    }
-
-    pub fn add_ingestion_size(&self, size: u64) {
-        self.ingestion_size.fetch_add(size, Ordering::AcqRel);
-    }
-
-    pub fn add_storage_size(&self, size: u64) {
-        self.storage_size.fetch_add(size, Ordering::AcqRel);
-    }
-
-    pub fn increase_event_by_n(&self, n: u64) {
-        self.events_ingested.fetch_add(n, Ordering::AcqRel);
-    }
-}
+use crate::metrics::{EVENTS_INGESTED, EVENTS_INGESTED_SIZE, STORAGE_SIZE};
 
 /// Helper struct type created by copying stats values from metadata
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -84,18 +26,26 @@ pub struct Stats {
     pub storage: u64,
 }
 
-impl From<&StatsCounter> for Stats {
-    fn from(stats: &StatsCounter) -> Self {
-        Self {
-            events: stats.events_ingested(),
-            ingestion: stats.ingestion_size(),
-            storage: stats.storage_size(),
-        }
-    }
-}
+pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<Stats> {
+    let events_ingested = EVENTS_INGESTED
+        .get_metric_with_label_values(&[stream_name, format])
+        .ok()?
+        .get();
+    let ingestion_size = EVENTS_INGESTED_SIZE
+        .get_metric_with_label_values(&[stream_name, format])
+        .ok()?
+        .get();
+    let storage_size = STORAGE_SIZE
+        .get_metric_with_label_values(&["data", stream_name, "parquet"])
+        .ok()?
+        .get();
+    // this should be valid for all cases given that gauge must never go negative
+    let ingestion_size = ingestion_size as u64;
+    let storage_size = storage_size as u64;
 
-impl From<Stats> for StatsCounter {
-    fn from(stats: Stats) -> Self {
-        StatsCounter::new(stats.ingestion, stats.storage, stats.events)
-    }
+    Some(Stats {
+        events: events_ingested,
+        ingestion: ingestion_size,
+        storage: storage_size,
+    })
 }
