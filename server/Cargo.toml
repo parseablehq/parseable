@@ -89,8 +89,8 @@ maplit = "1.0"
 rstest = "0.16"
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/v0.0.9/build.zip"
-assets-sha1 = "c81dd1806d335ecbf7bab628977455bec254f209"
+assets-url = "https://github.com/parseablehq/console/releases/download/v0.1.0/build.zip"
+assets-sha1 = "badcc2edbc910cac21f2fcb57a338b58f17ff969"
 
 [features]
 debug = ["pyroscope", "pyroscope_pprofrs"]
