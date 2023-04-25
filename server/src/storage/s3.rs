@@ -72,18 +72,28 @@ pub struct S3Config {
         long,
         env = "P_S3_ACCESS_KEY",
         value_name = "access-key",
-        required = true
+        required_unless_present = "profile_name"
     )]
-    pub access_key_id: String,
+    pub access_key_id: Option<String>,
 
     /// The secret key for AWS S3 or compatible object storage platform
     #[arg(
         long,
         env = "P_S3_SECRET_KEY",
         value_name = "secret-key",
-        required = true
+        required_unless_present = "profile_name"
     )]
-    pub secret_key: String,
+    pub secret_key: Option<String>,
+
+    // Use aws profile name to fetch credentials
+    #[arg(
+        long,
+        env = "P_S3_PROFILE_NAME",
+        value_name = "profile",
+        conflicts_with_all = ["access_key_id", "secret_key"],
+        required = false
+    )]
+    pub profile_name: Option<String>,
 
     /// The region for AWS S3 or compatible object storage platform
     #[arg(long, env = "P_S3_REGION", value_name = "region", required = true)]
@@ -135,10 +145,20 @@ impl S3Config {
             .with_region(&self.region)
             .with_endpoint(&self.endpoint_url)
             .with_bucket_name(&self.bucket_name)
-            .with_access_key_id(&self.access_key_id)
-            .with_secret_access_key(&self.secret_key)
             .with_virtual_hosted_style_request(!self.use_path_style)
             .with_allow_http(true);
+
+        if let Some((access_key, secret_key)) =
+            self.access_key_id.as_ref().zip(self.secret_key.as_ref())
+        {
+            builder = builder
+                .with_access_key_id(access_key)
+                .with_secret_access_key(secret_key);
+        }
+
+        if let Some(profile) = &self.profile_name {
+            builder = builder.with_profile(profile);
+        }
 
         if self.set_checksum {
             builder = builder.with_checksum_algorithm(Checksum::SHA256)
