@@ -24,6 +24,7 @@ use chrono::Local;
 use std::fmt::Debug;
 use std::fs::create_dir_all;
 
+pub mod encryption;
 mod localfs;
 mod object_storage;
 pub mod retention;
@@ -35,6 +36,7 @@ pub use localfs::{FSConfig, LocalFS};
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::{S3Config, S3};
 pub use store_metadata::StorageMetadata;
+pub use store_metadata::CURRENT_ENCRYPTION_ALGORITHM;
 
 pub use self::staging::StorageDir;
 use self::store_metadata::{put_staging_metadata, EnvChange};
@@ -57,8 +59,8 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 // const PERMISSIONS_READ_WRITE: &str = "readwrite";
 const ACCESS_ALL: &str = "all";
 
-pub const CURRENT_OBJECT_STORE_VERSION: &str = "v3";
-pub const CURRENT_SCHEMA_VERSION: &str = "v3";
+pub const CURRENT_OBJECT_STORE_VERSION: &str = "v4";
+pub const CURRENT_SCHEMA_VERSION: &str = "v4";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ObjectStoreFormat {

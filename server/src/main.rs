@@ -60,13 +60,12 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.validate();
     let storage = CONFIG.storage().get_object_store();
     CONFIG.validate_staging()?;
+    migration::run_migration(&CONFIG).await?;
     let metadata = storage::resolve_parseable_metadata().await?;
     metadata.set_global();
     banner::print(&CONFIG, storage::StorageMetadata::global()).await;
     let prometheus = metrics::build_metrics_handler();
     CONFIG.storage().register_store_metrics(&prometheus);
-
-    migration::run_migration(&CONFIG).await?;
 
     #[cfg(feature = "debug")]
     {

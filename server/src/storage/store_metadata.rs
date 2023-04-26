@@ -18,6 +18,7 @@
 
 use std::{
     fs::{self, OpenOptions},
+    io::Write,
     path::PathBuf,
 };
 
@@ -26,13 +27,17 @@ use std::io;
 
 use crate::{option::CONFIG, utils::uid};
 
-use super::object_storage::PARSEABLE_METADATA_FILE_NAME;
+use super::{encryption, object_storage::PARSEABLE_METADATA_FILE_NAME};
+
+pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v2";
+pub const CURRENT_ENCRYPTION_ALGORITHM: &str = "AES-GCM-SIV";
 
 pub static STORAGE_METADATA: OnceCell<StorageMetadata> = OnceCell::new();
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StorageMetadata {
     pub version: String,
+    pub encryption_algorithm: String,
     pub mode: String,
     pub staging: PathBuf,
     pub storage: String,
@@ -52,8 +57,9 @@ pub struct User {
 impl StorageMetadata {
     pub fn new() -> Self {
         Self {
-            version: "v1".to_string(),
+            version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
             mode: CONFIG.storage_name.to_owned(),
+            encryption_algorithm: CURRENT_ENCRYPTION_ALGORITHM.to_string(),
             staging: CONFIG.staging_dir().canonicalize().unwrap(),
             storage: CONFIG.storage().get_endpoint(),
             deployment_id: uid::gen(),
@@ -114,6 +120,7 @@ pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
         },
     };
 
+    let bytes = encryption::decrypt(encryption::key().as_bytes(), bytes.into());
     let meta: StorageMetadata = serde_json::from_slice(&bytes).unwrap();
 
     Ok(Some(meta))
@@ -122,6 +129,7 @@ pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
 pub fn put_staging_metadata(meta: &StorageMetadata) -> io::Result<()> {
     let path = CONFIG.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
     let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
-    serde_json::to_writer(&mut file, meta)?;
-    Ok(())
+    let bytes = serde_json::to_vec(meta).expect("serializable");
+    let bytes = encryption::encrypt(encryption::key().as_bytes(), bytes.into());
+    file.write_all(&bytes)
 }

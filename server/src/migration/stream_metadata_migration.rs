@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::storage;
 
-pub fn v1_v3(mut stream_metadata: Value) -> Value {
+pub fn v1_v4(mut stream_metadata: Value) -> Value {
     let default_stats = json!({
         "events": 0,
         "ingestion": 0,
@@ -40,7 +40,7 @@ pub fn v1_v3(mut stream_metadata: Value) -> Value {
     stream_metadata
 }
 
-pub fn v2_v3(mut stream_metadata: Value) -> Value {
+pub fn v2_v4(mut stream_metadata: Value) -> Value {
     let default_stats = json!({
         "events": 0,
         "ingestion": 0,

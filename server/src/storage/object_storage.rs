@@ -17,6 +17,7 @@
  */
 
 use super::{
+    encryption,
     retention::Retention,
     staging::{self, convert_disk_files_to_parquet, convert_mem_to_parquet},
     LogStream, ObjectStorageError, ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
@@ -69,6 +70,21 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
+    async fn decrypt_get(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
+        let bytes = self.get_object(path).await?;
+        let key = encryption::key();
+        Ok(encryption::decrypt(key.as_bytes(), bytes))
+    }
+    async fn encrypt_put(
+        &self,
+        path: &RelativePath,
+        resource: Bytes,
+    ) -> Result<(), ObjectStorageError> {
+        let key = encryption::key();
+        let bytes = encryption::encrypt(key.as_bytes(), resource);
+        self.put_object(path, bytes).await
+    }
+
     fn query_table(
         &self,
         prefixes: Vec<String>,
@@ -80,7 +96,7 @@ pub trait ObjectStorage: Sync + 'static {
         stream_name: &str,
         schema: &Schema,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(&schema_path(stream_name), to_bytes(schema))
+        self.encrypt_put(&schema_path(stream_name), to_bytes(schema))
             .await?;
 
         Ok(())
@@ -94,10 +110,10 @@ pub trait ObjectStorage: Sync + 'static {
 
         let format_json = to_bytes(&format);
 
-        self.put_object(&schema_path(stream_name), to_bytes(&Schema::empty()))
+        self.encrypt_put(&schema_path(stream_name), to_bytes(&Schema::empty()))
             .await?;
 
-        self.put_object(&stream_json_path(stream_name), format_json)
+        self.encrypt_put(&stream_json_path(stream_name), format_json)
             .await?;
 
         Ok(())
@@ -108,20 +124,20 @@ pub trait ObjectStorage: Sync + 'static {
         stream_name: &str,
         alerts: &Alerts,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(&alert_json_path(stream_name), to_bytes(alerts))
+        self.encrypt_put(&alert_json_path(stream_name), to_bytes(alerts))
             .await
     }
 
     async fn put_stats(&self, stream_name: &str, stats: &Stats) -> Result<(), ObjectStorageError> {
         let path = stream_json_path(stream_name);
-        let stream_metadata = self.get_object(&path).await?;
+        let stream_metadata = self.decrypt_get(&path).await?;
         let stats = serde_json::to_value(stats).expect("stats are perfectly serializable");
         let mut stream_metadata: serde_json::Value =
             serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
 
         stream_metadata["stats"] = stats;
 
-        self.put_object(&path, to_bytes(&stream_metadata)).await
+        self.encrypt_put(&path, to_bytes(&stream_metadata)).await
     }
 
     async fn put_retention(
@@ -130,7 +146,7 @@ pub trait ObjectStorage: Sync + 'static {
         retention: &Retention,
     ) -> Result<(), ObjectStorageError> {
         let path = stream_json_path(stream_name);
-        let stream_metadata = self.get_object(&path).await?;
+        let stream_metadata = self.decrypt_get(&path).await?;
         let stats =
             serde_json::to_value(retention).expect("rentention tasks are perfectly serializable");
         let mut stream_metadata: serde_json::Value =
@@ -138,24 +154,24 @@ pub trait ObjectStorage: Sync + 'static {
 
         stream_metadata["retention"] = stats;
 
-        self.put_object(&path, to_bytes(&stream_metadata)).await
+        self.encrypt_put(&path, to_bytes(&stream_metadata)).await
     }
 
     async fn put_metadata(
         &self,
         parseable_metadata: &StorageMetadata,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(&parseable_json_path(), to_bytes(parseable_metadata))
+        self.encrypt_put(&parseable_json_path(), to_bytes(parseable_metadata))
             .await
     }
 
     async fn get_schema(&self, stream_name: &str) -> Result<Schema, ObjectStorageError> {
-        let schema_map = self.get_object(&schema_path(stream_name)).await?;
+        let schema_map = self.decrypt_get(&schema_path(stream_name)).await?;
         Ok(serde_json::from_slice(&schema_map)?)
     }
 
     async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError> {
-        match self.get_object(&alert_json_path(stream_name)).await {
+        match self.decrypt_get(&alert_json_path(stream_name)).await {
             Ok(alerts) => {
                 if let Ok(alerts) = serde_json::from_slice(&alerts) {
                     Ok(alerts)
@@ -175,12 +191,12 @@ pub trait ObjectStorage: Sync + 'static {
         &self,
         stream_name: &str,
     ) -> Result<ObjectStoreFormat, ObjectStorageError> {
-        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
+        let stream_metadata = self.decrypt_get(&stream_json_path(stream_name)).await?;
         Ok(serde_json::from_slice(&stream_metadata).expect("parseable config is valid json"))
     }
 
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
-        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
+        let stream_metadata = self.decrypt_get(&stream_json_path(stream_name)).await?;
         let stream_metadata: Value =
             serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
 
@@ -192,7 +208,7 @@ pub trait ObjectStorage: Sync + 'static {
     }
 
     async fn get_retention(&self, stream_name: &str) -> Result<Retention, ObjectStorageError> {
-        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
+        let stream_metadata = self.decrypt_get(&stream_json_path(stream_name)).await?;
         let stream_metadata: Value =
             serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
 
@@ -211,7 +227,7 @@ pub trait ObjectStorage: Sync + 'static {
 
     async fn get_metadata(&self) -> Result<Option<StorageMetadata>, ObjectStorageError> {
         let parseable_metadata: Option<StorageMetadata> =
-            match self.get_object(&parseable_json_path()).await {
+            match self.decrypt_get(&parseable_json_path()).await {
                 Ok(bytes) => {
                     Some(serde_json::from_slice(&bytes).expect("parseable config is valid json"))
                 }
@@ -228,7 +244,7 @@ pub trait ObjectStorage: Sync + 'static {
     }
 
     async fn stream_exists(&self, stream_name: &str) -> Result<bool, ObjectStorageError> {
-        let res = self.get_object(&stream_json_path(stream_name)).await;
+        let res = self.decrypt_get(&stream_json_path(stream_name)).await;
 
         match res {
             Ok(_) => Ok(true),
