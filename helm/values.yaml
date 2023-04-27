@@ -1,7 +1,7 @@
 parseable:
   image:
     repository: parseable/parseable
-    tag: v0.4.1
+    tag: v0.4.2
     pullPolicy: Always
   local: false
   # env:
