@@ -88,7 +88,7 @@ async fn migration_metadata(config: &Config, storage: &dyn ObjectStorage) -> any
         .and_then(|meta| meta.get("version"))
         .and_then(|version| version.as_str());
 
-    if let Some("v1") = version {
+    if version == Some("v1") {
         let meta = metadata_migration::v1_v2(stream_metadata);
         storage.encrypt_put(&path, to_bytes(&meta)).await?;
     }
@@ -99,7 +99,7 @@ async fn migration_metadata(config: &Config, storage: &dyn ObjectStorage) -> any
             .and_then(|meta| meta.get("version"))
             .and_then(|version| version.as_str());
 
-        if let Some("v1") = version {
+        if version == Some("v1") {
             let meta = metadata_migration::v1_v2(staging_metadata);
             let meta = encryption::encrypt(encryption::key().as_bytes(), to_bytes(&meta));
             fs::write(&staging_metadata_path, &meta)?;
