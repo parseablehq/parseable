@@ -40,7 +40,7 @@ use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
 
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
 // metadata file names in a Stream prefix
 pub(super) const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
@@ -282,6 +282,8 @@ pub trait ObjectStorage: Sync + 'static {
                     .entry(stream)
                     .and_modify(|size| *size += compressed_size)
                     .or_insert_with(|| compressed_size);
+
+                let _ = fs::remove_file(file);
             }
         }
 
