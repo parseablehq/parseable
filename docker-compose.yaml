@@ -52,6 +52,11 @@ services:
       retries: 5
     depends_on:
       - minio
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 3
 
   quest:
     image: ghcr.io/parseablehq/quest:main
