@@ -55,19 +55,13 @@ docker run -p 8000:8000 \
 
 Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
-### Create a stream
+### Send log events
 
 ```sh
-curl --location --request PUT 'http://localhost:8000/api/v1/logstream/demo' \
---header 'Authorization: Basic YWRtaW46YWRtaW4='
-```
-
-### Send events to the stream
-
-```sh
-curl --location --request POST 'http://localhost:8000/api/v1/logstream/demo' \
+curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 --header 'X-P-META-meta1: value1' \
 --header 'X-P-TAG-tag1: value1' \
+--header 'X-P-Stream: demo' \
 --header 'Authorization: Basic YWRtaW46YWRtaW4=' \
 --header 'Content-Type: application/json' \
 --data-raw '[
@@ -82,6 +76,8 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/demo' \
     }
 ]'
 ```
+
+Note: The `X-P-Stream` header is used to specify the log stream where data is sent. Parseable will create the stream automatically if it doesn't exist already.
 
 ### Query the stream
 
