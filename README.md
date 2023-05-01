@@ -5,7 +5,7 @@
       <img alt="Parseable Logo" src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg">
     </picture>
     <br>
-    Cloud native log observability
+    Cloud native log analytics
 </h2>
 
 <div align="center">
@@ -17,11 +17,11 @@
 
 </div>
 
-Parseable is a lightweight, cloud native log observability engine. It can use either a local drive or S3 (and compatible stores) for backend data storage.
+Parseable is a lightweight, cloud native log observability and analytics engine. It is written in Rust and uses Apache Arrow and Parquet.
 
-Parseable is written in Rust and uses Apache Arrow and Parquet as underlying data structures. Additionally, it uses a simple, index-free mechanism to organize and query data allowing low latency, and high throughput ingestion and query.
+Parseable uses a simple, index-free mechanism to organize and query data allowing low latency, and high throughput ingestion and query. It can use either a local mount point or object storage (S3/compatible stores) for data storage.
 
-Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput.
+For comparison, Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput. Read more in the [benchmarks directory](./benchmarks/).
 
 - [Parseable UI Demo (Credentials: admin,admin) ↗︎](https://demo.parseable.io)
 - [Grafana Dashboard Demo ↗︎](http://demo.parseable.io:3000/dashboards)
@@ -41,12 +41,12 @@ Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than E
 Run the below command to deploy Parseable in local storage mode with Docker.
 
 ```sh
-mkdir -p /tmp/parseable/data
-mkdir -p /tmp/parseable/staging
+mkdir -p $HOME/parseable/data
+mkdir -p $HOME/parseable/staging
 
 docker run -p 8000:8000 \
-  -v /tmp/parseable/data:/parseable/data \
-  -v /tmp/parseable/staging:/parseable/staging \
+  -v $HOME/parseable/data:/parseable/data \
+  -v $HOME/parseable/staging:/parseable/staging \
   -e P_FS_DIR=/parseable/data \
   -e P_STAGING_DIR=/parseable/staging \
   parseable/parseable:latest \
@@ -74,10 +74,10 @@ curl --location --request POST 'http://localhost:8000/api/v1/logstream/demo' \
     {
         "id": "434a5f5e-2f5f-11ed-a261-0242ac120002",
         "datetime": "24/Jun/2022:14:12:15 +0000",
-        "host": "153.10.110.81", 
-        "user-identifier": "Mozilla/5.0 Gecko/20100101 Firefox/64.0", 
-        "method": "PUT", 
-        "status": 500, 
+        "host": "153.10.110.81",
+        "user-identifier": "Mozilla/5.0 Gecko/20100101 Firefox/64.0",
+        "method": "PUT",
+        "status": 500,
         "referrer": "http://www.google.com/"
     }
 ]'
@@ -95,8 +95,8 @@ curl --location --request POST 'http://localhost:8000/api/v1/query' \
 --header 'Content-Type: application/json' \
 --data-raw '{
     "query":"select * from demo",
-    "startTime":"2023-01-09T00:00:00+00:00",
-    "endTime":"2023-01-09T23:59:00+00:00"
+    "startTime":"2023-06-09T00:00:00+00:00",
+    "endTime":"2023-06-09T23:59:00+00:00"
 }'
 ```
 
@@ -118,9 +118,9 @@ But with log data growing exponentially, today's log data challenges involve who
 
 ## :stethoscope: Support
 
-- For questions and feedback please feel free to reach out to us on [Slack ↗︎](https://launchpass.com/parseable).
 - For bugs, please create issue on [GitHub ↗︎](https://github.com/parseablehq/parseable/issues).
 - For commercial support and consultation, please reach out to us at [`hi@parseable.io` ↗︎](mailto:hi@parseable.io).
+- Please consider supporting us on [GitHub Sponsors ↗︎](https://github.com/parseablehq/sponsors).
 
 ## :trophy: Contributing
 

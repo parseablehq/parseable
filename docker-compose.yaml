@@ -63,5 +63,5 @@ services:
     deploy:
       restart_policy:
         condition: on-failure
-        delay: 10s
+        delay: 20s
         max_attempts: 3
