@@ -16,8 +16,6 @@
  *
  */
 
-use std::sync::Arc;
-
 use actix_web::http::header::ContentType;
 use actix_web::{HttpRequest, HttpResponse};
 use arrow_schema::Schema;
@@ -29,6 +27,7 @@ use crate::event::error::EventError;
 use crate::event::format::EventFormat;
 use crate::event::{self, format};
 use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
+use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
@@ -62,7 +61,8 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
 }
 
 async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
-    let (size, rb) = into_event_batch(req, body, &get_stream_schema(&stream_name))?;
+    let schema = STREAM_INFO.schema(&stream_name)?;
+    let (size, rb) = into_event_batch(req, body, &schema)?;
 
     event::Event {
         rb,
@@ -95,12 +95,10 @@ fn into_event_batch(
     Ok((size, rb))
 }
 
-fn get_stream_schema(stream_name: &str) -> Arc<Schema> {
-    STREAM_INFO.schema(stream_name).unwrap()
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum PostError {
+    #[error("{0}")]
+    StreamNotFound(#[from] MetadataError),
     #[error("Could not deserialize into JSON object, {0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Header Error: {0}")]
@@ -121,6 +119,7 @@ impl actix_web::ResponseError for PostError {
             PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::Invalid(_) => StatusCode::BAD_REQUEST,
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
         }
     }
 
