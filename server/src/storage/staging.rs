@@ -140,7 +140,7 @@ impl StorageDir {
         &self,
         exclude: NaiveDateTime,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let hot_filename = StorageDir::file_time_suffix(exclude, "data.arrow");
+        let hot_filename = StorageDir::file_time_suffix(exclude, "data.arrows");
         // hashmap <time, vec[paths]> but exclude where hotfilename matches
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let mut arrow_files = self.arrow_files();
@@ -196,7 +196,7 @@ pub fn convert_disk_files_to_parquet(
 ) -> Result<Option<Schema>, MoveDataError> {
     let mut schemas = Vec::new();
 
-    let time = chrono::Utc::now().naive_utc();
+    let time = dbg!(chrono::Utc::now().naive_utc());
     let staging_files = dir.arrow_files_grouped_exclude_time(time);
     if staging_files.is_empty() {
         metrics::STAGING_FILES.with_label_values(&[stream]).set(0);
