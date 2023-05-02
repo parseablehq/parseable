@@ -38,6 +38,7 @@ use parquet::{
 };
 
 use crate::{
+    event::DEFAULT_TIMESTAMP_KEY,
     metrics,
     option::CONFIG,
     storage::OBJECT_STORE_DATA_GRANULARITY,
@@ -47,7 +48,6 @@ use crate::{
     },
 };
 
-const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 const EXTENTION_ARROW: &str = "data.arrows";
 
 // in mem global that hold all the in mem buffer that are ready to convert
@@ -199,7 +199,7 @@ pub fn convert_disk_files_to_parquet(
 ) -> Result<Option<Schema>, MoveDataError> {
     let mut schemas = Vec::new();
 
-    let time = dbg!(chrono::Utc::now().naive_utc());
+    let time = chrono::Utc::now().naive_utc();
     let staging_files = dir.arrow_files_grouped_exclude_time(time);
     if staging_files.is_empty() {
         metrics::STAGING_FILES.with_label_values(&[stream]).set(0);
