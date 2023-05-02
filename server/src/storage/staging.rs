@@ -47,6 +47,9 @@ use crate::{
     },
 };
 
+const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
+const EXTENTION_ARROW: &str = "data.arrows";
+
 // in mem global that hold all the in mem buffer that are ready to convert
 pub static MEMORY_READ_BUFFERS: Lazy<RwLock<HashMap<String, Vec<ReadBuf>>>> =
     Lazy::new(RwLock::default);
@@ -93,7 +96,7 @@ impl StorageDir {
         format!(
             "{}.{}",
             stream_hash,
-            Self::file_time_suffix(time, "data.arrows")
+            Self::file_time_suffix(time, EXTENTION_ARROW)
         )
     }
 
@@ -140,7 +143,7 @@ impl StorageDir {
         &self,
         exclude: NaiveDateTime,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let hot_filename = StorageDir::file_time_suffix(exclude, "data.arrows");
+        let hot_filename = StorageDir::file_time_suffix(exclude, EXTENTION_ARROW);
         // hashmap <time, vec[paths]> but exclude where hotfilename matches
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let mut arrow_files = self.arrow_files();
@@ -278,7 +281,7 @@ fn parquet_writer_props() -> WriterPropertiesBuilder {
         .set_max_row_group_size(CONFIG.parseable.row_group_size)
         .set_compression(CONFIG.parseable.parquet_compression.into())
         .set_column_encoding(
-            ColumnPath::new(vec!["p_timestamp".to_string()]),
+            ColumnPath::new(vec![DEFAULT_TIMESTAMP_KEY.to_string()]),
             Encoding::DELTA_BINARY_PACKED,
         )
 }
