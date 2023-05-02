@@ -49,6 +49,7 @@ use crate::{
 };
 
 const EXTENTION_ARROW: &str = "data.arrows";
+const EXTENTION_PARQUET: &str = "data.parquet";
 
 // in mem global that hold all the in mem buffer that are ready to convert
 pub static MEMORY_READ_BUFFERS: Lazy<RwLock<HashMap<String, Vec<ReadBuf>>>> =
@@ -188,7 +189,7 @@ impl StorageDir {
 
 pub fn to_parquet_path(stream_name: &str, time: NaiveDateTime) -> PathBuf {
     let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
-    let dir = StorageDir::file_time_suffix(time, "data.parquet");
+    let dir = StorageDir::file_time_suffix(time, EXTENTION_PARQUET);
 
     data_path.join(dir)
 }
