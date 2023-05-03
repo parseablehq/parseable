@@ -2,8 +2,8 @@ apiVersion: v2
 name: parseable
 description: Helm chart for Parseable Server
 type: application
-version: 0.4.3
-appVersion: "v0.4.2"
+version: 0.4.4
+appVersion: "v0.4.3"
 maintainers:
   - name: Parseable Team
     email: hi@parseable.io
