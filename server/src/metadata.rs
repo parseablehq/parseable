@@ -172,8 +172,9 @@ fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Sche
     let schema = MergedRecordReader::try_new(&staging_files)
         .unwrap()
         .merged_schema();
-
-    Schema::try_merge(vec![schema, current_schema]).unwrap()
+    let mut schema = Schema::try_merge(vec![schema, current_schema]).unwrap();
+    schema.fields.sort_by(|a, b| a.name().cmp(b.name()));
+    schema
 }
 
 pub mod error {

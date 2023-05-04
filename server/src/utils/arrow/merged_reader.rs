@@ -37,7 +37,8 @@ impl From<StreamReader<File>> for Reader {
         let timestamp_col_index = reader
             .schema()
             .all_fields()
-            .binary_search_by(|field| field.name().as_str().cmp("p_timestamp"))
+            .iter()
+            .position(|field| field.name().eq("p_timestamp"))
             .expect("schema should have this field");
 
         Self {
@@ -94,11 +95,13 @@ impl MergedRecordReader {
     }
 
     pub fn merged_schema(&self) -> Schema {
-        Schema::try_merge(
+        let mut schema = Schema::try_merge(
             self.readers
                 .iter()
                 .map(|reader| reader.reader.schema().as_ref().clone()),
         )
-        .unwrap()
+        .unwrap();
+        schema.fields.sort_by(|a, b| a.name().cmp(b.name()));
+        schema
     }
 }
