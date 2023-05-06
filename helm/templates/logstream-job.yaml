@@ -1,0 +1,63 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "parseable.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+spec:
+  template:
+    metadata:
+      {{- with .Values.parseable.podAnnotations }}
+      annotations:
+        "helm.sh/hook": post-install,post-upgrade
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "parseable.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        {{- toYaml .Values.parseable.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: parseable-init
+          projected:
+            sources:
+              - configMap:
+                  name: {{ include "parseable.fullname" . }}
+      containers:
+        - name: config-logstream
+          volumeMounts:
+            - name: parseable-init
+              mountPath: /config
+          securityContext:
+            {{- toYaml .Values.parseable.securityContext | nindent 12 }}
+          env:
+            {{- if .Values.parseable.local }}
+            {{- range $secret := .Values.parseable.localModeSecret }}
+            {{- range $key := $secret.keys }}
+            {{- $envPrefix := $secret.prefix | default "" | upper }}
+            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+            - name: {{ $envPrefix }}{{ $envKey }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret.name }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- end }}
+            {{- else}}
+            {{- range $secret := .Values.parseable.s3ModeSecret }}
+            {{- range $key := $secret.keys }}
+            {{- $envPrefix := $secret.prefix | default "" | upper }}
+            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+            - name: {{ $envPrefix }}{{ $envKey }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret.name }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          image: curlimages/curl:8.00.0
+          command: [ "/bin/sh", "/config/config-logstream" ]
+  backoffLimit: 20

@@ -32,7 +32,7 @@ use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
 // Handler for POST /api/v1/ingest
-// ingests events by extacting stream name from header
+// ingests events by extracting stream name from header
 // creates if stream does not exist
 pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     if let Some((_, stream_name)) = req

@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e ; # Have script exit in the event of a failed command.
+IFS=$' \t\r\n'
+
+createStream() {
+  STREAM=$1
+  echo;
+  echo \"Creating the log stream $STREAM\";
+  curl  -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" --location --request PUT "http://{{ include "parseable.fullname" . }}.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM";
+}
+
+setRetention() {
+  
+}
+
+{{ if .Values.parseable.logstream }}
+# Create the logstream
+{{- range .Values.parseable.logstream }}
+createStream {{.name}}
+setRetention {{.retention}}
+{{- end }}
+{{- end }}
