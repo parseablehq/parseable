@@ -1,7 +1,7 @@
 parseable:
   image:
     repository: parseable/parseable
-    tag: v0.4.0
+    tag: v0.4.1
     pullPolicy: Always
   ## Set to true if you want to deploy Parseable in local mode (store logs 
   ## on local mount point instead of S3 bucket)
@@ -12,12 +12,10 @@ parseable:
   logstream:
     - name: "vectordemo"
       retention:
-        description: "Delete logs after 30 days"
         action: "delete"
         duration: "30d"
     - name: "fluentbitdemo"
       retention:
-        description: "Delete logs after 30 days"
         action: "delete"
         duration: "30d"
   ## enable/disable persistence using PVC for the Data and Staging directories
