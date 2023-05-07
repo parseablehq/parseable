@@ -212,10 +212,6 @@ pub async fn put_retention(
         Err(err) => return Err(StreamError::InvalidRetentionConfig(err)),
     };
 
-    if !STREAM_INFO.stream_initialized(&stream_name)? {
-        return Err(StreamError::UninitializedLogstream);
-    }
-
     CONFIG
         .storage()
         .get_object_store()
