@@ -7,12 +7,14 @@ createStream() {
   echo;
   echo \"Creating the log stream $STREAM\";
 
-  response=$(curl  -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w '\n\n%{http_code}' --location --request PUT "http://{{ include "parseable.fullname" . }}.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM");
+  response=$(curl -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w 'HTTPSTATUS:%{http_code}' --location --request PUT "http://{{ include "parseable.fullname" . }}.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM");
 
-  http_code=$(tail -n1 <<< "$response")
-  content=$(sed '$ d' <<< "$response")
-  echo \"status code: $http_code\"
-  echo \"response message: $content\"
+  HTTP_BODY=$(echo $response | sed -e 's/HTTPSTATUS\:.*//g')
+  HTTP_STATUS=$(echo $response | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+
+  echo \"API response:\"
+  echo \"HTTP status code: $HTTP_STATUS\"
+  echo \"HTTP response message: $HTTP_BODY\"
 }
 
 setRetention() {
@@ -23,12 +25,14 @@ setRetention() {
   echo;
   echo \"Setting the retention for $STREAM\";
 
-  response=$(curl  -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w '\n\n%{http_code}' --location --request POST "http://{{ include "parseable.fullname" . }}.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM/retention" --data "[{\"description\":\"$ACTION logs after $DURATION\",\"action\":\"$ACTION\",\"duration\":\"$DURATION\"}]");
+  response=$(curl -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w 'HTTPSTATUS:%{http_code}' --location --request PUT "http://{{ include "parseable.fullname" . }}.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM/retention" --data "[{\"description\":\"$ACTION logs after $DURATION\",\"action\":\"$ACTION\",\"duration\":\"$DURATION\"}]");
 
-  http_code=$(tail -n1 <<< "$response")
-  content=$(sed '$ d' <<< "$response")
-  echo \"status code: $http_code\"
-  echo \"response message: $content\"
+  HTTP_BODY=$(echo $response | sed -e 's/HTTPSTATUS\:.*//g')
+  HTTP_STATUS=$(echo $response | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+
+  echo \"API response:\"
+  echo \"HTTP status code: $HTTP_STATUS\"
+  echo \"HTTP response message: $HTTP_BODY\"
 }
 
 {{ if .Values.parseable.logstream }}

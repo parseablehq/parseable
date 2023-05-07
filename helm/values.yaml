@@ -1,23 +1,23 @@
 parseable:
   image:
     repository: parseable/parseable
-    tag: v0.4.1
+    tag: v0.4.3
     pullPolicy: Always
   ## Set to true if you want to deploy Parseable in local mode (store logs 
   ## on local mount point instead of S3 bucket)
-  local: true
-  env:
-    RUST_LOG: error
-  ## Use this to create and configure Parseable logstreams
-  logstream:
-    - name: "vectordemo"
-      retention:
-        action: "delete"
-        duration: "30d"
-    - name: "fluentbitdemo"
-      retention:
-        action: "delete"
-        duration: "30d"
+  local: false
+  # env:
+  #   RUST_LOG: error
+  # ## Enable to create and configure logstreams
+  # logstream:
+  #   - name: "vectordemo"
+  #     retention:
+  #       action: "delete"
+  #       duration: "30d"
+  #   - name: "fluentbitdemo"
+  #     retention:
+  #       action: "delete"
+  #       duration: "30d"
   ## enable/disable persistence using PVC for the Data and Staging directories
   ## Note that Data directory is needed only for local mode
   persistence:
@@ -31,7 +31,6 @@ parseable:
       storageClass: ""
       accessMode: ReadWriteOnce
       size: 1Gi
-  ## Use 
   localModeSecret:
   - type: env
     name: parseable-env-secret
@@ -73,11 +72,11 @@ parseable:
     port: 80
   resources:
     limits:
-      cpu: 100m
-      memory: 250Mi
+      cpu: 500m
+      memory: 4Gi
     requests:
-      cpu: 100m
-      memory: 250Mi
+      cpu: 250m
+      memory: 1Gi
   securityContext:
     allowPrivilegeEscalation: false
   podAnnotations: {}
