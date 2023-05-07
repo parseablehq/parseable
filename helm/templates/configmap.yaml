@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "parseable.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+data:
+  config-logstream: |-
+    {{- include (print $.Template.BasePath "/_helpers_config_logstream.txt") . | nindent 4 }}

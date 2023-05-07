@@ -1,0 +1,44 @@
+#!/bin/sh
+set -e ; # Have script exit in the event of a failed command.
+IFS=$' \t\r\n'
+
+createStream() {
+  STREAM=$1
+  echo;
+  echo \"Creating the log stream $STREAM\";
+
+  response=$(curl -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w 'HTTPSTATUS:%{http_code}' --location --request PUT "http://{{ include "parseable.fullname" . }}.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM");
+
+  HTTP_BODY=$(echo $response | sed -e 's/HTTPSTATUS\:.*//g')
+  HTTP_STATUS=$(echo $response | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+
+  echo \"API response:\"
+  echo \"HTTP status code: $HTTP_STATUS\"
+  echo \"HTTP response message: $HTTP_BODY\"
+}
+
+setRetention() {
+  STREAM=$1
+  ACTION=$2
+  DURATION=$3
+
+  echo;
+  echo \"Setting the retention for $STREAM\";
+
+  response=$(curl -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w 'HTTPSTATUS:%{http_code}' --location --request PUT "http://{{ include "parseable.fullname" . }}.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM/retention" --data "[{\"description\":\"$ACTION logs after $DURATION\",\"action\":\"$ACTION\",\"duration\":\"$DURATION\"}]");
+
+  HTTP_BODY=$(echo $response | sed -e 's/HTTPSTATUS\:.*//g')
+  HTTP_STATUS=$(echo $response | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+
+  echo \"API response:\"
+  echo \"HTTP status code: $HTTP_STATUS\"
+  echo \"HTTP response message: $HTTP_BODY\"
+}
+
+{{ if .Values.parseable.logstream }}
+# Create the logstream
+{{- range .Values.parseable.logstream }}
+createStream {{.name}}
+setRetention {{.name}} {{.retention.action}} {{.retention.duration}}
+{{- end }}
+{{- end }}
