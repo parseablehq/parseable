@@ -87,6 +87,8 @@ impl StreamInfo {
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| &metadata.schema)?;
 
+        // sort fields on read from hashmap as order of fields can differ.
+        // This provides a stable output order if schema is same between calls to this function
         let fields = schema
             .values()
             .sorted_by_key(|field| field.name())
