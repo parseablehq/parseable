@@ -18,6 +18,7 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
+use itertools::Itertools;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -86,7 +87,13 @@ impl StreamInfo {
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| &metadata.schema)?;
 
-        let schema = Schema::new(schema.values().cloned().collect());
+        let fields = schema
+            .values()
+            .sorted_by_key(|field| field.name())
+            .cloned()
+            .collect();
+
+        let schema = Schema::new(fields);
 
         Ok(Arc::new(schema))
     }
