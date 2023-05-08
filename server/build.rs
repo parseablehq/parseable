@@ -16,22 +16,20 @@
  *
  */
 
-use vergen::{vergen, Config, ShaKind};
+use vergen::EmitBuilder;
+use std::error::Error;
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
+    ui::setup().unwrap();
+
     // Init vergen
-    let mut config = Config::default();
-    *config.git_mut().sha_kind_mut() = ShaKind::Short;
+    EmitBuilder::builder()
+        .all_build()
+        .all_cargo()
+        .git_sha(true)
+        .emit()?;
 
-    if let Err(e) = vergen(config) {
-        println!("cargo:warning=initializing vergen failed due to error: {e}",);
-    }
-
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-env-changed=LOCAL_ASSETS_PATH");
-    println!("Build File running");
-    ui::setup().unwrap()
+    Ok(())
 }
 
 mod ui {
