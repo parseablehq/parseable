@@ -65,7 +65,7 @@ pub fn flatten_object(
     for (key, value) in nested_dict.into_iter() {
         let new_key = parent_key.map_or_else(
             || key.clone(),
-            |parent_key| format!("{}{}{}", parent_key, separator, key),
+            |parent_key| format!("{parent_key}{separator}{key}"),
         );
         match value {
             Value::Object(obj) => flatten_object(map, Some(&new_key), obj, separator)?,
@@ -139,7 +139,7 @@ pub fn flatten_array_objects(
     }
 
     for (key, arr) in columns {
-        let new_key = format!("{}{}{}", parent_key, separator, key);
+        let new_key = format!("{parent_key}{separator}{key}");
         map.insert(new_key, Value::Array(arr));
     }
 

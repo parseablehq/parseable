@@ -20,8 +20,8 @@
 use chrono::Duration;
 use chrono_humanize::{Accuracy, Tense};
 use crossterm::style::Stylize;
+use std::env;
 use std::path::Path;
-use std::{env, fmt};
 use sysinfo::SystemExt;
 use ulid::Ulid;
 
@@ -31,10 +31,6 @@ use crate::storage::StorageMetadata;
 use crate::utils::update;
 
 static K8S_ENV_TO_CHECK: &str = "KUBERNETES_SERVICE_HOST";
-pub enum ParseableVersion {
-    Version(semver::Version),
-    Prerelease(semver::Prerelease),
-}
 
 fn is_docker() -> bool {
     Path::new("/.dockerenv").exists()
@@ -72,25 +68,16 @@ pub fn user_agent(uid: &Ulid) -> String {
     )
 }
 
-pub struct Version {
-    pub released_version: ParseableVersion,
+pub struct ParseableVersion {
+    pub released_version: semver::Version,
     pub commit_hash: String,
 }
 
-impl Version {
-    pub fn new(version: ParseableVersion, commit_hash: String) -> Self {
-        Version {
+impl ParseableVersion {
+    pub fn new(version: semver::Version, commit_hash: String) -> Self {
+        ParseableVersion {
             released_version: version,
             commit_hash,
-        }
-    }
-}
-
-impl fmt::Display for ParseableVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ParseableVersion::Version(v) => write!(f, "{v}"),
-            ParseableVersion::Prerelease(p) => write!(f, "{p}"),
         }
     }
 }
@@ -140,47 +127,24 @@ pub async fn print(config: &Config, meta: &StorageMetadata) {
         None
     };
 
-    match current.released_version {
-        ParseableVersion::Version(current_version) => {
-            print_about(current_version, latest_release, current.commit_hash);
-        }
-        ParseableVersion::Prerelease(current_prerelease) => {
-            eprintln!(
-                "
-{} {} ",
-                "Current Version:".to_string().blue().bold(),
-                current_prerelease
-            );
-        }
-    }
+    print_about(
+        current.released_version,
+        latest_release,
+        current.commit_hash,
+    );
 }
 
-pub fn current() -> Version {
-    let build_semver = env!("VERGEN_BUILD_SEMVER");
-    let sha_hash = env!("VERGEN_GIT_SHA_SHORT");
-    let mut git_semver = env!("VERGEN_GIT_SEMVER");
+pub fn current() -> ParseableVersion {
+    // CARGO_PKG_VERSION is set from Cargol.toml file at build time
+    // We need to ensure [package].version in Cargo.toml is always valid semver
+    let build_semver = env!("CARGO_PKG_VERSION");
+    // VERGEN_GIT_SHA is set from build.rs at build time
+    let sha_hash = env!("VERGEN_GIT_SHA");
 
-    if &git_semver[..1] == "v" {
-        git_semver = &git_semver[1..];
-    }
-
-    if build_semver == git_semver {
-        Version::new(
-            ParseableVersion::Version(
-                semver::Version::parse(build_semver)
-                    .expect("VERGEN_BUILD_SEMVER is always valid semver"),
-            ),
-            sha_hash.to_string(),
-        )
-    } else {
-        Version::new(
-            ParseableVersion::Prerelease(
-                semver::Prerelease::new(git_semver)
-                    .expect("VERGEN_GIT_SEMVER is always valid semver"),
-            ),
-            sha_hash.to_string(),
-        )
-    }
+    ParseableVersion::new(
+        semver::Version::parse(build_semver).expect("CARGO_PKG_VERSION is always valid semver"),
+        sha_hash.to_string(),
+    )
 }
 
 fn humanize_time(time_passed: Duration) -> String {
