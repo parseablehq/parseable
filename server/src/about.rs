@@ -20,8 +20,8 @@
 use chrono::Duration;
 use chrono_humanize::{Accuracy, Tense};
 use crossterm::style::Stylize;
-use std::path::Path;
 use std::env;
+use std::path::Path;
 use sysinfo::SystemExt;
 use ulid::Ulid;
 
@@ -127,7 +127,11 @@ pub async fn print(config: &Config, meta: &StorageMetadata) {
         None
     };
 
-    print_about(current.released_version, latest_release, current.commit_hash);
+    print_about(
+        current.released_version,
+        latest_release,
+        current.commit_hash,
+    );
 }
 
 pub fn current() -> ParseableVersion {
@@ -138,8 +142,7 @@ pub fn current() -> ParseableVersion {
     let sha_hash = env!("VERGEN_GIT_SHA");
 
     ParseableVersion::new(
-        semver::Version::parse(build_semver)
-                .expect("CARGO_PKG_VERSION is always valid semver"),
+        semver::Version::parse(build_semver).expect("CARGO_PKG_VERSION is always valid semver"),
         sha_hash.to_string(),
     )
 }
