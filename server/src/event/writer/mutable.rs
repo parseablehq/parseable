@@ -292,7 +292,11 @@ impl MutableColumns {
     pub fn push(&mut self, rb: RecordBatch) {
         let num_rows = rb.num_rows();
         let schema = rb.schema();
-        let rb = schema.fields().iter().zip(rb.columns().iter()).sorted_by_key(|(f, _)| f.name());
+        let rb = schema
+            .fields()
+            .iter()
+            .zip(rb.columns().iter())
+            .sorted_by_key(|(f, _)| f.name());
 
         // start index map to next location in self columns
         let mut index = 0;
