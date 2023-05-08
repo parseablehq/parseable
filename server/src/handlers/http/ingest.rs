@@ -201,13 +201,16 @@ mod tests {
         assert_eq!(size, 28);
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 6);
-        assert_eq!(rb.column(0).as_int64_arr(), &Int64Array::from_iter([1]));
         assert_eq!(
-            rb.column(1).as_utf8_arr(),
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from_iter([1])
+        );
+        assert_eq!(
+            rb.column_by_name("b").unwrap().as_utf8_arr(),
             &StringArray::from_iter_values(["hello"])
         );
         assert_eq!(
-            rb.column(2).as_float64_arr(),
+            rb.column_by_name("c").unwrap().as_float64_arr(),
             &Float64Array::from_iter([4.23])
         );
         assert_eq!(
@@ -243,9 +246,12 @@ mod tests {
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
-        assert_eq!(rb.column(0).as_int64_arr(), &Int64Array::from_iter([1]));
         assert_eq!(
-            rb.column(1).as_utf8_arr(),
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from_iter([1])
+        );
+        assert_eq!(
+            rb.column_by_name("b").unwrap().as_utf8_arr(),
             &StringArray::from_iter_values(["hello"])
         );
     }
@@ -274,9 +280,12 @@ mod tests {
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
-        assert_eq!(rb.column(0).as_int64_arr(), &Int64Array::from_iter([1]));
         assert_eq!(
-            rb.column(1).as_utf8_arr(),
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from_iter([1])
+        );
+        assert_eq!(
+            rb.column_by_name("b").unwrap().as_utf8_arr(),
             &StringArray::from_iter_values(["hello"])
         );
     }
@@ -373,15 +382,15 @@ mod tests {
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
         assert_eq!(
-            rb.column(0).as_int64_arr(),
+            rb.column_by_name("a").unwrap().as_int64_arr(),
             &Int64Array::from(vec![None, Some(1), Some(1)])
         );
         assert_eq!(
-            rb.column(1).as_utf8_arr(),
+            rb.column_by_name("b").unwrap().as_utf8_arr(),
             &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
         );
         assert_eq!(
-            rb.column(2).as_float64_arr(),
+            rb.column_by_name("c").unwrap().as_float64_arr(),
             &Float64Array::from(vec![None, Some(1.22), None,])
         );
     }
@@ -423,15 +432,15 @@ mod tests {
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
         assert_eq!(
-            rb.column(0).as_int64_arr(),
+            rb.column_by_name("a").unwrap().as_int64_arr(),
             &Int64Array::from(vec![None, Some(1), Some(1)])
         );
         assert_eq!(
-            rb.column(1).as_utf8_arr(),
+            rb.column_by_name("b").unwrap().as_utf8_arr(),
             &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
         );
         assert_eq!(
-            rb.column(2).as_float64_arr(),
+            rb.column_by_name("c").unwrap().as_float64_arr(),
             &Float64Array::from(vec![None, Some(1.22), None,])
         );
     }
@@ -468,11 +477,11 @@ mod tests {
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 5);
         assert_eq!(
-            rb.column(0).as_int64_arr(),
+            rb.column_by_name("a").unwrap().as_int64_arr(),
             &Int64Array::from(vec![Some(1), Some(1), Some(1)])
         );
         assert_eq!(
-            rb.column(1).as_utf8_arr(),
+            rb.column_by_name("b").unwrap().as_utf8_arr(),
             &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
         );
     }
@@ -548,11 +557,11 @@ mod tests {
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 7);
         assert_eq!(
-            rb.column(0).as_int64_arr(),
+            rb.column_by_name("a").unwrap().as_int64_arr(),
             &Int64Array::from(vec![Some(1), Some(1), Some(1), Some(1)])
         );
         assert_eq!(
-            rb.column(1).as_utf8_arr(),
+            rb.column_by_name("b").unwrap().as_utf8_arr(),
             &StringArray::from(vec![
                 Some("hello"),
                 Some("hello"),
@@ -565,12 +574,20 @@ mod tests {
         let c_b = vec![None, None, None, Some(vec![Some(2i64)])];
 
         assert_eq!(
-            rb.column(2).as_any().downcast_ref::<ListArray>().unwrap(),
+            rb.column_by_name("c_a")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap(),
             &ListArray::from_iter_primitive::<Int64Type, _, _>(c_a)
         );
 
         assert_eq!(
-            rb.column(3).as_any().downcast_ref::<ListArray>().unwrap(),
+            rb.column_by_name("c_b")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap(),
             &ListArray::from_iter_primitive::<Int64Type, _, _>(c_b)
         );
     }
