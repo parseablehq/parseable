@@ -111,5 +111,8 @@ fn merge_rb(rb: Vec<&Vec<RecordBatch>>, schema: Arc<Schema>) -> RecordBatch {
     .map(|batch| adapt_batch(&schema, batch.clone()))
     .collect();
 
+    // must be true for this to work
+    // each rb is of same schema. ( adapt_schema should do this )
+    // datatype is same
     concat_batches(&schema, sorted_rb.iter()).unwrap()
 }
