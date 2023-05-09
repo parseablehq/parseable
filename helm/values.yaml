@@ -6,18 +6,33 @@ parseable:
   ## Set to true if you want to deploy Parseable in local mode (store logs 
   ## on local mount point instead of S3 bucket)
   local: false
-  # env:
-  #   RUST_LOG: error
-  # ## Enable to create and configure logstreams
-  # logstream:
-  #   - name: "vectordemo"
-  #     retention:
-  #       action: "delete"
-  #       duration: "30d"
-  #   - name: "fluentbitdemo"
-  #     retention:
-  #       action: "delete"
-  #       duration: "30d"
+  ## Use this section to create ServiceMonitor object for 
+  ## this Parseable deployment. Read more on ServiceMonitor
+  ## here: https://prometheus-operator.dev/docs/operator/design/#servicemonitor
+  metrics:
+    serviceMonitor:
+      enabled: true
+      namespace: ""
+      interval: 30s
+      scrapeTimeout: ""
+      relabellings: []
+      metricRelabelings: []
+      honorLabels: false
+      additionalLabels: {}
+      podTargetLabels: []
+  ## Add environment variables to the Parseable Deployment Pod
+  env:
+    # RUST_LOG: error
+  ## Enable to create and configure log retention for logstreams
+  logstream:
+    # - name: "vectordemo"
+    #   retention:
+    #     action: "delete"
+    #     duration: "30d"   
+    # - name: "fluentbitdemo"
+    #   retention:
+    #     action: "delete"
+    #     duration: "30d"
   ## enable/disable persistence using PVC for the Data and Staging directories
   ## Note that Data directory is needed only for local mode
   persistence:
@@ -79,7 +94,10 @@ parseable:
       memory: 1Gi
   securityContext:
     allowPrivilegeEscalation: false
-  podAnnotations: {}
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "80"
+    prometheus.io/path: "/api/v1/metrics"
   podSecurityContext:
     runAsUser: 1000
     runAsGroup: 1000
