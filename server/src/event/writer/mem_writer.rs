@@ -37,9 +37,8 @@ impl<const N: usize> MemWriter<N> {
         if self.mutable_buffer.len() + rb.num_rows() > N {
             // init new mutable columns with schema of current
             let schema = self.current_mutable_schema();
-            let new_mutable_buffer = HashMap::default();
             // replace new mutable buffer with current one as that is full
-            let mutable_buffer = std::mem::replace(&mut self.mutable_buffer, new_mutable_buffer);
+            let mutable_buffer = std::mem::take(&mut self.mutable_buffer);
             let batches = mutable_buffer.values().collect();
             self.read_buffer.push(merge_rb(batches, Arc::new(schema)));
         }
