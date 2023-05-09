@@ -2950,6 +2950,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-json",
  "arrow-schema",
+ "arrow-select",
  "async-trait",
  "autometrics",
  "base64 0.21.0",

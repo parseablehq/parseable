@@ -19,7 +19,6 @@
 
 mod file_writer;
 mod mem_writer;
-mod mutable;
 
 use std::{
     collections::HashMap,
@@ -56,11 +55,11 @@ impl StreamWriter {
     ) -> Result<(), StreamWriterError> {
         match self {
             StreamWriter::Mem(mem) => {
-                mem.push(rb);
+                mem.push(schema_key, rb);
             }
             StreamWriter::Disk(disk, mem) => {
                 disk.push(stream_name, schema_key, &rb)?;
-                mem.push(rb);
+                mem.push(schema_key, rb);
             }
         }
         Ok(())
