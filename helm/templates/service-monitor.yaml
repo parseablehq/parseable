@@ -1,0 +1,37 @@
+{{- if .Values.parseable.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "parseable.fullname" . }}
+  namespace: {{ default .Release.Namespace .Values.parseable.metrics.serviceMonitor.namespace | quote }}
+  labels: {{- include "parseable.selectorLabels" . | nindent 4 }}
+    {{- if .Values.parseable.metrics.serviceMonitor.additionalLabels }}
+    {{- include (dict "value" .Values.parseable.metrics.serviceMonitor.additionalLabels "context" $) | nindent 4 }}
+    {{- end }}
+spec:
+  endpoints:
+    - port: parseable-metrics
+      {{- if .Values.parseable.metrics.serviceMonitor.interval }}
+      interval: {{ .Values.parseable.metrics.serviceMonitor.interval }}
+      {{- end }}
+      {{- if .Values.parseable.metrics.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ .Values.parseable.metrics.serviceMonitor.scrapeTimeout }}
+      {{- end }}
+      {{- if .Values.parseable.metrics.serviceMonitor.honorLabels }}
+      honorLabels: {{ .Values.parseable.metrics.serviceMonitor.honorLabels }}
+      {{- end }}
+      {{- if .Values.parseable.metrics.serviceMonitor.relabellings }}
+      relabelings: {{- toYaml .Values.parseable.metrics.serviceMonitor.relabellings | nindent 6 }}
+      {{- end }}
+      {{- if .Values.parseable.metrics.serviceMonitor.metricRelabelings }}
+      metricRelabelings: {{- toYaml .Values.parseable.metrics.serviceMonitor.metricRelabelings | nindent 6 }}
+      {{- end }}
+  {{- if .Values.parseable.metrics.serviceMonitor.podTargetLabels }}
+  podTargetLabels: {{- toYaml .Values.parseable.metrics.serviceMonitor.podTargetLabels | nindent 4 }}
+  {{- end }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels: {{- include "parseable.selectorLabels" . | nindent 6 }}
+{{- end }}
