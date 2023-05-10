@@ -143,7 +143,6 @@ fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
         if val.is_null() {
             continue;
         }
-
         let Ok(field) = schema.field_with_name(name) else { return true };
         if !valid_type(field.data_type(), val) {
             return true;
@@ -163,6 +162,9 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
             let data_type = field.data_type();
             if let Value::Array(arr) = value {
                 for elem in arr {
+                    if elem.is_null() {
+                        continue;
+                    }
                     if !valid_type(data_type, elem) {
                         return false;
                     }
@@ -178,6 +180,9 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
                         .map(|idx| &fields[idx]);
 
                     if let Some(field) = field {
+                        if value.is_null() {
+                            continue;
+                        }
                         if !valid_type(field.data_type(), value) {
                             return false;
                         }
