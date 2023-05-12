@@ -1,0 +1,39 @@
+name: Quest Load mode 
+
+on:
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'helm/**'
+      - 'assets/**'
+      - '**.md'
+
+jobs:
+  load_test: 
+    runs-on: ubuntu-latest
+    
+    steps: 
+      - name: Checkout
+        uses: actions/checkout@v3
+         
+      - name: Rust-Setup 
+        uses: actions/setup-rust@v1
+        with: 
+          rust-version: stable
+            
+      - name: Required dependencies
+        run: cargo-build --quiet  
+
+      - name: Run load tests
+        env: 
+          PR_BRANCH: ${{github.event.pull_request.head.ref }}
+        run: cargo test --features --branch $PR_BRANCH
+
+      - name: Fetch quest file
+        uses: action/checkout@v3
+        with: 
+          repository: parseablehq/quest
+          path: ./testcases/load.js
+
+      - name: Final Run 
+        run: ./load.js
