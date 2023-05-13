@@ -30,6 +30,7 @@ pub mod rule;
 pub mod target;
 
 use crate::metrics::ALERTS_STATES;
+use crate::utils::arrow::get_field;
 use crate::utils::uid;
 use crate::CONFIG;
 use crate::{storage, utils};
@@ -135,7 +136,7 @@ impl Message {
     // checks if message (with a column name) is valid (i.e. the column name is present in the schema)
     pub fn valid(&self, schema: &Schema, column: Option<&str>) -> bool {
         if let Some(col) = column {
-            return schema.field_with_name(col).is_ok();
+            return get_field(schema, col).is_some();
         }
         true
     }

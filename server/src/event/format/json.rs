@@ -28,7 +28,7 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
 use super::EventFormat;
-use crate::utils::json::flatten_json_body;
+use crate::utils::{arrow::get_field, json::flatten_json_body};
 
 pub struct Event {
     pub data: Value,
@@ -143,7 +143,7 @@ fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
         if val.is_null() {
             continue;
         }
-        let Ok(field) = schema.field_with_name(name) else { return true };
+        let Some(field) = get_field(schema, name) else { return true };
         if !valid_type(field.data_type(), val) {
             return true;
         }

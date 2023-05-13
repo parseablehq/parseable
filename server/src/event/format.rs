@@ -24,7 +24,7 @@ use arrow_array::{RecordBatch, StringArray, TimestampMillisecondArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::Utc;
 
-use crate::utils;
+use crate::utils::{self, arrow::get_field};
 
 use super::{DEFAULT_METADATA_KEY, DEFAULT_TAGS_KEY, DEFAULT_TIMESTAMP_KEY};
 
@@ -46,18 +46,18 @@ pub trait EventFormat: Sized {
     ) -> Result<(RecordBatch, bool), AnyError> {
         let (data, mut schema, is_first, tags, metadata) = self.to_data(schema)?;
 
-        if schema.field_with_name(DEFAULT_TAGS_KEY).is_ok() {
+        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
             return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
         };
 
-        if schema.field_with_name(DEFAULT_TAGS_KEY).is_ok() {
+        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
             return Err(anyhow!(
                 "field {} is a reserved field",
                 DEFAULT_METADATA_KEY
             ));
         };
 
-        if schema.field_with_name(DEFAULT_TAGS_KEY).is_ok() {
+        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
             return Err(anyhow!(
                 "field {} is a reserved field",
                 DEFAULT_TIMESTAMP_KEY
