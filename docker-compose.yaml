@@ -79,7 +79,6 @@ services:
     depends_on:
       quest-smoke: 
         condition: service_completed_successfully
-      - parseable
     deploy:
       restart_policy:
         condition: on-failure
