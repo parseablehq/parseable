@@ -65,7 +65,7 @@ services:
       - parseable-internal
     depends_on:
       parseable: 
-        condition: service_healthy
+        condition: service_started
     deploy:
       restart_policy:
         condition: on-failure
@@ -79,9 +79,9 @@ services:
       - parseable-internal
     depends_on:
       parseable: 
-        condition: service_healthy
+        condition: service_started
       quest-smoke: 
-        condition: service_completed_successfully
+        condition: service_started
     deploy:
       restart_policy:
         condition: on-failure
