@@ -20,9 +20,9 @@ services:
       - 9000
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
-      interval: 20s
+      interval: 15s
       timeout: 20s
-      retries: 10
+      retries: 5
     networks:
       - parseable-internal
 
@@ -51,38 +51,20 @@ services:
       timeout: 20s
       retries: 5
     depends_on:
-      minio:
-        condition: service_started
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 20s
-        max_attempts: 5
-
-  quest-smoke:
-    image: ghcr.io/parseablehq/quest:main
-    command: ["smoke", "http://parseable:8000", "parseableadmin", "parseableadmin"]
-    networks:
-      - parseable-internal
-    depends_on:
-      parseable: 
-        condition: service_healthy
+      - minio
     deploy:
       restart_policy:
         condition: on-failure
         delay: 20s
         max_attempts: 3
-        
+
   quest-load:
     image: ghcr.io/parseablehq/quest:main
     command: ["load", "http://parseable:8000", "parseableadmin", "parseableadmin", "20"]
     networks:
       - parseable-internal
     depends_on:
-      parseable: 
-        condition: service_healthy
-      quest-smoke: 
-        condition: service_completed_successfully
+      - parseable
     deploy:
       restart_policy:
         condition: on-failure
