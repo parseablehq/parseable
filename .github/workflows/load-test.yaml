@@ -17,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Start compose
-        run: docker-compose up -f ./github/docker-compose-load.yaml --build --exit-code-from quest-load
+        run: docker-compose -f ./github/docker-compose-load.yaml up --build --exit-code-from quest-load
       - name: Stop compose
         if: always()
-        run: docker-compose down -f ./github/docker-compose-load.yaml
+        run: docker-compose -f ./github/docker-compose-load.yaml down
