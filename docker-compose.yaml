@@ -58,15 +58,34 @@ services:
         delay: 20s
         max_attempts: 3
 
-  quest:
+  quest-smoke:
     image: ghcr.io/parseablehq/quest:main
     command: ["smoke", "http://parseable:8000", "parseableadmin", "parseableadmin"]
     networks:
       - parseable-internal
     depends_on:
-      - parseable
+      parseable: 
+        condition: service_started
     deploy:
       restart_policy:
         condition: on-failure
         delay: 20s
         max_attempts: 3
+        
+  quest-load:
+    image: ghcr.io/parseablehq/quest:main
+    command: ["load", "http://parseable:8000", "parseableadmin", "parseableadmin", "20"]
+    networks:
+      - parseable-internal
+    depends_on:
+      parseable: 
+        condition: service_started
+      quest-smoke: 
+        condition: service_started
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 3
+        
+        
