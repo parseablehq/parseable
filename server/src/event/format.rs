@@ -33,6 +33,8 @@ pub mod json;
 type Tags = String;
 type Metadata = String;
 
+// Global Trait for event format
+// This trait is implemented by all the event formats
 pub trait EventFormat: Sized {
     type Data;
     fn to_data(
@@ -64,6 +66,7 @@ pub trait EventFormat: Sized {
             ));
         };
 
+        // add the p_timestamp field to the event schema to the 0th index
         schema.fields.insert(
             0,
             Field::new(
@@ -72,17 +75,18 @@ pub trait EventFormat: Sized {
                 true,
             ),
         );
-        let tags_index = schema.fields.len();
 
+        // p_tags and p_metadata are added to the end of the schema
+        let tags_index = schema.fields.len();
+        let metadata_index = tags_index + 1;
         schema
             .fields
             .push(Field::new(DEFAULT_TAGS_KEY, DataType::Utf8, true));
-
-        let metadata_index = schema.fields.len();
         schema
             .fields
             .push(Field::new(DEFAULT_METADATA_KEY, DataType::Utf8, true));
 
+        // prepare the record batch and new fields to be added
         let schema_ref = Arc::new(schema);
         let rb = Self::decode(data, Arc::clone(&schema_ref))?;
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
@@ -90,6 +94,7 @@ pub trait EventFormat: Sized {
             StringArray::from_iter_values(std::iter::repeat(&metadata).take(rb.num_rows()));
         let timestamp_array = get_timestamp_array(rb.num_rows());
 
+        // modify the record batch to add fields to respective indexes
         let rb = utils::arrow::replace_columns(
             Arc::clone(&schema_ref),
             rb,

@@ -25,7 +25,10 @@ use arrow_json::reader::{infer_json_schema_from_iterator, Decoder, DecoderOption
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use super::EventFormat;
 use crate::utils::{arrow::get_field, json::flatten_json_body};
@@ -39,6 +42,8 @@ pub struct Event {
 impl EventFormat for Event {
     type Data = Vec<Value>;
 
+    // convert the incoming json to a vector of json values
+    // also extract the arrow schema, tags and metadata from the incoming json
     fn to_data(
         self,
         schema: &HashMap<String, Field>,
@@ -47,17 +52,21 @@ impl EventFormat for Event {
 
         let stream_schema = schema;
 
+        // incoming event may be a single json or a json array
+        // but Data (type defined above) is a vector of json values
+        // hence we need to convert the incoming event to a vector of json values
         let value_arr = match data {
             Value::Array(arr) => arr,
             value @ Value::Object(_) => vec![value],
             _ => unreachable!("flatten would have failed beforehand"),
         };
 
+        // collect all the keys from all the json objects in the request body
         let fields =
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
-        let schema = match derive_sub_schema(stream_schema, fields) {
+        let schema = match derive_arrow_schema(stream_schema, fields) {
             Ok(schema) => schema,
             Err(_) => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
                 Ok(infer_schema) => {
@@ -91,6 +100,7 @@ impl EventFormat for Event {
         Ok((value_arr, schema, is_first, self.tags, self.metadata))
     }
 
+    // Convert the Data type (defined above) to arrow record batch
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, anyhow::Error> {
         let array_capacity = round_upto_multiple_of_64(data.len());
         let value_iter: &mut (dyn Iterator<Item = Value>) = &mut data.into_iter();
@@ -107,7 +117,12 @@ impl EventFormat for Event {
     }
 }
 
-fn derive_sub_schema(schema: &HashMap<String, Field>, fields: Vec<&str>) -> Result<Schema, ()> {
+// Returns arrow schema with the fields that are present in the request body
+// This schema is an input to convert the request body to arrow record batch
+fn derive_arrow_schema(
+    schema: &HashMap<String, Field>,
+    fields: HashSet<&str>,
+) -> Result<Schema, ()> {
     let mut res = Vec::with_capacity(fields.len());
     let fields = fields.into_iter().map(|field_name| schema.get(field_name));
 
@@ -118,18 +133,13 @@ fn derive_sub_schema(schema: &HashMap<String, Field>, fields: Vec<&str>) -> Resu
 
     Ok(Schema::new(res))
 }
-// Must be in sorted order
-fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a str>, ()> {
-    let mut keys = Vec::new();
+
+fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<HashSet<&'a str>, ()> {
+    let mut keys = HashSet::new();
     for value in values {
         if let Some(obj) = value.as_object() {
             for key in obj.keys() {
-                match keys.binary_search(&key.as_str()) {
-                    Ok(_) => (),
-                    Err(pos) => {
-                        keys.insert(pos, key.as_str());
-                    }
-                }
+                keys.insert(key.as_str());
             }
         } else {
             return Err(());

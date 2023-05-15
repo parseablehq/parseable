@@ -84,7 +84,6 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
     Ok(())
 }
 
-// This function is decoupled from handler itself for testing purpose
 fn into_event_batch(
     req: HttpRequest,
     body: Bytes,
