@@ -41,6 +41,7 @@ mod metrics;
 mod migration;
 mod option;
 mod query;
+mod rbac;
 mod response;
 mod stats;
 mod storage;
@@ -61,8 +62,9 @@ async fn main() -> anyhow::Result<()> {
     let storage = CONFIG.storage().get_object_store();
     CONFIG.validate_staging()?;
     let metadata = storage::resolve_parseable_metadata().await?;
+    banner::print(&CONFIG, &metadata).await;
+    rbac::set_user_map(Vec::new());
     metadata.set_global();
-    banner::print(&CONFIG, storage::StorageMetadata::global()).await;
     let prometheus = metrics::build_metrics_handler();
     CONFIG.storage().register_store_metrics(&prometheus);
 

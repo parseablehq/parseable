@@ -24,12 +24,21 @@ use std::{
 use once_cell::sync::OnceCell;
 use std::io;
 
-use crate::{option::CONFIG, utils::uid};
+use crate::{option::CONFIG, rbac::user::User, utils::uid};
 
 use super::object_storage::PARSEABLE_METADATA_FILE_NAME;
 
-pub static STORAGE_METADATA: OnceCell<StorageMetadata> = OnceCell::new();
+// Expose some static variables for internal usage
+pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();
 
+// For use in global static
+#[derive(Debug, PartialEq, Eq)]
+pub struct StaticStorageMetadata {
+    pub mode: String,
+    pub deployment_id: uid::Uid,
+}
+
+// Type for serialization and deserialization
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StorageMetadata {
     pub version: String,
@@ -40,13 +49,6 @@ pub struct StorageMetadata {
     pub deployment_id: uid::Uid,
     pub user: Vec<User>,
     pub stream: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct User {
-    username: String,
-    password: String,
-    role: String,
 }
 
 impl StorageMetadata {
@@ -62,14 +64,19 @@ impl StorageMetadata {
         }
     }
 
-    pub fn global() -> &'static Self {
+    pub fn global() -> &'static StaticStorageMetadata {
         STORAGE_METADATA
             .get()
             .expect("gloabal static is initialized")
     }
 
     pub fn set_global(self) {
-        STORAGE_METADATA.set(self).expect("only set once")
+        let metadata = StaticStorageMetadata {
+            mode: self.mode,
+            deployment_id: self.deployment_id,
+        };
+
+        STORAGE_METADATA.set(metadata).expect("only set once")
     }
 }
 

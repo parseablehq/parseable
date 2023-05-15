@@ -30,11 +30,13 @@ use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
 use crate::option::CONFIG;
+use crate::rbac::get_user_map;
 
 mod health_check;
 mod ingest;
 mod logstream;
 mod query;
+mod rbac;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -63,10 +65,13 @@ async fn validator(
     req: ServiceRequest,
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, (actix_web::Error, ServiceRequest)> {
-    if credentials.user_id().trim() == CONFIG.parseable.username
-        && credentials.password().unwrap().trim() == CONFIG.parseable.password
-    {
-        return Ok(req);
+    let username = credentials.user_id().trim();
+    let password = credentials.password().unwrap().trim();
+
+    if let Some(user) = get_user_map().read().unwrap().get(username) {
+        if user.verify(password) {
+            return Ok(req);
+        }
     }
 
     Err((actix_web::error::ErrorUnauthorized("Unauthorized"), req))
@@ -158,6 +163,11 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route(web::get().to(logstream::get_retention)),
         );
 
+    let user_api = web::scope("/user")
+        .service(web::resource("/create/{username}").route(web::post().to(rbac::put_user)))
+        .service(web::resource("/reset/{username}").route(web::put().to(rbac::reset_password)))
+        .service(web::resource("/delete/{username}").route(web::get().to(rbac::delete_user)));
+
     cfg.service(
         // Base path "{url}/api/v1"
         web::scope(&base_path())
@@ -184,6 +194,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                         logstream_api,
                     ),
             )
+            .service(user_api)
             .wrap(HttpAuthentication::basic(validator)),
     )
     // GET "/" ==> Serve the static frontend directory
