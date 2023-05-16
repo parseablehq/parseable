@@ -116,7 +116,7 @@ pub fn stream_name(stream_name: &str) -> Result<(), StreamNameValidationError> {
 
 pub fn verify_username(username: &str) -> Result<(), UsernameValidationError> {
     // Check if the username meets the required criteria
-    if username.len() <= 3 || username.len() > 64 {
+    if username.len() < 3 || username.len() > 64 {
         return Err(UsernameValidationError::InvalidLength);
     }
     // Username should contain only alphanumeric characters or underscores
