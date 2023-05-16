@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.validate_staging()?;
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, &metadata).await;
-    rbac::set_user_map(Vec::new());
+    rbac::set_user_map(metadata.user.clone());
     metadata.set_global();
     let prometheus = metrics::build_metrics_handler();
     CONFIG.storage().register_store_metrics(&prometheus);
