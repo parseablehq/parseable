@@ -17,38 +17,44 @@
  *
  */
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, TimestampMillisecondArray};
+use arrow_schema::Schema;
+use arrow_select::concat::concat_batches;
+use itertools::kmerge_by;
 
 use crate::utils::arrow::adapt_batch;
-
-use super::mutable::MutableColumns;
 
 #[derive(Default)]
 pub struct MemWriter<const N: usize> {
     read_buffer: Vec<RecordBatch>,
-    mutable_buffer: MutableColumns,
+    mutable_buffer: HashMap<String, Vec<RecordBatch>>,
 }
 
 impl<const N: usize> MemWriter<N> {
-    pub fn push(&mut self, rb: RecordBatch) {
+    pub fn push(&mut self, schema_key: &str, rb: RecordBatch) {
         if self.mutable_buffer.len() + rb.num_rows() > N {
             // init new mutable columns with schema of current
-            let schema = self.mutable_buffer.current_schema();
-            let mut new_mutable_buffer = MutableColumns::default();
-            new_mutable_buffer.push(RecordBatch::new_empty(Arc::new(schema)));
+            let schema = self.current_mutable_schema();
             // replace new mutable buffer with current one as that is full
-            let mutable_buffer = std::mem::replace(&mut self.mutable_buffer, new_mutable_buffer);
-            let filled_rb = mutable_buffer.into_recordbatch();
-            self.read_buffer.push(filled_rb);
+            let mutable_buffer = std::mem::take(&mut self.mutable_buffer);
+            let batches = mutable_buffer.values().collect();
+            self.read_buffer.push(merge_rb(batches, Arc::new(schema)));
         }
-        self.mutable_buffer.push(rb)
+
+        if let Some(buf) = self.mutable_buffer.get_mut(schema_key) {
+            buf.push(rb);
+        } else {
+            self.mutable_buffer.insert(schema_key.to_owned(), vec![rb]);
+        }
     }
 
     pub fn recordbatch_cloned(&self) -> Vec<RecordBatch> {
         let mut read_buffer = self.read_buffer.clone();
-        let rb = self.mutable_buffer.recordbatch_cloned();
+        let schema = self.current_mutable_schema();
+        let batches = self.mutable_buffer.values().collect();
+        let rb = merge_rb(batches, Arc::new(schema));
         let schema = rb.schema();
         if rb.num_rows() > 0 {
             read_buffer.push(rb)
@@ -61,8 +67,10 @@ impl<const N: usize> MemWriter<N> {
     }
 
     pub fn finalize(self) -> Vec<RecordBatch> {
+        let schema = self.current_mutable_schema();
         let mut read_buffer = self.read_buffer;
-        let rb = self.mutable_buffer.into_recordbatch();
+        let batches = self.mutable_buffer.values().collect();
+        let rb = merge_rb(batches, Arc::new(schema));
         let schema = rb.schema();
         if rb.num_rows() > 0 {
             read_buffer.push(rb)
@@ -72,4 +80,39 @@ impl<const N: usize> MemWriter<N> {
             .map(|rb| adapt_batch(&schema, rb))
             .collect()
     }
+
+    fn current_mutable_schema(&self) -> Schema {
+        Schema::try_merge(
+            self.mutable_buffer
+                .values()
+                .flat_map(|rb| rb.first())
+                .map(|rb| rb.schema().as_ref().clone()),
+        )
+        .unwrap()
+    }
+}
+
+fn merge_rb(rb: Vec<&Vec<RecordBatch>>, schema: Arc<Schema>) -> RecordBatch {
+    let sorted_rb: Vec<RecordBatch> = kmerge_by(rb, |a: &&RecordBatch, b: &&RecordBatch| {
+        let a: &TimestampMillisecondArray = a
+            .column(0)
+            .as_any()
+            .downcast_ref::<TimestampMillisecondArray>()
+            .unwrap();
+
+        let b: &TimestampMillisecondArray = b
+            .column(0)
+            .as_any()
+            .downcast_ref::<TimestampMillisecondArray>()
+            .unwrap();
+
+        a.value(0) < b.value(0)
+    })
+    .map(|batch| adapt_batch(&schema, batch.clone()))
+    .collect();
+
+    // must be true for this to work
+    // each rb is of same schema. ( adapt_schema should do this )
+    // datatype is same
+    concat_batches(&schema, sorted_rb.iter()).unwrap()
 }

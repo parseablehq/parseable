@@ -25,10 +25,10 @@ use arrow_json::reader::{infer_json_schema_from_iterator, Decoder, DecoderOption
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use serde_json::Value;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use super::EventFormat;
-use crate::utils::json::flatten_json_body;
+use crate::utils::{arrow::get_field, json::flatten_json_body};
 
 pub struct Event {
     pub data: Value,
@@ -39,36 +39,41 @@ pub struct Event {
 impl EventFormat for Event {
     type Data = Vec<Value>;
 
+    // convert the incoming json to a vector of json values
+    // also extract the arrow schema, tags and metadata from the incoming json
     fn to_data(
         self,
-        schema: &Schema,
-    ) -> Result<(Self::Data, Schema, String, String), anyhow::Error> {
+        schema: &HashMap<String, Field>,
+    ) -> Result<(Self::Data, Schema, bool, String, String), anyhow::Error> {
         let data = flatten_json_body(self.data)?;
 
         let stream_schema = schema;
 
+        // incoming event may be a single json or a json array
+        // but Data (type defined above) is a vector of json values
+        // hence we need to convert the incoming event to a vector of json values
         let value_arr = match data {
             Value::Array(arr) => arr,
             value @ Value::Object(_) => vec![value],
             _ => unreachable!("flatten would have failed beforehand"),
         };
 
+        // collect all the keys from all the json objects in the request body
         let fields =
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
-        let schema = match derive_sub_schema(stream_schema.clone(), fields) {
+        let mut is_first = false;
+        let schema = match derive_arrow_schema(stream_schema, fields) {
             Ok(schema) => schema,
             Err(_) => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
-                Ok(mut infer_schema) => {
-                    infer_schema
-                        .fields
-                        .sort_by(|field1, field2| Ord::cmp(field1.name(), field2.name()));
-
-                    if let Err(err) =
-                        Schema::try_merge(vec![stream_schema.clone(), infer_schema.clone()])
-                    {
+                Ok(infer_schema) => {
+                    if let Err(err) = Schema::try_merge(vec![
+                        Schema::new(stream_schema.values().cloned().collect()),
+                        infer_schema.clone(),
+                    ]) {
                         return Err(anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err));
                     }
+                    is_first = true;
                     infer_schema
                 }
                 Err(err) => {
@@ -89,9 +94,10 @@ impl EventFormat for Event {
             ));
         }
 
-        Ok((value_arr, schema, self.tags, self.metadata))
+        Ok((value_arr, schema, is_first, self.tags, self.metadata))
     }
 
+    // Convert the Data type (defined above) to arrow record batch
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, anyhow::Error> {
         let array_capacity = round_upto_multiple_of_64(data.len());
         let value_iter: &mut (dyn Iterator<Item = Value>) = &mut data.into_iter();
@@ -108,50 +114,27 @@ impl EventFormat for Event {
     }
 }
 
-// invariants for this to work.
-// All fields in existing schema and fields in event are sorted my name lexographically
-fn derive_sub_schema(schema: arrow_schema::Schema, fields: Vec<&str>) -> Result<Schema, ()> {
-    let fields = derive_subset(schema.fields, fields)?;
-    Ok(Schema::new(fields))
+// Returns arrow schema with the fields that are present in the request body
+// This schema is an input to convert the request body to arrow record batch
+fn derive_arrow_schema(schema: &HashMap<String, Field>, fields: Vec<&str>) -> Result<Schema, ()> {
+    let mut res = Vec::with_capacity(fields.len());
+    let fields = fields.into_iter().map(|field_name| schema.get(field_name));
+    for field in fields {
+        let Some(field) = field else { return Err(()) };
+        res.push(field.clone())
+    }
+    Ok(Schema::new(res))
 }
 
-fn derive_subset(superset: Vec<Field>, subset: Vec<&str>) -> Result<Vec<Field>, ()> {
-    let mut superset_idx = 0;
-    let mut subset_idx = 0;
-    let mut subset_schema = Vec::with_capacity(subset.len());
-
-    while superset_idx < superset.len() && subset_idx < subset.len() {
-        let field = superset[superset_idx].clone();
-        let key = subset[subset_idx];
-        if field.name() == key {
-            subset_schema.push(field);
-            superset_idx += 1;
-            subset_idx += 1;
-        } else if field.name().as_str() < key {
-            superset_idx += 1;
-        } else {
-            return Err(());
-        }
-    }
-
-    // error if subset is not exhausted
-    if subset_idx < subset.len() {
-        return Err(());
-    }
-
-    Ok(subset_schema)
-}
-
-// Must be in sorted order
 fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a str>, ()> {
-    let mut sorted_keys = Vec::new();
+    let mut keys = Vec::new();
     for value in values {
         if let Some(obj) = value.as_object() {
             for key in obj.keys() {
-                match sorted_keys.binary_search(&key.as_str()) {
+                match keys.binary_search(&key.as_str()) {
                     Ok(_) => (),
                     Err(pos) => {
-                        sorted_keys.insert(pos, key.as_str());
+                        keys.insert(pos, key.as_str());
                     }
                 }
             }
@@ -159,7 +142,7 @@ fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a s
             return Err(());
         }
     }
-    Ok(sorted_keys)
+    Ok(keys)
 }
 
 fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
@@ -167,8 +150,7 @@ fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
         if val.is_null() {
             continue;
         }
-
-        let Ok(field) = schema.field_with_name(name) else { return true };
+        let Some(field) = get_field(schema, name) else { return true };
         if !valid_type(field.data_type(), val) {
             return true;
         }
@@ -187,6 +169,9 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
             let data_type = field.data_type();
             if let Value::Array(arr) = value {
                 for elem in arr {
+                    if elem.is_null() {
+                        continue;
+                    }
                     if !valid_type(data_type, elem) {
                         return false;
                     }
@@ -202,6 +187,9 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
                         .map(|idx| &fields[idx]);
 
                     if let Some(field) = field {
+                        if value.is_null() {
+                            continue;
+                        }
                         if !valid_type(field.data_type(), value) {
                             return false;
                         }

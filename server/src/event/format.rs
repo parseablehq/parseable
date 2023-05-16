@@ -17,14 +17,14 @@
  *
  */
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Error as AnyError};
 use arrow_array::{RecordBatch, StringArray, TimestampMillisecondArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::Utc;
 
-use crate::utils;
+use crate::utils::{self, arrow::get_field};
 
 use super::{DEFAULT_METADATA_KEY, DEFAULT_TAGS_KEY, DEFAULT_TIMESTAMP_KEY};
 
@@ -33,56 +33,60 @@ pub mod json;
 type Tags = String;
 type Metadata = String;
 
+// Global Trait for event format
+// This trait is implemented by all the event formats
 pub trait EventFormat: Sized {
     type Data;
-    fn to_data(self, schema: &Schema) -> Result<(Self::Data, Schema, Tags, Metadata), AnyError>;
+    fn to_data(
+        self,
+        schema: &HashMap<String, Field>,
+    ) -> Result<(Self::Data, Schema, bool, Tags, Metadata), AnyError>;
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
-    fn into_recordbatch(self, schema: &Schema) -> Result<RecordBatch, AnyError> {
-        let (data, mut schema, tags, metadata) = self.to_data(schema)?;
+    fn into_recordbatch(
+        self,
+        schema: &HashMap<String, Field>,
+    ) -> Result<(RecordBatch, bool), AnyError> {
+        let (data, mut schema, is_first, tags, metadata) = self.to_data(schema)?;
 
-        match tags_index(&schema) {
-            Ok(_) => return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY)),
-            Err(index) => {
-                schema
-                    .fields
-                    .insert(index, Field::new(DEFAULT_TAGS_KEY, DataType::Utf8, true));
-            }
+        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
+            return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
         };
 
-        match metadata_index(&schema) {
-            Ok(_) => {
-                return Err(anyhow!(
-                    "field {} is a reserved field",
-                    DEFAULT_METADATA_KEY
-                ))
-            }
-            Err(index) => {
-                schema.fields.insert(
-                    index,
-                    Field::new(DEFAULT_METADATA_KEY, DataType::Utf8, true),
-                );
-            }
+        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
+            return Err(anyhow!(
+                "field {} is a reserved field",
+                DEFAULT_METADATA_KEY
+            ));
         };
 
-        match timestamp_index(&schema) {
-            Ok(_) => {
-                return Err(anyhow!(
-                    "field {} is a reserved field",
-                    DEFAULT_TIMESTAMP_KEY
-                ))
-            }
-            Err(index) => {
-                schema.fields.insert(
-                    index,
-                    Field::new(
-                        DEFAULT_TIMESTAMP_KEY,
-                        DataType::Timestamp(TimeUnit::Millisecond, None),
-                        true,
-                    ),
-                );
-            }
+        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
+            return Err(anyhow!(
+                "field {} is a reserved field",
+                DEFAULT_TIMESTAMP_KEY
+            ));
         };
 
+        // add the p_timestamp field to the event schema to the 0th index
+        schema.fields.insert(
+            0,
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            ),
+        );
+
+        // p_tags and p_metadata are added to the end of the schema
+        let tags_index = schema.fields.len();
+        let metadata_index = tags_index + 1;
+        schema
+            .fields
+            .push(Field::new(DEFAULT_TAGS_KEY, DataType::Utf8, true));
+        schema
+            .fields
+            .push(Field::new(DEFAULT_METADATA_KEY, DataType::Utf8, true));
+
+        // prepare the record batch and new fields to be added
         let schema_ref = Arc::new(schema);
         let rb = Self::decode(data, Arc::clone(&schema_ref))?;
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
@@ -90,14 +94,11 @@ pub trait EventFormat: Sized {
             StringArray::from_iter_values(std::iter::repeat(&metadata).take(rb.num_rows()));
         let timestamp_array = get_timestamp_array(rb.num_rows());
 
+        // modify the record batch to add fields to respective indexes
         let rb = utils::arrow::replace_columns(
             Arc::clone(&schema_ref),
             rb,
-            &[
-                timestamp_index(&schema_ref).expect("timestamp field exists"),
-                tags_index(&schema_ref).expect("tags field exists"),
-                metadata_index(&schema_ref).expect("metadata field exists"),
-            ],
+            &[0, tags_index, metadata_index],
             &[
                 Arc::new(timestamp_array),
                 Arc::new(tags_arr),
@@ -105,26 +106,8 @@ pub trait EventFormat: Sized {
             ],
         );
 
-        Ok(rb)
+        Ok((rb, is_first))
     }
-}
-
-fn tags_index(schema: &Schema) -> Result<usize, usize> {
-    schema
-        .fields
-        .binary_search_by_key(&DEFAULT_TAGS_KEY, |field| field.name())
-}
-
-fn metadata_index(schema: &Schema) -> Result<usize, usize> {
-    schema
-        .fields
-        .binary_search_by_key(&DEFAULT_METADATA_KEY, |field| field.name())
-}
-
-fn timestamp_index(schema: &Schema) -> Result<usize, usize> {
-    schema
-        .fields
-        .binary_search_by_key(&DEFAULT_TIMESTAMP_KEY, |field| field.name())
 }
 
 fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {

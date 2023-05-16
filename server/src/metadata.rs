@@ -17,7 +17,8 @@
  */
 
 use arrow_array::RecordBatch;
-use arrow_schema::Schema;
+use arrow_schema::{Field, Schema};
+use itertools::Itertools;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -37,19 +38,10 @@ pub static STREAM_INFO: Lazy<StreamInfo> = Lazy::new(StreamInfo::default);
 #[derive(Debug, Deref, DerefMut, Default)]
 pub struct StreamInfo(RwLock<HashMap<String, LogStreamMetadata>>);
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LogStreamMetadata {
-    pub schema: Arc<Schema>,
+    pub schema: HashMap<String, Field>,
     pub alerts: Alerts,
-}
-
-impl Default for LogStreamMetadata {
-    fn default() -> Self {
-        Self {
-            schema: Arc::new(Schema::empty()),
-            alerts: Alerts::default(),
-        }
-    }
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -95,7 +87,17 @@ impl StreamInfo {
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| &metadata.schema)?;
 
-        Ok(Arc::clone(schema))
+        // sort fields on read from hashmap as order of fields can differ.
+        // This provides a stable output order if schema is same between calls to this function
+        let fields = schema
+            .values()
+            .sorted_by_key(|field| field.name())
+            .cloned()
+            .collect();
+
+        let schema = Schema::new(fields);
+
+        Ok(Arc::new(schema))
     }
 
     pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {
@@ -130,8 +132,9 @@ impl StreamInfo {
             let alerts = storage.get_alerts(&stream.name).await?;
             let schema = storage.get_schema(&stream.name).await?;
 
-            let schema = Arc::new(update_schema_from_staging(&stream.name, schema));
-
+            let schema = update_schema_from_staging(&stream.name, schema);
+            let schema =
+                HashMap::from_iter(schema.fields.into_iter().map(|v| (v.name().to_owned(), v)));
             let metadata = LogStreamMetadata { schema, alerts };
 
             let mut map = self.write().expect(LOCK_EXPECT);

@@ -25,31 +25,11 @@ use arrow_schema::Schema;
 use itertools::kmerge_by;
 
 use super::adapt_batch;
-
-#[derive(Debug)]
-pub struct Reader {
-    reader: StreamReader<File>,
-    timestamp_col_index: usize,
-}
-
-impl From<StreamReader<File>> for Reader {
-    fn from(reader: StreamReader<File>) -> Self {
-        let timestamp_col_index = reader
-            .schema()
-            .all_fields()
-            .binary_search_by(|field| field.name().as_str().cmp("p_timestamp"))
-            .expect("schema should have this field");
-
-        Self {
-            reader,
-            timestamp_col_index,
-        }
-    }
-}
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 
 #[derive(Debug)]
 pub struct MergedRecordReader {
-    pub readers: Vec<Reader>,
+    pub readers: Vec<StreamReader<File>>,
 }
 
 impl MergedRecordReader {
@@ -58,47 +38,48 @@ impl MergedRecordReader {
 
         for file in files {
             let reader = StreamReader::try_new(File::open(file).unwrap(), None).map_err(|_| ())?;
-            readers.push(reader.into());
+            readers.push(reader);
         }
 
         Ok(Self { readers })
     }
 
     pub fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
-        let adapted_readers = self.readers.into_iter().map(move |reader| {
-            reader
-                .reader
-                .flatten()
-                .zip(std::iter::repeat(reader.timestamp_col_index))
-        });
+        let adapted_readers = self.readers.into_iter().map(move |reader| reader.flatten());
 
-        kmerge_by(
-            adapted_readers,
-            |(a, a_col): &(RecordBatch, usize), (b, b_col): &(RecordBatch, usize)| {
-                let a: &TimestampMillisecondArray = a
-                    .column(*a_col)
-                    .as_any()
-                    .downcast_ref::<TimestampMillisecondArray>()
-                    .unwrap();
-
-                let b: &TimestampMillisecondArray = b
-                    .column(*b_col)
-                    .as_any()
-                    .downcast_ref::<TimestampMillisecondArray>()
-                    .unwrap();
-
-                a.value(0) < b.value(0)
-            },
-        )
-        .map(|(batch, _)| adapt_batch(schema, batch))
+        kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
+            let a_time = get_timestamp_millis(a);
+            let b_time = get_timestamp_millis(b);
+            a_time < b_time
+        })
+        .map(|batch| adapt_batch(schema, batch))
     }
 
     pub fn merged_schema(&self) -> Schema {
         Schema::try_merge(
             self.readers
                 .iter()
-                .map(|reader| reader.reader.schema().as_ref().clone()),
+                .map(|reader| reader.schema().as_ref().clone()),
         )
         .unwrap()
+    }
+}
+
+fn get_timestamp_millis(batch: &RecordBatch) -> i64 {
+    match batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<TimestampMillisecondArray>()
+    {
+        // Ideally we expect the first column to be a timestamp (because we add the timestamp column first in the writer)
+        Some(array) => array.value(0),
+        // In case the first column is not a timestamp, we fallback to look for default timestamp column across all columns
+        None => batch
+            .column_by_name(DEFAULT_TIMESTAMP_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<TimestampMillisecondArray>()
+            .unwrap()
+            .value(0),
     }
 }

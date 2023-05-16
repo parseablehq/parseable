@@ -19,6 +19,7 @@ arrow-schema = { version = "36.0.0", features = ["serde"] }
 arrow-array = { version = "36.0.0" }
 arrow-json = "36.0.0"
 arrow-ipc = "36.0.0"
+arrow-select = "36.0.0"
 async-trait = "0.1"
 base64 = "0.21"
 bytes = "1.4"

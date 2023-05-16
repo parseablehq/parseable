@@ -80,3 +80,7 @@ mod tests {
         assert_eq!(new_rb.num_rows(), 3)
     }
 }
+
+pub fn get_field<'a>(schema: &'a Schema, name: &str) -> Option<&'a arrow_schema::Field> {
+    schema.fields.iter().find(|field| field.name() == name)
+}
