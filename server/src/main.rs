@@ -61,9 +61,10 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.validate();
     let storage = CONFIG.storage().get_object_store();
     CONFIG.validate_staging()?;
+    migration::run_metadata_migration(&CONFIG).await?;
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, &metadata).await;
-    rbac::set_user_map(metadata.user.clone());
+    rbac::set_user_map(metadata.users.clone());
     metadata.set_global();
     let prometheus = metrics::build_metrics_handler();
     CONFIG.storage().register_store_metrics(&prometheus);

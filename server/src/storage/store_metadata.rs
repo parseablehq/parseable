@@ -47,20 +47,20 @@ pub struct StorageMetadata {
     pub storage: String,
     #[serde(default = "crate::utils::uid::gen")]
     pub deployment_id: uid::Uid,
-    pub user: Vec<User>,
-    pub stream: Vec<String>,
+    pub users: Vec<User>,
+    pub streams: Vec<String>,
 }
 
 impl StorageMetadata {
     pub fn new() -> Self {
         Self {
-            version: "v1".to_string(),
+            version: "v2".to_string(),
             mode: CONFIG.storage_name.to_owned(),
             staging: CONFIG.staging_dir().canonicalize().unwrap(),
             storage: CONFIG.storage().get_endpoint(),
             deployment_id: uid::gen(),
-            user: Vec::new(),
-            stream: Vec::new(),
+            users: Vec::new(),
+            streams: Vec::new(),
         }
     }
 
@@ -192,7 +192,11 @@ pub async fn put_remote_metadata(metadata: &StorageMetadata) -> Result<(), Objec
 
 pub fn put_staging_metadata(meta: &StorageMetadata) -> io::Result<()> {
     let path = CONFIG.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
-    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)?;
     serde_json::to_writer(&mut file, meta)?;
     Ok(())
 }

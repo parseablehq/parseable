@@ -17,14 +17,49 @@
 *
 */
 
+mod metadata_migration;
 mod schema_migration;
 mod stream_metadata_migration;
+
+use std::fs::OpenOptions;
 
 use bytes::Bytes;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
 
-use crate::{option::Config, storage::ObjectStorage};
+use crate::{
+    option::Config,
+    storage::{ObjectStorage, ObjectStorageError},
+};
+
+pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
+    let object_store = config.storage().get_object_store();
+    let storage_metadata = get_storage_metadata(&*object_store).await?;
+    let staging_metadata = get_staging_metadata(config)?;
+
+    fn get_version(metadata: &serde_json::Value) -> Option<&str> {
+        metadata
+            .as_object()
+            .and_then(|meta| meta.get("version"))
+            .and_then(|version| version.as_str())
+    }
+
+    if let Some(storage_metadata) = storage_metadata {
+        if let Some("v1") = dbg!(get_version(&storage_metadata)) {
+            let metadata = metadata_migration::v1_v2(storage_metadata);
+            put_remote_metadata(&*object_store, &metadata).await?;
+        }
+    }
+
+    if let Some(staging_metadata) = staging_metadata {
+        if let Some("v1") = get_version(&staging_metadata) {
+            let metadata = metadata_migration::v1_v2(staging_metadata);
+            put_staging_metadata(config, &metadata)?;
+        }
+    }
+
+    Ok(())
+}
 
 pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
     let storage = config.storage().get_object_store();
@@ -84,4 +119,55 @@ fn to_bytes(any: &(impl ?Sized + Serialize)) -> Bytes {
     serde_json::to_vec(any)
         .map(|any| any.into())
         .expect("serialize cannot fail")
+}
+
+pub fn get_staging_metadata(config: &Config) -> anyhow::Result<Option<serde_json::Value>> {
+    let path = config.staging_dir().join(".parseable.json");
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => match err.kind() {
+            std::io::ErrorKind::NotFound => return Ok(None),
+            _ => return Err(err.into()),
+        },
+    };
+    let meta: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    Ok(Some(meta))
+}
+
+async fn get_storage_metadata(
+    storage: &dyn ObjectStorage,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let path = RelativePathBuf::from_iter([".parseable.json"]);
+    match storage.get_object(&path).await {
+        Ok(bytes) => Ok(Some(
+            serde_json::from_slice(&bytes).expect("parseable config is valid json"),
+        )),
+        Err(err) => {
+            if matches!(err, ObjectStorageError::NoSuchKey(_)) {
+                Ok(None)
+            } else {
+                Err(err.into())
+            }
+        }
+    }
+}
+
+pub async fn put_remote_metadata(
+    storage: &dyn ObjectStorage,
+    metadata: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let path = RelativePathBuf::from_iter([".parseable.json"]);
+    let metadata = serde_json::to_vec(metadata)?.into();
+    Ok(storage.put_object(&path, metadata).await?)
+}
+
+pub fn put_staging_metadata(config: &Config, metadata: &serde_json::Value) -> anyhow::Result<()> {
+    let path = config.staging_dir().join(".parseable.json");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)?;
+    serde_json::to_writer(&mut file, metadata)?;
+    Ok(())
 }

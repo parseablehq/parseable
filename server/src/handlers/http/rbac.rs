@@ -27,13 +27,13 @@ pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBA
     }
 
     let mut metadata = get_metadata().await?;
-    if metadata.user.iter().any(|user| user.username == username) {
+    if metadata.users.iter().any(|user| user.username == username) {
         // should be unreachable given state is always consistent
         return Err(RBACError::UserExists);
     }
 
     let (user, password) = User::create_new(username);
-    metadata.user.push(user.clone());
+    metadata.users.push(user.clone());
     put_metadata(&metadata).await?;
     // set this user to user map
     get_user_map().write().unwrap().insert(user);
@@ -54,7 +54,7 @@ pub async fn reset_password(username: web::Path<String>) -> Result<impl Responde
     // update parseable.json first
     let mut metadata = get_metadata().await?;
     if let Some(user) = metadata
-        .user
+        .users
         .iter_mut()
         .find(|user| user.username == username)
     {
@@ -85,7 +85,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     };
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
-    metadata.user.retain(|user| user.username != username);
+    metadata.users.retain(|user| user.username != username);
     put_metadata(&metadata).await?;
     // update in mem table
     get_user_map().write().unwrap().remove(&username);
