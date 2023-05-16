@@ -72,7 +72,7 @@ fn get_timestamp_millis(batch: &RecordBatch) -> i64 {
         .downcast_ref::<TimestampMillisecondArray>()
     {
         // Ideally we expect the first column to be a timestamp (because we add the timestamp column first in the writer)
-        Some(array) => return array.value(0),
+        Some(array) => array.value(0),
         // In case the first column is not a timestamp, we fallback to look for default timestamp column across all columns
         None => batch
             .column_by_name(DEFAULT_TIMESTAMP_KEY)
