@@ -23,7 +23,9 @@ use crate::metadata::STREAM_INFO;
 use crate::query::Query;
 use chrono::{DateTime, Utc};
 
-use self::error::{AlertValidationError, QueryValidationError, StreamNameValidationError};
+use self::error::{
+    AlertValidationError, QueryValidationError, StreamNameValidationError, UsernameValidationError,
+};
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
@@ -107,6 +109,19 @@ pub fn stream_name(stream_name: &str) -> Result<(), StreamNameValidationError> {
         return Err(StreamNameValidationError::SQLKeyword(
             stream_name.to_owned(),
         ));
+    }
+
+    Ok(())
+}
+
+pub fn verify_username(username: &str) -> Result<(), UsernameValidationError> {
+    // Check if the username meets the required criteria
+    if username.len() <= 3 || username.len() > 64 {
+        return Err(UsernameValidationError::InvalidLength);
+    }
+    // Username should contain only alphanumeric characters or underscores
+    if !username.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Err(UsernameValidationError::SpecialChar);
     }
 
     Ok(())
@@ -232,5 +247,13 @@ pub mod error {
         NameUpperCase(String),
         #[error("SQL keyword cannot be used as stream name")]
         SQLKeyword(String),
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum UsernameValidationError {
+        #[error("Username length should be between 3 and 64 chars")]
+        InvalidLength,
+        #[error("Username contains invalid characters. Only aplhanumeric and _ is allowed")]
+        SpecialChar,
     }
 }

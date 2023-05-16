@@ -4,7 +4,8 @@ use crate::{
         get_user_map,
         user::{PassCode, User},
     },
-    storage::{ObjectStorageError, StorageMetadata},
+    storage::{self, ObjectStorageError, StorageMetadata},
+    validator::{self, error::UsernameValidationError},
 };
 use actix_web::{http::header::ContentType, web, Responder};
 use http::StatusCode;
@@ -15,6 +16,8 @@ static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
+    // verify username
+    validator::verify_username(&username)?;
     // get exclusive lock
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user is already in the map
@@ -100,11 +103,11 @@ async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorage
 }
 
 async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
-    CONFIG
-        .storage()
-        .get_object_store()
-        .put_metadata(metadata)
-        .await
+    // put to remote
+    storage::put_remote_metadata(metadata).await?;
+    // put to staging
+    storage::put_staging_metadata(metadata)?;
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -115,6 +118,8 @@ pub enum RBACError {
     UserDoesNotExist,
     #[error("Failed to connect to storage: {0}")]
     ObjectStorageError(#[from] ObjectStorageError),
+    #[error("invalid Username: {0}")]
+    ValidationError(#[from] UsernameValidationError),
 }
 
 impl actix_web::ResponseError for RBACError {
@@ -122,6 +127,7 @@ impl actix_web::ResponseError for RBACError {
         match self {
             Self::UserExists => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist => StatusCode::NOT_FOUND,
+            Self::ValidationError(_) => StatusCode::BAD_REQUEST,
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

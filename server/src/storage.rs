@@ -16,13 +16,11 @@
  *
  */
 
-use crate::option::CONFIG;
 use crate::stats::Stats;
 
 use chrono::Local;
 
 use std::fmt::Debug;
-use std::fs::create_dir_all;
 
 mod localfs;
 mod object_storage;
@@ -34,10 +32,11 @@ mod store_metadata;
 pub use localfs::{FSConfig, LocalFS};
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::{S3Config, S3};
-pub use store_metadata::StorageMetadata;
+pub use store_metadata::{
+    put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
+};
 
 pub use self::staging::StorageDir;
-use self::store_metadata::{put_staging_metadata, EnvChange};
 
 /// local sync interval to move data.records to /tmp dir of that stream.
 /// 60 sec is a reasonable value.
@@ -121,55 +120,6 @@ impl ObjectStoreFormat {
         self.owner.id.clone_from(&id);
         self.owner.group = id;
     }
-}
-
-pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStorageError> {
-    let staging_metadata = store_metadata::get_staging_metadata()?;
-    let storage = CONFIG.storage().get_object_store();
-    let remote_metadata = storage.get_metadata().await?;
-
-    let check = store_metadata::check_metadata_conflict(staging_metadata, remote_metadata);
-
-    const MISMATCH: &str = "Could not start the server because metadata file found in staging directory does not match one in the storage";
-    let res: Result<StorageMetadata, &str> = match check {
-        EnvChange::None(metadata) => Ok(metadata),
-        EnvChange::StagingMismatch => Err(MISMATCH),
-        EnvChange::StorageMismatch => Err(MISMATCH),
-        EnvChange::NewRemote => {
-            Err("Could not start the server because metadata not found in storage")
-        }
-        EnvChange::NewStaging(mut metadata) => {
-            create_dir_all(CONFIG.staging_dir())?;
-            metadata.staging = CONFIG.staging_dir().canonicalize()?;
-            create_remote_metadata(&metadata).await?;
-            put_staging_metadata(&metadata)?;
-
-            Ok(metadata)
-        }
-        EnvChange::CreateBoth => {
-            create_dir_all(CONFIG.staging_dir())?;
-            let metadata = StorageMetadata::new();
-            create_remote_metadata(&metadata).await?;
-            put_staging_metadata(&metadata)?;
-
-            Ok(metadata)
-        }
-    };
-
-    res.map_err(|err| {
-        let err = format!(
-            "{}. {}",
-            err,
-            "Join us on Parseable Slack to report this incident : https://launchpass.com/parseable"
-        );
-        let err: Box<dyn std::error::Error + Send + Sync + 'static> = err.into();
-        ObjectStorageError::UnhandledError(err)
-    })
-}
-
-async fn create_remote_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
-    let client = CONFIG.storage().get_object_store();
-    client.put_metadata(metadata).await
 }
 
 #[derive(serde::Serialize)]
