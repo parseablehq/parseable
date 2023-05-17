@@ -35,40 +35,43 @@ spec:
           # Uncomment to debug
           # command: [ "/bin/sh", "-c", "sleep 1000000" ]
           {{- if .Values.parseable.local }}
-          args: ["parseable", "local-store"]
+            args: ["parseable", "local-store"]
+          {{- else if .Values.parseable.skipSecrets }}
+            args: ["parseable", "no-secrets"]
           {{- else }}
-          args: ["parseable", "s3-store"]
+            args: ["parseable", "s3-store"]
           {{- end }}
+
           env:
-            {{- range $key, $value :=  .Values.parseable.env }}
-            - name: {{ $key }}
-              value: {{ tpl $value $ | quote }}
-            {{- end }}
-            {{- if .Values.parseable.local }}
-            {{- range $secret := .Values.parseable.localModeSecret }}
-            {{- range $key := $secret.keys }}
-            {{- $envPrefix := $secret.prefix | default "" | upper }}
-            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
-            - name: {{ $envPrefix }}{{ $envKey }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secret.name }}
-                  key: {{ $key }}
-            {{- end }}
-            {{- end }}
-            {{- else}}
-            {{- range $secret := .Values.parseable.s3ModeSecret }}
-            {{- range $key := $secret.keys }}
-            {{- $envPrefix := $secret.prefix | default "" | upper }}
-            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
-            - name: {{ $envPrefix }}{{ $envKey }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secret.name }}
-                  key: {{ $key }}
-            {{- end }}
-            {{- end }}
-            {{- end }}
+          {{- range $key, $value :=  .Values.parseable.env }}
+          - name: {{ $key }}
+            value: {{ tpl $value $ | quote }}
+          {{- end }}
+          {{- if or .Values.parseable.local .Values.parseable.skipSecrets }}
+          {{- range $secret := .Values.parseable.localModeSecret }}
+          {{- range $key := $secret.keys }}
+          {{- $envPrefix := $secret.prefix | default "" | upper }}
+          {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+          - name: {{ $envPrefix }}{{ $envKey }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $secret.name }}
+                key: {{ $key }}
+          {{- end }}
+          {{- end }}
+          {{- else }}
+          {{- range $secret := .Values.parseable.s3ModeSecret }}
+          {{- range $key := $secret.keys }}
+          {{- $envPrefix := $secret.prefix | default "" | upper }}
+          {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+          - name: {{ $envPrefix }}{{ $envKey }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $secret.name }}
+                key: {{ $key }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
           ports:
             - containerPort: 8000
           resources:
