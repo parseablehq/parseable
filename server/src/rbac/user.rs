@@ -30,7 +30,7 @@ use crate::option::CONFIG;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct User {
     pub username: String,
-    pub password: String,
+    pub password_hash: String,
     // fill this
     pub role: Vec<()>,
 }
@@ -38,11 +38,11 @@ pub struct User {
 impl User {
     // create a new User and return self with password generated for said user.
     pub fn create_new(username: String) -> (Self, String) {
-        let PassCode { password, hashcode } = Self::gen_new_password();
+        let PassCode { password, hash } = Self::gen_new_password();
         (
             Self {
                 username,
-                password: hashcode,
+                password_hash: hash,
                 role: Vec::new(),
             },
             password,
@@ -53,7 +53,7 @@ impl User {
     // $<id>[$v=<version>][$<param>=<value>(,<param>=<value>)*][$<salt>[$<hash>]]
     // ref https://github.com/P-H-C/phc-string-format/blob/master/phc-sf-spec.md#specification
     pub fn verify(&self, password: &str) -> bool {
-        let parsed_hash = PasswordHash::new(&self.password).unwrap();
+        let parsed_hash = PasswordHash::new(&self.password_hash).unwrap();
         Argon2::default()
             .verify_password(password.as_bytes(), &parsed_hash)
             .is_ok()
@@ -62,8 +62,8 @@ impl User {
     // gen new password
     pub fn gen_new_password() -> PassCode {
         let password = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
-        let hashcode = gen_hash(&password);
-        PassCode { password, hashcode }
+        let hash = gen_hash(&password);
+        PassCode { password, hash }
     }
 }
 
@@ -89,7 +89,7 @@ impl UserMap {
 
 pub struct PassCode {
     pub password: String,
-    pub hashcode: String,
+    pub hash: String,
 }
 
 pub fn get_admin_user() -> User {
@@ -99,7 +99,7 @@ pub fn get_admin_user() -> User {
 
     User {
         username,
-        password: hashcode,
+        password_hash: hashcode,
         role: Vec::new(),
     }
 }

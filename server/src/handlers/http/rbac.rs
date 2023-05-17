@@ -65,7 +65,7 @@ pub async fn reset_password(username: web::Path<String>) -> Result<impl Responde
         return Err(RBACError::UserDoesNotExist);
     }
     // get new password for this user
-    let PassCode { password, hashcode } = User::gen_new_password();
+    let PassCode { password, hash } = User::gen_new_password();
     // update parseable.json first
     let mut metadata = get_metadata().await?;
     if let Some(user) = metadata
@@ -73,7 +73,7 @@ pub async fn reset_password(username: web::Path<String>) -> Result<impl Responde
         .iter_mut()
         .find(|user| user.username == username)
     {
-        user.password = hashcode.clone();
+        user.password_hash = hash.clone();
     } else {
         // should be unreachable given state is always consistent
         return Err(RBACError::UserDoesNotExist);
@@ -86,7 +86,7 @@ pub async fn reset_password(username: web::Path<String>) -> Result<impl Responde
         .unwrap()
         .get_mut(&username)
         .expect("checked that user exists in map")
-        .password = hashcode;
+        .password_hash = hash;
 
     Ok(password)
 }
