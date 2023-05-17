@@ -79,7 +79,7 @@ pub async fn reset_password(username: web::Path<String>) -> Result<impl Responde
         .iter_mut()
         .find(|user| user.username == username)
     {
-        user.password_hash = hash.clone();
+        user.password_hash.clone_from(&hash);
     } else {
         // should be unreachable given state is always consistent
         return Err(RBACError::UserDoesNotExist);

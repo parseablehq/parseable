@@ -45,14 +45,14 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
     }
 
     if let Some(storage_metadata) = storage_metadata {
-        if let Some("v1") = dbg!(get_version(&storage_metadata)) {
+        if get_version(&storage_metadata) == Some("v1") {
             let metadata = metadata_migration::v1_v2(storage_metadata);
             put_remote_metadata(&*object_store, &metadata).await?;
         }
     }
 
     if let Some(staging_metadata) = staging_metadata {
-        if let Some("v1") = get_version(&staging_metadata) {
+        if get_version(&staging_metadata) == Some("v1") {
             let metadata = metadata_migration::v1_v2(staging_metadata);
             put_staging_metadata(config, &metadata)?;
         }
