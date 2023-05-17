@@ -22,13 +22,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process,
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
-use arrow_array::RecordBatch;
 use arrow_schema::{ArrowError, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
-use once_cell::sync::Lazy;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -42,35 +40,11 @@ use crate::{
     metrics,
     option::CONFIG,
     storage::OBJECT_STORE_DATA_GRANULARITY,
-    utils::{
-        self,
-        arrow::{adapt_batch, MergedRecordReader},
-    },
+    utils::{self, arrow::MergedRecordReader},
 };
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 const PARQUET_FILE_EXTENSION: &str = "data.parquet";
-
-// in mem global that hold all the in mem buffer that are ready to convert
-pub static MEMORY_READ_BUFFERS: Lazy<RwLock<HashMap<String, Vec<ReadBuf>>>> =
-    Lazy::new(RwLock::default);
-
-// this function takes all the read bufs per stream
-pub fn take_all_read_bufs() -> Vec<(String, Vec<ReadBuf>)> {
-    let mut res = Vec::new();
-    for (stream_name, bufs) in MEMORY_READ_BUFFERS.write().unwrap().iter_mut() {
-        let stream_name = stream_name.to_owned();
-        let bufs = std::mem::take(bufs);
-        res.push((stream_name, bufs));
-    }
-    res
-}
-
-#[derive(Debug, Clone)]
-pub struct ReadBuf {
-    pub time: NaiveDateTime,
-    pub buf: Vec<RecordBatch>,
-}
 
 #[derive(Debug)]
 pub struct StorageDir {
@@ -187,6 +161,7 @@ impl StorageDir {
     }
 }
 
+#[allow(unused)]
 pub fn to_parquet_path(stream_name: &str, time: NaiveDateTime) -> PathBuf {
     let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
     let dir = StorageDir::file_time_suffix(time, PARQUET_FILE_EXTENSION);
@@ -249,32 +224,6 @@ pub fn convert_disk_files_to_parquet(
     } else {
         Ok(None)
     }
-}
-
-pub fn convert_mem_to_parquet(
-    stream: &str,
-    read_buf: ReadBuf,
-) -> Result<Option<Schema>, MoveDataError> {
-    let ReadBuf { time, buf } = read_buf;
-    let Some(last_schema) = buf.last().map(|last| last.schema()) else { return Ok(None) };
-    let record_reader = buf.into_iter().map(|rb| adapt_batch(&last_schema, rb));
-
-    let parquet_path = to_parquet_path(stream, time);
-    if let Some(path) = parquet_path.parent() {
-        fs::create_dir_all(path)?;
-    }
-    let parquet_file = fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
-
-    let props = parquet_writer_props().build();
-    let mut writer = ArrowWriter::try_new(parquet_file, last_schema.clone(), Some(props))?;
-
-    for ref record in record_reader {
-        writer.write(record)?;
-    }
-
-    writer.close()?;
-
-    Ok(Some(last_schema.as_ref().clone()))
 }
 
 fn parquet_writer_props() -> WriterPropertiesBuilder {

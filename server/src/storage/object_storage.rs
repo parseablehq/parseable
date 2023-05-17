@@ -17,9 +17,8 @@
  */
 
 use super::{
-    retention::Retention,
-    staging::{self, convert_disk_files_to_parquet, convert_mem_to_parquet},
-    LogStream, ObjectStorageError, ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
+    retention::Retention, staging::convert_disk_files_to_parquet, LogStream, ObjectStorageError,
+    ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use crate::{
     alerts::Alerts,
@@ -245,16 +244,6 @@ pub trait ObjectStorage: Sync + 'static {
         let streams = STREAM_INFO.list_streams();
 
         let mut stream_stats = HashMap::new();
-
-        for (stream_name, bufs) in staging::take_all_read_bufs() {
-            for buf in bufs {
-                let schema = convert_mem_to_parquet(&stream_name, buf)
-                    .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-                if let Some(schema) = schema {
-                    commit_schema_to_storage(&stream_name, schema).await?;
-                }
-            }
-        }
 
         for stream in &streams {
             let dir = StorageDir::new(stream);
