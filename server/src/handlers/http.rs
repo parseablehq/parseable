@@ -162,11 +162,13 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
                 .route(web::get().to(logstream::get_retention)),
         );
-
     let user_api = web::scope("/user")
+        // POST /user/create/{username} => Create a new user
         .service(web::resource("/create/{username}").route(web::post().to(rbac::put_user)))
-        .service(web::resource("/reset/{username}").route(web::put().to(rbac::reset_password)))
-        .service(web::resource("/delete/{username}").route(web::get().to(rbac::delete_user)));
+        // POST /user/reset/{username} => Reset password for a user
+        .service(web::resource("/reset/{username}").route(web::post().to(rbac::reset_password)))
+        // DELETE /user/delete/{username} => Delete a user
+        .service(web::resource("/delete/{username}").route(web::delete().to(rbac::delete_user)));
 
     cfg.service(
         // Base path "{url}/api/v1"

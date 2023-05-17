@@ -32,6 +32,9 @@ use tokio::sync::Mutex;
 // async aware lock for updating storage metadata and user map atomicically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
+// Handler for POST /api/v1/user/create/{username}
+// Creates a new user by username
+// returns password generated for this user
 pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     validator::verify_username(&username)?;
@@ -57,6 +60,9 @@ pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBA
     Ok(password)
 }
 
+// Handler for POST /api/v1/user/reset/{username}
+// Reset password for given username
+// returns new password generated for this user
 pub async fn reset_password(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
@@ -91,6 +97,7 @@ pub async fn reset_password(username: web::Path<String>) -> Result<impl Responde
     Ok(password)
 }
 
+// Handler for DELETE /api/v1/user/delete/{username}
 pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
