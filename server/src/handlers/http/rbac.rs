@@ -34,9 +34,7 @@ static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-    // verify username
     validator::verify_username(&username)?;
-    // get exclusive lock
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user is already in the map
     // there is an exisiting config for this user
@@ -61,7 +59,6 @@ pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBA
 
 pub async fn reset_password(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-    // get exclusive lock
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
     if !get_user_map().read().unwrap().contains_key(&username) {
@@ -121,9 +118,7 @@ async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorage
 }
 
 async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
-    // put to remote
     storage::put_remote_metadata(metadata).await?;
-    // put to staging
     storage::put_staging_metadata(metadata)?;
     Ok(())
 }
