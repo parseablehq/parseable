@@ -19,8 +19,8 @@
 use crate::{
     option::CONFIG,
     rbac::{
-        user_map,
         user::{PassCode, User},
+        user_map,
     },
     storage::{self, ObjectStorageError, StorageMetadata},
     validator::{self, error::UsernameValidationError},
