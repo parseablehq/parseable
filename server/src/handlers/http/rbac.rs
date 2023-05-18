@@ -32,44 +32,54 @@ use tokio::sync::Mutex;
 // async aware lock for updating storage metadata and user map atomicically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
-// Handler for POST /api/v1/user/create/{username}
-// Creates a new user by username
+// Handler for PUT /api/v1/user/{username}
+// Creates a new user by username if it does not exists
+// Otherwise make a call to reset password
 // returns password generated for this user
 pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     validator::verify_username(&username)?;
     let _ = UPDATE_LOCK.lock().await;
-    // fail this request if the user is already in the map
-    // there is an exisiting config for this user
-    if get_user_map().read().unwrap().contains_key(&username) {
-        return Err(RBACError::UserExists);
+    let user_exists = get_user_map().read().unwrap().contains_key(&username);
+    if user_exists {
+        reset_password(username).await
+    } else {
+        let mut metadata = get_metadata().await?;
+        if metadata.users.iter().any(|user| user.username == username) {
+            // should be unreachable given state is always consistent
+            return Err(RBACError::UserExists);
+        }
+
+        let (user, password) = User::create_new(username);
+        metadata.users.push(user.clone());
+        put_metadata(&metadata).await?;
+        // set this user to user map
+        get_user_map().write().unwrap().insert(user);
+
+        Ok(password)
     }
-
-    let mut metadata = get_metadata().await?;
-    if metadata.users.iter().any(|user| user.username == username) {
-        // should be unreachable given state is always consistent
-        return Err(RBACError::UserExists);
-    }
-
-    let (user, password) = User::create_new(username);
-    metadata.users.push(user.clone());
-    put_metadata(&metadata).await?;
-    // set this user to user map
-    get_user_map().write().unwrap().insert(user);
-
-    Ok(password)
 }
 
-// Handler for POST /api/v1/user/reset/{username}
-// Reset password for given username
-// returns new password generated for this user
-pub async fn reset_password(username: web::Path<String>) -> Result<impl Responder, RBACError> {
+// Handler for DELETE /api/v1/user/delete/{username}
+pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
     if !get_user_map().read().unwrap().contains_key(&username) {
         return Err(RBACError::UserDoesNotExist);
-    }
+    };
+    // delete from parseable.json first
+    let mut metadata = get_metadata().await?;
+    metadata.users.retain(|user| user.username != username);
+    put_metadata(&metadata).await?;
+    // update in mem table
+    get_user_map().write().unwrap().remove(&username);
+    Ok(format!("deleted user: {}", username))
+}
+
+// Reset password for given username
+// returns new password generated for this user
+pub async fn reset_password(username: String) -> Result<String, RBACError> {
     // get new password for this user
     let PassCode { password, hash } = User::gen_new_password();
     // update parseable.json first
@@ -95,23 +105,6 @@ pub async fn reset_password(username: web::Path<String>) -> Result<impl Responde
         .password_hash = hash;
 
     Ok(password)
-}
-
-// Handler for DELETE /api/v1/user/delete/{username}
-pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
-    let username = username.into_inner();
-    let _ = UPDATE_LOCK.lock().await;
-    // fail this request if the user does not exists
-    if !get_user_map().read().unwrap().contains_key(&username) {
-        return Err(RBACError::UserDoesNotExist);
-    };
-    // delete from parseable.json first
-    let mut metadata = get_metadata().await?;
-    metadata.users.retain(|user| user.username != username);
-    put_metadata(&metadata).await?;
-    // update in mem table
-    get_user_map().write().unwrap().remove(&username);
-    Ok(format!("deleted user: {}", username))
 }
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {

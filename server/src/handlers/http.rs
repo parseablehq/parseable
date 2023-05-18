@@ -20,7 +20,8 @@ use std::fs::File;
 use std::io::BufReader;
 
 use actix_cors::Cors;
-use actix_web::dev::ServiceRequest;
+use actix_web::dev::{Service, ServiceRequest};
+use actix_web::error::ErrorBadRequest;
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
@@ -163,12 +164,22 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route(web::get().to(logstream::get_retention)),
         );
     let user_api = web::scope("/user")
-        // POST /user/create/{username} => Create a new user
-        .service(web::resource("/create/{username}").route(web::post().to(rbac::put_user)))
-        // POST /user/reset/{username} => Reset password for a user
-        .service(web::resource("/reset/{username}").route(web::post().to(rbac::reset_password)))
-        // DELETE /user/delete/{username} => Delete a user
-        .service(web::resource("/delete/{username}").route(web::delete().to(rbac::delete_user)));
+        // POST /user/{username} => Create a new user
+        .service(web::resource("/{username}").route(web::put().to(rbac::put_user)))
+        // DELETE /user/{username} => Delete a user
+        .service(web::resource("/{username}").route(web::delete().to(rbac::delete_user)))
+        .wrap_fn(|req, srv| {
+            // deny request if username is same as username from config
+            let username = req.match_info().get("username").unwrap_or("");
+            let is_root = username == CONFIG.parseable.username;
+            let call = srv.call(req);
+            async move {
+                if is_root {
+                    return Err(ErrorBadRequest("Cannot call this API for root admin user"));
+                }
+                call.await
+            }
+        });
 
     cfg.service(
         // Base path "{url}/api/v1"
