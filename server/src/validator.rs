@@ -120,7 +120,10 @@ pub fn verify_username(username: &str) -> Result<(), UsernameValidationError> {
         return Err(UsernameValidationError::InvalidLength);
     }
     // Username should contain only alphanumeric characters or underscores
-    if !username.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
         return Err(UsernameValidationError::SpecialChar);
     }
 
