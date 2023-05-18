@@ -256,7 +256,9 @@ pub mod error {
     pub enum UsernameValidationError {
         #[error("Username length should be between 3 and 64 chars")]
         InvalidLength,
-        #[error("Username contains invalid characters. Only aplhanumeric and _ is allowed")]
+        #[error(
+            "Username contains invalid characters. Only lowercase aplhanumeric and _ is allowed"
+        )]
         SpecialChar,
     }
 }
