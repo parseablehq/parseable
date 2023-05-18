@@ -32,7 +32,7 @@ pub struct User {
     pub username: String,
     pub password_hash: String,
     // fill this
-    pub role: Vec<()>,
+    pub roles: Vec<()>,
 }
 
 impl User {
@@ -43,7 +43,7 @@ impl User {
             Self {
                 username,
                 password_hash: hash,
-                role: Vec::new(),
+                roles: Vec::new(),
             },
             password,
         )
@@ -100,6 +100,6 @@ pub fn get_admin_user() -> User {
     User {
         username,
         password_hash: hashcode,
-        role: Vec::new(),
+        roles: Vec::new(),
     }
 }
