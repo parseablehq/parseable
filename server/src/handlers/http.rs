@@ -20,7 +20,8 @@ use std::fs::File;
 use std::io::BufReader;
 
 use actix_cors::Cors;
-use actix_web::dev::ServiceRequest;
+use actix_web::dev::{Service, ServiceRequest};
+use actix_web::error::ErrorBadRequest;
 use actix_web::{middleware, web, App, HttpServer};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
@@ -30,11 +31,13 @@ use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
 use crate::option::CONFIG;
+use crate::rbac::get_user_map;
 
 mod health_check;
 mod ingest;
 mod logstream;
 mod query;
+mod rbac;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -63,10 +66,13 @@ async fn validator(
     req: ServiceRequest,
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, (actix_web::Error, ServiceRequest)> {
-    if credentials.user_id().trim() == CONFIG.parseable.username
-        && credentials.password().unwrap().trim() == CONFIG.parseable.password
-    {
-        return Ok(req);
+    let username = credentials.user_id().trim();
+    let password = credentials.password().unwrap().trim();
+
+    if let Some(user) = get_user_map().read().unwrap().get(username) {
+        if user.verify(password) {
+            return Ok(req);
+        }
     }
 
     Err((actix_web::error::ErrorUnauthorized("Unauthorized"), req))
@@ -157,6 +163,25 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
                 .route(web::get().to(logstream::get_retention)),
         );
+    let user_api = web::scope("/user").service(
+        web::resource("/{username}")
+            // POST /user/{username} => Create a new user
+            .route(web::put().to(rbac::put_user))
+            // DELETE /user/{username} => Delete a user
+            .route(web::delete().to(rbac::delete_user))
+            .wrap_fn(|req, srv| {
+                // deny request if username is same as username from config
+                let username = req.match_info().get("username").unwrap_or("");
+                let is_root = username == CONFIG.parseable.username;
+                let call = srv.call(req);
+                async move {
+                    if is_root {
+                        return Err(ErrorBadRequest("Cannot call this API for root admin user"));
+                    }
+                    call.await
+                }
+            }),
+    );
 
     cfg.service(
         // Base path "{url}/api/v1"
@@ -184,6 +209,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                         logstream_api,
                     ),
             )
+            .service(user_api)
             .wrap(HttpAuthentication::basic(validator)),
     )
     // GET "/" ==> Serve the static frontend directory

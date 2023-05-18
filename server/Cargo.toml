@@ -78,6 +78,7 @@ pyroscope = { version = "0.5.3", optional = true }
 pyroscope_pprofrs = { version = "0.2", optional = true }
 uptime_lib = "0.2.2"
 regex = "1.7.3"
+argon2 = "0.5.0"
 
 [build-dependencies]
 static-files = "0.2"
