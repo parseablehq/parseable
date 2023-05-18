@@ -163,23 +163,25 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
                 .route(web::get().to(logstream::get_retention)),
         );
-    let user_api = web::scope("/user")
-        // POST /user/{username} => Create a new user
-        .service(web::resource("/{username}").route(web::put().to(rbac::put_user)))
-        // DELETE /user/{username} => Delete a user
-        .service(web::resource("/{username}").route(web::delete().to(rbac::delete_user)))
-        .wrap_fn(|req, srv| {
-            // deny request if username is same as username from config
-            let username = req.match_info().get("username").unwrap_or("");
-            let is_root = username == CONFIG.parseable.username;
-            let call = srv.call(req);
-            async move {
-                if is_root {
-                    return Err(ErrorBadRequest("Cannot call this API for root admin user"));
+    let user_api = web::scope("/user").service(
+        web::resource("/{username}")
+            // POST /user/{username} => Create a new user
+            .route(web::put().to(rbac::put_user))
+            // DELETE /user/{username} => Delete a user
+            .route(web::delete().to(rbac::delete_user))
+            .wrap_fn(|req, srv| {
+                // deny request if username is same as username from config
+                let username = req.match_info().get("username").unwrap_or("");
+                let is_root = username == CONFIG.parseable.username;
+                let call = srv.call(req);
+                async move {
+                    if is_root {
+                        return Err(ErrorBadRequest("Cannot call this API for root admin user"));
+                    }
+                    call.await
                 }
-                call.await
-            }
-        });
+            }),
+    );
 
     cfg.service(
         // Base path "{url}/api/v1"
