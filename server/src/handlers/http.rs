@@ -173,10 +173,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             // DELETE /user/{username} => Delete a user
             .route(web::delete().to(rbac::delete_user))
             .wrap_fn(|req, srv| {
-                // deny request if username is same as username from env variable (P_USERNAME)
-                // The root credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated
+                // The credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated
                 // as root credentials. Any other user is not allowed to modify / delete
-                // the root user.
+                // the root user. Deny request if username is same as username 
+                // from env variable P_USERNAME.
                 let username = req.match_info().get("username").unwrap_or("");
                 let is_root = username == CONFIG.parseable.username;
                 let call = srv.call(req);
