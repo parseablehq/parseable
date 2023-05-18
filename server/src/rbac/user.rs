@@ -49,8 +49,8 @@ impl User {
         )
     }
 
-    // Verification works because the PasswordHash is in PHC format
-    // $<id>[$v=<version>][$<param>=<value>(,<param>=<value>)*][$<salt>[$<hash>]]
+    // Take the password and compare with the hash stored internally (PHC format ==>
+    // $<id>[$v=<version>][$<param>=<value>(,<param>=<value>)*][$<salt>[$<hash>]])
     // ref https://github.com/P-H-C/phc-string-format/blob/master/phc-sf-spec.md#specification
     pub fn verify(&self, password: &str) -> bool {
         let parsed_hash = PasswordHash::new(&self.password_hash).unwrap();
@@ -59,7 +59,7 @@ impl User {
             .is_ok()
     }
 
-    // gen new password
+    // generate a new password
     pub fn gen_new_password() -> PassCode {
         let password = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
         let hash = gen_hash(&password);
@@ -67,6 +67,8 @@ impl User {
     }
 }
 
+// generate a one way hash for password to be stored in metadata file
+// ref https://github.com/P-H-C/phc-string-format/blob/master/phc-sf-spec.md
 fn gen_hash(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();

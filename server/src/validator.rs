@@ -114,7 +114,11 @@ pub fn stream_name(stream_name: &str) -> Result<(), StreamNameValidationError> {
     Ok(())
 }
 
-pub fn verify_username(username: &str) -> Result<(), UsernameValidationError> {
+// validate if username is valid
+// username should be between 3 and 64 characters long
+// username should contain only alphanumeric characters or underscores
+// username should be lowercase
+pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
     // Check if the username meets the required criteria
     if username.len() < 3 || username.len() > 64 {
         return Err(UsernameValidationError::InvalidLength);
@@ -254,10 +258,10 @@ pub mod error {
 
     #[derive(Debug, thiserror::Error)]
     pub enum UsernameValidationError {
-        #[error("Username length should be between 3 and 64 chars")]
+        #[error("Username should be between 3 and 64 chars long")]
         InvalidLength,
         #[error(
-            "Username contains invalid characters. Only lowercase aplhanumeric and _ is allowed"
+            "Username contains invalid characters. Please use lowercase, alphanumeric or underscore"
         )]
         SpecialChar,
     }
