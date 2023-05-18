@@ -178,9 +178,6 @@ pub struct Server {
     /// Password for the basic authentication on the server
     pub password: String,
 
-    /// Server in memory ingestion stratergy
-    pub in_mem_ingestion: bool,
-
     /// Server should check for update or not
     pub check_update: bool,
 
@@ -224,10 +221,6 @@ impl FromArgMatches for Server {
             .get_one::<String>(Self::PASSWORD)
             .cloned()
             .expect("default for password");
-        self.in_mem_ingestion = m
-            .get_one::<bool>(Self::IN_MEM)
-            .cloned()
-            .expect("default for in memory ingestion");
         self.check_update = m
             .get_one::<bool>(Self::CHECK_UPDATE)
             .cloned()
@@ -268,7 +261,6 @@ impl Server {
     pub const UPLOAD_INTERVAL: &str = "upload-interval";
     pub const USERNAME: &str = "username";
     pub const PASSWORD: &str = "password";
-    pub const IN_MEM: &str = "in-memory-ingestion";
     pub const CHECK_UPDATE: &str = "check-update";
     pub const SEND_ANALYTICS: &str = "send-analytics";
     pub const ROW_GROUP_SIZE: &str = "row-group-size";
@@ -349,16 +341,6 @@ impl Server {
                     .value_name("STRING")
                     .required(true)
                     .help("Password for the basic authentication on the server"),
-            )
-            .arg(
-                Arg::new(Self::IN_MEM)
-                    .long(Self::IN_MEM)
-                    .env("P_MEMORY_STAGING")
-                    .value_name("BOOL")
-                    .required(false)
-                    .default_value("false")
-                    .value_parser(value_parser!(bool))
-                    .help("Disable/Enable memory based data staging"),
             )
             .arg(
                 Arg::new(Self::CHECK_UPDATE)
