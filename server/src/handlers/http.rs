@@ -31,7 +31,7 @@ use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
 use crate::option::CONFIG;
-use crate::rbac::get_user_map;
+use crate::rbac::user_map;
 
 mod health_check;
 mod ingest;
@@ -62,14 +62,14 @@ macro_rules! create_app {
     };
 }
 
-async fn validator(
+async fn authenticate(
     req: ServiceRequest,
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, (actix_web::Error, ServiceRequest)> {
     let username = credentials.user_id().trim();
     let password = credentials.password().unwrap().trim();
 
-    if let Some(user) = get_user_map().read().unwrap().get(username) {
+    if let Some(user) = user_map().read().unwrap().get(username) {
         if user.verify(password) {
             return Ok(req);
         }
@@ -130,6 +130,7 @@ pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     let generated = generate();
 
+    //log stream API
     let logstream_api = web::scope("/{logstream}")
         .service(
             web::resource("")
@@ -163,6 +164,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
                 .route(web::get().to(logstream::get_retention)),
         );
+
+    // User API
     let user_api = web::scope("/user").service(
         web::resource("/{username}")
             // POST /user/{username} => Create a new user
@@ -170,7 +173,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             // DELETE /user/{username} => Delete a user
             .route(web::delete().to(rbac::delete_user))
             .wrap_fn(|req, srv| {
-                // deny request if username is same as username from config
+                // deny request if username is same as username from env variable (P_USERNAME)
+                // The root credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated
+                // as root credentials. Any other user is not allowed to modify / delete
+                // the root user.
                 let username = req.match_info().get("username").unwrap_or("");
                 let is_root = username == CONFIG.parseable.username;
                 let call = srv.call(req);
@@ -210,7 +216,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                     ),
             )
             .service(user_api)
-            .wrap(HttpAuthentication::basic(validator)),
+            .wrap(HttpAuthentication::basic(authenticate)),
     )
     // GET "/" ==> Serve the static frontend directory
     .service(ResourceFiles::new("/", generated));

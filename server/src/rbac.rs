@@ -26,7 +26,7 @@ pub mod user;
 
 pub static USERS: OnceCell<RwLock<UserMap>> = OnceCell::new();
 
-pub fn get_user_map() -> &'static RwLock<UserMap> {
+pub fn user_map() -> &'static RwLock<UserMap> {
     USERS.get().expect("user map is set")
 }
 

@@ -19,7 +19,7 @@
 use crate::{
     option::CONFIG,
     rbac::{
-        get_user_map,
+        user_map,
         user::{PassCode, User},
     },
     storage::{self, ObjectStorageError, StorageMetadata},
@@ -38,9 +38,9 @@ static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 // returns password generated for this user
 pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-    validator::verify_username(&username)?;
+    validator::user_name(&username)?;
     let _ = UPDATE_LOCK.lock().await;
-    let user_exists = get_user_map().read().unwrap().contains_key(&username);
+    let user_exists = user_map().read().unwrap().contains_key(&username);
     if user_exists {
         reset_password(username).await
     } else {
@@ -54,7 +54,7 @@ pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBA
         metadata.users.push(user.clone());
         put_metadata(&metadata).await?;
         // set this user to user map
-        get_user_map().write().unwrap().insert(user);
+        user_map().write().unwrap().insert(user);
 
         Ok(password)
     }
@@ -65,7 +65,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
-    if !get_user_map().read().unwrap().contains_key(&username) {
+    if !user_map().read().unwrap().contains_key(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
     // delete from parseable.json first
@@ -73,7 +73,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     metadata.users.retain(|user| user.username != username);
     put_metadata(&metadata).await?;
     // update in mem table
-    get_user_map().write().unwrap().remove(&username);
+    user_map().write().unwrap().remove(&username);
     Ok(format!("deleted user: {}", username))
 }
 
@@ -97,7 +97,7 @@ pub async fn reset_password(username: String) -> Result<String, RBACError> {
     put_metadata(&metadata).await?;
 
     // update in mem table
-    get_user_map()
+    user_map()
         .write()
         .unwrap()
         .get_mut(&username)
