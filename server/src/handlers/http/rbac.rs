@@ -74,7 +74,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     put_metadata(&metadata).await?;
     // update in mem table
     user_map().write().unwrap().remove(&username);
-    Ok(format!("deleted user: {}", username))
+    Ok(format!("deleted user: {username}"))
 }
 
 // Reset password for given username
