@@ -121,7 +121,7 @@ pub async fn put_roles(
         .iter_mut()
         .find(|user| user.username == username)
     {
-        user.roles = roles.clone();
+        user.roles = roles;
         permissions = user.permissions()
     } else {
         // should be unreachable given state is always consistent
