@@ -112,15 +112,34 @@ pub mod model {
 
     fn editor_role_builder() -> RoleBuilder {
         RoleBuilder {
-            actions: vec![Action::All],
-            stream: None,
+            actions: vec![
+                Action::Ingest,
+                Action::Query,
+                Action::CreateStream,
+                Action::ListStream,
+                Action::GetSchema,
+                Action::GetStats,
+                Action::GetRetention,
+                Action::PutRetention,
+                Action::PutAlert,
+                Action::GetAlert,
+            ],
+            stream: Some("*".to_string()),
             tag: None,
         }
     }
 
     fn writer_role_builder() -> RoleBuilder {
         RoleBuilder {
-            actions: vec![Action::All],
+            actions: vec![
+                Action::Ingest,
+                Action::Query,
+                Action::GetSchema,
+                Action::GetStats,
+                Action::GetRetention,
+                Action::PutAlert,
+                Action::GetAlert,
+            ],
             stream: None,
             tag: None,
         }
@@ -128,7 +147,13 @@ pub mod model {
 
     fn reader_role_builder() -> RoleBuilder {
         RoleBuilder {
-            actions: vec![Action::All],
+            actions: vec![
+                Action::Query,
+                Action::GetSchema,
+                Action::GetStats,
+                Action::GetRetention,
+                Action::GetAlert,
+            ],
             stream: None,
             tag: None,
         }
