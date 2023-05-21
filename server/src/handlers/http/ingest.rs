@@ -104,7 +104,7 @@ fn into_event_batch(
 
 #[derive(Debug, thiserror::Error)]
 pub enum PostError {
-    #[error("{0}")]
+    #[error("Stream {0} not found")]
     StreamNotFound(String),
     #[error("Could not deserialize into JSON object, {0}")]
     SerdeError(#[from] serde_json::Error),
