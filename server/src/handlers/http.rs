@@ -235,11 +235,14 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         // Base path "{url}/api/v1"
         web::scope(&base_path())
             // POST "/query" ==> Get results of the SQL query passed in request body
-            .service(web::resource("/query").route(web::post().to(query::query)))
+            .service(
+                web::resource("/query")
+                    .route(web::post().to(query::query).auth_stream(Action::Query)),
+            )
             // POST "/ingest" ==> Post logs to given log stream based on header
             .service(
                 web::resource("/ingest")
-                    .route(web::post().to(ingest::ingest))
+                    .route(web::post().to(ingest::ingest).auth(Action::Ingest))
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
