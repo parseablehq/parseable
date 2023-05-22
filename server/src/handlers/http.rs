@@ -141,15 +141,19 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route(
                     web::put()
                         .to(logstream::put_stream)
-                        .auth_stream(Action::CreateStream),
+                        .authorize_for_stream(Action::CreateStream),
                 )
                 // POST "/logstream/{logstream}" ==> Post logs to given log stream
-                .route(web::post().to(ingest::post_event))
+                .route(
+                    web::post()
+                        .to(ingest::post_event)
+                        .authorize_for_stream(Action::Ingest),
+                )
                 // DELETE "/logstream/{logstream}" ==> Delete log stream
                 .route(
                     web::delete()
                         .to(logstream::delete)
-                        .auth_stream(Action::DeleteStream),
+                        .authorize_for_stream(Action::DeleteStream),
                 )
                 .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
         )
@@ -159,13 +163,13 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route(
                     web::put()
                         .to(logstream::put_alert)
-                        .auth_stream(Action::PutAlert),
+                        .authorize_for_stream(Action::PutAlert),
                 )
                 // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
                 .route(
                     web::get()
                         .to(logstream::get_alert)
-                        .auth_stream(Action::GetAlert),
+                        .authorize_for_stream(Action::GetAlert),
                 ),
         )
         .service(
@@ -173,7 +177,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::resource("/schema").route(
                 web::get()
                     .to(logstream::schema)
-                    .auth_stream(Action::GetSchema),
+                    .authorize_for_stream(Action::GetSchema),
             ),
         )
         .service(
@@ -181,7 +185,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             web::resource("/stats").route(
                 web::get()
                     .to(logstream::get_stats)
-                    .auth_stream(Action::GetStats),
+                    .authorize_for_stream(Action::GetStats),
             ),
         )
         .service(
@@ -190,13 +194,13 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route(
                     web::put()
                         .to(logstream::put_retention)
-                        .auth_stream(Action::PutRetention),
+                        .authorize_for_stream(Action::PutRetention),
                 )
                 // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
                 .route(
                     web::get()
                         .to(logstream::get_retention)
-                        .auth_stream(Action::GetRetention),
+                        .authorize_for_stream(Action::GetRetention),
                 ),
         );
 
@@ -205,15 +209,19 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .service(
             web::resource("/{username}")
                 // PUT /user/{username} => Create a new user
-                .route(web::put().to(rbac::put_user).auth(Action::PutUser))
+                .route(web::put().to(rbac::put_user).authorize(Action::PutUser))
                 // DELETE /user/{username} => Delete a user
-                .route(web::delete().to(rbac::delete_user).auth(Action::DeleteUser))
-                .route(web::put().to(rbac::put_roles).auth(Action::PutUser)),
+                .route(
+                    web::delete()
+                        .to(rbac::delete_user)
+                        .authorize(Action::DeleteUser),
+                )
+                .route(web::put().to(rbac::put_roles).authorize(Action::PutUser)),
         )
         .service(
             web::resource("/{username}/roles")
                 // PUT /user/{username}/roles => Put roles for user
-                .route(web::put().to(rbac::put_roles).auth(Action::PutRoles)),
+                .route(web::put().to(rbac::put_roles).authorize(Action::PutRoles)),
         )
         .wrap_fn(|req, srv| {
             // The credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated
@@ -236,13 +244,20 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::scope(&base_path())
             // POST "/query" ==> Get results of the SQL query passed in request body
             .service(
-                web::resource("/query")
-                    .route(web::post().to(query::query).auth_stream(Action::Query)),
+                web::resource("/query").route(
+                    web::post()
+                        .to(query::query)
+                        .authorize_for_stream(Action::Query),
+                ),
             )
             // POST "/ingest" ==> Post logs to given log stream based on header
             .service(
                 web::resource("/ingest")
-                    .route(web::post().to(ingest::ingest).auth(Action::Ingest))
+                    .route(
+                        web::post()
+                            .to(ingest::ingest)
+                            .authorize_for_stream(Action::Ingest),
+                    )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
@@ -254,7 +269,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                     .service(
                         // GET "/logstream" ==> Get list of all Log Streams on the server
                         web::resource("")
-                            .route(web::get().to(logstream::list).auth(Action::ListStream)),
+                            .route(web::get().to(logstream::list).authorize(Action::ListStream)),
                     )
                     .service(
                         // logstream API
@@ -277,19 +292,19 @@ pub fn metrics_path() -> String {
 }
 
 trait RouteExt {
-    fn auth(self, action: Action) -> Self;
-    fn auth_stream(self, action: Action) -> Self;
+    fn authorize(self, action: Action) -> Self;
+    fn authorize_for_stream(self, action: Action) -> Self;
 }
 
 impl RouteExt for Route {
-    fn auth(self, action: Action) -> Self {
+    fn authorize(self, action: Action) -> Self {
         self.wrap(Authorization {
             action,
             stream: false,
         })
     }
 
-    fn auth_stream(self, action: Action) -> Self {
+    fn authorize_for_stream(self, action: Action) -> Self {
         self.wrap(Authorization {
             action,
             stream: true,
