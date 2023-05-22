@@ -80,7 +80,7 @@ pub mod model {
     #[serde(tag = "role", content = "resource", rename_all = "lowercase")]
     pub enum DefaultRole {
         Admin,
-        Editor { stream: String },
+        Editor,
         Writer { stream: String },
         Reader { stream: String, tag: String },
     }
@@ -89,9 +89,7 @@ pub mod model {
         fn from(value: &DefaultRole) -> Self {
             match value {
                 DefaultRole::Admin => admin_role_builder(),
-                DefaultRole::Editor { stream } => {
-                    editor_role_builder().with_stream(stream.to_owned())
-                }
+                DefaultRole::Editor => editor_role_builder(),
                 DefaultRole::Writer { stream } => {
                     writer_role_builder().with_stream(stream.to_owned())
                 }
