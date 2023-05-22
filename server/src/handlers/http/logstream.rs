@@ -39,8 +39,8 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     let objectstore = CONFIG.storage().get_object_store();
 
-    if !objectstore.stream_exists(&stream_name).await? {
-        return Err(StreamError::StreamNotFound(stream_name.to_string()));
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        return Err(StreamError::StreamNotFound(stream_name));
     }
 
     objectstore.delete_stream(&stream_name).await?;
