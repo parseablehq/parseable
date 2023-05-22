@@ -46,6 +46,9 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     objectstore.delete_stream(&stream_name).await?;
     metadata::STREAM_INFO.delete_stream(&stream_name);
     event::STREAM_WRITERS.delete_stream(&stream_name);
+    stats::delete_stats(&stream_name, "json").unwrap_or_else(|e| {
+        log::warn!("failed to delete stats for stream {}: {:?}", stream_name, e)
+    });
 
     let stream_dir = StorageDir::new(&stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
@@ -229,6 +232,10 @@ pub async fn put_retention(
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        return Err(StreamError::StreamNotFound(stream_name));
+    }
+
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
@@ -360,6 +367,33 @@ pub mod error {
             match value {
                 MetadataError::StreamMetaNotFound(s) => StreamError::StreamNotFound(s),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::handlers::http::logstream::error::StreamError;
+    use crate::handlers::http::logstream::get_stats;
+    use actix_web::test::TestRequest;
+    use anyhow::bail;
+
+    #[actix_web::test]
+    #[should_panic]
+    async fn get_stats_panics_without_logstream() {
+        let req = TestRequest::default().to_http_request();
+        let _ = get_stats(req).await;
+    }
+
+    #[actix_web::test]
+    async fn get_stats_stream_not_found_error_for_unknown_logstream() -> anyhow::Result<()> {
+        let req = TestRequest::default()
+            .param("logstream", "test")
+            .to_http_request();
+
+        match get_stats(req).await {
+            Err(StreamError::StreamNotFound(_)) => Ok(()),
+            _ => bail!("expected StreamNotFound error"),
         }
     }
 }

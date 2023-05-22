@@ -27,16 +27,19 @@ pub struct Stats {
 }
 
 pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<Stats> {
+    let event_labels = event_labels(stream_name, format);
+    let storage_size_labels = storage_size_labels(stream_name);
+
     let events_ingested = EVENTS_INGESTED
-        .get_metric_with_label_values(&[stream_name, format])
+        .get_metric_with_label_values(&event_labels)
         .ok()?
         .get();
     let ingestion_size = EVENTS_INGESTED_SIZE
-        .get_metric_with_label_values(&[stream_name, format])
+        .get_metric_with_label_values(&event_labels)
         .ok()?
         .get();
     let storage_size = STORAGE_SIZE
-        .get_metric_with_label_values(&["data", stream_name, "parquet"])
+        .get_metric_with_label_values(&storage_size_labels)
         .ok()?
         .get();
     // this should be valid for all cases given that gauge must never go negative
@@ -48,4 +51,23 @@ pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<Stat
         ingestion: ingestion_size,
         storage: storage_size,
     })
+}
+
+pub fn delete_stats(stream_name: &str, format: &'static str) -> prometheus::Result<()> {
+    let event_labels = event_labels(stream_name, format);
+    let storage_size_labels = storage_size_labels(stream_name);
+
+    EVENTS_INGESTED.remove_label_values(&event_labels)?;
+    EVENTS_INGESTED_SIZE.remove_label_values(&event_labels)?;
+    STORAGE_SIZE.remove_label_values(&storage_size_labels)?;
+
+    Ok(())
+}
+
+fn event_labels<'a>(stream_name: &'a str, format: &'static str) -> [&'a str; 2] {
+    [stream_name, format]
+}
+
+fn storage_size_labels(stream_name: &str) -> [&str; 3] {
+    ["data", stream_name, "parquet"]
 }
