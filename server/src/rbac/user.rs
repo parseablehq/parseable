@@ -33,7 +33,7 @@ use super::role::{model::DefaultPrivilege, Action, Permission, RoleBuilder};
 pub struct User {
     pub username: String,
     pub password_hash: String,
-    pub roles: Vec<DefaultPrivilege>,
+    pub role: Vec<DefaultPrivilege>,
 }
 
 impl User {
@@ -44,7 +44,7 @@ impl User {
             Self {
                 username,
                 password_hash: hash,
-                roles: Vec::new(),
+                role: Vec::new(),
             },
             password,
         )
@@ -59,7 +59,7 @@ impl User {
 
     pub fn permissions(&self) -> Vec<Permission> {
         let perms: HashSet<Permission> = self
-            .roles
+            .role
             .iter()
             .flat_map(|role| RoleBuilder::from(role).build())
             .collect();
@@ -122,7 +122,7 @@ pub fn get_admin_user() -> User {
     User {
         username,
         password_hash: hashcode,
-        roles: vec![DefaultPrivilege::Admin],
+        role: vec![DefaultPrivilege::Admin],
     }
 }
 

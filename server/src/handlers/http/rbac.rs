@@ -108,13 +108,13 @@ pub async fn reset_password(username: String) -> Result<String, RBACError> {
 }
 
 // Put roles for given user
-pub async fn put_roles(
+pub async fn put_role(
     username: web::Path<String>,
-    roles: web::Json<serde_json::Value>,
+    role: web::Json<serde_json::Value>,
 ) -> Result<String, RBACError> {
     let username = username.into_inner();
-    let roles = roles.into_inner();
-    let roles: Vec<DefaultPrivilege> = serde_json::from_value(roles)?;
+    let role = role.into_inner();
+    let role: Vec<DefaultPrivilege> = serde_json::from_value(role)?;
 
     let permissions;
     if !Users.contains(&username) {
@@ -127,7 +127,7 @@ pub async fn put_roles(
         .iter_mut()
         .find(|user| user.username == username)
     {
-        user.roles = roles;
+        user.role = role;
         permissions = user.permissions()
     } else {
         // should be unreachable given state is always consistent
