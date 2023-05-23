@@ -206,6 +206,11 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     // User API
     let user_api = web::scope("/user")
         .service(
+            web::resource("")
+                // GET /user => List all users
+                .route(web::get().to(rbac::list_users).authorize(Action::ListUser)),
+        )
+        .service(
             web::resource("/{username}")
                 // PUT /user/{username} => Create a new user
                 .route(web::put().to(rbac::put_user).authorize(Action::PutUser))

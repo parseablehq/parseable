@@ -50,6 +50,17 @@ impl Users {
             .insert(user);
     }
 
+    pub fn list_users(&self) -> Vec<String> {
+        USER_AUTHORIZATION_MAP
+            .get()
+            .expect("map is set")
+            .read()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     pub fn delete_user(&self, username: &str) {
         USER_AUTHORIZATION_MAP
             .get()

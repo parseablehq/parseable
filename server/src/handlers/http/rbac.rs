@@ -33,6 +33,12 @@ use tokio::sync::Mutex;
 // async aware lock for updating storage metadata and user map atomicically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
+// Handler for GET /api/v1/user
+// returns list of all registerd users
+pub async fn list_users() -> impl Responder {
+    web::Json(Users.list_users())
+}
+
 // Handler for PUT /api/v1/user/{username}
 // Creates a new user by username if it does not exists
 // Otherwise make a call to reset password
