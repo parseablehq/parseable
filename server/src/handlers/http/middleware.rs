@@ -21,12 +21,15 @@ use std::future::{ready, Ready};
 
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
-    error::ErrorUnauthorized,
+    error::{ErrorBadRequest, ErrorUnauthorized},
     Error, HttpMessage,
 };
 use futures_util::future::LocalBoxFuture;
 
-use crate::rbac::{role::Action, Users};
+use crate::{
+    option::CONFIG,
+    rbac::{role::Action, Users},
+};
 
 pub struct Authorization {
     pub action: Action,
@@ -90,6 +93,59 @@ where
         Box::pin(async move {
             if !is_auth {
                 return Err(ErrorUnauthorized("Not authorized"));
+            }
+            fut.await
+        })
+    }
+}
+
+// The credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated
+// as root credentials. Any other user is not allowed to modify or delete
+// the root user. Deny request if username is same as username
+// from env variable P_USERNAME.
+pub struct DisAllowRootUser;
+
+impl<S, B> Transform<S, ServiceRequest> for DisAllowRootUser
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type InitError = ();
+    type Transform = DisallowRootUserMiddleware<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(DisallowRootUserMiddleware { service }))
+    }
+}
+
+pub struct DisallowRootUserMiddleware<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for DisallowRootUserMiddleware<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let username = req.match_info().get("username").unwrap_or("");
+        let is_root = username == CONFIG.parseable.username;
+        let fut = self.service.call(req);
+
+        Box::pin(async move {
+            if is_root {
+                return Err(ErrorBadRequest("Cannot call this API for root admin user"));
             }
             fut.await
         })

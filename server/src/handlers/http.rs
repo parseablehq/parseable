@@ -20,9 +20,8 @@ use std::fs::File;
 use std::io::BufReader;
 
 use actix_cors::Cors;
-use actix_web::dev::{Service, ServiceRequest};
-use actix_web::error::ErrorBadRequest;
-use actix_web::{middleware, web, App, HttpMessage, HttpServer, Route};
+use actix_web::dev::ServiceRequest;
+use actix_web::{web, App, HttpMessage, HttpServer, Route};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web_prometheus::PrometheusMetrics;
@@ -34,12 +33,12 @@ use crate::option::CONFIG;
 use crate::rbac::role::Action;
 use crate::rbac::Users;
 
-use self::auth_middleware::Authorization;
+use self::middleware::{Authorization, DisAllowRootUser};
 
-mod auth_middleware;
 mod health_check;
 mod ingest;
 mod logstream;
+mod middleware;
 mod query;
 mod rbac;
 
@@ -55,8 +54,8 @@ macro_rules! create_app {
         App::new()
             .wrap($prometheus.clone())
             .configure(|cfg| configure_routes(cfg))
-            .wrap(middleware::Logger::default())
-            .wrap(middleware::Compress::default())
+            .wrap(actix_web::middleware::Logger::default())
+            .wrap(actix_web::middleware::Compress::default())
             .wrap(
                 Cors::default()
                     .allow_any_header()
@@ -223,21 +222,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 // PUT /user/{username}/roles => Put roles for user
                 .route(web::put().to(rbac::put_roles).authorize(Action::PutRoles)),
         )
-        .wrap_fn(|req, srv| {
-            // The credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated
-            // as root credentials. Any other user is not allowed to modify or delete
-            // the root user. Deny request if username is same as username
-            // from env variable P_USERNAME.
-            let username = req.match_info().get("username").unwrap_or("");
-            let is_root = username == CONFIG.parseable.username;
-            let call = srv.call(req);
-            async move {
-                if is_root {
-                    return Err(ErrorBadRequest("Cannot call this API for root admin user"));
-                }
-                call.await
-            }
-        });
+        // Deny request if username is same as the env variable P_USERNAME.
+        .wrap(DisAllowRootUser);
 
     cfg.service(
         // Base path "{url}/api/v1"
