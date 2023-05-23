@@ -98,30 +98,30 @@ pub mod model {
     use super::{Action, RoleBuilder};
 
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-    #[serde(tag = "role", content = "resource", rename_all = "lowercase")]
-    pub enum DefaultRole {
+    #[serde(tag = "privilege", content = "resource", rename_all = "lowercase")]
+    pub enum DefaultPrivilege {
         Admin,
         Editor,
         Writer { stream: String },
         Reader { stream: String, tag: String },
     }
 
-    impl From<&DefaultRole> for RoleBuilder {
-        fn from(value: &DefaultRole) -> Self {
+    impl From<&DefaultPrivilege> for RoleBuilder {
+        fn from(value: &DefaultPrivilege) -> Self {
             match value {
-                DefaultRole::Admin => admin_role_builder(),
-                DefaultRole::Editor => editor_role_builder(),
-                DefaultRole::Writer { stream } => {
-                    writer_role_builder().with_stream(stream.to_owned())
+                DefaultPrivilege::Admin => admin_perm_builder(),
+                DefaultPrivilege::Editor => editor_perm_builder(),
+                DefaultPrivilege::Writer { stream } => {
+                    writer_perm_builder().with_stream(stream.to_owned())
                 }
-                DefaultRole::Reader { stream, tag } => reader_role_builder()
+                DefaultPrivilege::Reader { stream, tag } => reader_perm_builder()
                     .with_stream(stream.to_owned())
                     .with_tag(tag.to_owned()),
             }
         }
     }
 
-    fn admin_role_builder() -> RoleBuilder {
+    fn admin_perm_builder() -> RoleBuilder {
         RoleBuilder {
             actions: vec![Action::All],
             stream: Some("*".to_string()),
@@ -129,7 +129,7 @@ pub mod model {
         }
     }
 
-    fn editor_role_builder() -> RoleBuilder {
+    fn editor_perm_builder() -> RoleBuilder {
         RoleBuilder {
             actions: vec![
                 Action::Ingest,
@@ -148,7 +148,7 @@ pub mod model {
         }
     }
 
-    fn writer_role_builder() -> RoleBuilder {
+    fn writer_perm_builder() -> RoleBuilder {
         RoleBuilder {
             actions: vec![
                 Action::Ingest,
@@ -164,7 +164,7 @@ pub mod model {
         }
     }
 
-    fn reader_role_builder() -> RoleBuilder {
+    fn reader_perm_builder() -> RoleBuilder {
         RoleBuilder {
             actions: vec![
                 Action::Query,

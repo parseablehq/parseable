@@ -19,7 +19,7 @@
 use crate::{
     option::CONFIG,
     rbac::{
-        role::model::DefaultRole,
+        role::model::DefaultPrivilege,
         user::{PassCode, User},
         Users,
     },
@@ -114,7 +114,7 @@ pub async fn put_roles(
 ) -> Result<String, RBACError> {
     let username = username.into_inner();
     let roles = roles.into_inner();
-    let roles: Vec<DefaultRole> = serde_json::from_value(roles)?;
+    let roles: Vec<DefaultPrivilege> = serde_json::from_value(roles)?;
 
     let permissions;
     if !Users.contains(&username) {

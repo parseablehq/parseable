@@ -27,13 +27,13 @@ use rand::distributions::{Alphanumeric, DistString};
 
 use crate::option::CONFIG;
 
-use super::role::{model::DefaultRole, Action, Permission, RoleBuilder};
+use super::role::{model::DefaultPrivilege, Action, Permission, RoleBuilder};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct User {
     pub username: String,
     pub password_hash: String,
-    pub roles: Vec<DefaultRole>,
+    pub roles: Vec<DefaultPrivilege>,
 }
 
 impl User {
@@ -122,7 +122,7 @@ pub fn get_admin_user() -> User {
     User {
         username,
         password_hash: hashcode,
-        roles: vec![DefaultRole::Admin],
+        roles: vec![DefaultPrivilege::Admin],
     }
 }
 
