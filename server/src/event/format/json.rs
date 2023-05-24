@@ -25,7 +25,7 @@ use arrow_json::reader::{infer_json_schema_from_iterator, Decoder, DecoderOption
 use arrow_schema::{DataType, Field, Schema};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 use super::EventFormat;
 use crate::utils::{arrow::get_field, json::flatten_json_body};
@@ -116,7 +116,7 @@ impl EventFormat for Event {
 
 // Returns arrow schema with the fields that are present in the request body
 // This schema is an input to convert the request body to arrow record batch
-fn derive_arrow_schema(schema: &HashMap<String, Field>, fields: Vec<&str>) -> Result<Schema, ()> {
+fn derive_arrow_schema(schema: &HashMap<String, Field>, fields: HashSet<&str>) -> Result<Schema, ()> {
     let mut res = Vec::with_capacity(fields.len());
     let fields = fields.into_iter().map(|field_name| schema.get(field_name));
     for field in fields {
@@ -126,17 +126,12 @@ fn derive_arrow_schema(schema: &HashMap<String, Field>, fields: Vec<&str>) -> Re
     Ok(Schema::new(res))
 }
 
-fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a str>, ()> {
-    let mut keys = Vec::new();
+fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<HashSet<&'a str>, ()> {
+    let mut keys = HashSet::new();
     for value in values {
         if let Some(obj) = value.as_object() {
             for key in obj.keys() {
-                match keys.binary_search(&key.as_str()) {
-                    Ok(_) => (),
-                    Err(pos) => {
-                        keys.insert(pos, key.as_str());
-                    }
-                }
+                keys.insert(key.as_str());
             }
         } else {
             return Err(());
@@ -204,5 +199,38 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
         }
         DataType::Timestamp(_, _) => value.is_string() || value.is_number(),
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_collect_keys() {
+        let values = vec![
+            json!({"key1": "value1", "key2": "value2"}),
+            json!({"key2": "value3", "key3": "value4", "key4": "value5"}),
+            json!({"a": "value3", "b": "value4", "b": "value5"}),
+        ];
+
+        let result = collect_keys(values.iter().map(|value| value));
+        assert!(result.is_ok());
+
+        let keys = result.unwrap();
+        let expected = HashSet::from_iter(vec!["key1", "key2", "key3", "key4", "a", "b"]);
+        assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn test_collect_keys_invalid_input() {
+        let values = vec![
+            json!({"key1": "value1", "key2": "value2"}),
+            json!(42),
+        ];
+
+        let result = collect_keys(values.iter().map(|value| value));
+        assert!(result.is_err());
     }
 }

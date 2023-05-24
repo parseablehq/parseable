@@ -58,13 +58,13 @@ impl StorageDir {
         Self { data_path }
     }
 
-    pub fn file_time_suffix(time: NaiveDateTime, extention: &str) -> String {
+    pub fn file_time_suffix(time: NaiveDateTime, extension: &str) -> String {
         let uri = utils::date_to_prefix(time.date())
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");
         let hostname = utils::hostname_unchecked();
-        format!("{local_uri}{hostname}.{extention}")
+        format!("{local_uri}{hostname}.{extension}")
     }
 
     fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
@@ -118,7 +118,8 @@ impl StorageDir {
         &self,
         exclude: NaiveDateTime,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let hot_filename = StorageDir::file_time_suffix(exclude, ARROW_FILE_EXTENSION);
+        // This is the file currently being written to
+        let hot_file_suffix = StorageDir::file_time_suffix(exclude, ARROW_FILE_EXTENSION);
         // hashmap <time, vec[paths]> but exclude where hot filename matches
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let mut arrow_files = self.arrow_files();
@@ -128,7 +129,7 @@ impl StorageDir {
                 .unwrap()
                 .to_str()
                 .unwrap()
-                .ends_with(&hot_filename)
+                .ends_with(&hot_file_suffix)
         });
         for arrow_file_path in arrow_files {
             let key = Self::arrow_path_to_parquet(&arrow_file_path);
@@ -202,6 +203,9 @@ pub fn convert_disk_files_to_parquet(
         let props = parquet_writer_props().build();
         let merged_schema = record_reader.merged_schema();
         schemas.push(merged_schema.clone());
+
+        print!("schemas: {:?}\n", schemas);
+        
         let schema = Arc::new(merged_schema);
         let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
 
