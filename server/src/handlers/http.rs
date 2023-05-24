@@ -20,9 +20,8 @@ use std::fs::File;
 use std::io::BufReader;
 
 use actix_cors::Cors;
-use actix_web::dev::{Service, ServiceRequest};
-use actix_web::error::ErrorBadRequest;
-use actix_web::{middleware, web, App, HttpServer};
+use actix_web::dev::ServiceRequest;
+use actix_web::{web, App, HttpMessage, HttpServer, Route};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use actix_web_httpauth::middleware::HttpAuthentication;
 use actix_web_prometheus::PrometheusMetrics;
@@ -31,11 +30,15 @@ use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
 use crate::option::CONFIG;
-use crate::rbac::user_map;
+use crate::rbac::role::Action;
+use crate::rbac::Users;
+
+use self::middleware::{Authorization, DisAllowRootUser};
 
 mod health_check;
 mod ingest;
 mod logstream;
+mod middleware;
 mod query;
 mod rbac;
 
@@ -51,8 +54,8 @@ macro_rules! create_app {
         App::new()
             .wrap($prometheus.clone())
             .configure(|cfg| configure_routes(cfg))
-            .wrap(middleware::Logger::default())
-            .wrap(middleware::Compress::default())
+            .wrap(actix_web::middleware::Logger::default())
+            .wrap(actix_web::middleware::Compress::default())
             .wrap(
                 Cors::default()
                     .allow_any_header()
@@ -66,16 +69,15 @@ async fn authenticate(
     req: ServiceRequest,
     credentials: BasicAuth,
 ) -> Result<ServiceRequest, (actix_web::Error, ServiceRequest)> {
-    let username = credentials.user_id().trim();
+    let username = credentials.user_id().trim().to_owned();
     let password = credentials.password().unwrap().trim();
 
-    if let Some(user) = user_map().read().unwrap().get(username) {
-        if user.verify(password) {
-            return Ok(req);
-        }
+    if Users.authenticate(&username, password) {
+        req.extensions_mut().insert(username);
+        Ok(req)
+    } else {
+        Err((actix_web::error::ErrorUnauthorized("Unauthorized"), req))
     }
-
-    Err((actix_web::error::ErrorUnauthorized("Unauthorized"), req))
 }
 
 pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
@@ -135,69 +137,117 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .service(
             web::resource("")
                 // PUT "/logstream/{logstream}" ==> Create log stream
-                .route(web::put().to(logstream::put_stream))
+                .route(
+                    web::put()
+                        .to(logstream::put_stream)
+                        .authorize_for_stream(Action::CreateStream),
+                )
                 // POST "/logstream/{logstream}" ==> Post logs to given log stream
-                .route(web::post().to(ingest::post_event))
+                .route(
+                    web::post()
+                        .to(ingest::post_event)
+                        .authorize_for_stream(Action::Ingest),
+                )
                 // DELETE "/logstream/{logstream}" ==> Delete log stream
-                .route(web::delete().to(logstream::delete))
+                .route(
+                    web::delete()
+                        .to(logstream::delete)
+                        .authorize_for_stream(Action::DeleteStream),
+                )
                 .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
         )
         .service(
             web::resource("/alert")
                 // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
-                .route(web::put().to(logstream::put_alert))
+                .route(
+                    web::put()
+                        .to(logstream::put_alert)
+                        .authorize_for_stream(Action::PutAlert),
+                )
                 // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
-                .route(web::get().to(logstream::get_alert)),
+                .route(
+                    web::get()
+                        .to(logstream::get_alert)
+                        .authorize_for_stream(Action::GetAlert),
+                ),
         )
         .service(
             // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
-            web::resource("/schema").route(web::get().to(logstream::schema)),
+            web::resource("/schema").route(
+                web::get()
+                    .to(logstream::schema)
+                    .authorize_for_stream(Action::GetSchema),
+            ),
         )
         .service(
             // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
-            web::resource("/stats").route(web::get().to(logstream::get_stats)),
+            web::resource("/stats").route(
+                web::get()
+                    .to(logstream::get_stats)
+                    .authorize_for_stream(Action::GetStats),
+            ),
         )
         .service(
             web::resource("/retention")
                 // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
-                .route(web::put().to(logstream::put_retention))
+                .route(
+                    web::put()
+                        .to(logstream::put_retention)
+                        .authorize_for_stream(Action::PutRetention),
+                )
                 // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
-                .route(web::get().to(logstream::get_retention)),
+                .route(
+                    web::get()
+                        .to(logstream::get_retention)
+                        .authorize_for_stream(Action::GetRetention),
+                ),
         );
 
     // User API
-    let user_api = web::scope("/user").service(
-        web::resource("/{username}")
-            // POST /user/{username} => Create a new user
-            .route(web::put().to(rbac::put_user))
-            // DELETE /user/{username} => Delete a user
-            .route(web::delete().to(rbac::delete_user))
-            .wrap_fn(|req, srv| {
-                // The credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated
-                // as root credentials. Any other user is not allowed to modify or delete
-                // the root user. Deny request if username is same as username
-                // from env variable P_USERNAME.
-                let username = req.match_info().get("username").unwrap_or("");
-                let is_root = username == CONFIG.parseable.username;
-                let call = srv.call(req);
-                async move {
-                    if is_root {
-                        return Err(ErrorBadRequest("Cannot call this API for root admin user"));
-                    }
-                    call.await
-                }
-            }),
-    );
+    let user_api = web::scope("/user")
+        .service(
+            web::resource("")
+                // GET /user => List all users
+                .route(web::get().to(rbac::list_users).authorize(Action::ListUser)),
+        )
+        .service(
+            web::resource("/{username}")
+                // PUT /user/{username} => Create a new user
+                .route(web::put().to(rbac::put_user).authorize(Action::PutUser))
+                // DELETE /user/{username} => Delete a user
+                .route(
+                    web::delete()
+                        .to(rbac::delete_user)
+                        .authorize(Action::DeleteUser),
+                ),
+        )
+        .service(
+            web::resource("/{username}/role")
+                // PUT /user/{username}/roles => Put roles for user
+                .route(web::put().to(rbac::put_role).authorize(Action::PutRoles)),
+        )
+        // Deny request if username is same as the env variable P_USERNAME.
+        .wrap(DisAllowRootUser);
 
     cfg.service(
         // Base path "{url}/api/v1"
         web::scope(&base_path())
             // POST "/query" ==> Get results of the SQL query passed in request body
-            .service(web::resource("/query").route(web::post().to(query::query)))
+            .service(
+                web::resource("/query").route(
+                    web::post()
+                        .to(query::query)
+                        .authorize_for_stream(Action::Query),
+                ),
+            )
             // POST "/ingest" ==> Post logs to given log stream based on header
             .service(
                 web::resource("/ingest")
-                    .route(web::post().to(ingest::ingest))
+                    .route(
+                        web::post()
+                            .to(ingest::ingest)
+                            .authorize_for_stream(Action::Ingest),
+                    )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
@@ -208,7 +258,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 web::scope("/logstream")
                     .service(
                         // GET "/logstream" ==> Get list of all Log Streams on the server
-                        web::resource("").route(web::get().to(logstream::list)),
+                        web::resource("")
+                            .route(web::get().to(logstream::list).authorize(Action::ListStream)),
                     )
                     .service(
                         // logstream API
@@ -228,4 +279,25 @@ fn base_path() -> String {
 
 pub fn metrics_path() -> String {
     format!("{}/metrics", base_path())
+}
+
+trait RouteExt {
+    fn authorize(self, action: Action) -> Self;
+    fn authorize_for_stream(self, action: Action) -> Self;
+}
+
+impl RouteExt for Route {
+    fn authorize(self, action: Action) -> Self {
+        self.wrap(Authorization {
+            action,
+            stream: false,
+        })
+    }
+
+    fn authorize_for_stream(self, action: Action) -> Self {
+        self.wrap(Authorization {
+            action,
+            stream: true,
+        })
+    }
 }

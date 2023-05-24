@@ -19,8 +19,9 @@
 use crate::{
     option::CONFIG,
     rbac::{
+        role::model::DefaultPrivilege,
         user::{PassCode, User},
-        user_map,
+        Users,
     },
     storage::{self, ObjectStorageError, StorageMetadata},
     validator::{self, error::UsernameValidationError},
@@ -32,6 +33,12 @@ use tokio::sync::Mutex;
 // async aware lock for updating storage metadata and user map atomicically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
+// Handler for GET /api/v1/user
+// returns list of all registerd users
+pub async fn list_users() -> impl Responder {
+    web::Json(Users.list_users())
+}
+
 // Handler for PUT /api/v1/user/{username}
 // Creates a new user by username if it does not exists
 // Otherwise make a call to reset password
@@ -40,8 +47,7 @@ pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBA
     let username = username.into_inner();
     validator::user_name(&username)?;
     let _ = UPDATE_LOCK.lock().await;
-    let user_exists = user_map().read().unwrap().contains_key(&username);
-    if user_exists {
+    if Users.contains(&username) {
         reset_password(username).await
     } else {
         let mut metadata = get_metadata().await?;
@@ -54,7 +60,7 @@ pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBA
         metadata.users.push(user.clone());
         put_metadata(&metadata).await?;
         // set this user to user map
-        user_map().write().unwrap().insert(user);
+        Users.put_user(user);
 
         Ok(password)
     }
@@ -65,7 +71,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
-    if !user_map().read().unwrap().contains_key(&username) {
+    if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
     // delete from parseable.json first
@@ -73,7 +79,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     metadata.users.retain(|user| user.username != username);
     put_metadata(&metadata).await?;
     // update in mem table
-    user_map().write().unwrap().remove(&username);
+    Users.delete_user(&username);
     Ok(format!("deleted user: {username}"))
 }
 
@@ -97,14 +103,41 @@ pub async fn reset_password(username: String) -> Result<String, RBACError> {
     put_metadata(&metadata).await?;
 
     // update in mem table
-    user_map()
-        .write()
-        .unwrap()
-        .get_mut(&username)
-        .expect("checked that user exists in map")
-        .password_hash = hash;
-
+    Users.change_password_hash(&username, &hash);
     Ok(password)
+}
+
+// Put roles for given user
+pub async fn put_role(
+    username: web::Path<String>,
+    role: web::Json<serde_json::Value>,
+) -> Result<String, RBACError> {
+    let username = username.into_inner();
+    let role = role.into_inner();
+    let role: Vec<DefaultPrivilege> = serde_json::from_value(role)?;
+
+    let permissions;
+    if !Users.contains(&username) {
+        return Err(RBACError::UserDoesNotExist);
+    };
+    // update parseable.json first
+    let mut metadata = get_metadata().await?;
+    if let Some(user) = metadata
+        .users
+        .iter_mut()
+        .find(|user| user.username == username)
+    {
+        user.role = role;
+        permissions = user.permissions()
+    } else {
+        // should be unreachable given state is always consistent
+        return Err(RBACError::UserDoesNotExist);
+    }
+
+    put_metadata(&metadata).await?;
+    // update in mem table
+    Users.put_permissions(&username, &permissions);
+    Ok(format!("Roles updated successfully for {}", username))
 }
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
@@ -129,6 +162,8 @@ pub enum RBACError {
     UserExists,
     #[error("User does not exist")]
     UserDoesNotExist,
+    #[error("{0}")]
+    SerdeError(#[from] serde_json::Error),
     #[error("Failed to connect to storage: {0}")]
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("invalid Username: {0}")]
@@ -140,6 +175,7 @@ impl actix_web::ResponseError for RBACError {
         match self {
             Self::UserExists => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist => StatusCode::NOT_FOUND,
+            Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::ValidationError(_) => StatusCode::BAD_REQUEST,
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
