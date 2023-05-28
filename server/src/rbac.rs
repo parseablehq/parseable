@@ -79,6 +79,13 @@ impl Users {
         user_map().keys().cloned().collect()
     }
 
+    pub fn get_role(&self, username: &str) -> Vec<DefaultPrivilege> {
+        user_map()
+            .get(username)
+            .map(|user| user.role.clone())
+            .unwrap_or_default()
+    }
+
     pub fn delete_user(&self, username: &str) {
         mut_user_map().remove(username);
         mut_auth_map().remove(username);

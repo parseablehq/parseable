@@ -205,7 +205,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .service(
             web::resource("/{username}/role")
                 // PUT /user/{username}/roles => Put roles for user
-                .route(web::put().to(rbac::put_role).authorize(Action::PutRoles)),
+                .route(web::put().to(rbac::put_role).authorize(Action::PutRoles))
+                .route(web::get().to(rbac::get_role).authorize(Action::GetRole)),
         )
         // Deny request if username is same as the env variable P_USERNAME.
         .wrap(DisAllowRootUser);
