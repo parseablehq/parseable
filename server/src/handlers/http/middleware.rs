@@ -77,29 +77,30 @@ where
     forward_ready!(service);
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
+        // Extract username and password using basic auth extractor.
         let creds = req.extract::<BasicAuth>().into_inner();
-        let creds: Result<(String, String), Error> = creds.map_err(Into::into).and_then(|creds| {
+        let creds = creds.map_err(Into::into).map(|creds| {
             let username = creds.user_id().trim().to_owned();
-            if let Some(password) = creds.password() {
-                Ok((username, password.trim().to_owned()))
-            } else {
-                Err(ErrorBadRequest("Password is required in basic auth"))
-            }
+            // password is not mandatory by basic auth standard.
+            // If not provided then treat as empty string
+            let password = creds.password().unwrap_or("").trim().to_owned();
+            (username, password)
         });
+
         let stream = if self.match_stream {
             req.match_info().get("logstream")
         } else {
             None
         };
-        let is_auth = creds.map(|creds| {
-            let (username, password) = creds;
+
+        let auth_result: Result<bool, Error> = creds.map(|(username, password)| {
             Users.authenticate(username, password, self.action, stream)
         });
 
         let fut = self.service.call(req);
 
         Box::pin(async move {
-            if !is_auth? {
+            if !auth_result? {
                 return Err(ErrorUnauthorized("Not authorized"));
             }
 
