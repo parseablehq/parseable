@@ -22,8 +22,9 @@ use std::future::{ready, Ready};
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     error::{ErrorBadRequest, ErrorUnauthorized},
-    Error, HttpMessage,
+    Error,
 };
+use actix_web_httpauth::extractors::basic::BasicAuth;
 use futures_util::future::LocalBoxFuture;
 
 use crate::{
@@ -31,12 +32,12 @@ use crate::{
     rbac::{role::Action, Users},
 };
 
-pub struct Authorization {
+pub struct Auth {
     pub action: Action,
     pub stream: bool,
 }
 
-impl<S, B> Transform<S, ServiceRequest> for Authorization
+impl<S, B> Transform<S, ServiceRequest> for Auth
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
     S::Future: 'static,
@@ -45,11 +46,11 @@ where
     type Response = ServiceResponse<B>;
     type Error = Error;
     type InitError = ();
-    type Transform = AuthorizationMiddleware<S>;
+    type Transform = AuthMiddleware<S>;
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
-        ready(Ok(AuthorizationMiddleware {
+        ready(Ok(AuthMiddleware {
             action: self.action,
             match_stream: self.stream,
             service,
@@ -57,13 +58,13 @@ where
     }
 }
 
-pub struct AuthorizationMiddleware<S> {
+pub struct AuthMiddleware<S> {
     action: Action,
     match_stream: bool,
     service: S,
 }
 
-impl<S, B> Service<ServiceRequest> for AuthorizationMiddleware<S>
+impl<S, B> Service<ServiceRequest> for AuthMiddleware<S>
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
     S::Future: 'static,
@@ -75,25 +76,34 @@ where
 
     forward_ready!(service);
 
-    fn call(&self, req: ServiceRequest) -> Self::Future {
+    fn call(&self, mut req: ServiceRequest) -> Self::Future {
+        // Extract username and password using basic auth extractor.
+        let creds = req.extract::<BasicAuth>().into_inner();
+        let creds = creds.map_err(Into::into).map(|creds| {
+            let username = creds.user_id().trim().to_owned();
+            // password is not mandatory by basic auth standard.
+            // If not provided then treat as empty string
+            let password = creds.password().unwrap_or("").trim().to_owned();
+            (username, password)
+        });
+
         let stream = if self.match_stream {
             req.match_info().get("logstream")
         } else {
             None
         };
-        let extensions = req.extensions();
-        let username = extensions
-            .get::<String>()
-            .expect("authentication layer verified username");
-        let is_auth = Users.check_permission(username, self.action, stream);
-        drop(extensions);
+
+        let auth_result: Result<bool, Error> = creds.map(|(username, password)| {
+            Users.authenticate(username, password, self.action, stream)
+        });
 
         let fut = self.service.call(req);
 
         Box::pin(async move {
-            if !is_auth {
+            if !auth_result? {
                 return Err(ErrorUnauthorized("Not authorized"));
             }
+
             fut.await
         })
     }

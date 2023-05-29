@@ -20,10 +20,7 @@ use std::fs::File;
 use std::io::BufReader;
 
 use actix_cors::Cors;
-use actix_web::dev::ServiceRequest;
-use actix_web::{web, App, HttpMessage, HttpServer, Route};
-use actix_web_httpauth::extractors::basic::BasicAuth;
-use actix_web_httpauth::middleware::HttpAuthentication;
+use actix_web::{web, App, HttpServer, Route};
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use rustls::{Certificate, PrivateKey, ServerConfig};
@@ -31,9 +28,8 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 
 use crate::option::CONFIG;
 use crate::rbac::role::Action;
-use crate::rbac::Users;
 
-use self::middleware::{Authorization, DisAllowRootUser};
+use self::middleware::{Auth, DisAllowRootUser};
 
 mod health_check;
 mod ingest;
@@ -63,21 +59,6 @@ macro_rules! create_app {
                     .allow_any_origin(),
             )
     };
-}
-
-async fn authenticate(
-    req: ServiceRequest,
-    credentials: BasicAuth,
-) -> Result<ServiceRequest, (actix_web::Error, ServiceRequest)> {
-    let username = credentials.user_id().trim().to_owned();
-    let password = credentials.password().unwrap().trim();
-
-    if Users.authenticate(&username, password) {
-        req.extensions_mut().insert(username);
-        Ok(req)
-    } else {
-        Err((actix_web::error::ErrorUnauthorized("Unauthorized"), req))
-    }
 }
 
 pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
@@ -224,7 +205,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .service(
             web::resource("/{username}/role")
                 // PUT /user/{username}/roles => Put roles for user
-                .route(web::put().to(rbac::put_role).authorize(Action::PutRoles)),
+                .route(web::put().to(rbac::put_role).authorize(Action::PutRoles))
+                .route(web::get().to(rbac::get_role).authorize(Action::GetRole)),
         )
         // Deny request if username is same as the env variable P_USERNAME.
         .wrap(DisAllowRootUser);
@@ -266,8 +248,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                         logstream_api,
                     ),
             )
-            .service(user_api)
-            .wrap(HttpAuthentication::basic(authenticate)),
+            .service(user_api),
     )
     // GET "/" ==> Serve the static frontend directory
     .service(ResourceFiles::new("/", generated));
@@ -288,14 +269,14 @@ trait RouteExt {
 
 impl RouteExt for Route {
     fn authorize(self, action: Action) -> Self {
-        self.wrap(Authorization {
+        self.wrap(Auth {
             action,
             stream: false,
         })
     }
 
     fn authorize_for_stream(self, action: Action) -> Self {
-        self.wrap(Authorization {
+        self.wrap(Auth {
             action,
             stream: true,
         })

@@ -66,6 +66,16 @@ pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBA
     }
 }
 
+// Handler for GET /api/v1/user/{username}/role
+// returns role for a user if that user exists
+pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBACError> {
+    if !Users.contains(&username) {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
+    Ok(web::Json(Users.get_role(&username)))
+}
+
 // Handler for DELETE /api/v1/user/delete/{username}
 pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
@@ -116,7 +126,6 @@ pub async fn put_role(
     let role = role.into_inner();
     let role: Vec<DefaultPrivilege> = serde_json::from_value(role)?;
 
-    let permissions;
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
@@ -127,8 +136,7 @@ pub async fn put_role(
         .iter_mut()
         .find(|user| user.username == username)
     {
-        user.role = role;
-        permissions = user.permissions()
+        user.role.clone_from(&role);
     } else {
         // should be unreachable given state is always consistent
         return Err(RBACError::UserDoesNotExist);
@@ -136,7 +144,7 @@ pub async fn put_role(
 
     put_metadata(&metadata).await?;
     // update in mem table
-    Users.put_permissions(&username, &permissions);
+    Users.put_role(&username, role);
     Ok(format!("Roles updated successfully for {}", username))
 }
 

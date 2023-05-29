@@ -35,6 +35,7 @@ pub enum Action {
     ListUser,
     DeleteUser,
     PutRoles,
+    GetRole,
     All,
 }
 
@@ -71,10 +72,10 @@ impl RoleBuilder {
                 Action::Ingest => Permission::Stream(action, self.stream.clone().unwrap()),
                 Action::Query => Permission::Stream(action, self.stream.clone().unwrap()),
                 Action::CreateStream => Permission::Unit(action),
+                Action::DeleteStream => Permission::Unit(action),
                 Action::ListStream => Permission::Unit(action),
                 Action::GetSchema => Permission::Stream(action, self.stream.clone().unwrap()),
                 Action::GetStats => Permission::Stream(action, self.stream.clone().unwrap()),
-                Action::DeleteStream => Permission::Stream(action, self.stream.clone().unwrap()),
                 Action::GetRetention => Permission::Stream(action, self.stream.clone().unwrap()),
                 Action::PutRetention => Permission::Stream(action, self.stream.clone().unwrap()),
                 Action::PutAlert => Permission::Stream(action, self.stream.clone().unwrap()),
@@ -82,6 +83,7 @@ impl RoleBuilder {
                 Action::PutUser => Permission::Unit(action),
                 Action::ListUser => Permission::Unit(action),
                 Action::PutRoles => Permission::Unit(action),
+                Action::GetRole => Permission::Unit(action),
                 Action::DeleteUser => Permission::Unit(action),
                 Action::All => Permission::Stream(action, self.stream.clone().unwrap()),
             };

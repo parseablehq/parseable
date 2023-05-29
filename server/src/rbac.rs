@@ -16,136 +16,146 @@
  *
  */
 
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use once_cell::sync::OnceCell;
 
+use crate::option::CONFIG;
+
 use self::{
-    role::{Action, Permission},
-    user::{get_admin_user, verify, User, UserMap, UserPermMap},
+    auth::AuthMap,
+    role::{model::DefaultPrivilege, Action},
+    user::{get_admin_user, User, UserMap},
 };
 
+pub mod auth;
 pub mod role;
 pub mod user;
 
-pub static USER_AUTHENTICATION_MAP: OnceCell<RwLock<UserMap>> = OnceCell::new();
-pub static USER_AUTHORIZATION_MAP: OnceCell<RwLock<UserPermMap>> = OnceCell::new();
+pub static USER_MAP: OnceCell<RwLock<UserMap>> = OnceCell::new();
+pub static AUTH_MAP: OnceCell<RwLock<AuthMap>> = OnceCell::new();
+
+fn user_map() -> RwLockReadGuard<'static, UserMap> {
+    USER_MAP
+        .get()
+        .expect("map is set")
+        .read()
+        .expect("not poisoned")
+}
+
+fn mut_user_map() -> RwLockWriteGuard<'static, UserMap> {
+    USER_MAP
+        .get()
+        .expect("map is set")
+        .write()
+        .expect("not poisoned")
+}
+
+fn auth_map() -> RwLockReadGuard<'static, AuthMap> {
+    AUTH_MAP
+        .get()
+        .expect("map is set")
+        .read()
+        .expect("not poisoned")
+}
+
+fn mut_auth_map() -> RwLockWriteGuard<'static, AuthMap> {
+    AUTH_MAP
+        .get()
+        .expect("map is set")
+        .write()
+        .expect("not poisoned")
+}
 
 pub struct Users;
 
 impl Users {
     pub fn put_user(&self, user: User) {
-        USER_AUTHORIZATION_MAP
-            .get()
-            .expect("map is set")
-            .write()
-            .unwrap()
-            .insert(&user);
-
-        USER_AUTHENTICATION_MAP
-            .get()
-            .expect("map is set")
-            .write()
-            .unwrap()
-            .insert(user);
+        mut_auth_map().remove(&user.username);
+        mut_user_map().insert(user);
     }
 
     pub fn list_users(&self) -> Vec<String> {
-        USER_AUTHORIZATION_MAP
-            .get()
-            .expect("map is set")
-            .read()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect()
+        user_map().keys().cloned().collect()
+    }
+
+    pub fn get_role(&self, username: &str) -> Vec<DefaultPrivilege> {
+        user_map()
+            .get(username)
+            .map(|user| user.role.clone())
+            .unwrap_or_default()
     }
 
     pub fn delete_user(&self, username: &str) {
-        USER_AUTHORIZATION_MAP
-            .get()
-            .expect("map is set")
-            .write()
-            .unwrap()
-            .remove(username);
-
-        USER_AUTHENTICATION_MAP
-            .get()
-            .expect("map is set")
-            .write()
-            .unwrap()
-            .remove(username);
+        mut_user_map().remove(username);
+        mut_auth_map().remove(username);
     }
 
     pub fn change_password_hash(&self, username: &str, hash: &String) {
-        if let Some(entry) = USER_AUTHENTICATION_MAP
-            .get()
-            .expect("map is set")
-            .write()
-            .unwrap()
-            .get_mut(username)
-        {
-            entry.clone_from(hash)
+        if let Some(user) = mut_user_map().get_mut(username) {
+            user.password_hash.clone_from(hash)
         };
+        mut_auth_map().remove(username);
     }
 
-    pub fn put_permissions(&self, username: &str, roles: &Vec<Permission>) {
-        if let Some(entry) = USER_AUTHORIZATION_MAP
-            .get()
-            .expect("map is set")
-            .write()
-            .unwrap()
-            .get_mut(username)
-        {
-            entry.clone_from(roles)
+    pub fn put_role(&self, username: &str, roles: Vec<DefaultPrivilege>) {
+        if let Some(user) = mut_user_map().get_mut(username) {
+            user.role = roles;
+            mut_auth_map().remove(username)
         };
     }
 
     pub fn contains(&self, username: &str) -> bool {
-        USER_AUTHENTICATION_MAP
-            .get()
-            .expect("map is set")
-            .read()
-            .unwrap()
-            .contains_key(username)
+        user_map().contains_key(username)
     }
 
-    pub fn authenticate(&self, username: &str, password: &str) -> bool {
-        if let Some(hash) = USER_AUTHENTICATION_MAP
-            .get()
-            .expect("map is set")
-            .read()
-            .unwrap()
-            .get(username)
-        {
-            verify(hash, password)
-        } else {
-            false
+    pub fn authenticate(
+        &self,
+        username: String,
+        password: String,
+        action: Action,
+        stream: Option<&str>,
+    ) -> bool {
+        let key = (username, password);
+        // try fetch from auth map for faster auth flow
+        if let Some(res) = auth_map().check_auth(&key, action, stream) {
+            return res;
         }
-    }
 
-    pub fn check_permission(&self, username: &str, action: Action, stream: Option<&str>) -> bool {
-        USER_AUTHORIZATION_MAP
-            .get()
-            .expect("map is set")
-            .read()
-            .unwrap()
-            .has_perm(username, action, stream)
+        let (username, password) = key;
+        // verify pass and add this user's perm to auth map
+        if let Some(user) = user_map().get(&username) {
+            if user.verify_password(&password) {
+                let mut auth_map = mut_auth_map();
+                auth_map.add_user(username.clone(), password.clone(), user.permissions());
+                // verify auth and return
+                let key = (username, password);
+                return auth_map
+                    .check_auth(&key, action, stream)
+                    .expect("entry for this key just added");
+            }
+        }
+
+        false
     }
 }
 
 pub fn set_user_map(users: Vec<User>) {
-    let mut perm_map = UserPermMap::from(&users);
     let mut user_map = UserMap::from(users);
+    let mut auth_map = AuthMap::default();
     let admin = get_admin_user();
-    perm_map.insert(&admin);
+    let admin_permissions = admin.permissions();
     user_map.insert(admin);
+    auth_map.add_user(
+        CONFIG.parseable.username.clone(),
+        CONFIG.parseable.password.clone(),
+        admin_permissions,
+    );
 
-    USER_AUTHENTICATION_MAP
+    USER_MAP
         .set(RwLock::new(user_map))
         .expect("map is only set once");
-
-    USER_AUTHORIZATION_MAP
-        .set(RwLock::new(perm_map))
+    AUTH_MAP
+        .set(RwLock::new(auth_map))
         .expect("map is only set once");
 }

@@ -27,7 +27,7 @@ use rand::distributions::{Alphanumeric, DistString};
 
 use crate::option::CONFIG;
 
-use super::role::{model::DefaultPrivilege, Action, Permission, RoleBuilder};
+use super::role::{model::DefaultPrivilege, Permission, RoleBuilder};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct User {
@@ -65,6 +65,10 @@ impl User {
             .collect();
         perms.into_iter().collect()
     }
+
+    pub fn verify_password(&self, password: &str) -> bool {
+        verify(&self.password_hash, password)
+    }
 }
 
 // Take the password and compare with the hash stored internally (PHC format ==>
@@ -90,25 +94,6 @@ fn gen_hash(password: &str) -> String {
     hashcode
 }
 
-#[derive(Debug, Default, derive_more::Deref, derive_more::DerefMut)]
-pub struct UserMap(HashMap<String, String>);
-
-impl UserMap {
-    pub fn insert(&mut self, user: User) {
-        self.0.insert(user.username, user.password_hash);
-    }
-}
-
-impl From<Vec<User>> for UserMap {
-    fn from(users: Vec<User>) -> Self {
-        let mut user_map = Self::default();
-        for user in users {
-            user_map.insert(user);
-        }
-        user_map
-    }
-}
-
 pub struct PassCode {
     pub password: String,
     pub hash: String,
@@ -127,48 +112,18 @@ pub fn get_admin_user() -> User {
 }
 
 #[derive(Debug, Default, Clone, derive_more::Deref, derive_more::DerefMut)]
-pub struct UserPermMap(HashMap<String, Vec<Permission>>);
+pub struct UserMap(HashMap<String, User>);
 
-impl UserPermMap {
-    pub fn insert(&mut self, user: &User) {
-        self.0.insert(user.username.clone(), user.permissions());
-    }
-
-    pub fn has_perm(
-        &self,
-        username: &str,
-        required_action: Action,
-        on_stream: Option<&str>,
-    ) -> bool {
-        if let Some(perms) = self.get(username) {
-            perms.iter().any(|user_perm| {
-                match *user_perm {
-                    // if any action is ALL then we we authorize
-                    Permission::Unit(action) => action == required_action || action == Action::All,
-                    Permission::Stream(action, ref stream) => {
-                        let ok_stream = if let Some(on_stream) = on_stream {
-                            stream == on_stream || stream == "*"
-                        } else {
-                            // if no stream to match then stream check is not needed
-                            true
-                        };
-                        (action == required_action || action == Action::All) && ok_stream
-                    }
-                }
-            })
-        } else {
-            // NO permission set for this user
-            false
-        }
+impl UserMap {
+    pub fn insert(&mut self, user: User) {
+        self.0.insert(user.username.clone(), user);
     }
 }
 
-impl From<&Vec<User>> for UserPermMap {
-    fn from(users: &Vec<User>) -> Self {
+impl From<Vec<User>> for UserMap {
+    fn from(users: Vec<User>) -> Self {
         let mut map = Self::default();
-        for user in users {
-            map.insert(user)
-        }
+        map.extend(users.into_iter().map(|user| (user.username.clone(), user)));
         map
     }
 }
