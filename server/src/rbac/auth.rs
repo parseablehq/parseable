@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use super::role::{Action, Permission};
 
-// A session is quicker way to authenticate user based on username and password
+// quicker way to authenticate user based on username and password
 // All users in this map are always authenticated
 #[derive(Debug, Default)]
 pub struct AuthMap {
@@ -28,8 +28,6 @@ pub struct AuthMap {
 }
 
 impl AuthMap {
-    // add user to the session store and return session token
-    // does not care about session from existing user
     pub fn add_user(&mut self, username: String, password: String, permissions: Vec<Permission>) {
         self.inner.insert((username, password), permissions);
     }
