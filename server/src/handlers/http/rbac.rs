@@ -96,7 +96,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
 // Reset password for given username
 // returns new password generated for this user
 pub async fn reset_password(username: String) -> Result<String, RBACError> {
-    // get new password for this user
+    // generate new password for this user
     let PassCode { password, hash } = User::gen_new_password();
     // update parseable.json first
     let mut metadata = get_metadata().await?;
@@ -145,7 +145,7 @@ pub async fn put_role(
     put_metadata(&metadata).await?;
     // update in mem table
     Users.put_role(&username, role);
-    Ok(format!("Roles updated successfully for {}", username))
+    Ok(format!("Roles updated successfully for {username}"))
 }
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {

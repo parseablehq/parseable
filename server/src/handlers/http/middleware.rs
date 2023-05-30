@@ -27,10 +27,7 @@ use actix_web::{
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use futures_util::future::LocalBoxFuture;
 
-use crate::{
-    option::CONFIG,
-    rbac::{role::Action, Users},
-};
+use crate::{option::CONFIG, rbac::role::Action, rbac::Users};
 
 pub struct Auth {
     pub action: Action,
@@ -77,7 +74,7 @@ where
     forward_ready!(service);
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
-        // Extract username and password using basic auth extractor.
+        // Extract username and password from the request using basic auth extractor.
         let creds = req.extract::<BasicAuth>().into_inner();
         let creds = creds.map_err(Into::into).map(|creds| {
             let username = creds.user_id().trim().to_owned();

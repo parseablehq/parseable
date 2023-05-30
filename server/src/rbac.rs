@@ -16,57 +16,16 @@
  *
  */
 
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-
-use once_cell::sync::OnceCell;
-
-use crate::option::CONFIG;
-
-use self::{
-    auth::AuthMap,
-    role::{model::DefaultPrivilege, Action},
-    user::{get_admin_user, User, UserMap},
-};
-
-pub mod auth;
+pub mod map;
 pub mod role;
 pub mod user;
 
-pub static USER_MAP: OnceCell<RwLock<UserMap>> = OnceCell::new();
-pub static AUTH_MAP: OnceCell<RwLock<AuthMap>> = OnceCell::new();
+use crate::rbac::map::{auth_map, mut_auth_map, mut_user_map, user_map};
+use crate::rbac::role::{model::DefaultPrivilege, Action};
+use crate::rbac::user::User;
 
-fn user_map() -> RwLockReadGuard<'static, UserMap> {
-    USER_MAP
-        .get()
-        .expect("map is set")
-        .read()
-        .expect("not poisoned")
-}
-
-fn mut_user_map() -> RwLockWriteGuard<'static, UserMap> {
-    USER_MAP
-        .get()
-        .expect("map is set")
-        .write()
-        .expect("not poisoned")
-}
-
-fn auth_map() -> RwLockReadGuard<'static, AuthMap> {
-    AUTH_MAP
-        .get()
-        .expect("map is set")
-        .read()
-        .expect("not poisoned")
-}
-
-fn mut_auth_map() -> RwLockWriteGuard<'static, AuthMap> {
-    AUTH_MAP
-        .get()
-        .expect("map is set")
-        .write()
-        .expect("not poisoned")
-}
-
+// This type encapsulates both the user_map and auth_map
+// so other entities deal with only this type
 pub struct Users;
 
 impl Users {
@@ -122,13 +81,15 @@ impl Users {
             return res;
         }
 
+        // if not found in auth map, look into user map
         let (username, password) = key;
-        // verify pass and add this user's perm to auth map
         if let Some(user) = user_map().get(&username) {
+            // if user exists and password matches
+            // add this user to auth map
             if user.verify_password(&password) {
                 let mut auth_map = mut_auth_map();
                 auth_map.add_user(username.clone(), password.clone(), user.permissions());
-                // verify auth and return
+                // verify from auth map and return
                 let key = (username, password);
                 return auth_map
                     .check_auth(&key, action, stream)
@@ -138,24 +99,4 @@ impl Users {
 
         false
     }
-}
-
-pub fn set_user_map(users: Vec<User>) {
-    let mut user_map = UserMap::from(users);
-    let mut auth_map = AuthMap::default();
-    let admin = get_admin_user();
-    let admin_permissions = admin.permissions();
-    user_map.insert(admin);
-    auth_map.add_user(
-        CONFIG.parseable.username.clone(),
-        CONFIG.parseable.password.clone(),
-        admin_permissions,
-    );
-
-    USER_MAP
-        .set(RwLock::new(user_map))
-        .expect("map is only set once");
-    AUTH_MAP
-        .set(RwLock::new(auth_map))
-        .expect("map is only set once");
 }
