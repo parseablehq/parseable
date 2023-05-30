@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
@@ -27,8 +27,11 @@ use rand::distributions::{Alphanumeric, DistString};
 
 use crate::option::CONFIG;
 
-use super::role::{model::DefaultPrivilege, Permission, RoleBuilder};
+use crate::rbac::role::{model::DefaultPrivilege, Permission, RoleBuilder};
 
+// Represents a User in the system
+// can be the root admin user (set with env vars at startup / restart)
+// or user(s) created by the root user
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct User {
     pub username: String,
@@ -108,22 +111,5 @@ pub fn get_admin_user() -> User {
         username,
         password_hash: hashcode,
         role: vec![DefaultPrivilege::Admin],
-    }
-}
-
-#[derive(Debug, Default, Clone, derive_more::Deref, derive_more::DerefMut)]
-pub struct UserMap(HashMap<String, User>);
-
-impl UserMap {
-    pub fn insert(&mut self, user: User) {
-        self.0.insert(user.username.clone(), user);
-    }
-}
-
-impl From<Vec<User>> for UserMap {
-    fn from(users: Vec<User>) -> Self {
-        let mut map = Self::default();
-        map.extend(users.into_iter().map(|user| (user.username.clone(), user)));
-        map
     }
 }
