@@ -68,21 +68,11 @@ pub struct S3Config {
     pub endpoint_url: String,
 
     /// The access key for AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_ACCESS_KEY",
-        value_name = "access-key",
-        required_unless_present = "profile_name"
-    )]
+    #[arg(long, env = "P_S3_ACCESS_KEY", value_name = "access-key")]
     pub access_key_id: Option<String>,
 
     /// The secret key for AWS S3 or compatible object storage platform
-    #[arg(
-        long,
-        env = "P_S3_SECRET_KEY",
-        value_name = "secret-key",
-        required_unless_present = "profile_name"
-    )]
+    #[arg(long, env = "P_S3_SECRET_KEY", value_name = "secret-key")]
     pub secret_key: Option<String>,
 
     // Use aws profile name to fetch credentials
@@ -91,7 +81,6 @@ pub struct S3Config {
         env = "P_AWS_PROFILE_NAME",
         value_name = "profile",
         conflicts_with_all = ["access_key_id", "secret_key"],
-        required = false
     )]
     pub profile_name: Option<String>,
 
@@ -201,7 +190,7 @@ impl ObjectStorageProvider for S3Config {
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
 
-        let object_store_registry = DefaultObjectStoreRegistry::new();
+        let object_store_registry: DefaultObjectStoreRegistry = DefaultObjectStoreRegistry::new();
         let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(s3));
 
