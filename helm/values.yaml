@@ -3,37 +3,25 @@ parseable:
     repository: parseable/parseable
     tag: v0.4.4
     pullPolicy: Always
-  ## Set to true if you want to deploy Parseable in local mode (store logs 
+  replicaCount: 1
+  ## Set to true if you want to deploy Parseable in local mode (store logs
   ## on local mount point instead of S3 bucket)
   local: false
-  ## Use this section to create ServiceMonitor object for 
-  ## this Parseable deployment. Read more on ServiceMonitor
-  ## here: https://prometheus-operator.dev/docs/operator/design/#servicemonitor
-  metrics:
-    serviceMonitor:
-      enabled: true
-      namespace: ""
-      interval: 30s
-      scrapeTimeout: ""
-      relabellings: []
-      metricRelabelings: []
-      honorLabels: false
-      additionalLabels: {}
-      podTargetLabels: []
-  ## Add environment variables to the Parseable Deployment Pod
+  ## Add environment variables to the Parseable Deployment
   env:
-    # RUST_LOG: error
-  ## Enable to create and configure log retention for logstreams
-  logstream:
-    # - name: "vectordemo"
-    #   retention:
-    #     action: "delete"
-    #     duration: "30d"   
-    # - name: "fluentbitdemo"
-    #   retention:
-    #     action: "delete"
-    #     duration: "30d"
-  ## enable/disable persistence using PVC for the Data and Staging directories
+    RUST_LOG: warn
+  ## Enable to create a log stream and then add retention configuration
+  ## for that log stream
+  # logstream:
+  #   - name: "vectordemo"
+  #     retention:
+  #       action: "delete"
+  #       duration: "30d"
+  #   - name: "fluentbitdemo"
+  #     retention:
+  #       action: "delete"
+  #       duration: "30d"
+  ## enable persistence using PVC for the Data and Staging directories
   ## Note that Data directory is needed only for local mode
   persistence:
     staging:
@@ -47,37 +35,34 @@ parseable:
       accessMode: ReadWriteOnce
       size: 1Gi
   localModeSecret:
-  - type: env
-    name: parseable-env-secret
-    prefix: P_
-    keys:
-    - addr
-    - username
-    - password
-    - staging.dir
-    - fs.dir
+    - type: env
+      name: parseable-env-secret
+      prefix: P_
+      keys:
+      - addr
+      - username
+      - password
+      - staging.dir
+      - fs.dir
   s3ModeSecret:
-  - type: env
-    name: parseable-env-secret
-    prefix: P_
-    keys:
-    ## Comment / uncomment the following lines as required
-    # - tls.cert.path
-    # - tls.key.path
-    # - storage.upload.interval
-    - addr
-    - username
-    - password
-    - staging.dir
-    - fs.dir
-    - s3.url
-    - s3.access.key
-    - s3.secret.key
-    - s3.bucket
-    - s3.region
-  replicaCount: 1
-  nameOverride: ""
-  fullnameOverride: ""
+    - type: env
+      name: parseable-env-secret
+      prefix: P_
+      keys:
+      ## Comment / uncomment the following lines as required
+      # - tls.cert.path
+      # - tls.key.path
+      # - storage.upload.interval
+      - addr
+      - username
+      - password
+      - staging.dir
+      - fs.dir
+      - s3.url
+      - s3.access.key
+      - s3.secret.key
+      - s3.bucket
+      - s3.region
   serviceAccount:
     create: true
     name: "parseable"
@@ -103,9 +88,25 @@ parseable:
     runAsGroup: 1000
     fsGroup: 1000
     fsGroupChangePolicy: "Always"
+  nameOverride: ""
+  fullnameOverride: ""
   nodeSelector: {}
   affinity: {}
   tolerations: []
+  ## Use this section to create ServiceMonitor object for
+  ## this Parseable deployment. Read more on ServiceMonitor
+  ## here: https://prometheus-operator.dev/docs/operator/design/#servicemonitor
+  metrics:
+    serviceMonitor:
+      enabled: false
+      namespace: ""
+      interval: 30s
+      scrapeTimeout: ""
+      relabellings: []
+      metricRelabelings: []
+      honorLabels: false
+      additionalLabels: {}
+      podTargetLabels: []
 
 # Default values for Vector
 # See Vector helm documentation to learn more:
