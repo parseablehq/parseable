@@ -17,17 +17,24 @@
 *
 */
 
-use std::future::{ready, Ready};
+use std::{
+    collections::{HashMap, HashSet},
+    future::{ready, Ready},
+};
 
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     error::{ErrorBadRequest, ErrorUnauthorized},
-    Error,
+    Error, HttpMessage,
 };
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use futures_util::future::LocalBoxFuture;
 
-use crate::{option::CONFIG, rbac::role::Action, rbac::Users};
+use crate::{
+    option::CONFIG,
+    rbac::role::Action,
+    rbac::{role::Permission, Users},
+};
 
 pub struct Auth {
     pub action: Action,
@@ -156,5 +163,96 @@ where
             }
             fut.await
         })
+    }
+}
+
+// extract username from auth information and attach to request.
+// For use in query handler
+pub struct ExtractQueryPermission;
+
+impl<S, B> Transform<S, ServiceRequest> for ExtractQueryPermission
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type InitError = ();
+    type Transform = ExtractQueryPermissionMiddleware<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(ExtractQueryPermissionMiddleware { service }))
+    }
+}
+
+pub struct ExtractQueryPermissionMiddleware<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for ExtractQueryPermissionMiddleware<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    forward_ready!(service);
+
+    fn call(&self, mut req: ServiceRequest) -> Self::Future {
+        if let Ok(creds) = req.extract::<BasicAuth>().into_inner() {
+            // Extract username and password from the request using basic auth extractor.
+            let username = creds.user_id().trim().to_owned();
+            let password = creds.password().unwrap_or("").trim().to_owned();
+
+            // maintain a map for all tags allowed for a stream.
+            let mut map = StreamTag::default();
+
+            for permission in Users.get_permissions(username, password) {
+                match permission {
+                    Permission::Stream(Action::All, stream) => map.update(stream, None),
+                    Permission::StreamWithTag(Action::Query, stream, tag) => {
+                        map.update(stream, tag)
+                    }
+                    _ => (),
+                }
+            }
+
+            req.extensions_mut().insert(map.finalize());
+        }
+
+        let fut = self.service.call(req);
+
+        Box::pin(async move { fut.await })
+    }
+}
+
+// A map is maintained where key is stream and value is tag.
+// for each stream and tag in permission list we do following
+// if any permission for a stream contains no tag then that stream tag is set to none
+// if permission contains tag then it is added to that stream's entry
+#[derive(Debug, Default)]
+struct StreamTag {
+    inner: HashMap<String, Option<HashSet<String>>>,
+}
+
+impl StreamTag {
+    fn update(&mut self, stream: String, tag: Option<String>) {
+        let entry = self.inner.entry(stream).or_insert(Some(HashSet::default()));
+        if let Some(tags) = entry {
+            if let Some(tag) = tag {
+                tags.insert(tag);
+            } else {
+                *entry = None;
+            }
+        }
+    }
+
+    fn finalize(self) -> HashMap<String, Option<HashSet<String>>> {
+        self.inner
     }
 }
