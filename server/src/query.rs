@@ -16,10 +16,13 @@
  *
  */
 
+mod filter_optimizer;
+
 use chrono::TimeZone;
 use chrono::{DateTime, Utc};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::execution::context::SessionState;
 use datafusion::prelude::*;
 use itertools::Itertools;
 use serde_json::Value;
@@ -33,6 +36,7 @@ use crate::utils::TimePeriod;
 use crate::validator;
 
 use self::error::{ExecuteError, ParseError};
+use self::filter_optimizer::FilterOptimizerRule;
 
 type Key = &'static str;
 fn get_value(value: &Value, key: Key) -> Result<&str, Key> {
@@ -46,6 +50,7 @@ pub struct Query {
     pub schema: Arc<Schema>,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
+    pub filter_tag: Option<String>,
 }
 
 impl Query {
@@ -72,17 +77,30 @@ impl Query {
             .collect()
     }
 
+    // create session context for this query
+    fn create_session_context(&self) -> SessionContext {
+        let config = SessionConfig::default();
+        let runtime = CONFIG.storage().get_datafusion_runtime();
+        let mut state = SessionState::with_config_rt(config, runtime);
+
+        if let Some(tag) = self.filter_tag {
+            let filter = FilterOptimizerRule {
+                column: crate::event::DEFAULT_TAGS_KEY.to_string(),
+                pattern: tag.clone(),
+            };
+            state = state.add_optimizer_rule(Arc::new(filter))
+        }
+
+        SessionContext::with_state(state)
+    }
+
     /// Execute query on object storage(and if necessary on cache as well) with given stream information
     /// TODO: find a way to query all selected parquet files together in a single context.
     pub async fn execute(
         &self,
         storage: Arc<dyn ObjectStorage + Send>,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let ctx = SessionContext::with_config_rt(
-            SessionConfig::default(),
-            CONFIG.storage().get_datafusion_runtime(),
-        );
-
+        let ctx = self.create_session_context();
         let prefixes = self.get_prefixes();
         let Some(table) = storage.query_table(prefixes, Arc::clone(&self.schema))? else { return Ok((Vec::new(), Vec::new())) };
 
