@@ -43,6 +43,7 @@ pub enum Action {
 pub enum Permission {
     Unit(Action),
     Stream(Action, String),
+    StreamWithTag(Action, String, Option<String>),
 }
 
 // Currently Roles are tied to one stream
@@ -70,7 +71,11 @@ impl RoleBuilder {
         for action in self.actions {
             let perm = match action {
                 Action::Ingest => Permission::Stream(action, self.stream.clone().unwrap()),
-                Action::Query => Permission::Stream(action, self.stream.clone().unwrap()),
+                Action::Query => Permission::StreamWithTag(
+                    action,
+                    self.stream.clone().unwrap(),
+                    self.tag.clone(),
+                ),
                 Action::CreateStream => Permission::Unit(action),
                 Action::DeleteStream => Permission::Unit(action),
                 Action::ListStream => Permission::Unit(action),

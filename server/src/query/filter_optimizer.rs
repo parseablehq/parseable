@@ -21,12 +21,12 @@ use std::sync::Arc;
 use datafusion::{
     logical_expr::{Filter, LogicalPlan},
     optimizer::{optimize_children, OptimizerRule},
-    prelude::{lit, Column, Expr},
+    prelude::{lit, or, Column, Expr},
 };
 
 pub struct FilterOptimizerRule {
     pub column: String,
-    pub pattern: String,
+    pub literals: Vec<String>,
 }
 
 impl OptimizerRule for FilterOptimizerRule {
@@ -35,8 +35,14 @@ impl OptimizerRule for FilterOptimizerRule {
         plan: &datafusion::logical_expr::LogicalPlan,
         config: &dyn datafusion::optimizer::OptimizerConfig,
     ) -> datafusion::error::Result<Option<datafusion::logical_expr::LogicalPlan>> {
-        let filter_expr =
-            Expr::Column(Column::from_name(&self.column)).like(lit(format!("%{}%", self.pattern)));
+        let mut patterns = self.literals.iter().map(|literal| {
+            Expr::Column(Column::from_name(&self.column)).like(lit(format!("%{}%", literal)))
+        });
+
+        let Some(mut filter_expr) = patterns.next() else { return Ok(None) };
+        for expr in patterns {
+            filter_expr = or(filter_expr, expr)
+        }
 
         // Do not apply optimization when node is already there
         // maybe this is second pass

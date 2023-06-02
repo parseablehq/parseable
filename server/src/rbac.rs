@@ -24,6 +24,8 @@ use crate::rbac::map::{auth_map, mut_auth_map, mut_user_map, user_map};
 use crate::rbac::role::{model::DefaultPrivilege, Action};
 use crate::rbac::user::User;
 
+use self::role::Permission;
+
 // This type encapsulates both the user_map and auth_map
 // so other entities deal with only this type
 pub struct Users;
@@ -66,6 +68,11 @@ impl Users {
 
     pub fn contains(&self, username: &str) -> bool {
         user_map().contains_key(username)
+    }
+
+    pub fn get_permissions(&self, username: String, password: String) -> Vec<Permission> {
+        let key = (username, password);
+        auth_map().get(&key).cloned().unwrap_or_default()
     }
 
     pub fn authenticate(

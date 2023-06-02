@@ -17,9 +17,10 @@
  */
 
 use actix_web::http::header::ContentType;
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{web, HttpMessage, HttpRequest, Responder};
 use http::StatusCode;
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::handlers::FILL_NULL_OPTION_KEY;
@@ -29,10 +30,12 @@ use crate::query::error::{ExecuteError, ParseError};
 use crate::query::Query;
 use crate::response::QueryResponse;
 
-pub async fn query(
-    _req: HttpRequest,
-    json: web::Json<Value>,
-) -> Result<impl Responder, QueryError> {
+pub async fn query(req: HttpRequest, json: web::Json<Value>) -> Result<impl Responder, QueryError> {
+    let mut allowed_stream = req
+        .extensions_mut()
+        .remove::<HashMap<String, Option<HashSet<String>>>>()
+        .expect("set by middleware");
+
     let time = Instant::now();
     let json = json.into_inner();
 
@@ -42,7 +45,17 @@ pub async fn query(
         .and_then(|value| value.as_bool())
         .unwrap_or_default();
 
-    let query = Query::parse(json)?;
+    let mut query = Query::parse(json)?;
+
+    match allowed_stream
+        .remove(&query.stream_name)
+        .or_else(|| allowed_stream.remove("*"))
+    {
+        // if this user cannot query this stream then return error
+        None => return Err(QueryError::UnAuthorized(query.stream_name.clone())),
+        Some(Some(tags)) => query.filter_tag = Some(tags.into_iter().collect()),
+        _ => (),
+    }
 
     let storage = CONFIG.storage().get_object_store();
     let query_result = query.execute(storage).await;
@@ -65,6 +78,8 @@ pub enum QueryError {
     Parse(#[from] ParseError),
     #[error("Query execution failed due to {0}")]
     Execute(#[from] ExecuteError),
+    #[error("Not authorized to run query for stream {0}")]
+    UnAuthorized(String),
 }
 
 impl actix_web::ResponseError for QueryError {
@@ -72,6 +87,7 @@ impl actix_web::ResponseError for QueryError {
         match self {
             QueryError::Parse(_) => StatusCode::BAD_REQUEST,
             QueryError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::UnAuthorized(_) => StatusCode::UNAUTHORIZED,
         }
     }
 

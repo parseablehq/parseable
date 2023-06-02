@@ -219,7 +219,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 web::resource("/query").route(
                     web::post()
                         .to(query::query)
-                        .authorize_for_stream(Action::Query),
+                        .wrap(middleware::ExtractQueryPermission)
+                        .authorize(Action::Query),
                 ),
             )
             // POST "/ingest" ==> Post logs to given log stream based on header

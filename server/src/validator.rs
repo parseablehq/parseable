@@ -192,6 +192,7 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Que
         end,
         query: query.to_string(),
         schema,
+        filter_tag: None,
     })
 }
 
