@@ -50,7 +50,7 @@ pub struct Query {
     pub schema: Arc<Schema>,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
-    pub filter_tag: Option<String>,
+    pub filter_tag: Option<Vec<String>>,
 }
 
 impl Query {
@@ -83,10 +83,10 @@ impl Query {
         let runtime = CONFIG.storage().get_datafusion_runtime();
         let mut state = SessionState::with_config_rt(config, runtime);
 
-        if let Some(tag) = self.filter_tag {
+        if let Some(tag) = &self.filter_tag {
             let filter = FilterOptimizerRule {
                 column: crate::event::DEFAULT_TAGS_KEY.to_string(),
-                pattern: tag.clone(),
+                literals: tag.clone(),
             };
             state = state.add_optimizer_rule(Arc::new(filter))
         }
