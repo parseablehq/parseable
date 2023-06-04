@@ -51,6 +51,7 @@ pub struct Query {
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
     pub filter_tag: Option<Vec<String>>,
+    pub fill_null: bool,
 }
 
 impl Query {

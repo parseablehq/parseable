@@ -16,11 +16,15 @@
  *
  */
 
+use actix_web::error::ErrorUnauthorized;
 use actix_web::http::header::ContentType;
-use actix_web::{web, HttpMessage, HttpRequest, Responder};
+use actix_web::web::Json;
+use actix_web::{FromRequest, HttpRequest, Responder};
+use actix_web_httpauth::extractors::basic::BasicAuth;
+use futures_util::Future;
 use http::StatusCode;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
 use std::time::Instant;
 
 use crate::handlers::FILL_NULL_OPTION_KEY;
@@ -28,39 +32,17 @@ use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::CONFIG;
 use crate::query::error::{ExecuteError, ParseError};
 use crate::query::Query;
+use crate::rbac::role::{Action, Permission};
+use crate::rbac::Users;
 use crate::response::QueryResponse;
 
-pub async fn query(req: HttpRequest, json: web::Json<Value>) -> Result<impl Responder, QueryError> {
-    let mut allowed_stream = req
-        .extensions_mut()
-        .remove::<HashMap<String, Option<HashSet<String>>>>()
-        .expect("set by middleware");
-
+pub async fn query(query: Query) -> Result<impl Responder, QueryError> {
     let time = Instant::now();
-    let json = json.into_inner();
-
-    let fill_null = json
-        .as_object()
-        .and_then(|map| map.get(FILL_NULL_OPTION_KEY))
-        .and_then(|value| value.as_bool())
-        .unwrap_or_default();
-
-    let mut query = Query::parse(json)?;
-
-    match allowed_stream
-        .remove(&query.stream_name)
-        .or_else(|| allowed_stream.remove("*"))
-    {
-        // if this user cannot query this stream then return error
-        None => return Err(QueryError::UnAuthorized(query.stream_name.clone())),
-        Some(Some(tags)) => query.filter_tag = Some(tags.into_iter().collect()),
-        _ => (),
-    }
 
     let storage = CONFIG.storage().get_object_store();
     let query_result = query.execute(storage).await;
     let query_result = query_result
-        .map(|(records, fields)| QueryResponse::new(records, fields, fill_null))
+        .map(|(records, fields)| QueryResponse::new(records, fields, query.fill_null))
         .map(|response| response.to_http())
         .map_err(|e| e.into());
 
@@ -72,14 +54,73 @@ pub async fn query(req: HttpRequest, json: web::Json<Value>) -> Result<impl Resp
     query_result
 }
 
+impl FromRequest for Query {
+    type Error = actix_web::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
+
+    fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
+        let creds = BasicAuth::extract(req)
+            .into_inner()
+            .expect("expects basic auth");
+        // Extract username and password from the request using basic auth extractor.
+        let username = creds.user_id().trim().to_owned();
+        let password = creds.password().unwrap_or("").trim().to_owned();
+        let permissions = Users.get_permissions(username, password);
+        let json = Json::<Value>::from_request(req, payload);
+
+        let fut = async move {
+            let json = json.await?.into_inner();
+            // maybe move this option to query param instead so that it can simply be extracted from request
+            let fill_null = json
+                .as_object()
+                .and_then(|map| map.get(FILL_NULL_OPTION_KEY))
+                .and_then(|value| value.as_bool())
+                .unwrap_or_default();
+
+            let mut query = Query::parse(json).map_err(QueryError::Parse)?;
+            query.fill_null = fill_null;
+
+            let mut authorized = false;
+            let mut tags = Vec::new();
+
+            // in permission check if user can run query on the stream.
+            // also while iterating add any filter tags for this stream
+            for permission in permissions {
+                match permission {
+                    Permission::Stream(Action::All, _) => authorized = true,
+                    Permission::StreamWithTag(Action::Query, stream, tag)
+                        if stream == query.stream_name =>
+                    {
+                        authorized = true;
+                        if let Some(tag) = tag {
+                            tags.push(tag)
+                        }
+                    }
+                    _ => (),
+                }
+            }
+
+            if !authorized {
+                return Err(ErrorUnauthorized("Not authorized"));
+            }
+
+            if !tags.is_empty() {
+                query.filter_tag = Some(tags)
+            }
+
+            Ok(query)
+        };
+
+        Box::pin(fut)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
     #[error("Bad request: {0}")]
     Parse(#[from] ParseError),
     #[error("Query execution failed due to {0}")]
     Execute(#[from] ExecuteError),
-    #[error("Not authorized to run query for stream {0}")]
-    UnAuthorized(String),
 }
 
 impl actix_web::ResponseError for QueryError {
@@ -87,7 +128,6 @@ impl actix_web::ResponseError for QueryError {
         match self {
             QueryError::Parse(_) => StatusCode::BAD_REQUEST,
             QueryError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            QueryError::UnAuthorized(_) => StatusCode::UNAUTHORIZED,
         }
     }
 

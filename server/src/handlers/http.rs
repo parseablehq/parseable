@@ -216,12 +216,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::scope(&base_path())
             // POST "/query" ==> Get results of the SQL query passed in request body
             .service(
-                web::resource("/query").route(
-                    web::post()
-                        .to(query::query)
-                        .wrap(middleware::ExtractQueryPermission)
-                        .authorize(Action::Query),
-                ),
+                web::resource("/query")
+                    .route(web::post().to(query::query).authorize(Action::Query)),
             )
             // POST "/ingest" ==> Post logs to given log stream based on header
             .service(
