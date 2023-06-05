@@ -69,10 +69,8 @@ impl OptimizerRule for FilterOptimizerRule {
                     tags_field.is_nullable(),
                 ));
 
-                table.projected_schema = Arc::new(dbg!(DFSchema::new_with_metadata(
-                    df_schema,
-                    HashMap::default()
-                ))?);
+                table.projected_schema =
+                    Arc::new(DFSchema::new_with_metadata(df_schema, HashMap::default())?);
                 if let Some(projection) = &mut table.projection {
                     projection.push(tags_index)
                 }
