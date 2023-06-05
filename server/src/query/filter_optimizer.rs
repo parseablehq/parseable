@@ -23,6 +23,7 @@ use datafusion::{
     logical_expr::{Filter, LogicalPlan, Projection},
     optimizer::{optimize_children, OptimizerRule},
     prelude::{lit, or, Column, Expr},
+    scalar::ScalarValue,
 };
 
 /// Rewrites logical plan for source using projection and filter  
@@ -38,23 +39,27 @@ impl OptimizerRule for FilterOptimizerRule {
         config: &dyn datafusion::optimizer::OptimizerConfig,
     ) -> datafusion::error::Result<Option<datafusion::logical_expr::LogicalPlan>> {
         // if there are no patterns then the rule cannot be performed
-        let Some(filter_expr) = self.expr() else { return Ok(None); } ;
-        // if filter ( tags ) - table_scan pattern encountered then do not apply
-        if let LogicalPlan::Filter(Filter { predicate, .. }) = plan {
-            if predicate == &filter_expr {
+        let Some(filter_expr) = self.expr() else { return Ok(None); };
+
+        if let LogicalPlan::TableScan(table) = plan {
+            if table.projection.is_none()
+                || table
+                    .filters
+                    .iter()
+                    .any(|expr| self.contains_valid_tag_filter(expr))
+            {
                 return Ok(None);
             }
-        }
 
-        match plan {
-            // cannot apply when no projection is set on the table
-            LogicalPlan::TableScan(table) if table.projection.is_none() => return Ok(None),
-            LogicalPlan::TableScan(table) => {
-                let mut table = table.clone();
-                let schema = &table.source.schema();
+            let mut table = table.clone();
+            let schema = &table.source.schema();
+
+            if !table
+                .projected_schema
+                .has_column_with_unqualified_name(&self.column)
+            {
                 let tags_index = schema.index_of(&self.column)?;
                 let tags_field = schema.field(tags_index);
-
                 // modify source table projection to include tags
                 let mut df_schema = table.projected_schema.fields().clone();
                 df_schema.push(DFField::new(
@@ -64,26 +69,26 @@ impl OptimizerRule for FilterOptimizerRule {
                     tags_field.is_nullable(),
                 ));
 
-                table.projected_schema =
-                    Arc::new(DFSchema::new_with_metadata(df_schema, HashMap::default())?);
-
+                table.projected_schema = Arc::new(dbg!(DFSchema::new_with_metadata(
+                    df_schema,
+                    HashMap::default()
+                ))?);
                 if let Some(projection) = &mut table.projection {
                     projection.push(tags_index)
                 }
-
-                let projected_schema = table.projected_schema.clone();
-                let filter = LogicalPlan::Filter(Filter::try_new(
-                    filter_expr,
-                    Arc::new(LogicalPlan::TableScan(table)),
-                )?);
-                let plan = LogicalPlan::Projection(Projection::new_from_schema(
-                    Arc::new(filter),
-                    projected_schema,
-                ));
-
-                return Ok(Some(plan));
             }
-            _ => (),
+
+            let projected_schema = table.projected_schema.clone();
+            let filter = LogicalPlan::Filter(Filter::try_new(
+                filter_expr,
+                Arc::new(LogicalPlan::TableScan(table)),
+            )?);
+            let plan = LogicalPlan::Projection(Projection::new_from_schema(
+                Arc::new(filter),
+                projected_schema,
+            ));
+
+            return Ok(Some(plan));
         }
 
         // If we didn't find anything then recurse as normal and build the result.
@@ -107,5 +112,27 @@ impl FilterOptimizerRule {
         }
 
         Some(filter_expr)
+    }
+
+    fn contains_valid_tag_filter(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Like(like) => {
+                let matches_column = match &*like.expr {
+                    Expr::Column(column) => column.name == self.column,
+                    _ => return false,
+                };
+
+                let matches_pattern = match &*like.pattern {
+                    Expr::Literal(ScalarValue::Utf8(Some(literal))) => {
+                        let literal = literal.trim_matches('%');
+                        self.literals.iter().any(|x| x == literal)
+                    }
+                    _ => false,
+                };
+
+                matches_column && matches_pattern && !like.negated
+            }
+            _ => false,
+        }
     }
 }
