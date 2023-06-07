@@ -99,13 +99,9 @@ impl EventFormat for Event {
 
     // Convert the Data type (defined above) to arrow record batch
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, anyhow::Error> {
-        let array_capacity = round_upto_multiple_of_64(data.len());
         let value_iter: &mut (dyn Iterator<Item = Value>) = &mut data.into_iter();
 
-        let reader = Decoder::new(
-            schema,
-            DecoderOptions::new().with_batch_size(array_capacity),
-        );
+        let reader = Decoder::new(schema, DecoderOptions::new());
         match reader.next_batch(&mut value_iter.map(Ok)) {
             Ok(Some(recordbatch)) => Ok(recordbatch),
             Err(err) => Err(anyhow!("Failed to create recordbatch due to {:?}", err)),
