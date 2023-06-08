@@ -31,7 +31,7 @@ use datafusion::{
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
     error::DataFusionError,
-    execution::runtime_env::{RuntimeConfig, RuntimeEnv},
+    execution::runtime_env::RuntimeConfig,
 };
 use fs_extra::file::{move_file, CopyOptions};
 use futures::{stream::FuturesUnordered, TryStreamExt};
@@ -64,10 +64,8 @@ pub struct FSConfig {
 }
 
 impl ObjectStorageProvider for FSConfig {
-    fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv> {
-        let config = RuntimeConfig::new();
-        let runtime = RuntimeEnv::new(config).unwrap();
-        Arc::new(runtime)
+    fn get_datafusion_runtime(&self) -> RuntimeConfig {
+        RuntimeConfig::new()
     }
 
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
