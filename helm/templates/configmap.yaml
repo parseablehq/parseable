@@ -1,3 +1,4 @@
+{{- if not (empty .Values.parseable.logstream) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,3 +9,4 @@ metadata:
 data:
   config-logstream: |-
     {{- include (print $.Template.BasePath "/_helpers_config_logstream.txt") . | nindent 4 }}
+{{- end }}

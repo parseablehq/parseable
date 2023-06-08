@@ -1,3 +1,4 @@
+{{- if not (empty .Values.parseable.logstream) }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -61,3 +62,4 @@ spec:
           image: curlimages/curl:8.00.0
           command: [ "/bin/sh", "/config/config-logstream" ]
   backoffLimit: 20
+{{- end}}
