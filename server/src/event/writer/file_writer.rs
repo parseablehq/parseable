@@ -17,14 +17,17 @@
  *
  */
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_ipc::writer::StreamWriter;
+use chrono::Utc;
 use derive_more::{Deref, DerefMut};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::storage::staging::StorageDir;
+use crate::utils;
 
 use super::errors::StreamWriterError;
 
@@ -42,19 +45,23 @@ impl FileWriter {
         &mut self,
         stream_name: &str,
         schema_key: &str,
-        record: &RecordBatch,
+        record: RecordBatch,
     ) -> Result<(), StreamWriterError> {
+        let timestamp_array = Arc::new(get_timestamp_array(record.num_rows()));
+        let record =
+            utils::arrow::replace_columns(record.schema(), record, &[0], &[timestamp_array]);
+
         match self.get_mut(schema_key) {
             Some(writer) => {
                 writer
                     .writer
-                    .write(record)
+                    .write(&record)
                     .map_err(StreamWriterError::Writer)?;
             }
             // entry is not present thus we create it
             None => {
                 // this requires mutable borrow of the map so we drop this read lock and wait for write lock
-                let (path, writer) = init_new_stream_writer_file(stream_name, schema_key, record)?;
+                let (path, writer) = init_new_stream_writer_file(stream_name, schema_key, &record)?;
                 self.insert(
                     schema_key.to_owned(),
                     ArrowWriter {
@@ -73,6 +80,10 @@ impl FileWriter {
             _ = writer.writer.finish();
         }
     }
+}
+
+fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
+    TimestampMillisecondArray::from_value(Utc::now().timestamp_millis(), size)
 }
 
 fn init_new_stream_writer_file(

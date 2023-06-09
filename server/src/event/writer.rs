@@ -49,7 +49,7 @@ impl WriterTable {
                 stream_writer
                     .lock()
                     .unwrap()
-                    .push(stream_name, schema_key, &record)?;
+                    .push(stream_name, schema_key, record)?;
             }
             None => {
                 drop(hashmap_guard);
@@ -60,10 +60,10 @@ impl WriterTable {
                     writer
                         .lock()
                         .unwrap()
-                        .push(stream_name, schema_key, &record)?;
+                        .push(stream_name, schema_key, record)?;
                 } else {
                     let mut writer = FileWriter::default();
-                    writer.push(stream_name, schema_key, &record)?;
+                    writer.push(stream_name, schema_key, record)?;
                     map.insert(stream_name.to_owned(), Mutex::new(writer));
                 }
             }

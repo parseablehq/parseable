@@ -111,6 +111,5 @@ pub trait EventFormat: Sized {
 }
 
 fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
-    let time = Utc::now();
-    TimestampMillisecondArray::from_value(time.timestamp_millis(), size)
+    TimestampMillisecondArray::from_value(Utc::now().timestamp_millis(), size)
 }
