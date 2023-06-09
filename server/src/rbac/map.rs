@@ -107,6 +107,10 @@ impl AuthMap {
         self.inner.retain(|(x, _), _| x != username)
     }
 
+    pub fn get(&self, key: &(String, String)) -> Option<&Vec<Permission>> {
+        self.inner.get(key)
+    }
+
     // returns None if user is not in the map
     // Otherwise returns Some(is_authenticated)
     pub fn check_auth(
@@ -120,7 +124,8 @@ impl AuthMap {
                 match *user_perm {
                     // if any action is ALL then we we authorize
                     Permission::Unit(action) => action == required_action || action == Action::All,
-                    Permission::Stream(action, ref stream) => {
+                    Permission::Stream(action, ref stream)
+                    | Permission::StreamWithTag(action, ref stream, _) => {
                         let ok_stream = if let Some(on_stream) = on_stream {
                             stream == on_stream || stream == "*"
                         } else {
