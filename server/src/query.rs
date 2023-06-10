@@ -95,7 +95,7 @@ impl Query {
                 let mut system = System::new();
                 system.refresh_memory();
                 let available_mem = system.available_memory();
-                (available_mem as usize, 0.8)
+                (available_mem as usize, 0.85)
             }
         };
 
