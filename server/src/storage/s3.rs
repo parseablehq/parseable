@@ -28,7 +28,7 @@ use datafusion::datasource::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
 };
 use datafusion::error::DataFusionError;
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::runtime_env::RuntimeConfig;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, Checksum};
@@ -184,7 +184,7 @@ impl S3Config {
 }
 
 impl ObjectStorageProvider for S3Config {
-    fn get_datafusion_runtime(&self) -> Arc<RuntimeEnv> {
+    fn get_datafusion_runtime(&self) -> RuntimeConfig {
         let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
@@ -194,12 +194,7 @@ impl ObjectStorageProvider for S3Config {
         let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(s3));
 
-        let config =
-            RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry));
-
-        let runtime = RuntimeEnv::new(config).unwrap();
-
-        Arc::new(runtime)
+        RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry))
     }
 
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
