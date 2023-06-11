@@ -23,11 +23,14 @@ use chrono::{DateTime, Utc};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::SessionState;
+use datafusion::execution::disk_manager::DiskManagerConfig;
+use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::*;
 use itertools::Itertools;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
+use sysinfo::{System, SystemExt};
 
 use crate::option::CONFIG;
 use crate::storage::ObjectStorageError;
@@ -81,7 +84,23 @@ impl Query {
     // create session context for this query
     fn create_session_context(&self) -> SessionContext {
         let config = SessionConfig::default();
-        let runtime = CONFIG.storage().get_datafusion_runtime();
+        let runtime_config = CONFIG
+            .storage()
+            .get_datafusion_runtime()
+            .with_disk_manager(DiskManagerConfig::NewOs);
+
+        let (pool_size, fraction) = match CONFIG.parseable.query_memory_pool_size {
+            Some(size) => (size, 1.),
+            None => {
+                let mut system = System::new();
+                system.refresh_memory();
+                let available_mem = system.available_memory();
+                (available_mem as usize, 0.85)
+            }
+        };
+
+        let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
+        let runtime = Arc::new(RuntimeEnv::new(runtime_config).unwrap());
         let mut state = SessionState::with_config_rt(config, runtime);
 
         if let Some(tag) = &self.filter_tag {

@@ -187,6 +187,9 @@ pub struct Server {
     /// Rows in Parquet Rowgroup
     pub row_group_size: usize,
 
+    /// Query memory limit in bytes
+    pub query_memory_pool_size: Option<usize>,
+
     /// Parquet compression algorithm
     pub parquet_compression: Compression,
 }
@@ -229,6 +232,11 @@ impl FromArgMatches for Server {
             .get_one::<bool>(Self::SEND_ANALYTICS)
             .cloned()
             .expect("default for send analytics");
+        // converts Gib to bytes before assigning
+        self.query_memory_pool_size = m
+            .get_one::<u8>(Self::QUERY_MEM_POOL_SIZE)
+            .cloned()
+            .map(|gib| gib as usize * 1024usize.pow(3));
         self.row_group_size = m
             .get_one::<usize>(Self::ROW_GROUP_SIZE)
             .cloned()
@@ -263,6 +271,7 @@ impl Server {
     pub const PASSWORD: &str = "password";
     pub const CHECK_UPDATE: &str = "check-update";
     pub const SEND_ANALYTICS: &str = "send-analytics";
+    pub const QUERY_MEM_POOL_SIZE: &str = "query-mempool-size";
     pub const ROW_GROUP_SIZE: &str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &str = "compression-algo";
     pub const DEFAULT_USERNAME: &str = "admin";
@@ -351,6 +360,15 @@ impl Server {
                     .default_value("true")
                     .value_parser(value_parser!(bool))
                     .help("Disable/Enable checking for updates"),
+            )
+            .arg(
+                Arg::new(Self::QUERY_MEM_POOL_SIZE)
+                    .long(Self::QUERY_MEM_POOL_SIZE)
+                    .env("P_QUERY_MEMORY_LIMIT")
+                    .value_name("Gib")
+                    .required(false)
+                    .value_parser(value_parser!(u8))
+                    .help("Set a fixed memory limit for query"),
             )
             .arg(
                 Arg::new(Self::ROW_GROUP_SIZE)
