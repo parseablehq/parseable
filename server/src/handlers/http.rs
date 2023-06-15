@@ -229,6 +229,24 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
+            .service(
+                web::resource("/traces")
+                    .route(
+                        web::post()
+                            .to(ingest::traces)
+                            .authorize_for_stream(Action::Ingest),
+                    )
+                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+            )
+            .service(
+                web::resource("/logs")
+                    .route(
+                        web::post()
+                            .to(ingest::logs)
+                            .authorize_for_stream(Action::Ingest),
+                    )
+                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+            )
             // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
             .service(web::resource("/liveness").route(web::get().to(health_check::liveness)))
             // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes

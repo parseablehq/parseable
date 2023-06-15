@@ -29,6 +29,7 @@ use crate::utils::{self, arrow::get_field};
 use super::{DEFAULT_METADATA_KEY, DEFAULT_TAGS_KEY, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
+pub mod otel;
 
 type Tags = String;
 type Metadata = String;

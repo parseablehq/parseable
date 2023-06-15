@@ -85,6 +85,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "actix-protobuf"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2e1151cdf1d5f30115da7c8e3e4cefadfb6d396973d75354647c4e8fae3a14f"
+dependencies = [
+ "actix-web",
+ "derive_more",
+ "futures-util",
+ "prost",
+]
+
+[[package]]
 name = "actix-router"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2958,6 +2970,7 @@ name = "parseable"
 version = "0.5.0"
 dependencies = [
  "actix-cors",
+ "actix-protobuf",
  "actix-web",
  "actix-web-httpauth",
  "actix-web-prometheus",
@@ -2998,6 +3011,8 @@ dependencies = [
  "once_cell",
  "parquet",
  "prometheus",
+ "prost",
+ "prost-types",
  "pyroscope",
  "pyroscope_pprofrs",
  "rand",
@@ -3243,6 +3258,38 @@ dependencies = [
  "procfs",
  "protobuf",
  "thiserror",
+]
+
+[[package]]
+name = "prost"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b82eaa1d779e9a4bc1c3217db8ffbeabaae1dca241bf70183242128d48681cd"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5d2d8d10f3c6ded6da8b05b5fb3b8a5082514344d56c9f871412d29b4e075b4"
+dependencies = [
+ "anyhow",
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.107",
+]
+
+[[package]]
+name = "prost-types"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "213622a1460818959ac1181aaeb2dc9c7f63df720db7d788b3e24eacd1983e13"
+dependencies = [
+ "prost",
 ]
 
 [[package]]

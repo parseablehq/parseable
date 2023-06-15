@@ -23,33 +23,107 @@ use actix_web::{HttpRequest, HttpResponse};
 use arrow_schema::Field;
 use bytes::Bytes;
 use http::StatusCode;
+use prost::Message;
 use serde_json::Value;
 
 use crate::event::error::EventError;
+use crate::event::format::otel::{LogsData, TracesData};
 use crate::event::format::EventFormat;
 use crate::event::{self, format};
 use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
 use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
+// Handler for POST /api/v1/traces
+// only ingests events into the specified logstream
+// fails if the logstream does not exist
+pub async fn traces(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+    let stream_name = get_stream_name_from_header(&req)?;
+    let (tags, metadata) = collect_tags_metadata(&req)?;
+    if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
+        return Err(PostError::CreateStream(e.into()));
+    }
+    let size = body.len();
+    let body = TracesData::decode(body)?;
+    let body = serde_json::to_value(&body.resource_spans)?;
+    dbg!(&body);
+    let (rb, is_first_event) = {
+        let hash_map = STREAM_INFO.read().unwrap();
+        let schema = &hash_map
+            .get(&stream_name)
+            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
+            .schema;
+        let event = format::json::Event {
+            data: body,
+            tags,
+            metadata,
+        };
+        dbg!(event.into_recordbatch(schema))?
+    };
+
+    event::Event {
+        rb,
+        stream_name,
+        origin_format: "protobuf",
+        origin_size: size as u64,
+        is_first_event,
+    }
+    .process()
+    .await?;
+
+    Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for POST /api/v1/traces
+// only ingests events into the specified logstream
+// fails if the logstream does not exist
+pub async fn logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+    let stream_name = get_stream_name_from_header(&req)?;
+    let (tags, metadata) = collect_tags_metadata(&req)?;
+    if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
+        return Err(PostError::CreateStream(e.into()));
+    }
+    let size = body.len();
+    let body = LogsData::decode(body)?;
+    let body = serde_json::to_value(&body.resource_logs)?;
+    dbg!(&body);
+    let (rb, is_first_event) = {
+        let hash_map = STREAM_INFO.read().unwrap();
+        let schema = &hash_map
+            .get(&stream_name)
+            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
+            .schema;
+        let event = format::json::Event {
+            data: body,
+            tags,
+            metadata,
+        };
+        dbg!(event.into_recordbatch(schema))?
+    };
+
+    event::Event {
+        rb,
+        stream_name,
+        origin_format: "protobuf",
+        origin_size: size as u64,
+        is_first_event,
+    }
+    .process()
+    .await?;
+
+    Ok(HttpResponse::Ok().finish())
+}
+
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
 pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
-    if let Some((_, stream_name)) = req
-        .headers()
-        .iter()
-        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-    {
-        let stream_name = stream_name.to_str().unwrap().to_owned();
-        if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
-            return Err(PostError::CreateStream(e.into()));
-        }
-        push_logs(stream_name, req, body).await?;
-        Ok(HttpResponse::Ok().finish())
-    } else {
-        Err(PostError::Header(ParseHeaderError::MissingStreamName))
+    let stream_name = get_stream_name_from_header(&req)?;
+    if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
+        return Err(PostError::CreateStream(e.into()));
     }
+    push_logs(stream_name, req, body).await?;
+    Ok(HttpResponse::Ok().finish())
 }
 
 // Handler for POST /api/v1/logstream/{logstream}
@@ -89,8 +163,7 @@ fn into_event_batch(
     body: Bytes,
     schema: &HashMap<String, Field>,
 ) -> Result<(usize, arrow_array::RecordBatch, bool), PostError> {
-    let tags = collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?;
-    let metadata = collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?;
+    let (tags, metadata) = collect_tags_metadata(&req)?;
     let size = body.len();
     let body: Value = serde_json::from_slice(&body)?;
     let event = format::json::Event {
@@ -102,12 +175,28 @@ fn into_event_batch(
     Ok((size, rb, is_first))
 }
 
+fn collect_tags_metadata(req: &HttpRequest) -> Result<(String, String), PostError> {
+    let tags = collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?;
+    let metadata = collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?;
+    Ok((tags, metadata))
+}
+
+fn get_stream_name_from_header(req: &HttpRequest) -> Result<String, PostError> {
+    req.headers()
+        .iter()
+        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
+        .map(|(_, stream_name)| stream_name.to_str().unwrap().to_owned())
+        .ok_or(PostError::Header(ParseHeaderError::MissingStreamName))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PostError {
     #[error("Stream {0} not found")]
     StreamNotFound(String),
     #[error("Could not deserialize into JSON object, {0}")]
     SerdeError(#[from] serde_json::Error),
+    #[error("Could not deserialize into Protobuf object, {0}")]
+    ProtoError(#[from] prost::DecodeError),
     #[error("Header Error: {0}")]
     Header(#[from] ParseHeaderError),
     #[error("Event Error: {0}")]
@@ -122,6 +211,7 @@ impl actix_web::ResponseError for PostError {
     fn status_code(&self) -> http::StatusCode {
         match self {
             PostError::SerdeError(_) => StatusCode::BAD_REQUEST,
+            PostError::ProtoError(_) => StatusCode::BAD_REQUEST,
             PostError::Header(_) => StatusCode::BAD_REQUEST,
             PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::Invalid(_) => StatusCode::BAD_REQUEST,
