@@ -1,323 +1,188 @@
-use prost::alloc::string::String;
-use prost::alloc::vec::Vec;
+use std::collections::BTreeMap;
 
-use super::common::{InstrumentationScope, KeyValue};
-use super::resource::Resource;
+use super::proto::{common, resource, trace};
 
-/// TracesData represents the traces data that can be stored in a persistent storage,
-/// OR can be embedded by other protocols that transfer OTLP traces data but do
-/// not implement the OTLP protocol.
-///
-/// The main difference between this message and collector protocol is that
-/// in this message there will not be any "control" or "metadata" specific to
-/// OTLP protocol.
-///
-/// When new fields are added into this message, the OTLP request MUST be updated
-/// as well.
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, prost::Message, serde::Serialize, serde::Deserialize)]
-pub struct TracesData {
-    /// An array of ResourceSpans.
-    /// For data coming from a single resource this array will typically contain
-    /// one element. Intermediary nodes that receive data from multiple origins
-    /// typically batch the data before forwarding further and in that case this
-    /// array will contain multiple elements.
-    #[prost(message, repeated, tag = "1")]
-    pub resource_spans: Vec<ResourceSpans>,
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct SpanData {
+    resource: Option<Resource>,
+    scope: Option<Scope>,
+    trace_id: [u8; 16],
+    span_id: [u8; 8],
+    trace_state: String,
+    parent_span_id: [u8; 8],
+    name: String,
+    // replace with SpanKind
+    kind: i32,
+    start_time_unix_nano: u64,
+    end_time_unix_nano: u64,
+    attributes: BTreeMap<String, String>,
+    dropped_attributes_count: u32,
+    events: Vec<Event>,
+    dropped_events_count: u32,
+    links: Vec<Link>,
+    dropped_links_count: u32,
+    status: Option<Status>,
 }
-/// A collection of ScopeSpans from a Resource.
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, prost::Message, serde::Serialize, serde::Deserialize)]
-pub struct ResourceSpans {
-    /// The resource for the spans in this message.
-    /// If this field is not set then no resource info is known.
-    #[prost(message, optional, tag = "1")]
-    pub resource: Option<Resource>,
-    /// A list of ScopeSpans that originate from a resource.
-    #[prost(message, repeated, tag = "2")]
-    pub scope_spans: Vec<ScopeSpans>,
-    /// This schema_url applies to the data in the "resource" field. It does not apply
-    /// to the data in the "scope_spans" field which have their own schema_url field.
-    #[prost(string, tag = "3")]
-    pub schema_url: String,
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Resource {
+    attributes: BTreeMap<String, String>,
+    dropped_attributes_count: u32,
 }
-/// A collection of Spans produced by an InstrumentationScope.
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, prost::Message, serde::Serialize, serde::Deserialize)]
-pub struct ScopeSpans {
-    /// The instrumentation scope information for the spans in this message.
-    /// Semantically when InstrumentationScope isn't set, it is equivalent with
-    /// an empty instrumentation scope name (unknown).
-    #[prost(message, optional, tag = "1")]
-    pub scope: Option<InstrumentationScope>,
-    /// A list of Spans that originate from an instrumentation scope.
-    #[prost(message, repeated, tag = "2")]
-    pub spans: Vec<Span>,
-    /// This schema_url applies to all spans and span events in the "spans" field.
-    #[prost(string, tag = "3")]
-    pub schema_url: String,
+
+impl From<resource::Resource> for Resource {
+    fn from(value: resource::Resource) -> Self {
+        let resource::Resource {
+            attributes,
+            dropped_attributes_count,
+        } = value;
+        Resource {
+            attributes: BTreeMap::from_iter(attributes),
+            dropped_attributes_count,
+        }
+    }
 }
-/// A Span represents a single operation performed by a single component of the system.
-///
-/// The next available field id is 17.
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, prost::Message, serde::Serialize, serde::Deserialize)]
-pub struct Span {
-    /// A unique identifier for a trace. All spans from the same trace share
-    /// the same `trace_id`. The ID is a 16-byte array. An ID with all zeroes OR
-    /// of length other than 16 bytes is considered invalid (empty string in OTLP/JSON
-    /// is zero-length and thus is also invalid).
-    ///
-    /// This field is required.
-    #[prost(bytes = "vec", tag = "1")]
-    pub trace_id: Vec<u8>,
-    /// A unique identifier for a span within a trace, assigned when the span
-    /// is created. The ID is an 8-byte array. An ID with all zeroes OR of length
-    /// other than 8 bytes is considered invalid (empty string in OTLP/JSON
-    /// is zero-length and thus is also invalid).
-    ///
-    /// This field is required.
-    #[prost(bytes = "vec", tag = "2")]
-    pub span_id: Vec<u8>,
-    /// trace_state conveys information about request position in multiple distributed tracing graphs.
-    /// It is a trace_state in w3c-trace-context format: <https://www.w3.org/TR/trace-context/#tracestate-header>
-    /// See also <https://github.com/w3c/distributed-tracing> for more details about this field.
-    #[prost(string, tag = "3")]
-    pub trace_state: String,
-    /// The `span_id` of this span's parent span. If this is a root span, then this
-    /// field must be empty. The ID is an 8-byte array.
-    #[prost(bytes = "vec", tag = "4")]
-    pub parent_span_id: Vec<u8>,
-    /// A description of the span's operation.
-    ///
-    /// For example, the name can be a qualified method name or a file name
-    /// and a line number where the operation is called. A best practice is to use
-    /// the same display name at the same call point in an application.
-    /// This makes it easier to correlate spans in different traces.
-    ///
-    /// This field is semantically required to be set to non-empty string.
-    /// Empty value is equivalent to an unknown span name.
-    ///
-    /// This field is required.
-    #[prost(string, tag = "5")]
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Scope {
     pub name: String,
-    /// Distinguishes between spans generated in a particular context. For example,
-    /// two spans with the same name may be distinguished using `CLIENT` (caller)
-    /// and `SERVER` (callee) to identify queueing latency associated with the span.
-    #[prost(enumeration = "span::SpanKind", tag = "6")]
-    pub kind: i32,
-    /// start_time_unix_nano is the start time of the span. On the client side, this is the time
-    /// kept by the local machine where the span execution starts. On the server side, this
-    /// is the time when the server's application handler starts running.
-    /// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
-    ///
-    /// This field is semantically required and it is expected that end_time >= start_time.
-    #[prost(fixed64, tag = "7")]
-    pub start_time_unix_nano: u64,
-    /// end_time_unix_nano is the end time of the span. On the client side, this is the time
-    /// kept by the local machine where the span execution ends. On the server side, this
-    /// is the time when the server application handler stops running.
-    /// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
-    ///
-    /// This field is semantically required and it is expected that end_time >= start_time.
-    #[prost(fixed64, tag = "8")]
-    pub end_time_unix_nano: u64,
-    /// attributes is a collection of key/value pairs. Note, global attributes
-    /// like server name can be set using the resource API. Examples of attributes:
-    ///
-    ///      "/http/user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/71.0.3578.98 Safari/537.36"
-    ///      "/http/server_latency": 300
-    ///      "example.com/myattribute": true
-    ///      "example.com/score": 10.239
-    ///
-    /// The OpenTelemetry API specification further restricts the allowed value types:
-    /// <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/common/README.md#attribute>
-    /// Attribute keys MUST be unique (it is not allowed to have more than one
-    /// attribute with the same key).
-    #[prost(message, repeated, tag = "9")]
-    pub attributes: Vec<KeyValue>,
-    /// dropped_attributes_count is the number of attributes that were discarded. Attributes
-    /// can be discarded because their keys are too long or because there are too many
-    /// attributes. If this value is 0, then no attributes were dropped.
-    #[prost(uint32, tag = "10")]
+    pub version: String,
+    pub attributes: BTreeMap<String, String>,
     pub dropped_attributes_count: u32,
-    /// events is a collection of Event items.
-    #[prost(message, repeated, tag = "11")]
-    pub events: Vec<span::Event>,
-    /// dropped_events_count is the number of dropped events. If the value is 0, then no
-    /// events were dropped.
-    #[prost(uint32, tag = "12")]
-    pub dropped_events_count: u32,
-    /// links is a collection of Links, which are references from this span to a span
-    /// in the same or different trace.
-    #[prost(message, repeated, tag = "13")]
-    pub links: Vec<span::Link>,
-    /// dropped_links_count is the number of dropped links after the maximum size was
-    /// enforced. If this value is 0, then no links were dropped.
-    #[prost(uint32, tag = "14")]
-    pub dropped_links_count: u32,
-    /// An optional final status for this span. Semantically when Status isn't set, it means
-    /// span's status code is unset, i.e. assume STATUS_CODE_UNSET (code = 0).
-    #[prost(message, optional, tag = "15")]
-    pub status: Option<Status>,
 }
-/// Nested message and enum types in `Span`.
-pub mod span {
-    use prost::alloc::{string::String, vec::Vec};
 
-    use super::super::common::KeyValue;
-
-    /// Event is a time-stamped annotation of the span, consisting of user-supplied
-    /// text description and key-value pairs.
-    #[allow(clippy::derive_partial_eq_without_eq)]
-    #[derive(Clone, PartialEq, prost::Message, serde::Serialize, serde::Deserialize)]
-    pub struct Event {
-        /// time_unix_nano is the time the event occurred.
-        #[prost(fixed64, tag = "1")]
-        pub time_unix_nano: u64,
-        /// name of the event.
-        /// This field is semantically required to be set to non-empty string.
-        #[prost(string, tag = "2")]
-        pub name: String,
-        /// attributes is a collection of attribute key/value pairs on the event.
-        /// Attribute keys MUST be unique (it is not allowed to have more than one
-        /// attribute with the same key).
-        #[prost(message, repeated, tag = "3")]
-        pub attributes: Vec<KeyValue>,
-        /// dropped_attributes_count is the number of dropped attributes. If the value is 0,
-        /// then no attributes were dropped.
-        #[prost(uint32, tag = "4")]
-        pub dropped_attributes_count: u32,
-    }
-    /// A pointer from the current span to another span in the same trace or in a
-    /// different trace. For example, this can be used in batching operations,
-    /// where a single batch handler processes multiple requests from different
-    /// traces or when the handler receives a request from a different project.
-    #[allow(clippy::derive_partial_eq_without_eq)]
-    #[derive(Clone, PartialEq, prost::Message, serde::Serialize, serde::Deserialize)]
-    pub struct Link {
-        /// A unique identifier of a trace that this linked span is part of. The ID is a
-        /// 16-byte array.
-        #[prost(bytes = "vec", tag = "1")]
-        pub trace_id: Vec<u8>,
-        /// A unique identifier for the linked span. The ID is an 8-byte array.
-        #[prost(bytes = "vec", tag = "2")]
-        pub span_id: Vec<u8>,
-        /// The trace_state associated with the link.
-        #[prost(string, tag = "3")]
-        pub trace_state: String,
-        /// attributes is a collection of attribute key/value pairs on the link.
-        /// Attribute keys MUST be unique (it is not allowed to have more than one
-        /// attribute with the same key).
-        #[prost(message, repeated, tag = "4")]
-        pub attributes: Vec<KeyValue>,
-        /// dropped_attributes_count is the number of dropped attributes. If the value is 0,
-        /// then no attributes were dropped.
-        #[prost(uint32, tag = "5")]
-        pub dropped_attributes_count: u32,
-    }
-    /// SpanKind is the type of span. Can be used to specify additional relationships between spans
-    /// in addition to a parent/child relationship.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
-    #[repr(i32)]
-    pub enum SpanKind {
-        /// Unspecified. Do NOT use as default.
-        /// Implementations MAY assume SpanKind to be INTERNAL when receiving UNSPECIFIED.
-        Unspecified = 0,
-        /// Indicates that the span represents an internal operation within an application,
-        /// as opposed to an operation happening at the boundaries. Default value.
-        Internal = 1,
-        /// Indicates that the span covers server-side handling of an RPC or other
-        /// remote network request.
-        Server = 2,
-        /// Indicates that the span describes a request to some remote service.
-        Client = 3,
-        /// Indicates that the span describes a producer sending a message to a broker.
-        /// Unlike CLIENT and SERVER, there is often no direct critical path latency relationship
-        /// between producer and consumer spans. A PRODUCER span ends when the message was accepted
-        /// by the broker while the logical processing of the message might span a much longer time.
-        Producer = 4,
-        /// Indicates that the span describes consumer receiving a message from a broker.
-        /// Like the PRODUCER kind, there is often no direct critical path latency relationship
-        /// between producer and consumer spans.
-        Consumer = 5,
-    }
-    impl SpanKind {
-        /// String value of the enum field names used in the ProtoBuf definition.
-        ///
-        /// The values are not transformed in any way and thus are considered stable
-        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-        pub fn as_str_name(&self) -> &'static str {
-            match self {
-                SpanKind::Unspecified => "SPAN_KIND_UNSPECIFIED",
-                SpanKind::Internal => "SPAN_KIND_INTERNAL",
-                SpanKind::Server => "SPAN_KIND_SERVER",
-                SpanKind::Client => "SPAN_KIND_CLIENT",
-                SpanKind::Producer => "SPAN_KIND_PRODUCER",
-                SpanKind::Consumer => "SPAN_KIND_CONSUMER",
-            }
-        }
-        /// Creates an enum from field names used in the ProtoBuf definition.
-        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-            match value {
-                "SPAN_KIND_UNSPECIFIED" => Some(Self::Unspecified),
-                "SPAN_KIND_INTERNAL" => Some(Self::Internal),
-                "SPAN_KIND_SERVER" => Some(Self::Server),
-                "SPAN_KIND_CLIENT" => Some(Self::Client),
-                "SPAN_KIND_PRODUCER" => Some(Self::Producer),
-                "SPAN_KIND_CONSUMER" => Some(Self::Consumer),
-                _ => None,
-            }
+impl From<common::InstrumentationScope> for Scope {
+    fn from(value: common::InstrumentationScope) -> Self {
+        let common::InstrumentationScope {
+            name,
+            version,
+            attributes,
+            dropped_attributes_count,
+        } = value;
+        Scope {
+            name,
+            version,
+            attributes: BTreeMap::from_iter(attributes),
+            dropped_attributes_count,
         }
     }
 }
-/// The Status type defines a logical error model that is suitable for different
-/// programming environments, including REST APIs and RPC APIs.
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, prost::Message, serde::Serialize, serde::Deserialize)]
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Event {
+    time_unix_nano: u64,
+    name: String,
+    attributes: BTreeMap<String, String>,
+    dropped_attributes_count: u32,
+}
+
+impl From<trace::span::Event> for Event {
+    fn from(value: trace::span::Event) -> Self {
+        let trace::span::Event {
+            time_unix_nano,
+            name,
+            attributes,
+            dropped_attributes_count,
+        } = value;
+        Event {
+            time_unix_nano,
+            name,
+            attributes: BTreeMap::from_iter(attributes),
+            dropped_attributes_count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Link {
+    pub trace_id: [u8; 16],
+    pub span_id: [u8; 8],
+    pub trace_state: String,
+    pub attributes: BTreeMap<String, String>,
+    pub dropped_attributes_count: u32,
+}
+
+impl From<trace::span::Link> for Link {
+    fn from(value: trace::span::Link) -> Self {
+        let trace::span::Link {
+            trace_id,
+            span_id,
+            trace_state,
+            attributes,
+            dropped_attributes_count,
+        } = value;
+        let trace_id: [u8; 16] = trace_id[0..16]
+            .try_into()
+            .expect("trace id is 16 bytes in otel format ");
+        let span_id: [u8; 8] = span_id[0..8]
+            .try_into()
+            .expect("span id is 8 bytes in otel format");
+        Link {
+            trace_id,
+            span_id,
+            trace_state,
+            attributes: BTreeMap::from_iter(attributes),
+            dropped_attributes_count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Status {
-    /// A developer-facing human readable error message.
-    #[prost(string, tag = "2")]
     pub message: String,
-    /// The status code.
-    #[prost(enumeration = "status::StatusCode", tag = "3")]
     pub code: i32,
 }
-/// Nested message and enum types in `Status`.
-pub mod status {
-    /// For the semantics of status codes see
-    /// <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#set-status>
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
-    #[repr(i32)]
-    pub enum StatusCode {
-        /// The default status.
-        Unset = 0,
-        /// The Span has been validated by an Application developer or Operator to
-        /// have completed successfully.
-        Ok = 1,
-        /// The Span contains an error.
-        Error = 2,
+
+impl From<trace::Status> for Status {
+    fn from(value: trace::Status) -> Self {
+        Status {
+            message: value.message,
+            code: value.code,
+        }
     }
-    impl StatusCode {
-        /// String value of the enum field names used in the ProtoBuf definition.
-        ///
-        /// The values are not transformed in any way and thus are considered stable
-        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-        pub fn as_str_name(&self) -> &'static str {
-            match self {
-                StatusCode::Unset => "STATUS_CODE_UNSET",
-                StatusCode::Ok => "STATUS_CODE_OK",
-                StatusCode::Error => "STATUS_CODE_ERROR",
+}
+
+impl From<super::proto::trace::TracesData> for Vec<SpanData> {
+    fn from(value: super::proto::trace::TracesData) -> Self {
+        let mut res = Vec::new();
+        for resource_spans in value.resource_spans {
+            let resource = resource_spans.resource.map(Resource::from);
+            for scope_spans in resource_spans.scope_spans {
+                let scope = scope_spans.scope.map(Scope::from);
+                for span in scope_spans.spans {
+                    let span = SpanData {
+                        resource: resource.clone(),
+                        scope: scope.clone(),
+                        trace_id: span.trace_id[0..16]
+                            .try_into()
+                            .expect("trace_id is 16 bytes by spec"),
+                        span_id: span.span_id[0..8]
+                            .try_into()
+                            .expect("span_id is 16 bytes by spec"),
+                        trace_state: span.trace_state,
+                        parent_span_id: span
+                            .parent_span_id
+                            .get(0..8)
+                            .unwrap_or(&[0; 8])
+                            .try_into()
+                            .unwrap(),
+                        name: span.name,
+                        kind: span.kind,
+                        start_time_unix_nano: span.start_time_unix_nano,
+                        end_time_unix_nano: span.end_time_unix_nano,
+                        attributes: BTreeMap::from_iter(span.attributes),
+                        dropped_attributes_count: span.dropped_attributes_count,
+                        events: span.events.into_iter().map(Into::into).collect(),
+                        dropped_events_count: span.dropped_events_count,
+                        links: span.links.into_iter().map(Into::into).collect(),
+                        dropped_links_count: span.dropped_links_count,
+                        status: span.status.map(Into::into),
+                    };
+
+                    res.push(span)
+                }
             }
         }
-        /// Creates an enum from field names used in the ProtoBuf definition.
-        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-            match value {
-                "STATUS_CODE_UNSET" => Some(Self::Unset),
-                "STATUS_CODE_OK" => Some(Self::Ok),
-                "STATUS_CODE_ERROR" => Some(Self::Error),
-                _ => None,
-            }
-        }
+        res
     }
 }

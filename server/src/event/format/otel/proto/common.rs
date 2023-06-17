@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use prost::alloc::string::String;
 use prost::alloc::vec::Vec;
 
@@ -12,6 +14,16 @@ pub struct AnyValue {
     #[prost(oneof = "any_value::Value", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub value: Option<any_value::Value>,
 }
+
+impl ToString for AnyValue {
+    fn to_string(&self) -> String {
+        self.value
+            .as_ref()
+            .map(|value| value.to_string())
+            .unwrap_or("null".to_string())
+    }
+}
+
 /// Nested message and enum types in `AnyValue`.
 pub mod any_value {
     use prost::alloc::{string::String, vec::Vec};
@@ -36,7 +48,22 @@ pub mod any_value {
         #[prost(bytes, tag = "7")]
         BytesValue(Vec<u8>),
     }
+
+    impl ToString for Value {
+        fn to_string(&self) -> String {
+            match self {
+                Value::StringValue(value) => value.to_owned(),
+                Value::BoolValue(value) => value.to_string(),
+                Value::IntValue(value) => value.to_string(),
+                Value::DoubleValue(value) => value.to_string(),
+                Value::ArrayValue(value) => value.to_string(),
+                Value::KvlistValue(value) => value.to_string(),
+                Value::BytesValue(value) => format!("{:?}", value),
+            }
+        }
+    }
 }
+
 /// ArrayValue is a list of AnyValue messages. We need ArrayValue as a message
 /// since oneof in AnyValue does not allow repeated fields.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -46,6 +73,19 @@ pub struct ArrayValue {
     #[prost(message, repeated, tag = "1")]
     pub values: Vec<AnyValue>,
 }
+
+impl std::fmt::Display for ArrayValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        for value in &self.values {
+            write!(f, "{}", value.to_string())?;
+        }
+        write!(f, "]")?;
+
+        Ok(())
+    }
+}
+
 /// KeyValueList is a list of KeyValue messages. We need KeyValueList as a message
 /// since `oneof` in AnyValue does not allow repeated fields. Everywhere else where we need
 /// a list of KeyValue messages (e.g. in Span) we use `repeated KeyValue` directly to
@@ -61,6 +101,19 @@ pub struct KeyValueList {
     #[prost(message, repeated, tag = "1")]
     pub values: Vec<KeyValue>,
 }
+
+impl std::fmt::Display for KeyValueList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{")?;
+        for value in &self.values {
+            write!(f, "{}", value.to_string())?;
+        }
+        write!(f, "}}")?;
+
+        Ok(())
+    }
+}
+
 /// KeyValue is a key-value pair that is used to store Span attributes, Link
 /// attributes, etc.
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -71,6 +124,30 @@ pub struct KeyValue {
     #[prost(message, optional, tag = "2")]
     pub value: Option<AnyValue>,
 }
+
+impl ToString for KeyValue {
+    fn to_string(&self) -> String {
+        format!(
+            "{}:{}",
+            self.key,
+            self.value
+                .as_ref()
+                .map(|x| x.to_string())
+                .unwrap_or("null".to_string())
+        )
+    }
+}
+
+impl FromIterator<KeyValue> for BTreeMap<String, String> {
+    fn from_iter<T: IntoIterator<Item = KeyValue>>(iter: T) -> Self {
+        let iter = iter.into_iter().filter_map(|KeyValue { key, value }| {
+            let value = value.and_then(|value| value.value)?;
+            Some((key, value.to_string()))
+        });
+        BTreeMap::from_iter(iter)
+    }
+}
+
 /// InstrumentationScope is a message representing the instrumentation scope information
 /// such as the fully qualified name and version.
 #[allow(clippy::derive_partial_eq_without_eq)]

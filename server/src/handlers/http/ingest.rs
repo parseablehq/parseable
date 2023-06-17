@@ -16,19 +16,16 @@
  *
  */
 
-use std::collections::HashMap;
-
 use actix_web::http::header::ContentType;
 use actix_web::{HttpRequest, HttpResponse};
-use arrow_schema::Field;
 use bytes::Bytes;
 use http::StatusCode;
 use prost::Message;
 use serde_json::Value;
 
 use crate::event::error::EventError;
-use crate::event::format::otel::{LogsData, TracesData};
-use crate::event::format::EventFormat;
+use crate::event::format::otel::{LogsData, SpanData, TracesData};
+use crate::event::format::{EventFormat, GlobalSchemaProvider};
 use crate::event::{self, format};
 use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
 use crate::metadata::STREAM_INFO;
@@ -39,26 +36,22 @@ use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 // fails if the logstream does not exist
 pub async fn traces(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name = get_stream_name_from_header(&req)?;
-    let (tags, metadata) = collect_tags_metadata(&req)?;
     if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
         return Err(PostError::CreateStream(e.into()));
     }
     let size = body.len();
     let body = TracesData::decode(body)?;
-    let body = serde_json::to_value(&body.resource_spans)?;
-    dbg!(&body);
+    let body: Vec<SpanData> = body.into();
+    let body = serde_json::to_value(&body)?;
     let (rb, is_first_event) = {
-        let hash_map = STREAM_INFO.read().unwrap();
-        let schema = &hash_map
-            .get(&stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
-            .schema;
         let event = format::json::Event {
             data: body,
             tags,
             metadata,
         };
-        dbg!(event.into_recordbatch(schema))?
+        event.into_recordbatch(GlobalSchemaProvider {
+            stream_name: stream_name.clone(),
+        })?
     };
 
     event::Event {
@@ -86,7 +79,6 @@ pub async fn logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostErr
     let size = body.len();
     let body = LogsData::decode(body)?;
     let body = serde_json::to_value(&body.resource_logs)?;
-    dbg!(&body);
     let (rb, is_first_event) = {
         let hash_map = STREAM_INFO.read().unwrap();
         let schema = &hash_map
@@ -98,7 +90,9 @@ pub async fn logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostErr
             tags,
             metadata,
         };
-        dbg!(event.into_recordbatch(schema))?
+        event.into_recordbatch(GlobalSchemaProvider {
+            stream_name: stream_name.clone(),
+        })?
     };
 
     event::Event {
@@ -136,14 +130,7 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
 }
 
 async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
-    let (size, rb, is_first_event) = {
-        let hash_map = STREAM_INFO.read().unwrap();
-        let schema = &hash_map
-            .get(&stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
-            .schema;
-        into_event_batch(req, body, schema)?
-    };
+    let (size, rb, is_first_event) = into_event_batch(req, body, stream_name.clone())?;
 
     event::Event {
         rb,
@@ -161,7 +148,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
 fn into_event_batch(
     req: HttpRequest,
     body: Bytes,
-    schema: &HashMap<String, Field>,
+    stream_name: String,
 ) -> Result<(usize, arrow_array::RecordBatch, bool), PostError> {
     let (tags, metadata) = collect_tags_metadata(&req)?;
     let size = body.len();
@@ -171,7 +158,7 @@ fn into_event_batch(
         tags,
         metadata,
     };
-    let (rb, is_first) = event.into_recordbatch(schema)?;
+    let (rb, is_first) = event.into_recordbatch(format::GlobalSchemaProvider { stream_name })?;
     Ok((size, rb, is_first))
 }
 
@@ -232,20 +219,23 @@ mod tests {
 
     use std::collections::HashMap;
 
-    use actix_web::test::TestRequest;
+    use actix_web::{test::TestRequest, HttpRequest};
     use arrow_array::{
         types::Int64Type, ArrayRef, Float64Array, Int64Array, ListArray, StringArray,
     };
     use arrow_schema::{DataType, Field};
     use bytes::Bytes;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use crate::{
-        event,
+        event::{
+            self,
+            format::{self, EventFormat},
+        },
         handlers::{PREFIX_META, PREFIX_TAGS},
     };
 
-    use super::into_event_batch;
+    use super::{collect_tags_metadata, PostError};
 
     trait TestExt {
         fn as_int64_arr(&self) -> &Int64Array;
@@ -267,6 +257,33 @@ mod tests {
         }
     }
 
+    struct MapSchemaProvider {
+        map: HashMap<String, Field>,
+    }
+
+    impl format::SchemaProvider for MapSchemaProvider {
+        fn get_schema_context(self) -> format::SchemaContext {
+            format::SchemaContext::DeriveMap(self.map)
+        }
+    }
+
+    fn into_event_batch(
+        req: HttpRequest,
+        body: Bytes,
+        map: HashMap<String, Field>,
+    ) -> Result<(usize, arrow_array::RecordBatch, bool), PostError> {
+        let (tags, metadata) = collect_tags_metadata(&req)?;
+        let size = body.len();
+        let body: Value = serde_json::from_slice(&body)?;
+        let event = format::json::Event {
+            data: body,
+            tags,
+            metadata,
+        };
+        let (rb, is_first) = event.into_recordbatch(MapSchemaProvider { map })?;
+        Ok((size, rb, is_first))
+    }
+
     #[test]
     fn basic_object_into_rb() {
         let json = json!({
@@ -283,7 +300,7 @@ mod tests {
         let (size, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 
@@ -329,7 +346,7 @@ mod tests {
         let (_, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 
@@ -360,12 +377,8 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _) = into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .unwrap();
+        let (_, rb, _) =
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
@@ -394,12 +407,10 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .is_err());
+        assert!(
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,)
+                .is_err()
+        );
     }
 
     #[test]
@@ -414,12 +425,8 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _) = into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .unwrap();
+        let (_, rb, _) =
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -434,7 +441,7 @@ mod tests {
         assert!(into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .is_err())
     }
@@ -464,7 +471,7 @@ mod tests {
         let (_, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 
@@ -511,12 +518,8 @@ mod tests {
         ]);
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _) = into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .unwrap();
+        let (_, rb, _) =
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -559,7 +562,7 @@ mod tests {
         let (_, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 
@@ -603,12 +606,10 @@ mod tests {
             ("c".to_string(), Field::new("c", DataType::Float64, true)),
         ]);
 
-        assert!(into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .is_err());
+        assert!(
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,)
+                .is_err()
+        );
     }
 
     #[test]
@@ -639,7 +640,7 @@ mod tests {
         let (_, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 

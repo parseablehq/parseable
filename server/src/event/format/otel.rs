@@ -1,7 +1,7 @@
-mod common;
-mod log;
-mod resource;
+mod proto;
+mod schema;
 mod trace;
 
-pub use self::log::LogsData;
-pub use self::trace::TracesData;
+pub use self::proto::log::LogsData;
+pub use self::proto::trace::TracesData;
+pub use self::trace::SpanData;
