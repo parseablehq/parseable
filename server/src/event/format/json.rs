@@ -27,26 +27,19 @@ use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use serde_json::Value;
 use std::sync::Arc;
 
-use super::{EventFormat, SchemaContext};
+use super::{EventFormat, RecordContext, SchemaContext};
 use crate::utils::{arrow::get_field, json::flatten_json_body};
 
 pub struct Event {
     pub data: Value,
-    pub tags: String,
-    pub metadata: String,
+    pub schema: SchemaContext,
 }
 
 impl EventFormat for Event {
-    type Data = Vec<Value>;
-
     // convert the incoming json to a vector of json values
     // also extract the arrow schema, tags and metadata from the incoming json
-    fn to_data(
-        self,
-        schema_context: SchemaContext,
-    ) -> Result<(Self::Data, Schema, bool), anyhow::Error> {
+    fn decode(self) -> Result<RecordContext, anyhow::Error> {
         let data = flatten_json_body(self.data)?;
-
         // incoming event may be a single json or a json array
         // but Data (type defined above) is a vector of json values
         // hence we need to convert the incoming event to a vector of json values
@@ -61,7 +54,7 @@ impl EventFormat for Event {
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
-        let schema = match schema_context.derive_arrow_schema(fields)? {
+        let schema = match self.schema.derive_arrow_schema(fields)? {
             Some(schema) => schema,
             None => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
                 Ok(infer_schema) => {
@@ -86,30 +79,25 @@ impl EventFormat for Event {
             ));
         }
 
-        Ok((value_arr, schema, is_first))
+        let rb = decode(value_arr, Arc::new(schema))?;
+
+        Ok(RecordContext { is_first, rb })
     }
+}
 
-    // Convert the Data type (defined above) to arrow record batch
-    fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, anyhow::Error> {
-        let array_capacity = round_upto_multiple_of_64(data.len());
-        let value_iter: &mut (dyn Iterator<Item = Value>) = &mut data.into_iter();
+// Convert the Data type (defined above) to arrow record batch
+pub fn decode(data: Vec<Value>, schema: Arc<Schema>) -> Result<RecordBatch, anyhow::Error> {
+    let array_capacity = round_upto_multiple_of_64(data.len());
+    let value_iter: &mut (dyn Iterator<Item = Value>) = &mut data.into_iter();
 
-        let reader = Decoder::new(
-            schema,
-            DecoderOptions::new().with_batch_size(array_capacity),
-        );
-        match reader.next_batch(&mut value_iter.map(Ok)) {
-            Ok(Some(recordbatch)) => Ok(recordbatch),
-            Err(err) => Err(anyhow!("Failed to create recordbatch due to {:?}", err)),
-            Ok(None) => unreachable!("all records are added to one rb"),
-        }
-    }
-
-    fn extention(&self) -> Option<Box<dyn super::DecodeExt>> {
-        Some(Box::new(super::DefaultDecoderExt::new(
-            self.tags.clone(),
-            self.metadata.clone(),
-        )))
+    let reader = Decoder::new(
+        schema,
+        DecoderOptions::new().with_batch_size(array_capacity),
+    );
+    match reader.next_batch(&mut value_iter.map(Ok)) {
+        Ok(Some(recordbatch)) => Ok(recordbatch),
+        Err(err) => Err(anyhow!("Failed to create recordbatch due to {:?}", err)),
+        Ok(None) => unreachable!("all records are added to one rb"),
     }
 }
 

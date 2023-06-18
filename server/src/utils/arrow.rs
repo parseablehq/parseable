@@ -29,15 +29,14 @@ pub mod merged_reader;
 pub use batch_adapter::adapt_batch;
 pub use merged_reader::MergedRecordReader;
 
-pub fn replace_columns(
+pub fn add_columns(
     schema: Arc<Schema>,
     batch: RecordBatch,
-    indexes: &[usize],
-    arrays: &[Arc<dyn Array + 'static>],
+    arrays: &[(usize, Arc<dyn Array + 'static>)],
 ) -> RecordBatch {
     let mut batch_arrays = batch.columns().iter().map(Arc::clone).collect_vec();
-    for (&index, arr) in indexes.iter().zip(arrays.iter()) {
-        batch_arrays[index] = Arc::clone(arr);
+    for (index, arr) in arrays {
+        batch_arrays[*index] = Arc::clone(arr);
     }
     RecordBatch::try_new(schema, batch_arrays).unwrap()
 }
@@ -49,7 +48,7 @@ mod tests {
     use arrow_array::{Array, Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
 
-    use super::replace_columns;
+    use super::add_columns;
 
     #[test]
     fn check_replace() {
@@ -73,7 +72,7 @@ mod tests {
 
         let arr: Arc<dyn Array + 'static> = Arc::new(Int32Array::from_value(0, 3));
 
-        let new_rb = replace_columns(schema_ref.clone(), rb, &[2], &[arr]);
+        let new_rb = add_columns(schema_ref.clone(), rb, &[(2, arr)]);
 
         assert_eq!(new_rb.schema(), schema_ref);
         assert_eq!(new_rb.num_columns(), 3);

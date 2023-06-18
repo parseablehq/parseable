@@ -24,11 +24,10 @@ use prost::Message;
 use serde_json::Value;
 
 use crate::event::error::EventError;
-use crate::event::format::otel::{LogsData, SpanData, TracesData};
-use crate::event::format::{EventFormat, GlobalSchemaProvider};
+use crate::event::format::otel::{LogsData, TracesData};
+use crate::event::format::{DefaultRecordExt, EventFormat, RecordContext, SchemaContext};
 use crate::event::{self, format};
 use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
-use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
 // Handler for POST /api/v1/traces
@@ -40,18 +39,14 @@ pub async fn traces(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         return Err(PostError::CreateStream(e.into()));
     }
     let size = body.len();
-    let body = TracesData::decode(body)?;
-    let body: Vec<SpanData> = body.into();
-    let body = serde_json::to_value(&body)?;
-    let (rb, is_first_event) = {
-        let event = format::json::Event {
-            data: body,
-            tags,
-            metadata,
+    let RecordContext {
+        is_first: is_first_event,
+        rb,
+    } = {
+        let event = format::otel::TraceEvent {
+            data: TracesData::decode(body)?,
         };
-        event.into_recordbatch(GlobalSchemaProvider {
-            stream_name: stream_name.clone(),
-        })?
+        event.into_recordbatch(Some(format::TimestampRecordExt))?
     };
 
     event::Event {
@@ -79,20 +74,16 @@ pub async fn logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostErr
     let size = body.len();
     let body = LogsData::decode(body)?;
     let body = serde_json::to_value(&body.resource_logs)?;
-    let (rb, is_first_event) = {
-        let hash_map = STREAM_INFO.read().unwrap();
-        let schema = &hash_map
-            .get(&stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
-            .schema;
+    let RecordContext {
+        is_first: is_first_event,
+        rb,
+    } = {
         let event = format::json::Event {
             data: body,
-            tags,
-            metadata,
+            schema: SchemaContext::Derive(stream_name.clone()),
         };
-        event.into_recordbatch(GlobalSchemaProvider {
-            stream_name: stream_name.clone(),
-        })?
+
+        event.into_recordbatch(Some(DefaultRecordExt::new(tags, metadata)))?
     };
 
     event::Event {
@@ -155,10 +146,10 @@ fn into_event_batch(
     let body: Value = serde_json::from_slice(&body)?;
     let event = format::json::Event {
         data: body,
-        tags,
-        metadata,
+        schema: SchemaContext::Derive(stream_name),
     };
-    let (rb, is_first) = event.into_recordbatch(format::GlobalSchemaProvider { stream_name })?;
+    let RecordContext { is_first, rb } =
+        event.into_recordbatch(Some(format::DefaultRecordExt::new(tags, metadata)))?;
     Ok((size, rb, is_first))
 }
 
@@ -230,7 +221,7 @@ mod tests {
     use crate::{
         event::{
             self,
-            format::{self, EventFormat},
+            format::{self, EventFormat, RecordContext},
         },
         handlers::{PREFIX_META, PREFIX_TAGS},
     };
@@ -257,16 +248,6 @@ mod tests {
         }
     }
 
-    struct MapSchemaProvider {
-        map: HashMap<String, Field>,
-    }
-
-    impl format::SchemaProvider for MapSchemaProvider {
-        fn get_schema_context(self) -> format::SchemaContext {
-            format::SchemaContext::DeriveMap(self.map)
-        }
-    }
-
     fn into_event_batch(
         req: HttpRequest,
         body: Bytes,
@@ -277,10 +258,10 @@ mod tests {
         let body: Value = serde_json::from_slice(&body)?;
         let event = format::json::Event {
             data: body,
-            tags,
-            metadata,
+            schema: format::SchemaContext::DeriveMap(map),
         };
-        let (rb, is_first) = event.into_recordbatch(MapSchemaProvider { map })?;
+        let RecordContext { is_first, rb } =
+            event.into_recordbatch(Some(format::DefaultRecordExt::new(tags, metadata)))?;
         Ok((size, rb, is_first))
     }
 
