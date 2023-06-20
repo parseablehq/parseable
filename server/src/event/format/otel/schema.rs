@@ -13,10 +13,10 @@ fn attribute_datatype() -> DataType {
 
 fn common_schema() -> Vec<Field> {
     vec![
-        Field::new("resource_attributes", DataType::Utf8, true),
+        Field::new("resource_attributes", attribute_datatype(), true),
         Field::new("scope_name", DataType::Utf8, true),
         Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
+        Field::new("scope_attributes", attribute_datatype(), true),
     ]
 }
 
@@ -25,7 +25,7 @@ impl ArrowSchema for trace::Event {
         vec![
             Field::new("time_unix_nano", DataType::UInt64, true),
             Field::new("name", DataType::Utf8, true),
-            Field::new("attributes", DataType::Utf8, true),
+            Field::new("attributes", attribute_datatype(), true),
             Field::new("dropped_attributes_count", DataType::UInt32, true),
         ]
     }

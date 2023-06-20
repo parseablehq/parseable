@@ -25,9 +25,7 @@ use serde_json::Value;
 
 use crate::event::error::EventError;
 use crate::event::format::otel::{LogsData, TracesData};
-use crate::event::format::{
-    DefaultRecordExt, EventFormat, RecordContext, SchemaContext, TimestampRecordExt,
-};
+use crate::event::format::{DefaultRecordExt, EventFormat, RecordContext, SchemaContext};
 use crate::event::{self, format};
 use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
@@ -48,7 +46,10 @@ pub async fn traces(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
     let RecordContext {
         is_first: is_first_event,
         rb,
-    } = event.into_recordbatch(Some(format::TimestampRecordExt))?;
+    } = event.into_recordbatch(Some(DefaultRecordExt::new(
+        "example=example".to_string(),
+        "metadata=metadata".to_string(),
+    )))?;
 
     event::Event {
         rb,
@@ -79,7 +80,10 @@ pub async fn logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostErr
     let RecordContext {
         is_first: is_first_event,
         rb,
-    } = event.into_recordbatch(Some(TimestampRecordExt))?;
+    } = event.into_recordbatch(Some(DefaultRecordExt::new(
+        "example=example".to_string(),
+        "metadata=metadata".to_string(),
+    )))?;
 
     event::Event {
         rb,
