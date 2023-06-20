@@ -25,7 +25,9 @@ use serde_json::Value;
 
 use crate::event::error::EventError;
 use crate::event::format::otel::{LogsData, TracesData};
-use crate::event::format::{DefaultRecordExt, EventFormat, RecordContext, SchemaContext};
+use crate::event::format::{
+    DefaultRecordExt, EventFormat, RecordContext, SchemaContext, TimestampRecordExt,
+};
 use crate::event::{self, format};
 use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
@@ -39,15 +41,14 @@ pub async fn traces(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         return Err(PostError::CreateStream(e.into()));
     }
     let size = body.len();
+    let event = format::otel::TraceEvent {
+        data: TracesData::decode(body)?,
+    };
+
     let RecordContext {
         is_first: is_first_event,
         rb,
-    } = {
-        let event = format::otel::TraceEvent {
-            data: TracesData::decode(body)?,
-        };
-        event.into_recordbatch(Some(format::TimestampRecordExt))?
-    };
+    } = event.into_recordbatch(Some(format::TimestampRecordExt))?;
 
     event::Event {
         rb,
@@ -67,24 +68,18 @@ pub async fn traces(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
 // fails if the logstream does not exist
 pub async fn logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name = get_stream_name_from_header(&req)?;
-    let (tags, metadata) = collect_tags_metadata(&req)?;
     if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
         return Err(PostError::CreateStream(e.into()));
     }
     let size = body.len();
-    let body = LogsData::decode(body)?;
-    let body = serde_json::to_value(&body.resource_logs)?;
+    let event = format::otel::LogEvent {
+        data: LogsData::decode(body)?,
+    };
+
     let RecordContext {
         is_first: is_first_event,
         rb,
-    } = {
-        let event = format::json::Event {
-            data: body,
-            schema: SchemaContext::Derive(stream_name.clone()),
-        };
-
-        event.into_recordbatch(Some(DefaultRecordExt::new(tags, metadata)))?
-    };
+    } = event.into_recordbatch(Some(TimestampRecordExt))?;
 
     event::Event {
         rb,
@@ -149,7 +144,7 @@ fn into_event_batch(
         schema: SchemaContext::Derive(stream_name),
     };
     let RecordContext { is_first, rb } =
-        event.into_recordbatch(Some(format::DefaultRecordExt::new(tags, metadata)))?;
+        event.into_recordbatch(Some(DefaultRecordExt::new(tags, metadata)))?;
     Ok((size, rb, is_first))
 }
 

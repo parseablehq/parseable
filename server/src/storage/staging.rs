@@ -206,7 +206,7 @@ pub fn convert_disk_files_to_parquet(
         let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
 
         for ref record in record_reader.merged_iter(&schema) {
-            writer.write(record)?;
+            dbg!(writer.write(record))?;
         }
 
         writer.close()?;

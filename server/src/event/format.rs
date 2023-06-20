@@ -78,7 +78,7 @@ pub trait EventFormat: Sized {
         };
 
         if let Some(extention) = extention {
-            rb = extention.extend_recordbatch(rb)
+            rb = dbg!(extention.extend_recordbatch(rb))
         }
 
         Ok(RecordContext { is_first, rb })
@@ -179,7 +179,7 @@ impl RecordExt for DefaultRecordExt {
 
         // modify the record batch to add fields to respective indexes
         utils::arrow::add_columns(
-            Arc::clone(&rb.schema()),
+            Arc::new(schema),
             rb,
             &[
                 (0, Arc::new(timestamp_array)),
@@ -208,10 +208,6 @@ impl RecordExt for TimestampRecordExt {
         let timestamp_array = get_timestamp_array(rb.num_rows());
 
         // modify the record batch to add fields to respective indexes
-        utils::arrow::add_columns(
-            Arc::clone(&rb.schema()),
-            rb,
-            &[(0, Arc::new(timestamp_array))],
-        )
+        utils::arrow::add_columns(Arc::new(schema), rb, &[(0, Arc::new(timestamp_array))])
     }
 }

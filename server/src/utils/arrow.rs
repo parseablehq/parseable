@@ -36,7 +36,7 @@ pub fn add_columns(
 ) -> RecordBatch {
     let mut batch_arrays = batch.columns().iter().map(Arc::clone).collect_vec();
     for (index, arr) in arrays {
-        batch_arrays[*index] = Arc::clone(arr);
+        batch_arrays.insert(*index, Arc::clone(arr));
     }
     RecordBatch::try_new(schema, batch_arrays).unwrap()
 }
