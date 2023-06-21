@@ -1,20 +1,16 @@
+use itertools::Itertools;
+
 use super::proto::{common, resource};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Resource {
     pub attributes: Vec<KeyValue>,
-    dropped_attributes_count: u32,
 }
 
 impl From<resource::Resource> for Resource {
     fn from(value: resource::Resource) -> Self {
-        let resource::Resource {
-            attributes,
-            dropped_attributes_count,
-        } = value;
         Resource {
-            attributes: attributes.into_iter().map(Into::into).collect(),
-            dropped_attributes_count,
+            attributes: value.attributes.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -24,7 +20,6 @@ pub struct Scope {
     pub name: String,
     pub version: String,
     pub attributes: Vec<KeyValue>,
-    pub dropped_attributes_count: u32,
 }
 
 impl From<common::InstrumentationScope> for Scope {
@@ -33,13 +28,12 @@ impl From<common::InstrumentationScope> for Scope {
             name,
             version,
             attributes,
-            dropped_attributes_count,
+            ..
         } = value;
         Scope {
             name,
             version,
             attributes: attributes.into_iter().map(Into::into).collect(),
-            dropped_attributes_count,
         }
     }
 }
@@ -59,8 +53,22 @@ impl From<common::KeyValue> for KeyValue {
     }
 }
 
+impl ToString for KeyValue {
+    fn to_string(&self) -> String {
+        format!("{}={}", self.key, self.value)
+    }
+}
+
 impl From<common::KeyValueList> for Vec<KeyValue> {
     fn from(value: common::KeyValueList) -> Self {
         value.values.into_iter().map(Into::into).collect()
     }
+}
+
+pub fn attributes_to_string(values: &[KeyValue]) -> String {
+    values.iter().map(|x| x.to_string()).join("^")
+}
+
+pub fn id_to_string(trace_id: &[u8]) -> String {
+    String::from_utf8_lossy(&trace_id).to_string()
 }

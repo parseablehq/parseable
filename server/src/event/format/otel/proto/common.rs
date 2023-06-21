@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use prost::alloc::string::String;
 use prost::alloc::vec::Vec;
 
@@ -128,23 +126,13 @@ pub struct KeyValue {
 impl ToString for KeyValue {
     fn to_string(&self) -> String {
         format!(
-            "{}:{}",
+            "{}={}",
             self.key,
             self.value
                 .as_ref()
                 .map(|x| x.to_string())
                 .unwrap_or("null".to_string())
         )
-    }
-}
-
-impl FromIterator<KeyValue> for BTreeMap<String, String> {
-    fn from_iter<T: IntoIterator<Item = KeyValue>>(iter: T) -> Self {
-        let iter = iter.into_iter().filter_map(|KeyValue { key, value }| {
-            let value = value.and_then(|value| value.value)?;
-            Some((key, value.to_string()))
-        });
-        BTreeMap::from_iter(iter)
     }
 }
 

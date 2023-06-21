@@ -16,18 +16,24 @@
  *
  */
 
+use std::sync::Arc;
+
 use actix_web::http::header::ContentType;
 use actix_web::{HttpRequest, HttpResponse};
+use arrow_schema::Schema;
 use bytes::Bytes;
 use http::StatusCode;
 use prost::Message;
 use serde_json::Value;
 
 use crate::event::error::EventError;
-use crate::event::format::otel::{LogsData, TracesData};
-use crate::event::format::{DefaultRecordExt, EventFormat, RecordContext, SchemaContext};
+use crate::event::format::otel::{LogEvent, LogsData, TraceEvent, TracesData};
+use crate::event::format::{
+    ArrowSchema, DefaultRecordExt, EventFormat, RecordContext, SchemaContext,
+};
 use crate::event::{self, format};
 use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
+use crate::metadata;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
 // Handler for POST /api/v1/traces
@@ -35,7 +41,7 @@ use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 // fails if the logstream does not exist
 pub async fn traces(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name = get_stream_name_from_header(&req)?;
-    if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
+    if let Err(e) = create_stream_if_not_exists_with_schema::<TraceEvent>(&stream_name).await {
         return Err(PostError::CreateStream(e.into()));
     }
     let size = body.len();
@@ -69,7 +75,7 @@ pub async fn traces(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
 // fails if the logstream does not exist
 pub async fn logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name = get_stream_name_from_header(&req)?;
-    if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
+    if let Err(e) = create_stream_if_not_exists_with_schema::<LogEvent>(&stream_name).await {
         return Err(PostError::CreateStream(e.into()));
     }
     let size = body.len();
@@ -166,10 +172,24 @@ fn get_stream_name_from_header(req: &HttpRequest) -> Result<String, PostError> {
         .ok_or(PostError::Header(ParseHeaderError::MissingStreamName))
 }
 
+async fn create_stream_if_not_exists_with_schema<T: ArrowSchema>(
+    stream_name: &str,
+) -> Result<(), anyhow::Error> {
+    if metadata::STREAM_INFO.stream_exists(stream_name) {
+        return Ok(());
+    }
+    let schema = <T as ArrowSchema>::arrow_schema();
+    super::logstream::create_stream(stream_name.to_string()).await?;
+    let storage = crate::option::CONFIG.storage().get_object_store();
+    let schema = Schema::new(schema);
+    storage.put_schema(stream_name, &schema).await?;
+    event::commit_schema(stream_name, Arc::new(schema))?;
+
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PostError {
-    #[error("Stream {0} not found")]
-    StreamNotFound(String),
     #[error("Could not deserialize into JSON object, {0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Could not deserialize into Protobuf object, {0}")]
@@ -193,7 +213,6 @@ impl actix_web::ResponseError for PostError {
             PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::Invalid(_) => StatusCode::BAD_REQUEST,
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
         }
     }
 

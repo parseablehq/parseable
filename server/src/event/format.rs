@@ -78,7 +78,7 @@ pub trait EventFormat: Sized {
         };
 
         if let Some(extention) = extention {
-            rb = dbg!(extention.extend_recordbatch(rb))
+            rb = extention.extend_recordbatch(rb)
         }
 
         Ok(RecordContext { is_first, rb })

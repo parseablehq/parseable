@@ -45,10 +45,7 @@ impl MergedRecordReader {
     }
 
     pub fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
-        let adapted_readers = self
-            .readers
-            .into_iter()
-            .map(move |reader| reader.map(|x| dbg!(x)).flatten());
+        let adapted_readers = self.readers.into_iter().map(move |reader| reader.flatten());
 
         kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
             let a_time = get_timestamp_millis(a);
