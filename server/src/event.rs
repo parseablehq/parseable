@@ -21,7 +21,7 @@ pub mod format;
 mod writer;
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Schema};
+use arrow_schema::{Field, Fields, Schema};
 use itertools::Itertools;
 
 use std::sync::Arc;
@@ -85,7 +85,7 @@ impl Event {
     }
 }
 
-pub fn get_schema_key(fields: &[Field]) -> String {
+pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     // Fields must be sorted
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     for field in fields.iter().sorted_by_key(|v| v.name()) {
@@ -102,10 +102,10 @@ pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), Event
         .get_mut(stream_name)
         .expect("map has entry for this stream name")
         .schema;
-    let current_schema = Schema::new(map.values().cloned().collect());
+    let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
     let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
     map.clear();
-    map.extend(schema.fields.into_iter().map(|f| (f.name().clone(), f)));
+    map.extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
     Ok(())
 }
 

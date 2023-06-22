@@ -17,7 +17,7 @@
  *
  */
 
-use std::{fs::File, path::PathBuf};
+use std::{fs::File, io::BufReader, path::PathBuf};
 
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_ipc::reader::StreamReader;
@@ -29,7 +29,7 @@ use crate::event::DEFAULT_TIMESTAMP_KEY;
 
 #[derive(Debug)]
 pub struct MergedRecordReader {
-    pub readers: Vec<StreamReader<File>>,
+    pub readers: Vec<StreamReader<BufReader<File>>>,
 }
 
 impl MergedRecordReader {

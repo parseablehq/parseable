@@ -38,9 +38,10 @@ pub(super) fn v2_v3(schemas: HashMap<String, Value>) -> anyhow::Result<Schema> {
         derived_schemas.push(schema);
     }
 
-    let mut schema = Schema::try_merge(derived_schemas)?;
-    schema.fields.sort_by(|a, b| a.name().cmp(b.name()));
-    Ok(schema)
+    let schema = Schema::try_merge(derived_schemas)?;
+    let mut fields: Vec<_> = schema.fields.iter().cloned().collect();
+    fields.sort_by(|a, b| a.name().cmp(b.name()));
+    Ok(Schema::new(fields))
 }
 
 fn value_to_schema(schema: Value) -> Result<Schema, anyhow::Error> {

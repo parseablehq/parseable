@@ -39,12 +39,12 @@ pub trait EventFormat: Sized {
     type Data;
     fn to_data(
         self,
-        schema: &HashMap<String, Field>,
-    ) -> Result<(Self::Data, Schema, bool, Tags, Metadata), AnyError>;
+        schema: HashMap<String, Arc<Field>>,
+    ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), AnyError>;
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
     fn into_recordbatch(
         self,
-        schema: &HashMap<String, Field>,
+        schema: HashMap<String, Arc<Field>>,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let (data, mut schema, is_first, tags, metadata) = self.to_data(schema)?;
 
@@ -67,28 +67,28 @@ pub trait EventFormat: Sized {
         };
 
         // add the p_timestamp field to the event schema to the 0th index
-        schema.fields.insert(
+        schema.insert(
             0,
-            Field::new(
+            Arc::new(Field::new(
                 DEFAULT_TIMESTAMP_KEY,
                 DataType::Timestamp(TimeUnit::Millisecond, None),
                 true,
-            ),
+            )),
         );
 
         // p_tags and p_metadata are added to the end of the schema
-        let tags_index = schema.fields.len();
+        let tags_index = schema.len();
         let metadata_index = tags_index + 1;
-        schema
-            .fields
-            .push(Field::new(DEFAULT_TAGS_KEY, DataType::Utf8, true));
-        schema
-            .fields
-            .push(Field::new(DEFAULT_METADATA_KEY, DataType::Utf8, true));
+        schema.push(Arc::new(Field::new(DEFAULT_TAGS_KEY, DataType::Utf8, true)));
+        schema.push(Arc::new(Field::new(
+            DEFAULT_METADATA_KEY,
+            DataType::Utf8,
+            true,
+        )));
 
         // prepare the record batch and new fields to be added
-        let schema_ref = Arc::new(schema);
-        let rb = Self::decode(data, Arc::clone(&schema_ref))?;
+        let schema = Arc::new(Schema::new(schema));
+        let rb = Self::decode(data, schema.clone())?;
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
         let metadata_arr =
             StringArray::from_iter_values(std::iter::repeat(&metadata).take(rb.num_rows()));
@@ -96,7 +96,7 @@ pub trait EventFormat: Sized {
 
         // modify the record batch to add fields to respective indexes
         let rb = utils::arrow::replace_columns(
-            Arc::clone(&schema_ref),
+            Arc::clone(&schema),
             rb,
             &[0, tags_index, metadata_index],
             &[

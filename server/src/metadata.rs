@@ -17,7 +17,7 @@
  */
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Schema};
+use arrow_schema::{Field, Fields, Schema};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -40,7 +40,7 @@ pub struct StreamInfo(RwLock<HashMap<String, LogStreamMetadata>>);
 
 #[derive(Debug, Default)]
 pub struct LogStreamMetadata {
-    pub schema: HashMap<String, Field>,
+    pub schema: HashMap<String, Arc<Field>>,
     pub alerts: Alerts,
 }
 
@@ -89,7 +89,7 @@ impl StreamInfo {
 
         // sort fields on read from hashmap as order of fields can differ.
         // This provides a stable output order if schema is same between calls to this function
-        let fields = schema
+        let fields: Fields = schema
             .values()
             .sorted_by_key(|field| field.name())
             .cloned()
@@ -133,8 +133,13 @@ impl StreamInfo {
             let schema = storage.get_schema(&stream.name).await?;
 
             let schema = update_schema_from_staging(&stream.name, schema);
-            let schema =
-                HashMap::from_iter(schema.fields.into_iter().map(|v| (v.name().to_owned(), v)));
+            let schema = HashMap::from_iter(
+                schema
+                    .fields
+                    .iter()
+                    .map(|v| (v.name().to_owned(), v.clone())),
+            );
+
             let metadata = LogStreamMetadata { schema, alerts };
 
             let mut map = self.write().expect(LOCK_EXPECT);

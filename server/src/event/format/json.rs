@@ -21,19 +21,19 @@
 
 use anyhow::anyhow;
 use arrow_array::RecordBatch;
-use arrow_json::reader::{infer_json_schema_from_iterator, Decoder, DecoderOptions};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
-use super::EventFormat;
+use super::{EventFormat, Metadata, Tags};
 use crate::utils::{arrow::get_field, json::flatten_json_body};
 
 pub struct Event {
     pub data: Value,
-    pub tags: String,
-    pub metadata: String,
+    pub tags: Tags,
+    pub metadata: Metadata,
 }
 
 impl EventFormat for Event {
@@ -43,10 +43,9 @@ impl EventFormat for Event {
     // also extract the arrow schema, tags and metadata from the incoming json
     fn to_data(
         self,
-        schema: &HashMap<String, Field>,
-    ) -> Result<(Self::Data, Schema, bool, String, String), anyhow::Error> {
+        schema: HashMap<String, Arc<Field>>,
+    ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
         let data = flatten_json_body(self.data)?;
-
         let stream_schema = schema;
 
         // incoming event may be a single json or a json array
@@ -63,18 +62,18 @@ impl EventFormat for Event {
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
-        let schema = match derive_arrow_schema(stream_schema, fields) {
+        let schema = match derive_arrow_schema(&stream_schema, fields) {
             Ok(schema) => schema,
             Err(_) => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
                 Ok(infer_schema) => {
                     if let Err(err) = Schema::try_merge(vec![
-                        Schema::new(stream_schema.values().cloned().collect()),
+                        Schema::new(stream_schema.values().cloned().collect::<Fields>()),
                         infer_schema.clone(),
                     ]) {
                         return Err(anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err));
                     }
                     is_first = true;
-                    infer_schema
+                    infer_schema.fields.iter().cloned().collect()
                 }
                 Err(err) => {
                     return Err(anyhow!(
@@ -100,13 +99,13 @@ impl EventFormat for Event {
     // Convert the Data type (defined above) to arrow record batch
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, anyhow::Error> {
         let array_capacity = round_upto_multiple_of_64(data.len());
-        let value_iter: &mut (dyn Iterator<Item = Value>) = &mut data.into_iter();
+        let mut reader = ReaderBuilder::new(schema)
+            .with_batch_size(array_capacity)
+            .with_coerce_primitive(false)
+            .build_decoder()?;
 
-        let reader = Decoder::new(
-            schema,
-            DecoderOptions::new().with_batch_size(array_capacity),
-        );
-        match reader.next_batch(&mut value_iter.map(Ok)) {
+        reader.serialize(&data)?;
+        match reader.flush() {
             Ok(Some(recordbatch)) => Ok(recordbatch),
             Err(err) => Err(anyhow!("Failed to create recordbatch due to {:?}", err)),
             Ok(None) => unreachable!("all records are added to one rb"),
@@ -116,14 +115,17 @@ impl EventFormat for Event {
 
 // Returns arrow schema with the fields that are present in the request body
 // This schema is an input to convert the request body to arrow record batch
-fn derive_arrow_schema(schema: &HashMap<String, Field>, fields: Vec<&str>) -> Result<Schema, ()> {
+fn derive_arrow_schema(
+    schema: &HashMap<String, Arc<Field>>,
+    fields: Vec<&str>,
+) -> Result<Vec<Arc<Field>>, ()> {
     let mut res = Vec::with_capacity(fields.len());
     let fields = fields.into_iter().map(|field_name| schema.get(field_name));
     for field in fields {
         let Some(field) = field else { return Err(()) };
         res.push(field.clone())
     }
-    Ok(Schema::new(res))
+    Ok(res)
 }
 
 fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a str>, ()> {
@@ -145,12 +147,12 @@ fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a s
     Ok(keys)
 }
 
-fn fields_mismatch(schema: &Schema, body: &Value) -> bool {
+fn fields_mismatch(schema: &Vec<Arc<Field>>, body: &Value) -> bool {
     for (name, val) in body.as_object().expect("body is of object variant") {
         if val.is_null() {
             continue;
         }
-        let Some(field) = get_field(schema, name) else { return true };
+        let Some(field) = get_field(&schema, name) else { return true };
         if !valid_type(field.data_type(), val) {
             return true;
         }

@@ -81,6 +81,12 @@ mod tests {
     }
 }
 
-pub fn get_field<'a>(schema: &'a Schema, name: &str) -> Option<&'a arrow_schema::Field> {
-    schema.fields.iter().find(|field| field.name() == name)
+pub fn get_field<'a>(
+    fields: &'a [impl AsRef<arrow_schema::Field>],
+    name: &str,
+) -> Option<&'a arrow_schema::Field> {
+    fields
+        .iter()
+        .map(|x| x.as_ref())
+        .find(|field| field.name() == name)
 }
