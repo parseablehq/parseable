@@ -147,12 +147,12 @@ fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a s
     Ok(keys)
 }
 
-fn fields_mismatch(schema: &Vec<Arc<Field>>, body: &Value) -> bool {
+fn fields_mismatch(schema: &[Arc<Field>], body: &Value) -> bool {
     for (name, val) in body.as_object().expect("body is of object variant") {
         if val.is_null() {
             continue;
         }
-        let Some(field) = get_field(&schema, name) else { return true };
+        let Some(field) = get_field(schema, name) else { return true };
         if !valid_type(field.data_type(), val) {
             return true;
         }

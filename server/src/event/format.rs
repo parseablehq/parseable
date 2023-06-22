@@ -32,15 +32,17 @@ pub mod json;
 
 type Tags = String;
 type Metadata = String;
+type EventSchema = Vec<Arc<Field>>;
 
 // Global Trait for event format
 // This trait is implemented by all the event formats
 pub trait EventFormat: Sized {
     type Data;
+
     fn to_data(
         self,
         schema: HashMap<String, Arc<Field>>,
-    ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), AnyError>;
+    ) -> Result<(Self::Data, EventSchema, bool, Tags, Metadata), AnyError>;
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
     fn into_recordbatch(
         self,
