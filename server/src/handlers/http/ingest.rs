@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use actix_web::http::header::ContentType;
 use actix_web::{HttpRequest, HttpResponse};
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use bytes::Bytes;
 use http::StatusCode;
 use prost::Message;
@@ -178,10 +178,27 @@ async fn create_stream_if_not_exists_with_schema<T: ArrowSchema>(
     if metadata::STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
     }
-    let schema = <T as ArrowSchema>::arrow_schema();
+    let mut fields = <T as ArrowSchema>::arrow_schema();
+    // add the p_timestamp field to the event schema to the 0th index
+    fields.insert(
+        0,
+        Field::new(
+            event::DEFAULT_TIMESTAMP_KEY,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        ),
+    );
+    // p_tags and p_metadata are added to the end of the schema
+    fields.push(Field::new(event::DEFAULT_TAGS_KEY, DataType::Utf8, true));
+    fields.push(Field::new(
+        event::DEFAULT_METADATA_KEY,
+        DataType::Utf8,
+        true,
+    ));
+
     super::logstream::create_stream(stream_name.to_string()).await?;
     let storage = crate::option::CONFIG.storage().get_object_store();
-    let schema = Schema::new(schema);
+    let schema = Schema::new(fields);
     storage.put_schema(stream_name, &schema).await?;
     event::commit_schema(stream_name, Arc::new(schema))?;
 
