@@ -136,7 +136,7 @@ impl Message {
     // checks if message (with a column name) is valid (i.e. the column name is present in the schema)
     pub fn valid(&self, schema: &Schema, column: Option<&str>) -> bool {
         if let Some(col) = column {
-            return get_field(schema, col).is_some();
+            return get_field(&schema.fields, col).is_some();
         }
         true
     }

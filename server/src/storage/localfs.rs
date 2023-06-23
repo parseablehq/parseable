@@ -222,7 +222,7 @@ impl ObjectStorage for LocalFS {
         let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
         let listing_options = ListingOptions {
             file_extension: ".parquet".to_string(),
-            file_sort_order: None,
+            file_sort_order: Vec::new(),
             infinite_source: false,
             format: Arc::new(file_format),
             table_partition_cols: vec![],

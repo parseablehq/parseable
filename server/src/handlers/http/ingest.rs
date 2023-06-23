@@ -17,6 +17,7 @@
  */
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use actix_web::http::header::ContentType;
 use actix_web::{HttpRequest, HttpResponse};
@@ -64,10 +65,11 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
 async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
     let (size, rb, is_first_event) = {
         let hash_map = STREAM_INFO.read().unwrap();
-        let schema = &hash_map
+        let schema = hash_map
             .get(&stream_name)
             .ok_or(PostError::StreamNotFound(stream_name.clone()))?
-            .schema;
+            .schema
+            .clone();
         into_event_batch(req, body, schema)?
     };
 
@@ -87,7 +89,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
 fn into_event_batch(
     req: HttpRequest,
     body: Bytes,
-    schema: &HashMap<String, Field>,
+    schema: HashMap<String, Arc<Field>>,
 ) -> Result<(usize, arrow_array::RecordBatch, bool), PostError> {
     let tags = collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?;
@@ -140,7 +142,7 @@ impl actix_web::ResponseError for PostError {
 #[cfg(test)]
 mod tests {
 
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Arc};
 
     use actix_web::test::TestRequest;
     use arrow_array::{
@@ -177,6 +179,10 @@ mod tests {
         }
     }
 
+    fn fields_to_map(iter: impl Iterator<Item = Field>) -> HashMap<String, Arc<Field>> {
+        iter.map(|x| (x.name().clone(), Arc::new(x))).collect()
+    }
+
     #[test]
     fn basic_object_into_rb() {
         let json = json!({
@@ -193,7 +199,7 @@ mod tests {
         let (size, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 
@@ -239,7 +245,7 @@ mod tests {
         let (_, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 
@@ -262,20 +268,19 @@ mod tests {
             "b": "hello",
         });
 
-        let schema = HashMap::from([
-            ("a".to_string(), Field::new("a", DataType::Int64, true)),
-            ("b".to_string(), Field::new("b", DataType::Utf8, true)),
-            ("c".to_string(), Field::new("c", DataType::Float64, true)),
-        ]);
+        let schema = fields_to_map(
+            [
+                Field::new("a", DataType::Int64, true),
+                Field::new("b", DataType::Utf8, true),
+                Field::new("c", DataType::Float64, true),
+            ]
+            .into_iter(),
+        );
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _) = into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .unwrap();
+        let (_, rb, _) =
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
@@ -296,40 +301,40 @@ mod tests {
             "b": 1, // type mismatch
         });
 
-        let schema = HashMap::from([
-            ("a".to_string(), Field::new("a", DataType::Int64, true)),
-            ("b".to_string(), Field::new("b", DataType::Utf8, true)),
-            ("c".to_string(), Field::new("c", DataType::Float64, true)),
-        ]);
+        let schema = fields_to_map(
+            [
+                Field::new("a", DataType::Int64, true),
+                Field::new("b", DataType::Utf8, true),
+                Field::new("c", DataType::Float64, true),
+            ]
+            .into_iter(),
+        );
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .is_err());
+        assert!(
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,)
+                .is_err()
+        );
     }
 
     #[test]
     fn empty_object() {
         let json = json!({});
 
-        let schema = HashMap::from([
-            ("a".to_string(), Field::new("a", DataType::Int64, true)),
-            ("b".to_string(), Field::new("b", DataType::Utf8, true)),
-            ("c".to_string(), Field::new("c", DataType::Float64, true)),
-        ]);
+        let schema = fields_to_map(
+            [
+                Field::new("a", DataType::Int64, true),
+                Field::new("b", DataType::Utf8, true),
+                Field::new("c", DataType::Float64, true),
+            ]
+            .into_iter(),
+        );
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _) = into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .unwrap();
+        let (_, rb, _) =
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -344,7 +349,7 @@ mod tests {
         assert!(into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .is_err())
     }
@@ -374,7 +379,7 @@ mod tests {
         let (_, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 
@@ -414,19 +419,18 @@ mod tests {
             },
         ]);
 
-        let schema = HashMap::from([
-            ("a".to_string(), Field::new("a", DataType::Int64, true)),
-            ("b".to_string(), Field::new("b", DataType::Utf8, true)),
-            ("c".to_string(), Field::new("c", DataType::Float64, true)),
-        ]);
+        let schema = fields_to_map(
+            [
+                Field::new("a", DataType::Int64, true),
+                Field::new("b", DataType::Utf8, true),
+                Field::new("c", DataType::Float64, true),
+            ]
+            .into_iter(),
+        );
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _) = into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .unwrap();
+        let (_, rb, _) =
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -469,7 +473,7 @@ mod tests {
         let (_, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 
@@ -507,18 +511,19 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let schema = HashMap::from([
-            ("a".to_string(), Field::new("a", DataType::Int64, true)),
-            ("b".to_string(), Field::new("b", DataType::Utf8, true)),
-            ("c".to_string(), Field::new("c", DataType::Float64, true)),
-        ]);
+        let schema = fields_to_map(
+            [
+                Field::new("a", DataType::Int64, true),
+                Field::new("b", DataType::Utf8, true),
+                Field::new("c", DataType::Float64, true),
+            ]
+            .into_iter(),
+        );
 
-        assert!(into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &schema,
-        )
-        .is_err());
+        assert!(
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,)
+                .is_err()
+        );
     }
 
     #[test]
@@ -549,7 +554,7 @@ mod tests {
         let (_, rb, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            &HashMap::default(),
+            HashMap::default(),
         )
         .unwrap();
 

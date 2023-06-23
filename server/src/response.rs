@@ -42,8 +42,8 @@ impl QueryResponse {
 
     pub fn to_http(&self) -> impl Responder {
         log::info!("{}", "Returning query results");
-        let mut json_records = record_batches_to_json_rows(&self.records).unwrap();
-
+        let records: Vec<&RecordBatch> = self.records.iter().collect();
+        let mut json_records = record_batches_to_json_rows(&records).unwrap();
         if self.fill_null {
             for map in &mut json_records {
                 for field in &self.fields {
