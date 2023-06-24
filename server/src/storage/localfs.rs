@@ -24,7 +24,7 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use datafusion::arrow::datatypes::Schema;
+use datafusion::{arrow::datatypes::Schema, prelude::col};
 use datafusion::{
     datasource::{
         file_format::parquet::ParquetFormat,
@@ -39,7 +39,10 @@ use relative_path::RelativePath;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
+use crate::{
+    event::DEFAULT_TIMESTAMP_KEY,
+    metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics},
+};
 use crate::{option::validation, utils::validate_path_is_writeable};
 
 use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
@@ -222,12 +225,12 @@ impl ObjectStorage for LocalFS {
         let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
         let listing_options = ListingOptions {
             file_extension: ".parquet".to_string(),
-            file_sort_order: Vec::new(),
+            file_sort_order: vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]],
             infinite_source: false,
             format: Arc::new(file_format),
             table_partition_cols: vec![],
             collect_stat: true,
-            target_partitions: 1,
+            target_partitions: 32,
         };
 
         let config = ListingTableConfig::new_with_multi_paths(prefixes)

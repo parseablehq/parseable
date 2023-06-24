@@ -20,9 +20,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Error as AnyError};
-use arrow_array::{RecordBatch, StringArray, TimestampMillisecondArray};
+use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::Utc;
 
 use crate::utils::{self, arrow::get_field};
 
@@ -94,25 +93,14 @@ pub trait EventFormat: Sized {
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
         let metadata_arr =
             StringArray::from_iter_values(std::iter::repeat(&metadata).take(rb.num_rows()));
-        let timestamp_array = get_timestamp_array(rb.num_rows());
-
         // modify the record batch to add fields to respective indexes
         let rb = utils::arrow::replace_columns(
             Arc::clone(&schema),
-            rb,
-            &[0, tags_index, metadata_index],
-            &[
-                Arc::new(timestamp_array),
-                Arc::new(tags_arr),
-                Arc::new(metadata_arr),
-            ],
+            &rb,
+            &[tags_index, metadata_index],
+            &[Arc::new(tags_arr), Arc::new(metadata_arr)],
         );
 
         Ok((rb, is_first))
     }
-}
-
-fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
-    let time = Utc::now();
-    TimestampMillisecondArray::from_value(time.timestamp_millis(), size)
 }

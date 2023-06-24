@@ -29,6 +29,7 @@ use datafusion::datasource::object_store::{
 };
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeConfig;
+use datafusion::prelude::col;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, Checksum};
@@ -44,6 +45,7 @@ use std::path::Path as StdPath;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
@@ -474,12 +476,12 @@ impl ObjectStorage for S3 {
         let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
         let listing_options = ListingOptions {
             file_extension: ".parquet".to_string(),
-            file_sort_order: Vec::default(),
+            file_sort_order: vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]],
             infinite_source: false,
             format: Arc::new(file_format),
             table_partition_cols: vec![],
             collect_stat: true,
-            target_partitions: 1,
+            target_partitions: 32,
         };
 
         let config = ListingTableConfig::new_with_multi_paths(prefixes)

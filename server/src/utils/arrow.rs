@@ -31,7 +31,7 @@ pub use merged_reader::MergedRecordReader;
 
 pub fn replace_columns(
     schema: Arc<Schema>,
-    batch: RecordBatch,
+    batch: &RecordBatch,
     indexes: &[usize],
     arrays: &[Arc<dyn Array + 'static>],
 ) -> RecordBatch {
@@ -73,7 +73,7 @@ mod tests {
 
         let arr: Arc<dyn Array + 'static> = Arc::new(Int32Array::from_value(0, 3));
 
-        let new_rb = replace_columns(schema_ref.clone(), rb, &[2], &[arr]);
+        let new_rb = replace_columns(schema_ref.clone(), &rb, &[2], &[arr]);
 
         assert_eq!(new_rb.schema(), schema_ref);
         assert_eq!(new_rb.num_columns(), 3);
