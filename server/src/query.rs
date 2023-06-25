@@ -22,6 +22,8 @@ use chrono::TimeZone;
 use chrono::{DateTime, Utc};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig};
 use datafusion::execution::context::SessionState;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -32,6 +34,7 @@ use std::path::Path;
 use std::sync::Arc;
 use sysinfo::{System, SystemExt};
 
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::option::CONFIG;
 use crate::storage::ObjectStorageError;
 use crate::storage::{ObjectStorage, OBJECT_STORE_DATA_GRANULARITY};
@@ -121,10 +124,30 @@ impl Query {
         storage: Arc<dyn ObjectStorage + Send>,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let ctx = self.create_session_context();
-        let prefixes = self.get_prefixes();
-        let Some(table) = storage.query_table(prefixes, Arc::clone(&self.schema))? else { return Ok((Vec::new(), Vec::new())) };
+        let prefixes = storage.query_prefixes(self.get_prefixes());
 
-        ctx.register_table(&*self.stream_name, Arc::new(table))
+        if prefixes.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+
+        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
+        let listing_options = ListingOptions {
+            file_extension: ".parquet".to_string(),
+            file_sort_order: vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]],
+            infinite_source: false,
+            format: Arc::new(file_format),
+            table_partition_cols: vec![],
+            collect_stat: true,
+            target_partitions: 32,
+        };
+
+        let config = ListingTableConfig::new_with_multi_paths(prefixes)
+            .with_listing_options(listing_options)
+            .with_schema(self.schema.clone());
+
+        let table = Arc::new(ListingTable::try_new(config)?);
+
+        ctx.register_table(&*self.stream_name, table)
             .map_err(ObjectStorageError::DataFusionError)?;
         // execute the query and collect results
         let df = ctx.sql(self.query.as_str()).await?;

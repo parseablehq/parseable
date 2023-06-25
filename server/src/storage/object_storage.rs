@@ -20,6 +20,7 @@ use super::{
     retention::Retention, staging::convert_disk_files_to_parquet, LogStream, ObjectStorageError,
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
+
 use crate::{
     alerts::Alerts,
     metadata::STREAM_INFO,
@@ -32,10 +33,7 @@ use actix_web_prometheus::PrometheusMetrics;
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
-use datafusion::{
-    datasource::listing::ListingTable, error::DataFusionError,
-    execution::runtime_env::RuntimeConfig,
-};
+use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
@@ -69,11 +67,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
-    fn query_table(
-        &self,
-        prefixes: Vec<String>,
-        schema: Arc<Schema>,
-    ) -> Result<Option<ListingTable>, DataFusionError>;
+    fn query_prefixes(&self, prefixes: Vec<String>) -> Vec<ListingTableUrl>;
 
     async fn put_schema(
         &self,

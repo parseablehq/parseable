@@ -32,6 +32,7 @@ use parquet::{
     basic::Encoding,
     errors::ParquetError,
     file::properties::{WriterProperties, WriterPropertiesBuilder},
+    format::SortingColumn,
     schema::types::ColumnPath,
 };
 
@@ -234,6 +235,11 @@ fn parquet_writer_props() -> WriterPropertiesBuilder {
             ColumnPath::new(vec![DEFAULT_TIMESTAMP_KEY.to_string()]),
             Encoding::DELTA_BINARY_PACKED,
         )
+        .set_sorting_columns(Some(vec![SortingColumn {
+            column_idx: 0,
+            descending: false,
+            nulls_first: false,
+        }]))
 }
 
 #[derive(Debug, thiserror::Error)]
