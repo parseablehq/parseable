@@ -24,25 +24,14 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use datafusion::{arrow::datatypes::Schema, prelude::col};
-use datafusion::{
-    datasource::{
-        file_format::parquet::ParquetFormat,
-        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
-    },
-    error::DataFusionError,
-    execution::runtime_env::RuntimeConfig,
-};
+use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
 use fs_extra::file::{move_file, CopyOptions};
 use futures::{stream::FuturesUnordered, TryStreamExt};
 use relative_path::RelativePath;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::{
-    event::DEFAULT_TIMESTAMP_KEY,
-    metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics},
-};
+use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::{option::validation, utils::validate_path_is_writeable};
 
 use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
@@ -205,39 +194,14 @@ impl ObjectStorage for LocalFS {
         Ok(())
     }
 
-    fn query_table(
-        &self,
-        prefixes: Vec<String>,
-        schema: Arc<Schema>,
-    ) -> Result<Option<ListingTable>, DataFusionError> {
-        let prefixes: Vec<ListingTableUrl> = prefixes
+    fn query_prefixes(&self, prefixes: Vec<String>) -> Vec<ListingTableUrl> {
+        prefixes
             .into_iter()
             .filter_map(|prefix| {
                 let path = self.root.join(prefix);
                 ListingTableUrl::parse(path.to_str().unwrap()).ok()
             })
-            .collect();
-
-        if prefixes.is_empty() {
-            return Ok(None);
-        }
-
-        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
-        let listing_options = ListingOptions {
-            file_extension: ".parquet".to_string(),
-            file_sort_order: vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]],
-            infinite_source: false,
-            format: Arc::new(file_format),
-            table_partition_cols: vec![],
-            collect_stat: true,
-            target_partitions: 32,
-        };
-
-        let config = ListingTableConfig::new_with_multi_paths(prefixes)
-            .with_listing_options(listing_options)
-            .with_schema(schema);
-
-        Ok(Some(ListingTable::try_new(config)?))
+            .collect()
     }
 }
 
