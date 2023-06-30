@@ -17,7 +17,7 @@
  *
  */
 
-use std::{fs::File, io::BufReader, path::PathBuf};
+use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc};
 
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_ipc::reader::StreamReader;
@@ -44,7 +44,7 @@ impl MergedRecordReader {
         Ok(Self { readers })
     }
 
-    pub fn merged_iter(self, schema: &Schema) -> impl Iterator<Item = RecordBatch> + '_ {
+    pub fn merged_iter(self, schema: Arc<Schema>) -> impl Iterator<Item = RecordBatch> {
         let adapted_readers = self.readers.into_iter().map(move |reader| reader.flatten());
 
         kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
@@ -52,7 +52,7 @@ impl MergedRecordReader {
             let b_time = get_timestamp_millis(b);
             a_time < b_time
         })
-        .map(|batch| adapt_batch(schema, batch))
+        .map(move |batch| adapt_batch(&schema, batch))
     }
 
     pub fn merged_schema(&self) -> Schema {
