@@ -1,7 +1,24 @@
+/*
+ * Parseable Server (C) 2022 - 2023 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use arrow_select::concat::concat;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
-
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::listing::ListingTable;
 use datafusion::datasource::streaming::{PartitionStream, StreamingTable};
@@ -14,6 +31,7 @@ use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream};
 use datafusion::prelude::Expr;
 use futures_util::{Stream, StreamExt};
+
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
