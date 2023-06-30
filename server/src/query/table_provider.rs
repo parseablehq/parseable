@@ -189,7 +189,7 @@ impl<T: Iterator<Item = RecordBatch>> Iterator for ConcatIterator<T> {
         self.buffer.clear();
 
         //return resulting batch
-        return Some(res);
+        Some(res)
     }
 }
 
