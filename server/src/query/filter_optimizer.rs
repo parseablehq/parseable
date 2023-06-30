@@ -32,6 +32,10 @@ pub struct FilterOptimizerRule {
     pub literals: Vec<String>,
 }
 
+// Try to add filter node on table scan
+// As every table supports projection push down
+// we try to directly add projection for column directly to table
+// To preserve the orignal projection we must add a projection node with orignal projection
 impl OptimizerRule for FilterOptimizerRule {
     fn try_optimize(
         &self,
@@ -40,6 +44,12 @@ impl OptimizerRule for FilterOptimizerRule {
     ) -> datafusion::error::Result<Option<datafusion::logical_expr::LogicalPlan>> {
         // if there are no patterns then the rule cannot be performed
         let Some(filter_expr) = self.expr() else { return Ok(None); };
+
+        if let LogicalPlan::Filter(filter) = plan {
+            if filter.predicate == filter_expr {
+                return Ok(None);
+            }
+        }
 
         if let LogicalPlan::TableScan(table) = plan {
             if table.projection.is_none()
@@ -53,7 +63,9 @@ impl OptimizerRule for FilterOptimizerRule {
 
             let mut table = table.clone();
             let schema = &table.source.schema();
+            let orignal_projection = table.projected_schema.clone();
 
+            // add filtered column projection to table
             if !table
                 .projected_schema
                 .has_column_with_unqualified_name(&self.column)
@@ -76,14 +88,13 @@ impl OptimizerRule for FilterOptimizerRule {
                 }
             }
 
-            let projected_schema = table.projected_schema.clone();
             let filter = LogicalPlan::Filter(Filter::try_new(
                 filter_expr,
                 Arc::new(LogicalPlan::TableScan(table)),
             )?);
             let plan = LogicalPlan::Projection(Projection::new_from_schema(
                 Arc::new(filter),
-                projected_schema,
+                orignal_projection,
             ));
 
             return Ok(Some(plan));

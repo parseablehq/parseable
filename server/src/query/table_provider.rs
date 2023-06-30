@@ -25,7 +25,7 @@ use datafusion::datasource::streaming::{PartitionStream, StreamingTable};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
-use datafusion::logical_expr::TableType;
+use datafusion::logical_expr::{TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream};
@@ -115,6 +115,16 @@ impl TableProvider for QueryTableProvider {
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
         self.create_physical_plan(ctx, projection, filters, limit)
             .await
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
+        Ok(filters
+            .iter()
+            .map(|_| TableProviderFilterPushDown::Inexact)
+            .collect())
     }
 }
 
