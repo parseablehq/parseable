@@ -80,7 +80,7 @@ impl QueryTableProvider {
             );
         }
 
-        let exec: Arc<dyn ExecutionPlan> = if exec.len() == 0 {
+        let exec: Arc<dyn ExecutionPlan> = if exec.is_empty() {
             Arc::new(EmptyExec::new(false, self.schema.clone()))
         } else if exec.len() == 1 {
             exec.pop().unwrap()
