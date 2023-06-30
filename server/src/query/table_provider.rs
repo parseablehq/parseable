@@ -147,7 +147,7 @@ impl<T: Iterator<Item = RecordBatch>> Iterator for ConcatIterator<T> {
             }
         }
 
-        if self.buffer.len() == 0 {
+        if self.buffer.is_empty() {
             return None;
         }
 
