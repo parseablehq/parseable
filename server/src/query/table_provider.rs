@@ -82,7 +82,7 @@ impl QueryTableProvider {
 
         let exec: Arc<dyn ExecutionPlan> = if exec.is_empty() {
             let schema = match projection {
-                Some(projection) => Arc::new(self.schema.project(&projection)?),
+                Some(projection) => Arc::new(self.schema.project(projection)?),
                 None => self.schema.clone(),
             };
             Arc::new(EmptyExec::new(false, schema))
