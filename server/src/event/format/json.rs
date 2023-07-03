@@ -24,6 +24,7 @@ use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
 use arrow_schema::{DataType, Field, Fields, Schema};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
+use itertools::Itertools;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
@@ -73,7 +74,12 @@ impl EventFormat for Event {
                         return Err(anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err));
                     }
                     is_first = true;
-                    infer_schema.fields.iter().cloned().collect()
+                    infer_schema
+                        .fields
+                        .iter()
+                        .cloned()
+                        .sorted_by(|a, b| a.name().cmp(b.name()))
+                        .collect()
                 }
                 Err(err) => {
                     return Err(anyhow!(
