@@ -52,7 +52,7 @@ impl MergedRecordReader {
             let b_time = get_timestamp_millis(b);
             a_time < b_time
         })
-        .map(move |batch| adapt_batch(&schema, batch))
+        .map(move |batch| adapt_batch(&schema, &batch))
     }
 
     pub fn merged_schema(&self) -> Schema {

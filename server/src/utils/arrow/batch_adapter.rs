@@ -30,7 +30,7 @@ use std::sync::Arc;
 // log stream schema.
 // This is necessary because all the record batches in a log
 // stream need to have all the fields.
-pub fn adapt_batch(table_schema: &Schema, batch: RecordBatch) -> RecordBatch {
+pub fn adapt_batch(table_schema: &Schema, batch: &RecordBatch) -> RecordBatch {
     let batch_schema = &*batch.schema();
     let batch_cols = batch.columns().to_vec();
 

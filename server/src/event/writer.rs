@@ -18,21 +18,42 @@
  */
 
 mod file_writer;
+mod mem_writer;
 
 use std::{
     collections::HashMap,
-    sync::{Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
 
-use self::{errors::StreamWriterError, file_writer::FileWriter};
+use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
 use arrow_array::RecordBatch;
+use arrow_schema::Schema;
 use derive_more::{Deref, DerefMut};
 use once_cell::sync::Lazy;
 
 pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 
+#[derive(Default)]
+pub struct Writer {
+    pub mem: MemWriter<1024>,
+    pub disk: FileWriter,
+}
+
+impl Writer {
+    fn push(
+        &mut self,
+        stream_name: &str,
+        schema_key: &str,
+        rb: RecordBatch,
+    ) -> Result<(), StreamWriterError> {
+        self.disk.push(stream_name, schema_key, &rb)?;
+        self.mem.push(schema_key, rb);
+        Ok(())
+    }
+}
+
 #[derive(Deref, DerefMut, Default)]
-pub struct WriterTable(RwLock<HashMap<String, Mutex<FileWriter>>>);
+pub struct WriterTable(RwLock<HashMap<String, Mutex<Writer>>>);
 
 impl WriterTable {
     // append to a existing stream
@@ -49,7 +70,7 @@ impl WriterTable {
                 stream_writer
                     .lock()
                     .unwrap()
-                    .push(stream_name, schema_key, &record)?;
+                    .push(stream_name, schema_key, record)?;
             }
             None => {
                 drop(hashmap_guard);
@@ -60,10 +81,10 @@ impl WriterTable {
                     writer
                         .lock()
                         .unwrap()
-                        .push(stream_name, schema_key, &record)?;
+                        .push(stream_name, schema_key, record)?;
                 } else {
-                    let mut writer = FileWriter::default();
-                    writer.push(stream_name, schema_key, &record)?;
+                    let mut writer = Writer::default();
+                    writer.push(stream_name, schema_key, record)?;
                     map.insert(stream_name.to_owned(), Mutex::new(writer));
                 }
             }
@@ -81,8 +102,26 @@ impl WriterTable {
         drop(table);
         for writer in map.into_values() {
             let writer = writer.into_inner().unwrap();
-            writer.close_all();
+            writer.disk.close_all();
         }
+    }
+
+    pub fn recordbatches_cloned(
+        &self,
+        stream_name: &str,
+        schema: &Arc<Schema>,
+    ) -> Option<Vec<RecordBatch>> {
+        let records = self
+            .0
+            .read()
+            .unwrap()
+            .get(stream_name)?
+            .lock()
+            .unwrap()
+            .mem
+            .recordbatch_cloned(schema);
+
+        Some(records)
     }
 }
 

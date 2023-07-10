@@ -128,12 +128,10 @@ impl Query {
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let ctx = self.create_session_context();
         let remote_listing_table = self._remote_query(storage)?;
-        let staging_prefixes = get_staging_prefixes(&self.stream_name, self.start, self.end);
-        let table = QueryTableProvider::new(
-            staging_prefixes.into_values().collect(),
-            remote_listing_table,
-            self.schema.clone(),
-        );
+        let memtable =
+            crate::event::STREAM_WRITERS.recordbatches_cloned(&self.stream_name, &self.schema);
+        let table =
+            QueryTableProvider::try_new(memtable, remote_listing_table, self.schema.clone())?;
 
         ctx.register_table(&*self.stream_name, Arc::new(table))
             .map_err(ObjectStorageError::DataFusionError)?;
@@ -182,6 +180,7 @@ impl Query {
     }
 }
 
+#[allow(dead_code)]
 fn get_staging_prefixes(
     stream_name: &str,
     start: DateTime<Utc>,
