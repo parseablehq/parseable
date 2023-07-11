@@ -25,9 +25,12 @@ use std::{
     sync::{Arc, Mutex, RwLock},
 };
 
+use crate::utils;
+
 use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_schema::Schema;
+use chrono::Utc;
 use derive_more::{Deref, DerefMut};
 use once_cell::sync::Lazy;
 
@@ -46,6 +49,13 @@ impl Writer {
         schema_key: &str,
         rb: RecordBatch,
     ) -> Result<(), StreamWriterError> {
+        let rb = utils::arrow::replace_columns(
+            rb.schema(),
+            &rb,
+            &[0],
+            &[Arc::new(get_timestamp_array(rb.num_rows()))],
+        );
+
         self.disk.push(stream_name, schema_key, &rb)?;
         self.mem.push(schema_key, rb);
         Ok(())
@@ -123,6 +133,10 @@ impl WriterTable {
 
         Some(records)
     }
+}
+
+fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
+    TimestampMillisecondArray::from_value(Utc::now().timestamp_millis(), size)
 }
 
 pub mod errors {
