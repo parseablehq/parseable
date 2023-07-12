@@ -69,15 +69,6 @@ pub struct S3Config {
     #[arg(long, env = "P_S3_SECRET_KEY", value_name = "secret-key")]
     pub secret_key: Option<String>,
 
-    // Use aws profile name to fetch credentials
-    #[arg(
-        long,
-        env = "P_AWS_PROFILE_NAME",
-        value_name = "profile",
-        conflicts_with_all = ["access_key_id", "secret_key"],
-    )]
-    pub profile_name: Option<String>,
-
     /// The region for AWS S3 or compatible object storage platform
     #[arg(long, env = "P_S3_REGION", value_name = "region", required = true)]
     pub region: String,
@@ -159,10 +150,6 @@ impl S3Config {
             builder = builder
                 .with_access_key_id(access_key)
                 .with_secret_access_key(secret_key);
-        }
-
-        if let Some(profile) = &self.profile_name {
-            builder = builder.with_profile(profile);
         }
 
         if self.imdsv1_fallback {
