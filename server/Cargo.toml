@@ -64,11 +64,9 @@ pyroscope_pprofrs = { version = "0.2", optional = true }
 rand = "0.8"
 regex = "1.7.3"
 relative-path = { version = "1.7", features = ["serde"] }
-reqwest = { version = "0.11", default_features = false, features = [
-  "rustls",
+reqwest = { version = "0.11.18", default_features = false, features = [
+  "rustls-tls",
   "json",
-  "hyper-rustls",
-  "tokio-rustls",
 ] }
 rustls = "0.20"
 rustls-pemfile = "1.0"
