@@ -38,7 +38,7 @@ pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 
 #[derive(Default)]
 pub struct Writer {
-    pub mem: MemWriter<1024>,
+    pub mem: MemWriter<16384>,
     pub disk: FileWriter,
 }
 
