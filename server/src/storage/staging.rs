@@ -99,7 +99,7 @@ impl StorageDir {
         paths
     }
 
-    #[allow(unused)]
+    #[allow(dead_code)]
     pub fn arrow_files_grouped_by_time(&self) -> HashMap<PathBuf, Vec<PathBuf>> {
         // hashmap <time, vec[paths]>
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
@@ -206,7 +206,7 @@ pub fn convert_disk_files_to_parquet(
         let schema = Arc::new(merged_schema);
         let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
 
-        for ref record in record_reader.merged_iter(&schema) {
+        for ref record in record_reader.merged_iter(schema) {
             writer.write(record)?;
         }
 

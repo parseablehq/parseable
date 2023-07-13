@@ -17,6 +17,7 @@
  */
 
 mod filter_optimizer;
+mod table_provider;
 
 use chrono::TimeZone;
 use chrono::{DateTime, Utc};
@@ -30,19 +31,21 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::*;
 use itertools::Itertools;
 use serde_json::Value;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sysinfo::{System, SystemExt};
 
 use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::option::CONFIG;
-use crate::storage::ObjectStorageError;
 use crate::storage::{ObjectStorage, OBJECT_STORE_DATA_GRANULARITY};
+use crate::storage::{ObjectStorageError, StorageDir};
 use crate::utils::TimePeriod;
 use crate::validator;
 
 use self::error::{ExecuteError, ParseError};
 use self::filter_optimizer::FilterOptimizerRule;
+use self::table_provider::QueryTableProvider;
 
 type Key = &'static str;
 fn get_value(value: &Value, key: Key) -> Result<&str, Key> {
@@ -124,30 +127,13 @@ impl Query {
         storage: Arc<dyn ObjectStorage + Send>,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let ctx = self.create_session_context();
-        let prefixes = storage.query_prefixes(self.get_prefixes());
+        let remote_listing_table = self._remote_query(storage)?;
+        let memtable =
+            crate::event::STREAM_WRITERS.recordbatches_cloned(&self.stream_name, &self.schema);
+        let table =
+            QueryTableProvider::try_new(memtable, remote_listing_table, self.schema.clone())?;
 
-        if prefixes.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
-        }
-
-        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
-        let listing_options = ListingOptions {
-            file_extension: ".parquet".to_string(),
-            file_sort_order: vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]],
-            infinite_source: false,
-            format: Arc::new(file_format),
-            table_partition_cols: vec![],
-            collect_stat: true,
-            target_partitions: 32,
-        };
-
-        let config = ListingTableConfig::new_with_multi_paths(prefixes)
-            .with_listing_options(listing_options)
-            .with_schema(self.schema.clone());
-
-        let table = Arc::new(ListingTable::try_new(config)?);
-
-        ctx.register_table(&*self.stream_name, table)
+        ctx.register_table(&*self.stream_name, Arc::new(table))
             .map_err(ObjectStorageError::DataFusionError)?;
         // execute the query and collect results
         let df = ctx.sql(self.query.as_str()).await?;
@@ -165,15 +151,52 @@ impl Query {
 
         Ok((results, fields))
     }
+
+    fn _remote_query(
+        &self,
+        storage: Arc<dyn ObjectStorage + Send>,
+    ) -> Result<Option<Arc<ListingTable>>, ExecuteError> {
+        let prefixes = storage.query_prefixes(self.get_prefixes());
+        if prefixes.is_empty() {
+            return Ok(None);
+        }
+        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
+        let file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]];
+        let listing_options = ListingOptions {
+            file_extension: ".parquet".to_string(),
+            file_sort_order,
+            infinite_source: false,
+            format: Arc::new(file_format),
+            table_partition_cols: vec![],
+            collect_stat: true,
+            target_partitions: 32,
+        };
+        let config = ListingTableConfig::new_with_multi_paths(prefixes)
+            .with_listing_options(listing_options)
+            .with_schema(self.schema.clone());
+
+        let listing_table = Arc::new(ListingTable::try_new(config)?);
+        Ok(Some(listing_table))
+    }
 }
 
-#[allow(unused)]
+#[allow(dead_code)]
+fn get_staging_prefixes(
+    stream_name: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> HashMap<PathBuf, Vec<PathBuf>> {
+    let dir = StorageDir::new(stream_name);
+    let mut files = dir.arrow_files_grouped_by_time();
+    files.retain(|k, _| path_intersects_query(k, start, end));
+    files
+}
+
 fn path_intersects_query(path: &Path, starttime: DateTime<Utc>, endtime: DateTime<Utc>) -> bool {
     let time = time_from_path(path);
     starttime <= time && time <= endtime
 }
 
-#[allow(unused)]
 fn time_from_path(path: &Path) -> DateTime<Utc> {
     let prefix = path
         .file_name()
