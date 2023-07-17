@@ -355,6 +355,57 @@ mod tests {
     }
 
     #[test]
+    fn array_into_recordbatch_inffered_schema() {
+        let json = json!([
+            {
+                "b": "hello",
+            },
+            {
+                "b": "hello",
+                "a": 1,
+                "c": 1
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": null
+            },
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        let (_, rb, _) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            HashMap::default(),
+        )
+        .unwrap();
+
+        assert_eq!(rb.num_rows(), 3);
+        assert_eq!(rb.num_columns(), 6);
+
+        let schema = rb.schema();
+        let fields = &schema.fields;
+
+        assert_eq!(&*fields[1], &Field::new("a", DataType::Int64, true));
+        assert_eq!(&*fields[2], &Field::new("b", DataType::Utf8, true));
+        assert_eq!(&*fields[3], &Field::new("c", DataType::Int64, true));
+
+        assert_eq!(
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), Some(1)])
+        );
+        assert_eq!(
+            rb.column_by_name("b").unwrap().as_utf8_arr(),
+            &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
+        );
+        assert_eq!(
+            rb.column_by_name("c").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), None])
+        );
+    }
+
+    #[test]
     fn arr_with_null_into_rb() {
         let json = json!([
             {
