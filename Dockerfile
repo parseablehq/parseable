@@ -26,7 +26,7 @@ COPY . .
 RUN cargo build --release
 
 # final stage
-FROM gcr.io/distroless/cc-debian11:nonroot
+FROM gcr.io/distroless/cc-debian11:latest
 
 WORKDIR /parseable
 
