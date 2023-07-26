@@ -248,7 +248,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             .service(user_api),
     )
     // GET "/" ==> Serve the static frontend directory
-    .service(ResourceFiles::new("/", generated));
+    .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
 }
 
 fn base_path() -> String {
