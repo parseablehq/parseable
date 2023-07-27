@@ -14,9 +14,9 @@ entries:
   operator:
   - apiVersion: v2
     appVersion: v0.0.3
-    created: "2023-07-19T08:41:48.726479+05:30"
+    created: "2023-07-27T18:37:26.465044+05:30"
     description: A Helm chart for Parseable Operator
-    digest: f15d628be93d50eaa7f01ac328b01aab899f53f83831ba33bd7770c909bad80d
+    digest: f3caab2aa3f7e7c64c3ef6879aa089d64d59df0c7f90d6336938a908e40ba50b
     name: operator
     type: application
     urls:
@@ -24,7 +24,7 @@ entries:
     version: 0.0.3
   - apiVersion: v2
     appVersion: v0.0.2
-    created: "2023-07-19T08:41:48.724048+05:30"
+    created: "2023-07-27T18:37:26.463713+05:30"
     description: A Helm chart for Parseable Operator
     digest: 0bf4cd8cc7f1c5ff6d49f91fe91204855a215ae1cb5acaeb3fe84497bc97c566
     name: operator
@@ -34,7 +34,7 @@ entries:
     version: 0.0.2
   - apiVersion: v2
     appVersion: 0.0.1
-    created: "2023-07-19T08:41:48.717834+05:30"
+    created: "2023-07-27T18:37:26.460811+05:30"
     description: A Helm chart for Parseable Operator
     digest: 344cedd9e3a0f17c6ff09514dabed994bac7bac94ace500857d487c1c9cc1859
     name: operator
@@ -44,8 +44,31 @@ entries:
     version: 0.0.1
   parseable:
   - apiVersion: v2
+    appVersion: v0.6.0
+    created: "2023-07-27T18:37:26.53716+05:30"
+    dependencies:
+    - condition: vector.enabled
+      name: vector
+      repository: https://helm.vector.dev
+      version: 0.20.1
+    - condition: fluent-bit.enabled
+      name: fluent-bit
+      repository: https://fluent.github.io/helm-charts
+      version: 0.25.0
+    description: Helm chart for Parseable Server
+    digest: 27413a0ee59901ce0ec630a525802c90c3f6bd67bf38089f9b586054c97e48f3
+    maintainers:
+    - email: hi@parseable.io
+      name: Parseable Team
+      url: https://parseable.io
+    name: parseable
+    type: application
+    urls:
+    - https://charts.parseable.io/helm-releases/parseable-0.6.0.tgz
+    version: 0.6.0
+  - apiVersion: v2
     appVersion: v0.5.1
-    created: "2023-07-19T08:41:48.828362+05:30"
+    created: "2023-07-27T18:37:26.532679+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -68,7 +91,7 @@ entries:
     version: 0.5.1
   - apiVersion: v2
     appVersion: v0.5.0
-    created: "2023-07-19T08:41:48.818454+05:30"
+    created: "2023-07-27T18:37:26.526508+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -91,7 +114,7 @@ entries:
     version: 0.5.0
   - apiVersion: v2
     appVersion: v0.4.4
-    created: "2023-07-19T08:41:48.809733+05:30"
+    created: "2023-07-27T18:37:26.520754+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -114,7 +137,7 @@ entries:
     version: 0.4.5
   - apiVersion: v2
     appVersion: v0.4.3
-    created: "2023-07-19T08:41:48.800974+05:30"
+    created: "2023-07-27T18:37:26.513618+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -137,7 +160,7 @@ entries:
     version: 0.4.4
   - apiVersion: v2
     appVersion: v0.4.2
-    created: "2023-07-19T08:41:48.791056+05:30"
+    created: "2023-07-27T18:37:26.508257+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -160,7 +183,7 @@ entries:
     version: 0.4.3
   - apiVersion: v2
     appVersion: v0.4.1
-    created: "2023-07-19T08:41:48.782771+05:30"
+    created: "2023-07-27T18:37:26.501256+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -183,7 +206,7 @@ entries:
     version: 0.4.2
   - apiVersion: v2
     appVersion: v0.4.0
-    created: "2023-07-19T08:41:48.772824+05:30"
+    created: "2023-07-27T18:37:26.495395+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -206,7 +229,7 @@ entries:
     version: 0.4.1
   - apiVersion: v2
     appVersion: v0.4.0
-    created: "2023-07-19T08:41:48.763706+05:30"
+    created: "2023-07-27T18:37:26.488445+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -229,7 +252,7 @@ entries:
     version: 0.4.0
   - apiVersion: v2
     appVersion: v0.3.1
-    created: "2023-07-19T08:41:48.754673+05:30"
+    created: "2023-07-27T18:37:26.482522+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -252,7 +275,7 @@ entries:
     version: 0.3.1
   - apiVersion: v2
     appVersion: v0.3.0
-    created: "2023-07-19T08:41:48.743275+05:30"
+    created: "2023-07-27T18:37:26.478008+05:30"
     description: Helm chart for Parseable Server
     digest: ff30739229b727dc637f62fd4481c886a6080ce4556bae10cafe7642ddcfd937
     name: parseable
@@ -262,7 +285,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: v0.2.2
-    created: "2023-07-19T08:41:48.741886+05:30"
+    created: "2023-07-27T18:37:26.477123+05:30"
     description: Helm chart for Parseable Server
     digest: 477d0dc2f0c07d4f4c32e105d4bdd70c71113add5c2a75ac5f1cb42aa0276db7
     name: parseable
@@ -272,7 +295,7 @@ entries:
     version: 0.2.2
   - apiVersion: v2
     appVersion: v0.2.1
-    created: "2023-07-19T08:41:48.739956+05:30"
+    created: "2023-07-27T18:37:26.476223+05:30"
     description: Helm chart for Parseable Server
     digest: 84826fcd1b4c579f301569f43b0309c07e8082bad76f5cdd25f86e86ca2e8192
     name: parseable
@@ -282,7 +305,7 @@ entries:
     version: 0.2.1
   - apiVersion: v2
     appVersion: v0.2.0
-    created: "2023-07-19T08:41:48.738949+05:30"
+    created: "2023-07-27T18:37:26.475338+05:30"
     description: Helm chart for Parseable Server
     digest: 7a759f7f9809f3935cba685e904c021a0b645f217f4e45b9be185900c467edff
     name: parseable
@@ -292,7 +315,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: v0.1.1
-    created: "2023-07-19T08:41:48.737842+05:30"
+    created: "2023-07-27T18:37:26.474575+05:30"
     description: Helm chart for Parseable Server
     digest: 37993cf392f662ec7b1fbfc9a2ba00ec906d98723e38f3c91ff1daca97c3d0b3
     name: parseable
@@ -302,7 +325,7 @@ entries:
     version: 0.1.1
   - apiVersion: v2
     appVersion: v0.1.0
-    created: "2023-07-19T08:41:48.736631+05:30"
+    created: "2023-07-27T18:37:26.473573+05:30"
     description: Helm chart for Parseable Server
     digest: 1d580d072af8d6b1ebcbfee31c2e16c907d08db754780f913b5f0032b403789b
     name: parseable
@@ -312,7 +335,7 @@ entries:
     version: 0.1.0
   - apiVersion: v2
     appVersion: v0.0.8
-    created: "2023-07-19T08:41:48.734985+05:30"
+    created: "2023-07-27T18:37:26.472683+05:30"
     description: Helm chart for Parseable Server
     digest: c805254ffa634f96ecec448bcfff9973339aa9487dd8199b21b17b79a4de9345
     name: parseable
@@ -322,7 +345,7 @@ entries:
     version: 0.0.8
   - apiVersion: v2
     appVersion: v0.0.7
-    created: "2023-07-19T08:41:48.733429+05:30"
+    created: "2023-07-27T18:37:26.471559+05:30"
     description: Helm chart for Parseable Server
     digest: c591f617ed1fe820bb2c72a4c976a78126f1d1095d552daa07c4700f46c4708a
     name: parseable
@@ -332,7 +355,7 @@ entries:
     version: 0.0.7
   - apiVersion: v2
     appVersion: v0.0.6
-    created: "2023-07-19T08:41:48.731889+05:30"
+    created: "2023-07-27T18:37:26.470537+05:30"
     description: Helm chart for Parseable Server
     digest: f9ae56a6fcd6a59e7bee0436200ddbedeb74ade6073deb435b8fcbaf08dda795
     name: parseable
@@ -342,7 +365,7 @@ entries:
     version: 0.0.6
   - apiVersion: v2
     appVersion: v0.0.5
-    created: "2023-07-19T08:41:48.730869+05:30"
+    created: "2023-07-27T18:37:26.468092+05:30"
     description: Helm chart for Parseable Server
     digest: 4d6b08a064fba36e16feeb820b77e1e8e60fb6de48dbf7ec8410d03d10c26ad0
     name: parseable
@@ -352,7 +375,7 @@ entries:
     version: 0.0.5
   - apiVersion: v2
     appVersion: v0.0.2
-    created: "2023-07-19T08:41:48.729476+05:30"
+    created: "2023-07-27T18:37:26.46699+05:30"
     description: Helm chart for Parseable Server
     digest: 38a0a3e4c498afbbcc76ebfcb9cb598fa2ca843a53cc93b3cb4f135b85c10844
     name: parseable
@@ -362,7 +385,7 @@ entries:
     version: 0.0.2
   - apiVersion: v2
     appVersion: v0.0.1
-    created: "2023-07-19T08:41:48.72797+05:30"
+    created: "2023-07-27T18:37:26.466094+05:30"
     description: Helm chart for Parseable Server
     digest: 1f1142db092b9620ee38bb2294ccbb1c17f807b33bf56da43816af7fe89f301e
     name: parseable
@@ -391,4 +414,4 @@ entries:
     urls:
     - https://charts.parseable.io/helm-releases/parseable-operator-0.0.1.tgz
     version: 0.0.1
-generated: "2023-07-19T08:41:48.713804+05:30"
+generated: "2023-07-27T18:37:26.457146+05:30"

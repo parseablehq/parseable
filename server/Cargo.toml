@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "0.5.1"
+version = "0.6.0"
 authors = ["Parseable Team <hi@parseable.io>"]
 edition = "2021"
 rust-version = "1.67"
@@ -102,8 +102,8 @@ maplit = "1.0"
 rstest = "0.16"
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/v0.1.0/build.zip"
-assets-sha1 = "badcc2edbc910cac21f2fcb57a338b58f17ff969"
+assets-url = "https://github.com/parseablehq/console/releases/download/v0.2.0/build.zip"
+assets-sha1 = "428750dafab6ae3cfd723fb076d3d3c9a42ce584"
 
 [features]
 debug = ["pyroscope", "pyroscope_pprofrs"]
