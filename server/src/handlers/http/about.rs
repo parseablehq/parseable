@@ -45,9 +45,9 @@ pub async fn about() -> Json<serde_json::Value> {
     Json(json!({
         "version": current_version,
         "commit": commit,
-        "deployment-id": deployment_id,
-        "update-available": update_available,
-        "latest-version": latest_release,
+        "deploymentId": deployment_id,
+        "updateAvailable": update_available,
+        "latestVersion": latest_release,
         "license": "AGPL-3.0-only",
         "mode": mode,
         "staging": staging,
