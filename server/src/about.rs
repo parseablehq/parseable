@@ -122,7 +122,7 @@ pub async fn print(config: &Config, meta: &StorageMetadata) {
     // print current version
     let current = current();
     let latest_release = if config.parseable.check_update {
-        update::get_latest(meta).await.ok()
+        update::get_latest(&meta.deployment_id).await.ok()
     } else {
         None
     };

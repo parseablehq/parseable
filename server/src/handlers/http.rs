@@ -31,6 +31,7 @@ use crate::rbac::role::Action;
 
 use self::middleware::{Auth, DisAllowRootUser};
 
+mod about;
 mod health_check;
 mod ingest;
 mod logstream;
@@ -233,6 +234,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             .service(web::resource("/liveness").route(web::get().to(health_check::liveness)))
             // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
             .service(web::resource("/readiness").route(web::get().to(health_check::readiness)))
+            // GET "/about" ==> Returns information about instance
+            .service(web::resource("/about").route(web::get().to(about::about)))
             .service(
                 web::scope("/logstream")
                     .service(

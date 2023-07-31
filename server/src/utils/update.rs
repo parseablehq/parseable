@@ -22,7 +22,8 @@ use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 
 use crate::about;
-use crate::storage::StorageMetadata;
+
+use super::uid;
 
 #[derive(Debug)]
 pub struct LatestRelease {
@@ -30,9 +31,9 @@ pub struct LatestRelease {
     pub date: DateTime<Utc>,
 }
 
-pub async fn get_latest(meta: &StorageMetadata) -> Result<LatestRelease, anyhow::Error> {
+pub async fn get_latest(deployment_id: &uid::Uid) -> Result<LatestRelease, anyhow::Error> {
     let agent = reqwest::ClientBuilder::new()
-        .user_agent(about::user_agent(&meta.deployment_id))
+        .user_agent(about::user_agent(deployment_id))
         .timeout(Duration::from_secs(8))
         .build()
         .expect("client can be built on this system");
