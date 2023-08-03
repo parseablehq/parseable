@@ -122,13 +122,12 @@ pub mod model {
                     writer_perm_builder().with_stream(stream.to_owned())
                 }
                 DefaultPrivilege::Reader { stream, tag } => {
-                    let mut reader  = reader_perm_builder()
-                    .with_stream(stream.to_owned());
+                    let mut reader = reader_perm_builder().with_stream(stream.to_owned());
                     if let Some(tag) = tag {
                         reader = reader.with_tag(tag.to_owned())
                     }
                     reader
-                },
+                }
             }
         }
     }
