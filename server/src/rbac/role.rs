@@ -110,7 +110,7 @@ pub mod model {
         Admin,
         Editor,
         Writer { stream: String },
-        Reader { stream: String, tag: String },
+        Reader { stream: String, tag: Option<String> },
     }
 
     impl From<&DefaultPrivilege> for RoleBuilder {
@@ -121,9 +121,14 @@ pub mod model {
                 DefaultPrivilege::Writer { stream } => {
                     writer_perm_builder().with_stream(stream.to_owned())
                 }
-                DefaultPrivilege::Reader { stream, tag } => reader_perm_builder()
-                    .with_stream(stream.to_owned())
-                    .with_tag(tag.to_owned()),
+                DefaultPrivilege::Reader { stream, tag } => {
+                    let mut reader  = reader_perm_builder()
+                    .with_stream(stream.to_owned());
+                    if let Some(tag) = tag {
+                        reader = reader.with_tag(tag.to_owned())
+                    }
+                    reader
+                },
             }
         }
     }

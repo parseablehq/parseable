@@ -89,7 +89,7 @@ impl FromRequest for Query {
                 match permission {
                     Permission::Stream(Action::All, _) => authorized = true,
                     Permission::StreamWithTag(Action::Query, stream, tag)
-                        if stream == query.stream_name =>
+                        if stream == query.stream_name || stream == "*" =>
                     {
                         authorized = true;
                         if let Some(tag) = tag {
