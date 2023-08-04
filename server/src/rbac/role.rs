@@ -104,7 +104,7 @@ impl RoleBuilder {
 pub mod model {
     use super::{Action, RoleBuilder};
 
-    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash)]
     #[serde(tag = "privilege", content = "resource", rename_all = "lowercase")]
     pub enum DefaultPrivilege {
         Admin,
