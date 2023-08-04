@@ -16,6 +16,8 @@
  *
  */
 
+use std::collections::HashSet;
+
 use crate::{
     option::CONFIG,
     rbac::{
@@ -124,7 +126,8 @@ pub async fn put_role(
 ) -> Result<String, RBACError> {
     let username = username.into_inner();
     let role = role.into_inner();
-    let role: Vec<DefaultPrivilege> = serde_json::from_value(role)?;
+    let role: HashSet<DefaultPrivilege> = serde_json::from_value(role)?;
+    let role = role.into_iter().collect();
 
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
