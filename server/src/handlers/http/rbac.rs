@@ -48,6 +48,9 @@ pub async fn list_users() -> impl Responder {
 pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     validator::user_name(&username)?;
+    if username == CONFIG.parseable.username {
+        return Err(RBACError::BadUser);
+    }
     let _ = UPDATE_LOCK.lock().await;
     if Users.contains(&username) {
         reset_password(username).await
@@ -81,6 +84,9 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
 // Handler for DELETE /api/v1/user/delete/{username}
 pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
+    if username == CONFIG.parseable.username {
+        return Err(RBACError::BadUser);
+    }
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
     if !Users.contains(&username) {
@@ -125,6 +131,9 @@ pub async fn put_role(
     role: web::Json<serde_json::Value>,
 ) -> Result<String, RBACError> {
     let username = username.into_inner();
+    if username == CONFIG.parseable.username {
+        return Err(RBACError::BadUser);
+    }
     let role = role.into_inner();
     let role: HashSet<DefaultPrivilege> = serde_json::from_value(role)?;
     let role = role.into_iter().collect();
@@ -169,6 +178,8 @@ async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageErr
 
 #[derive(Debug, thiserror::Error)]
 pub enum RBACError {
+    #[error("Request cannot be allowed for this user")]
+    BadUser,
     #[error("User exists already")]
     UserExists,
     #[error("User does not exist")]
@@ -184,6 +195,7 @@ pub enum RBACError {
 impl actix_web::ResponseError for RBACError {
     fn status_code(&self) -> http::StatusCode {
         match self {
+            Self::BadUser => StatusCode::BAD_REQUEST,
             Self::UserExists => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist => StatusCode::NOT_FOUND,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
