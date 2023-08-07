@@ -44,7 +44,7 @@ pub async fn query(
     let time = Instant::now();
 
     // format output json to include field names
-    let with_fields = params.get("withFields").cloned().unwrap_or(false);
+    let with_fields = params.get("fields").cloned().unwrap_or(false);
     // Fill missing columns with null
     let fill_null = params
         .get("fillNull")
