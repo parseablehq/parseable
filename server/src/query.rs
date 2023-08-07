@@ -19,8 +19,8 @@
 mod filter_optimizer;
 mod table_provider;
 
-use chrono::TimeZone;
 use chrono::{DateTime, Utc};
+use chrono::{TimeZone, Timelike};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
@@ -128,8 +128,18 @@ impl Query {
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let ctx = self.create_session_context();
         let remote_listing_table = self._remote_query(storage)?;
-        let memtable =
-            crate::event::STREAM_WRITERS.recordbatches_cloned(&self.stream_name, &self.schema);
+
+        let current_minute = Utc::now()
+            .with_second(0)
+            .and_then(|x| x.with_nanosecond(0))
+            .expect("zeroed value is valid");
+
+        let memtable = if self.end > current_minute {
+            crate::event::STREAM_WRITERS.recordbatches_cloned(&self.stream_name, &self.schema)
+        } else {
+            None
+        };
+
         let table =
             QueryTableProvider::try_new(memtable, remote_listing_table, self.schema.clone())?;
 
