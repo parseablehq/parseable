@@ -18,12 +18,13 @@
 
 use actix_web::error::ErrorUnauthorized;
 use actix_web::http::header::ContentType;
-use actix_web::web::Json;
+use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use futures_util::Future;
 use http::StatusCode;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::time::Instant;
 
@@ -36,22 +37,37 @@ use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 
-pub async fn query(query: Query) -> Result<impl Responder, QueryError> {
+pub async fn query(
+    query: Query,
+    web::Query(params): web::Query<HashMap<String, bool>>,
+) -> Result<impl Responder, QueryError> {
     let time = Instant::now();
 
+    // format output json to include field names
+    let with_fields = params.get("fields").cloned().unwrap_or(false);
+    // Fill missing columns with null
+    let fill_null = params
+        .get("fillNull")
+        .cloned()
+        .or(Some(query.fill_null))
+        .unwrap_or(false);
+
     let storage = CONFIG.storage().get_object_store();
-    let query_result = query.execute(storage).await;
-    let query_result = query_result
-        .map(|(records, fields)| QueryResponse::new(records, fields, query.fill_null))
-        .map(|response| response.to_http())
-        .map_err(|e| e.into());
+    let (records, fields) = query.execute(storage).await?;
+    let response = QueryResponse {
+        records,
+        fields,
+        fill_null,
+        with_fields,
+    }
+    .to_http();
 
     let time = time.elapsed().as_secs_f64();
     QUERY_EXECUTE_TIME
         .with_label_values(&[query.stream_name.as_str()])
         .observe(time);
 
-    query_result
+    Ok(response)
 }
 
 impl FromRequest for Query {
