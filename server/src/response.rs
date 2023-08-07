@@ -16,30 +16,20 @@
  *
  */
 
-use actix_web::http::StatusCode;
 use actix_web::{web, Responder};
 use datafusion::arrow::json::writer::record_batches_to_json_rows;
 use datafusion::arrow::record_batch::RecordBatch;
 use itertools::Itertools;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub struct QueryResponse {
-    pub code: StatusCode,
     pub records: Vec<RecordBatch>,
     pub fields: Vec<String>,
     pub fill_null: bool,
+    pub with_fields: bool,
 }
 
 impl QueryResponse {
-    pub fn new(records: Vec<RecordBatch>, fields: Vec<String>, fill_null: bool) -> Self {
-        Self {
-            code: StatusCode::OK,
-            records,
-            fields,
-            fill_null,
-        }
-    }
-
     pub fn to_http(&self) -> impl Responder {
         log::info!("{}", "Returning query results");
         let records: Vec<&RecordBatch> = self.records.iter().collect();
@@ -53,8 +43,16 @@ impl QueryResponse {
                 }
             }
         }
-
         let values = json_records.into_iter().map(Value::Object).collect_vec();
-        web::Json(values)
+        let response = if self.with_fields {
+            json!({
+                "fields": self.fields,
+                "records": values
+            })
+        } else {
+            Value::Array(values)
+        };
+
+        web::Json(response)
     }
 }
