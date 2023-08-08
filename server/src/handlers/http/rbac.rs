@@ -45,7 +45,10 @@ pub async fn list_users() -> impl Responder {
 // Creates a new user by username if it does not exists
 // Otherwise make a call to reset password
 // returns password generated for this user
-pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
+pub async fn put_user(
+    username: web::Path<String>,
+    body: Option<web::Json<serde_json::Value>>,
+) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     validator::user_name(&username)?;
     if username == CONFIG.parseable.username {
@@ -60,12 +63,15 @@ pub async fn put_user(username: web::Path<String>) -> Result<impl Responder, RBA
             // should be unreachable given state is always consistent
             return Err(RBACError::UserExists);
         }
-
-        let (user, password) = User::create_new(username);
+        let (user, password) = User::create_new(username.clone());
         metadata.users.push(user.clone());
         put_metadata(&metadata).await?;
         // set this user to user map
         Users.put_user(user);
+
+        if let Some(body) = body {
+            put_role(web::Path::<String>::from(username), body).await?;
+        }
 
         Ok(password)
     }
