@@ -18,7 +18,17 @@
 
 use arrow_array::{cast::as_string_array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Schema};
-use std::sync::atomic::{AtomicU32, Ordering};
+use itertools::Itertools;
+use serde::{
+    de::{MapAccess, Visitor},
+    Deserialize, Deserializer,
+};
+use std::{
+    fmt,
+    marker::PhantomData,
+    str::FromStr,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use self::base::{
     ops::{NumericOperator, StringOperator},
@@ -32,24 +42,39 @@ use super::AlertState;
 #[serde(rename_all = "camelCase")]
 pub enum Rule {
     Column(ColumnRule),
+    #[serde(deserialize_with = "string_or_struct")]
+    Composite(CompositeRule),
 }
 
 impl Rule {
     pub fn resolves(&self, event: RecordBatch) -> Vec<AlertState> {
         match self {
             Rule::Column(rule) => rule.resolves(event),
+            Rule::Composite(rule) => rule
+                .resolves(event)
+                .iter()
+                .map(|x| {
+                    if *x {
+                        AlertState::SetToFiring
+                    } else {
+                        AlertState::Listening
+                    }
+                })
+                .collect(),
         }
     }
 
     pub fn valid_for_schema(&self, schema: &Schema) -> bool {
         match self {
             Rule::Column(rule) => rule.valid_for_schema(schema),
+            Rule::Composite(rule) => rule.valid_for_schema(schema),
         }
     }
 
     pub fn trigger_reason(&self) -> String {
         match self {
             Rule::Column(rule) => rule.trigger_reason(),
+            Rule::Composite(_) => "todo".to_string(),
         }
     }
 }
@@ -217,6 +242,136 @@ fn one() -> u32 {
     1
 }
 
+fn string_or_struct<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Deserialize<'de> + FromStr<Err = Box<dyn std::error::Error>>,
+    D: Deserializer<'de>,
+{
+    // This is a Visitor that forwards string types to T's `FromStr` impl and
+    // forwards map types to T's `Deserialize` impl. The `PhantomData` is to
+    // keep the compiler from complaining about T being an unused generic type
+    // parameter. We need T in order to know the Value type for the Visitor
+    // impl.
+    struct StringOrStruct<T>(PhantomData<fn() -> T>);
+
+    impl<'de, T> Visitor<'de> for StringOrStruct<T>
+    where
+        T: Deserialize<'de> + FromStr<Err = Box<dyn std::error::Error>>,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("string or map")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<T, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(FromStr::from_str(value).unwrap())
+        }
+
+        fn visit_map<M>(self, map: M) -> Result<T, M::Error>
+        where
+            M: MapAccess<'de>,
+        {
+            // `MapAccessDeserializer` is a wrapper that turns a `MapAccess`
+            // into a `Deserializer`, allowing it to be used as the input to T's
+            // `Deserialize` implementation. T then deserializes itself using
+            // the entries from the map visitor.
+            Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_any(StringOrStruct(PhantomData))
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CompositeRule {
+    And(Vec<CompositeRule>),
+    Or(Vec<CompositeRule>),
+    Not(Box<CompositeRule>),
+    Numeric(NumericRule),
+    String(StringRule),
+}
+
+impl CompositeRule {
+    fn resolves(&self, event: RecordBatch) -> Vec<bool> {
+        let res = match self {
+            CompositeRule::And(rules) => {
+                // get individual evaluation for each subrule
+                let mut evaluations = rules
+                    .iter()
+                    .map(|x| x.resolves(event.clone()))
+                    .collect_vec();
+                // They all must be of same length otherwise some columns was missing in evaluation
+                let is_same_len = evaluations.iter().map(|x| x.len()).all_equal();
+                // if there are more than one rule then we go through all evaluations and compare them side by side
+                if is_same_len && evaluations.len() > 1 {
+                    (0..evaluations[0].len())
+                        .map(|idx| evaluations.iter().all(|x| x[idx]))
+                        .collect()
+                } else if is_same_len && evaluations.len() == 1 {
+                    evaluations.pop().expect("length one")
+                } else {
+                    vec![]
+                }
+            }
+            CompositeRule::Or(rules) => {
+                // get individual evaluation for each subrule
+                let evaluations: Vec<Vec<bool>> = rules
+                    .iter()
+                    .map(|x| x.resolves(event.clone()))
+                    .collect_vec();
+                let mut evaluation_iterators = evaluations.iter().map(|x| x.iter()).collect_vec();
+                let mut res = vec![];
+
+                loop {
+                    let mut continue_iteration = false;
+                    let mut accumulator = false;
+                    for iter in &mut evaluation_iterators {
+                        if let Some(val) = iter.next() {
+                            accumulator = accumulator || *val;
+                            continue_iteration = true
+                        }
+                    }
+                    if !continue_iteration {
+                        break;
+                    } else {
+                        res.push(accumulator)
+                    }
+                }
+
+                res
+            }
+            CompositeRule::Numeric(rule) => {
+                let Some(column) = event.column_by_name(&rule.column) else {
+                    return Vec::new();
+                };
+                rule.resolves(column)
+            }
+            CompositeRule::String(rule) => {
+                let Some(column) = event.column_by_name(&rule.column) else {
+                    return Vec::new();
+                };
+                rule.resolves(as_string_array(column))
+            }
+            CompositeRule::Not(rule) => {
+                let mut res = rule.resolves(event);
+                res.iter_mut().for_each(|x| *x = !*x);
+                res
+            }
+        };
+
+        dbg!(res)
+    }
+
+    fn valid_for_schema(&self, _: &Schema) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConsecutiveRepeatState {
     #[serde(default = "one")]
@@ -308,7 +463,7 @@ pub mod base {
     use self::ops::{NumericOperator, StringOperator};
     use regex::Regex;
 
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
     #[serde(rename_all = "camelCase")]
     pub struct NumericRule {
         pub column: String,
@@ -362,7 +517,7 @@ pub mod base {
         }
     }
 
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
     #[serde(rename_all = "camelCase")]
     pub struct StringRule {
         pub column: String,

@@ -26,6 +26,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod parser;
 pub mod rule;
 pub mod target;
 

@@ -62,6 +62,7 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
                     }
                 }
             },
+            _ => {}
         }
     }
     Ok(())
