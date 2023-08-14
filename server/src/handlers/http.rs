@@ -201,21 +201,25 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                     web::delete()
                         .to(rbac::delete_user)
                         .authorize(Action::DeleteUser),
-                ),
+                )
+                .wrap(DisAllowRootUser),
         )
         .service(
             web::resource("/{username}/role")
                 // PUT /user/{username}/roles => Put roles for user
-                .route(web::put().to(rbac::put_role).authorize(Action::PutRoles))
+                .route(
+                    web::put()
+                        .to(rbac::put_role)
+                        .authorize(Action::PutRoles)
+                        .wrap(DisAllowRootUser),
+                )
                 .route(
                     web::get()
                         .to(rbac::get_role)
                         .authorize_for_user(Action::GetRole),
                 ),
-        )
-        // Deny request if username is same as the env variable P_USERNAME.
-        .wrap(DisAllowRootUser);
-
+        );
+    // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(
         // Base path "{url}/api/v1"
         web::scope(&base_path())
