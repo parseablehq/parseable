@@ -80,11 +80,12 @@ impl Users {
         username: String,
         password: String,
         action: Action,
-        stream: Option<&str>,
+        context_stream: Option<&str>,
+        context_user: Option<&str>,
     ) -> bool {
         let key = (username, password);
         // try fetch from auth map for faster auth flow
-        if let Some(res) = auth_map().check_auth(&key, action, stream) {
+        if let Some(res) = auth_map().check_auth(&key, action, context_stream, context_user) {
             return res;
         }
 
@@ -99,7 +100,7 @@ impl Users {
                 // verify from auth map and return
                 let key = (username, password);
                 return auth_map
-                    .check_auth(&key, action, stream)
+                    .check_auth(&key, action, context_stream, context_user)
                     .expect("entry for this key just added");
             }
         }

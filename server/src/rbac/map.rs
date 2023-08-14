@@ -117,7 +117,8 @@ impl AuthMap {
         &self,
         key: &(String, String),
         required_action: Action,
-        on_stream: Option<&str>,
+        context_stream: Option<&str>,
+        context_user: Option<&str>,
     ) -> Option<bool> {
         self.inner.get(key).map(|perms| {
             perms.iter().any(|user_perm| {
@@ -126,13 +127,17 @@ impl AuthMap {
                     Permission::Unit(action) => action == required_action || action == Action::All,
                     Permission::Stream(action, ref stream)
                     | Permission::StreamWithTag(action, ref stream, _) => {
-                        let ok_stream = if let Some(on_stream) = on_stream {
-                            stream == on_stream || stream == "*"
+                        let ok_stream = if let Some(context_stream) = context_stream {
+                            stream == context_stream || stream == "*"
                         } else {
                             // if no stream to match then stream check is not needed
                             true
                         };
                         (action == required_action || action == Action::All) && ok_stream
+                    }
+                    Permission::SelfRole => {
+                        context_user.map(|x| x == key.0).unwrap_or_default()
+                            && required_action == Action::GetRole
                     }
                 }
             })
