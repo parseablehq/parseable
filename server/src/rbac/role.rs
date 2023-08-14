@@ -44,6 +44,7 @@ pub enum Permission {
     Unit(Action),
     Stream(Action, String),
     StreamWithTag(Action, String, Option<String>),
+    SelfRole,
 }
 
 // Currently Roles are tied to one stream
@@ -94,6 +95,7 @@ impl RoleBuilder {
             };
             perms.push(perm);
         }
+        perms.push(Permission::SelfRole);
         perms
     }
 }

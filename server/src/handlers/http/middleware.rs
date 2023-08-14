@@ -22,16 +22,46 @@ use std::future::{ready, Ready};
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     error::{ErrorBadRequest, ErrorUnauthorized},
-    Error,
+    Error, Route,
 };
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use futures_util::future::LocalBoxFuture;
 
 use crate::{option::CONFIG, rbac::role::Action, rbac::Users};
 
+pub trait RouteExt {
+    fn authorize(self, action: Action) -> Self;
+    fn authorize_for_stream(self, action: Action) -> Self;
+    fn authorize_for_user(self, action: Action) -> Self;
+}
+
+impl RouteExt for Route {
+    fn authorize(self, action: Action) -> Self {
+        self.wrap(Auth {
+            action,
+            method: auth_no_context,
+        })
+    }
+
+    fn authorize_for_stream(self, action: Action) -> Self {
+        self.wrap(Auth {
+            action,
+            method: auth_stream_context,
+        })
+    }
+
+    fn authorize_for_user(self, action: Action) -> Self {
+        self.wrap(Auth {
+            action,
+            method: auth_user_context,
+        })
+    }
+}
+
+// Authentication Layer with no context
 pub struct Auth {
     pub action: Action,
-    pub stream: bool,
+    pub method: fn(&mut ServiceRequest, Action) -> Result<bool, Error>,
 }
 
 impl<S, B> Transform<S, ServiceRequest> for Auth
@@ -49,15 +79,15 @@ where
     fn new_transform(&self, service: S) -> Self::Future {
         ready(Ok(AuthMiddleware {
             action: self.action,
-            match_stream: self.stream,
             service,
+            auth_method: self.method,
         }))
     }
 }
 
 pub struct AuthMiddleware<S> {
     action: Action,
-    match_stream: bool,
+    auth_method: fn(&mut ServiceRequest, Action) -> Result<bool, Error>,
     service: S,
 }
 
@@ -74,36 +104,44 @@ where
     forward_ready!(service);
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
-        // Extract username and password from the request using basic auth extractor.
-        let creds = req.extract::<BasicAuth>().into_inner();
-        let creds = creds.map_err(Into::into).map(|creds| {
-            let username = creds.user_id().trim().to_owned();
-            // password is not mandatory by basic auth standard.
-            // If not provided then treat as empty string
-            let password = creds.password().unwrap_or("").trim().to_owned();
-            (username, password)
-        });
-
-        let stream = if self.match_stream {
-            req.match_info().get("logstream")
-        } else {
-            None
-        };
-
-        let auth_result: Result<bool, Error> = creds.map(|(username, password)| {
-            Users.authenticate(username, password, self.action, stream)
-        });
-
+        let auth_result: Result<bool, Error> = (self.auth_method)(&mut req, self.action);
         let fut = self.service.call(req);
-
         Box::pin(async move {
             if !auth_result? {
                 return Err(ErrorUnauthorized("Not authorized"));
             }
-
             fut.await
         })
     }
+}
+
+pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<bool, Error> {
+    let creds = extract_basic_auth(req);
+    creds.map(|(username, password)| Users.authenticate(username, password, action, None, None))
+}
+
+pub fn auth_stream_context(req: &mut ServiceRequest, action: Action) -> Result<bool, Error> {
+    let creds = extract_basic_auth(req);
+    let stream = req.match_info().get("logstream");
+    creds.map(|(username, password)| Users.authenticate(username, password, action, stream, None))
+}
+
+pub fn auth_user_context(req: &mut ServiceRequest, action: Action) -> Result<bool, Error> {
+    let creds = extract_basic_auth(req);
+    let user = req.match_info().get("username");
+    creds.map(|(username, password)| Users.authenticate(username, password, action, None, user))
+}
+
+fn extract_basic_auth(req: &mut ServiceRequest) -> Result<(String, String), Error> {
+    // Extract username and password from the request using basic auth extractor.
+    let creds = req.extract::<BasicAuth>().into_inner();
+    creds.map_err(Into::into).map(|creds| {
+        let username = creds.user_id().trim().to_owned();
+        // password is not mandatory by basic auth standard.
+        // If not provided then treat as empty string
+        let password = creds.password().unwrap_or("").trim().to_owned();
+        (username, password)
+    })
 }
 
 // The credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated

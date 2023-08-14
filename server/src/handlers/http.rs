@@ -20,7 +20,7 @@ use std::fs::File;
 use std::io::BufReader;
 
 use actix_cors::Cors;
-use actix_web::{web, App, HttpServer, Route};
+use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use rustls::{Certificate, PrivateKey, ServerConfig};
@@ -29,7 +29,7 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 use crate::option::CONFIG;
 use crate::rbac::role::Action;
 
-use self::middleware::{Auth, DisAllowRootUser};
+use self::middleware::{DisAllowRootUser, RouteExt};
 
 mod about;
 mod health_check;
@@ -201,17 +201,25 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                     web::delete()
                         .to(rbac::delete_user)
                         .authorize(Action::DeleteUser),
-                ),
+                )
+                .wrap(DisAllowRootUser),
         )
         .service(
             web::resource("/{username}/role")
                 // PUT /user/{username}/roles => Put roles for user
-                .route(web::put().to(rbac::put_role).authorize(Action::PutRoles))
-                .route(web::get().to(rbac::get_role).authorize(Action::GetRole)),
-        )
-        // Deny request if username is same as the env variable P_USERNAME.
-        .wrap(DisAllowRootUser);
-
+                .route(
+                    web::put()
+                        .to(rbac::put_role)
+                        .authorize(Action::PutRoles)
+                        .wrap(DisAllowRootUser),
+                )
+                .route(
+                    web::get()
+                        .to(rbac::get_role)
+                        .authorize_for_user(Action::GetRole),
+                ),
+        );
+    // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(
         // Base path "{url}/api/v1"
         web::scope(&base_path())
@@ -260,25 +268,4 @@ fn base_path() -> String {
 
 pub fn metrics_path() -> String {
     format!("{}/metrics", base_path())
-}
-
-trait RouteExt {
-    fn authorize(self, action: Action) -> Self;
-    fn authorize_for_stream(self, action: Action) -> Self;
-}
-
-impl RouteExt for Route {
-    fn authorize(self, action: Action) -> Self {
-        self.wrap(Auth {
-            action,
-            stream: false,
-        })
-    }
-
-    fn authorize_for_stream(self, action: Action) -> Self {
-        self.wrap(Auth {
-            action,
-            stream: true,
-        })
-    }
 }
