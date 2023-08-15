@@ -302,8 +302,14 @@ impl CompositeRule {
         }
     }
 
-    fn valid_for_schema(&self, _: &Schema) -> bool {
-        true
+    fn valid_for_schema(&self, schema: &Schema) -> bool {
+        match self {
+            CompositeRule::And(rules) => rules.iter().all(|rule| rule.valid_for_schema(schema)),
+            CompositeRule::Or(rules) => rules.iter().all(|rule| rule.valid_for_schema(schema)),
+            CompositeRule::Not(rule) => rule.valid_for_schema(schema),
+            CompositeRule::Numeric(rule) => rule.valid_for_schema(schema),
+            CompositeRule::String(rule) => rule.valid_for_schema(schema),
+        }
     }
 }
 
