@@ -17,7 +17,7 @@
  */
 
 use arrow_array::{cast::as_string_array, RecordBatch};
-use datafusion::arrow::datatypes::{DataType, Schema};
+use datafusion::arrow::datatypes::Schema;
 use itertools::Itertools;
 use serde::{
     de::{MapAccess, Visitor},
@@ -74,7 +74,7 @@ impl Rule {
     pub fn trigger_reason(&self) -> String {
         match self {
             Rule::Column(rule) => rule.trigger_reason(),
-            Rule::Composite(_) => "todo".to_string(),
+            Rule::Composite(rule) => format!("matched rule {}", rule),
         }
     }
 }
@@ -98,29 +98,10 @@ impl ColumnRule {
         match self {
             Self::ConsecutiveNumeric(ConsecutiveNumericRule {
                 base_rule: rule, ..
-            }) => match schema.column_with_name(&rule.column) {
-                Some((_, column)) => matches!(
-                    column.data_type(),
-                    DataType::Int8
-                        | DataType::Int16
-                        | DataType::Int32
-                        | DataType::Int64
-                        | DataType::UInt8
-                        | DataType::UInt16
-                        | DataType::UInt32
-                        | DataType::UInt64
-                        | DataType::Float16
-                        | DataType::Float32
-                        | DataType::Float64
-                ),
-                None => false,
-            },
+            }) => rule.valid_for_schema(schema),
             Self::ConsecutiveString(ConsecutiveStringRule {
                 base_rule: rule, ..
-            }) => match schema.column_with_name(&rule.column) {
-                Some((_, column)) => matches!(column.data_type(), DataType::Utf8),
-                None => false,
-            },
+            }) => rule.valid_for_schema(schema),
         }
     }
 
@@ -486,6 +467,7 @@ pub mod base {
         types::{Float64Type, Int64Type, UInt64Type},
         Array, ArrowPrimitiveType, PrimitiveArray, StringArray,
     };
+    use arrow_schema::{DataType, Schema};
     use itertools::Itertools;
 
     use self::ops::{NumericOperator, StringOperator};
@@ -542,6 +524,26 @@ pub mod base {
                     }
                 })
                 .collect()
+        }
+
+        pub fn valid_for_schema(&self, schema: &Schema) -> bool {
+            match schema.column_with_name(&self.column) {
+                Some((_, column)) => matches!(
+                    column.data_type(),
+                    DataType::Int8
+                        | DataType::Int16
+                        | DataType::Int32
+                        | DataType::Int64
+                        | DataType::UInt8
+                        | DataType::UInt16
+                        | DataType::UInt32
+                        | DataType::UInt64
+                        | DataType::Float16
+                        | DataType::Float32
+                        | DataType::Float64
+                ),
+                None => false,
+            }
         }
     }
 
@@ -604,6 +606,13 @@ pub mod base {
                         re.is_match(string)
                     }
                 }
+            }
+        }
+
+        pub fn valid_for_schema(&self, schema: &Schema) -> bool {
+            match schema.column_with_name(&self.column) {
+                Some((_, column)) => matches!(column.data_type(), DataType::Utf8),
+                None => false,
             }
         }
     }

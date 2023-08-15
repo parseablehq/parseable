@@ -44,8 +44,8 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
             return Err(AlertValidationError::NoTarget);
         }
 
-        match alert.rule {
-            Rule::Column(ref column_rule) => match column_rule {
+        if let Rule::Column(ref column_rule) = alert.rule {
+            match column_rule {
                 ColumnRule::ConsecutiveNumeric(ConsecutiveNumericRule {
                     base_rule: NumericRule { ref column, .. },
                     ref state,
@@ -61,8 +61,7 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
                         return Err(AlertValidationError::InvalidRuleRepeat);
                     }
                 }
-            },
-            _ => {}
+            }
         }
     }
     Ok(())
