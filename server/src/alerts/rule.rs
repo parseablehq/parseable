@@ -42,7 +42,7 @@ use super::AlertState;
 #[serde(rename_all = "camelCase")]
 pub enum Rule {
     Column(ColumnRule),
-    #[serde(deserialize_with = "string_or_struct")]
+    #[serde(deserialize_with = "string_or_struct", serialize_with = "to_string")]
     Composite(CompositeRule),
 }
 
@@ -242,50 +242,6 @@ fn one() -> u32 {
     1
 }
 
-fn string_or_struct<'de, T, D>(deserializer: D) -> Result<T, D::Error>
-where
-    T: Deserialize<'de> + FromStr<Err = Box<dyn std::error::Error>>,
-    D: Deserializer<'de>,
-{
-    // This is a Visitor that forwards string types to T's `FromStr` impl and
-    // forwards map types to T's `Deserialize` impl. The `PhantomData` is to
-    // keep the compiler from complaining about T being an unused generic type
-    // parameter. We need T in order to know the Value type for the Visitor
-    // impl.
-    struct StringOrStruct<T>(PhantomData<fn() -> T>);
-
-    impl<'de, T> Visitor<'de> for StringOrStruct<T>
-    where
-        T: Deserialize<'de> + FromStr<Err = Box<dyn std::error::Error>>,
-    {
-        type Value = T;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("string or map")
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<T, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(FromStr::from_str(value).unwrap())
-        }
-
-        fn visit_map<M>(self, map: M) -> Result<T, M::Error>
-        where
-            M: MapAccess<'de>,
-        {
-            // `MapAccessDeserializer` is a wrapper that turns a `MapAccess`
-            // into a `Deserializer`, allowing it to be used as the input to T's
-            // `Deserialize` implementation. T then deserializes itself using
-            // the entries from the map visitor.
-            Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-        }
-    }
-
-    deserializer.deserialize_any(StringOrStruct(PhantomData))
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CompositeRule {
@@ -372,6 +328,25 @@ impl CompositeRule {
     }
 }
 
+impl fmt::Display for CompositeRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let v = match self {
+            CompositeRule::And(rules) => {
+                let rules_str: Vec<String> = rules.iter().map(|rule| rule.to_string()).collect();
+                format!("({})", rules_str.join(" and "))
+            }
+            CompositeRule::Or(rules) => {
+                let rules_str: Vec<String> = rules.iter().map(|rule| rule.to_string()).collect();
+                format!("({})", rules_str.join(" or "))
+            }
+            CompositeRule::Not(rule) => format!("!({})", rule),
+            CompositeRule::Numeric(numeric_rule) => numeric_rule.to_string(),
+            CompositeRule::String(string_rule) => string_rule.to_string(),
+        };
+        write!(f, "{}", v)
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConsecutiveRepeatState {
     #[serde(default = "one")]
@@ -415,6 +390,57 @@ impl ConsecutiveRepeatState {
     }
 }
 
+fn string_or_struct<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Deserialize<'de> + FromStr<Err = Box<dyn std::error::Error>>,
+    D: Deserializer<'de>,
+{
+    // This is a Visitor that forwards string types to T's `FromStr` impl and
+    // forwards map types to T's `Deserialize` impl. The `PhantomData` is to
+    // keep the compiler from complaining about T being an unused generic type
+    // parameter. We need T in order to know the Value type for the Visitor
+    // impl.
+    struct StringOrStruct<T>(PhantomData<fn() -> T>);
+
+    impl<'de, T> Visitor<'de> for StringOrStruct<T>
+    where
+        T: Deserialize<'de> + FromStr<Err = Box<dyn std::error::Error>>,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("string or map")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<T, E>
+        where
+            E: serde::de::Error,
+        {
+            FromStr::from_str(value).map_err(|x| serde::de::Error::custom(x))
+        }
+
+        fn visit_map<M>(self, map: M) -> Result<T, M::Error>
+        where
+            M: MapAccess<'de>,
+        {
+            // `MapAccessDeserializer` is a wrapper that turns a `MapAccess`
+            // into a `Deserializer`, allowing it to be used as the input to T's
+            // `Deserialize` implementation. T then deserializes itself using
+            // the entries from the map visitor.
+            Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_any(StringOrStruct(PhantomData))
+}
+
+fn to_string<S>(ty: &CompositeRule, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&ty.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicU32;
@@ -453,6 +479,8 @@ mod tests {
 }
 
 pub mod base {
+    use std::fmt::Display;
+
     use arrow_array::{
         cast::as_primitive_array,
         types::{Float64Type, Int64Type, UInt64Type},
@@ -517,6 +545,12 @@ pub mod base {
         }
     }
 
+    impl Display for NumericRule {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} {} {}", self.column, self.operator, self.value)
+        }
+    }
+
     #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
     #[serde(rename_all = "camelCase")]
     pub struct StringRule {
@@ -574,10 +608,21 @@ pub mod base {
         }
     }
 
+    impl Display for StringRule {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} {} \"{}\"", self.column, self.operator, self.value)
+        }
+    }
+
     pub mod ops {
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        use std::fmt::Display;
+
+        #[derive(
+            Debug, Default, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+        )]
         #[serde(rename_all = "camelCase")]
         pub enum NumericOperator {
+            #[default]
             #[serde(alias = "=")]
             EqualTo,
             #[serde(alias = "!=")]
@@ -592,19 +637,33 @@ pub mod base {
             LessThanEquals,
         }
 
-        impl Default for NumericOperator {
-            fn default() -> Self {
-                Self::EqualTo
+        impl Display for NumericOperator {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "{}",
+                    match self {
+                        NumericOperator::EqualTo => "=",
+                        NumericOperator::NotEqualTo => "!=",
+                        NumericOperator::GreaterThan => ">",
+                        NumericOperator::GreaterThanEquals => ">=",
+                        NumericOperator::LessThan => "<",
+                        NumericOperator::LessThanEquals => "<=",
+                    }
+                )
             }
         }
 
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[derive(
+            Debug, Default, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+        )]
         #[serde(rename_all = "camelCase")]
         pub enum StringOperator {
             #[serde(alias = "=")]
             Exact,
             #[serde(alias = "!=")]
             NotExact,
+            #[default]
             #[serde(alias = "=%")]
             Contains,
             #[serde(alias = "!%")]
@@ -613,9 +672,19 @@ pub mod base {
             Regex,
         }
 
-        impl Default for StringOperator {
-            fn default() -> Self {
-                Self::Contains
+        impl Display for StringOperator {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "{}",
+                    match self {
+                        StringOperator::Exact => "=",
+                        StringOperator::NotExact => "!=",
+                        StringOperator::Contains => "=%",
+                        StringOperator::NotContains => "!%",
+                        StringOperator::Regex => "~",
+                    }
+                )
             }
         }
     }

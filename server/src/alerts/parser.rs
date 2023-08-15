@@ -32,9 +32,9 @@ fn parse_string_op(input: &str) -> IResult<&str, StringOperator> {
     alt((
         map(tag("="), |_| StringOperator::Exact),
         map(tag("!="), |_| StringOperator::NotExact),
-        map(tag("%"), |_| StringOperator::Contains),
+        map(tag("=%"), |_| StringOperator::Contains),
         map(tag("!%"), |_| StringOperator::NotContains),
-        map(tag("*="), |_| StringOperator::Regex),
+        map(tag("~"), |_| StringOperator::Regex),
     ))(input)
 }
 
