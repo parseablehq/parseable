@@ -235,7 +235,7 @@ pub enum CompositeRule {
 
 impl CompositeRule {
     fn resolves(&self, event: RecordBatch) -> Vec<bool> {
-        let res = match self {
+        match self {
             CompositeRule::And(rules) => {
                 // get individual evaluation for each subrule
                 let mut evaluations = rules
@@ -299,7 +299,7 @@ impl CompositeRule {
                 res.iter_mut().for_each(|x| *x = !*x);
                 res
             }
-        };
+        }
     }
 
     fn valid_for_schema(&self, _: &Schema) -> bool {
