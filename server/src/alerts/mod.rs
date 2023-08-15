@@ -67,7 +67,7 @@ pub struct Alert {
 
 impl Alert {
     pub fn check_alert(&self, stream_name: &str, events: RecordBatch) {
-        let resolves = self.rule.resolves(events.clone());
+        let resolves = dbg!(self.rule.resolves(events.clone()));
 
         for (index, state) in resolves.into_iter().enumerate() {
             match state {

@@ -300,8 +300,6 @@ impl CompositeRule {
                 res
             }
         };
-
-        dbg!(res)
     }
 
     fn valid_for_schema(&self, _: &Schema) -> bool {

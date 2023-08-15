@@ -19,21 +19,21 @@ use super::rule::{
 
 fn parse_numeric_op(input: &str) -> IResult<&str, NumericOperator> {
     alt((
-        map(tag("<"), |_| NumericOperator::LessThan),
-        map(tag(">"), |_| NumericOperator::GreaterThan),
         map(tag("<="), |_| NumericOperator::LessThanEquals),
         map(tag(">="), |_| NumericOperator::GreaterThanEquals),
-        map(tag("="), |_| NumericOperator::EqualTo),
         map(tag("!="), |_| NumericOperator::NotEqualTo),
+        map(tag("<"), |_| NumericOperator::LessThan),
+        map(tag(">"), |_| NumericOperator::GreaterThan),
+        map(tag("="), |_| NumericOperator::EqualTo),
     ))(input)
 }
 
 fn parse_string_op(input: &str) -> IResult<&str, StringOperator> {
     alt((
-        map(tag("="), |_| StringOperator::Exact),
         map(tag("!="), |_| StringOperator::NotExact),
         map(tag("=%"), |_| StringOperator::Contains),
         map(tag("!%"), |_| StringOperator::NotContains),
+        map(tag("="), |_| StringOperator::Exact),
         map(tag("~"), |_| StringOperator::Regex),
     ))(input)
 }
@@ -180,6 +180,54 @@ mod tests {
                     CompositeRule::String(string1)
                 ]),
                 CompositeRule::Not(Box::new(CompositeRule::Numeric(numeric3)))
+            ])
+        )
+    }
+
+    #[test]
+    fn test_complex() {
+        let input = r#"(verb =% "list" or verb =% "get") and (resource = "secret" and username !% "admin")"#;
+        let rule = CompositeRule::from_str(input).unwrap();
+
+        let verb_like_list = StringRule {
+            column: "verb".to_string(),
+            operator: StringOperator::Contains,
+            value: "list".to_string(),
+            ignore_case: None,
+        };
+
+        let verb_like_get = StringRule {
+            column: "verb".to_string(),
+            operator: StringOperator::Contains,
+            value: "get".to_string(),
+            ignore_case: None,
+        };
+
+        let resource_exact_secret = StringRule {
+            column: "resource".to_string(),
+            operator: StringOperator::Exact,
+            value: "secret".to_string(),
+            ignore_case: None,
+        };
+
+        let username_notcontains_admin = StringRule {
+            column: "username".to_string(),
+            operator: StringOperator::NotContains,
+            value: "admin".to_string(),
+            ignore_case: None,
+        };
+
+        assert_eq!(
+            rule,
+            CompositeRule::And(vec![
+                CompositeRule::Or(vec![
+                    CompositeRule::String(verb_like_list),
+                    CompositeRule::String(verb_like_get)
+                ]),
+                CompositeRule::And(vec![
+                    CompositeRule::String(resource_exact_secret),
+                    CompositeRule::String(username_notcontains_admin)
+                ]),
             ])
         )
     }
