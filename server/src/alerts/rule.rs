@@ -301,9 +301,6 @@ impl CompositeRule {
             }
         };
 
-        let dbg = self.to_string();
-        eprintln!("{} {}", dbg, res[0]);
-
         res
     }
 
