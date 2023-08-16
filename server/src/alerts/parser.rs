@@ -16,15 +16,16 @@
  *
  */
 
-use std::str::FromStr;
+use std::{borrow::Cow, str::FromStr};
 
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_until, take_while1},
+    bytes::complete::{is_not, tag, take_while1},
     character::complete::{char, multispace0, multispace1},
-    combinator::map,
-    sequence::{delimited, separated_pair},
-    IResult,
+    combinator::{cut, map, value},
+    error::{convert_error, VerboseError},
+    sequence::{delimited, preceded, separated_pair},
+    IResult as NomIResult, Parser,
 };
 
 use super::rule::{
@@ -35,7 +36,69 @@ use super::rule::{
     CompositeRule,
 };
 
-fn parse_numeric_op(input: &str) -> IResult<&str, NumericOperator> {
+type IResult<'a, O> = NomIResult<&'a str, O, VerboseError<&'a str>>;
+
+enum StrFragment<'a> {
+    Escaped(char),
+    Unescaped(&'a str),
+}
+
+fn parse_escaped_char(input: &str) -> IResult<char> {
+    preceded(
+        char('\\'),
+        alt((
+            value('"', char('"')),
+            value('\\', char('\\')),
+            value('/', char('/')),
+            value('\n', char('n')),
+            value('\r', char('r')),
+            value('\t', char('t')),
+            value('\u{08}', char('b')),
+            value('\u{0C}', char('f')),
+        )),
+    )
+    .parse(input)
+}
+
+fn parse_str_char(input: &str) -> IResult<StrFragment> {
+    alt((
+        map(parse_escaped_char, StrFragment::Escaped),
+        map(is_not(r#""\"#), StrFragment::Unescaped),
+    ))
+    .parse(input)
+}
+
+fn parse_string(input: &str) -> IResult<Cow<str>> {
+    let mut res = Cow::Borrowed("");
+    let (mut input, _) = char('"').parse(input)?;
+
+    loop {
+        match char('"').parse(input) {
+            // If it is terminating double quotes then we can return the ok value
+            Ok((tail, _)) => return Ok((tail, res)),
+            // Fail to parsing in recoverable variant can mean it is a valid char that is not double quote
+            Err(nom::Err::Error(_)) => {}
+            Err(err) => return Err(err),
+        };
+
+        input = match cut(parse_str_char)(input)? {
+            (tail, StrFragment::Escaped(ch)) => {
+                res.to_mut().push(ch);
+                tail
+            }
+            (tail, StrFragment::Unescaped(s)) => {
+                if res.is_empty() {
+                    res = Cow::Borrowed(s)
+                } else {
+                    res.to_mut().push_str(s)
+                }
+                tail
+            }
+        };
+    }
+}
+
+fn parse_numeric_op(input: &str) -> IResult<NumericOperator> {
     alt((
         map(tag("<="), |_| NumericOperator::LessThanEquals),
         map(tag(">="), |_| NumericOperator::GreaterThanEquals),
@@ -46,7 +109,7 @@ fn parse_numeric_op(input: &str) -> IResult<&str, NumericOperator> {
     ))(input)
 }
 
-fn parse_string_op(input: &str) -> IResult<&str, StringOperator> {
+fn parse_string_op(input: &str) -> IResult<StringOperator> {
     alt((
         map(tag("!="), |_| StringOperator::NotExact),
         map(tag("=%"), |_| StringOperator::Contains),
@@ -56,7 +119,7 @@ fn parse_string_op(input: &str) -> IResult<&str, StringOperator> {
     ))(input)
 }
 
-fn parse_numeric_rule(input: &str) -> IResult<&str, CompositeRule> {
+fn parse_numeric_rule(input: &str) -> IResult<CompositeRule> {
     let (remaining, key) = map(parse_identifier, |s: &str| s.to_string())(input)?;
     let (remaining, op) = delimited(multispace0, parse_numeric_op, multispace0)(remaining)?;
     let (remaining, value) = map(take_while1(|c: char| c.is_ascii_digit()), |x| {
@@ -73,84 +136,92 @@ fn parse_numeric_rule(input: &str) -> IResult<&str, CompositeRule> {
     ))
 }
 
-fn parse_string_rule(input: &str) -> IResult<&str, CompositeRule> {
+fn parse_string_rule(input: &str) -> IResult<CompositeRule> {
     let (remaining, key) = map(parse_identifier, |s: &str| s.to_string())(input)?;
     let (remaining, op) = delimited(multispace0, parse_string_op, multispace0)(remaining)?;
-    let (remaining, value) = map(
-        delimited(char('"'), take_until("\""), char('"')),
-        |x: &str| x.to_string(),
-    )(remaining)?;
+    let (remaining, value) = parse_string(remaining)?;
 
     Ok((
         remaining,
         CompositeRule::String(StringRule {
             column: key,
             operator: op,
-            value,
+            value: value.into_owned(),
             ignore_case: None,
         }),
     ))
 }
 
-fn parse_identifier(input: &str) -> IResult<&str, &str> {
+fn parse_identifier(input: &str) -> IResult<&str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_')(input)
 }
 
-fn parse_unary_expr(input: &str) -> IResult<&str, CompositeRule> {
-    map(delimited(tag("!("), parse_expression, char(')')), |x| {
-        CompositeRule::Not(Box::new(x))
-    })(input)
-}
-
-fn parse_bracket_expr(input: &str) -> IResult<&str, CompositeRule> {
-    delimited(
-        char('('),
-        delimited(multispace0, parse_expression, multispace0),
-        char(')'),
+fn parse_unary_expr(input: &str) -> IResult<CompositeRule> {
+    map(
+        delimited(tag("!("), cut(parse_expression), char(')')),
+        |x| CompositeRule::Not(Box::new(x)),
     )(input)
 }
 
-fn parse_and(input: &str) -> IResult<&str, CompositeRule> {
+fn parse_bracket_expr(input: &str) -> IResult<CompositeRule> {
+    delimited(
+        char('('),
+        delimited(multispace0, cut(parse_expression), multispace0),
+        cut(char(')')),
+    )(input)
+}
+
+fn parse_and(input: &str) -> IResult<CompositeRule> {
     let (remaining, (lhs, rhs)) = separated_pair(
         parse_atom,
         delimited(multispace1, tag("and"), multispace1),
-        parse_term,
+        cut(parse_term),
     )(input)?;
 
     Ok((remaining, CompositeRule::And(vec![lhs, rhs])))
 }
 
-fn parse_or(input: &str) -> IResult<&str, CompositeRule> {
+fn parse_or(input: &str) -> IResult<CompositeRule> {
     let (remaining, (lhs, rhs)) = separated_pair(
         parse_term,
         delimited(multispace1, tag("or"), multispace1),
-        parse_expression,
+        cut(parse_expression),
     )(input)?;
 
     Ok((remaining, CompositeRule::Or(vec![lhs, rhs])))
 }
 
-fn parse_expression(input: &str) -> IResult<&str, CompositeRule> {
+fn parse_expression(input: &str) -> IResult<CompositeRule> {
     alt((parse_or, parse_term))(input)
 }
-fn parse_term(input: &str) -> IResult<&str, CompositeRule> {
+
+fn parse_term(input: &str) -> IResult<CompositeRule> {
     alt((parse_and, parse_atom))(input)
 }
-fn parse_atom(input: &str) -> IResult<&str, CompositeRule> {
+
+fn parse_atom(input: &str) -> IResult<CompositeRule> {
     alt((
-        alt((parse_numeric_rule, parse_string_rule)),
+        alt((parse_string_rule, parse_numeric_rule)),
         parse_unary_expr,
         parse_bracket_expr,
     ))(input)
 }
 
 impl FromStr for CompositeRule {
-    type Err = Box<dyn std::error::Error>;
+    type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_expression(s)
-            .map(|(_, x)| x)
-            .map_err(|x| x.to_string().into())
+        let s = s.trim();
+        let (remaining, parsed) = parse_expression(s).map_err(|err| match err {
+            nom::Err::Incomplete(_) => "Needed more data".to_string(),
+            nom::Err::Error(err) | nom::Err::Failure(err) => convert_error(s, err),
+        })?;
+
+        if remaining.is_empty() {
+            Ok(parsed)
+        } else {
+            Err(format!("Could not parse input \n{}", remaining))
+        }
     }
 }
 

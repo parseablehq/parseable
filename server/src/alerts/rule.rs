@@ -379,7 +379,7 @@ impl ConsecutiveRepeatState {
 
 fn string_or_struct<'de, T, D>(deserializer: D) -> Result<T, D::Error>
 where
-    T: Deserialize<'de> + FromStr<Err = Box<dyn std::error::Error>>,
+    T: Deserialize<'de> + FromStr<Err = String>,
     D: Deserializer<'de>,
 {
     // This is a Visitor that forwards string types to T's `FromStr` impl and
@@ -391,7 +391,7 @@ where
 
     impl<'de, T> Visitor<'de> for StringOrStruct<T>
     where
-        T: Deserialize<'de> + FromStr<Err = Box<dyn std::error::Error>>,
+        T: Deserialize<'de> + FromStr<Err = String>,
     {
         type Value = T;
 
