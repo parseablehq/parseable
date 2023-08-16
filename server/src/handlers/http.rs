@@ -195,7 +195,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .service(
             web::resource("/{username}")
                 // PUT /user/{username} => Create a new user
-                .route(web::put().to(rbac::put_user).authorize(Action::PutUser))
+                .route(web::post().to(rbac::post_user).authorize(Action::PutUser))
                 // DELETE /user/{username} => Delete a user
                 .route(
                     web::delete()
@@ -217,6 +217,16 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                     web::get()
                         .to(rbac::get_role)
                         .authorize_for_user(Action::GetRole),
+                ),
+        )
+        .service(
+            web::resource("/{username}/generate-new-password")
+                // POST /user/{username}/generate-new-password => reset password for this user
+                .route(
+                    web::post()
+                        .to(rbac::post_gen_password)
+                        .authorize(Action::PutUser)
+                        .wrap(DisAllowRootUser),
                 ),
         );
     // Deny request if username is same as the env variable P_USERNAME.
