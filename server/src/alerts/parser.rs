@@ -75,7 +75,7 @@ fn parse_string_rule(input: &str) -> IResult<&str, CompositeRule> {
 }
 
 fn parse_identifier(input: &str) -> IResult<&str, &str> {
-    take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_' )(input)
+    take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_')(input)
 }
 
 fn parse_unary_expr(input: &str) -> IResult<&str, CompositeRule> {
