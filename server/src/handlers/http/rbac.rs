@@ -41,11 +41,9 @@ pub async fn list_users() -> impl Responder {
     web::Json(Users.list_users())
 }
 
-// Handler for PUT /api/v1/user/{username}
+// Handler for POST /api/v1/user/{username}
 // Creates a new user by username if it does not exists
-// Otherwise make a call to reset password
-// returns password generated for this user
-pub async fn put_user(
+pub async fn post_user(
     username: web::Path<String>,
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
@@ -53,25 +51,49 @@ pub async fn put_user(
     validator::user_name(&username)?;
     let _ = UPDATE_LOCK.lock().await;
     if Users.contains(&username) {
-        reset_password(username).await
-    } else {
-        let mut metadata = get_metadata().await?;
-        if metadata.users.iter().any(|user| user.username == username) {
-            // should be unreachable given state is always consistent
-            return Err(RBACError::UserExists);
-        }
-        let (user, password) = User::create_new(username.clone());
-        metadata.users.push(user.clone());
-        put_metadata(&metadata).await?;
-        // set this user to user map
-        Users.put_user(user);
-
-        if let Some(body) = body {
-            put_role(web::Path::<String>::from(username), body).await?;
-        }
-
-        Ok(password)
+        return Err(RBACError::UserExists);
     }
+    let mut metadata = get_metadata().await?;
+    if metadata.users.iter().any(|user| user.username == username) {
+        // should be unreachable given state is always consistent
+        return Err(RBACError::UserExists);
+    }
+    let (user, password) = User::create_new(username.clone());
+    metadata.users.push(user.clone());
+    put_metadata(&metadata).await?;
+    // set this user to user map
+    Users.put_user(user);
+
+    if let Some(body) = body {
+        put_role(web::Path::<String>::from(username), body).await?;
+    }
+
+    Ok(password)
+}
+
+// Handler for POST /api/v1/user/{username}/generate-new-password
+// Resets password for the user to a newly generated one and returns it
+pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Responder, RBACError> {
+    let username = username.into_inner();
+    let _ = UPDATE_LOCK.lock().await;
+    if !Users.contains(&username) {
+        return Err(RBACError::UserDoesNotExist);
+    }
+    let PassCode { password, hash } = User::gen_new_password();
+    let mut metadata = get_metadata().await?;
+    if let Some(user) = metadata
+        .users
+        .iter_mut()
+        .find(|user| user.username == username)
+    {
+        user.password_hash.clone_from(&hash);
+    } else {
+        // should be unreachable given state is always consistent
+        return Err(RBACError::UserDoesNotExist);
+    }
+    put_metadata(&metadata).await?;
+    Users.change_password_hash(&username, &hash);
+    Ok(password)
 }
 
 // Handler for GET /api/v1/user/{username}/role
@@ -99,30 +121,6 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     // update in mem table
     Users.delete_user(&username);
     Ok(format!("deleted user: {username}"))
-}
-
-// Reset password for given username
-// returns new password generated for this user
-pub async fn reset_password(username: String) -> Result<String, RBACError> {
-    // generate new password for this user
-    let PassCode { password, hash } = User::gen_new_password();
-    // update parseable.json first
-    let mut metadata = get_metadata().await?;
-    if let Some(user) = metadata
-        .users
-        .iter_mut()
-        .find(|user| user.username == username)
-    {
-        user.password_hash.clone_from(&hash);
-    } else {
-        // should be unreachable given state is always consistent
-        return Err(RBACError::UserDoesNotExist);
-    }
-    put_metadata(&metadata).await?;
-
-    // update in mem table
-    Users.change_password_hash(&username, &hash);
-    Ok(password)
 }
 
 // Put roles for given user
