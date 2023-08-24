@@ -25,7 +25,7 @@ use datafusion::datasource::object_store::{
 use datafusion::execution::runtime_env::RuntimeConfig;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
-use object_store::aws::{AmazonS3, AmazonS3Builder, Checksum};
+use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
 use object_store::{ClientOptions, ObjectStore};
@@ -46,6 +46,7 @@ use super::{object_storage, ObjectStorageProvider};
 // in bytes
 const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const CONNECT_TIMEOUT_SECS: u64 = 5;
+const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -150,6 +151,13 @@ impl S3Config {
             builder = builder
                 .with_access_key_id(access_key)
                 .with_secret_access_key(secret_key);
+        }
+
+        if let Ok(relative_uri) = std::env::var(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI) {
+            builder = builder.with_config(
+                AmazonS3ConfigKey::ContainerCredentialsRelativeUri,
+                relative_uri,
+            );
         }
 
         if self.imdsv1_fallback {
