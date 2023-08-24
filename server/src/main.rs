@@ -39,6 +39,7 @@ mod handlers;
 mod metadata;
 mod metrics;
 mod migration;
+mod oidc;
 mod option;
 mod query;
 mod rbac;

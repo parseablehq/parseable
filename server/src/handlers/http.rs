@@ -16,11 +16,14 @@
  *
  */
 
-use std::fs::File;
 use std::io::BufReader;
+use std::{fs::File, sync::Arc};
 
 use actix_cors::Cors;
-use actix_web::{web, App, HttpServer};
+use actix_web::{
+    web::{self, resource},
+    App, HttpServer,
+};
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use rustls::{Certificate, PrivateKey, ServerConfig};
@@ -37,6 +40,7 @@ mod ingest;
 mod llm;
 mod logstream;
 mod middleware;
+pub mod oidc;
 mod query;
 mod rbac;
 
@@ -46,12 +50,17 @@ const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 const API_BASE_PATH: &str = "/api";
 const API_VERSION: &str = "v1";
 
-#[macro_export]
-macro_rules! create_app {
-    ($prometheus: expr) => {
+pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
+    let oidc_client =
+        crate::oidc::get_oidc_client(&CONFIG, &format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
+            .await
+            .transpose()?
+            .map(Arc::new);
+
+    let create_app = move || {
         App::new()
-            .wrap($prometheus.clone())
-            .configure(|cfg| configure_routes(cfg))
+            .wrap(prometheus.clone())
+            .configure(|cfg| configure_routes(cfg, oidc_client.clone()))
             .wrap(actix_web::middleware::Logger::default())
             .wrap(actix_web::middleware::Compress::default())
             .wrap(
@@ -61,9 +70,7 @@ macro_rules! create_app {
                     .allow_any_origin(),
             )
     };
-}
 
-pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
     let ssl_acceptor = match (
         &CONFIG.parseable.tls_cert_path,
         &CONFIG.parseable.tls_key_path,
@@ -99,7 +106,7 @@ pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
     };
 
     // concurrent workers equal to number of cores on the cpu
-    let http_server = HttpServer::new(move || create_app!(prometheus)).workers(num_cpus::get());
+    let http_server = HttpServer::new(create_app).workers(num_cpus::get());
     if let Some(config) = ssl_acceptor {
         http_server
             .bind_rustls(&CONFIG.parseable.address, config)?
@@ -112,7 +119,7 @@ pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn configure_routes(cfg: &mut web::ServiceConfig) {
+pub fn configure_routes(cfg: &mut web::ServiceConfig, oidc_client: Option<Arc<openid::Client>>) {
     let generated = generate();
 
     //log stream API
@@ -239,6 +246,14 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         ),
     );
 
+    let mut oauth_api = web::scope("/o")
+        .service(resource("/login").route(web::get().to(oidc::login)))
+        .service(resource("/code").route(web::get().to(oidc::reply_login)));
+
+    if let Some(client) = oidc_client {
+        oauth_api = oauth_api.app_data(web::Data::from(client))
+    }
+
     // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(
         // Base path "{url}/api/v1"
@@ -280,7 +295,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                     ),
             )
             .service(user_api)
-            .service(llm_query_api),
+            .service(llm_query_api)
+            .service(oauth_api),
     )
     // GET "/" ==> Serve the static frontend directory
     .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());

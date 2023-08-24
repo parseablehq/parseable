@@ -23,6 +23,7 @@ use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use url::Url;
 
 use crate::storage::{FSConfig, ObjectStorageProvider, S3Config, LOCAL_SYNC_INTERVAL};
 use crate::utils::validate_path_is_writeable;
@@ -186,6 +187,17 @@ pub struct Server {
 
     /// Open AI access key
     pub open_ai_key: Option<String>,
+    /// OpenID Connect Client ID
+    pub openid_client_id: Option<String>,
+
+    /// OpenID Connect Client Secret
+    pub openid_client_secret: Option<String>,
+
+    /// OIDC Provider base endpoint to connect to
+    pub openid_issuer: Option<Url>,
+
+    /// OIDC Provider base endpoint to connect to
+    pub openid_redirect_uri: Option<Url>,
 
     /// Rows in Parquet Rowgroup
     pub row_group_size: usize,
@@ -207,6 +219,11 @@ impl FromArgMatches for Server {
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
+        self.openid_client_id = m.get_one::<String>(Self::OPENID_CLIENT_ID).cloned();
+        self.openid_client_secret = m.get_one::<String>(Self::OPENID_CLIENT_SECRET).cloned();
+        self.openid_issuer = m.get_one::<Url>(Self::OPENID_ISSUER).cloned();
+        self.openid_redirect_uri = m.get_one::<Url>(Self::REDIRECT_URI).cloned();
+
         self.address = m
             .get_one::<String>(Self::ADDRESS)
             .cloned()
@@ -276,6 +293,11 @@ impl Server {
     pub const CHECK_UPDATE: &str = "check-update";
     pub const SEND_ANALYTICS: &str = "send-analytics";
     pub const OPEN_AI_KEY: &str = "open-ai-key";
+    pub const OPENID_CLIENT_ID: &str = "oidc-client";
+    pub const OPENID_CLIENT_SECRET: &str = "oidc-client-secret";
+    pub const OPENID_ISSUER: &str = "oidc-issuer";
+    // todo : what should this flag be
+    pub const REDIRECT_URI: &str = "oidc-origin";
     pub const QUERY_MEM_POOL_SIZE: &str = "query-mempool-size";
     pub const ROW_GROUP_SIZE: &str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &str = "compression-algo";
@@ -385,6 +407,50 @@ impl Server {
                     .help("Disable/Enable checking for updates"),
             )
             .arg(
+                Arg::new(Self::SEND_ANALYTICS)
+                    .long(Self::SEND_ANALYTICS)
+                    .env("P_SEND_ANONYMOUS_USAGE_DATA")
+                    .value_name("BOOL")
+                    .required(false)
+                    .default_value("true")
+                    .value_parser(value_parser!(bool))
+                    .help("Disable/Enable sending anonymous user data"),
+            )
+            .arg(
+                Arg::new(Self::OPENID_CLIENT_ID)
+                    .long(Self::OPENID_CLIENT_ID)
+                    .env("P_OIDC_CLIENT_ID")
+                    .value_name("STRING")
+                    .required(false)
+                    .help("Set client id for oidc provider"),
+            )
+            .arg(
+                Arg::new(Self::OPENID_CLIENT_SECRET)
+                    .long(Self::OPENID_CLIENT_SECRET)
+                    .env("P_OIDC_CLIENT_SECRET")
+                    .value_name("STRING")
+                    .required(false)
+                    .help("Set client secret for oidc provider"),
+            )
+            .arg(
+                Arg::new(Self::OPENID_ISSUER)
+                    .long(Self::OPENID_ISSUER)
+                    .env("P_OIDC_ISSUER")
+                    .value_name("URl")
+                    .required(false)
+                    .value_parser(validation::url)
+                    .help("Set OIDC provider's host address."),
+            )
+            .arg(
+                Arg::new(Self::REDIRECT_URI)
+                    .long(Self::REDIRECT_URI)
+                    .env("P_OIDC_REDIRECT_URI")
+                    .value_name("URl")
+                    .required(false)
+                    .value_parser(validation::url)
+                    .help("Set host address for oidc"),
+            )
+            .arg(
                 Arg::new(Self::QUERY_MEM_POOL_SIZE)
                     .long(Self::QUERY_MEM_POOL_SIZE)
                     .env("P_QUERY_MEMORY_LIMIT")
@@ -487,5 +553,9 @@ pub mod validation {
             .is_ok()
             .then_some(s.to_string())
             .ok_or_else(|| "Socket Address for server is invalid".to_string())
+    }
+
+    pub fn url(s: &str) -> Result<url::Url, String> {
+        url::Url::parse(s).map_err(|_| "Invalid URL provided".to_string())
     }
 }
