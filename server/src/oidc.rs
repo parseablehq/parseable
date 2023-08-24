@@ -20,21 +20,28 @@ use openid::DiscoveredClient;
 
 use crate::option::Config;
 
+/// Create a new oidc client from server configuration.
+/// redirect_suffix
 pub async fn get_oidc_client(
     config: &Config,
     redirect_suffix: &str,
 ) -> Option<Result<openid::Client, openid::error::Error>> {
-    if let (Some(id), Some(secret), Some(issuer), Some(redirect)) = (
-        config.parseable.openid_client_id.to_owned(),
-        config.parseable.openid_client_secret.to_owned(),
-        config.parseable.openid_issuer.to_owned(),
-        config
-            .parseable
-            .openid_redirect_uri
-            .to_owned()
-            .and_then(|url| url.join(redirect_suffix).ok()),
-    ) {
-        Some(DiscoveredClient::discover(id, secret, redirect.to_string(), issuer).await)
+    let id = config.parseable.openid_client_id.to_owned();
+    let secret = config.parseable.openid_client_secret.to_owned();
+    let issuer = config.parseable.openid_issuer.to_owned();
+    let redirect_uri = config
+        .parseable
+        .domain_address
+        .to_owned()
+        .map(|url| url.join(redirect_suffix).expect("valid suffix"))
+        .unwrap_or_else(|| {
+            let socket_addr = config.parseable.address.clone();
+            let host = config.parseable.get_scheme();
+            url::Url::parse(&format!("{host}://{socket_addr}")).expect("valid url")
+        });
+
+    if let (Some(id), Some(secret), Some(issuer)) = (id, secret, issuer) {
+        Some(DiscoveredClient::discover(id, secret, redirect_uri.to_string(), issuer).await)
     } else {
         None
     }

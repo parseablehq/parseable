@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use actix_web::{
-    cookie::{time, Cookie},
+    cookie::{time, Cookie, SameSite},
     http::header,
     web::{self, Data},
     HttpResponse,
@@ -32,12 +32,16 @@ use url::Url;
 
 use crate::{option::CONFIG, utils::uid};
 
+/// Struct representing query params returned from oidc provider
 #[derive(Deserialize, Debug)]
 pub struct Login {
     pub code: String,
     pub state: Option<String>,
 }
 
+/// Struct representing query param when visiting /login
+/// Caller can set the state for code auth flow and this is
+/// at the end used as target for redirect
 #[derive(Deserialize, Debug)]
 pub struct RedirectAfterLogin {
     pub redirect: Url,
@@ -90,6 +94,7 @@ pub async fn reply_login(
             let authorization_cookie = Cookie::build("session", id)
                 .http_only(true)
                 .max_age(time::Duration::days(1))
+                .same_site(SameSite::Strict)
                 .path("/")
                 .finish();
 

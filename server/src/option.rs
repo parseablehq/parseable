@@ -165,6 +165,10 @@ pub struct Server {
     /// The address on which the http server will listen.
     pub address: String,
 
+    /// Base domain under which server is hosted.
+    /// This information is used by OIDC to refer redirects
+    pub domain_address: Option<Url>,
+
     /// The local staging path is used as a temporary landing point
     /// for incoming events and local cache
     pub local_staging_path: PathBuf,
@@ -196,9 +200,6 @@ pub struct Server {
     /// OIDC Provider base endpoint to connect to
     pub openid_issuer: Option<Url>,
 
-    /// OIDC Provider base endpoint to connect to
-    pub openid_redirect_uri: Option<Url>,
-
     /// Rows in Parquet Rowgroup
     pub row_group_size: usize,
 
@@ -219,10 +220,10 @@ impl FromArgMatches for Server {
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
+        self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
         self.openid_client_id = m.get_one::<String>(Self::OPENID_CLIENT_ID).cloned();
         self.openid_client_secret = m.get_one::<String>(Self::OPENID_CLIENT_SECRET).cloned();
         self.openid_issuer = m.get_one::<Url>(Self::OPENID_ISSUER).cloned();
-        self.openid_redirect_uri = m.get_one::<Url>(Self::REDIRECT_URI).cloned();
 
         self.address = m
             .get_one::<String>(Self::ADDRESS)
@@ -286,6 +287,7 @@ impl Server {
     pub const TLS_CERT: &str = "tls-cert-path";
     pub const TLS_KEY: &str = "tls-key-path";
     pub const ADDRESS: &str = "address";
+    pub const DOMAIN_URI: &str = "origin";
     pub const STAGING: &str = "local-staging-path";
     pub const UPLOAD_INTERVAL: &str = "upload-interval";
     pub const USERNAME: &str = "username";
@@ -297,7 +299,6 @@ impl Server {
     pub const OPENID_CLIENT_SECRET: &str = "oidc-client-secret";
     pub const OPENID_ISSUER: &str = "oidc-issuer";
     // todo : what should this flag be
-    pub const REDIRECT_URI: &str = "oidc-origin";
     pub const QUERY_MEM_POOL_SIZE: &str = "query-mempool-size";
     pub const ROW_GROUP_SIZE: &str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &str = "compression-algo";
@@ -442,13 +443,13 @@ impl Server {
                     .help("Set OIDC provider's host address."),
             )
             .arg(
-                Arg::new(Self::REDIRECT_URI)
-                    .long(Self::REDIRECT_URI)
-                    .env("P_OIDC_REDIRECT_URI")
-                    .value_name("URl")
+                Arg::new(Self::DOMAIN_URI)
+                    .long(Self::DOMAIN_URI)
+                    .env("P_ORIGIN_URI")
+                    .value_name("URL")
                     .required(false)
                     .value_parser(validation::url)
-                    .help("Set host address for oidc"),
+                    .help("Set host global domain address"),
             )
             .arg(
                 Arg::new(Self::QUERY_MEM_POOL_SIZE)
