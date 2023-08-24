@@ -46,6 +46,7 @@ use super::{object_storage, ObjectStorageProvider};
 // in bytes
 const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const CONNECT_TIMEOUT_SECS: u64 = 5;
+const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -152,7 +153,7 @@ impl S3Config {
                 .with_secret_access_key(secret_key);
         }
 
-        if let Ok(relative_uri) = std::env::var("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") {
+        if let Ok(relative_uri) = std::env::var(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI) {
             builder = builder.with_config(
                 AmazonS3ConfigKey::ContainerCredentialsRelativeUri,
                 relative_uri,
