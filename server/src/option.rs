@@ -17,7 +17,7 @@
  */
 
 use clap::error::ErrorKind;
-use clap::{command, value_parser, Arg, Args, Command, FromArgMatches};
+use clap::{command, value_parser, Arg, ArgGroup, Args, Command, FromArgMatches};
 
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use url::Url;
 
+use crate::oidc::{self, OpenidConfig};
 use crate::storage::{FSConfig, ObjectStorageProvider, S3Config, LOCAL_SYNC_INTERVAL};
 use crate::utils::validate_path_is_writeable;
 
@@ -183,6 +184,9 @@ pub struct Server {
     /// Password for the basic authentication on the server
     pub password: String,
 
+    /// OpenId configuration
+    pub openid: Option<oidc::OpenidConfig>,
+
     /// Server should check for update or not
     pub check_update: bool,
 
@@ -221,9 +225,9 @@ impl FromArgMatches for Server {
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
-        self.openid_client_id = m.get_one::<String>(Self::OPENID_CLIENT_ID).cloned();
-        self.openid_client_secret = m.get_one::<String>(Self::OPENID_CLIENT_SECRET).cloned();
-        self.openid_issuer = m.get_one::<Url>(Self::OPENID_ISSUER).cloned();
+        let openid_client_id = m.get_one::<String>(Self::OPENID_CLIENT_ID).cloned();
+        let openid_client_secret = m.get_one::<String>(Self::OPENID_CLIENT_SECRET).cloned();
+        let openid_issuer = m.get_one::<Url>(Self::OPENID_ISSUER).cloned();
 
         self.address = m
             .get_one::<String>(Self::ADDRESS)
@@ -276,6 +280,26 @@ impl FromArgMatches for Server {
             "lz4" => Compression::LZ4,
             "zstd" => Compression::ZSTD,
             _ => unreachable!(),
+        };
+
+        self.openid = match (openid_client_id, openid_client_secret, openid_issuer) {
+            (Some(id), Some(secret), Some(issuer)) => {
+                let origin = if let Some(url) = self.domain_address.clone() {
+                    oidc::Origin::Production(url)
+                } else {
+                    oidc::Origin::Local {
+                        socket_addr: self.address.clone(),
+                        https: self.tls_cert_path.is_some() && self.tls_key_path.is_some(),
+                    }
+                };
+                Some(OpenidConfig {
+                    id,
+                    secret,
+                    issuer,
+                    origin,
+                })
+            }
+            _ => None,
         };
 
         Ok(())
@@ -486,7 +510,11 @@ impl Server {
                         "lz4",
                         "zstd"])
                     .help("Parquet compression algorithm"),
-            )
+            ).group(
+                ArgGroup::new("oidc")
+                    .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
+                    .requires_all([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
+        )
     }
 }
 

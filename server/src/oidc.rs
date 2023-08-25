@@ -17,32 +17,44 @@
  */
 
 use openid::DiscoveredClient;
+use url::Url;
 
-use crate::option::Config;
+// If domain is not configured then
+// we can assume running in a development mode or private environment
+#[derive(Debug, Clone)]
+pub enum Origin {
+    // socket address
+    Local { socket_addr: String, https: bool },
+    // domain url
+    Production(Url),
+}
 
-/// Create a new oidc client from server configuration.
-/// redirect_suffix
-pub async fn get_oidc_client(
-    config: &Config,
-    redirect_suffix: &str,
-) -> Option<Result<openid::Client, openid::error::Error>> {
-    let id = config.parseable.openid_client_id.to_owned();
-    let secret = config.parseable.openid_client_secret.to_owned();
-    let issuer = config.parseable.openid_issuer.to_owned();
-    let redirect_uri = config
-        .parseable
-        .domain_address
-        .to_owned()
-        .map(|url| url.join(redirect_suffix).expect("valid suffix"))
-        .unwrap_or_else(|| {
-            let socket_addr = config.parseable.address.clone();
-            let host = config.parseable.get_scheme();
-            url::Url::parse(&format!("{host}://{socket_addr}")).expect("valid url")
-        });
+/// Configuration for OpenID Connect
+#[derive(Debug, Clone)]
+pub struct OpenidConfig {
+    /// Client id
+    pub id: String,
+    /// Client Secret
+    pub secret: String,
+    /// OP host address over which discovery can be done
+    pub issuer: Url,
+    /// Current client host address which will be used for redirects  
+    pub origin: Origin,
+}
 
-    if let (Some(id), Some(secret), Some(issuer)) = (id, secret, issuer) {
-        Some(DiscoveredClient::discover(id, secret, redirect_uri.to_string(), issuer).await)
-    } else {
-        None
+impl OpenidConfig {
+    /// Create a new oidc client from server configuration.
+    /// redirect_suffix
+    pub async fn connect(self, redirect_to: &str) -> Result<openid::Client, openid::error::Error> {
+        let redirect_uri = match self.origin {
+            Origin::Local { socket_addr, https } => {
+                let protocol = if https { "https" } else { "http" };
+                url::Url::parse(&format!("{protocol}://{socket_addr}")).expect("valid url")
+            }
+            Origin::Production(url) => url.join(redirect_to).expect("valid suffix"),
+        };
+
+        DiscoveredClient::discover(self.id, self.secret, redirect_uri.to_string(), self.issuer)
+            .await
     }
 }

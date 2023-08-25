@@ -16,8 +16,9 @@
  *
  */
 
+use std::fs::File;
 use std::io::BufReader;
-use std::{fs::File, sync::Arc};
+use std::sync::Arc;
 
 use actix_cors::Cors;
 use actix_web::{
@@ -50,12 +51,19 @@ const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 const API_BASE_PATH: &str = "/api";
 const API_VERSION: &str = "v1";
 
-pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
-    let oidc_client =
-        crate::oidc::get_oidc_client(&CONFIG, &format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
-            .await
-            .transpose()?
-            .map(Arc::new);
+pub async fn run_http(
+    prometheus: PrometheusMetrics,
+    oidc_client: Option<crate::oidc::OpenidConfig>,
+) -> anyhow::Result<()> {
+    let oidc_client = match oidc_client {
+        Some(config) => {
+            let client = config
+                .connect(&format!("{API_VERSION}/{API_VERSION}/o/code"))
+                .await?;
+            Some(Arc::new(client))
+        }
+        None => None,
+    };
 
     let create_app = move || {
         App::new()

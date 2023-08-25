@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
         analytics::init_analytics_scheduler().await;
     }
 
-    let app = handlers::http::run_http(prometheus);
+    let app = handlers::http::run_http(prometheus, CONFIG.parseable.openid.clone());
     tokio::pin!(app);
     loop {
         tokio::select! {
