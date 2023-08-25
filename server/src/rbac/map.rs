@@ -24,38 +24,39 @@ use super::{
     role::{Action, Permission},
     user,
 };
+use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-pub static USER_MAP: OnceCell<RwLock<UserMap>> = OnceCell::new();
-pub static AUTH_MAP: OnceCell<RwLock<AuthMap>> = OnceCell::new();
+pub static USERS: OnceCell<RwLock<Users>> = OnceCell::new();
+pub static SESSIONS: OnceCell<RwLock<Sessions>> = OnceCell::new();
 
-pub fn user_map() -> RwLockReadGuard<'static, UserMap> {
-    USER_MAP
+pub fn users() -> RwLockReadGuard<'static, Users> {
+    USERS
         .get()
         .expect("map is set")
         .read()
         .expect("not poisoned")
 }
 
-pub fn mut_user_map() -> RwLockWriteGuard<'static, UserMap> {
-    USER_MAP
+pub fn mut_users() -> RwLockWriteGuard<'static, Users> {
+    USERS
         .get()
         .expect("map is set")
         .write()
         .expect("not poisoned")
 }
 
-pub fn auth_map() -> RwLockReadGuard<'static, AuthMap> {
-    AUTH_MAP
+pub fn sessions() -> RwLockReadGuard<'static, Sessions> {
+    SESSIONS
         .get()
         .expect("map is set")
         .read()
         .expect("not poisoned")
 }
 
-pub fn mut_auth_map() -> RwLockWriteGuard<'static, AuthMap> {
-    AUTH_MAP
+pub fn mut_sessions() -> RwLockWriteGuard<'static, Sessions> {
+    SESSIONS
         .get()
         .expect("map is set")
         .write()
@@ -66,61 +67,101 @@ pub fn mut_auth_map() -> RwLockWriteGuard<'static, AuthMap> {
 // the user_map is initialized from the config file and has a list of all users
 // the auth_map is initialized with admin user only and then gets lazily populated
 // as users authenticate
-pub fn init_auth_maps(users: Vec<User>) {
-    let mut user_map = UserMap::from(users);
-    let mut auth_map = AuthMap::default();
+pub fn init(users: Vec<User>) {
+    let mut users = Users::from(users);
+    let mut sessions = Sessions::default();
+
     let admin = user::get_admin_user();
     let admin_permissions = admin.permissions();
-    user_map.insert(admin);
-    auth_map.add_user(
-        CONFIG.parseable.username.clone(),
-        CONFIG.parseable.password.clone(),
+
+    sessions.track_new(
+        admin.username().to_owned(),
+        SessionKey::BasicAuth {
+            username: CONFIG.parseable.username.clone(),
+            password: CONFIG.parseable.password.clone(),
+        },
+        chrono::DateTime::<Utc>::MAX_UTC,
         admin_permissions,
     );
+    users.insert(admin);
 
-    USER_MAP
-        .set(RwLock::new(user_map))
-        .expect("map is only set once");
-    AUTH_MAP
-        .set(RwLock::new(auth_map))
+    USERS.set(RwLock::new(users)).expect("map is only set once");
+    SESSIONS
+        .set(RwLock::new(sessions))
         .expect("map is only set once");
 }
 
-// AuthMap is a map of [(username, password) --> permissions]
-// This map is populated lazily as users send auth requests.
-// First auth request for a user will populate the map with
-// the user info (password and permissions) and subsequent
-// requests will check the map for the user.
-// If user is present in the map then we use this map for both
-// authentication and authorization.
+// A session is loosly active mapping to permissions
+// this is lazily initialized and
+// cleanup of unused session is done when a new session is added
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum SessionKey {
+    BasicAuth { username: String, password: String },
+    SessionId(ulid::Ulid),
+}
+
 #[derive(Debug, Default)]
-pub struct AuthMap {
-    inner: HashMap<(String, String), Vec<Permission>>,
+pub struct Sessions {
+    // map session key to perms
+    active_sessions: HashMap<SessionKey, Vec<Permission>>,
+    // map user to one or more session
+    // this tracks session based on session id. Not basic auth
+    // Ulid time contains expiration datetime
+    user_sessions: HashMap<String, Vec<(SessionKey, DateTime<Utc>)>>,
 }
 
-impl AuthMap {
-    pub fn add_user(&mut self, username: String, password: String, permissions: Vec<Permission>) {
-        self.inner.insert((username, password), permissions);
+impl Sessions {
+    // track new session key
+    pub fn track_new(
+        &mut self,
+        user: String,
+        key: SessionKey,
+        expiry: DateTime<Utc>,
+        permissions: Vec<Permission>,
+    ) {
+        self.user_sessions
+            .entry(user)
+            .and_modify(|sessions| sessions.push((key.clone(), expiry)))
+            .or_default();
+        self.active_sessions.insert(key, permissions);
     }
 
-    pub fn remove(&mut self, username: &str) {
-        self.inner.retain(|(x, _), _| x != username)
+    // remove a specific session
+    pub fn remove_session(&mut self, key: &SessionKey) {
+        self.active_sessions.remove(key);
     }
 
-    pub fn get(&self, key: &(String, String)) -> Option<&Vec<Permission>> {
-        self.inner.get(key)
+    // remove sessions related to a user
+    pub fn remove_user(&mut self, username: &str) {
+        let sessions = self.user_sessions.remove(username);
+        if let Some(sessions) = sessions {
+            sessions.into_iter().for_each(|(key, _)| {
+                self.active_sessions.remove(&key);
+            })
+        }
+    }
+
+    fn remove_expired_session(&mut self, user: &str) {
+        let now = Utc::now();
+        let Some(sessions) = self.user_sessions.get_mut(user) else {return;};
+        sessions.retain(|(_, expiry)| expiry < &now);
+    }
+
+    // get permission related to this session
+    pub fn get(&self, key: &SessionKey) -> Option<&Vec<Permission>> {
+        self.active_sessions.get(key)
     }
 
     // returns None if user is not in the map
     // Otherwise returns Some(is_authenticated)
     pub fn check_auth(
         &self,
-        key: &(String, String),
+        key: &SessionKey,
         required_action: Action,
         context_stream: Option<&str>,
         context_user: Option<&str>,
     ) -> Option<bool> {
-        self.inner.get(key).map(|perms| {
+        self.active_sessions.get(key).map(|perms| {
             perms.iter().any(|user_perm| {
                 match *user_perm {
                     // if any action is ALL then we we authorize
@@ -135,10 +176,14 @@ impl AuthMap {
                         };
                         (action == required_action || action == Action::All) && ok_stream
                     }
-                    Permission::SelfRole => {
-                        context_user.map(|x| x == key.0).unwrap_or_default()
-                            && required_action == Action::GetRole
+                    Permission::SelfRole if required_action == Action::GetRole => {
+                        // session user is same as defined in request context
+                        context_user
+                            .and_then(|user| self.user_sessions.get(user))
+                            .map(|sessions| sessions.iter().any(|(session, _)| session == key))
+                            .unwrap_or_default()
                     }
+                    _ => false,
                 }
             })
         })
@@ -148,18 +193,22 @@ impl AuthMap {
 // UserMap is a map of [username --> User]
 // This map is populated at startup with the list of users from parseable.json file
 #[derive(Debug, Default, Clone, derive_more::Deref, derive_more::DerefMut)]
-pub struct UserMap(HashMap<String, User>);
+pub struct Users(HashMap<String, User>);
 
-impl UserMap {
+impl Users {
     pub fn insert(&mut self, user: User) {
-        self.0.insert(user.username.clone(), user);
+        self.0.insert(user.username().to_owned(), user);
     }
 }
 
-impl From<Vec<User>> for UserMap {
+impl From<Vec<User>> for Users {
     fn from(users: Vec<User>) -> Self {
         let mut map = Self::default();
-        map.extend(users.into_iter().map(|user| (user.username.clone(), user)));
+        map.extend(
+            users
+                .into_iter()
+                .map(|user| (user.username().to_owned(), user)),
+        );
         map
     }
 }

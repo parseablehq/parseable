@@ -29,35 +29,48 @@ use crate::option::CONFIG;
 
 use crate::rbac::role::{model::DefaultPrivilege, Permission, RoleBuilder};
 
-// Represents a User in the system
-// can be the root admin user (set with env vars at startup / restart)
-// or user(s) created by the root user
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum UserType {
+    Native(Basic),
+    OAuth(OAuth),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct User {
-    pub username: String,
-    pub password_hash: String,
+    #[serde(flatten)]
+    pub ty: UserType,
     pub role: Vec<DefaultPrivilege>,
 }
 
 impl User {
     // create a new User and return self with password generated for said user.
-    pub fn create_new(username: String) -> (Self, String) {
-        let PassCode { password, hash } = Self::gen_new_password();
+    pub fn new_basic(username: String) -> (Self, String) {
+        let PassCode { password, hash } = Basic::gen_new_password();
         (
             Self {
-                username,
-                password_hash: hash,
+                ty: UserType::Native(Basic {
+                    username,
+                    password_hash: hash,
+                }),
                 role: Vec::new(),
             },
             password,
         )
     }
 
-    // generate a new password
-    pub fn gen_new_password() -> PassCode {
-        let password = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
-        let hash = gen_hash(&password);
-        PassCode { password, hash }
+    pub fn new_oauth(username: String) -> Self {
+        Self {
+            ty: UserType::OAuth(OAuth { username }),
+            role: Vec::new(),
+        }
+    }
+
+    pub fn username(&self) -> &str {
+        match self.ty {
+            UserType::Native(Basic { ref username, .. }) => username,
+            UserType::OAuth(OAuth { ref username }) => username,
+        }
     }
 
     pub fn permissions(&self) -> Vec<Permission> {
@@ -67,6 +80,24 @@ impl User {
             .flat_map(|role| RoleBuilder::from(role).build())
             .collect();
         perms.into_iter().collect()
+    }
+}
+
+// Represents a User in the system
+// can be the root admin user (set with env vars at startup / restart)
+// or user(s) created by the root user
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Basic {
+    pub username: String,
+    pub password_hash: String,
+}
+
+impl Basic {
+    // generate a new password
+    pub fn gen_new_password() -> PassCode {
+        let password = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let hash = gen_hash(&password);
+        PassCode { password, hash }
     }
 
     pub fn verify_password(&self, password: &str) -> bool {
@@ -108,8 +139,15 @@ pub fn get_admin_user() -> User {
     let hashcode = gen_hash(&password);
 
     User {
-        username,
-        password_hash: hashcode,
+        ty: UserType::Native(Basic {
+            username,
+            password_hash: hashcode,
+        }),
         role: vec![DefaultPrivilege::Admin],
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OAuth {
+    username: String,
 }

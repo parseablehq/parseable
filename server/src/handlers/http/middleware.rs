@@ -21,13 +21,17 @@ use std::future::{ready, Ready};
 
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
-    error::{ErrorBadRequest, ErrorUnauthorized},
+    error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
     Error, Route,
 };
-use actix_web_httpauth::extractors::basic::BasicAuth;
 use futures_util::future::LocalBoxFuture;
 
-use crate::{option::CONFIG, rbac::role::Action, rbac::Users};
+use crate::{
+    option::CONFIG,
+    rbac::Users,
+    rbac::{self, role::Action},
+    utils::actix::extract_session_key,
+};
 
 pub trait RouteExt {
     fn authorize(self, action: Action) -> Self;
@@ -61,7 +65,7 @@ impl RouteExt for Route {
 // Authentication Layer with no context
 pub struct Auth {
     pub action: Action,
-    pub method: fn(&mut ServiceRequest, Action) -> Result<bool, Error>,
+    pub method: fn(&mut ServiceRequest, Action) -> Result<rbac::Response, Error>,
 }
 
 impl<S, B> Transform<S, ServiceRequest> for Auth
@@ -87,7 +91,7 @@ where
 
 pub struct AuthMiddleware<S> {
     action: Action,
-    auth_method: fn(&mut ServiceRequest, Action) -> Result<bool, Error>,
+    auth_method: fn(&mut ServiceRequest, Action) -> Result<rbac::Response, Error>,
     service: S,
 }
 
@@ -104,44 +108,44 @@ where
     forward_ready!(service);
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
-        let auth_result: Result<bool, Error> = (self.auth_method)(&mut req, self.action);
+        let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
         let fut = self.service.call(req);
         Box::pin(async move {
-            if !auth_result? {
-                return Err(ErrorUnauthorized("Not authorized"));
+            match auth_result? {
+                rbac::Response::UnAuthorized => return Err(
+                    ErrorForbidden("You don't have permission to access this resource. Please contact your administrator for assistance.")
+                ),
+                rbac::Response::ReloadRequired => return Err(
+                    ErrorUnauthorized("Your session has expired or is no longer valid. Please re-authenticate to access this resource.")
+                ),
+                _ => {}
             }
             fut.await
         })
     }
 }
 
-pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<bool, Error> {
-    let creds = extract_basic_auth(req);
-    creds.map(|(username, password)| Users.authenticate(username, password, action, None, None))
+pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<rbac::Response, Error> {
+    let creds = extract_session_key(req);
+    creds.map(|key| Users.authenticate(key, action, None, None))
 }
 
-pub fn auth_stream_context(req: &mut ServiceRequest, action: Action) -> Result<bool, Error> {
-    let creds = extract_basic_auth(req);
+pub fn auth_stream_context(
+    req: &mut ServiceRequest,
+    action: Action,
+) -> Result<rbac::Response, Error> {
+    let creds = extract_session_key(req);
     let stream = req.match_info().get("logstream");
-    creds.map(|(username, password)| Users.authenticate(username, password, action, stream, None))
+    creds.map(|key| Users.authenticate(key, action, stream, None))
 }
 
-pub fn auth_user_context(req: &mut ServiceRequest, action: Action) -> Result<bool, Error> {
-    let creds = extract_basic_auth(req);
+pub fn auth_user_context(
+    req: &mut ServiceRequest,
+    action: Action,
+) -> Result<rbac::Response, Error> {
+    let creds = extract_session_key(req);
     let user = req.match_info().get("username");
-    creds.map(|(username, password)| Users.authenticate(username, password, action, None, user))
-}
-
-fn extract_basic_auth(req: &mut ServiceRequest) -> Result<(String, String), Error> {
-    // Extract username and password from the request using basic auth extractor.
-    let creds = req.extract::<BasicAuth>().into_inner();
-    creds.map_err(Into::into).map(|creds| {
-        let username = creds.user_id().trim().to_owned();
-        // password is not mandatory by basic auth standard.
-        // If not provided then treat as empty string
-        let password = creds.password().unwrap_or("").trim().to_owned();
-        (username, password)
-    })
+    creds.map(|key| Users.authenticate(key, action, None, user))
 }
 
 // The credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated

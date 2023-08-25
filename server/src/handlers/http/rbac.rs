@@ -20,11 +20,7 @@ use std::collections::HashSet;
 
 use crate::{
     option::CONFIG,
-    rbac::{
-        role::model::DefaultPrivilege,
-        user::{PassCode, User},
-        Users,
-    },
+    rbac::{role::model::DefaultPrivilege, user, Users},
     storage::{self, ObjectStorageError, StorageMetadata},
     validator::{self, error::UsernameValidationError},
 };
@@ -54,11 +50,15 @@ pub async fn post_user(
         return Err(RBACError::UserExists);
     }
     let mut metadata = get_metadata().await?;
-    if metadata.users.iter().any(|user| user.username == username) {
+    if metadata
+        .users
+        .iter()
+        .any(|user| user.username() == username)
+    {
         // should be unreachable given state is always consistent
         return Err(RBACError::UserExists);
     }
-    let (user, password) = User::create_new(username.clone());
+    let (user, password) = user::User::new_basic(username.clone());
     metadata.users.push(user.clone());
     put_metadata(&metadata).await?;
     // set this user to user map
@@ -76,19 +76,19 @@ pub async fn post_user(
 pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
-    if !Users.contains(&username) {
-        return Err(RBACError::UserDoesNotExist);
-    }
-    let PassCode { password, hash } = User::gen_new_password();
+    let user::PassCode { password, hash } = user::Basic::gen_new_password();
     let mut metadata = get_metadata().await?;
     if let Some(user) = metadata
         .users
         .iter_mut()
+        .filter_map(|user| match user.ty {
+            user::UserType::Native(ref mut user) => Some(user),
+            _ => None,
+        })
         .find(|user| user.username == username)
     {
         user.password_hash.clone_from(&hash);
     } else {
-        // should be unreachable given state is always consistent
         return Err(RBACError::UserDoesNotExist);
     }
     put_metadata(&metadata).await?;
@@ -102,7 +102,6 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
-
     Ok(web::Json(Users.get_role(&username)))
 }
 
@@ -116,7 +115,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     };
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
-    metadata.users.retain(|user| user.username != username);
+    metadata.users.retain(|user| user.username() != username);
     put_metadata(&metadata).await?;
     // update in mem table
     Users.delete_user(&username);
@@ -141,7 +140,7 @@ pub async fn put_role(
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username == username)
+        .find(|user| user.username() == username)
     {
         user.role.clone_from(&role);
     } else {

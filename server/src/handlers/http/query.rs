@@ -20,7 +20,6 @@ use actix_web::error::ErrorUnauthorized;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
-use actix_web_httpauth::extractors::basic::BasicAuth;
 use futures_util::Future;
 use http::StatusCode;
 use serde_json::Value;
@@ -36,6 +35,7 @@ use crate::query::Query;
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
+use crate::utils::actix::extract_session_key_from_req;
 
 pub async fn query(
     query: Query,
@@ -75,13 +75,8 @@ impl FromRequest for Query {
     type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
 
     fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
-        let creds = BasicAuth::extract(req)
-            .into_inner()
-            .expect("expects basic auth");
-        // Extract username and password from the request using basic auth extractor.
-        let username = creds.user_id().trim().to_owned();
-        let password = creds.password().unwrap_or("").trim().to_owned();
-        let permissions = Users.get_permissions(username, password);
+        let creds = extract_session_key_from_req(req).expect("expects basic auth");
+        let permissions = Users.get_permissions(&creds);
         let json = Json::<Value>::from_request(req, payload);
 
         let fut = async move {

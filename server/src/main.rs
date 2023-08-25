@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
     migration::run_metadata_migration(&CONFIG).await?;
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, &metadata).await;
-    rbac::map::init_auth_maps(metadata.users.clone());
+    rbac::map::init(metadata.users.clone());
     metadata.set_global();
     let prometheus = metrics::build_metrics_handler();
     CONFIG.storage().register_store_metrics(&prometheus);

@@ -16,6 +16,7 @@
  *
  */
 
+pub mod actix;
 pub mod arrow;
 pub mod header_parsing;
 pub mod json;
