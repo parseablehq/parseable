@@ -51,9 +51,10 @@ impl OpenidConfig {
                 let protocol = if https { "https" } else { "http" };
                 url::Url::parse(&format!("{protocol}://{socket_addr}")).expect("valid url")
             }
-            Origin::Production(url) => url.join(redirect_to).expect("valid suffix"),
+            Origin::Production(url) => url,
         };
 
+        let redirect_uri = redirect_uri.join(redirect_to).expect("valid suffix");
         DiscoveredClient::discover(self.id, self.secret, redirect_uri.to_string(), self.issuer)
             .await
     }

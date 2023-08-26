@@ -89,7 +89,7 @@ impl Users {
         sessions().get(session).cloned().unwrap_or_default()
     }
 
-    pub fn authenticate(
+    pub fn authorize(
         &self,
         key: SessionKey,
         action: Action,

@@ -127,7 +127,7 @@ where
 
 pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<rbac::Response, Error> {
     let creds = extract_session_key(req);
-    creds.map(|key| Users.authenticate(key, action, None, None))
+    creds.map(|key| Users.authorize(key, action, None, None))
 }
 
 pub fn auth_stream_context(
@@ -136,7 +136,7 @@ pub fn auth_stream_context(
 ) -> Result<rbac::Response, Error> {
     let creds = extract_session_key(req);
     let stream = req.match_info().get("logstream");
-    creds.map(|key| Users.authenticate(key, action, stream, None))
+    creds.map(|key| Users.authorize(key, action, stream, None))
 }
 
 pub fn auth_user_context(
@@ -145,7 +145,7 @@ pub fn auth_user_context(
 ) -> Result<rbac::Response, Error> {
     let creds = extract_session_key(req);
     let user = req.match_info().get("username");
-    creds.map(|key| Users.authenticate(key, action, None, user))
+    creds.map(|key| Users.authorize(key, action, None, user))
 }
 
 // The credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated

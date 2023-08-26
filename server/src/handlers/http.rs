@@ -58,7 +58,7 @@ pub async fn run_http(
     let oidc_client = match oidc_client {
         Some(config) => {
             let client = config
-                .connect(&format!("{API_VERSION}/{API_VERSION}/o/code"))
+                .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
                 .await?;
             Some(Arc::new(client))
         }

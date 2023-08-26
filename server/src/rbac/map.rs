@@ -102,8 +102,8 @@ pub enum SessionKey {
 
 #[derive(Debug, Default)]
 pub struct Sessions {
-    // map session key to perms
-    active_sessions: HashMap<SessionKey, Vec<Permission>>,
+    // map session key to user and their permission
+    active_sessions: HashMap<SessionKey, (String, Vec<Permission>)>,
     // map user to one or more session
     // this tracks session based on session id. Not basic auth
     // Ulid time contains expiration datetime
@@ -120,15 +120,19 @@ impl Sessions {
         permissions: Vec<Permission>,
     ) {
         self.user_sessions
-            .entry(user)
+            .entry(user.clone())
             .and_modify(|sessions| sessions.push((key.clone(), expiry)))
             .or_default();
-        self.active_sessions.insert(key, permissions);
+        self.active_sessions.insert(key, (user, permissions));
     }
 
     // remove a specific session
     pub fn remove_session(&mut self, key: &SessionKey) {
-        self.active_sessions.remove(key);
+        if let Some((user, _)) = self.active_sessions.remove(key) {
+            if let Some(items) = self.user_sessions.get_mut(&user) {
+                items.retain(|(session, _)| session != key)
+            }
+        }
     }
 
     // remove sessions related to a user
@@ -149,7 +153,7 @@ impl Sessions {
 
     // get permission related to this session
     pub fn get(&self, key: &SessionKey) -> Option<&Vec<Permission>> {
-        self.active_sessions.get(key)
+        self.active_sessions.get(key).map(|(_, perms)| perms)
     }
 
     // returns None if user is not in the map
@@ -161,7 +165,7 @@ impl Sessions {
         context_stream: Option<&str>,
         context_user: Option<&str>,
     ) -> Option<bool> {
-        self.active_sessions.get(key).map(|perms| {
+        self.active_sessions.get(key).map(|(username, perms)| {
             perms.iter().any(|user_perm| {
                 match *user_perm {
                     // if any action is ALL then we we authorize
@@ -177,11 +181,7 @@ impl Sessions {
                         (action == required_action || action == Action::All) && ok_stream
                     }
                     Permission::SelfRole if required_action == Action::GetRole => {
-                        // session user is same as defined in request context
-                        context_user
-                            .and_then(|user| self.user_sessions.get(user))
-                            .map(|sessions| sessions.iter().any(|(session, _)| session == key))
-                            .unwrap_or_default()
+                        context_user.map(|x| x == username).unwrap_or_default()
                     }
                     _ => false,
                 }
