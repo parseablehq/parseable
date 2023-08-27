@@ -116,7 +116,7 @@ But with log data growing exponentially, today's log data challenges involve who
 
 - For bugs, please create issue on [GitHub ↗︎](https://github.com/parseablehq/parseable/issues).
 - For commercial support and consultation, please reach out to us at [`hi@parseable.io` ↗︎](mailto:hi@parseable.io).
-- Please consider supporting us on [GitHub Sponsors ↗︎](https://github.com/parseablehq/sponsors).
+- Please consider supporting us on [GitHub Sponsors ↗︎](https://github.com/sponsors/parseablehq).
 
 ## :trophy: Contributing
 
