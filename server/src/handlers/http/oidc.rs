@@ -160,14 +160,18 @@ pub async fn reply_login(
         Users.put_user(user);
     };
 
+    let permissions = users().get(&username).unwrap().permissions();
     let id = Ulid::new();
+
     mut_sessions().track_new(
-        username,
+        username.clone(),
         crate::rbac::map::SessionKey::SessionId(id),
         Utc::now() + Days::new(7),
-        vec![Permission::SelfRole],
+        permissions,
     );
+
     let authorization_cookie = cookie(id);
+    let username_cookie = cookie_username(&username);
 
     let redirect_url = login_query
         .state
@@ -177,6 +181,7 @@ pub async fn reply_login(
     Ok(HttpResponse::MovedPermanently()
         .insert_header((header::LOCATION, redirect_url))
         .cookie(authorization_cookie)
+        .cookie(username_cookie)
         .body(""))
 }
 
@@ -198,6 +203,16 @@ fn redirect_to_oidc(
 
 fn cookie(id: Ulid) -> Cookie<'static> {
     let authorization_cookie = Cookie::build("session", id.to_string())
+        .http_only(true)
+        .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
+        .same_site(SameSite::Strict)
+        .path("/")
+        .finish();
+    authorization_cookie
+}
+
+fn cookie_username(username: &str) -> Cookie<'static> {
+    let authorization_cookie = Cookie::build("username", username.to_string())
         .http_only(true)
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
         .same_site(SameSite::Strict)
