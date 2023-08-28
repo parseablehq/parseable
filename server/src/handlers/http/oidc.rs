@@ -84,48 +84,26 @@ pub async fn login(
                     ..
                 },
             ) if basic.verify_password(&password) => {
-                let cookie = exchange_basic_for_cookie(
+                let user_cookie = cookie_username(&username);
+                let session_cookie = exchange_basic_for_cookie(
                     username.clone(),
                     SessionKey::BasicAuth { username, password },
                     user.permissions(),
                 );
-
-                HttpResponse::MovedPermanently()
-                    .insert_header((header::LOCATION, query.redirect.to_string()))
-                    .cookie(cookie)
-                    .finish()
+                return_to_client(query.redirect.as_str(), [user_cookie, session_cookie])
             }
             _ => ErrorBadRequest("Request contains basic auth that does not match").into(),
         },
         // if it's a valid active session, just redirect back
         key @ SessionKey::SessionId(_) => {
             if sessions().get(&key).is_some() {
-                HttpResponse::MovedPermanently()
-                    .insert_header((header::LOCATION, query.redirect.to_string()))
-                    .finish()
+                return_to_client(query.redirect.as_str(), None)
             } else {
                 mut_sessions().remove_session(&key);
                 redirect_to_oidc(query, oidc_client)
             }
         }
     }
-}
-
-fn exchange_basic_for_cookie(
-    username: String,
-    key: SessionKey,
-    permissions: Vec<Permission>,
-) -> Cookie<'static> {
-    let id = Ulid::new();
-    let mut sessions = mut_sessions();
-    sessions.remove_session(&key);
-    sessions.track_new(
-        username,
-        SessionKey::SessionId(id),
-        Utc::now() + Days::new(COOKIE_AGE_DAYS as u64),
-        permissions,
-    );
-    cookie(id)
 }
 
 /// Handler for code callback
@@ -170,7 +148,7 @@ pub async fn reply_login(
         permissions,
     );
 
-    let authorization_cookie = cookie(id);
+    let authorization_cookie = cookie_session(id);
     let username_cookie = cookie_username(&username);
 
     let redirect_url = login_query
@@ -178,11 +156,27 @@ pub async fn reply_login(
         .clone()
         .unwrap_or_else(|| CONFIG.parseable.address.to_string());
 
-    Ok(HttpResponse::MovedPermanently()
-        .insert_header((header::LOCATION, redirect_url))
-        .cookie(authorization_cookie)
-        .cookie(username_cookie)
-        .body(""))
+    Ok(return_to_client(
+        &redirect_url,
+        [authorization_cookie, username_cookie],
+    ))
+}
+
+fn exchange_basic_for_cookie(
+    username: String,
+    key: SessionKey,
+    permissions: Vec<Permission>,
+) -> Cookie<'static> {
+    let id = Ulid::new();
+    let mut sessions = mut_sessions();
+    sessions.remove_session(&key);
+    sessions.track_new(
+        username,
+        SessionKey::SessionId(id),
+        Utc::now() + Days::new(COOKIE_AGE_DAYS as u64),
+        permissions,
+    );
+    cookie_session(id)
 }
 
 fn redirect_to_oidc(
@@ -201,7 +195,16 @@ fn redirect_to_oidc(
         .finish()
 }
 
-fn cookie(id: Ulid) -> Cookie<'static> {
+fn return_to_client(url: &str, cookies: impl IntoIterator<Item = Cookie<'static>>) -> HttpResponse {
+    let mut response = HttpResponse::MovedPermanently();
+    response.insert_header((header::LOCATION, url));
+    for cookie in cookies {
+        response.cookie(cookie);
+    }
+    response.finish()
+}
+
+fn cookie_session(id: Ulid) -> Cookie<'static> {
     let authorization_cookie = Cookie::build("session", id.to_string())
         .http_only(true)
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
