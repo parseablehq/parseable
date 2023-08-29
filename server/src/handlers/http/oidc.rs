@@ -101,6 +101,22 @@ pub async fn login(
     }
 }
 
+pub async fn logout(
+    req: HttpRequest,
+    query: web::Query<RedirectAfterLogin>,
+    oidc_client: Data<openid::Client>,
+) -> HttpResponse {
+    let Some(session) = extract_session_key_from_req(&req).ok() else {
+        return return_to_client(query.redirect.as_str(), None);
+    };
+    Users.remove_session(&session);
+    if let Some(url) = oidc_client.config().end_session_endpoint.clone() {
+        redirect_to_oidc_logout(url, &query.redirect)
+    } else {
+        return_to_client(query.redirect.as_str(), None)
+    }
+}
+
 /// Handler for code callback
 /// User should be redirected to page they were trying to access with cookie
 pub async fn reply_login(
@@ -153,6 +169,13 @@ fn redirect_to_oidc(
     let url: String = auth_url.into();
     HttpResponse::TemporaryRedirect()
         .insert_header((header::LOCATION, url))
+        .finish()
+}
+
+fn redirect_to_oidc_logout(mut logout_endpoint: Url, redirect: &Url) -> HttpResponse {
+    logout_endpoint.set_query(Some(&format!("post_logout_redirect_uri={}", redirect)));
+    HttpResponse::TemporaryRedirect()
+        .insert_header((header::LOCATION, logout_endpoint.to_string()))
         .finish()
 }
 

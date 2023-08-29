@@ -119,6 +119,7 @@ impl Sessions {
         expiry: DateTime<Utc>,
         permissions: Vec<Permission>,
     ) {
+        self.remove_expired_session(&user);
         self.user_sessions
             .entry(user.clone())
             .and_modify(|sessions| sessions.push((key.clone(), expiry)))

@@ -256,6 +256,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig, oidc_client: Option<Arc<op
 
     let mut oauth_api = web::scope("/o")
         .service(resource("/login").route(web::get().to(oidc::login)))
+        .service(resource("/logout").route(web::get().to(oidc::logout)))
         .service(resource("/code").route(web::get().to(oidc::reply_login)));
 
     if let Some(client) = oidc_client {
