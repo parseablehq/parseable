@@ -20,7 +20,7 @@ pub mod map;
 pub mod role;
 pub mod user;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Days, Utc};
 
 use crate::rbac::map::{mut_sessions, mut_users, sessions, users};
 use crate::rbac::role::{model::DefaultPrivilege, Action};
@@ -44,6 +44,10 @@ impl Users {
     pub fn put_user(&self, user: User) {
         mut_sessions().remove_user(user.username());
         mut_users().insert(user);
+    }
+
+    pub fn get_user(&self, username: &str) -> Option<User> {
+        users().get(username).cloned()
     }
 
     pub fn list_users(&self) -> Vec<String> {
@@ -87,6 +91,23 @@ impl Users {
 
     pub fn get_permissions(&self, session: &SessionKey) -> Vec<Permission> {
         sessions().get(session).cloned().unwrap_or_default()
+    }
+
+    pub fn session_exists(&self, session: &SessionKey) -> bool {
+        sessions().get(session).is_some()
+    }
+
+    pub fn remove_session(&self, session: &SessionKey) {
+        mut_sessions().remove_session(session)
+    }
+
+    pub fn new_session(&self, user: &User, session: SessionKey) {
+        mut_sessions().track_new(
+            user.username().to_owned(),
+            session,
+            Utc::now() + Days::new(7),
+            user.permissions(),
+        )
     }
 
     pub fn authorize(

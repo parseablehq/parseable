@@ -25,7 +25,6 @@ use actix_web::{
     web::{self, Data},
     HttpRequest, HttpResponse,
 };
-use chrono::{Days, Utc};
 use http::StatusCode;
 use log::info;
 use openid::{Options, Token, Userinfo};
@@ -36,8 +35,7 @@ use url::Url;
 use crate::{
     option::CONFIG,
     rbac::{
-        map::{mut_sessions, sessions, users, SessionKey},
-        role::Permission,
+        map::SessionKey,
         user::{User, UserType},
         Users,
     },
@@ -77,29 +75,26 @@ pub async fn login(
 
     match session_key {
         // We can exchange basic auth for session cookie
-        SessionKey::BasicAuth { username, password } => match users().get(&username) {
+        SessionKey::BasicAuth { username, password } => match Users.get_user(&username) {
             Some(
-                user @ User {
-                    ty: UserType::Native(basic),
+                ref user @ User {
+                    ty: UserType::Native(ref basic),
                     ..
                 },
             ) if basic.verify_password(&password) => {
                 let user_cookie = cookie_username(&username);
-                let session_cookie = exchange_basic_for_cookie(
-                    username.clone(),
-                    SessionKey::BasicAuth { username, password },
-                    user.permissions(),
-                );
+                let session_cookie =
+                    exchange_basic_for_cookie(user, SessionKey::BasicAuth { username, password });
                 return_to_client(query.redirect.as_str(), [user_cookie, session_cookie])
             }
             _ => ErrorBadRequest("Request contains basic auth that does not match").into(),
         },
         // if it's a valid active session, just redirect back
         key @ SessionKey::SessionId(_) => {
-            if sessions().get(&key).is_some() {
+            if Users.session_exists(&key) {
                 return_to_client(query.redirect.as_str(), None)
             } else {
-                mut_sessions().remove_session(&key);
+                Users.remove_session(&key);
                 redirect_to_oidc(query, oidc_client)
             }
         }
@@ -120,36 +115,12 @@ pub async fn reply_login(
 
     // User may not exist
     // create a new one depending on state of metadata
-    if !Users.contains(&username) {
-        let mut metadata = get_metadata().await?;
-        let user = match metadata
-            .users
-            .iter()
-            .find(|user| user.username() == username)
-        {
-            Some(user) => user.clone(),
-            None => {
-                let user = User::new_oauth(username.clone());
-                metadata.users.push(user.clone());
-                put_metadata(&metadata).await?;
-                user
-            }
-        };
-        Users.put_user(user);
+    let user = match Users.get_user(&username) {
+        Some(user) => user,
+        None => put_user(&username).await?,
     };
-
-    let permissions = users().get(&username).unwrap().permissions();
     let id = Ulid::new();
-
-    mut_sessions().track_new(
-        username.clone(),
-        crate::rbac::map::SessionKey::SessionId(id),
-        Utc::now() + Days::new(7),
-        permissions,
-    );
-
-    let authorization_cookie = cookie_session(id);
-    let username_cookie = cookie_username(&username);
+    Users.new_session(&user, SessionKey::SessionId(id));
 
     let redirect_url = login_query
         .state
@@ -158,24 +129,14 @@ pub async fn reply_login(
 
     Ok(return_to_client(
         &redirect_url,
-        [authorization_cookie, username_cookie],
+        [cookie_session(id), cookie_username(&username)],
     ))
 }
 
-fn exchange_basic_for_cookie(
-    username: String,
-    key: SessionKey,
-    permissions: Vec<Permission>,
-) -> Cookie<'static> {
+fn exchange_basic_for_cookie(user: &User, key: SessionKey) -> Cookie<'static> {
     let id = Ulid::new();
-    let mut sessions = mut_sessions();
-    sessions.remove_session(&key);
-    sessions.track_new(
-        username,
-        SessionKey::SessionId(id),
-        Utc::now() + Days::new(COOKIE_AGE_DAYS as u64),
-        permissions,
-    );
+    Users.remove_session(&key);
+    Users.new_session(user, key);
     cookie_session(id)
 }
 
@@ -239,6 +200,27 @@ async fn request_token(
     let userinfo = oidc_client.request_userinfo(&token).await?;
     info!("user info: {:?}", userinfo);
     Ok((token, userinfo))
+}
+
+// put new user in metadata if does not exits
+// update local cache
+async fn put_user(username: &str) -> Result<User, ObjectStorageError> {
+    let mut metadata = get_metadata().await?;
+    let user = match metadata
+        .users
+        .iter()
+        .find(|user| user.username() == username)
+    {
+        Some(user) => user.clone(),
+        None => {
+            let user = User::new_oauth(username.to_owned());
+            metadata.users.push(user.clone());
+            put_metadata(&metadata).await?;
+            user
+        }
+    };
+    Users.put_user(user.clone());
+    Ok(user)
 }
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
