@@ -128,7 +128,9 @@ impl Users {
 
         // attempt reloading permissions into new session for basic auth user
         // id user will be reloaded only through login endpoint
-        let SessionKey::BasicAuth { username, password } = &key else { return Response::ReloadRequired ;};
+        let SessionKey::BasicAuth { username, password } = &key else {
+            return Response::ReloadRequired;
+        };
         if let Some(
             user @ User {
                 ty: UserType::Native(basic_user),

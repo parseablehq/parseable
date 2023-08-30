@@ -148,7 +148,9 @@ impl Sessions {
 
     fn remove_expired_session(&mut self, user: &str) {
         let now = Utc::now();
-        let Some(sessions) = self.user_sessions.get_mut(user) else {return;};
+        let Some(sessions) = self.user_sessions.get_mut(user) else {
+            return;
+        };
         sessions.retain(|(_, expiry)| expiry < &now);
     }
 
