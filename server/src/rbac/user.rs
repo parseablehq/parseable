@@ -27,7 +27,9 @@ use rand::distributions::{Alphanumeric, DistString};
 
 use crate::option::CONFIG;
 
-use crate::rbac::role::{model::DefaultPrivilege, Permission, RoleBuilder};
+use crate::rbac::role::{Permission, RoleBuilder};
+
+use super::map::roles;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
@@ -40,7 +42,7 @@ pub enum UserType {
 pub struct User {
     #[serde(flatten)]
     pub ty: UserType,
-    pub role: Vec<DefaultPrivilege>,
+    pub role: Vec<String>,
 }
 
 impl User {
@@ -74,11 +76,12 @@ impl User {
     }
 
     pub fn permissions(&self) -> Vec<Permission> {
-        let perms: HashSet<Permission> = self
-            .role
-            .iter()
-            .flat_map(|role| RoleBuilder::from(role).build())
-            .collect();
+        let mut perms = HashSet::new();
+        for role in &self.role {
+            for privs in roles().get(role).map(|x| x.iter()).unwrap_or_default() {
+                perms.extend(RoleBuilder::from(privs).build())
+            }
+        }
         perms.into_iter().collect()
     }
 }
@@ -143,7 +146,7 @@ pub fn get_admin_user() -> User {
             username,
             password_hash: hashcode,
         }),
-        role: vec![DefaultPrivilege::Admin],
+        role: vec!["admin".to_string()],
     }
 }
 

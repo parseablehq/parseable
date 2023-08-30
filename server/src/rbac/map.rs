@@ -21,14 +21,17 @@ use crate::rbac::user::User;
 use std::collections::HashMap;
 
 use super::{
-    role::{Action, Permission},
+    role::{model::DefaultPrivilege, Action, Permission},
     user,
 };
 use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+pub type Roles = HashMap<String, Vec<DefaultPrivilege>>;
+
 pub static USERS: OnceCell<RwLock<Users>> = OnceCell::new();
+pub static ROLES: OnceCell<RwLock<Roles>> = OnceCell::new();
 pub static SESSIONS: OnceCell<RwLock<Sessions>> = OnceCell::new();
 
 pub fn users() -> RwLockReadGuard<'static, Users> {
@@ -41,6 +44,22 @@ pub fn users() -> RwLockReadGuard<'static, Users> {
 
 pub fn mut_users() -> RwLockWriteGuard<'static, Users> {
     USERS
+        .get()
+        .expect("map is set")
+        .write()
+        .expect("not poisoned")
+}
+
+pub fn roles() -> RwLockReadGuard<'static, Roles> {
+    ROLES
+        .get()
+        .expect("map is set")
+        .read()
+        .expect("not poisoned")
+}
+
+pub fn mut_roles() -> RwLockWriteGuard<'static, Roles> {
+    ROLES
         .get()
         .expect("map is set")
         .write()
@@ -67,7 +86,10 @@ pub fn mut_sessions() -> RwLockWriteGuard<'static, Sessions> {
 // the user_map is initialized from the config file and has a list of all users
 // the auth_map is initialized with admin user only and then gets lazily populated
 // as users authenticate
-pub fn init(users: Vec<User>) {
+pub fn init(users: Vec<User>, mut roles: Roles) {
+    roles.insert("admin".to_string(), vec![DefaultPrivilege::Admin]);
+    ROLES.set(RwLock::new(roles)).expect("map is only set once");
+
     let mut users = Users::from(users);
     let mut sessions = Sessions::default();
 

@@ -27,6 +27,7 @@ use actix_web::{
 };
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
+use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
@@ -41,9 +42,10 @@ mod ingest;
 mod llm;
 mod logstream;
 mod middleware;
-pub mod oidc;
+mod oidc;
 mod query;
 mod rbac;
+mod role;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -127,7 +129,10 @@ pub async fn run_http(
     Ok(())
 }
 
-pub fn configure_routes(cfg: &mut web::ServiceConfig, oidc_client: Option<Arc<openid::Client>>) {
+pub fn configure_routes(
+    cfg: &mut web::ServiceConfig,
+    oidc_client: Option<Arc<openid::Client<Discovered, crate::oidc::Claims>>>,
+) {
     let generated = generate();
 
     //log stream API
@@ -253,6 +258,14 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig, oidc_client: Option<Arc<op
                 .authorize(Action::QueryLLM),
         ),
     );
+    let role_api = web::scope("/role")
+        .service(resource("").route(web::get().to(role::list)))
+        .service(
+            resource("/{{name}}")
+                .route(web::put().to(role::put))
+                .route(web::delete().to(role::delete))
+                .route(web::get().to(role::get)),
+        );
 
     let mut oauth_api = web::scope("/o")
         .service(resource("/login").route(web::get().to(oidc::login)))
@@ -305,7 +318,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig, oidc_client: Option<Arc<op
             )
             .service(user_api)
             .service(llm_query_api)
-            .service(oauth_api),
+            .service(oauth_api)
+            .service(role_api),
     )
     // GET "/" ==> Serve the static frontend directory
     .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());

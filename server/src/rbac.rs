@@ -23,7 +23,7 @@ pub mod user;
 use chrono::{DateTime, Days, Utc};
 
 use crate::rbac::map::{mut_sessions, mut_users, sessions, users};
-use crate::rbac::role::{model::DefaultPrivilege, Action};
+use crate::rbac::role::Action;
 use crate::rbac::user::User;
 
 use self::map::SessionKey;
@@ -54,7 +54,7 @@ impl Users {
         users().keys().cloned().collect()
     }
 
-    pub fn get_role(&self, username: &str) -> Vec<DefaultPrivilege> {
+    pub fn get_role(&self, username: &str) -> Vec<String> {
         users()
             .get(username)
             .map(|user| user.role.clone())
@@ -78,7 +78,7 @@ impl Users {
         };
     }
 
-    pub fn put_role(&self, username: &str, roles: Vec<DefaultPrivilege>) {
+    pub fn put_role(&self, username: &str, roles: Vec<String>) {
         if let Some(user) = mut_users().get_mut(username) {
             user.role = roles;
             mut_sessions().remove_user(username)

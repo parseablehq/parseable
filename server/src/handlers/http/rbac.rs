@@ -20,7 +20,7 @@ use std::collections::HashSet;
 
 use crate::{
     option::CONFIG,
-    rbac::{role::model::DefaultPrivilege, user, Users},
+    rbac::{user, Users},
     storage::{self, ObjectStorageError, StorageMetadata},
     validator::{self, error::UsernameValidationError},
 };
@@ -129,7 +129,7 @@ pub async fn put_role(
 ) -> Result<String, RBACError> {
     let username = username.into_inner();
     let role = role.into_inner();
-    let role: HashSet<DefaultPrivilege> = serde_json::from_value(role)?;
+    let role: HashSet<String> = serde_json::from_value(role)?;
     let role = role.into_iter().collect();
 
     if !Users.contains(&username) {

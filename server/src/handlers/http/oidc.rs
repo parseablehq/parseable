@@ -26,13 +26,13 @@ use actix_web::{
     HttpRequest, HttpResponse,
 };
 use http::StatusCode;
-use log::info;
 use openid::{Options, Token, Userinfo};
 use serde::Deserialize;
 use ulid::Ulid;
 use url::Url;
 
 use crate::{
+    oidc::{Claims, DiscoveredClient},
     option::CONFIG,
     rbac::{
         map::SessionKey,
@@ -65,7 +65,7 @@ pub struct RedirectAfterLogin {
 pub async fn login(
     req: HttpRequest,
     query: web::Query<RedirectAfterLogin>,
-    oidc_client: Data<openid::Client>,
+    oidc_client: Data<DiscoveredClient>,
 ) -> HttpResponse {
     let session_key = extract_session_key_from_req(&req).ok();
     // if no authentication method is used then the client is requesting for a oauth session to be established
@@ -104,7 +104,7 @@ pub async fn login(
 pub async fn logout(
     req: HttpRequest,
     query: web::Query<RedirectAfterLogin>,
-    oidc_client: Data<openid::Client>,
+    oidc_client: Data<DiscoveredClient>,
 ) -> HttpResponse {
     let Some(session) = extract_session_key_from_req(&req).ok() else {
         return return_to_client(query.redirect.as_str(), None);
@@ -120,20 +120,27 @@ pub async fn logout(
 /// Handler for code callback
 /// User should be redirected to page they were trying to access with cookie
 pub async fn reply_login(
-    oidc_client: Data<openid::Client>,
+    oidc_client: Data<DiscoveredClient>,
     login_query: web::Query<Login>,
 ) -> Result<HttpResponse, OIDCError> {
     let oidc_client = Data::into_inner(oidc_client);
-    let Ok((_, user_info)) = request_token(oidc_client, &login_query).await else {
+    let Ok((mut claims, user_info)): Result<(Claims, Userinfo), anyhow::Error> =
+        request_token(oidc_client, &login_query).await
+    else {
         return Ok(HttpResponse::Unauthorized().finish());
     };
     let username = user_info.preferred_username.unwrap();
+    let group: Option<Vec<String>> = claims
+        .other
+        .remove("groups")
+        .map(serde_json::from_value)
+        .transpose()?;
 
     // User may not exist
     // create a new one depending on state of metadata
     let user = match Users.get_user(&username) {
         Some(user) => user,
-        None => put_user(&username).await?,
+        None => put_user(&username, group).await?,
     };
     let id = Ulid::new();
     Users.new_session(&user, SessionKey::SessionId(id));
@@ -158,7 +165,7 @@ fn exchange_basic_for_cookie(user: &User, key: SessionKey) -> Cookie<'static> {
 
 fn redirect_to_oidc(
     query: web::Query<RedirectAfterLogin>,
-    oidc_client: Data<openid::Client>,
+    oidc_client: Data<DiscoveredClient>,
 ) -> HttpResponse {
     let redirect = query.into_inner().redirect.to_string();
     let auth_url = oidc_client.auth_url(&Options {
@@ -209,25 +216,25 @@ fn cookie_username(username: &str) -> Cookie<'static> {
 }
 
 async fn request_token(
-    oidc_client: Arc<openid::Client>,
+    oidc_client: Arc<DiscoveredClient>,
     login_query: &Login,
-) -> anyhow::Result<(Token, Userinfo)> {
-    let mut token: Token = oidc_client.request_token(&login_query.code).await?.into();
+) -> anyhow::Result<(Claims, Userinfo)> {
+    let mut token: Token<Claims> = oidc_client.request_token(&login_query.code).await?.into();
+    let claims: Claims;
     if let Some(id_token) = token.id_token.as_mut() {
         oidc_client.decode_token(id_token)?;
         oidc_client.validate_token(id_token, None, None)?;
-        info!("token: {:?}", id_token);
+        claims = id_token.payload().expect("payload is decoded").clone()
     } else {
         return Err(anyhow::anyhow!("No id_token provided"));
     }
     let userinfo = oidc_client.request_userinfo(&token).await?;
-    info!("user info: {:?}", userinfo);
-    Ok((token, userinfo))
+    Ok((claims, userinfo))
 }
 
 // put new user in metadata if does not exits
 // update local cache
-async fn put_user(username: &str) -> Result<User, ObjectStorageError> {
+async fn put_user(username: &str, group: Option<Vec<String>>) -> Result<User, ObjectStorageError> {
     let mut metadata = get_metadata().await?;
     let user = match metadata
         .users
@@ -236,7 +243,10 @@ async fn put_user(username: &str) -> Result<User, ObjectStorageError> {
     {
         Some(user) => user.clone(),
         None => {
-            let user = User::new_oauth(username.to_owned());
+            let mut user = User::new_oauth(username.to_owned());
+            if let Some(group) = group {
+                user.role = group
+            }
             metadata.users.push(user.clone());
             put_metadata(&metadata).await?;
             user
@@ -266,12 +276,15 @@ async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageErr
 pub enum OIDCError {
     #[error("Failed to connect to storage: {0}")]
     ObjectStorageError(#[from] ObjectStorageError),
+    #[error("{0}")]
+    Serde(#[from] serde_json::Error),
 }
 
 impl actix_web::ResponseError for OIDCError {
     fn status_code(&self) -> http::StatusCode {
         match self {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

@@ -16,8 +16,12 @@
  *
  */
 
-use openid::DiscoveredClient;
+use std::collections::HashMap;
+
+use openid::{Client, CompactJson, CustomClaims, Discovered, StandardClaims};
 use url::Url;
+
+pub type DiscoveredClient = Client<Discovered, Claims>;
 
 // If domain is not configured then
 // we can assume running in a development mode or private environment
@@ -45,7 +49,10 @@ pub struct OpenidConfig {
 impl OpenidConfig {
     /// Create a new oidc client from server configuration.
     /// redirect_suffix
-    pub async fn connect(self, redirect_to: &str) -> Result<openid::Client, openid::error::Error> {
+    pub async fn connect(
+        self,
+        redirect_to: &str,
+    ) -> Result<DiscoveredClient, openid::error::Error> {
         let redirect_uri = match self.origin {
             Origin::Local { socket_addr, https } => {
                 let protocol = if https { "https" } else { "http" };
@@ -59,3 +66,18 @@ impl OpenidConfig {
             .await
     }
 }
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct Claims {
+    pub other: HashMap<String, serde_json::Value>,
+    #[serde(flatten)]
+    pub standard: StandardClaims,
+}
+
+impl CustomClaims for Claims {
+    fn standard_claims(&self) -> &StandardClaims {
+        &self.standard
+    }
+}
+
+impl CompactJson for Claims {}
