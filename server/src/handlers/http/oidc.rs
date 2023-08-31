@@ -159,7 +159,7 @@ pub async fn reply_login(
 fn exchange_basic_for_cookie(user: &User, key: SessionKey) -> Cookie<'static> {
     let id = Ulid::new();
     Users.remove_session(&key);
-    Users.new_session(user, key);
+    Users.new_session(user, SessionKey::SessionId(id));
     cookie_session(id)
 }
 
