@@ -191,7 +191,7 @@ fn return_to_client(url: &str, cookies: impl IntoIterator<Item = Cookie<'static>
 fn cookie_session(id: Ulid) -> Cookie<'static> {
     let authorization_cookie = Cookie::build("session", id.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::Strict)
+        .same_site(SameSite::None)
         .path("/")
         .finish();
     authorization_cookie
@@ -200,7 +200,7 @@ fn cookie_session(id: Ulid) -> Cookie<'static> {
 fn cookie_username(username: &str) -> Cookie<'static> {
     let authorization_cookie = Cookie::build("username", username.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::Strict)
+        .same_site(SameSite::None)
         .path("/")
         .finish();
     authorization_cookie
