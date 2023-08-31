@@ -261,7 +261,7 @@ pub fn configure_routes(
     let role_api = web::scope("/role")
         .service(resource("").route(web::get().to(role::list)))
         .service(
-            resource("/{{name}}")
+            resource("/{name}")
                 .route(web::put().to(role::put))
                 .route(web::delete().to(role::delete))
                 .route(web::get().to(role::get)),

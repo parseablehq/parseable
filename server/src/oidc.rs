@@ -69,9 +69,10 @@ impl OpenidConfig {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct Claims {
-    pub other: HashMap<String, serde_json::Value>,
     #[serde(flatten)]
     pub standard: StandardClaims,
+    #[serde(flatten)]
+    pub other: HashMap<String, serde_json::Value>,
 }
 
 impl CustomClaims for Claims {

@@ -16,11 +16,11 @@
  *
  */
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     option::CONFIG,
-    rbac::{user, Users},
+    rbac::{map::roles, role::model::DefaultPrivilege, user, Users},
     storage::{self, ObjectStorageError, StorageMetadata},
     validator::{self, error::UsernameValidationError},
 };
@@ -102,7 +102,17 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
-    Ok(web::Json(Users.get_role(&username)))
+    let res: HashMap<String, Vec<DefaultPrivilege>> = Users
+        .get_role(&username)
+        .iter()
+        .filter_map(|role_name| {
+            roles()
+                .get(role_name)
+                .map(|role| (role_name.to_owned(), role.clone()))
+        })
+        .collect();
+
+    Ok(web::Json(res))
 }
 
 // Handler for DELETE /api/v1/user/delete/{username}
