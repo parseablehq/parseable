@@ -192,6 +192,7 @@ fn cookie_session(id: Ulid) -> Cookie<'static> {
     let authorization_cookie = Cookie::build("session", id.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
         .same_site(SameSite::None)
+        .secure(false)
         .path("/")
         .finish();
     authorization_cookie
@@ -201,6 +202,7 @@ fn cookie_username(username: &str) -> Cookie<'static> {
     let authorization_cookie = Cookie::build("username", username.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
         .same_site(SameSite::None)
+        .secure(false)
         .path("/")
         .finish();
     authorization_cookie
