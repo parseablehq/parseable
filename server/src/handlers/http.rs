@@ -27,6 +27,7 @@ use actix_web::{
 };
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
+use log::info;
 use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
@@ -273,6 +274,7 @@ pub fn configure_routes(
         .service(resource("/code").route(web::get().to(oidc::reply_login)));
 
     if let Some(client) = oidc_client {
+        info!("Registered oidc client");
         oauth_api = oauth_api.app_data(web::Data::from(client))
     }
 
