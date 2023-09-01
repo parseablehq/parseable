@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use actix_web::{
     cookie::{time, Cookie, SameSite},
-    error::ErrorBadRequest,
     http::header::{self, ContentType},
     web::{self, Data},
     HttpRequest, HttpResponse,
@@ -65,12 +64,14 @@ pub struct RedirectAfterLogin {
 pub async fn login(
     req: HttpRequest,
     query: web::Query<RedirectAfterLogin>,
-    oidc_client: Data<DiscoveredClient>,
-) -> HttpResponse {
+) -> Result<HttpResponse, OIDCError> {
+    let oidc_client = req.app_data::<Data<DiscoveredClient>>();
     let session_key = extract_session_key_from_req(&req).ok();
-    // if no authentication method is used then the client is requesting for a oauth session to be established
-    let Some(session_key) = session_key else {
-        return redirect_to_oidc(query, oidc_client);
+
+    let (session_key, oidc_client) = match (session_key, oidc_client) {
+        (None, None) => return Err(OIDCError::NoAuthMethod),
+        (None, Some(client)) => return Ok(redirect_to_oidc(query, client)),
+        (Some(session_key), client) => (session_key, client),
     };
 
     match session_key {
@@ -85,32 +86,37 @@ pub async fn login(
                 let user_cookie = cookie_username(&username);
                 let session_cookie =
                     exchange_basic_for_cookie(user, SessionKey::BasicAuth { username, password });
-                return_to_client(query.redirect.as_str(), [user_cookie, session_cookie])
+                Ok(return_to_client(
+                    query.redirect.as_str(),
+                    [user_cookie, session_cookie],
+                ))
             }
-            _ => ErrorBadRequest("Request contains basic auth that does not match").into(),
+            _ => Err(OIDCError::BadRequest),
         },
         // if it's a valid active session, just redirect back
         key @ SessionKey::SessionId(_) => {
-            if Users.session_exists(&key) {
+            let resp = if Users.session_exists(&key) {
                 return_to_client(query.redirect.as_str(), None)
             } else {
                 Users.remove_session(&key);
-                redirect_to_oidc(query, oidc_client)
-            }
+                if let Some(oidc_client) = oidc_client {
+                    redirect_to_oidc(query, oidc_client)
+                } else {
+                    return_to_client(query.redirect.as_str(), None)
+                }
+            };
+            Ok(resp)
         }
     }
 }
 
-pub async fn logout(
-    req: HttpRequest,
-    query: web::Query<RedirectAfterLogin>,
-    oidc_client: Data<DiscoveredClient>,
-) -> HttpResponse {
+pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> HttpResponse {
+    let oidc_client = req.app_data::<Data<DiscoveredClient>>();
     let Some(session) = extract_session_key_from_req(&req).ok() else {
         return return_to_client(query.redirect.as_str(), None);
     };
     Users.remove_session(&session);
-    if let Some(url) = oidc_client.config().end_session_endpoint.clone() {
+    if let Some(url) = oidc_client.and_then(|client| client.config().end_session_endpoint.clone()) {
         redirect_to_oidc_logout(url, &query.redirect)
     } else {
         return_to_client(query.redirect.as_str(), None)
@@ -165,7 +171,7 @@ fn exchange_basic_for_cookie(user: &User, key: SessionKey) -> Cookie<'static> {
 
 fn redirect_to_oidc(
     query: web::Query<RedirectAfterLogin>,
-    oidc_client: Data<DiscoveredClient>,
+    oidc_client: &DiscoveredClient,
 ) -> HttpResponse {
     let redirect = query.into_inner().redirect.to_string();
     let auth_url = oidc_client.auth_url(&Options {
@@ -278,6 +284,10 @@ pub enum OIDCError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("{0}")]
     Serde(#[from] serde_json::Error),
+    #[error("No authentication method supplied")]
+    NoAuthMethod,
+    #[error("Bad Request")]
+    BadRequest,
 }
 
 impl actix_web::ResponseError for OIDCError {
@@ -285,6 +295,8 @@ impl actix_web::ResponseError for OIDCError {
         match self {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::NoAuthMethod => StatusCode::BAD_REQUEST,
+            Self::BadRequest => StatusCode::BAD_REQUEST,
         }
     }
 
