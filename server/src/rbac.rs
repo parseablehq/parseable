@@ -20,6 +20,8 @@ pub mod map;
 pub mod role;
 pub mod user;
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Days, Utc};
 
 use crate::rbac::map::{mut_sessions, mut_users, sessions, users};
@@ -57,7 +59,7 @@ impl Users {
     pub fn get_role(&self, username: &str) -> Vec<String> {
         users()
             .get(username)
-            .map(|user| user.role.clone())
+            .map(|user| user.role.iter().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -78,7 +80,7 @@ impl Users {
         };
     }
 
-    pub fn put_role(&self, username: &str, roles: Vec<String>) {
+    pub fn put_role(&self, username: &str, roles: HashSet<String>) {
         if let Some(user) = mut_users().get_mut(username) {
             user.role = roles;
             mut_sessions().remove_user(username)

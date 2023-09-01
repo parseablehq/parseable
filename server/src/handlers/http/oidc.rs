@@ -16,7 +16,7 @@
  *
  */
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use actix_web::{
     cookie::{time, Cookie, SameSite},
@@ -136,7 +136,7 @@ pub async fn reply_login(
         return Ok(HttpResponse::Unauthorized().finish());
     };
     let username = user_info.preferred_username.unwrap();
-    let group: Option<Vec<String>> = claims
+    let group: Option<HashSet<String>> = claims
         .other
         .remove("groups")
         .map(serde_json::from_value)
@@ -240,7 +240,10 @@ async fn request_token(
 
 // put new user in metadata if does not exits
 // update local cache
-async fn put_user(username: &str, group: Option<Vec<String>>) -> Result<User, ObjectStorageError> {
+async fn put_user(
+    username: &str,
+    group: Option<HashSet<String>>,
+) -> Result<User, ObjectStorageError> {
     let mut metadata = get_metadata().await?;
     let user = match metadata
         .users

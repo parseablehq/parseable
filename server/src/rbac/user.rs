@@ -42,7 +42,7 @@ pub enum UserType {
 pub struct User {
     #[serde(flatten)]
     pub ty: UserType,
-    pub role: Vec<String>,
+    pub role: HashSet<String>,
 }
 
 impl User {
@@ -55,7 +55,7 @@ impl User {
                     username,
                     password_hash: hash,
                 }),
-                role: Vec::new(),
+                role: HashSet::new(),
             },
             password,
         )
@@ -64,7 +64,7 @@ impl User {
     pub fn new_oauth(username: String) -> Self {
         Self {
             ty: UserType::OAuth(OAuth { username }),
-            role: Vec::new(),
+            role: HashSet::new(),
         }
     }
 
@@ -146,7 +146,7 @@ pub fn get_admin_user() -> User {
             username,
             password_hash: hashcode,
         }),
-        role: vec!["admin".to_string()],
+        role: ["admin".to_string()].into(),
     }
 }
 
