@@ -144,9 +144,10 @@ pub async fn reply_login(
 
     // User may not exist
     // create a new one depending on state of metadata
-    let user = match Users.get_user(&username) {
-        Some(user) => user,
-        None => put_user(&username, group).await?,
+    let user = match (Users.get_user(&username), group) {
+        (Some(user), Some(group)) => update_user_if_changed(user, group).await?,
+        (Some(user), None) => user,
+        (None, group) => put_user(&username, group).await?,
     };
     let id = Ulid::new();
     Users.new_session(&user, SessionKey::SessionId(id));
@@ -261,6 +262,21 @@ async fn put_user(
             user
         }
     };
+    Users.put_user(user.clone());
+    Ok(user)
+}
+
+async fn update_user_if_changed(
+    mut user: User,
+    group: HashSet<String>,
+) -> Result<User, ObjectStorageError> {
+    // update user if roles have changed
+    if user.role == group {
+        return Ok(user);
+    }
+    let metadata = get_metadata().await?;
+    user.role = group;
+    put_metadata(&metadata).await?;
     Users.put_user(user.clone());
     Ok(user)
 }
