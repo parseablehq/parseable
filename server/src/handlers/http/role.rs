@@ -25,8 +25,8 @@ use crate::{
     storage::{self, ObjectStorageError, StorageMetadata},
 };
 
-// Handler for POST /api/v1/role/{name}
-// Creates a new user by username if it does not exists
+// Handler for PUT /api/v1/role/{name}
+// Creates a new role or update existing one
 pub async fn put(
     name: web::Path<String>,
     body: web::Json<Vec<DefaultPrivilege>>,
@@ -41,7 +41,7 @@ pub async fn put(
 }
 
 // Handler for GET /api/v1/role/{name}
-// Creates a new user by username if it does not exists
+// Fetch role by name
 pub async fn get(name: web::Path<String>) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let metadata = get_metadata().await?;
@@ -49,16 +49,16 @@ pub async fn get(name: web::Path<String>) -> Result<impl Responder, RoleError> {
     Ok(web::Json(privileges))
 }
 
-// Handler for POST /api/v1/role
-// Creates a new user by username if it does not exists
+// Handler for GET /api/v1/role
+// Fetch all roles in the system
 pub async fn list() -> Result<impl Responder, RoleError> {
     let metadata = get_metadata().await?;
     let roles: Vec<String> = metadata.roles.keys().cloned().collect();
     Ok(web::Json(roles))
 }
 
-// Handler for POST /api/v1/user/{username}
-// Creates a new user by username if it does not exists
+// Handler for DELETE /api/v1/role/{username}
+// Delete existing role
 pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let mut metadata = get_metadata().await?;
