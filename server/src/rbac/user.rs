@@ -75,6 +75,10 @@ impl User {
         }
     }
 
+    pub fn is_oauth(&self) -> bool {
+        matches!(self.ty, UserType::OAuth(_))
+    }
+
     pub fn permissions(&self) -> Vec<Permission> {
         let mut perms = HashSet::new();
         for role in &self.role {

@@ -52,6 +52,10 @@ impl Users {
         users().get(username).cloned()
     }
 
+    pub fn is_oauth(&self, username: &str) -> Option<bool> {
+        users().get(username).map(|user| user.is_oauth())
+    }
+
     pub fn list_users(&self) -> Vec<String> {
         users().keys().cloned().collect()
     }
@@ -99,7 +103,7 @@ impl Users {
         sessions().get(session).is_some()
     }
 
-    pub fn remove_session(&self, session: &SessionKey) {
+    pub fn remove_session(&self, session: &SessionKey) -> Option<String> {
         mut_sessions().remove_session(session)
     }
 

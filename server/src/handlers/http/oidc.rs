@@ -115,11 +115,17 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
     let Some(session) = extract_session_key_from_req(&req).ok() else {
         return return_to_client(query.redirect.as_str(), None);
     };
-    Users.remove_session(&session);
-    if let Some(url) = oidc_client.and_then(|client| client.config().end_session_endpoint.clone()) {
-        redirect_to_oidc_logout(url, &query.redirect)
-    } else {
-        return_to_client(query.redirect.as_str(), None)
+    let user = Users.remove_session(&session);
+    let logout_endpoint =
+        oidc_client.and_then(|client| client.config().end_session_endpoint.clone());
+
+    match (user, logout_endpoint) {
+        (Some(username), Some(logout_endpoint))
+            if Users.is_oauth(&username).unwrap_or_default() =>
+        {
+            redirect_to_oidc_logout(logout_endpoint, &query.redirect)
+        }
+        _ => return_to_client(query.redirect.as_str(), None),
     }
 }
 

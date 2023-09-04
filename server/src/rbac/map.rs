@@ -150,11 +150,16 @@ impl Sessions {
     }
 
     // remove a specific session
-    pub fn remove_session(&mut self, key: &SessionKey) {
-        if let Some((user, _)) = self.active_sessions.remove(key) {
-            if let Some(items) = self.user_sessions.get_mut(&user) {
-                items.retain(|(session, _)| session != key)
-            }
+    pub fn remove_session(&mut self, key: &SessionKey) -> Option<String> {
+        let Some((user, _)) = self.active_sessions.remove(key) else {
+            return None;
+        };
+
+        if let Some(items) = self.user_sessions.get_mut(&user) {
+            items.retain(|(session, _)| session != key);
+            Some(user)
+        } else {
+            None
         }
     }
 
