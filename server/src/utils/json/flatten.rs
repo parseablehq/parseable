@@ -32,7 +32,9 @@ pub fn flatten(nested_value: Value, separator: &str) -> Result<Value, anyhow::Er
             for _value in &mut arr {
                 let value = std::mem::replace(_value, Value::Null);
                 let mut map = Map::new();
-                let Value::Object(obj) = value else { return Err(anyhow!("Expected object in array of objects")) };
+                let Value::Object(obj) = value else {
+                    return Err(anyhow!("Expected object in array of objects"));
+                };
                 flatten_object(&mut map, None, obj, separator)?;
                 *_value = Value::Object(map);
             }
@@ -255,7 +257,9 @@ mod tests {
             null,
             {"p": 2, "q": 2},
             {"q": 3},
-        ]) else { unreachable!() };
+        ]) else {
+            unreachable!()
+        };
 
         let mut map = Map::new();
         flatten_array_objects(&mut map, "key", arr, ".").unwrap();
@@ -267,7 +271,9 @@ mod tests {
 
     #[test]
     fn flatten_array_objects_nulls_at_end() {
-        let Value::Array(arr) = json!([{"a": 1, "b": 1}, {"a": 2}, null]) else { unreachable!() };
+        let Value::Array(arr) = json!([{"a": 1, "b": 1}, {"a": 2}, null]) else {
+            unreachable!()
+        };
 
         let mut map = Map::new();
         flatten_array_objects(&mut map, "key", arr, ".").unwrap();
@@ -279,7 +285,9 @@ mod tests {
 
     #[test]
     fn flatten_array_objects_nulls_in_middle() {
-        let Value::Array(arr) = json!([{"a": 1, "b": 1}, null, {"a": 3, "c": 3}]) else { unreachable!() };
+        let Value::Array(arr) = json!([{"a": 1, "b": 1}, null, {"a": 3, "c": 3}]) else {
+            unreachable!()
+        };
 
         let mut map = Map::new();
         flatten_array_objects(&mut map, "key", arr, ".").unwrap();
@@ -296,7 +304,9 @@ mod tests {
             {"p": 1, "q": 1},
             {"r": 2, "q": 2},
             {"p": 3, "r": 3}
-        ]) else { unreachable!() };
+        ]) else {
+            unreachable!()
+        };
 
         let mut map = Map::new();
         flatten_array_objects(&mut map, "key", arr, ".").unwrap();
@@ -313,7 +323,9 @@ mod tests {
             {"p": 1, "q": [{"x": 1}, {"x": 2}]},
             {"r": 2, "q": [{"x": 1}]},
             {"p": 3, "r": 3}
-        ]) else { unreachable!() };
+        ]) else {
+            unreachable!()
+        };
 
         let mut map = Map::new();
         flatten_array_objects(&mut map, "key", arr, ".").unwrap();

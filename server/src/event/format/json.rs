@@ -158,7 +158,9 @@ fn fields_mismatch(schema: &[Arc<Field>], body: &Value) -> bool {
         if val.is_null() {
             continue;
         }
-        let Some(field) = get_field(schema, name) else { return true };
+        let Some(field) = get_field(schema, name) else {
+            return true;
+        };
         if !valid_type(field.data_type(), val) {
             return true;
         }

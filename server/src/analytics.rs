@@ -113,7 +113,9 @@ fn total_event_stats() -> (u64, u64, u64) {
     let mut total_json_bytes: u64 = 0;
 
     for stream in metadata::STREAM_INFO.list_streams() {
-        let Some(stats) = stats::get_current_stats(&stream, "json") else {continue;};
+        let Some(stats) = stats::get_current_stats(&stream, "json") else {
+            continue;
+        };
         total_events += stats.events;
         total_parquet_bytes += stats.storage;
         total_json_bytes += stats.ingestion;

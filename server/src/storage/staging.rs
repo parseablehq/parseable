@@ -87,8 +87,9 @@ impl StorageDir {
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
-        let Ok(dir) = self.data_path
-            .read_dir() else { return vec![] };
+        let Ok(dir) = self.data_path.read_dir() else {
+            return vec![];
+        };
 
         let paths: Vec<PathBuf> = dir
             .flatten()
@@ -143,8 +144,9 @@ impl StorageDir {
     }
 
     pub fn parquet_files(&self) -> Vec<PathBuf> {
-        let Ok(dir) = self.data_path
-            .read_dir() else { return vec![] };
+        let Ok(dir) = self.data_path.read_dir() else {
+            return vec![];
+        };
 
         dir.flatten()
             .map(|file| file.path())
