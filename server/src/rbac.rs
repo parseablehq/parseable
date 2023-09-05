@@ -64,7 +64,7 @@ impl Users {
     pub fn get_role(&self, username: &str) -> Vec<String> {
         users()
             .get(username)
-            .map(|user| user.role.iter().cloned().collect())
+            .map(|user| user.roles.iter().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -87,7 +87,7 @@ impl Users {
 
     pub fn put_role(&self, username: &str, roles: HashSet<String>) {
         if let Some(user) = mut_users().get_mut(username) {
-            user.role = roles;
+            user.roles = roles;
             mut_sessions().remove_user(username)
         };
     }

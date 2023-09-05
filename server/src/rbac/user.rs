@@ -42,7 +42,7 @@ pub enum UserType {
 pub struct User {
     #[serde(flatten)]
     pub ty: UserType,
-    pub role: HashSet<String>,
+    pub roles: HashSet<String>,
 }
 
 impl User {
@@ -55,7 +55,7 @@ impl User {
                     username,
                     password_hash: hash,
                 }),
-                role: HashSet::new(),
+                roles: HashSet::new(),
             },
             password,
         )
@@ -64,7 +64,7 @@ impl User {
     pub fn new_oauth(username: String) -> Self {
         Self {
             ty: UserType::OAuth(OAuth { username }),
-            role: HashSet::new(),
+            roles: HashSet::new(),
         }
     }
 
@@ -81,7 +81,7 @@ impl User {
 
     pub fn permissions(&self) -> Vec<Permission> {
         let mut perms = HashSet::new();
-        for role in &self.role {
+        for role in &self.roles {
             for privs in roles().get(role).map(|x| x.iter()).unwrap_or_default() {
                 perms.extend(RoleBuilder::from(privs).build())
             }
@@ -150,7 +150,7 @@ pub fn get_admin_user() -> User {
             username,
             password_hash: hashcode,
         }),
-        role: ["admin".to_string()].into(),
+        roles: ["admin".to_string()].into(),
     }
 }
 

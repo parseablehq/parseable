@@ -172,7 +172,7 @@ pub async fn put_role(
         .iter_mut()
         .find(|user| user.username() == username)
     {
-        user.role.clone_from(&role);
+        user.roles.clone_from(&role);
     } else {
         // should be unreachable given state is always consistent
         return Err(RBACError::UserDoesNotExist);

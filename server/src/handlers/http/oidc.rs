@@ -261,7 +261,7 @@ async fn put_user(
         None => {
             let mut user = User::new_oauth(username.to_owned());
             if let Some(group) = group {
-                user.role = group
+                user.roles = group
             }
             metadata.users.push(user.clone());
             put_metadata(&metadata).await?;
@@ -277,11 +277,11 @@ async fn update_user_if_changed(
     group: HashSet<String>,
 ) -> Result<User, ObjectStorageError> {
     // update user if roles have changed
-    if user.role == group {
+    if user.roles == group {
         return Ok(user);
     }
     let metadata = get_metadata().await?;
-    user.role = group;
+    user.roles = group;
     put_metadata(&metadata).await?;
     Users.put_user(user.clone());
     Ok(user)
