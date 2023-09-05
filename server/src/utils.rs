@@ -43,7 +43,9 @@ pub fn capitalize_ascii(s: &str) -> String {
 }
 
 pub fn validate_path_is_writeable(path: &Path) -> anyhow::Result<()> {
-    let Ok(md) = std::fs::metadata(path) else { anyhow::bail!("Could not read metadata for staging dir") };
+    let Ok(md) = std::fs::metadata(path) else {
+        anyhow::bail!("Could not read metadata for staging dir")
+    };
     let permissions = md.permissions();
     if permissions.readonly() {
         anyhow::bail!("Staging directory {} is unwritable", path.display())

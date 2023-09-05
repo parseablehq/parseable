@@ -133,7 +133,9 @@ impl TryFrom<Vec<TaskView>> for Retention {
             if !duration.ends_with('d') {
                 return Err("missing 'd' suffix for duration value".to_string());
             }
-            let Ok(days) = duration[0..duration.len() - 1].parse() else { return Err("could not convert duration to an unsigned number".to_string());};
+            let Ok(days) = duration[0..duration.len() - 1].parse() else {
+                return Err("could not convert duration to an unsigned number".to_string());
+            };
 
             if set.contains(&task.action) {
                 return Err(format!(
@@ -184,8 +186,14 @@ mod action {
         log::info!("running retention task - delete");
         let retain_until = get_retain_until(Utc::now().date_naive(), days as u64);
 
-        let Ok(dates) = CONFIG.storage().get_object_store().list_dates(&stream_name)
-        .await else { return };
+        let Ok(dates) = CONFIG
+            .storage()
+            .get_object_store()
+            .list_dates(&stream_name)
+            .await
+        else {
+            return;
+        };
 
         let dates_to_delete = dates
             .into_iter()

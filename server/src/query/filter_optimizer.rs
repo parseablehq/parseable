@@ -43,7 +43,9 @@ impl OptimizerRule for FilterOptimizerRule {
         config: &dyn datafusion::optimizer::OptimizerConfig,
     ) -> datafusion::error::Result<Option<datafusion::logical_expr::LogicalPlan>> {
         // if there are no patterns then the rule cannot be performed
-        let Some(filter_expr) = self.expr() else { return Ok(None); };
+        let Some(filter_expr) = self.expr() else {
+            return Ok(None);
+        };
 
         if let LogicalPlan::Filter(filter) = plan {
             if filter.predicate == filter_expr {
@@ -115,7 +117,9 @@ impl FilterOptimizerRule {
             Expr::Column(Column::from_name(&self.column)).like(lit(format!("%{}%", literal)))
         });
 
-        let Some(mut filter_expr) = patterns.next() else { return None };
+        let Some(mut filter_expr) = patterns.next() else {
+            return None;
+        };
         for expr in patterns {
             filter_expr = or(filter_expr, expr)
         }
