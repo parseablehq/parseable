@@ -232,13 +232,13 @@ pub fn configure_routes(
                 .route(
                     web::put()
                         .to(rbac::put_role)
-                        .authorize(Action::PutRoles)
+                        .authorize(Action::PutUserRoles)
                         .wrap(DisAllowRootUser),
                 )
                 .route(
                     web::get()
                         .to(rbac::get_role)
-                        .authorize_for_user(Action::GetRole),
+                        .authorize_for_user(Action::GetUserRoles),
                 ),
         )
         .service(
@@ -260,12 +260,12 @@ pub fn configure_routes(
         ),
     );
     let role_api = web::scope("/role")
-        .service(resource("").route(web::get().to(role::list)))
+        .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
         .service(
             resource("/{name}")
-                .route(web::put().to(role::put))
-                .route(web::delete().to(role::delete))
-                .route(web::get().to(role::get)),
+                .route(web::put().to(role::put).authorize(Action::PutRole))
+                .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
+                .route(web::get().to(role::get).authorize(Action::GetRole)),
         );
 
     let mut oauth_api = web::scope("/o")
