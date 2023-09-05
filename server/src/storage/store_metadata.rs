@@ -62,7 +62,7 @@ pub struct StorageMetadata {
 impl StorageMetadata {
     pub fn new() -> Self {
         Self {
-            version: "v2".to_string(),
+            version: "v3".to_string(),
             mode: CONFIG.storage_name.to_owned(),
             staging: CONFIG.staging_dir().canonicalize().unwrap(),
             storage: CONFIG.storage().get_endpoint(),

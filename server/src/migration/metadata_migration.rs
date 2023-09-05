@@ -16,16 +16,56 @@
  *
  */
 
-use std::vec;
+use rand::distributions::DistString;
+use serde_json::{Map, Value};
 
-use serde_json::Value;
-
-pub fn v1_v2(mut storage_metadata: serde_json::Value) -> Value {
+pub fn v1_v3(mut storage_metadata: serde_json::Value) -> Value {
     let metadata = storage_metadata.as_object_mut().unwrap();
-    *metadata.get_mut("version").unwrap() = Value::String("v2".to_string());
+    *metadata.get_mut("version").unwrap() = Value::String("v3".to_string());
     metadata.remove("user");
     metadata.remove("stream");
     metadata.insert("users".to_string(), Value::Array(vec![]));
     metadata.insert("streams".to_string(), Value::Array(vec![]));
+    metadata.insert("roles".to_string(), Value::Array(vec![]));
+    storage_metadata
+}
+
+pub fn v2_v3(mut storage_metadata: serde_json::Value) -> Value {
+    let metadata = storage_metadata.as_object_mut().unwrap();
+    *metadata.get_mut("version").unwrap() = Value::String("v3".to_string());
+    let users = metadata
+        .get_mut("users")
+        .expect("users field is present")
+        .as_array_mut()
+        .unwrap();
+
+    // role names - role value
+    let mut privileges_map = Vec::new();
+
+    for user in users {
+        // user is an object
+        let user = user.as_object_mut().unwrap();
+        // take out privileges
+        let Value::Array(privileges) = user.remove("role").expect("role exists for v2") else {
+            panic!("privileges is an arrray")
+        };
+
+        let mut roles = Vec::new();
+
+        if !privileges.is_empty() {
+            let role_name =
+                rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
+            privileges_map.push((role_name.clone(), Value::Array(privileges)));
+            roles.push(Value::from(role_name));
+        }
+        user.insert("roles".to_string(), roles.into());
+    }
+
+    metadata.insert("users".to_string(), Value::Array(vec![]));
+    metadata.insert("streams".to_string(), Value::Array(vec![]));
+    metadata.insert(
+        "roles".to_string(),
+        Value::Object(Map::from_iter(privileges_map)),
+    );
     storage_metadata
 }
