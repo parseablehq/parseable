@@ -61,8 +61,6 @@ pub fn v2_v3(mut storage_metadata: serde_json::Value) -> Value {
         user.insert("roles".to_string(), roles.into());
     }
 
-    metadata.insert("users".to_string(), Value::Array(vec![]));
-    metadata.insert("streams".to_string(), Value::Array(vec![]));
     metadata.insert(
         "roles".to_string(),
         Value::Object(Map::from_iter(privileges_map)),
