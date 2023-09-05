@@ -23,6 +23,7 @@ pub mod user;
 use std::collections::HashSet;
 
 use chrono::{DateTime, Days, Utc};
+use itertools::Itertools;
 
 use crate::rbac::map::{mut_sessions, mut_users, sessions, users};
 use crate::rbac::role::Action;
@@ -56,8 +57,8 @@ impl Users {
         users().get(username).map(|user| user.is_oauth())
     }
 
-    pub fn list_users(&self) -> Vec<String> {
-        users().keys().cloned().collect()
+    pub fn collect_user<T: for<'a> From<&'a User> + 'static>(&self) -> Vec<T> {
+        users().values().map(|user| user.into()).collect_vec()
     }
 
     pub fn get_role(&self, username: &str) -> Vec<String> {

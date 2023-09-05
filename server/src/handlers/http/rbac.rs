@@ -31,10 +31,30 @@ use tokio::sync::Mutex;
 // async aware lock for updating storage metadata and user map atomicically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
+#[derive(serde::Serialize)]
+struct User {
+    id: String,
+    method: String,
+}
+
+impl From<&user::User> for User {
+    fn from(user: &user::User) -> Self {
+        let method = match user.ty {
+            user::UserType::Native(_) => "native".to_string(),
+            user::UserType::OAuth(_) => "oauth".to_string(),
+        };
+
+        User {
+            id: user.username().to_owned(),
+            method,
+        }
+    }
+}
+
 // Handler for GET /api/v1/user
 // returns list of all registerd users
 pub async fn list_users() -> impl Responder {
-    web::Json(Users.list_users())
+    web::Json(Users.collect_user::<User>())
 }
 
 // Handler for POST /api/v1/user/{username}
