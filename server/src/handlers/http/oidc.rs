@@ -233,14 +233,14 @@ async fn request_token(
     login_query: &Login,
 ) -> anyhow::Result<(Claims, Userinfo)> {
     let mut token: Token<Claims> = oidc_client.request_token(&login_query.code).await?.into();
-    let claims: Claims;
-    if let Some(id_token) = token.id_token.as_mut() {
-        oidc_client.decode_token(id_token)?;
-        oidc_client.validate_token(id_token, None, None)?;
-        claims = id_token.payload().expect("payload is decoded").clone()
-    } else {
+    let Some(id_token) = token.id_token.as_mut() else {
         return Err(anyhow::anyhow!("No id_token provided"));
-    }
+    };
+
+    oidc_client.decode_token(id_token)?;
+    oidc_client.validate_token(id_token, None, None)?;
+    let claims = id_token.payload().expect("payload is decoded").clone();
+
     let userinfo = oidc_client.request_userinfo(&token).await?;
     Ok((claims, userinfo))
 }
