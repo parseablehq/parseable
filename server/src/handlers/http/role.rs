@@ -62,6 +62,9 @@ pub async fn list() -> Result<impl Responder, RoleError> {
 pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let mut metadata = get_metadata().await?;
+    if metadata.users.iter().any(|user| user.roles.contains(&name)) {
+        return Err(RoleError::RoleInUse);
+    }
     metadata.roles.remove(&name);
     put_metadata(&metadata).await?;
     mut_roles().remove(&name);
@@ -88,12 +91,15 @@ async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageErr
 pub enum RoleError {
     #[error("Failed to connect to storage: {0}")]
     ObjectStorageError(#[from] ObjectStorageError),
+    #[error("Cannot perform this operation as role is assigned to an existing user.")]
+    RoleInUse,
 }
 
 impl actix_web::ResponseError for RoleError {
     fn status_code(&self) -> http::StatusCode {
         match self {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::RoleInUse => StatusCode::BAD_REQUEST,
         }
     }
 
