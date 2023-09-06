@@ -30,7 +30,7 @@ use crate::rbac::role::Action;
 use crate::rbac::user::User;
 
 use self::map::SessionKey;
-use self::role::Permission;
+use self::role::{Permission, RoleBuilder};
 use self::user::UserType;
 
 pub enum Response {
@@ -113,7 +113,7 @@ impl Users {
             user.username().to_owned(),
             session,
             Utc::now() + Days::new(7),
-            user.permissions(),
+            roles_to_permission(user.roles()),
         )
     }
 
@@ -153,7 +153,7 @@ impl Users {
                     username.clone(),
                     key.clone(),
                     DateTime::<Utc>::MAX_UTC,
-                    user.permissions(),
+                    roles_to_permission(user.roles()),
                 );
                 return if sessions
                     .check_auth(&key, action, context_stream, context_user)
@@ -168,4 +168,14 @@ impl Users {
 
         Response::UnAuthorized
     }
+}
+
+fn roles_to_permission(roles: Vec<String>) -> Vec<Permission> {
+    let mut perms = HashSet::new();
+    for role in &roles {
+        for privs in map::roles().get(role).map(|x| x.iter()).unwrap_or_default() {
+            perms.extend(RoleBuilder::from(privs).build())
+        }
+    }
+    perms.into_iter().collect()
 }

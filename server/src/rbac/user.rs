@@ -27,10 +27,6 @@ use rand::distributions::{Alphanumeric, DistString};
 
 use crate::option::CONFIG;
 
-use crate::rbac::role::{Permission, RoleBuilder};
-
-use super::map::roles;
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum UserType {
@@ -79,14 +75,8 @@ impl User {
         matches!(self.ty, UserType::OAuth(_))
     }
 
-    pub fn permissions(&self) -> Vec<Permission> {
-        let mut perms = HashSet::new();
-        for role in &self.roles {
-            for privs in roles().get(role).map(|x| x.iter()).unwrap_or_default() {
-                perms.extend(RoleBuilder::from(privs).build())
-            }
-        }
-        perms.into_iter().collect()
+    pub fn roles(&self) -> Vec<String> {
+        self.roles.iter().cloned().collect()
     }
 }
 

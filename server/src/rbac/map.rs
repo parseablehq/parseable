@@ -21,7 +21,7 @@ use crate::rbac::user::User;
 use std::collections::HashMap;
 
 use super::{
-    role::{model::DefaultPrivilege, Action, Permission},
+    role::{model::DefaultPrivilege, Action, Permission, RoleBuilder},
     user,
 };
 use chrono::{DateTime, Utc};
@@ -87,17 +87,18 @@ pub fn mut_sessions() -> RwLockWriteGuard<'static, Sessions> {
 // the auth_map is initialized with admin user only and then gets lazily populated
 // as users authenticate
 pub fn init(users: Vec<User>, mut roles: Roles) {
-    roles.insert("admin".to_string(), vec![DefaultPrivilege::Admin]);
-    ROLES.set(RwLock::new(roles)).expect("map is only set once");
+    let admin_privilege = DefaultPrivilege::Admin;
+    let admin_permissions = RoleBuilder::from(&admin_privilege).build();
+    roles.insert("admin".to_string(), vec![admin_privilege]);
 
     let mut users = Users::from(users);
-    let mut sessions = Sessions::default();
-
     let admin = user::get_admin_user();
-    let admin_permissions = admin.permissions();
+    let admin_username = admin.username().to_owned();
+    users.insert(admin);
 
+    let mut sessions = Sessions::default();
     sessions.track_new(
-        admin.username().to_owned(),
+        admin_username,
         SessionKey::BasicAuth {
             username: CONFIG.parseable.username.clone(),
             password: CONFIG.parseable.password.clone(),
@@ -105,8 +106,8 @@ pub fn init(users: Vec<User>, mut roles: Roles) {
         chrono::DateTime::<Utc>::MAX_UTC,
         admin_permissions,
     );
-    users.insert(admin);
 
+    ROLES.set(RwLock::new(roles)).expect("map is only set once");
     USERS.set(RwLock::new(users)).expect("map is only set once");
     SESSIONS
         .set(RwLock::new(sessions))
