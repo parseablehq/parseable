@@ -21,7 +21,7 @@ parquet = "^42.0.0"
 ### actix dependencies
 actix-web-httpauth = "0.8"
 actix-web = { version = "4.3", features = ["rustls"] }
-actix-cors = "0.6"
+actix-cors = { version = "0.6", features = ["draft-private-network-access"] }
 actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 
