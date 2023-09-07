@@ -32,6 +32,7 @@ use crate::rbac::role::Action;
 use self::middleware::{DisAllowRootUser, RouteExt};
 
 mod about;
+mod llm;
 mod health_check;
 mod ingest;
 mod logstream;
@@ -229,6 +230,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                         .wrap(DisAllowRootUser),
                 ),
         );
+
+    let llm_query_api =
+        web::scope("/llm").service(web::resource("").route(web::post().to(llm::make_llm_request)));
+
     // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(
         // Base path "{url}/api/v1"
@@ -266,7 +271,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                         logstream_api,
                     ),
             )
-            .service(user_api),
+            .service(user_api)
+            .service(llm_query_api),
     )
     // GET "/" ==> Serve the static frontend directory
     .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
