@@ -16,19 +16,15 @@
  *
  */
 
-use actix_web::{web, HttpResponse, Result};
+use actix_web::{http::header::ContentType, web, HttpResponse, Result};
+use http::{header, StatusCode};
 use reqwest;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
+
+use crate::option::CONFIG;
 
 const OPEN_AI_URL: &str = "https://api.openai.com/v1/chat/completions";
-
-#[derive(Serialize)]
-struct RequestData {
-    model: String,
-    messages: Vec<Message>,
-    temperature: f32,
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Message {
@@ -46,55 +42,76 @@ struct Choice {
     message: Message,
 }
 
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AiPrompt {
     prompt: String,
 }
 
-pub async fn make_llm_request(data: web::Json<AiPrompt>) -> Result<HttpResponse> {
-    // let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
-    let req = data.into_inner();
-    let prompt = req.prompt;
-    
-    let api_key = "...";
-  
+pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse, LLMError> {
+    let api_key = match &CONFIG.parseable.open_ai_key {
+        Some(api_key) if api_key.len() > 3 => api_key,
+        _ => return Err(LLMError::InvalidAPIKey),
+    };
 
     let json_data = json!({
         "model": "gpt-3.5-turbo",
-        "messages": [{ "role": "user", "content": prompt}],
-        "temperature": 0.5,
+        "messages": [{ "role": "user", "content": body.prompt}],
+        "temperature": 0.7,
     });
 
     let client = reqwest::Client::new();
     let response = client
         .post(OPEN_AI_URL)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", api_key))
+        .header(header::CONTENT_TYPE, "application/json")
+        .bearer_auth(api_key)
         .json(&json_data)
         .send()
-        .await;
+        .await?;
 
-    match response {
-        Ok(res) => {
-            if res.status().is_success() {
-                let body = res.json::<ResponseData>().await.unwrap();
-                Ok(HttpResponse::Ok().json(&body.choices[0].message.content))
-            } else {
-                Ok(HttpResponse::InternalServerError().json(ErrorResponse {
-                    error: "Failed to make the API request".to_string(),
-                }))
-            }
+    if response.status().is_success() {
+        let body: ResponseData = response
+            .json()
+            .await
+            .expect("OpenAI response is always the same");
+        Ok(HttpResponse::Ok()
+            .content_type("application/json")
+            .json(&body.choices[0].message.content))
+    } else {
+        let body: Value = response.json().await?;
+        let message = body
+            .as_object()
+            .and_then(|body| body.get("error"))
+            .and_then(|error| error.as_object())
+            .and_then(|error| error.get("message"))
+            .map(|message| message.to_string())
+            .unwrap_or_else(|| "Error from OpenAI".to_string());
+
+        Err(LLMError::APIError(message))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LLMError {
+    #[error("Either OpenAI key was not provided or was invalid")]
+    InvalidAPIKey,
+    #[error("Failed to call OpenAI endpoint: {0}")]
+    FailedRequest(#[from] reqwest::Error),
+    #[error("{0}")]
+    APIError(String),
+}
+
+impl actix_web::ResponseError for LLMError {
+    fn status_code(&self) -> http::StatusCode {
+        match self {
+            Self::InvalidAPIKey => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::FailedRequest(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::APIError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
-        Err(err) => {
-            eprintln!("Error: {:?}", err);
-            Ok(HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            }))
-        }
+    }
+
+    fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
+        actix_web::HttpResponse::build(self.status_code())
+            .insert_header(ContentType::plaintext())
+            .body(self.to_string())
     }
 }
