@@ -32,9 +32,9 @@ use crate::rbac::role::Action;
 use self::middleware::{DisAllowRootUser, RouteExt};
 
 mod about;
-mod llm;
 mod health_check;
 mod ingest;
+mod llm;
 mod logstream;
 mod middleware;
 mod query;
