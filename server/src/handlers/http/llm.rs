@@ -18,15 +18,17 @@
 
 use actix_web::{http::header::ContentType, web, HttpResponse, Result};
 use http::{header, StatusCode};
+use itertools::Itertools;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{metadata::StreamInfo, option::CONFIG};
-use once_cell::sync::Lazy;
+use crate::{
+    metadata::{error::stream_info::MetadataError, STREAM_INFO},
+    option::CONFIG,
+};
 
 const OPEN_AI_URL: &str = "https://api.openai.com/v1/chat/completions";
-pub static STREAM_INFO: Lazy<StreamInfo> = Lazy::new(StreamInfo::default);
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Message {
@@ -48,26 +50,33 @@ struct Choice {
 pub struct AiPrompt {
     prompt: String,
     stream: String,
-    stringified: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct Field {
     name: String,
     data_type: String,
 }
 
-fn filter_unnecessary_fields_from_record(obj_array: Vec<Field>) -> Vec<Field> {
-    let mut filtered_fields: Vec<Field> = Vec::new();
-    for obj in obj_array {
-        let name = obj.name.clone();
-        let data_type = obj.data_type.clone();
-        let filtered_field = Field { name, data_type };
-
-        filtered_fields.push(filtered_field);
+impl From<&arrow_schema::Field> for Field {
+    fn from(field: &arrow_schema::Field) -> Self {
+        Self {
+            name: field.name().clone(),
+            data_type: field.data_type().to_string(),
+        }
     }
+}
 
-    return filtered_fields;
+fn format_prompt(stream: &str, prompt: &str, schema_json: &str) -> String {
+    format!(
+        r#"I have a table called {}.
+It has the columns:\n{}
+Based on this, generate valid SQL for the query: "{}"
+Generate only SQL as output. Also add comments in SQL syntax to explain your actions.
+Don't output anything else.
+If it is not possible to generate valid SQL, output an SQL comment saying so."#,
+        stream, schema_json, prompt
+    )
 }
 
 pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse, LLMError> {
@@ -76,18 +85,18 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
         _ => return Err(LLMError::InvalidAPIKey),
     };
 
-    let stream_name: String = body.stream;
+    let stream_name = &body.stream;
+    let schema = STREAM_INFO.schema(stream_name)?;
+    let filtered_schema = schema
+        .all_fields()
+        .into_iter()
+        .map(Field::from)
+        .collect_vec();
 
-    let schema = STREAM_INFO.schema(&stream_name)?;
-    println!("{:?}", schema);
+    let schema_json =
+        serde_json::to_string(&filtered_schema).expect("always converted to valid json");
 
-    let filtered_schema = filter_unnecessary_fields_from_record(schema);
-
-    let schema_json = serde_json::to_string(&filtered_schema).expect("");
-    println!("{:?}", schema_json);
-
-    let ai_prompt = format!("I have a table called {}. It has the columns:\n{}\nBased on this, generate valid SQL for the query: \"{}\"\nGenerate only SQL as output. Also add comments in SQL syntax to explain your actions. Don't output anything else.\nIf it is not possible to generate valid SQL, output an SQL comment saying so.",
-                     body.stream, schema_json, body.prompt);
+    let ai_prompt = dbg!(format_prompt(stream_name, &body.prompt, &schema_json));
 
     let json_data = json!({
         "model": "gpt-3.5-turbo",
@@ -134,6 +143,8 @@ pub enum LLMError {
     FailedRequest(#[from] reqwest::Error),
     #[error("{0}")]
     APIError(String),
+    #[error("{0}")]
+    StreamDoesNotExist(#[from] MetadataError),
 }
 
 impl actix_web::ResponseError for LLMError {
@@ -142,6 +153,7 @@ impl actix_web::ResponseError for LLMError {
             Self::InvalidAPIKey => StatusCode::INTERNAL_SERVER_ERROR,
             Self::FailedRequest(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::APIError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::StreamDoesNotExist(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
