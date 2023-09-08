@@ -22,9 +22,11 @@ use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::option::CONFIG;
+use crate::{metadata::StreamInfo, option::CONFIG};
+use once_cell::sync::Lazy;
 
 const OPEN_AI_URL: &str = "https://api.openai.com/v1/chat/completions";
+pub static STREAM_INFO: Lazy<StreamInfo> = Lazy::new(StreamInfo::default);
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Message {
@@ -45,6 +47,27 @@ struct Choice {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AiPrompt {
     prompt: String,
+    stream: String,
+    stringified: String,
+}
+
+#[derive(Debug)]
+struct Field {
+    name: String,
+    data_type: String,
+}
+
+fn filter_unnecessary_fields_from_record(obj_array: Vec<Field>) -> Vec<Field> {
+    let mut filtered_fields: Vec<Field> = Vec::new();
+    for obj in obj_array {
+        let name = obj.name.clone();
+        let data_type = obj.data_type.clone();
+        let filtered_field = Field { name, data_type };
+
+        filtered_fields.push(filtered_field);
+    }
+
+    return filtered_fields;
 }
 
 pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse, LLMError> {
@@ -53,10 +76,23 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
         _ => return Err(LLMError::InvalidAPIKey),
     };
 
+    let stream_name: String = body.stream;
+
+    let schema = STREAM_INFO.schema(&stream_name)?;
+    println!("{:?}", schema);
+
+    let filtered_schema = filter_unnecessary_fields_from_record(schema);
+
+    let schema_json = serde_json::to_string(&filtered_schema).expect("");
+    println!("{:?}", schema_json);
+
+    let ai_prompt = format!("I have a table called {}. It has the columns:\n{}\nBased on this, generate valid SQL for the query: \"{}\"\nGenerate only SQL as output. Also add comments in SQL syntax to explain your actions. Don't output anything else.\nIf it is not possible to generate valid SQL, output an SQL comment saying so.",
+                     body.stream, schema_json, body.prompt);
+
     let json_data = json!({
         "model": "gpt-3.5-turbo",
-        "messages": [{ "role": "user", "content": body.prompt}],
-        "temperature": 0.7,
+        "messages": [{ "role": "user", "content": ai_prompt}],
+        "temperature": 0.6,
     });
 
     let client = reqwest::Client::new();
