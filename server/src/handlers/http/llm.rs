@@ -96,7 +96,7 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
     let schema_json =
         serde_json::to_string(&filtered_schema).expect("always converted to valid json");
 
-    let ai_prompt = dbg!(format_prompt(stream_name, &body.prompt, &schema_json));
+    let ai_prompt = format_prompt(stream_name, &body.prompt, &schema_json);
 
     let json_data = json!({
         "model": "gpt-3.5-turbo",
