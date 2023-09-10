@@ -232,7 +232,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         );
 
     let llm_query_api =
-        web::scope("/llm").service(web::resource("").route(web::post().to(llm::make_llm_request)));
+        web::scope("/llm").service(web::resource("").route(web::post().to(llm::make_llm_request).authorize(Action::Query)));
 
     // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(
