@@ -20,7 +20,6 @@ use actix_web::{http::header::ContentType, web, HttpResponse, Result};
 use http::{header, StatusCode};
 use itertools::Itertools;
 use reqwest;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
@@ -30,29 +29,31 @@ use crate::{
 
 const OPEN_AI_URL: &str = "https://api.openai.com/v1/chat/completions";
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Message {
-    role: String,
-    content: String,
-}
-
-#[derive(Deserialize, Debug)]
+// Deserialize types for OpenAI Response
+#[derive(serde::Deserialize, Debug)]
 struct ResponseData {
     choices: Vec<Choice>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug)]
 struct Choice {
     message: Message,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug)]
+struct Message {
+    content: String,
+}
+
+// Request body
+#[derive(serde::Deserialize, Debug)]
 pub struct AiPrompt {
     prompt: String,
     stream: String,
 }
 
-#[derive(Debug, Serialize)]
+// Temperory type
+#[derive(Debug, serde::Serialize)]
 struct Field {
     name: String,
     data_type: String,
@@ -67,7 +68,7 @@ impl From<&arrow_schema::Field> for Field {
     }
 }
 
-fn format_prompt(stream: &str, prompt: &str, schema_json: &str) -> String {
+fn build_prompt(stream: &str, prompt: &str, schema_json: &str) -> String {
     format!(
         r#"I have a table called {}.
 It has the columns:\n{}
@@ -77,6 +78,14 @@ Don't output anything else.
 If it is not possible to generate valid SQL, output an SQL comment saying so."#,
         stream, schema_json, prompt
     )
+}
+
+fn build_request_body(ai_prompt: String) -> impl serde::Serialize {
+    json!({
+        "model": "gpt-3.5-turbo",
+        "messages": [{ "role": "user", "content": ai_prompt}],
+        "temperature": 0.6,
+    })
 }
 
 pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse, LLMError> {
@@ -96,20 +105,15 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
     let schema_json =
         serde_json::to_string(&filtered_schema).expect("always converted to valid json");
 
-    let ai_prompt = format_prompt(stream_name, &body.prompt, &schema_json);
-
-    let json_data = json!({
-        "model": "gpt-3.5-turbo",
-        "messages": [{ "role": "user", "content": ai_prompt}],
-        "temperature": 0.6,
-    });
+    let prompt = build_prompt(stream_name, &body.prompt, &schema_json);
+    let body = build_request_body(prompt);
 
     let client = reqwest::Client::new();
     let response = client
         .post(OPEN_AI_URL)
         .header(header::CONTENT_TYPE, "application/json")
         .bearer_auth(api_key)
-        .json(&json_data)
+        .json(&body)
         .send()
         .await?;
 
