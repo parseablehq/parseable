@@ -135,11 +135,11 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
     }
 }
 
-pub async fn is_llm_active(_body: web::Json<AiPrompt>) -> Result<HttpResponse, LLMError> {
+pub async fn is_llm_active(_body: web::Json<AiPrompt>) -> HttpResponse {
     let is_active = matches!(&CONFIG.parseable.open_ai_key, Some(api_key) if api_key.len() > 3);
-    Ok(HttpResponse::Ok()
+    HttpResponse::Ok()
         .content_type("application/json")
-        .json(json!({"is_active": is_active})))
+        .json(json!({"is_active": is_active}))
 }
 
 #[derive(Debug, thiserror::Error)]
