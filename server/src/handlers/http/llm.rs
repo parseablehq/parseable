@@ -135,7 +135,6 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
     }
 }
 
-
 pub async fn is_llm_active(_body: web::Json<AiPrompt>) -> Result<HttpResponse, LLMError> {
     let api_key = match &CONFIG.parseable.open_ai_key {
         Some(api_key) if api_key.len() > 3 => true,
