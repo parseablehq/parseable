@@ -369,7 +369,7 @@ impl Server {
             .arg(
                 Arg::new(Self::OPEN_AI_KEY)
                     .long(Self::OPEN_AI_KEY)
-                    .env("OPENAI_API_KEY")
+                    .env("P_OPENAI_API_KEY")
                     .value_name("STRING")
                     .required(false)
                     .help("Set OpenAI key to enable llm feature"),
