@@ -34,6 +34,7 @@ use self::middleware::{DisAllowRootUser, RouteExt};
 mod about;
 mod health_check;
 mod ingest;
+mod llm;
 mod logstream;
 mod middleware;
 mod query;
@@ -229,6 +230,21 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                         .wrap(DisAllowRootUser),
                 ),
         );
+
+    let llm_query_api = web::scope("/llm")
+        .service(
+            web::resource("").route(
+                web::post()
+                    .to(llm::make_llm_request)
+                    .authorize(Action::Query),
+            ),
+        )
+        .service(
+            // to check if the API key for an LLM has been set up as env var
+            web::resource("isactive")
+                .route(web::post().to(llm::is_llm_active).authorize(Action::Query)),
+        );
+
     // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(
         // Base path "{url}/api/v1"
@@ -266,7 +282,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                         logstream_api,
                     ),
             )
-            .service(user_api),
+            .service(user_api)
+            .service(llm_query_api),
     )
     // GET "/" ==> Serve the static frontend directory
     .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());

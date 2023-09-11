@@ -184,6 +184,9 @@ pub struct Server {
     /// Server should send anonymous analytics or not
     pub send_analytics: bool,
 
+    /// Open AI access key
+    pub open_ai_key: Option<String>,
+
     /// Rows in Parquet Rowgroup
     pub row_group_size: usize,
 
@@ -232,6 +235,7 @@ impl FromArgMatches for Server {
             .get_one::<bool>(Self::SEND_ANALYTICS)
             .cloned()
             .expect("default for send analytics");
+        self.open_ai_key = m.get_one::<String>(Self::OPEN_AI_KEY).cloned();
         // converts Gib to bytes before assigning
         self.query_memory_pool_size = m
             .get_one::<u8>(Self::QUERY_MEM_POOL_SIZE)
@@ -271,6 +275,7 @@ impl Server {
     pub const PASSWORD: &str = "password";
     pub const CHECK_UPDATE: &str = "check-update";
     pub const SEND_ANALYTICS: &str = "send-analytics";
+    pub const OPEN_AI_KEY: &str = "open-ai-key";
     pub const QUERY_MEM_POOL_SIZE: &str = "query-mempool-size";
     pub const ROW_GROUP_SIZE: &str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &str = "compression-algo";
@@ -352,6 +357,24 @@ impl Server {
                     .help("Password for the basic authentication on the server"),
             )
             .arg(
+                Arg::new(Self::SEND_ANALYTICS)
+                    .long(Self::SEND_ANALYTICS)
+                    .env("P_SEND_ANONYMOUS_USAGE_DATA")
+                    .value_name("BOOL")
+                    .required(false)
+                    .default_value("true")
+                    .value_parser(value_parser!(bool))
+                    .help("Disable/Enable sending anonymous user data"),
+            )
+            .arg(
+                Arg::new(Self::OPEN_AI_KEY)
+                    .long(Self::OPEN_AI_KEY)
+                    .env("OPENAI_API_KEY")
+                    .value_name("STRING")
+                    .required(false)
+                    .help("Set OpenAI key to enable llm feature"),
+            )
+            .arg(
                 Arg::new(Self::CHECK_UPDATE)
                     .long(Self::CHECK_UPDATE)
                     .env("P_CHECK_UPDATE")
@@ -379,16 +402,6 @@ impl Server {
                     .default_value("16384")
                     .value_parser(value_parser!(usize))
                     .help("Number of rows in a row groups"),
-            )
-            .arg(
-                Arg::new(Self::SEND_ANALYTICS)
-                    .long(Self::SEND_ANALYTICS)
-                    .env("P_SEND_ANONYMOUS_USAGE_DATA")
-                    .value_name("BOOL")
-                    .required(false)
-                    .default_value("true")
-                    .value_parser(value_parser!(bool))
-                    .help("Disable/Enable sending anonymous user data"),
             )
             .arg(
                 Arg::new(Self::PARQUET_COMPRESSION_ALGO)
