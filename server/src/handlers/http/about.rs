@@ -40,7 +40,10 @@ pub async fn about() -> Json<serde_json::Value> {
     let deployment_id = meta.deployment_id.to_string();
     let mode = CONFIG.mode_string();
     let staging = CONFIG.staging_dir();
+
     let store = CONFIG.storage().get_endpoint();
+    let is_llm_active = matches!(&CONFIG.parseable.open_ai_key, Some(_));
+    let llm_provider = is_llm_active.then_some("OpenAI");
 
     Json(json!({
         "version": current_version,
@@ -48,6 +51,8 @@ pub async fn about() -> Json<serde_json::Value> {
         "deploymentId": deployment_id,
         "updateAvailable": update_available,
         "latestVersion": latest_release,
+        "llmActive": is_llm_active,
+        "llmProvider": llm_provider,
         "license": "AGPL-3.0-only",
         "mode": mode,
         "staging": staging,

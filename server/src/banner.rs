@@ -59,16 +59,23 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
         credentials = "\"Using default creds admin, admin. Please set credentials with P_USERNAME and P_PASSWORD.\"".red().to_string();
     }
 
+    let llm_status = match &config.parseable.open_ai_key {
+        Some(_) => "OpenAI Configured".green(),
+        None => "Not Configured".grey(),
+    };
+
     eprintln!(
         "
     {}
         URL:                {}
         Credentials:        {}
-        Deployment UID:     \"{}\"",
+        Deployment UID:     \"{}\"
+        LLM Status:          {}",
         "Server:".to_string().bold(),
         url,
         credentials,
         id.to_string(),
+        llm_status
     );
 }
 
