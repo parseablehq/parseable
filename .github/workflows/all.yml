@@ -1,178 +1,178 @@
-name: GitHub Release for all necessary architectures
+# name: GitHub Release for all necessary architectures
 
-on:
-  push:
+# on:
+#   push:
 
-env:
-  CARGO_TERM_COLOR: always
-  CONTAINER_REGISTRY: ghcr.io
-  CONTAINER_REPOSITORY: ${{ github.repository }}
-  ORIGINAL_SOURCECODE_URL: https://github.com/parseablehq/parseable
+# env:
+#   CARGO_TERM_COLOR: always
+#   CONTAINER_REGISTRY: ghcr.io
+#   CONTAINER_REPOSITORY: ${{ github.repository }}
+#   ORIGINAL_SOURCECODE_URL: https://github.com/parseablehq/parseable
 
-jobs:
-  init-env:
-    name: Set env outputs
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      actions: none
-      checks: none
-      contents: none
-      deployments: none
-      issues: none
-      packages: none
-      pull-requests: none
-      repository-projects: none
-      security-events: none
-      statuses: none
-    outputs:
-      container_registry_base_uri: ${{ steps.set-env.outputs.container_registry_base_uri }}
-    steps:
-      - name: Set env for later jobs
-        id: set-env
-        run: |
-          echo "container_registry_base_uri=$(echo $CONTAINER_REGISTRY/$(echo $CONTAINER_REPOSITORY | tr 'A-Z' 'a-z'))" >> $GITHUB_OUTPUT
+# jobs:
+#   init-env:
+#     name: Set env outputs
+#     runs-on: ubuntu-latest
+#     continue-on-error: true
+#     permissions:
+#       actions: none
+#       checks: none
+#       contents: none
+#       deployments: none
+#       issues: none
+#       packages: none
+#       pull-requests: none
+#       repository-projects: none
+#       security-events: none
+#       statuses: none
+#     outputs:
+#       container_registry_base_uri: ${{ steps.set-env.outputs.container_registry_base_uri }}
+#     steps:
+#       - name: Set env for later jobs
+#         id: set-env
+#         run: |
+#           echo "container_registry_base_uri=$(echo $CONTAINER_REGISTRY/$(echo $CONTAINER_REPOSITORY | tr 'A-Z' 'a-z'))" >> $GITHUB_OUTPUT
 
-  release:
-    name: Publish to Github Relases
-    needs: [init-env]
-    outputs:
-      rc: ${{ steps.check-tag.outputs.rc }}
+#   release:
+#     name: Publish to Github Relases
+#     needs: [init-env]
+#     outputs:
+#       rc: ${{ steps.check-tag.outputs.rc }}
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - build: aarch64
-            os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            linker: gcc-aarch64-linux-gnu
-            use-cross: true
-            asset_name: parseable-linux-aarch64
-          - build: x86_64-apple-darwin
-            os: ubuntu-latest
-            target: x86_64-apple-darwin
-            use-cross: false # No cross-compilation needed
-            asset_name: parseable-macos-x86_64
-          - build: x86_64-pc-windows-msvc
-            os: ubuntu-latest
-            target: x86_64-pc-windows-msvc
-            use-cross: false # No cross-compilation needed
-            asset_name: parseable-windows-x86_64
-          - build: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            use-cross: false # No cross-compilation needed
-            asset_name: parseable-linux-x86_64
-          - build: aarch64-apple-darwin
-            os: ubuntu-latest
-            target: aarch64-apple-darwin
-            linker: gcc-aarch64-linux-gnu
-            use-cross: true
-            asset_name: parseable-macos-aarch64
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         include:
+#           - build: aarch64
+#             os: ubuntu-latest
+#             target: aarch64-unknown-linux-gnu
+#             linker: gcc-aarch64-linux-gnu
+#             use-cross: true
+#             asset_name: parseable-linux-aarch64
+#           - build: x86_64-apple-darwin
+#             os: ubuntu-latest
+#             target: x86_64-apple-darwin
+#             use-cross: false # No cross-compilation needed
+#             asset_name: parseable-macos-x86_64
+#           - build: x86_64-pc-windows-msvc
+#             os: ubuntu-latest
+#             target: x86_64-pc-windows-msvc
+#             use-cross: false # No cross-compilation needed
+#             asset_name: parseable-windows-x86_64
+#           - build: x86_64-unknown-linux-musl
+#             os: ubuntu-latest
+#             target: x86_64-unknown-linux-musl
+#             use-cross: false # No cross-compilation needed
+#             asset_name: parseable-linux-x86_64
+#           - build: aarch64-apple-darwin
+#             os: ubuntu-latest
+#             target: aarch64-apple-darwin
+#             linker: gcc-aarch64-linux-gnu
+#             use-cross: true
+#             asset_name: parseable-macos-aarch64
 
-    runs-on: ${{ matrix.os }}
+#     runs-on: ${{ matrix.os }}
 
-    steps:
-      - uses: actions/checkout@v2
+#     steps:
+#       - uses: actions/checkout@v2
 
-      - name: Check Tag
-        id: check-tag
-        shell: bash
-        run: |
-          tag=${GITHUB_REF##*/}
-          echo "::set-output name=version::$tag"
-          if [[ "$tag" =~ [0-9]+.[0-9]+.[0-9]+$ ]]; then
-            echo "::set-output name=rc::false"
-          else
-            echo "::set-output name=rc::true"
-          fi
+#       - name: Check Tag
+#         id: check-tag
+#         shell: bash
+#         run: |
+#           tag=${GITHUB_REF##*/}
+#           echo "::set-output name=version::$tag"
+#           if [[ "$tag" =~ [0-9]+.[0-9]+.[0-9]+$ ]]; then
+#             echo "::set-output name=rc::false"
+#           else
+#             echo "::set-output name=rc::true"
+#           fi
 
-      - name: Install Rust Toolchain Components
-        uses: actions-rs/toolchain@v1
-        with:
-          override: true
-          target: ${{ matrix.target }}
-          toolchain: stable
-          profile: minimal
+#       - name: Install Rust Toolchain Components
+#         uses: actions-rs/toolchain@v1
+#         with:
+#           override: true
+#           target: ${{ matrix.target }}
+#           toolchain: stable
+#           profile: minimal
 
-      - name: Install OpenSSL
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y libssl-dev
+#       - name: Install OpenSSL
+#         if: runner.os == 'Linux'
+#         run: sudo apt-get install -y libssl-dev
 
-      - name: APT update
-        run: |
-          sudo apt update
+#       - name: APT update
+#         run: |
+#           sudo apt update
 
-      - name: Install target specific tools
-        if: matrix.use-cross
-        run: |
-          sudo apt-get install -y ${{ matrix.linker }}
+#       - name: Install target specific tools
+#         if: matrix.use-cross
+#         run: |
+#           sudo apt-get install -y ${{ matrix.linker }}
 
-      - name: Configure target aarch64 GNU
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config
-          echo 'JEMALLOC_SYS_WITH_LG_PAGE=16' >> $GITHUB_ENV
+#       - name: Configure target aarch64 GNU
+#         if: matrix.target == 'aarch64-unknown-linux-gnu'
+#         run: |
+#           echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config
+#           echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config
+#           echo 'JEMALLOC_SYS_WITH_LG_PAGE=16' >> $GITHUB_ENV
 
-      - name: Show Version Information (Rust, cargo, GCC)
-        shell: bash
-        run: |
-          gcc --version || true
-          rustup -V
-          rustup toolchain list
-          rustup default
-          cargo -V
-          rustc -V
+#       - name: Show Version Information (Rust, cargo, GCC)
+#         shell: bash
+#         run: |
+#           gcc --version || true
+#           rustup -V
+#           rustup toolchain list
+#           rustup default
+#           cargo -V
+#           rustc -V
 
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: ${{ matrix.use-cross }}
-          command: build
-          args: --locked --release --target=${{ matrix.target }} ${{ matrix.cargo-flags }}
+#       - name: Build
+#         uses: actions-rs/cargo@v1
+#         with:
+#           use-cross: ${{ matrix.use-cross }}
+#           command: build
+#           args: --locked --release --target=${{ matrix.target }} ${{ matrix.cargo-flags }}
 
-      - uses: actions/upload-artifact@v3
-        with:
-          name: artifact
-          path: target/${{ matrix.target }}/release/parseable
+#       - uses: actions/upload-artifact@v3
+#         with:
+#           name: artifact
+#           path: target/${{ matrix.target }}/release/parseable
 
-      - name: Build Archive
-        shell: bash
-        id: package
-        env:
-          target: ${{ matrix.target }}
-          version: ${{ steps.check-tag.outputs.version }}
-        run: |
-          set -euxo pipefail
-          bin=${GITHUB_REPOSITORY##*/}
-          src=`pwd`
-          dist=$src/dist
-          name=$bin-$version-$target
-          executable=target/$target/release/$bin
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            executable=$executable.exe
-          fi
-          mkdir $dist
-          cp $executable $dist
-          cd $dist
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-              archive=$dist/$name.zip
-              7z a $archive *
-              echo "::set-output name=archive::`pwd -W`/$name.zip"
-          else
-              archive=$dist/$name.tar.gz
-              tar czf $archive *
-              echo "::set-output name=archive::$archive"
-          fi
+#       - name: Build Archive
+#         shell: bash
+#         id: package
+#         env:
+#           target: ${{ matrix.target }}
+#           version: ${{ steps.check-tag.outputs.version }}
+#         run: |
+#           set -euxo pipefail
+#           bin=${GITHUB_REPOSITORY##*/}
+#           src=`pwd`
+#           dist=$src/dist
+#           name=$bin-$version-$target
+#           executable=target/$target/release/$bin
+#           if [[ "$RUNNER_OS" == "Windows" ]]; then
+#             executable=$executable.exe
+#           fi
+#           mkdir $dist
+#           cp $executable $dist
+#           cd $dist
+#           if [[ "$RUNNER_OS" == "Windows" ]]; then
+#               archive=$dist/$name.zip
+#               7z a $archive *
+#               echo "::set-output name=archive::`pwd -W`/$name.zip"
+#           else
+#               archive=$dist/$name.tar.gz
+#               tar czf $archive *
+#               echo "::set-output name=archive::$archive"
+#           fi
 
-      - name: Publish Archive
-        uses: softprops/action-gh-release@v0.1.15
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        with:
-          draft: false
-          files: ${{ steps.package.outputs.archive }}
-          prerelease: ${{ steps.check-tag.outputs.rc == 'true' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#       - name: Publish Archive
+#         uses: softprops/action-gh-release@v0.1.15
+#         if: ${{ startsWith(github.ref, 'refs/tags/') }}
+#         with:
+#           draft: false
+#           files: ${{ steps.package.outputs.archive }}
+#           prerelease: ${{ steps.check-tag.outputs.rc == 'true' }}
+#         env:
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
