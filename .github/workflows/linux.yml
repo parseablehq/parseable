@@ -1,6 +1,6 @@
 on: [push]
 
-name: Release builds
+name: Release builds for linux
 
 jobs:
   cross:
@@ -10,11 +10,9 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - x86_64-apple-darwin
-          - x86_64-pc-windows-msvc
           - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
           - aarch64-unknown-linux-musl
-          - aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
@@ -27,3 +25,8 @@ jobs:
           use-cross: true
           command: build
           args: --release --target ${{matrix.target}}
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: artifact
+          path: target/${{ matrix.target }}/release/parseable
