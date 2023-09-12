@@ -23,5 +23,5 @@
 #       - name: Create artifact
 #         uses: actions/upload-artifact@v2
 #         with:
-#           name: PARSEABLE
-#           path: target/x86_64-pc-windows-msvc/release/PARSEABLE.exe
+#           name: parseable_windows_msvc
+#           path: target/x86_64-pc-windows-msvc/release/parseable_windows_msvc.exe

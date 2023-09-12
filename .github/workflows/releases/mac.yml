@@ -1,0 +1,47 @@
+name: Mac
+
+on: [push]
+
+jobs:
+  build-mac:
+    runs-on: darwin-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - name: Install latest rust toolchain for aarch64
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: aarch64-apple-darwin
+          default: true
+          override: true
+
+      - name: Build for aarch64
+        run: cargo build --all --release --target aarch64-apple-darwin && strip target/aarch64-apple-darwin/release/Parseable && mv target/aarch64-apple-darwin/release/Parseable target/aarch64-apple-darwin/release/Parseable_darwin
+
+      - name: Create artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: Parseable
+          path: |
+            target/aarch64-apple-darwin/release/parseable
+
+      - name: Install latest rust toolchain for x86_64
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-apple-darwin
+          default: true
+          override: true
+
+      - name: Build for x86_64
+        run: cargo build --release --target x86_64-apple-darwin && strip target/x86_64-apple-darwin/release/Parseable && mv target/x86_64-apple-darwin/release/Parseable target/x86_64-apple-darwin/release/Parseable_darwin
+
+      - name: Create artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: Parseable
+          path: |
+            target/aarch64-apple-darwin/release/parseable
