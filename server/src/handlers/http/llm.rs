@@ -139,13 +139,6 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
     }
 }
 
-pub async fn is_llm_active() -> HttpResponse {
-    let is_active = matches!(&CONFIG.parseable.open_ai_key, Some(api_key) if api_key.len() > 3);
-    HttpResponse::Ok()
-        .content_type("application/json")
-        .json(json!({"is_active": is_active}))
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum LLMError {
     #[error("Either OpenAI key was not provided or was invalid")]

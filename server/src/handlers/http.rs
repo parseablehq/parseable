@@ -231,19 +231,13 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 ),
         );
 
-    let llm_query_api = web::scope("/llm")
-        .service(
-            web::resource("").route(
-                web::post()
-                    .to(llm::make_llm_request)
-                    .authorize(Action::Query),
-            ),
-        )
-        .service(
-            // to check if the API key for an LLM has been set up as env var
-            web::resource("isactive")
-                .route(web::post().to(llm::is_llm_active).authorize(Action::Query)),
-        );
+    let llm_query_api = web::scope("/llm").service(
+        web::resource("").route(
+            web::post()
+                .to(llm::make_llm_request)
+                .authorize(Action::Query),
+        ),
+    );
 
     // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(
