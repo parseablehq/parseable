@@ -173,7 +173,11 @@ impl Users {
 fn roles_to_permission(roles: Vec<String>) -> Vec<Permission> {
     let mut perms = HashSet::new();
     for role in &roles {
-        for privs in map::roles().get(role).map(|x| x.iter()).unwrap_or_default() {
+        let role_map = &map::roles();
+        let Some(privilege_list) = role_map.get(role) else {
+            continue;
+        };
+        for privs in privilege_list {
             perms.extend(RoleBuilder::from(privs).build())
         }
     }
