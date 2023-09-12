@@ -166,13 +166,20 @@ pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, Que
         return Err(QueryValidationError::MultipleStreams(query.to_string()));
     }
 
-    let start: DateTime<Utc> = DateTime::parse_from_rfc3339(start_time)
-        .map_err(|_| QueryValidationError::StartTimeParse)?
-        .into();
+    let start: DateTime<Utc>;
+    let end: DateTime<Utc>;
 
-    let end: DateTime<Utc> = DateTime::parse_from_rfc3339(end_time)
-        .map_err(|_| QueryValidationError::EndTimeParse)?
-        .into();
+    if end_time == "now" {
+        end = Utc::now();
+        start = end - chrono::Duration::from_std(humantime::parse_duration(start_time)?)?;
+    } else {
+        start = DateTime::parse_from_rfc3339(start_time)
+            .map_err(|_| QueryValidationError::StartTimeParse)?
+            .into();
+        end = DateTime::parse_from_rfc3339(end_time)
+            .map_err(|_| QueryValidationError::EndTimeParse)?
+            .into();
+    };
 
     if start.timestamp() > end.timestamp() {
         return Err(QueryValidationError::StartTimeAfterEndTime);
@@ -226,6 +233,10 @@ pub mod error {
         StartTimeParse,
         #[error("Could not parse end time correctly")]
         EndTimeParse,
+        #[error("While generating times for 'now' failed to parse duration")]
+        NotValidDuration(#[from] humantime::DurationError),
+        #[error("Parsed duration out of range")]
+        OutOfRange(#[from] chrono::OutOfRangeError),
         #[error("Start time cannot be greater than the end time")]
         StartTimeAfterEndTime,
         #[error("Stream is not initialized yet. Post an event first.")]
