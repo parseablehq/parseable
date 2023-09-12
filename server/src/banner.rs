@@ -70,7 +70,7 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
         URL:                {}
         Credentials:        {}
         Deployment UID:     \"{}\"
-        LLM Status:          {}",
+        LLM Status:         \"{}\"",
         "Server:".to_string().bold(),
         url,
         credentials,
