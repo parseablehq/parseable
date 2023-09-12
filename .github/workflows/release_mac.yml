@@ -22,7 +22,7 @@ jobs:
         run: cargo build --all --release --target aarch64-apple-darwin && strip target/aarch64-apple-darwin/release/Parseable && mv target/aarch64-apple-darwin/release/Parseable target/aarch64-apple-darwin/release/Parseable_darwin
 
       - name: Dir command
-        run: find target/release/ -type f -maxdepth 2
+        run: find target/ -type d -name "debug" -prune -o -type f -maxdepth 3
 
       - name: Create artifact
         uses: actions/upload-artifact@v2

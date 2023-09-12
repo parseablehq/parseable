@@ -1,36 +1,34 @@
-on: [push]
+# on: [push]
 
-name: Release builds for linux
+# name: Release builds for linux
 
-jobs:
-  cross:
-    name: Build for ${{matrix.target}}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-gnu
-          # - aarch64-unknown-linux-musl
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: ${{matrix.target}}
-          override: true
+# jobs:
+#   cross:
+#     name: Build for ${{matrix.target}}
+#     runs-on: ubuntu-latest
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         target:
+#           - aarch64-unknown-linux-gnu
+#     steps:
+#       - uses: actions/checkout@v2
+#       - uses: actions-rs/toolchain@v1
+#         with:
+#           toolchain: stable
+#           target: ${{matrix.target}}
+#           override: true
 
-      - uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: --release --target ${{matrix.target}}
+#       - uses: actions-rs/cargo@v1
+#         with:
+#           use-cross: true
+#           command: build
+#           args: --release --target ${{matrix.target}}
 
-      - uses: actions/upload-artifact@v3
-        with:
-          name: artifact
-          path: target/${{ matrix.target }}/release/parseable
+#       - uses: actions/upload-artifact@v3
+#         with:
+#           name: artifact
+#           path: target/${{ matrix.target }}/release/parseable
 
-      - name: Dir command
-        run: find target/release/ -type f -maxdepth 2
+#       - name: Dir command
+#         run: find target/ -type d -name "debug" -prune -o -type f -maxdepth 3
