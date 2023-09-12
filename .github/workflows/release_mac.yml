@@ -1,6 +1,12 @@
 name: Mac
 
-on: [push]
+on:
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "helm/**"
+      - "assets/**"
+      - "**.md"
 
 jobs:
   build-mac:
