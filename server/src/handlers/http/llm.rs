@@ -139,7 +139,6 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
     }
 }
 
-
 #[derive(Debug, thiserror::Error)]
 pub enum LLMError {
     #[error("Either OpenAI key was not provided or was invalid")]

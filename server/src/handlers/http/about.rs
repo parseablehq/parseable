@@ -42,7 +42,7 @@ pub async fn about() -> Json<serde_json::Value> {
     let staging = CONFIG.staging_dir();
 
     let store = CONFIG.storage().get_endpoint();
-    let is_llm_active = matches!(&CONFIG.parseable.open_ai_key, Some(_));
+    let is_llm_active = &CONFIG.parseable.open_ai_key.is_some();
     let llm_provider = is_llm_active.then_some("OpenAI");
 
     Json(json!({
