@@ -88,6 +88,7 @@ uptime_lib = "0.2.2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 xz2 = { version = "*", features = ["static"] }
 nom = "7.1.3"
+humantime = "2.1.0"
 
 [build-dependencies]
 cargo_toml = "0.15"
