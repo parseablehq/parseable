@@ -36,6 +36,8 @@ pub enum Action {
     DeleteUser,
     PutRoles,
     GetRole,
+    GetAbout,
+    QueryLLM,
     All,
 }
 
@@ -91,6 +93,8 @@ impl RoleBuilder {
                 Action::PutRoles => Permission::Unit(action),
                 Action::GetRole => Permission::Unit(action),
                 Action::DeleteUser => Permission::Unit(action),
+                Action::GetAbout => Permission::Unit(action),
+                Action::QueryLLM => Permission::Unit(action),
                 Action::All => Permission::Stream(action, self.stream.clone().unwrap()),
             };
             perms.push(perm);
@@ -155,6 +159,8 @@ pub mod model {
                 Action::PutRetention,
                 Action::PutAlert,
                 Action::GetAlert,
+                Action::GetAbout,
+                Action::QueryLLM,
             ],
             stream: Some("*".to_string()),
             tag: None,
@@ -172,6 +178,8 @@ pub mod model {
                 Action::GetRetention,
                 Action::PutAlert,
                 Action::GetAlert,
+                Action::GetAbout,
+                Action::QueryLLM,
             ],
             stream: None,
             tag: None,
@@ -187,6 +195,8 @@ pub mod model {
                 Action::GetStats,
                 Action::GetRetention,
                 Action::GetAlert,
+                Action::GetAbout,
+                Action::QueryLLM,
             ],
             stream: None,
             tag: None,

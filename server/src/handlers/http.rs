@@ -235,7 +235,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::resource("").route(
             web::post()
                 .to(llm::make_llm_request)
-                .authorize(Action::Query),
+                .authorize(Action::QueryLLM),
         ),
     );
 
@@ -263,7 +263,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
             .service(web::resource("/readiness").route(web::get().to(health_check::readiness)))
             // GET "/about" ==> Returns information about instance
-            .service(web::resource("/about").route(web::get().to(about::about)))
+            .service(
+                web::resource("/about")
+                    .route(web::get().to(about::about).authorize(Action::GetAbout)),
+            )
             .service(
                 web::scope("/logstream")
                     .service(
