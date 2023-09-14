@@ -33,6 +33,8 @@ use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KE
 use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
+use super::logstream::error::CreateStreamError;
+
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
@@ -43,9 +45,7 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
-        if let Err(e) = super::logstream::create_stream_if_not_exists(&stream_name).await {
-            return Err(PostError::CreateStream(e.into()));
-        }
+        create_stream_if_not_exists(&stream_name).await?;
         push_logs(stream_name, req, body).await?;
         Ok(HttpResponse::Ok().finish())
     } else {
@@ -104,6 +104,15 @@ fn into_event_batch(
     Ok((size, rb, is_first))
 }
 
+// Check if the stream exists and create a new stream if doesn't exist
+pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostError> {
+    if STREAM_INFO.stream_exists(stream_name) {
+        return Ok(());
+    }
+    super::logstream::create_stream(stream_name.to_string()).await?;
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PostError {
     #[error("Stream {0} not found")]
@@ -116,8 +125,8 @@ pub enum PostError {
     Event(#[from] EventError),
     #[error("Invalid Request: {0}")]
     Invalid(#[from] anyhow::Error),
-    #[error("Failed to create stream due to {0}")]
-    CreateStream(Box<dyn std::error::Error + Send + Sync>),
+    #[error("{0}")]
+    CreateStream(#[from] CreateStreamError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -127,6 +136,9 @@ impl actix_web::ResponseError for PostError {
             PostError::Header(_) => StatusCode::BAD_REQUEST,
             PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::Invalid(_) => StatusCode::BAD_REQUEST,
+            PostError::CreateStream(CreateStreamError::StreamNameValidation(_)) => {
+                StatusCode::BAD_REQUEST
+            }
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
         }
