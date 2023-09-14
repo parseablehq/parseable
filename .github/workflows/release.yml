@@ -25,6 +25,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          profile: minimal # minimal component installation (ie, no documentation)
           target: ${{matrix.target}}
           override: true
 
@@ -63,6 +64,7 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          profile: minimal
           default: true
           override: true
 
@@ -104,6 +106,7 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          profile: minimal
           target: ${{ matrix.target }}
           default: true
           override: true
