@@ -141,7 +141,7 @@ pub async fn reply_login(
     else {
         return Ok(HttpResponse::Unauthorized().finish());
     };
-    let username = user_info.preferred_username.unwrap();
+    let username = user_info.sub.unwrap();
     let group: Option<HashSet<String>> = claims
         .other
         .remove("groups")

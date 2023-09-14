@@ -195,14 +195,6 @@ pub struct Server {
 
     /// Open AI access key
     pub open_ai_key: Option<String>,
-    /// OpenID Connect Client ID
-    pub openid_client_id: Option<String>,
-
-    /// OpenID Connect Client Secret
-    pub openid_client_secret: Option<String>,
-
-    /// OIDC Provider base endpoint to connect to
-    pub openid_issuer: Option<Url>,
 
     /// Rows in Parquet Rowgroup
     pub row_group_size: usize,
@@ -404,24 +396,6 @@ impl Server {
                     .help("Password for the basic authentication on the server"),
             )
             .arg(
-                Arg::new(Self::SEND_ANALYTICS)
-                    .long(Self::SEND_ANALYTICS)
-                    .env("P_SEND_ANONYMOUS_USAGE_DATA")
-                    .value_name("BOOL")
-                    .required(false)
-                    .default_value("true")
-                    .value_parser(value_parser!(bool))
-                    .help("Disable/Enable sending anonymous user data"),
-            )
-            .arg(
-                Arg::new(Self::OPEN_AI_KEY)
-                    .long(Self::OPEN_AI_KEY)
-                    .env("P_OPENAI_API_KEY")
-                    .value_name("STRING")
-                    .required(false)
-                    .help("Set OpenAI key to enable llm feature"),
-            )
-            .arg(
                 Arg::new(Self::CHECK_UPDATE)
                     .long(Self::CHECK_UPDATE)
                     .env("P_CHECK_UPDATE")
@@ -440,6 +414,14 @@ impl Server {
                     .default_value("true")
                     .value_parser(value_parser!(bool))
                     .help("Disable/Enable sending anonymous user data"),
+            )
+            .arg(
+                Arg::new(Self::OPEN_AI_KEY)
+                    .long(Self::OPEN_AI_KEY)
+                    .env("P_OPENAI_API_KEY")
+                    .value_name("STRING")
+                    .required(false)
+                    .help("Set OpenAI key to enable llm feature"),
             )
             .arg(
                 Arg::new(Self::OPENID_CLIENT_ID)

@@ -59,7 +59,7 @@ impl User {
 
     pub fn new_oauth(username: String) -> Self {
         Self {
-            ty: UserType::OAuth(OAuth { username }),
+            ty: UserType::OAuth(OAuth { userid: username }),
             roles: HashSet::new(),
         }
     }
@@ -67,7 +67,9 @@ impl User {
     pub fn username(&self) -> &str {
         match self.ty {
             UserType::Native(Basic { ref username, .. }) => username,
-            UserType::OAuth(OAuth { ref username }) => username,
+            UserType::OAuth(OAuth {
+                userid: ref username,
+            }) => username,
         }
     }
 
@@ -146,5 +148,5 @@ pub fn get_admin_user() -> User {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OAuth {
-    username: String,
+    userid: String,
 }
