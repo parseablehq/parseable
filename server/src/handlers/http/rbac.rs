@@ -64,6 +64,10 @@ pub async fn post_user(
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
+    let roles: Option<HashSet<String>> = body
+        .map(|body| serde_json::from_value(body.into_inner()))
+        .transpose()?;
+
     validator::user_name(&username)?;
     let _ = UPDATE_LOCK.lock().await;
     if Users.contains(&username) {
@@ -84,8 +88,8 @@ pub async fn post_user(
     // set this user to user map
     Users.put_user(user);
 
-    if let Some(body) = body {
-        put_role(web::Path::<String>::from(username), body).await?;
+    if let Some(roles) = roles {
+        put_role(web::Path::<String>::from(username), web::Json(roles)).await?;
     }
 
     Ok(password)
@@ -152,15 +156,14 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     Ok(format!("deleted user: {username}"))
 }
 
+// Handler PUT /user/{username}/roles => Put roles for user
 // Put roles for given user
 pub async fn put_role(
     username: web::Path<String>,
-    role: web::Json<serde_json::Value>,
+    role: web::Json<HashSet<String>>,
 ) -> Result<String, RBACError> {
     let username = username.into_inner();
     let role = role.into_inner();
-    let role: HashSet<String> = serde_json::from_value(role)?;
-    let role = role.into_iter().collect();
 
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
