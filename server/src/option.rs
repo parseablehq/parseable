@@ -17,13 +17,15 @@
  */
 
 use clap::error::ErrorKind;
-use clap::{command, value_parser, Arg, Args, Command, FromArgMatches};
+use clap::{command, value_parser, Arg, ArgGroup, Args, Command, FromArgMatches};
 
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use url::Url;
 
+use crate::oidc::{self, OpenidConfig};
 use crate::storage::{FSConfig, ObjectStorageProvider, S3Config, LOCAL_SYNC_INTERVAL};
 use crate::utils::validate_path_is_writeable;
 
@@ -164,6 +166,10 @@ pub struct Server {
     /// The address on which the http server will listen.
     pub address: String,
 
+    /// Base domain under which server is hosted.
+    /// This information is used by OIDC to refer redirects
+    pub domain_address: Option<Url>,
+
     /// The local staging path is used as a temporary landing point
     /// for incoming events and local cache
     pub local_staging_path: PathBuf,
@@ -177,6 +183,9 @@ pub struct Server {
 
     /// Password for the basic authentication on the server
     pub password: String,
+
+    /// OpenId configuration
+    pub openid: Option<oidc::OpenidConfig>,
 
     /// Server should check for update or not
     pub check_update: bool,
@@ -207,6 +216,11 @@ impl FromArgMatches for Server {
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
+        self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
+        let openid_client_id = m.get_one::<String>(Self::OPENID_CLIENT_ID).cloned();
+        let openid_client_secret = m.get_one::<String>(Self::OPENID_CLIENT_SECRET).cloned();
+        let openid_issuer = m.get_one::<Url>(Self::OPENID_ISSUER).cloned();
+
         self.address = m
             .get_one::<String>(Self::ADDRESS)
             .cloned()
@@ -260,6 +274,26 @@ impl FromArgMatches for Server {
             _ => unreachable!(),
         };
 
+        self.openid = match (openid_client_id, openid_client_secret, openid_issuer) {
+            (Some(id), Some(secret), Some(issuer)) => {
+                let origin = if let Some(url) = self.domain_address.clone() {
+                    oidc::Origin::Production(url)
+                } else {
+                    oidc::Origin::Local {
+                        socket_addr: self.address.clone(),
+                        https: self.tls_cert_path.is_some() && self.tls_key_path.is_some(),
+                    }
+                };
+                Some(OpenidConfig {
+                    id,
+                    secret,
+                    issuer,
+                    origin,
+                })
+            }
+            _ => None,
+        };
+
         Ok(())
     }
 }
@@ -269,6 +303,7 @@ impl Server {
     pub const TLS_CERT: &str = "tls-cert-path";
     pub const TLS_KEY: &str = "tls-key-path";
     pub const ADDRESS: &str = "address";
+    pub const DOMAIN_URI: &str = "origin";
     pub const STAGING: &str = "local-staging-path";
     pub const UPLOAD_INTERVAL: &str = "upload-interval";
     pub const USERNAME: &str = "username";
@@ -276,6 +311,10 @@ impl Server {
     pub const CHECK_UPDATE: &str = "check-update";
     pub const SEND_ANALYTICS: &str = "send-analytics";
     pub const OPEN_AI_KEY: &str = "open-ai-key";
+    pub const OPENID_CLIENT_ID: &str = "oidc-client";
+    pub const OPENID_CLIENT_SECRET: &str = "oidc-client-secret";
+    pub const OPENID_ISSUER: &str = "oidc-issuer";
+    // todo : what should this flag be
     pub const QUERY_MEM_POOL_SIZE: &str = "query-mempool-size";
     pub const ROW_GROUP_SIZE: &str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &str = "compression-algo";
@@ -357,6 +396,16 @@ impl Server {
                     .help("Password for the basic authentication on the server"),
             )
             .arg(
+                Arg::new(Self::CHECK_UPDATE)
+                    .long(Self::CHECK_UPDATE)
+                    .env("P_CHECK_UPDATE")
+                    .value_name("BOOL")
+                    .required(false)
+                    .default_value("true")
+                    .value_parser(value_parser!(bool))
+                    .help("Disable/Enable checking for updates"),
+            )
+            .arg(
                 Arg::new(Self::SEND_ANALYTICS)
                     .long(Self::SEND_ANALYTICS)
                     .env("P_SEND_ANONYMOUS_USAGE_DATA")
@@ -375,14 +424,38 @@ impl Server {
                     .help("Set OpenAI key to enable llm feature"),
             )
             .arg(
-                Arg::new(Self::CHECK_UPDATE)
-                    .long(Self::CHECK_UPDATE)
-                    .env("P_CHECK_UPDATE")
-                    .value_name("BOOL")
+                Arg::new(Self::OPENID_CLIENT_ID)
+                    .long(Self::OPENID_CLIENT_ID)
+                    .env("P_OIDC_CLIENT_ID")
+                    .value_name("STRING")
                     .required(false)
-                    .default_value("true")
-                    .value_parser(value_parser!(bool))
-                    .help("Disable/Enable checking for updates"),
+                    .help("Set client id for oidc provider"),
+            )
+            .arg(
+                Arg::new(Self::OPENID_CLIENT_SECRET)
+                    .long(Self::OPENID_CLIENT_SECRET)
+                    .env("P_OIDC_CLIENT_SECRET")
+                    .value_name("STRING")
+                    .required(false)
+                    .help("Set client secret for oidc provider"),
+            )
+            .arg(
+                Arg::new(Self::OPENID_ISSUER)
+                    .long(Self::OPENID_ISSUER)
+                    .env("P_OIDC_ISSUER")
+                    .value_name("URl")
+                    .required(false)
+                    .value_parser(validation::url)
+                    .help("Set OIDC provider's host address."),
+            )
+            .arg(
+                Arg::new(Self::DOMAIN_URI)
+                    .long(Self::DOMAIN_URI)
+                    .env("P_ORIGIN_URI")
+                    .value_name("URL")
+                    .required(false)
+                    .value_parser(validation::url)
+                    .help("Set host global domain address"),
             )
             .arg(
                 Arg::new(Self::QUERY_MEM_POOL_SIZE)
@@ -419,7 +492,12 @@ impl Server {
                         "lz4",
                         "zstd"])
                     .help("Parquet compression algorithm"),
-            )
+            ).group(
+                ArgGroup::new("oidc")
+                    .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
+                    .requires_all([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
+                    .multiple(true)
+        )
     }
 }
 
@@ -487,5 +565,9 @@ pub mod validation {
             .is_ok()
             .then_some(s.to_string())
             .ok_or_else(|| "Socket Address for server is invalid".to_string())
+    }
+
+    pub fn url(s: &str) -> Result<url::Url, String> {
+        url::Url::parse(s).map_err(|_| "Invalid URL provided".to_string())
     }
 }

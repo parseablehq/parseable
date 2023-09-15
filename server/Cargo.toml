@@ -89,6 +89,8 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 xz2 = { version = "*", features = ["static"] }
 nom = "7.1.3"
 humantime = "2.1.0"
+openid = { version = "0.12.0", default-features = false, features = ["rustls"] }
+url = "2.4.0"
 
 [build-dependencies]
 cargo_toml = "0.15"

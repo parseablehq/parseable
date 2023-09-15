@@ -18,11 +18,17 @@
 
 use std::fs::File;
 use std::io::BufReader;
+use std::sync::Arc;
 
 use actix_cors::Cors;
-use actix_web::{web, App, HttpServer};
+use actix_web::{
+    web::{self, resource},
+    App, HttpServer,
+};
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
+use log::info;
+use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
@@ -37,8 +43,10 @@ mod ingest;
 mod llm;
 mod logstream;
 mod middleware;
+mod oidc;
 mod query;
 mod rbac;
+mod role;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -46,24 +54,36 @@ const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 const API_BASE_PATH: &str = "/api";
 const API_VERSION: &str = "v1";
 
-#[macro_export]
-macro_rules! create_app {
-    ($prometheus: expr) => {
+pub async fn run_http(
+    prometheus: PrometheusMetrics,
+    oidc_client: Option<crate::oidc::OpenidConfig>,
+) -> anyhow::Result<()> {
+    let oidc_client = match oidc_client {
+        Some(config) => {
+            let client = config
+                .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
+                .await?;
+            Some(Arc::new(client))
+        }
+        None => None,
+    };
+
+    let create_app = move || {
         App::new()
-            .wrap($prometheus.clone())
-            .configure(|cfg| configure_routes(cfg))
+            .wrap(prometheus.clone())
+            .configure(|cfg| configure_routes(cfg, oidc_client.clone()))
             .wrap(actix_web::middleware::Logger::default())
             .wrap(actix_web::middleware::Compress::default())
             .wrap(
                 Cors::default()
                     .allow_any_header()
                     .allow_any_method()
-                    .allow_any_origin(),
+                    .allow_any_origin()
+                    .expose_any_header()
+                    .supports_credentials(),
             )
     };
-}
 
-pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
     let ssl_acceptor = match (
         &CONFIG.parseable.tls_cert_path,
         &CONFIG.parseable.tls_key_path,
@@ -99,7 +119,7 @@ pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
     };
 
     // concurrent workers equal to number of cores on the cpu
-    let http_server = HttpServer::new(move || create_app!(prometheus)).workers(num_cpus::get());
+    let http_server = HttpServer::new(create_app).workers(num_cpus::get());
     if let Some(config) = ssl_acceptor {
         http_server
             .bind_rustls(&CONFIG.parseable.address, config)?
@@ -112,7 +132,10 @@ pub async fn run_http(prometheus: PrometheusMetrics) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn configure_routes(cfg: &mut web::ServiceConfig) {
+pub fn configure_routes(
+    cfg: &mut web::ServiceConfig,
+    oidc_client: Option<Arc<openid::Client<Discovered, crate::oidc::Claims>>>,
+) {
     let generated = generate();
 
     //log stream API
@@ -211,13 +234,13 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .route(
                     web::put()
                         .to(rbac::put_role)
-                        .authorize(Action::PutRoles)
+                        .authorize(Action::PutUserRoles)
                         .wrap(DisAllowRootUser),
                 )
                 .route(
                     web::get()
                         .to(rbac::get_role)
-                        .authorize_for_user(Action::GetRole),
+                        .authorize_for_user(Action::GetUserRoles),
                 ),
         )
         .service(
@@ -238,6 +261,24 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                 .authorize(Action::QueryLLM),
         ),
     );
+    let role_api = web::scope("/role")
+        .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+        .service(
+            resource("/{name}")
+                .route(web::put().to(role::put).authorize(Action::PutRole))
+                .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
+                .route(web::get().to(role::get).authorize(Action::GetRole)),
+        );
+
+    let mut oauth_api = web::scope("/o")
+        .service(resource("/login").route(web::get().to(oidc::login)))
+        .service(resource("/logout").route(web::get().to(oidc::logout)))
+        .service(resource("/code").route(web::get().to(oidc::reply_login)));
+
+    if let Some(client) = oidc_client {
+        info!("Registered oidc client");
+        oauth_api = oauth_api.app_data(web::Data::from(client))
+    }
 
     // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(
@@ -280,7 +321,9 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
                     ),
             )
             .service(user_api)
-            .service(llm_query_api),
+            .service(llm_query_api)
+            .service(oauth_api)
+            .service(role_api),
     )
     // GET "/" ==> Serve the static frontend directory
     .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());

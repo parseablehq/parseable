@@ -16,15 +16,11 @@
  *
  */
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     option::CONFIG,
-    rbac::{
-        role::model::DefaultPrivilege,
-        user::{PassCode, User},
-        Users,
-    },
+    rbac::{map::roles, role::model::DefaultPrivilege, user, Users},
     storage::{self, ObjectStorageError, StorageMetadata},
     validator::{self, error::UsernameValidationError},
 };
@@ -35,10 +31,30 @@ use tokio::sync::Mutex;
 // async aware lock for updating storage metadata and user map atomicically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
+#[derive(serde::Serialize)]
+struct User {
+    id: String,
+    method: String,
+}
+
+impl From<&user::User> for User {
+    fn from(user: &user::User) -> Self {
+        let method = match user.ty {
+            user::UserType::Native(_) => "native".to_string(),
+            user::UserType::OAuth(_) => "oauth".to_string(),
+        };
+
+        User {
+            id: user.username().to_owned(),
+            method,
+        }
+    }
+}
+
 // Handler for GET /api/v1/user
 // returns list of all registerd users
 pub async fn list_users() -> impl Responder {
-    web::Json(Users.list_users())
+    web::Json(Users.collect_user::<User>())
 }
 
 // Handler for POST /api/v1/user/{username}
@@ -48,24 +64,32 @@ pub async fn post_user(
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
+    let roles: Option<HashSet<String>> = body
+        .map(|body| serde_json::from_value(body.into_inner()))
+        .transpose()?;
+
     validator::user_name(&username)?;
     let _ = UPDATE_LOCK.lock().await;
     if Users.contains(&username) {
         return Err(RBACError::UserExists);
     }
     let mut metadata = get_metadata().await?;
-    if metadata.users.iter().any(|user| user.username == username) {
+    if metadata
+        .users
+        .iter()
+        .any(|user| user.username() == username)
+    {
         // should be unreachable given state is always consistent
         return Err(RBACError::UserExists);
     }
-    let (user, password) = User::create_new(username.clone());
+    let (user, password) = user::User::new_basic(username.clone());
     metadata.users.push(user.clone());
     put_metadata(&metadata).await?;
     // set this user to user map
     Users.put_user(user);
 
-    if let Some(body) = body {
-        put_role(web::Path::<String>::from(username), body).await?;
+    if let Some(roles) = roles {
+        put_role(web::Path::<String>::from(username), web::Json(roles)).await?;
     }
 
     Ok(password)
@@ -76,19 +100,19 @@ pub async fn post_user(
 pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
-    if !Users.contains(&username) {
-        return Err(RBACError::UserDoesNotExist);
-    }
-    let PassCode { password, hash } = User::gen_new_password();
+    let user::PassCode { password, hash } = user::Basic::gen_new_password();
     let mut metadata = get_metadata().await?;
     if let Some(user) = metadata
         .users
         .iter_mut()
+        .filter_map(|user| match user.ty {
+            user::UserType::Native(ref mut user) => Some(user),
+            _ => None,
+        })
         .find(|user| user.username == username)
     {
         user.password_hash.clone_from(&hash);
     } else {
-        // should be unreachable given state is always consistent
         return Err(RBACError::UserDoesNotExist);
     }
     put_metadata(&metadata).await?;
@@ -102,8 +126,17 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
+    let res: HashMap<String, Vec<DefaultPrivilege>> = Users
+        .get_role(&username)
+        .iter()
+        .filter_map(|role_name| {
+            roles()
+                .get(role_name)
+                .map(|role| (role_name.to_owned(), role.clone()))
+        })
+        .collect();
 
-    Ok(web::Json(Users.get_role(&username)))
+    Ok(web::Json(res))
 }
 
 // Handler for DELETE /api/v1/user/delete/{username}
@@ -116,22 +149,21 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     };
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
-    metadata.users.retain(|user| user.username != username);
+    metadata.users.retain(|user| user.username() != username);
     put_metadata(&metadata).await?;
     // update in mem table
     Users.delete_user(&username);
     Ok(format!("deleted user: {username}"))
 }
 
+// Handler PUT /user/{username}/roles => Put roles for user
 // Put roles for given user
 pub async fn put_role(
     username: web::Path<String>,
-    role: web::Json<serde_json::Value>,
+    role: web::Json<HashSet<String>>,
 ) -> Result<String, RBACError> {
     let username = username.into_inner();
     let role = role.into_inner();
-    let role: HashSet<DefaultPrivilege> = serde_json::from_value(role)?;
-    let role = role.into_iter().collect();
 
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
@@ -141,9 +173,9 @@ pub async fn put_role(
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username == username)
+        .find(|user| user.username() == username)
     {
-        user.role.clone_from(&role);
+        user.roles.clone_from(&role);
     } else {
         // should be unreachable given state is always consistent
         return Err(RBACError::UserDoesNotExist);

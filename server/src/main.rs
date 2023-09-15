@@ -39,6 +39,7 @@ mod handlers;
 mod metadata;
 mod metrics;
 mod migration;
+mod oidc;
 mod option;
 mod query;
 mod rbac;
@@ -64,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
     migration::run_metadata_migration(&CONFIG).await?;
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, &metadata).await;
-    rbac::map::init_auth_maps(metadata.users.clone());
+    rbac::map::init(metadata.users.clone(), metadata.roles.clone());
     metadata.set_global();
     let prometheus = metrics::build_metrics_handler();
     CONFIG.storage().register_store_metrics(&prometheus);
@@ -98,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
         analytics::init_analytics_scheduler().await;
     }
 
-    let app = handlers::http::run_http(prometheus);
+    let app = handlers::http::run_http(prometheus, CONFIG.parseable.openid.clone());
     tokio::pin!(app);
     loop {
         tokio::select! {

@@ -17,6 +17,7 @@
  */
 
 use std::{
+    collections::HashMap,
     fs::{self, create_dir_all, OpenOptions},
     path::PathBuf,
 };
@@ -24,7 +25,12 @@ use std::{
 use once_cell::sync::OnceCell;
 use std::io;
 
-use crate::{option::CONFIG, rbac::user::User, storage::ObjectStorageError, utils::uid};
+use crate::{
+    option::CONFIG,
+    rbac::{role::model::DefaultPrivilege, user::User},
+    storage::ObjectStorageError,
+    utils::uid,
+};
 
 use super::object_storage::PARSEABLE_METADATA_FILE_NAME;
 
@@ -49,18 +55,21 @@ pub struct StorageMetadata {
     pub deployment_id: uid::Uid,
     pub users: Vec<User>,
     pub streams: Vec<String>,
+    #[serde(default)]
+    pub roles: HashMap<String, Vec<DefaultPrivilege>>,
 }
 
 impl StorageMetadata {
     pub fn new() -> Self {
         Self {
-            version: "v2".to_string(),
+            version: "v3".to_string(),
             mode: CONFIG.storage_name.to_owned(),
             staging: CONFIG.staging_dir().canonicalize().unwrap(),
             storage: CONFIG.storage().get_endpoint(),
             deployment_id: uid::gen(),
             users: Vec::new(),
             streams: Vec::new(),
+            roles: HashMap::default(),
         }
     }
 
