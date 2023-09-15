@@ -76,7 +76,6 @@ pub async fn run_http(
             .wrap(actix_web::middleware::Compress::default())
             .wrap(
                 Cors::default()
-                    .block_on_origin_mismatch(false)
                     .allow_any_header()
                     .allow_any_method()
                     .allow_any_origin()
