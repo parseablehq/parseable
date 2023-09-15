@@ -125,6 +125,7 @@ pub mod model {
         Editor,
         Writer { stream: String },
         Reader { stream: String, tag: Option<String> },
+        Ingest { stream: String },
     }
 
     impl From<&DefaultPrivilege> for RoleBuilder {
@@ -141,6 +142,9 @@ pub mod model {
                         reader = reader.with_tag(tag.to_owned())
                     }
                     reader
+                }
+                DefaultPrivilege::Ingest { stream } => {
+                    ingest_perm_builder().with_stream(stream.to_owned())
                 }
             }
         }
@@ -206,6 +210,14 @@ pub mod model {
                 Action::GetAbout,
                 Action::QueryLLM,
             ],
+            stream: None,
+            tag: None,
+        }
+    }
+
+    fn ingest_perm_builder() -> RoleBuilder {
+        RoleBuilder {
+            actions: vec![Action::Ingest],
             stream: None,
             tag: None,
         }
