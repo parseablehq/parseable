@@ -2,6 +2,13 @@ name: Release builds for Mac(64bit, Arm), Windows and Linux(64 bit, Arm)
 
 on:
   push:
+    tags:
+      - v[0-9]+.[0-9]+.[0-9]+*
+    paths-ignore:
+      - "docs/**"
+      - "helm/**"
+      - "assets/**"
+      - "**.md"
 
 jobs:
   build-linux:
