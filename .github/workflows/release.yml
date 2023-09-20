@@ -2,13 +2,6 @@ name: Release builds for Mac(64bit, Arm), Windows and Linux(64 bit, Arm)
 
 on:
   push:
-    tags:
-      - v[0-9]+.[0-9]+.[0-9]+*
-    paths-ignore:
-      - "docs/**"
-      - "helm/**"
-      - "assets/**"
-      - "**.md"
 
 jobs:
   build-linux:
@@ -35,15 +28,15 @@ jobs:
           command: build
           args: --release --target ${{matrix.target}}
 
+      - name: Rename binary
+        run: |
+          mv target/${{ matrix.target }}/release/parseable Parseable_${{ matrix.target }}
+
       - name: Create Artifact
         uses: actions/upload-artifact@v3
         with:
           name: Parseable_${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/parseable
-
-      - name: Rename binary
-        run: |
-          mv target/${{ matrix.target }}/release/parseable Parseable_${{ matrix.target }}
+          path: Parseable_${{ matrix.target }}
 
       - name: Publish Archive to Release Page
         uses: softprops/action-gh-release@v0.1.15
@@ -71,15 +64,15 @@ jobs:
       - name: Build
         run: cargo build --all --release --target x86_64-pc-windows-msvc
 
-      - name: Create artifact for Windows
-        uses: actions/upload-artifact@v2
-        with:
-          name: Parseable_x86_64-pc-windows-msvc
-          path: target/x86_64-pc-windows-msvc/release/PARSEABLE.exe
-
       - name: Rename binary
         run: |
           mv target/x86_64-pc-windows-msvc/release/PARSEABLE.exe Parseable_x86_64-pc-windows-msvc.exe
+
+      - name: Create artifact for Windows
+        uses: actions/upload-artifact@v2
+        with:
+          name: Parseable_x86_64-pc-windows-msvc.exe
+          path: Parseable_x86_64-pc-windows-msvc.exe
 
       - name: Publish Archive to Release Page
         uses: softprops/action-gh-release@v0.1.15
@@ -116,16 +109,15 @@ jobs:
           cargo build --release --target ${{ matrix.target }}
           strip target/${{ matrix.target }}/release/Parseable
 
+      - name: Rename binary
+        run: |
+          mv target/${{ matrix.target }}/release/Parseable Parseable_${{ matrix.target }}
+
       - name: Create artifact
         uses: actions/upload-artifact@v2
         with:
           name: Parseable_${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/Parseable
-
-      - name: Rename binary
-        run: |
-          mv target/${{ matrix.target }}/release/Parseable Parseable_${{ matrix.target }}
+          path: Parseable_${{ matrix.target }}
 
       - name: Publish Archive to Release Page
         uses: softprops/action-gh-release@v0.1.15
@@ -133,5 +125,31 @@ jobs:
         with:
           draft: false
           files: Parseable_${{ matrix.target }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-checksum:
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-windows, build-mac]
+    steps:
+      - name: Download artifacts created
+        uses: actions/download-artifact@v3
+
+      - name: Run shasum command
+        run: |
+          find . -type f -name "Parseable_*" -exec shasum {} \; | sed 's/.\/.*\///' > checksum.txt
+
+      - name: Create artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: checksum.txt
+          path: checksum.txt
+
+      - name: Publish Check Sum to Release Page
+        uses: softprops/action-gh-release@v0.1.15
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        with:
+          draft: false
+          files: checksum.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
