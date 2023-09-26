@@ -16,8 +16,8 @@
  *
  */
 
-use crate::option::CONFIG;
 use crate::rbac::user::User;
+use crate::{option::CONFIG, storage::StorageMetadata};
 use std::{collections::HashMap, sync::Mutex};
 
 use super::{
@@ -87,7 +87,12 @@ pub fn mut_sessions() -> RwLockWriteGuard<'static, Sessions> {
 // the user_map is initialized from the config file and has a list of all users
 // the auth_map is initialized with admin user only and then gets lazily populated
 // as users authenticate
-pub fn init(users: Vec<User>, mut roles: Roles) {
+pub fn init(metadata: &StorageMetadata) {
+    let users = metadata.users.clone();
+    let mut roles = metadata.roles.clone();
+
+    *DEFAULT_ROLE.lock().unwrap() = metadata.default_role.clone();
+
     let admin_privilege = DefaultPrivilege::Admin;
     let admin_permissions = RoleBuilder::from(&admin_privilege).build();
     roles.insert("admin".to_string(), vec![admin_privilege]);
