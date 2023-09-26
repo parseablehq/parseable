@@ -44,7 +44,7 @@ pub async fn about() -> Json<serde_json::Value> {
     let store = CONFIG.storage().get_endpoint();
     let is_llm_active = &CONFIG.parseable.open_ai_key.is_some();
     let llm_provider = is_llm_active.then_some("OpenAI");
-    let ui_version = option_env!("UI_VERSION");
+    let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
     Json(json!({
         "version": current_version,
