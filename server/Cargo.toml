@@ -99,6 +99,7 @@ static-files = "0.2"
 ureq = "2.6"
 vergen = { version = "8.1", features = ["build", "git", "cargo", "gitcl"] }
 zip = { version = "0.6", default_features = false, features = ["deflate"] }
+url = "2.4.0"
 
 [dev-dependencies]
 maplit = "1.0"
