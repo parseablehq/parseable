@@ -139,6 +139,17 @@ mod ui {
         file.write_all(checksum.as_bytes())?;
         file.flush()?;
 
+        if local_assets_path.is_none() {
+            // emit ui version for asset url
+            let url = url::Url::parse(url).expect("valid url");
+            let ui_version = url
+                .path_segments()
+                .expect("has segemnts")
+                .find(|v| v.starts_with('v'))
+                .expect("version segement");
+            println!("cargo:rustc-env=UI_VERSION={}", ui_version);
+        }
+
         Ok(())
     }
 }
