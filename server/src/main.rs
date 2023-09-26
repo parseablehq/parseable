@@ -35,6 +35,7 @@ mod alerts;
 mod analytics;
 mod banner;
 mod event;
+mod external_service;
 mod handlers;
 mod metadata;
 mod metrics;
