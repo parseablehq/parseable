@@ -34,7 +34,7 @@ use crate::{
     oidc::{Claims, DiscoveredClient},
     option::CONFIG,
     rbac::{
-        map::SessionKey,
+        map::{SessionKey, DEFAULT_ROLE},
         user::{User, UserType},
         Users,
     },
@@ -263,22 +263,27 @@ async fn put_user(
     group: Option<HashSet<String>>,
 ) -> Result<User, ObjectStorageError> {
     let mut metadata = get_metadata().await?;
-    let user = match metadata
+    let group = group.unwrap_or_else(|| {
+        DEFAULT_ROLE
+            .lock()
+            .unwrap()
+            .clone()
+            .map(|role| HashSet::from([role]))
+            .unwrap_or_default()
+    });
+
+    let user = metadata
         .users
         .iter()
         .find(|user| user.username() == username)
-    {
-        Some(user) => user.clone(),
-        None => {
-            let mut user = User::new_oauth(username.to_owned());
-            if let Some(group) = group {
-                user.roles = group
-            }
+        .cloned()
+        .unwrap_or_else(|| {
+            let user = User::new_oauth(username.to_owned(), group);
             metadata.users.push(user.clone());
-            put_metadata(&metadata).await?;
             user
-        }
-    };
+        });
+
+    put_metadata(&metadata).await?;
     Users.put_user(user.clone());
     Ok(user)
 }

@@ -18,20 +18,21 @@
 
 use crate::option::CONFIG;
 use crate::rbac::user::User;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Mutex};
 
 use super::{
     role::{model::DefaultPrivilege, Action, Permission, RoleBuilder},
     user,
 };
 use chrono::{DateTime, Utc};
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub type Roles = HashMap<String, Vec<DefaultPrivilege>>;
 
 pub static USERS: OnceCell<RwLock<Users>> = OnceCell::new();
 pub static ROLES: OnceCell<RwLock<Roles>> = OnceCell::new();
+pub static DEFAULT_ROLE: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 pub static SESSIONS: OnceCell<RwLock<Sessions>> = OnceCell::new();
 
 pub fn users() -> RwLockReadGuard<'static, Users> {

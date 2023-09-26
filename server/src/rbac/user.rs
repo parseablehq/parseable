@@ -57,10 +57,10 @@ impl User {
         )
     }
 
-    pub fn new_oauth(username: String) -> Self {
+    pub fn new_oauth(username: String, roles: HashSet<String>) -> Self {
         Self {
             ty: UserType::OAuth(OAuth { userid: username }),
-            roles: HashSet::new(),
+            roles,
         }
     }
 

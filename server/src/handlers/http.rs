@@ -268,6 +268,9 @@ pub fn configure_routes(
                 .route(web::put().to(role::put).authorize(Action::PutRole))
                 .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                 .route(web::get().to(role::get).authorize(Action::GetRole)),
+        )
+        .service(
+            resource("/default").route(web::put().to(role::default).authorize(Action::PutRole)),
         );
 
     let mut oauth_api = web::scope("/o")
