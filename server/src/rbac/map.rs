@@ -16,22 +16,23 @@
  *
  */
 
-use crate::option::CONFIG;
 use crate::rbac::user::User;
-use std::collections::HashMap;
+use crate::{option::CONFIG, storage::StorageMetadata};
+use std::{collections::HashMap, sync::Mutex};
 
 use super::{
     role::{model::DefaultPrivilege, Action, Permission, RoleBuilder},
     user,
 };
 use chrono::{DateTime, Utc};
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub type Roles = HashMap<String, Vec<DefaultPrivilege>>;
 
 pub static USERS: OnceCell<RwLock<Users>> = OnceCell::new();
 pub static ROLES: OnceCell<RwLock<Roles>> = OnceCell::new();
+pub static DEFAULT_ROLE: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 pub static SESSIONS: OnceCell<RwLock<Sessions>> = OnceCell::new();
 
 pub fn users() -> RwLockReadGuard<'static, Users> {
@@ -86,7 +87,12 @@ pub fn mut_sessions() -> RwLockWriteGuard<'static, Sessions> {
 // the user_map is initialized from the config file and has a list of all users
 // the auth_map is initialized with admin user only and then gets lazily populated
 // as users authenticate
-pub fn init(users: Vec<User>, mut roles: Roles) {
+pub fn init(metadata: &StorageMetadata) {
+    let users = metadata.users.clone();
+    let mut roles = metadata.roles.clone();
+
+    *DEFAULT_ROLE.lock().unwrap() = metadata.default_role.clone();
+
     let admin_privilege = DefaultPrivilege::Admin;
     let admin_permissions = RoleBuilder::from(&admin_privilege).build();
     roles.insert("admin".to_string(), vec![admin_privilege]);

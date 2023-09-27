@@ -261,8 +261,14 @@ pub fn configure_routes(
                 .authorize(Action::QueryLLM),
         ),
     );
+
     let role_api = web::scope("/role")
         .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+        .service(
+            resource("/default")
+                .route(web::put().to(role::put_default).authorize(Action::PutRole))
+                .route(web::get().to(role::get_default).authorize(Action::GetRole)),
+        )
         .service(
             resource("/{name}")
                 .route(web::put().to(role::put).authorize(Action::PutRole))

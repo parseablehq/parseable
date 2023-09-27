@@ -21,7 +21,10 @@ use http::StatusCode;
 
 use crate::{
     option::CONFIG,
-    rbac::{map::mut_roles, role::model::DefaultPrivilege},
+    rbac::{
+        map::{mut_roles, DEFAULT_ROLE},
+        role::model::DefaultPrivilege,
+    },
     storage::{self, ObjectStorageError, StorageMetadata},
 };
 
@@ -69,6 +72,28 @@ pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError
     put_metadata(&metadata).await?;
     mut_roles().remove(&name);
     Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for PUT /api/v1/role/default
+// Delete existing role
+pub async fn put_default(name: web::Json<String>) -> Result<impl Responder, RoleError> {
+    let name = name.into_inner();
+    let mut metadata = get_metadata().await?;
+    metadata.default_role = Some(name.clone());
+    *DEFAULT_ROLE.lock().unwrap() = Some(name);
+    put_metadata(&metadata).await?;
+    Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for GET /api/v1/role/default
+// Delete existing role
+pub async fn get_default() -> Result<impl Responder, RoleError> {
+    let res = match DEFAULT_ROLE.lock().unwrap().clone() {
+        Some(role) => serde_json::Value::String(role),
+        None => serde_json::Value::Null,
+    };
+
+    Ok(web::Json(res))
 }
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
