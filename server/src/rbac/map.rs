@@ -91,7 +91,10 @@ pub fn init(metadata: &StorageMetadata) {
     let users = metadata.users.clone();
     let mut roles = metadata.roles.clone();
 
-    *DEFAULT_ROLE.lock().unwrap() = metadata.default_role.clone();
+    DEFAULT_ROLE
+        .lock()
+        .unwrap()
+        .clone_from(&metadata.default_role);
 
     let admin_privilege = DefaultPrivilege::Admin;
     let admin_permissions = RoleBuilder::from(&admin_privilege).build();
