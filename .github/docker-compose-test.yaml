@@ -29,7 +29,7 @@ services:
   parseable:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: ../Dockerfile
     command: ["parseable", "s3-store"]
     ports:
       - 8000

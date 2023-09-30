@@ -1,4 +1,4 @@
-name: Load tests
+name: Integration tests
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ on:
 jobs:
 
   docker-compose-test:
-    name: Docker Compose based load tests
+    name: Integrations tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
