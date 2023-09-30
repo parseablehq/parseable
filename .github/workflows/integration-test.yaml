@@ -1,4 +1,4 @@
-name: Integration tests
+name: Integration
 
 on:
   pull_request:
@@ -11,13 +11,13 @@ on:
 jobs:
 
   docker-compose-test:
-    name: Integrations tests
+    name: Quest Smoke and Load Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Start compose
-        run: docker-compose -f ./.github/docker-compose-test.yaml up --build --exit-code-from quest
+        run: docker-compose -f docker-compose-test.yaml up --build --exit-code-from quest
       - name: Stop compose
         if: always()
-        run: docker-compose -f ./.github/docker-compose-test.yaml down
+        run: docker-compose -f docker-compose-test.yaml down
