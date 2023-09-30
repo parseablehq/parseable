@@ -125,7 +125,7 @@ fn total_event_stats() -> (u64, u64, u64) {
 
 fn build_metrics() -> HashMap<String, Value> {
     // sysinfo refreshed in previous function
-    // so no need to refresh again
+    // so no need to refresh again here
     let sys = SYS_INFO.lock().unwrap();
 
     let mut metrics = HashMap::new();
