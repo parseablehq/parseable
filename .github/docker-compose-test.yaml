@@ -58,7 +58,7 @@ services:
         delay: 20s
         max_attempts: 3
 
-  quest-load:
+  quest:
     image: ghcr.io/parseablehq/quest:main
     command: ["load", "http://parseable:8000", "parseableadmin", "parseableadmin", "20"]
     networks:
