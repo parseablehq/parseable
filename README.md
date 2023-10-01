@@ -29,17 +29,10 @@ For :stethoscope: commercial support and consultation, please reach out to us at
 
 ## :zap: Quickstart
 
-Run the below command to deploy Parseable in local storage mode with Docker.
+Deploy Parseable in local storage mode with Docker.
 
 ```sh
-mkdir -p $HOME/parseable/data
-mkdir -p $HOME/parseable/staging
-
 docker run -p 8000:8000 \
-  -v $HOME/parseable/data:/parseable/data \
-  -v $HOME/parseable/staging:/parseable/staging \
-  -e P_FS_DIR=/parseable/data \
-  -e P_STAGING_DIR=/parseable/staging \
   parseable/parseable:latest \
   parseable local-store
 ```
@@ -50,8 +43,6 @@ To ingest data, run the below command. This will send logs to the `demo` stream.
 
 ```sh
 curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
---header 'X-P-META-meta1: value1' \
---header 'X-P-TAG-tag1: value1' \
 --header 'X-P-Stream: demo' \
 --header 'Authorization: Basic YWRtaW46YWRtaW4=' \
 --header 'Content-Type: application/json' \
@@ -59,11 +50,7 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
     {
         "id": "434a5f5e-2f5f-11ed-a261-0242ac120002",
         "datetime": "24/Jun/2022:14:12:15 +0000",
-        "host": "153.10.110.81",
-        "user-identifier": "Mozilla/5.0 Gecko/20100101 Firefox/64.0",
-        "method": "PUT",
-        "status": 500,
-        "referrer": "http://www.google.com/"
+        "host": "153.10.110.81"
     }
 ]'
 ```
@@ -92,11 +79,11 @@ But with log data growing exponentially, today's log data challenges involve who
 
 ## :trophy: Contributing
 
-Refer to the contributing guide [here ↗︎](https://www.parseable.io/docs/contributing).
-
-### Contributors
+[Contribution guide ↗︎](https://www.parseable.io/docs/contributing).
 
 ![Alt](https://repobeats.axiom.co/api/embed/7c4e0f51cd3b8f78d1da682c396a3b5bd855a6ba.svg "Repobeats analytics image")
+
+### Contributors
 
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
 
