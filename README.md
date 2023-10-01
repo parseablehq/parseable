@@ -15,28 +15,19 @@
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
 [![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?style=flat&color=%2373DC8C&label=Checks)](https://github.com/parseablehq/parseable/actions)
 
+[Highlights ↗︎](https://github.com/parseablehq/parseable#rocket-highlights) | [Documentation ↗︎](https://www.parseable.io/docs/) | [Demo ↗︎](https://demo.parseable.io/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9) | [Integrations ↗︎](https://www.parseable.io/docs/category/integrations) | [FAQ ↗︎](https://www.parseable.io/docs/faq)
+
 </div>
 
-Parseable is a lightweight, cloud native log observability and analytics engine. It is written in Rust and uses Apache Arrow and Parquet.
+Parseable is a log analytics platform, built for the modern, cloud native era. Parseable uses a index-free mechanism to organize and query data allowing low latency, and high throughput ingestion and query.
 
-Parseable uses a simple, index-free mechanism to organize and query data allowing low latency, and high throughput ingestion and query. It can use either a local mount point or object storage (S3/compatible stores) for data storage.
+To get started, download the Parseable binary from [releases page ↗︎](https://github.com/parseablehq/parseable/releases/latest) and run it on your machine.
 
 For comparison, Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput. Read more in the [benchmarks directory](./benchmarks/).
 
-- [Parseable UI Demo (Credentials: admin,admin) ↗︎](https://demo.parseable.io)
-- [Grafana Dashboard Demo ↗︎](http://demo.parseable.io:3000/dashboards)
+For :stethoscope: commercial support and consultation, please reach out to us at [`sales@parseable.io` ↗︎](mailto:sales@parseable.io).
 
-## :rocket: Features
-
-- Choose your own storage backend - local drive or S3 (or compatible) object store.
-- Ingestion API compatible with HTTP + JSON output of log agents.
-- Query log data with PostgreSQL compatible SQL.
-- [Grafana ↗︎](https://github.com/parseablehq/parseable-datasource) for visualization.
-- [Send alerts ↗︎](https://www.parseable.io/docs/api/alerts) to webhook targets including Slack.
-- [Stats API ↗︎](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3) to track ingestion and compressed data.
-- Single binary includes all components - ingestion, store and query. Built-in UI.
-
-## :white_check_mark: Getting Started
+## :zap: Quickstart
 
 Run the below command to deploy Parseable in local storage mode with Docker.
 
@@ -55,7 +46,7 @@ docker run -p 8000:8000 \
 
 Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
-### Send log events
+To ingest data, run the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
 
 ```sh
 curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
@@ -77,34 +68,21 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 ]'
 ```
 
-Note: The `X-P-Stream` header is used to specify the log stream where data is sent. Parseable will create the stream automatically if it doesn't exist already.
+## :rocket: Highlights
 
-### Query the stream
+- Choose storage backend - local drive or S3 (or compatible) object store.
+- Ingestion API compatible with HTTP + JSON output of log agents.
+- Query log data with PostgreSQL compatible SQL.
+- Single binary includes all components - ingestion, store and query. Built-in UI.
 
-You can see the events in Parseable UI, or use the below curl command to see the query response on CLI.
+### Enterprise ready
 
-NOTE: Please change the `startTime` and `endTime` to the time range corresponding to the event you sent in the previous step.
-
-```sh
-curl --location --request POST 'http://localhost:8000/api/v1/query' \
---header 'Authorization: Basic YWRtaW46YWRtaW4=' \
---header 'Content-Type: application/json' \
---data-raw '{
-    "query":"select * from demo",
-    "startTime":"2023-06-09T00:00:00+00:00",
-    "endTime":"2023-06-09T23:59:00+00:00"
-}'
-```
-
-## :chart_with_upwards_trend: Benchmarking
-
-Parseable is benchmarked with [K6](https://k6.io). Please find the results and details on how to run the benchmark in your environment in the [benchmarks directory](./benchmarks/).
-
-## :books: Documentation
-
-- [Complete documentation ↗︎](https://www.parseable.io/docs/)
-- [Roadmap ↗︎](https://github.com/orgs/parseablehq/projects/4)
-- [FAQ ↗︎](https://www.parseable.io/docs/faq)
+- [Alerts ↗︎](https://www.parseable.io/docs/alerts).
+- [RBAC ↗︎](https://www.parseable.io/docs/rbac).
+- [OAuth2 ↗︎](https://www.parseable.io/docs/oidc) for authentication.
+- [Grafana ↗︎](https://github.com/parseablehq/parseable-datasource) for visualization.
+- [LLM ↗︎](https://www.parseable.io/docs/llm).
+- [Stats API ↗︎](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3) to track ingestion and compressed data.
 
 ## :dart: Motivation
 
@@ -112,17 +90,13 @@ Traditionally, logging has been seen as a text search problem. Log volumes were 
 
 But with log data growing exponentially, today's log data challenges involve whole lot more – Data ingestion, storage, and observation, all at scale. We are building Parseable to address these challenges.
 
-## :stethoscope: Support
-
-- For bugs, please create issue on [GitHub ↗︎](https://github.com/parseablehq/parseable/issues).
-- For commercial support and consultation, please reach out to us at [`hi@parseable.io` ↗︎](mailto:hi@parseable.io).
-- Please consider supporting us on [GitHub Sponsors ↗︎](https://github.com/sponsors/parseablehq).
-
 ## :trophy: Contributing
 
 Refer to the contributing guide [here ↗︎](https://www.parseable.io/docs/contributing).
 
 ### Contributors
+
+![Alt](https://repobeats.axiom.co/api/embed/7c4e0f51cd3b8f78d1da682c396a3b5bd855a6ba.svg "Repobeats analytics image")
 
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
 
