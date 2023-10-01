@@ -2,20 +2,19 @@
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png">
       <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg">
-      <a href="https://www.parseable.io" target="_blank"><img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg" alt="Parseable" width="500" height="100" /></a>
+      <a href="https://www.parseable.io" target="_blank"><img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg" alt="Parseable" width="600" height="150" /></a>
     </picture>
     <br>
     Cloud native log analytics
+    [![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?logo=docker&label=Docker%20Pulls)](https://hub.docker.com/r/parseable/parseable)
+    [![Slack](https://img.shields.io/badge/slack-brightgreen.svg?logo=slack&label=Community&style=flat&color=%2373DC8C&)](https://launchpass.com/parseable)
+    [![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
+    [![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?style=flat&color=%2373DC8C&label=Checks)](https://github.com/parseablehq/parseable/actions)
 </h2>
 
 <div align="center">
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?logo=docker&label=Docker%20Pulls)](https://hub.docker.com/r/parseable/parseable)
-[![Slack](https://img.shields.io/badge/slack-brightgreen.svg?logo=slack&label=Community&style=flat&color=%2373DC8C&)](https://launchpass.com/parseable)
-[![Docs](https://img.shields.io/badge/stable%20docs-parseable.io%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://www.parseable.io/docs)
-[![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?style=flat&color=%2373DC8C&label=Checks)](https://github.com/parseablehq/parseable/actions)
-
-[Highlights](https://github.com/parseablehq/parseable#rocket-highlights) | [Documentation](https://www.parseable.io/docs/) | [Demo](https://demo.parseable.io/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9) | [Integrations](https://www.parseable.io/docs/category/integrations) | [FAQ](https://www.parseable.io/docs/faq)
+[Highlights](https://github.com/parseablehq/parseable#rocket-highlights) | [Key Concepts](https://www.parseable.io/docs/concepts) | [Documentation](https://www.parseable.io/docs/) | [Demo](https://demo.parseable.io/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9) | [Integrations](https://www.parseable.io/docs/category/integrations) | [FAQ](https://www.parseable.io/docs/faq)
 
 </div>
 
@@ -23,7 +22,7 @@ Parseable is a log analytics platform, built for the modern, cloud native era. P
 
 To get started, download the Parseable binary from [releases page ↗︎](https://github.com/parseablehq/parseable/releases/latest) and run it on your machine.
 
-For comparison, Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput. Read more in the [benchmarks directory](./benchmarks/).
+For comparison, Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput. Read more in the [benchmarks directory ↗︎](./benchmarks/).
 
 For :stethoscope: commercial support and consultation, please reach out to us at [`sales@parseable.io` ↗︎](mailto:sales@parseable.io).
 
@@ -37,7 +36,7 @@ docker run -p 8000:8000 \
   parseable local-store
 ```
 
-Once this runs successfully, you'll see dashboard at [http://localhost:8000](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
+Once this runs successfully, you'll see dashboard at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
 To ingest data, run the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
 
@@ -64,12 +63,12 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 
 ### Enterprise ready
 
-- [Alerts ↗︎](https://www.parseable.io/docs/alerts).
-- [RBAC ↗︎](https://www.parseable.io/docs/rbac).
-- [OAuth2 ↗︎](https://www.parseable.io/docs/oidc) for authentication.
-- [Grafana ↗︎](https://github.com/parseablehq/parseable-datasource) for visualization.
-- [LLM ↗︎](https://www.parseable.io/docs/llm).
-- [Stats API ↗︎](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3) to track ingestion and compressed data.
+- [Alerts ↗︎](https://www.parseable.io/docs/alerts)
+- [RBAC ↗︎](https://www.parseable.io/docs/rbac)
+- [OAuth2 ↗︎](https://www.parseable.io/docs/oidc)
+- [Grafana ↗︎](https://github.com/parseablehq/parseable-datasource)
+- [LLM ↗︎](https://www.parseable.io/docs/llm)
+- [Stats ↗︎](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3)
 
 ## :dart: Motivation
 
