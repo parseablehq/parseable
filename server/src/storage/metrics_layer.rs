@@ -1,8 +1,12 @@
-use std::{ops::Range, time};
+use std::{
+    ops::Range,
+    task::{Context, Poll},
+    time,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::stream::BoxStream;
+use futures_util::{stream::BoxStream, Stream, StreamExt};
 use object_store::{
     path::Path, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
 };
@@ -154,13 +158,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         &'a self,
         locations: BoxStream<'a, object_store::Result<Path>>,
     ) -> BoxStream<'a, object_store::Result<Path>> {
-        let time = time::Instant::now();
-        let res = self.inner.delete_stream(locations);
-        let elapsed = time.elapsed().as_secs_f64();
-        QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&["DELETE_STREAM", "200"])
-            .observe(elapsed);
-        res
+        self.inner.delete_stream(locations)
     }
 
     async fn list(
@@ -168,12 +166,13 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         prefix: Option<&Path>,
     ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
         let time = time::Instant::now();
-        let res = self.inner.list(prefix).await?;
-        let elapsed = time.elapsed().as_secs_f64();
-        QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&["LIST", "200"])
-            .observe(elapsed);
-        Ok(res)
+        let inner = self.inner.list(prefix).await?;
+        let res = StreamMetricWrapper {
+            time,
+            labels: ["LIST", "200"],
+            inner,
+        };
+        Ok(Box::pin(res))
     }
 
     async fn list_with_offset(
@@ -182,12 +181,13 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         offset: &Path,
     ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
         let time = time::Instant::now();
-        let res = self.inner.list_with_offset(prefix, offset).await?;
-        let elapsed = time.elapsed().as_secs_f64();
-        QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&["LIST_OFFSET", "200"])
-            .observe(elapsed);
-        Ok(res)
+        let inner = self.inner.list_with_offset(prefix, offset).await?;
+        let res = StreamMetricWrapper {
+            time,
+            labels: ["LIST_OFFSET", "200"],
+            inner,
+        };
+        Ok(Box::pin(res))
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
@@ -238,5 +238,30 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
             .with_label_values(&["RENAME_IF", "200"])
             .observe(elapsed);
         Ok(res)
+    }
+}
+
+struct StreamMetricWrapper<'a, const N: usize, T> {
+    time: time::Instant,
+    labels: [&'static str; N],
+    inner: BoxStream<'a, T>,
+}
+
+impl<T, const N: usize> Stream for StreamMetricWrapper<'_, N, T> {
+    type Item = T;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        match self.inner.poll_next_unpin(cx) {
+            t @ Poll::Ready(None) => {
+                QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&self.labels)
+                    .observe(self.time.elapsed().as_secs_f64());
+                t
+            }
+            t => t,
+        }
     }
 }
