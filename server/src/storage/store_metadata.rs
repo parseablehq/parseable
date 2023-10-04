@@ -59,6 +59,7 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
+    pub modules: HashMap<String, serde_json::Value>,
 }
 
 impl StorageMetadata {
@@ -73,6 +74,7 @@ impl StorageMetadata {
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
+            modules: HashMap::default(),
         }
     }
 

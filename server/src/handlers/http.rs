@@ -32,12 +32,13 @@ use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
-use crate::option::CONFIG;
 use crate::rbac::role::Action;
+use crate::{external_service::MODULE_REGISTRY, option::CONFIG};
 
 use self::middleware::{DisAllowRootUser, RouteExt};
 
 mod about;
+mod external;
 mod health_check;
 mod ingest;
 mod llm;
@@ -286,6 +287,14 @@ pub fn configure_routes(
         oauth_api = oauth_api.app_data(web::Data::from(client))
     }
 
+    let external_services = web::scope("modules")
+        .service(resource("").route(web::get().to(external::get)))
+        .service(resource("register").route(web::put().to(external::register)))
+        .service(resource("{module}/config").route(web::get().to(external::get_config)))
+        .service(resource("{module}/config").route(web::put().to(external::put_config)))
+        .service(resource("{module}/{tail}*").to(external::router))
+        .app_data(web::Data::from(Arc::clone(&*MODULE_REGISTRY)));
+
     // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(
         // Base path "{url}/api/v1"
@@ -329,6 +338,7 @@ pub fn configure_routes(
             .service(user_api)
             .service(llm_query_api)
             .service(oauth_api)
+            .service(external_services)
             .service(role_api),
     )
     // GET "/" ==> Serve the static frontend directory
