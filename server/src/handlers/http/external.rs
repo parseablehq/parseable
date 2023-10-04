@@ -33,22 +33,25 @@ pub async fn get(
     Ok(web::Json(list))
 }
 
-pub async fn get_config(name: web::Path<String>) -> Result<impl Responder, RegistrationError> {
+pub async fn get_config(
+    path: web::Path<(String, String)>,
+) -> Result<impl Responder, RegistrationError> {
+    let (name, _stream_name) = path.into_inner();
     let mut metadata = get_metadata().await?;
     let body = metadata
         .modules
         .remove(&*name)
-        .ok_or_else(|| RegistrationError::ModuleNotFound(name.into_inner()))?;
+        .ok_or_else(|| RegistrationError::ModuleNotFound(name.to_owned()))?;
 
     Ok(web::Json(body))
 }
 
 pub async fn put_config(
-    name: web::Path<String>,
+    path: web::Path<(String, String)>,
     body: web::Json<serde_json::Value>,
     registry: web::Data<RwLock<ModuleRegistry>>,
 ) -> Result<impl Responder, RegistrationError> {
-    let name = name.into_inner();
+    let (name, _stream_name) = path.into_inner();
     let url = registry
         .read()
         .unwrap()

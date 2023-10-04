@@ -290,8 +290,8 @@ pub fn configure_routes(
     let external_services = web::scope("modules")
         .service(resource("").route(web::get().to(external::get)))
         .service(resource("register").route(web::put().to(external::register)))
-        .service(resource("{module}/config").route(web::get().to(external::get_config)))
-        .service(resource("{module}/config").route(web::put().to(external::put_config)))
+        .service(resource("{module}/config/{logstream}").route(web::get().to(external::get_config)))
+        .service(resource("{module}/config/{logstream}").route(web::put().to(external::put_config)))
         .service(resource("{module}/{tail}*").to(external::router))
         .app_data(web::Data::from(Arc::clone(&*MODULE_REGISTRY)));
 
