@@ -64,11 +64,24 @@ pub mod s3 {
         .expect("metric can be created")
     });
 
+    pub static QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new("query_s3_response_time", "S3 Request Latency")
+                .namespace(METRICS_NAMESPACE),
+            &["method", "status"],
+        )
+        .expect("metric can be created")
+    });
+
     impl StorageMetrics for S3Config {
         fn register_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
             handler
                 .registry
                 .register(Box::new(REQUEST_RESPONSE_TIME.clone()))
+                .expect("metric can be registered");
+            handler
+                .registry
+                .register(Box::new(QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME.clone()))
                 .expect("metric can be registered");
         }
     }

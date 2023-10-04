@@ -23,6 +23,7 @@ use chrono::Local;
 use std::fmt::Debug;
 
 mod localfs;
+mod metrics_layer;
 mod object_storage;
 pub mod retention;
 mod s3;

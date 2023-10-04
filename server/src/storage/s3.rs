@@ -41,6 +41,7 @@ use std::time::{Duration, Instant};
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
+use super::metrics_layer::MetricLayer;
 use super::{object_storage, ObjectStorageProvider};
 
 // in bytes
@@ -178,6 +179,7 @@ impl ObjectStorageProvider for S3Config {
 
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
+        let s3 = MetricLayer::new(s3);
 
         let object_store_registry: DefaultObjectStoreRegistry = DefaultObjectStoreRegistry::new();
         let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
