@@ -13,11 +13,16 @@ pub async fn register(
     registration: web::Json<Registration>,
     registry: web::Data<RwLock<ModuleRegistry>>,
 ) -> Result<impl Responder, RegistrationError> {
-    registry
-        .write()
-        .unwrap()
-        .register(registration.into_inner());
-    Ok(HttpResponse::Ok().finish())
+    let registration = registration.into_inner();
+    let mut metadata = get_metadata().await?;
+    metadata
+        .modules
+        .insert(registration.id.clone(), registration.clone());
+    put_metadata(&metadata).await?;
+
+    registry.write().unwrap().register(registration);
+
+    Ok(HttpResponse::Ok().body("Added"))
 }
 
 pub async fn get(
@@ -40,7 +45,7 @@ pub async fn get_config(
     let mut metadata = get_metadata().await?;
     let body = metadata
         .modules
-        .remove(&*name)
+        .remove(&name)
         .ok_or_else(|| RegistrationError::ModuleNotFound(name.to_owned()))?;
 
     Ok(web::Json(body))
@@ -84,25 +89,32 @@ pub async fn router(
     let (name, path) = params.into_inner();
     let method: &http::Method = req.method();
 
-    let url = {
-        let module_registry = &registry.read().unwrap();
-        let registration = module_registry
-            .get(&name)
-            .ok_or_else(|| RegistrationError::ModuleNotFound(name.clone()))?;
+    let module_registry = registry.read().unwrap();
+    let registration = module_registry
+        .get(&name)
+        .ok_or_else(|| RegistrationError::ModuleNotFound(name.clone()))?;
 
-        if !registration.contains_route(&path, method) {
-            return Ok(HttpResponse::NotFound().finish());
-        }
+    if !registration.contains_route(&path, method) {
+        return Ok(HttpResponse::NotFound().finish());
+    }
 
-        registration.url.join(&path).expect("valid sub path")
-    };
+    let url = registration.url.join(&path).expect("valid sub path");
+    let username = registration.username.clone();
+    let password = registration.password.clone();
+
+    drop(module_registry);
 
     let client = reqwest::Client::new();
-    let request = client
+    let mut request = client
         .request(method.clone(), url)
         .body(body)
-        .build()
-        .unwrap();
+        .basic_auth(username, Some(password));
+
+    if let Some(content_type) = req.headers().get("Content-Type") {
+        request = request.header(http::header::CONTENT_TYPE, content_type)
+    }
+
+    let request = request.build().unwrap();
     let resp = client.execute(request).await?;
     Ok(HttpResponse::Ok().body(resp.bytes().await?))
 }
