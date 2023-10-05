@@ -109,7 +109,9 @@ pub async fn router(
     let headers = req
         .headers()
         .iter()
-        .filter(|(_, value)| !value.is_sensitive())
+        .filter(|(name, value)| {
+            !value.is_sensitive() && !name.as_str().eq_ignore_ascii_case("authorization")
+        })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
 
