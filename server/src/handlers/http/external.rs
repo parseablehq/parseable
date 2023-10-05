@@ -89,30 +89,36 @@ pub async fn router(
     let (name, path) = params.into_inner();
     let method: &http::Method = req.method();
 
-    let module_registry = registry.read().unwrap();
-    let registration = module_registry
-        .get(&name)
-        .ok_or_else(|| RegistrationError::ModuleNotFound(name.clone()))?;
+    let (url, username, password) = {
+        let module_registry = registry.read().unwrap();
+        let registration = module_registry
+            .get(&name)
+            .ok_or_else(|| RegistrationError::ModuleNotFound(name.clone()))?;
 
-    if !registration.contains_route(&path, method) {
-        return Ok(HttpResponse::NotFound().finish());
-    }
+        if !registration.contains_route(&path, method) {
+            return Ok(HttpResponse::NotFound().finish());
+        }
 
-    let url = registration.url.join(&path).expect("valid sub path");
-    let username = registration.username.clone();
-    let password = registration.password.clone();
+        (
+            registration.url.join(&path).expect("valid sub path"),
+            registration.username.clone(),
+            registration.password.clone(),
+        )
+    };
 
-    drop(module_registry);
+    let headers = req
+        .headers()
+        .iter()
+        .filter(|(_, value)| !value.is_sensitive())
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
 
     let client = reqwest::Client::new();
-    let mut request = client
+    let request = client
         .request(method.clone(), url)
+        .headers(headers)
         .body(body)
         .basic_auth(username, Some(password));
-
-    if let Some(content_type) = req.headers().get("Content-Type") {
-        request = request.header(http::header::CONTENT_TYPE, content_type)
-    }
 
     let request = request.build().unwrap();
     let resp = client.execute(request).await?;
