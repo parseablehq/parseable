@@ -12,7 +12,7 @@ use crate::{
 pub async fn register(
     registration: web::Json<Registration>,
     registry: web::Data<RwLock<ModuleRegistry>>,
-) -> Result<impl Responder, RegistrationError> {
+) -> Result<impl Responder, ModuleError> {
     let registration = registration.into_inner();
     let mut metadata = get_metadata().await?;
     metadata
@@ -20,14 +20,33 @@ pub async fn register(
         .insert(registration.id.clone(), registration.clone());
     put_metadata(&metadata).await?;
 
+    let module_id = registration.id.clone();
     registry.write().unwrap().register(registration);
 
-    Ok(HttpResponse::Ok().body("Added"))
+    Ok(HttpResponse::Ok().body(format!("Added {}", module_id)))
+}
+
+pub async fn deregister(
+    module_id: web::Path<String>,
+    registry: web::Data<RwLock<ModuleRegistry>>,
+) -> Result<impl Responder, ModuleError> {
+    let module_id = module_id.into_inner();
+    let mut metadata = get_metadata().await?;
+
+    metadata
+        .modules
+        .remove(&module_id)
+        .ok_or_else(|| ModuleError::ModuleNotFound(module_id.to_owned()))?;
+    put_metadata(&metadata).await?;
+
+    registry.write().unwrap().deregister(&module_id);
+
+    Ok(HttpResponse::Ok().body(format!("Deregistered {}", module_id)))
 }
 
 pub async fn get(
     registry: web::Data<RwLock<ModuleRegistry>>,
-) -> Result<impl Responder, RegistrationError> {
+) -> Result<impl Responder, ModuleError> {
     let list: Vec<String> = registry
         .read()
         .unwrap()
@@ -38,15 +57,13 @@ pub async fn get(
     Ok(web::Json(list))
 }
 
-pub async fn get_config(
-    path: web::Path<(String, String)>,
-) -> Result<impl Responder, RegistrationError> {
+pub async fn get_config(path: web::Path<(String, String)>) -> Result<impl Responder, ModuleError> {
     let (name, _stream_name) = path.into_inner();
     let mut metadata = get_metadata().await?;
     let body = metadata
         .modules
         .remove(&name)
-        .ok_or_else(|| RegistrationError::ModuleNotFound(name.to_owned()))?;
+        .ok_or_else(|| ModuleError::ModuleNotFound(name.to_owned()))?;
 
     Ok(web::Json(body))
 }
@@ -55,7 +72,7 @@ pub async fn put_config(
     path: web::Path<(String, String)>,
     body: web::Json<serde_json::Value>,
     registry: web::Data<RwLock<ModuleRegistry>>,
-) -> Result<impl Responder, RegistrationError> {
+) -> Result<impl Responder, ModuleError> {
     let (name, _stream_name) = path.into_inner();
     let url = registry
         .read()
@@ -64,7 +81,7 @@ pub async fn put_config(
         .find(|&registration| registration.id == name)
         .map(|registration| &registration.url)
         .cloned()
-        .ok_or_else(|| RegistrationError::ModuleNotFound(name.clone()))?;
+        .ok_or_else(|| ModuleError::ModuleNotFound(name.clone()))?;
 
     let url = url.join("/config").expect("valid url");
     let client = reqwest::Client::new();
@@ -85,7 +102,7 @@ pub async fn router(
     params: web::Path<(String, String)>,
     body: web::Bytes,
     registry: web::Data<RwLock<ModuleRegistry>>,
-) -> Result<HttpResponse, RegistrationError> {
+) -> Result<HttpResponse, ModuleError> {
     let (name, path) = params.into_inner();
     let method: &http::Method = req.method();
 
@@ -93,7 +110,7 @@ pub async fn router(
         let module_registry = registry.read().unwrap();
         let registration = module_registry
             .get(&name)
-            .ok_or_else(|| RegistrationError::ModuleNotFound(name.clone()))?;
+            .ok_or_else(|| ModuleError::ModuleNotFound(name.clone()))?;
 
         if !registration.contains_route(&path, method) {
             return Ok(HttpResponse::NotFound().finish());
@@ -144,7 +161,7 @@ async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageErr
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum RegistrationError {
+pub enum ModuleError {
     #[error("Could not find module {0}")]
     ModuleNotFound(String),
     #[error("Object Store: {0}")]
@@ -155,13 +172,13 @@ pub enum RegistrationError {
     Serde(#[from] serde_json::Error),
 }
 
-impl actix_web::ResponseError for RegistrationError {
+impl actix_web::ResponseError for ModuleError {
     fn status_code(&self) -> http::StatusCode {
         match self {
-            RegistrationError::ModuleNotFound(_) => StatusCode::BAD_REQUEST,
-            RegistrationError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            RegistrationError::ModuleConnectionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            RegistrationError::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ModuleError::ModuleNotFound(_) => StatusCode::BAD_REQUEST,
+            ModuleError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ModuleError::ModuleConnectionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ModuleError::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

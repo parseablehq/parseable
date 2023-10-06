@@ -25,6 +25,9 @@ impl ModuleRegistry {
     pub fn get(&self, id: &str) -> Option<&Registration> {
         self.inner.get(id)
     }
+    pub fn deregister(&mut self, module_id: &str) {
+        self.inner.remove(module_id);
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
