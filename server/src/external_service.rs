@@ -40,7 +40,7 @@ pub struct StreamConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Registration {
     pub id: String,
-    pub version: Version,
+    pub version: String,
     pub url: url::Url,
     pub username: String,
     pub password: String,
@@ -53,6 +53,19 @@ impl Registration {
         self.routes
             .iter()
             .any(|x| x.module_path == path && method.eq(&x.method))
+    }
+    pub fn set_version(&mut self, version: &str) -> Result<(), String> {
+        if version.starts_with('v') {
+            match Version::parse(&version[1..]) {
+                Ok(_) => {
+                    self.version = version.to_string();
+                    Ok(())
+                }
+                Err(_) => Err("Invalid SemVer format".to_string()),
+            }
+        } else {
+            Err("Module version must start with 'v'".to_string())
+        }
     }
 }
 

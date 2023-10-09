@@ -13,7 +13,14 @@ pub async fn register(
     registration: web::Json<Registration>,
     registry: web::Data<RwLock<ModuleRegistry>>,
 ) -> Result<impl Responder, ModuleError> {
-    let registration = registration.into_inner();
+    let mut registration = registration.into_inner();
+    let module_version = registration.version.clone();
+    let version_result = registration.set_version(&module_version);
+
+    if let Err(err) = version_result {
+        return Err(ModuleError::VersionMismatch(err.to_string()));
+    }
+
     let mut metadata = get_metadata().await?;
     metadata
         .modules
@@ -187,12 +194,15 @@ pub enum ModuleError {
     BadUrl(#[from] url::ParseError),
     #[error("Module retuned an error: {0}")]
     Custom(#[from] Box<dyn std::error::Error>),
+    #[error("Version mismatch: {0}")]
+    VersionMismatch(String),
 }
 
 impl actix_web::ResponseError for ModuleError {
     fn status_code(&self) -> http::StatusCode {
         match self {
             ModuleError::ModuleNotFound(_) => StatusCode::BAD_REQUEST,
+            ModuleError::VersionMismatch(_) => StatusCode::BAD_REQUEST,
             ModuleError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ModuleError::ModuleConnectionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ModuleError::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
