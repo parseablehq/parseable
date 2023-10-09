@@ -106,10 +106,12 @@ pub async fn put_config(
 
     let client = reqwest::Client::new();
     let req_body = serde_json::to_vec(&config).expect("valid json");
+
     let request = client
         .put(url)
         .body(req_body)
         .basic_auth(registration.username, Some(registration.password))
+        .header(reqwest::header::CONTENT_TYPE, "application/json") // Set the Content-Type header
         .build()
         .unwrap();
     let resp = client.execute(request).await?;
