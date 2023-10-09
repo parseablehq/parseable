@@ -48,10 +48,11 @@ pub struct Registration {
 }
 
 impl Registration {
-    pub fn contains_route(&self, path: &str, method: &http::Method) -> bool {
+    pub fn get_module_path(&self, path: &str, method: &http::Method) -> Option<String> {
         self.routes
             .iter()
-            .any(|x| x.module_path == path && method.eq(&x.method))
+            .find(|x| x.server_path == path && method.eq(&x.method))
+            .map(|route| route.module_path.clone())
     }
 
     pub fn set_version(&mut self, version: &str) -> Result<(), String> {
