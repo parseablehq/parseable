@@ -71,10 +71,12 @@ pub async fn get_config(path: web::Path<(String, String)>) -> Result<impl Respon
 
 pub async fn put_config(
     path: web::Path<(String, String)>,
-    body: web::Json<serde_json::Value>,
+    config: web::Json<serde_json::Value>,
     registry: web::Data<RwLock<ModuleRegistry>>,
 ) -> Result<impl Responder, ModuleError> {
-    let (name, _stream_name) = path.into_inner();
+    let (name, stream_name) = path.into_inner();
+    let config = config.into_inner();
+
     let url = registry
         .read()
         .unwrap()
@@ -86,15 +88,20 @@ pub async fn put_config(
 
     let url = url.join("/config").expect("valid url");
     let client = reqwest::Client::new();
-    let body = serde_json::to_vec(&body).expect("valid json");
-    let request = client.post(url).body(body).build().unwrap();
+    let req_body = serde_json::to_vec(&config).expect("valid json");
+    let request = client.post(url).body(req_body).build().unwrap();
     let resp = client.execute(request).await?;
-    let resp_body = resp.bytes().await?;
-    let resp_body = serde_json::from_slice(&resp_body)?;
-    let mut metadata = get_metadata().await?;
-    metadata.modules.insert(name, resp_body);
-    put_metadata(&metadata).await?;
 
+    if !resp.status().is_success() {
+        let resp_body = String::from_utf8_lossy(&resp.bytes().await?).to_string();
+        return Err(ModuleError::Custom(resp_body.into()));
+    }
+
+    CONFIG
+        .storage()
+        .get_object_store()
+        .put_module_config(&stream_name, name, config)
+        .await?;
     Ok(HttpResponse::Ok())
 }
 
@@ -171,6 +178,8 @@ pub enum ModuleError {
     ModuleConnectionError(#[from] reqwest::Error),
     #[error("Serde json error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("Module retuned an error: {0}")]
+    Custom(#[from] Box<dyn std::error::Error>),
 }
 
 impl actix_web::ResponseError for ModuleError {
@@ -180,6 +189,7 @@ impl actix_web::ResponseError for ModuleError {
             ModuleError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ModuleError::ModuleConnectionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ModuleError::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ModuleError::Custom(_) => StatusCode::BAD_REQUEST,
         }
     }
 
