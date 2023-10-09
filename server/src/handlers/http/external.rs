@@ -4,7 +4,7 @@ use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Respo
 use http::StatusCode;
 
 use crate::{
-    external_service::{ModuleRegistry, Registration},
+    external_service::{DeRegistration, ModuleRegistry, Registration},
     option::CONFIG,
     storage::{self, ObjectStorageError, StorageMetadata},
 };
@@ -27,10 +27,11 @@ pub async fn register(
 }
 
 pub async fn deregister(
-    module_id: web::Path<String>,
+    de_registration: web::Json<DeRegistration>,
     registry: web::Data<RwLock<ModuleRegistry>>,
 ) -> Result<impl Responder, ModuleError> {
-    let module_id = module_id.into_inner();
+    let de_registration = de_registration.into_inner();
+    let module_id = de_registration.id.clone();
     let mut metadata = get_metadata().await?;
 
     metadata

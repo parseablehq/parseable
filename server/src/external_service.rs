@@ -31,12 +31,20 @@ impl ModuleRegistry {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+pub struct StreamConfig {
+    pub path: String,
+    pub method: Method,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
 pub struct Registration {
     pub id: String,
     pub version: Version,
     pub url: url::Url,
     pub username: String,
     pub password: String,
+    pub stream_config: StreamConfig,
     pub routes: Vec<Route>,
 }
 
@@ -44,13 +52,20 @@ impl Registration {
     pub fn contains_route(&self, path: &str, method: &http::Method) -> bool {
         self.routes
             .iter()
-            .any(|x| x.path == path && method.eq(&x.method))
+            .any(|x| x.module_path == path && method.eq(&x.method))
     }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+pub struct DeRegistration {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
 pub struct Route {
-    pub path: String,
+    pub server_path: String,
+    pub module_path: String,
     pub method: Method,
 }
 

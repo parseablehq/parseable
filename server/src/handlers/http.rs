@@ -287,11 +287,13 @@ pub fn configure_routes(
         oauth_api = oauth_api.app_data(web::Data::from(client))
     }
 
-    // api/v1/modules/panorama/config/logstream
     let external_services = web::scope("modules")
         .service(resource("").route(web::get().to(external::get)))
-        .service(resource("register").route(web::put().to(external::register)))
-        .service(resource("deregister/{module}").route(web::put().to(external::deregister)))
+        .service(
+            resource("/register")
+                .route(web::put().to(external::register))
+                .route(web::delete().to(external::deregister)),
+        )
         .service(resource("{module}/config/{logstream}").route(web::get().to(external::get_config)))
         .service(resource("{module}/config/{logstream}").route(web::put().to(external::put_config)))
         .service(resource("{module}/{tail}*").to(external::router))
