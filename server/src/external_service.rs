@@ -33,7 +33,6 @@ impl ModuleRegistry {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
 pub struct StreamConfig {
     pub path: String,
-    pub method: Method,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]

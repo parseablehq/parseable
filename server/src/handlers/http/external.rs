@@ -66,14 +66,19 @@ pub async fn get(
 }
 
 pub async fn get_config(path: web::Path<(String, String)>) -> Result<impl Responder, ModuleError> {
-    let (name, _stream_name) = path.into_inner();
-    let mut metadata = get_metadata().await?;
-    let body = metadata
+    let (name, stream_name) = path.into_inner();
+    let mut metadata = CONFIG
+        .storage()
+        .get_object_store()
+        .get_stream_metadata(&stream_name)
+        .await?;
+
+    let config = metadata
         .modules
         .remove(&name)
-        .ok_or_else(|| ModuleError::ModuleNotFound(name.to_owned()))?;
+        .ok_or_else(|| ModuleError::ModuleNotFound(name.clone()))?;
 
-    Ok(web::Json(body))
+    Ok(web::Json(config))
 }
 
 pub async fn put_config(
@@ -84,35 +89,41 @@ pub async fn put_config(
     let (name, stream_name) = path.into_inner();
     let config = config.into_inner();
 
-    let (url, path_segment) = registry
+    let registration = registry
         .read()
         .unwrap()
         .registrations()
         .find(|&registration| registration.id == name)
-        .map(|registration| {
-            (
-                registration.url.clone(),
-                registration.stream_config.path.clone(),
-            )
-        })
+        .cloned()
         .ok_or_else(|| ModuleError::ModuleNotFound(name.clone()))?;
 
-    let path = path_segment.replace("{stream_name}", &stream_name);
-    let url = url.join(&path)?;
+    let path = registration
+        .stream_config
+        .path
+        .replace("{stream_name}", &stream_name);
+
+    let url = registration.url.join(&path)?;
+
     let client = reqwest::Client::new();
     let req_body = serde_json::to_vec(&config).expect("valid json");
-    CONFIG
-        .storage()
-        .get_object_store()
-        .put_module_config(&stream_name, name, config)
-        .await?;
-    let request = client.post(url).body(req_body).build().unwrap();
+    let request = client
+        .put(url)
+        .body(req_body)
+        .basic_auth(registration.username, Some(registration.password))
+        .build()
+        .unwrap();
     let resp = client.execute(request).await?;
 
     if !resp.status().is_success() {
         let resp_body = String::from_utf8_lossy(&resp.bytes().await?).to_string();
         return Err(ModuleError::Custom(resp_body.into()));
     }
+
+    CONFIG
+        .storage()
+        .get_object_store()
+        .put_module_config(&stream_name, name, config)
+        .await?;
 
     Ok(HttpResponse::Ok())
 }
