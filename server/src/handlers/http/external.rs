@@ -77,16 +77,21 @@ pub async fn put_config(
     let (name, stream_name) = path.into_inner();
     let config = config.into_inner();
 
-    let url = registry
+    let (url, path_segment) = registry
         .read()
         .unwrap()
         .registrations()
         .find(|&registration| registration.id == name)
-        .map(|registration| &registration.url)
-        .cloned()
+        .map(|registration| {
+            (
+                registration.url.clone(),
+                registration.stream_config.path.clone(),
+            )
+        })
         .ok_or_else(|| ModuleError::ModuleNotFound(name.clone()))?;
 
-    let url = url.join("/config").expect("valid url");
+    let path = path_segment.replace("{stream_name}", &stream_name);
+    let url = url.join(&path)?;
     let client = reqwest::Client::new();
     let req_body = serde_json::to_vec(&config).expect("valid json");
     let request = client.post(url).body(req_body).build().unwrap();
@@ -178,6 +183,8 @@ pub enum ModuleError {
     ModuleConnectionError(#[from] reqwest::Error),
     #[error("Serde json error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("Bad Url: {0}")]
+    BadUrl(#[from] url::ParseError),
     #[error("Module retuned an error: {0}")]
     Custom(#[from] Box<dyn std::error::Error>),
 }
@@ -190,6 +197,7 @@ impl actix_web::ResponseError for ModuleError {
             ModuleError::ModuleConnectionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ModuleError::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ModuleError::Custom(_) => StatusCode::BAD_REQUEST,
+            ModuleError::BadUrl(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
