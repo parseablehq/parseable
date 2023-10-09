@@ -116,6 +116,8 @@ impl Default for ObjectStoreFormat {
             owner: Owner::new("".to_string(), "".to_string()),
             permissions: vec![Permisssion::new("parseable".to_string())],
             stats: Stats::default(),
+            retention: Retention::default(),
+            modules: HashMap::default(),
         }
     }
 }
