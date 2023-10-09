@@ -101,6 +101,11 @@ pub async fn put_config(
     let url = url.join(&path)?;
     let client = reqwest::Client::new();
     let req_body = serde_json::to_vec(&config).expect("valid json");
+    CONFIG
+        .storage()
+        .get_object_store()
+        .put_module_config(&stream_name, name, config)
+        .await?;
     let request = client.post(url).body(req_body).build().unwrap();
     let resp = client.execute(request).await?;
 
@@ -109,11 +114,6 @@ pub async fn put_config(
         return Err(ModuleError::Custom(resp_body.into()));
     }
 
-    CONFIG
-        .storage()
-        .get_object_store()
-        .put_module_config(&stream_name, name, config)
-        .await?;
     Ok(HttpResponse::Ok())
 }
 

@@ -294,8 +294,11 @@ pub fn configure_routes(
                 .route(web::put().to(external::register))
                 .route(web::delete().to(external::deregister)),
         )
-        .service(resource("{module}/config/{logstream}").route(web::get().to(external::get_config)))
-        .service(resource("{module}/config/{logstream}").route(web::put().to(external::put_config)))
+        .service(
+            resource("{module}/config/{logstream}")
+                .route(web::get().to(external::get_config))
+                .route(web::put().to(external::put_config)),
+        )
         .service(resource("{module}/{tail}*").to(external::router))
         .app_data(web::Data::from(Arc::clone(&*MODULE_REGISTRY)));
 
