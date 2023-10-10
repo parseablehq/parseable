@@ -145,12 +145,10 @@ pub async fn router(
             .get(&name)
             .ok_or_else(|| ModuleError::ModuleNotFound(name.clone()))?;
 
-        let module_path = registration.get_module_path(&path, method);
-        let module_path = module_path.unwrap_or_else(|| "".to_string());
-
-        if module_path.is_empty() {
-            return Ok(HttpResponse::NotFound().finish());
-        }
+        let module_path = match registration.get_module_path(&path, method) {
+            Some(path) => path,
+            None => return Ok(HttpResponse::NotFound().finish()),
+        };
 
         (
             registration.url.join(&module_path).expect("valid sub path"),
