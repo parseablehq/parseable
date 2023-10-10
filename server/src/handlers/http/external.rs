@@ -146,7 +146,7 @@ pub async fn router(
             .ok_or_else(|| ModuleError::ModuleNotFound(name.clone()))?;
 
         let module_path = registration.get_module_path(&path, method);
-        let module_path = module_path.unwrap_or("".to_string());
+        let module_path = module_path.unwrap_or_else(|| "".to_string());
 
         if module_path.is_empty() {
             return Ok(HttpResponse::NotFound().finish());
