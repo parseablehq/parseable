@@ -4,7 +4,6 @@ use std::{
 };
 
 use once_cell::sync::Lazy;
-use semver::Version;
 
 pub static MODULE_REGISTRY: Lazy<Arc<RwLock<ModuleRegistry>>> = Lazy::new(Arc::default);
 
@@ -53,18 +52,6 @@ impl Registration {
             .iter()
             .find(|x| x.server_path == path && method.eq(&x.method))
             .map(|route| route.module_path.clone())
-    }
-
-    pub fn set_version(&mut self, version: &str) -> Result<(), String> {
-        if let Some(version) = version.strip_prefix('v') {
-            if Version::parse(version).is_err() {
-                return Err("Invalid SemVer format".to_string());
-            }
-            self.version = version.to_string();
-            Ok(())
-        } else {
-            Err("Module version must start with 'v'".to_string())
-        }
     }
 }
 

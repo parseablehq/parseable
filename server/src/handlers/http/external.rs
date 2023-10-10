@@ -13,13 +13,8 @@ pub async fn register(
     registration: web::Json<Registration>,
     registry: web::Data<RwLock<ModuleRegistry>>,
 ) -> Result<impl Responder, ModuleError> {
-    let mut registration = registration.into_inner();
-    let module_version = registration.version.clone();
-    let version_result = registration.set_version(&module_version);
-
-    if let Err(err) = version_result {
-        return Err(ModuleError::VersionMismatch(err.to_string()));
-    }
+    let registration = registration.into_inner();
+    validate_version(&registration.version)?;
 
     let mut metadata = get_metadata().await?;
     metadata
@@ -192,6 +187,18 @@ async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageErr
     storage::put_remote_metadata(metadata).await?;
     storage::put_staging_metadata(metadata)?;
     Ok(())
+}
+
+pub fn validate_version(version: &str) -> Result<(), ModuleError> {
+    if let Some(semver) = version.strip_prefix('v') {
+        semver::Version::parse(semver)
+            .map(|_| ())
+            .map_err(|_| ModuleError::VersionMismatch("Invalid SemVer format".to_string()))
+    } else {
+        Err(ModuleError::VersionMismatch(
+            "Module version must start with 'v'".to_string(),
+        ))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
