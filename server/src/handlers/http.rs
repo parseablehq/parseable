@@ -33,10 +33,7 @@ use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
 use crate::option::CONFIG;
-use crate::{
-    external_service::{self},
-    rbac::role::Action,
-};
+use crate::{external_service, rbac::role::Action};
 
 use self::middleware::{DisAllowRootUser, RouteExt};
 
