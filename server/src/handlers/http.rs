@@ -288,9 +288,9 @@ pub fn configure_routes(
     }
 
     let external_services = web::scope("modules")
-        .service(resource("").route(web::get().to(external::get)))
+        .service(resource("").route(web::get().to(external::list_modules)))
         .service(
-            resource("/register")
+            resource("{module}")
                 .route(web::put().to(external::register))
                 .route(web::delete().to(external::deregister)),
         )

@@ -4,59 +4,57 @@ use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Respo
 use http::StatusCode;
 
 use crate::{
-    external_service::{DeRegistration, ModuleRegistry, Registration},
+    external_service::{ModuleRegistry, Registration},
     option::CONFIG,
     storage::{self, ObjectStorageError, StorageMetadata},
 };
 
 pub async fn register(
     registration: web::Json<Registration>,
+    module_name: web::Path<String>,
     registry: web::Data<RwLock<ModuleRegistry>>,
 ) -> Result<impl Responder, ModuleError> {
     let registration = registration.into_inner();
     validate_version(&registration.version)?;
 
+    let module_name = module_name.into_inner();
+
     let mut metadata = get_metadata().await?;
     metadata
         .modules
-        .insert(registration.id.clone(), registration.clone());
+        .insert(module_name.clone(), registration.clone());
     put_metadata(&metadata).await?;
 
-    let module_id = registration.id.clone();
-    registry.write().unwrap().register(registration);
+    registry
+        .write()
+        .unwrap()
+        .register(module_name.clone(), registration);
 
-    Ok(HttpResponse::Ok().body(format!("Added {}", module_id)))
+    Ok(HttpResponse::Ok().body(format!("Added {}", module_name)))
 }
 
 pub async fn deregister(
-    de_registration: web::Json<DeRegistration>,
+    module_name: web::Path<String>,
     registry: web::Data<RwLock<ModuleRegistry>>,
 ) -> Result<impl Responder, ModuleError> {
-    let de_registration = de_registration.into_inner();
-    let module_id = de_registration.id.clone();
+    let module_name = module_name.into_inner();
     let mut metadata = get_metadata().await?;
 
     metadata
         .modules
-        .remove(&module_id)
-        .ok_or_else(|| ModuleError::ModuleNotFound(module_id.to_owned()))?;
+        .remove(&module_name)
+        .ok_or_else(|| ModuleError::ModuleNotFound(module_name.to_owned()))?;
     put_metadata(&metadata).await?;
 
-    registry.write().unwrap().deregister(&module_id);
+    registry.write().unwrap().deregister(&module_name);
 
-    Ok(HttpResponse::Ok().body(format!("Deregistered {}", module_id)))
+    Ok(HttpResponse::Ok().body(format!("Deregistered {}", module_name)))
 }
 
-pub async fn get(
+pub async fn list_modules(
     registry: web::Data<RwLock<ModuleRegistry>>,
 ) -> Result<impl Responder, ModuleError> {
-    let list: Vec<String> = registry
-        .read()
-        .unwrap()
-        .registrations()
-        .map(|x| x.id.clone())
-        .collect();
-
+    let list: Vec<String> = registry.read().unwrap().get_keys();
     Ok(web::Json(list))
 }
 
@@ -87,8 +85,7 @@ pub async fn put_config(
     let registration = registry
         .read()
         .unwrap()
-        .registrations()
-        .find(|&registration| registration.id == name)
+        .get(&name)
         .cloned()
         .ok_or_else(|| ModuleError::ModuleNotFound(name.clone()))?;
 

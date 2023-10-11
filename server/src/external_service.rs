@@ -13,17 +13,18 @@ pub struct ModuleRegistry {
 }
 
 impl ModuleRegistry {
-    pub fn register(&mut self, module: Registration) {
-        self.inner.insert(module.id.clone(), module);
-    }
-
-    pub fn registrations(&self) -> impl Iterator<Item = &Registration> {
-        self.inner.values()
+    pub fn register(&mut self, module_name: String, module: Registration) {
+        self.inner.insert(module_name, module);
     }
 
     pub fn get(&self, id: &str) -> Option<&Registration> {
         self.inner.get(id)
     }
+
+    pub fn get_keys(&self) -> Vec<String> {
+        self.inner.keys().cloned().collect()
+    }
+
     pub fn deregister(&mut self, module_id: &str) {
         self.inner.remove(module_id);
     }
@@ -37,7 +38,7 @@ pub struct StreamConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct Registration {
-    pub id: String,
+    // pub id: String,
     pub version: String,
     pub url: url::Url,
     pub username: String,
