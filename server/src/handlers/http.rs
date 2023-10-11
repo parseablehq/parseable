@@ -32,8 +32,11 @@ use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
-use crate::rbac::role::Action;
-use crate::{external_service::MODULE_REGISTRY, option::CONFIG};
+use crate::option::CONFIG;
+use crate::{
+    external_service::{self},
+    rbac::role::Action,
+};
 
 use self::middleware::{DisAllowRootUser, RouteExt};
 
@@ -300,7 +303,9 @@ pub fn configure_routes(
                 .route(web::put().to(external::put_config)),
         )
         .service(resource("{module}/{tail}*").to(external::router))
-        .app_data(web::Data::from(Arc::clone(&*MODULE_REGISTRY)));
+        .app_data(web::Data::from(Arc::clone(
+            &external_service::global_module_registry(),
+        )));
 
     // Deny request if username is same as the env variable P_USERNAME.
     cfg.service(

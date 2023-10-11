@@ -3,9 +3,26 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use once_cell::sync::Lazy;
+use crate::storage::StorageMetadata;
+use once_cell::sync::OnceCell;
 
-pub static MODULE_REGISTRY: Lazy<Arc<RwLock<ModuleRegistry>>> = Lazy::new(Arc::default);
+pub static MODULE_REGISTRY: OnceCell<Arc<RwLock<ModuleRegistry>>> = OnceCell::new();
+
+pub fn init(metadata: &StorageMetadata) {
+    let mut registry = ModuleRegistry::default();
+    registry.load_registry(metadata);
+
+    MODULE_REGISTRY
+        .set(Arc::new(RwLock::new(registry)))
+        .expect("Module Registry is only set once");
+}
+
+pub fn global_module_registry() -> Arc<RwLock<ModuleRegistry>> {
+    MODULE_REGISTRY
+        .get()
+        .expect("Module Registry initialized in main")
+        .clone()
+}
 
 #[derive(Debug, Default)]
 pub struct ModuleRegistry {
@@ -13,6 +30,11 @@ pub struct ModuleRegistry {
 }
 
 impl ModuleRegistry {
+    pub fn load_registry(&mut self, metadata: &StorageMetadata) {
+        for (module_name, module) in &metadata.modules {
+            self.inner.insert(module_name.clone(), module.clone());
+        }
+    }
     pub fn register(&mut self, module_name: String, module: Registration) {
         self.inner.insert(module_name, module);
     }

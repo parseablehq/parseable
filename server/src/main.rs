@@ -67,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
     let metadata = storage::resolve_parseable_metadata().await?;
     banner::print(&CONFIG, &metadata).await;
     rbac::map::init(&metadata);
+    external_service::init(&metadata);
     metadata.set_global();
     let prometheus = metrics::build_metrics_handler();
     CONFIG.storage().register_store_metrics(&prometheus);
