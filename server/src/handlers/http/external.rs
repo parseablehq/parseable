@@ -5,6 +5,7 @@ use http::StatusCode;
 
 use crate::{
     external_service::{ModuleRegistry, Registration},
+    metadata::STREAM_INFO,
     option::CONFIG,
     storage::{self, ObjectStorageError, StorageMetadata},
 };
@@ -60,6 +61,11 @@ pub async fn list_modules(
 
 pub async fn get_config(path: web::Path<(String, String)>) -> Result<impl Responder, ModuleError> {
     let (name, stream_name) = path.into_inner();
+
+    if !STREAM_INFO.stream_exists(&stream_name) {
+        return Err(ModuleError::StreamDoesNotExist(stream_name.clone()));
+    }
+
     let mut metadata = CONFIG
         .storage()
         .get_object_store()
@@ -81,6 +87,10 @@ pub async fn put_config(
 ) -> Result<impl Responder, ModuleError> {
     let (name, stream_name) = path.into_inner();
     let config = config.into_inner();
+
+    if !STREAM_INFO.stream_exists(&stream_name) {
+        return Err(ModuleError::StreamDoesNotExist(stream_name.clone()));
+    }
 
     let registration = registry
         .read()
@@ -214,6 +224,8 @@ pub enum ModuleError {
     Custom(#[from] Box<dyn std::error::Error>),
     #[error("Version mismatch: {0}")]
     VersionMismatch(String),
+    #[error("Stream {0} does not exist.")]
+    StreamDoesNotExist(String),
 }
 
 impl actix_web::ResponseError for ModuleError {
@@ -221,6 +233,7 @@ impl actix_web::ResponseError for ModuleError {
         match self {
             ModuleError::ModuleNotFound(_) => StatusCode::BAD_REQUEST,
             ModuleError::VersionMismatch(_) => StatusCode::BAD_REQUEST,
+            ModuleError::StreamDoesNotExist(_) => StatusCode::BAD_REQUEST,
             ModuleError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ModuleError::ModuleConnectionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ModuleError::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,

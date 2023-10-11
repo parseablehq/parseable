@@ -38,7 +38,6 @@ pub struct StreamConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct Registration {
-    // pub id: String,
     pub version: String,
     pub url: url::Url,
     pub username: String,
