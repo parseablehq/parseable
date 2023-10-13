@@ -196,6 +196,9 @@ pub struct Server {
     /// Open AI access key
     pub open_ai_key: Option<String>,
 
+    /// Livetail port
+    pub grpc_port: u16,
+
     /// Rows in Parquet Rowgroup
     pub row_group_size: usize,
 
@@ -250,6 +253,10 @@ impl FromArgMatches for Server {
             .cloned()
             .expect("default for send analytics");
         self.open_ai_key = m.get_one::<String>(Self::OPEN_AI_KEY).cloned();
+        self.grpc_port = m
+            .get_one::<u16>(Self::GRPC_PORT)
+            .cloned()
+            .expect("default for livetail port");
         // converts Gib to bytes before assigning
         self.query_memory_pool_size = m
             .get_one::<u8>(Self::QUERY_MEM_POOL_SIZE)
@@ -314,6 +321,7 @@ impl Server {
     pub const OPENID_CLIENT_ID: &str = "oidc-client";
     pub const OPENID_CLIENT_SECRET: &str = "oidc-client-secret";
     pub const OPENID_ISSUER: &str = "oidc-issuer";
+    pub const GRPC_PORT: &str = "grpc-port";
     // todo : what should this flag be
     pub const QUERY_MEM_POOL_SIZE: &str = "query-mempool-size";
     pub const ROW_GROUP_SIZE: &str = "row-group-size";
@@ -456,6 +464,16 @@ impl Server {
                     .required(false)
                     .value_parser(validation::url)
                     .help("Set host global domain address"),
+            )
+            .arg(
+                Arg::new(Self::GRPC_PORT)
+                    .long(Self::GRPC_PORT)
+                    .env("P_GRPC_PORT")
+                    .value_name("PORT")
+                    .default_value("8001")
+                    .required(false)
+                    .value_parser(value_parser!(u16))
+                    .help("Set port for livetail arrow flight server"),
             )
             .arg(
                 Arg::new(Self::QUERY_MEM_POOL_SIZE)

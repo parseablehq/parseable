@@ -17,6 +17,7 @@
  */
 
 pub mod http;
+pub mod livetail;
 
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
