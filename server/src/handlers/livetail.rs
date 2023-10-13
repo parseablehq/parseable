@@ -18,9 +18,9 @@
 
 use std::net::SocketAddr;
 
+use arrow_array::RecordBatch;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use cookie::Cookie;
-use futures::future;
 use futures::stream::BoxStream;
 use futures_util::{Future, StreamExt, TryFutureExt, TryStreamExt};
 use http_auth_basic::Credentials;
@@ -117,11 +117,9 @@ impl FlightService for FlightServiceImpl {
         );
 
         let adapter_schema = schema.clone();
-        let rx = rx.filter_map(move |x| {
-            future::ready(match x {
-                Message::Record(t) => Some(Ok(utils::arrow::adapt_batch(&adapter_schema, &t))),
-                _ => None,
-            })
+        let rx = rx.map(move |x| match x {
+            Message::Record(t) => Ok(utils::arrow::adapt_batch(&adapter_schema, &t)),
+            Message::Skipped(_) => Ok(RecordBatch::new_empty(adapter_schema.clone())),
         });
 
         let rb_stream = FlightDataEncoderBuilder::new()
