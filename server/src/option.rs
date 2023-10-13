@@ -199,6 +199,9 @@ pub struct Server {
     /// Livetail port
     pub grpc_port: u16,
 
+    /// Livetail channel capacity
+    pub livetail_channel_capacity: usize,
+
     /// Rows in Parquet Rowgroup
     pub row_group_size: usize,
 
@@ -255,6 +258,10 @@ impl FromArgMatches for Server {
         self.open_ai_key = m.get_one::<String>(Self::OPEN_AI_KEY).cloned();
         self.grpc_port = m
             .get_one::<u16>(Self::GRPC_PORT)
+            .cloned()
+            .expect("default for livetail port");
+        self.livetail_channel_capacity = m
+            .get_one::<usize>(Self::LIVETAIL_CAPACITY)
             .cloned()
             .expect("default for livetail port");
         // converts Gib to bytes before assigning
@@ -322,6 +329,7 @@ impl Server {
     pub const OPENID_CLIENT_SECRET: &str = "oidc-client-secret";
     pub const OPENID_ISSUER: &str = "oidc-issuer";
     pub const GRPC_PORT: &str = "grpc-port";
+    pub const LIVETAIL_CAPACITY: &str = "livetail-capacity";
     // todo : what should this flag be
     pub const QUERY_MEM_POOL_SIZE: &str = "query-mempool-size";
     pub const ROW_GROUP_SIZE: &str = "row-group-size";
@@ -473,6 +481,16 @@ impl Server {
                     .default_value("8001")
                     .required(false)
                     .value_parser(value_parser!(u16))
+                    .help("Set port for livetail arrow flight server"),
+            )
+            .arg(
+                Arg::new(Self::LIVETAIL_CAPACITY)
+                    .long(Self::LIVETAIL_CAPACITY)
+                    .env("P_LIVETAIL_CAPACITY")
+                    .value_name("NUMBER")
+                    .default_value("1000")
+                    .required(false)
+                    .value_parser(value_parser!(usize))
                     .help("Set port for livetail arrow flight server"),
             )
             .arg(
