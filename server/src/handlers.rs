@@ -24,3 +24,8 @@ const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const FILL_NULL_OPTION_KEY: &str = "send_null";
 const SEPARATOR: char = '^';
+
+const OIDC_SCOPE: &str = "openid profile email";
+const COOKIE_AGE_DAYS: usize = 7;
+const SESSION_COOKIE_NAME: &str = "session";
+const USER_COOKIE_NAME: &str = "username";
