@@ -31,6 +31,7 @@ use ulid::Ulid;
 use url::Url;
 
 use crate::{
+    handlers::{COOKIE_AGE_DAYS, OIDC_SCOPE, SESSION_COOKIE_NAME, USER_COOKIE_NAME},
     oidc::{Claims, DiscoveredClient},
     option::CONFIG,
     rbac::{
@@ -41,10 +42,6 @@ use crate::{
     storage::{self, ObjectStorageError, StorageMetadata},
     utils::actix::extract_session_key_from_req,
 };
-
-// fetch common personalization scope to determine username.
-const SCOPE: &str = "openid profile email";
-const COOKIE_AGE_DAYS: usize = 7;
 
 /// Struct representing query params returned from oidc provider
 #[derive(Deserialize, Debug)]
@@ -182,7 +179,7 @@ fn redirect_to_oidc(
 ) -> HttpResponse {
     let redirect = query.into_inner().redirect.to_string();
     let auth_url = oidc_client.auth_url(&Options {
-        scope: Some(SCOPE.into()),
+        scope: Some(OIDC_SCOPE.into()),
         state: Some(redirect),
         ..Default::default()
     });
@@ -222,7 +219,7 @@ fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
 }
 
 fn cookie_session(id: Ulid) -> Cookie<'static> {
-    let authorization_cookie = Cookie::build("session", id.to_string())
+    let authorization_cookie = Cookie::build(SESSION_COOKIE_NAME, id.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
         .same_site(SameSite::Strict)
         .path("/")
@@ -231,7 +228,7 @@ fn cookie_session(id: Ulid) -> Cookie<'static> {
 }
 
 fn cookie_username(username: &str) -> Cookie<'static> {
-    let authorization_cookie = Cookie::build("username", username.to_string())
+    let authorization_cookie = Cookie::build(USER_COOKIE_NAME, username.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
         .same_site(SameSite::Strict)
         .path("/")
