@@ -19,7 +19,7 @@ services:
     ports:
       - 9000
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 15s
       timeout: 20s
       retries: 5
@@ -46,7 +46,7 @@ services:
     networks:
       - parseable-internal
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness"]
       interval: 15s
       timeout: 20s
       retries: 5
@@ -58,13 +58,42 @@ services:
         delay: 20s
         max_attempts: 3
 
-  quest:
-    image: ghcr.io/parseablehq/quest:main
-    command: ["load", "http://parseable:8000", "parseableadmin", "parseableadmin", "20"]
+  panorama:
+    image: ghcr.io/aldrinjenson/panorama:main
     networks:
       - parseable-internal
     depends_on:
       - parseable
+    environment:
+      - PANORAMA_ADDRESS="http:0.0.0.0:5000"
+      - PANORAMA_ADMIN_USERNAME=pano_admin
+      - PANORAMA_ADMIN_PASSWORD=pano_admin
+      - PARSEABLE_USERNAME=parseableadmin # todo: make as env var and use in other jobs
+      - PARSEABLE_PASSWORD=parseableadmin
+      - PARSEABLE_BASE_URL="http://parseable:8000/api/v1"
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 3
+
+  quest:
+    image: ghcr.io/parseablehq/quest:main
+    command: [
+        "load",
+        "http://parseable:8000",
+        "parseableadmin",
+        "parseableadmin",
+        "20",
+        "http:0.0.0.0:5000", # todo: make these into env var
+        pano_admin,
+        pano_admin,
+      ]
+    networks:
+      - parseable-internal
+    depends_on:
+      - parseable
+      - panorama
     deploy:
       restart_policy:
         condition: on-failure
