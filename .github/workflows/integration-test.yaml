@@ -3,17 +3,18 @@ name: Integration
 on:
   pull_request:
     paths-ignore:
-      - 'docs/**'
-      - 'helm/**'
-      - 'assets/**'
-      - '**.md'
+      - "docs/**"
+      - "helm/**"
+      - "assets/**"
+      - "**.md"
 
 jobs:
-
   docker-compose-test:
     name: Quest Smoke and Load Tests
     runs-on: ubuntu-latest
     steps:
+      - name: Login to GitHub Container Registry
+        run: echo ${{ secrets.GH_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
       - name: Checkout
         uses: actions/checkout@v3
       - name: Start compose
