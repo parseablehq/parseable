@@ -60,6 +60,9 @@ services:
 
   panorama:
     image: ghcr.io/aldrinjenson/panorama:main
+    credentials:
+      username: ${{ github.repository_owner }}
+      password: ${{ secrets.GH_TOKEN }}
     networks:
       - parseable-internal
     depends_on:
