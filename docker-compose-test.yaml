@@ -78,7 +78,7 @@ services:
         max_attempts: 3
 
   quest:
-    image: ghcr.io/parseablehq/quest:main
+    image: ghcr.io/aldrinjenson/quest:main
     command: [
         "load",
         "http://parseable:8000",
