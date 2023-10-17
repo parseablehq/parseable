@@ -11,12 +11,12 @@ services:
     depends_on:
       - parseable
     environment:
-      - PANORAMA_ADDRESS="http://panorama:5000"
+      - PANORAMA_ADDRESS=http://panorama:5000
       - PANORAMA_ADMIN_USERNAME=pano_admin
       - PANORAMA_ADMIN_PASSWORD=pano_admin
       - PARSEABLE_USERNAME=parseableadmin # todo: make as env var and use in other jobs
       - PARSEABLE_PASSWORD=parseableadmin
-      - PARSEABLE_BASE_URL="http://parseable:8000"
+      - PARSEABLE_BASE_URL=http://parseable:8000
     deploy:
       restart_policy:
         condition: on-failure
