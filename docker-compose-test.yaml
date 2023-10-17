@@ -16,7 +16,7 @@ services:
       - PANORAMA_ADMIN_PASSWORD=pano_admin
       - PARSEABLE_USERNAME=parseableadmin # todo: make as env var and use in other jobs
       - PARSEABLE_PASSWORD=parseableadmin
-      - PARSEABLE_BASE_URL="http://localhost:8000"
+      - PARSEABLE_BASE_URL="http://parseable:8000"
     deploy:
       restart_policy:
         condition: on-failure
