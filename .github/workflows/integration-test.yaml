@@ -7,6 +7,9 @@ on:
       - "helm/**"
       - "assets/**"
       - "**.md"
+  push: # todo: remove this before pr merge
+    branches:
+      - main
 
 jobs:
   docker-compose-test:
