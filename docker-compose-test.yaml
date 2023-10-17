@@ -4,6 +4,25 @@ networks:
   parseable-internal:
 
 services:
+  panorama:
+    image: ghcr.io/aldrinjenson/panorama:main
+    networks:
+      - parseable-internal
+    depends_on:
+      - parseable
+    environment:
+      - PANORAMA_ADDRESS="http://panorama:5000"
+      - PANORAMA_ADMIN_USERNAME=pano_admin
+      - PANORAMA_ADMIN_PASSWORD=pano_admin
+      - PARSEABLE_USERNAME=parseableadmin # todo: make as env var and use in other jobs
+      - PARSEABLE_PASSWORD=parseableadmin
+      - PARSEABLE_BASE_URL="http://parseable:8000"
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 32
+
   minio:
     image: minio/minio:RELEASE.2023-02-10T18-48-39Z
     entrypoint:
@@ -57,26 +76,6 @@ services:
         condition: on-failure
         delay: 20s
         max_attempts: 3
-
-  panorama:
-    image: ghcr.io/aldrinjenson/panorama:main
-    networks:
-      - parseable-internal
-    depends_on:
-      - parseable
-    environment:
-      - PANORAMA_ADDRESS="http:0.0.0.0:5000"
-      - PANORAMA_ADMIN_USERNAME=pano_admin
-      - PANORAMA_ADMIN_PASSWORD=pano_admin
-      - PARSEABLE_USERNAME=parseableadmin # todo: make as env var and use in other jobs
-      - PARSEABLE_PASSWORD=parseableadmin
-      - PARSEABLE_BASE_URL="http://parseable:8000/api/v1"
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 20s
-        max_attempts: 3
-
   quest:
     image: ghcr.io/aldrinjenson/quest:main
     command: [
@@ -85,7 +84,7 @@ services:
         "parseableadmin",
         "parseableadmin",
         "20",
-        "http:0.0.0.0:5000", # todo: make these into env var
+        "http://panorama:5000", # todo: make these into env var
         pano_admin,
         pano_admin,
       ]
