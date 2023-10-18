@@ -3,7 +3,7 @@ name = "parseable"
 version = "0.7.0"
 authors = ["Parseable Team <hi@parseable.io>"]
 edition = "2021"
-rust-version = "1.67"
+rust-version = "1.73"
 categories = ["logging", "observability", "log analytics"]
 build = "build.rs"
 
