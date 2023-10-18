@@ -40,6 +40,7 @@ pub async fn about() -> Json<serde_json::Value> {
     let deployment_id = meta.deployment_id.to_string();
     let mode = CONFIG.mode_string();
     let staging = CONFIG.staging_dir();
+    let grpc_port = CONFIG.parseable.grpc_port;
 
     let store = CONFIG.storage().get_endpoint();
     let is_llm_active = &CONFIG.parseable.open_ai_key.is_some();
@@ -58,6 +59,7 @@ pub async fn about() -> Json<serde_json::Value> {
         "license": "AGPL-3.0-only",
         "mode": mode,
         "staging": staging,
+        "grpcPort": grpc_port,
         "store": store
     }))
 }
