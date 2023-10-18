@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # build stage
-FROM rust:1.67.0-bullseye as builder
+FROM rust:1.73.0-bookworm as builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
@@ -26,7 +26,7 @@ COPY . .
 RUN cargo build --release
 
 # final stage
-FROM gcr.io/distroless/cc-debian11:latest
+FROM gcr.io/distroless/cc-debian12:latest
 
 WORKDIR /parseable
 
