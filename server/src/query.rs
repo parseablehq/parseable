@@ -107,7 +107,7 @@ impl Query {
 
         let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
         let runtime = Arc::new(RuntimeEnv::new(runtime_config).unwrap());
-        let mut state = SessionState::with_config_rt(config, runtime);
+        let mut state = SessionState::new_with_config_rt(config, runtime);
 
         if let Some(tag) = &self.filter_tag {
             let filter = FilterOptimizerRule {
@@ -117,7 +117,7 @@ impl Query {
             state = state.add_optimizer_rule(Arc::new(filter))
         }
 
-        SessionContext::with_state(state)
+        SessionContext::new_with_state(state)
     }
 
     /// Execute query on object storage(and if necessary on cache as well) with given stream information
@@ -172,15 +172,12 @@ impl Query {
         }
         let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
         let file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]];
-        let listing_options = ListingOptions {
-            file_extension: ".parquet".to_string(),
-            file_sort_order,
-            infinite_source: false,
-            format: Arc::new(file_format),
-            table_partition_cols: vec![],
-            collect_stat: true,
-            target_partitions: 32,
-        };
+        let listing_options = ListingOptions::new(Arc::new(file_format))
+            .with_file_extension(".parquet")
+            .with_file_sort_order(file_sort_order)
+            .with_collect_stat(true)
+            .with_target_partitions(32);
+
         let config = ListingTableConfig::new_with_multi_paths(prefixes)
             .with_listing_options(listing_options)
             .with_schema(self.schema.clone());

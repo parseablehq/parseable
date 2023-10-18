@@ -3,20 +3,26 @@ name = "parseable"
 version = "0.7.0"
 authors = ["Parseable Team <hi@parseable.io>"]
 edition = "2021"
-rust-version = "1.67"
+rust-version = "1.73"
 categories = ["logging", "observability", "log analytics"]
 build = "build.rs"
 
 [dependencies]
 ### apache arrow/datafusion dependencies
-arrow-schema = { version = "^42.0.0", features = ["serde"] }
-arrow-array = { version = "^42.0.0" }
-arrow-json = "^42.0.0"
-arrow-ipc = "^42.0.0"
-arrow-select = "^42.0.0"
-datafusion = "^27.0.0"
-object_store = { version = "^0.6.1", features = ["cloud", "aws"] }
-parquet = "^42.0.0"
+arrow-schema = { version = "^47.0.0", features = ["serde"] }
+arrow-array = { version = "^47.0.0" }
+arrow-json = "^47.0.0"
+arrow-ipc = "^47.0.0"
+arrow-select = "^47.0.0"
+datafusion = "32.0.0"
+object_store = { version = "^0.7.0", features = ["cloud", "aws"] }
+parquet = "^47.0.0"
+
+### LiveTail server deps
+arrow-flight = "47.0.0"
+tonic = "0.10.0"
+tonic-web = "0.10.0"
+tower-http = { version = "0.4.4", features = ["cors"] }
 
 ### actix dependencies
 actix-web-httpauth = "0.8"
@@ -25,12 +31,6 @@ actix-cors = "0.6"
 actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 mime = "0.3.17"
-
-### LiveTail server deps
-arrow-flight = "42.0.0"
-tonic = "0.9.0"
-tonic-web = "0.9.0"
-tower-http = { version = "0.4.4", features = ["cors"] }
 
 ### other dependencies
 anyhow = { version = "1.0", features = ["backtrace"] }
