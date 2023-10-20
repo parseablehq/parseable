@@ -63,6 +63,8 @@ impl Event {
             num_rows,
         )?;
 
+        crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
+
         if let Err(e) = metadata::STREAM_INFO
             .check_alerts(&self.stream_name, self.rb)
             .await

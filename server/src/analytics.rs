@@ -155,7 +155,7 @@ fn build_metrics() -> HashMap<String, Value> {
     metrics
 }
 
-pub async fn init_analytics_scheduler() {
+pub fn init_analytics_scheduler() {
     log::info!("Setting up schedular for anonymous user analytics");
 
     let mut scheduler = AsyncScheduler::new();

@@ -37,6 +37,7 @@ mod banner;
 mod event;
 mod external_service;
 mod handlers;
+mod livetail;
 mod metadata;
 mod metrics;
 mod migration;
@@ -98,8 +99,10 @@ async fn main() -> anyhow::Result<()> {
     // all internal data structures populated now.
     // start the analytics scheduler if enabled
     if CONFIG.parseable.send_analytics {
-        analytics::init_analytics_scheduler().await;
+        analytics::init_analytics_scheduler();
     }
+
+    tokio::spawn(handlers::livetail::server());
 
     let app = handlers::http::run_http(prometheus, CONFIG.parseable.openid.clone());
     tokio::pin!(app);
@@ -123,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
                 remote_sync_handler.join().unwrap_or(());
                 (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = object_store_sync();
             }
+
         };
     }
 }
