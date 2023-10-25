@@ -232,7 +232,7 @@ fn extract_basic_auth(header: &MetadataMap) -> Option<Credentials> {
 
 fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {
     let cookies = header
-        .get("Cookies")
+        .get("Cookie")
         .and_then(|value| value.to_str().ok())
         .map(Cookie::split_parse)?;
 
