@@ -111,7 +111,6 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-
 fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
