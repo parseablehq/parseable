@@ -174,11 +174,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let svc = FlightServiceServer::new(service);
 
-    let cors = CorsLayer::new()
-        .allow_methods(AllowMethods::mirror_request())
-        .allow_headers(AllowHeaders::mirror_request())
-        .allow_origin(AllowOrigin::mirror_request())
-        .allow_credentials(true);
+    let cors = cross_origin_config();
 
     Server::builder()
         .accept_http1(true)
@@ -238,4 +234,12 @@ fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {
     cookies
         .flatten()
         .find(|cookie| cookie.name() == SESSION_COOKIE_NAME)
+}
+
+fn cross_origin_config() -> CorsLayer {
+    if cfg!(feature = "debug") {
+        CorsLayer::very_permissive().allow_credentials(true)
+    } else {
+        CorsLayer::new()
+    }
 }
