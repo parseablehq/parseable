@@ -35,7 +35,7 @@ use arrow_flight::{
     HandshakeResponse, PutResult, SchemaResult, Ticket,
 };
 use tonic_web::GrpcWebLayer;
-use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 use crate::livetail::{Message, LIVETAIL};
 use crate::metadata::STREAM_INFO;
