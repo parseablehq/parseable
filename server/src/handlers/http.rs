@@ -74,14 +74,7 @@ pub async fn run_http(
             .configure(|cfg| configure_routes(cfg, oidc_client.clone()))
             .wrap(actix_web::middleware::Logger::default())
             .wrap(actix_web::middleware::Compress::default())
-            .wrap(
-                Cors::default()
-                    .allow_any_header()
-                    .allow_any_method()
-                    .allow_any_origin()
-                    .expose_any_header()
-                    .supports_credentials(),
-            )
+            .wrap(cross_origin_config())
     };
 
     let ssl_acceptor = match (
@@ -341,4 +334,12 @@ fn base_path() -> String {
 
 pub fn metrics_path() -> String {
     format!("{}/metrics", base_path())
+}
+
+fn cross_origin_config() -> Cors {
+    if cfg!(feature = "debug") {
+        Cors::permissive()
+    } else {
+        Cors::default()
+    }
 }
