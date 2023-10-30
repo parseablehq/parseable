@@ -119,4 +119,4 @@ assets-sha1 = "6abd7b5ca5b9c832ff58b8450cffdc83dd7172bf"
 
 [features]
 permissive_cors = ["dep:tower-http", "dep:actix-cors"]
-debug = ["permissive-cors"]
+debug = ["permissive_cors"]
