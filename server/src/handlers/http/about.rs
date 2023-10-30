@@ -45,6 +45,7 @@ pub async fn about() -> Json<serde_json::Value> {
     let store = CONFIG.storage().get_endpoint();
     let is_llm_active = &CONFIG.parseable.open_ai_key.is_some();
     let llm_provider = is_llm_active.then_some("OpenAI");
+    let is_oidc_active = CONFIG.parseable.openid.is_some();
     let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
     Json(json!({
@@ -56,6 +57,7 @@ pub async fn about() -> Json<serde_json::Value> {
         "latestVersion": latest_release,
         "llmActive": is_llm_active,
         "llmProvider": llm_provider,
+        "oidcActive": is_oidc_active,
         "license": "AGPL-3.0-only",
         "mode": mode,
         "staging": staging,
