@@ -22,15 +22,15 @@ parquet = "^47.0.0"
 arrow-flight = "47.0.0"
 tonic = "0.10.0"
 tonic-web = "0.10.0"
-tower-http = { version = "0.4.4", features = ["cors"] }
+tower-http = { version = "0.4.4", features = ["cors"], optional = true }
 
 ### actix dependencies
 actix-web-httpauth = "0.8"
 actix-web = { version = "4.3", features = ["rustls"] }
-actix-cors = "0.6"
 actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 mime = "0.3.17"
+actix-cors = { version = "0.6", optional = true }
 
 ### other dependencies
 anyhow = { version = "1.0", features = ["backtrace"] }
@@ -118,4 +118,4 @@ assets-url = "https://github.com/parseablehq/console/releases/download/v0.3.1/bu
 assets-sha1 = "6abd7b5ca5b9c832ff58b8450cffdc83dd7172bf"
 
 [features]
-debug = []
+debug = ["dep:tower-http", "dep:actix-cors"]
