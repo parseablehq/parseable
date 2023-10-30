@@ -338,8 +338,8 @@ pub fn metrics_path() -> String {
 
 fn cross_origin_config() -> Cors {
     if cfg!(feature = "debug") {
-        Cors::permissive()
+        Cors::permissive().block_on_origin_mismatch(false)
     } else {
-        Cors::default()
+        Cors::default().block_on_origin_mismatch(false)
     }
 }
