@@ -31,7 +31,7 @@ use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
-#[cfg(feature = "debug")]
+#[cfg(feature = "permissive_cors")]
 use actix_cors::Cors;
 
 use crate::option::CONFIG;
@@ -77,7 +77,7 @@ pub async fn run_http(
             .wrap(actix_web::middleware::Logger::default())
             .wrap(actix_web::middleware::Compress::default());
 
-        #[cfg(feature = "debug")]
+        #[cfg(feature = "permissive_cors")]
         let app = app.wrap(Cors::permissive());
 
         app

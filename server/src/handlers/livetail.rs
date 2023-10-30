@@ -35,7 +35,7 @@ use arrow_flight::{
     HandshakeResponse, PutResult, SchemaResult, Ticket,
 };
 use tonic_web::GrpcWebLayer;
-#[cfg(feature = "debug")]
+#[cfg(feature = "permissive_cors")]
 use tower_http::cors::CorsLayer;
 
 use crate::livetail::{Message, LIVETAIL};
@@ -177,7 +177,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let builder = Server::builder().accept_http1(true);
 
-    #[cfg(feature = "debug")]
+    #[cfg(feature = "permissive_cors")]
     let builder = builder.layer(CorsLayer::very_permissive().allow_credentials(true));
 
     builder
