@@ -35,6 +35,7 @@ use arrow_flight::{
     HandshakeResponse, PutResult, SchemaResult, Ticket,
 };
 use tonic_web::GrpcWebLayer;
+#[cfg(feature = "debug")]
 use tower_http::cors::CorsLayer;
 
 use crate::livetail::{Message, LIVETAIL};
@@ -174,11 +175,12 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let svc = FlightServiceServer::new(service);
 
-    let cors = cross_origin_config();
+    let builder = Server::builder().accept_http1(true);
 
-    Server::builder()
-        .accept_http1(true)
-        .layer(cors)
+    #[cfg(feature = "debug")]
+    let builder = builder.layer(CorsLayer::very_permissive().allow_credentials(true));
+
+    builder
         .layer(GrpcWebLayer::new())
         .add_service(svc)
         .serve(addr)
@@ -234,12 +236,4 @@ fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {
     cookies
         .flatten()
         .find(|cookie| cookie.name() == SESSION_COOKIE_NAME)
-}
-
-fn cross_origin_config() -> CorsLayer {
-    if cfg!(feature = "debug") {
-        CorsLayer::very_permissive().allow_credentials(true)
-    } else {
-        CorsLayer::new()
-    }
 }

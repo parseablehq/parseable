@@ -20,7 +20,6 @@ use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 
-use actix_cors::Cors;
 use actix_web::{
     web::{self, resource},
     App, HttpServer,
@@ -31,6 +30,9 @@ use log::info;
 use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
+
+#[cfg(feature = "debug")]
+use actix_cors::Cors;
 
 use crate::option::CONFIG;
 use crate::rbac::role::Action;
@@ -69,12 +71,16 @@ pub async fn run_http(
     };
 
     let create_app = move || {
-        App::new()
+        let app = App::new()
             .wrap(prometheus.clone())
             .configure(|cfg| configure_routes(cfg, oidc_client.clone()))
             .wrap(actix_web::middleware::Logger::default())
-            .wrap(actix_web::middleware::Compress::default())
-            .wrap(cross_origin_config())
+            .wrap(actix_web::middleware::Compress::default());
+
+        #[cfg(feature = "debug")]
+        let app = app.wrap(Cors::permissive());
+
+        app
     };
 
     let ssl_acceptor = match (
@@ -334,12 +340,4 @@ fn base_path() -> String {
 
 pub fn metrics_path() -> String {
     format!("{}/metrics", base_path())
-}
-
-fn cross_origin_config() -> Cors {
-    if cfg!(feature = "debug") {
-        Cors::permissive()
-    } else {
-        Cors::default()
-    }
 }
