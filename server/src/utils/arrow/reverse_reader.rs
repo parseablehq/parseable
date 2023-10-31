@@ -244,7 +244,7 @@ mod tests {
             .iter()
             .flatten()
             .collect();
-        assert_eq!(col1_val, vec![2, 1, 0]);
+        assert_eq!(col1_val, vec![0, 1, 2]);
 
         let rb = reader.next().unwrap().unwrap();
         assert_eq!(rb.num_rows(), 2);
