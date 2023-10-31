@@ -171,7 +171,7 @@ impl Query {
             return Ok(None);
         }
         let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
-        let file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]];
+        let file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(false, true)]];
         let listing_options = ListingOptions::new(Arc::new(file_format))
             .with_file_extension(".parquet")
             .with_file_sort_order(file_sort_order)

@@ -239,8 +239,8 @@ fn parquet_writer_props() -> WriterPropertiesBuilder {
         )
         .set_sorting_columns(Some(vec![SortingColumn {
             column_idx: 0,
-            descending: false,
-            nulls_first: false,
+            descending: true,
+            nulls_first: true,
         }]))
 }
 
