@@ -24,8 +24,11 @@ use arrow_ipc::reader::StreamReader;
 use arrow_schema::Schema;
 use itertools::kmerge_by;
 
-use super::adapt_batch;
-use crate::event::DEFAULT_TIMESTAMP_KEY;
+use super::{
+    adapt_batch,
+    reverse_reader::{reverse, OffsetReader},
+};
+use crate::{event::DEFAULT_TIMESTAMP_KEY, utils};
 
 #[derive(Debug)]
 pub struct MergedRecordReader {
@@ -44,14 +47,42 @@ impl MergedRecordReader {
         Ok(Self { readers })
     }
 
-    pub fn merged_iter(self, schema: Arc<Schema>) -> impl Iterator<Item = RecordBatch> {
-        let adapted_readers = self.readers.into_iter().map(move |reader| reader.flatten());
+    pub fn merged_schema(&self) -> Schema {
+        Schema::try_merge(
+            self.readers
+                .iter()
+                .map(|reader| reader.schema().as_ref().clone()),
+        )
+        .unwrap()
+    }
+}
 
+#[derive(Debug)]
+pub struct MergedReverseRecordReader {
+    pub readers: Vec<StreamReader<BufReader<OffsetReader<File>>>>,
+}
+
+impl MergedReverseRecordReader {
+    pub fn try_new(files: &[PathBuf]) -> Result<Self, ()> {
+        let mut readers = Vec::with_capacity(files.len());
+        for file in files {
+            let reader =
+                utils::arrow::reverse_reader::get_reverse_reader(File::open(file).unwrap())
+                    .map_err(|_| ())?;
+            readers.push(reader);
+        }
+
+        Ok(Self { readers })
+    }
+
+    pub fn merged_iter(self, schema: Arc<Schema>) -> impl Iterator<Item = RecordBatch> {
+        let adapted_readers = self.readers.into_iter().map(|reader| reader.flatten());
         kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
             let a_time = get_timestamp_millis(a);
             let b_time = get_timestamp_millis(b);
-            a_time < b_time
+            a_time > b_time
         })
+        .map(|batch| reverse(&batch))
         .map(move |batch| adapt_batch(&schema, &batch))
     }
 
