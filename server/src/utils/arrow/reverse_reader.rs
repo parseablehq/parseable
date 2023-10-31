@@ -160,7 +160,7 @@ fn find_limit_and_type(
     reader.read_exact(&mut message)?;
     size += metadata_size;
 
-    let message = unsafe { root_as_message_unchecked(&mut message) };
+    let message = unsafe { root_as_message_unchecked(&message) };
     let header = message.header_type();
     let message_size = message.bodyLength();
     size += message_size as usize;
