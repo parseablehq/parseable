@@ -119,7 +119,7 @@ pub fn get_reverse_reader<T: Read + Seek>(
         .collect();
 
     // reset reader
-    reader.rewind();
+    reader.rewind()?;
 
     Ok(StreamReader::try_new(OffsetReader::new(reader, messages), None).unwrap())
 }
