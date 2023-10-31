@@ -60,7 +60,7 @@ impl<R: Read + Seek> Read for OffsetReader<R> {
         if self.buffer_position == 0 {
             self.reader.seek(SeekFrom::Start(offset))?;
             // resize for current message
-            if self.buffer.capacity() < size {
+            if self.buffer.len() < size {
                 self.buffer.resize(size, 0)
             }
             self.reader.read_exact(&mut self.buffer[0..size])?;
