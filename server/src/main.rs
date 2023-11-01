@@ -16,7 +16,7 @@
  *
  */
 
-use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
+use clokwerk::{AsyncScheduler, Job, Scheduler, TimeUnits};
 use thread_priority::{ThreadBuilder, ThreadPriority};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
@@ -122,6 +122,8 @@ fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sende
                 let mut scheduler = AsyncScheduler::new();
                 scheduler
                     .every((CONFIG.parseable.upload_interval as u32).seconds())
+                    // Extra time interval is added so that this schedular does not race with local sync.
+                    .plus(5u32.seconds())
                     .run(|| async {
                         if let Err(e) = CONFIG.storage().get_object_store().sync().await {
                             log::warn!("failed to sync local data with object store. {:?}", e);
