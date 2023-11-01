@@ -34,6 +34,8 @@ use std::any::Any;
 use std::sync::Arc;
 use std::vec;
 
+use crate::utils::arrow::reverse_reader::reverse;
+
 pub struct QueryTableProvider {
     staging: Option<MemTable>,
     // remote table
@@ -47,6 +49,17 @@ impl QueryTableProvider {
         storage: Option<Arc<ListingTable>>,
         schema: Arc<Schema>,
     ) -> Result<Self, DataFusionError> {
+        // in place reverse transform
+        let staging = if let Some(mut staged_batches) = staging {
+            staged_batches[..].reverse();
+            staged_batches
+                .iter_mut()
+                .for_each(|batch| *batch = reverse(batch));
+            Some(staged_batches)
+        } else {
+            None
+        };
+
         let memtable = staging
             .map(|records| MemTable::try_new(schema.clone(), vec![records]))
             .transpose()?;

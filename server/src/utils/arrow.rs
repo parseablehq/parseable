@@ -25,6 +25,7 @@ use itertools::Itertools;
 
 pub mod batch_adapter;
 pub mod merged_reader;
+pub mod reverse_reader;
 
 pub use batch_adapter::adapt_batch;
 pub use merged_reader::MergedRecordReader;
