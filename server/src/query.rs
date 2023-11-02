@@ -84,6 +84,8 @@ impl Query {
         self._get_prefixes()
             .into_iter()
             .map(|key| format!("{}/{}", self.stream_name, key))
+            // latest first
+            .rev()
             .collect()
     }
 
@@ -176,7 +178,8 @@ impl Query {
             .with_file_extension(".parquet")
             .with_file_sort_order(file_sort_order)
             .with_collect_stat(true)
-            .with_target_partitions(32);
+            // enforce distribution will take care of parallelization
+            .with_target_partitions(1);
 
         let config = ListingTableConfig::new_with_multi_paths(prefixes)
             .with_listing_options(listing_options)
