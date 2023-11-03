@@ -41,7 +41,7 @@ use crate::{
     metrics,
     option::CONFIG,
     storage::OBJECT_STORE_DATA_GRANULARITY,
-    utils::{self, arrow::MergedRecordReader},
+    utils::{self, arrow::merged_reader::MergedReverseRecordReader},
 };
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
@@ -198,7 +198,7 @@ pub fn convert_disk_files_to_parquet(
                 .add(file_size as i64);
         }
 
-        let record_reader = MergedRecordReader::try_new(&files).unwrap();
+        let record_reader = MergedReverseRecordReader::try_new(&files).unwrap();
 
         let parquet_file = fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
 
@@ -239,8 +239,8 @@ fn parquet_writer_props() -> WriterPropertiesBuilder {
         )
         .set_sorting_columns(Some(vec![SortingColumn {
             column_idx: 0,
-            descending: false,
-            nulls_first: false,
+            descending: true,
+            nulls_first: true,
         }]))
 }
 

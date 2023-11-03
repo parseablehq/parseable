@@ -35,7 +35,7 @@ use arrow_flight::{
     HandshakeResponse, PutResult, SchemaResult, Ticket,
 };
 use tonic_web::GrpcWebLayer;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 use crate::livetail::{Message, LIVETAIL};
 use crate::metadata::STREAM_INFO;
@@ -174,12 +174,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let svc = FlightServiceServer::new(service);
 
-    let cors = CorsLayer::new()
-        // allow `GET` and `POST` when accessing the resource
-        .allow_methods(Any)
-        .allow_headers(Any)
-        .allow_origin(Any);
-    // allow requests from any origin
+    let cors = cross_origin_config();
 
     Server::builder()
         .accept_http1(true)
@@ -232,11 +227,19 @@ fn extract_basic_auth(header: &MetadataMap) -> Option<Credentials> {
 
 fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {
     let cookies = header
-        .get("Cookies")
+        .get("Cookie")
         .and_then(|value| value.to_str().ok())
         .map(Cookie::split_parse)?;
 
     cookies
         .flatten()
         .find(|cookie| cookie.name() == SESSION_COOKIE_NAME)
+}
+
+fn cross_origin_config() -> CorsLayer {
+    if cfg!(feature = "debug") {
+        CorsLayer::very_permissive().allow_credentials(true)
+    } else {
+        CorsLayer::new()
+    }
 }

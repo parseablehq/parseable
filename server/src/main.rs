@@ -16,15 +16,10 @@
  *
  */
 
-use clokwerk::{AsyncScheduler, Scheduler, TimeUnits};
+use clokwerk::{AsyncScheduler, Job, Scheduler, TimeUnits};
 use thread_priority::{ThreadBuilder, ThreadPriority};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
-
-#[cfg(feature = "debug")]
-use pyroscope::PyroscopeAgent;
-#[cfg(feature = "debug")]
-use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread::{self, JoinHandle};
@@ -53,11 +48,6 @@ mod validator;
 
 use option::CONFIG;
 
-#[cfg(feature = "debug")]
-const DEBUG_PYROSCOPE_URL: &str = "P_PROFILE_PYROSCOPE_URL";
-#[cfg(feature = "debug")]
-const DEBUG_PYROSCOPE_TOKEN: &str = "P_PROFILE_PYROSCOPE_AUTH_TOKEN";
-
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -74,14 +64,6 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.storage().register_store_metrics(&prometheus);
 
     migration::run_migration(&CONFIG).await?;
-
-    #[cfg(feature = "debug")]
-    {
-        if std::env::var(DEBUG_PYROSCOPE_URL).is_ok() {
-            let url = std::env::var(DEBUG_PYROSCOPE_URL).ok();
-            start_profiling(url.unwrap());
-        }
-    }
 
     if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
         log::warn!("could not populate local metadata. {:?}", e);
@@ -131,21 +113,6 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-#[cfg(feature = "debug")]
-fn start_profiling(url: String) {
-    let auth_token = std::env::var(DEBUG_PYROSCOPE_TOKEN).unwrap_or_else(|_| "".to_string());
-
-    // Configure Pyroscope client.
-    let agent = PyroscopeAgent::builder(url, env!("CARGO_PKG_NAME").to_string())
-        .auth_token(auth_token)
-        .backend(pprof_backend(PprofConfig::new().sample_rate(100)))
-        .build()
-        .unwrap();
-
-    // Start the Pyroscope client.
-    agent.start().unwrap();
-}
-
 fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
@@ -157,6 +124,8 @@ fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sende
                 let mut scheduler = AsyncScheduler::new();
                 scheduler
                     .every((CONFIG.parseable.upload_interval as u32).seconds())
+                    // Extra time interval is added so that this schedular does not race with local sync.
+                    .plus(5u32.seconds())
                     .run(|| async {
                         if let Err(e) = CONFIG.storage().get_object_store().sync().await {
                             log::warn!("failed to sync local data with object store. {:?}", e);

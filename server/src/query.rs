@@ -84,6 +84,8 @@ impl Query {
         self._get_prefixes()
             .into_iter()
             .map(|key| format!("{}/{}", self.stream_name, key))
+            // latest first
+            .rev()
             .collect()
     }
 
@@ -171,12 +173,13 @@ impl Query {
             return Ok(None);
         }
         let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
-        let file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]];
+        let file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(false, true)]];
         let listing_options = ListingOptions::new(Arc::new(file_format))
             .with_file_extension(".parquet")
             .with_file_sort_order(file_sort_order)
             .with_collect_stat(true)
-            .with_target_partitions(32);
+            // enforce distribution will take care of parallelization
+            .with_target_partitions(1);
 
         let config = ListingTableConfig::new_with_multi_paths(prefixes)
             .with_listing_options(listing_options)
