@@ -29,10 +29,15 @@ use datafusion::execution::context::SessionState;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::*;
+use futures_util::stream::FuturesUnordered;
+use futures_util::{future, Future, TryStreamExt};
 use itertools::Itertools;
+use object_store::path::Path as StorePath;
+use object_store::ObjectStore;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use sysinfo::{System, SystemExt};
 
@@ -76,16 +81,15 @@ impl Query {
     }
 
     /// Return prefixes, each per day/hour/minutes as necessary
-    fn _get_prefixes(&self) -> Vec<String> {
+    fn generate_prefixes(&self) -> Vec<String> {
         TimePeriod::new(self.start, self.end, OBJECT_STORE_DATA_GRANULARITY).generate_prefixes()
     }
 
-    pub fn get_prefixes(&self) -> Vec<String> {
-        self._get_prefixes()
+    fn get_prefixes(&self) -> Vec<String> {
+        self.generate_prefixes()
             .into_iter()
             .map(|key| format!("{}/{}", self.stream_name, key))
             // latest first
-            .rev()
             .collect()
     }
 
@@ -129,7 +133,15 @@ impl Query {
         storage: Arc<dyn ObjectStorage + Send>,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let ctx = self.create_session_context();
-        let remote_listing_table = self._remote_query(storage)?;
+        let unresolved_prefixes = self.get_prefixes();
+        let client = ctx
+            .runtime_env()
+            .object_store(Box::new(storage.store_url()))
+            .unwrap();
+        let prefixes =
+            resolve_paths(client, storage.normalize_prefixes(unresolved_prefixes)).await?;
+
+        let remote_listing_table = self.remote_query(dbg!(prefixes), storage)?;
 
         let current_minute = Utc::now()
             .with_second(0)
@@ -164,11 +176,12 @@ impl Query {
         Ok((results, fields))
     }
 
-    fn _remote_query(
+    fn remote_query(
         &self,
+        prefixes: Vec<String>,
         storage: Arc<dyn ObjectStorage + Send>,
     ) -> Result<Option<Arc<ListingTable>>, ExecuteError> {
-        let prefixes = storage.query_prefixes(self.get_prefixes());
+        let prefixes = storage.query_prefixes(prefixes);
         if prefixes.is_empty() {
             return Ok(None);
         }
@@ -229,6 +242,85 @@ fn time_from_path(path: &Path) -> DateTime<Utc> {
 
     Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
         .unwrap()
+}
+
+// accepts relative paths to resolve the narrative
+// returns list of prefixes sorted in descending order
+async fn resolve_paths(
+    client: Arc<dyn ObjectStore>,
+    prefixes: Vec<String>,
+) -> Result<Vec<String>, ObjectStorageError> {
+    let mut minute_resolve: HashMap<String, Vec<String>> = HashMap::new();
+    let mut all_resolve = Vec::new();
+
+    for prefix in prefixes {
+        let components = prefix.split_terminator('/');
+        if components.last().is_some_and(|x| x.starts_with("minute")) {
+            let hour_prefix = &prefix[0..prefix.rfind("minute").expect("minute exists")];
+            minute_resolve
+                .entry(hour_prefix.to_owned())
+                .and_modify(|list| list.push(prefix))
+                .or_default();
+        } else {
+            all_resolve.push(prefix)
+        }
+    }
+
+    let tasks: FuturesUnordered<
+        Pin<Box<dyn Future<Output = Result<Vec<object_store::ObjectMeta>, ObjectStorageError>>>>,
+    > = FuturesUnordered::new();
+
+    for (listing_prefix, prefix) in minute_resolve {
+        let client = Arc::clone(&client);
+        tasks.push(Box::pin(async move {
+            let mut list = dbg!(
+                client
+                    .list(Some(&StorePath::from(listing_prefix)))
+                    .await?
+                    .try_collect::<Vec<_>>()
+                    .await?
+            );
+
+            list.retain(|object| {
+                prefix.iter().any(|prefix| {
+                    object
+                        .location
+                        .prefix_matches(&StorePath::from(prefix.as_ref()))
+                })
+            });
+
+            Ok(list)
+        }));
+    }
+
+    for prefix in all_resolve {
+        let client = Arc::clone(&client);
+        tasks.push(Box::pin(async move {
+            dbg!(client
+                .list(Some(&StorePath::from(prefix)))
+                .await?
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(Into::into))
+        }));
+    }
+
+    let res: Vec<Vec<String>> = tasks
+        .and_then(|res| {
+            future::ok(
+                res.into_iter()
+                    .map(|res| res.location.to_string())
+                    .collect_vec(),
+            )
+        })
+        .try_collect()
+        .await?;
+
+    let mut res = res.into_iter().flatten().collect_vec();
+    res.sort();
+    res.reverse();
+
+    Ok(res)
 }
 
 pub mod error {

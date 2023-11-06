@@ -67,7 +67,9 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
+    fn normalize_prefixes(&self, prefixes: Vec<String>) -> Vec<String>;
     fn query_prefixes(&self, prefixes: Vec<String>) -> Vec<ListingTableUrl>;
+    fn store_url(&self) -> url::Url;
 
     async fn put_schema(
         &self,
