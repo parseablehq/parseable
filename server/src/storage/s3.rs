@@ -444,6 +444,11 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
+    // no op on s3
+    fn normalize_prefixes(&self, prefixes: Vec<String>) -> Vec<String> {
+        prefixes
+    }
+
     fn query_prefixes(&self, prefixes: Vec<String>) -> Vec<ListingTableUrl> {
         prefixes
             .into_iter()
@@ -452,6 +457,10 @@ impl ObjectStorage for S3 {
                 ListingTableUrl::parse(path).unwrap()
             })
             .collect()
+    }
+
+    fn store_url(&self) -> url::Url {
+        url::Url::parse(&format!("s3://{}", self.bucket)).unwrap()
     }
 }
 
