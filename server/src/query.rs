@@ -89,7 +89,6 @@ impl Query {
         self.generate_prefixes()
             .into_iter()
             .map(|key| format!("{}/{}", self.stream_name, key))
-            // latest first
             .collect()
     }
 
