@@ -33,7 +33,7 @@ use futures_util::stream::FuturesUnordered;
 use futures_util::{future, Future, TryStreamExt};
 use itertools::Itertools;
 use object_store::path::Path as StorePath;
-use object_store::ObjectStore;
+use object_store::{ObjectMeta, ObjectStore};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -265,9 +265,9 @@ async fn resolve_paths(
         }
     }
 
-    let tasks: FuturesUnordered<
-        Pin<Box<dyn Future<Output = Result<Vec<object_store::ObjectMeta>, ObjectStorageError>>>>,
-    > = FuturesUnordered::new();
+    type ResolveFuture = Pin<Box<dyn Future<Output = Result<Vec<ObjectMeta>, ObjectStorageError>>>>;
+
+    let tasks: FuturesUnordered<ResolveFuture> = FuturesUnordered::new();
 
     for (listing_prefix, prefix) in minute_resolve {
         let client = Arc::clone(&client);
