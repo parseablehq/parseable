@@ -140,7 +140,7 @@ impl Query {
         let prefixes =
             resolve_paths(client, storage.normalize_prefixes(unresolved_prefixes)).await?;
 
-        let remote_listing_table = self.remote_query(dbg!(prefixes), storage)?;
+        let remote_listing_table = self.remote_query(prefixes, storage)?;
 
         let current_minute = Utc::now()
             .with_second(0)
@@ -272,13 +272,11 @@ async fn resolve_paths(
     for (listing_prefix, prefix) in minute_resolve {
         let client = Arc::clone(&client);
         tasks.push(Box::pin(async move {
-            let mut list = dbg!(
-                client
-                    .list(Some(&StorePath::from(listing_prefix)))
-                    .await?
-                    .try_collect::<Vec<_>>()
-                    .await?
-            );
+            let mut list = client
+                .list(Some(&StorePath::from(listing_prefix)))
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
 
             list.retain(|object| {
                 prefix.iter().any(|prefix| {
@@ -295,12 +293,12 @@ async fn resolve_paths(
     for prefix in all_resolve {
         let client = Arc::clone(&client);
         tasks.push(Box::pin(async move {
-            dbg!(client
+            client
                 .list(Some(&StorePath::from(prefix)))
                 .await?
                 .try_collect::<Vec<_>>()
                 .await
-                .map_err(Into::into))
+                .map_err(Into::into)
         }));
     }
 
