@@ -16,7 +16,7 @@
  *
  */
 
-use crate::stats::Stats;
+use crate::{catalog::snapshot::Snapshot, stats::Stats};
 
 use chrono::Local;
 
@@ -72,6 +72,8 @@ pub struct ObjectStoreFormat {
     pub owner: Owner,
     pub permissions: Vec<Permisssion>,
     pub stats: Stats,
+    #[serde(default)]
+    pub snapshot: Snapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -112,6 +114,7 @@ impl Default for ObjectStoreFormat {
             owner: Owner::new("".to_string(), "".to_string()),
             permissions: vec![Permisssion::new("parseable".to_string())],
             stats: Stats::default(),
+            snapshot: Snapshot::default(),
         }
     }
 }

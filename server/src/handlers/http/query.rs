@@ -16,56 +16,100 @@
  *
  */
 
-use actix_web::error::ErrorUnauthorized;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
+use chrono::{DateTime, Utc};
+use datafusion::error::DataFusionError;
+use datafusion::execution::context::SessionState;
 use futures_util::Future;
 use http::StatusCode;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::time::Instant;
 
-use crate::handlers::FILL_NULL_OPTION_KEY;
 use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::option::CONFIG;
-use crate::query::error::{ExecuteError, ParseError};
-use crate::query::Query;
+use crate::query::error::ExecuteError;
+use crate::query::QUERY_SESSION;
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::utils::actix::extract_session_key_from_req;
 
-pub async fn query(
-    query: Query,
-    web::Query(params): web::Query<HashMap<String, bool>>,
-) -> Result<impl Responder, QueryError> {
+// Query Request thorugh http endpoint.
+// Implememts FromRequest
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Query {
+    query: String,
+    start_time: String,
+    end_time: String,
+    #[serde(default)]
+    send_null: bool,
+    #[serde(skip)]
+    fields: bool,
+    #[serde(skip)]
+    filter_tags: Option<Vec<String>>,
+}
+
+pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
+    let creds = extract_session_key_from_req(&req).expect("expects basic auth");
+    let permissions = Users.get_permissions(&creds);
+    let session_state = QUERY_SESSION.state();
+    let mut query = into_query(&query_request, &session_state).await?;
+
+    // check authorization of this query if it references physical table;
+    let table_name = query.table_name();
+    if let Some(ref table) = table_name {
+        let mut authorized = false;
+        let mut tags = Vec::new();
+
+        // in permission check if user can run query on the stream.
+        // also while iterating add any filter tags for this stream
+        for permission in permissions {
+            match permission {
+                Permission::Stream(Action::All, _) => {
+                    authorized = true;
+                    break;
+                }
+                Permission::StreamWithTag(Action::Query, ref stream, tag)
+                    if stream == table || stream == "*" =>
+                {
+                    authorized = true;
+                    if let Some(tag) = tag {
+                        tags.push(tag)
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        if !authorized {
+            return Err(QueryError::Unauthorized);
+        }
+
+        if !tags.is_empty() {
+            query.filter_tag = Some(tags)
+        }
+    }
+
     let time = Instant::now();
 
-    // format output json to include field names
-    let with_fields = params.get("fields").cloned().unwrap_or(false);
-    // Fill missing columns with null
-    let fill_null = params
-        .get("fillNull")
-        .cloned()
-        .or(Some(query.fill_null))
-        .unwrap_or(false);
-
-    let storage = CONFIG.storage().get_object_store();
-    let (records, fields) = query.execute(storage).await?;
+    let (records, fields) = query.execute().await?;
     let response = QueryResponse {
         records,
         fields,
-        fill_null,
-        with_fields,
+        fill_null: query_request.send_null,
+        with_fields: query_request.fields,
     }
     .to_http();
 
-    let time = time.elapsed().as_secs_f64();
-    QUERY_EXECUTE_TIME
-        .with_label_values(&[query.stream_name.as_str()])
-        .observe(time);
+    if let Some(table) = table_name {
+        let time = time.elapsed().as_secs_f64();
+        QUERY_EXECUTE_TIME
+            .with_label_values(&[&table])
+            .observe(time);
+    }
 
     Ok(response)
 }
@@ -75,48 +119,19 @@ impl FromRequest for Query {
     type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
 
     fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
-        let creds = extract_session_key_from_req(req).expect("expects basic auth");
-        let permissions = Users.get_permissions(&creds);
-        let json = Json::<Value>::from_request(req, payload);
+        let query = Json::<Query>::from_request(req, payload);
+        let params = web::Query::<HashMap<String, bool>>::from_request(req, payload)
+            .into_inner()
+            .map(|x| x.0)
+            .unwrap_or_default();
 
         let fut = async move {
-            let json = json.await?.into_inner();
-            // maybe move this option to query param instead so that it can simply be extracted from request
-            let fill_null = json
-                .as_object()
-                .and_then(|map| map.get(FILL_NULL_OPTION_KEY))
-                .and_then(|value| value.as_bool())
-                .unwrap_or_default();
+            let mut query = query.await?.into_inner();
+            // format output json to include field names
+            query.fields = params.get("fields").cloned().unwrap_or(false);
 
-            let mut query = Query::parse(json).map_err(QueryError::Parse)?;
-            query.fill_null = fill_null;
-
-            let mut authorized = false;
-            let mut tags = Vec::new();
-
-            // in permission check if user can run query on the stream.
-            // also while iterating add any filter tags for this stream
-            for permission in permissions {
-                match permission {
-                    Permission::Stream(Action::All, _) => authorized = true,
-                    Permission::StreamWithTag(Action::Query, stream, tag)
-                        if stream == query.stream_name || stream == "*" =>
-                    {
-                        authorized = true;
-                        if let Some(tag) = tag {
-                            tags.push(tag)
-                        }
-                    }
-                    _ => (),
-                }
-            }
-
-            if !authorized {
-                return Err(ErrorUnauthorized("Not authorized"));
-            }
-
-            if !tags.is_empty() {
-                query.filter_tag = Some(tags)
+            if !query.send_null {
+                query.send_null = params.get("sendNull").cloned().unwrap_or(false);
             }
 
             Ok(query)
@@ -126,10 +141,71 @@ impl FromRequest for Query {
     }
 }
 
+async fn into_query(
+    query: &Query,
+    session_state: &SessionState,
+) -> Result<crate::query::Query, QueryError> {
+    if query.query.is_empty() {
+        return Err(QueryError::EmptyQuery);
+    }
+
+    if query.start_time.is_empty() {
+        return Err(QueryError::EmptyStartTime);
+    }
+
+    if query.end_time.is_empty() {
+        return Err(QueryError::EmptyEndTime);
+    }
+
+    let start: DateTime<Utc>;
+    let end: DateTime<Utc>;
+
+    if query.end_time == "now" {
+        end = Utc::now();
+        start = end - chrono::Duration::from_std(humantime::parse_duration(&query.start_time)?)?;
+    } else {
+        start = DateTime::parse_from_rfc3339(&query.start_time)
+            .map_err(|_| QueryError::StartTimeParse)?
+            .into();
+        end = DateTime::parse_from_rfc3339(&query.end_time)
+            .map_err(|_| QueryError::EndTimeParse)?
+            .into();
+    };
+
+    if start.timestamp() > end.timestamp() {
+        return Err(QueryError::StartTimeAfterEndTime);
+    }
+
+    Ok(crate::query::Query {
+        raw_logical_plan: session_state.create_logical_plan(&query.query).await?,
+        start,
+        end,
+        filter_tag: query.filter_tags.clone(),
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
-    #[error("Bad request: {0}")]
-    Parse(#[from] ParseError),
+    #[error("Query cannot be empty")]
+    EmptyQuery,
+    #[error("Start time cannot be empty")]
+    EmptyStartTime,
+    #[error("End time cannot be empty")]
+    EmptyEndTime,
+    #[error("Could not parse start time correctly")]
+    StartTimeParse,
+    #[error("Could not parse end time correctly")]
+    EndTimeParse,
+    #[error("While generating times for 'now' failed to parse duration")]
+    NotValidDuration(#[from] humantime::DurationError),
+    #[error("Parsed duration out of range")]
+    OutOfRange(#[from] chrono::OutOfRangeError),
+    #[error("Start time cannot be greater than the end time")]
+    StartTimeAfterEndTime,
+    #[error("Unauthorized")]
+    Unauthorized,
+    #[error("Datafusion Error: {0}")]
+    Datafusion(#[from] DataFusionError),
     #[error("Query execution failed due to {0}")]
     Execute(#[from] ExecuteError),
 }
@@ -137,8 +213,8 @@ pub enum QueryError {
 impl actix_web::ResponseError for QueryError {
     fn status_code(&self) -> http::StatusCode {
         match self {
-            QueryError::Parse(_) => StatusCode::BAD_REQUEST,
             QueryError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
         }
     }
 

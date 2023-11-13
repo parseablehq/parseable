@@ -295,10 +295,10 @@ mod tests {
         write_message(&mut buf, schema, &options).unwrap();
 
         let buf = Cursor::new(buf);
-        let mut reader = get_reverse_reader(buf).unwrap().flatten();
+        let reader = get_reverse_reader(buf).unwrap().flatten();
 
         let mut sum = 0;
-        while let Some(rb) = reader.next() {
+        for rb in reader {
             sum += 1;
             assert!(rb.num_rows() > 0);
         }

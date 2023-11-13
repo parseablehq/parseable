@@ -23,6 +23,7 @@ use super::{
 
 use crate::{
     alerts::Alerts,
+    catalog::{self, manifest::Manifest, snapshot::Snapshot},
     metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
     option::CONFIG,
@@ -51,6 +52,7 @@ pub(super) const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
 pub(super) const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 const SCHEMA_FILE_NAME: &str = ".schema";
 const ALERT_FILE_NAME: &str = ".alert.json";
+const MANIFEST_FILE: &str = "manifest.json";
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
     fn get_datafusion_runtime(&self) -> RuntimeConfig;
@@ -86,8 +88,8 @@ pub trait ObjectStorage: Sync + 'static {
         start.elapsed()
     }
 
-    fn normalize_prefixes(&self, prefixes: Vec<String>) -> Vec<String>;
     fn query_prefixes(&self, prefixes: Vec<String>) -> Vec<ListingTableUrl>;
+    fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path;
     fn store_url(&self) -> url::Url;
 
     async fn put_schema(
@@ -244,12 +246,58 @@ pub trait ObjectStorage: Sync + 'static {
 
     async fn stream_exists(&self, stream_name: &str) -> Result<bool, ObjectStorageError> {
         let res = self.get_object(&stream_json_path(stream_name)).await;
-
         match res {
             Ok(_) => Ok(true),
             Err(ObjectStorageError::NoSuchKey(_)) => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    async fn get_manifest(
+        &self,
+        path: &RelativePath,
+    ) -> Result<Option<Manifest>, ObjectStorageError> {
+        let path = manifest_path(path.as_str());
+        match self.get_object(&path).await {
+            Ok(bytes) => Ok(Some(
+                serde_json::from_slice(&bytes).expect("manifest is valid json"),
+            )),
+            Err(err) => {
+                if matches!(err, ObjectStorageError::NoSuchKey(_)) {
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    async fn put_manifest(
+        &self,
+        path: &RelativePath,
+        manifest: Manifest,
+    ) -> Result<(), ObjectStorageError> {
+        let path = manifest_path(path.as_str());
+        self.put_object(&path, to_bytes(&manifest)).await
+    }
+
+    async fn get_snapshot(&self, stream: &str) -> Result<Snapshot, ObjectStorageError> {
+        let path = stream_json_path(stream);
+        let bytes = self.get_object(&path).await?;
+        Ok(serde_json::from_slice::<ObjectStoreFormat>(&bytes)
+            .expect("snapshot is valid json")
+            .snapshot)
+    }
+
+    async fn put_snapshot(
+        &self,
+        stream: &str,
+        snapshot: Snapshot,
+    ) -> Result<(), ObjectStorageError> {
+        let mut stream_meta = self.get_stream_metadata(stream).await?;
+        stream_meta.snapshot = snapshot;
+        self.put_object(&stream_json_path(stream), to_bytes(&stream_meta))
+            .await
     }
 
     async fn sync(&self) -> Result<(), ObjectStorageError> {
@@ -270,7 +318,17 @@ pub trait ObjectStorage: Sync + 'static {
                 commit_schema_to_storage(stream, schema).await?;
             }
 
-            for file in dir.parquet_files() {
+            let parquet_files = dir.parquet_files();
+            parquet_files.iter().for_each(|file| {
+                let compressed_size = file.metadata().map_or(0, |meta| meta.len());
+                stream_stats
+                    .entry(stream)
+                    .and_modify(|size| *size += compressed_size)
+                    .or_insert_with(|| compressed_size);
+            });
+
+            let mut manifest_entries = Vec::new();
+            for file in &parquet_files {
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")
@@ -278,16 +336,21 @@ pub trait ObjectStorage: Sync + 'static {
                     .expect("filename is valid string");
                 let file_suffix = str::replacen(filename, ".", "/", 3);
                 let objectstore_path = format!("{stream}/{file_suffix}");
+                let manifest = catalog::create_from_parquet_file(
+                    self.absolute_url(RelativePath::from_path(&objectstore_path).unwrap())
+                        .to_string(),
+                    file,
+                )
+                .unwrap();
+                manifest_entries.push(manifest);
 
-                let compressed_size = file.metadata().map_or(0, |meta| meta.len());
+                self.upload_file(&objectstore_path, file).await?;
+            }
 
-                self.upload_file(&objectstore_path, &file).await?;
+            let store = CONFIG.storage().get_object_store();
+            catalog::update_snapshot(store, stream, manifest_entries).await?;
 
-                stream_stats
-                    .entry(stream)
-                    .and_modify(|size| *size += compressed_size)
-                    .or_insert_with(|| compressed_size);
-
+            for file in parquet_files {
                 let _ = fs::remove_file(file);
             }
         }
@@ -343,4 +406,9 @@ fn parseable_json_path() -> RelativePathBuf {
 #[inline(always)]
 fn alert_json_path(stream_name: &str) -> RelativePathBuf {
     RelativePathBuf::from_iter([stream_name, ALERT_FILE_NAME])
+}
+
+#[inline(always)]
+fn manifest_path(prefix: &str) -> RelativePathBuf {
+    RelativePathBuf::from_iter([prefix, MANIFEST_FILE])
 }

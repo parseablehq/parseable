@@ -194,14 +194,11 @@ impl ObjectStorage for LocalFS {
         Ok(())
     }
 
-    fn normalize_prefixes(&self, prefixes: Vec<String>) -> Vec<String> {
-        prefixes
-            .into_iter()
-            .map(|prefix| {
-                let path = self.root.join(prefix);
-                format!("{}", path.display())
-            })
-            .collect()
+    fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path {
+        object_store::path::Path::parse(
+            format!("{}", self.root.join(prefix.as_str()).display()).trim_start_matches('/'),
+        )
+        .unwrap()
     }
 
     fn query_prefixes(&self, prefixes: Vec<String>) -> Vec<ListingTableUrl> {

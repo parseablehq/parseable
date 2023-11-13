@@ -29,6 +29,7 @@ mod about;
 mod alerts;
 mod analytics;
 mod banner;
+mod catalog;
 mod event;
 mod handlers;
 mod livetail;
