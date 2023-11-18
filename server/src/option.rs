@@ -314,28 +314,28 @@ impl FromArgMatches for Server {
 
 impl Server {
     // identifiers for arguments
-    pub const TLS_CERT: &str = "tls-cert-path";
-    pub const TLS_KEY: &str = "tls-key-path";
-    pub const ADDRESS: &str = "address";
-    pub const DOMAIN_URI: &str = "origin";
-    pub const STAGING: &str = "local-staging-path";
-    pub const UPLOAD_INTERVAL: &str = "upload-interval";
-    pub const USERNAME: &str = "username";
-    pub const PASSWORD: &str = "password";
-    pub const CHECK_UPDATE: &str = "check-update";
-    pub const SEND_ANALYTICS: &str = "send-analytics";
-    pub const OPEN_AI_KEY: &str = "open-ai-key";
-    pub const OPENID_CLIENT_ID: &str = "oidc-client";
-    pub const OPENID_CLIENT_SECRET: &str = "oidc-client-secret";
-    pub const OPENID_ISSUER: &str = "oidc-issuer";
-    pub const GRPC_PORT: &str = "grpc-port";
-    pub const LIVETAIL_CAPACITY: &str = "livetail-capacity";
+    pub const TLS_CERT: &'static str = "tls-cert-path";
+    pub const TLS_KEY: &'static str = "tls-key-path";
+    pub const ADDRESS: &'static str = "address";
+    pub const DOMAIN_URI: &'static str = "origin";
+    pub const STAGING: &'static str = "local-staging-path";
+    pub const UPLOAD_INTERVAL: &'static str = "upload-interval";
+    pub const USERNAME: &'static str = "username";
+    pub const PASSWORD: &'static str = "password";
+    pub const CHECK_UPDATE: &'static str = "check-update";
+    pub const SEND_ANALYTICS: &'static str = "send-analytics";
+    pub const OPEN_AI_KEY: &'static str = "open-ai-key";
+    pub const OPENID_CLIENT_ID: &'static str = "oidc-client";
+    pub const OPENID_CLIENT_SECRET: &'static str = "oidc-client-secret";
+    pub const OPENID_ISSUER: &'static str = "oidc-issuer";
+    pub const GRPC_PORT: &'static str = "grpc-port";
+    pub const LIVETAIL_CAPACITY: &'static str = "livetail-capacity";
     // todo : what should this flag be
-    pub const QUERY_MEM_POOL_SIZE: &str = "query-mempool-size";
-    pub const ROW_GROUP_SIZE: &str = "row-group-size";
-    pub const PARQUET_COMPRESSION_ALGO: &str = "compression-algo";
-    pub const DEFAULT_USERNAME: &str = "admin";
-    pub const DEFAULT_PASSWORD: &str = "admin";
+    pub const QUERY_MEM_POOL_SIZE: &'static str = "query-mempool-size";
+    pub const ROW_GROUP_SIZE: &'static str = "row-group-size";
+    pub const PARQUET_COMPRESSION_ALGO: &'static str = "compression-algo";
+    pub const DEFAULT_USERNAME: &'static str = "admin";
+    pub const DEFAULT_PASSWORD: &'static str = "admin";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
