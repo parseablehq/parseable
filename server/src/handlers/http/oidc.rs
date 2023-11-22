@@ -280,8 +280,7 @@ async fn put_user(
         .find(|user| user.username() == username)
         .cloned()
         .unwrap_or_else(|| {
-            let mut user = User::new_oauth(username.to_owned(), group);
-            user.user_info = user_info;
+            let user = User::new_oauth(username.to_owned(), group, user_info);
             metadata.users.push(user.clone());
             user
         });
@@ -296,14 +295,21 @@ async fn update_user_if_changed(
     group: HashSet<String>,
     user_info: user::UserInfo,
 ) -> Result<User, ObjectStorageError> {
+    let User { ty, roles } = &mut user;
+    let UserType::OAuth(oauth_user) = ty else {
+        unreachable!()
+    };
+
     // update user only if roles or userinfo has changed
-    if user.roles == group && user.user_info == user_info {
+    if roles == &group && &oauth_user.user_info == &user_info {
         return Ok(user);
     }
 
+    oauth_user.user_info = user_info;
+    *roles = group;
+
     let mut metadata = get_metadata().await?;
-    user.roles = group;
-    user.user_info = user_info;
+
     if let Some(entry) = metadata
         .users
         .iter_mut()

@@ -38,7 +38,6 @@ pub enum UserType {
 pub struct User {
     #[serde(flatten)]
     pub ty: UserType,
-    pub user_info: UserInfo,
     pub roles: HashSet<String>,
 }
 
@@ -52,17 +51,18 @@ impl User {
                     username,
                     password_hash: hash,
                 }),
-                user_info: UserInfo::default(),
                 roles: HashSet::new(),
             },
             password,
         )
     }
 
-    pub fn new_oauth(username: String, roles: HashSet<String>) -> Self {
+    pub fn new_oauth(username: String, roles: HashSet<String>, user_info: UserInfo) -> Self {
         Self {
-            ty: UserType::OAuth(OAuth { userid: username }),
-            user_info: UserInfo::default(),
+            ty: UserType::OAuth(OAuth {
+                userid: username,
+                user_info,
+            }),
             roles,
         }
     }
@@ -72,6 +72,7 @@ impl User {
             UserType::Native(Basic { ref username, .. }) => username,
             UserType::OAuth(OAuth {
                 userid: ref username,
+                ..
             }) => username,
         }
     }
@@ -145,14 +146,14 @@ pub fn get_admin_user() -> User {
             username,
             password_hash: hashcode,
         }),
-        user_info: UserInfo::default(),
         roles: ["admin".to_string()].into(),
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OAuth {
-    userid: String,
+    pub userid: String,
+    pub user_info: UserInfo,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -169,8 +170,6 @@ pub struct UserInfo {
     #[serde(default)]
     pub gender: Option<String>,
     #[serde(default)]
-    pub locale: Option<String>,
-    #[serde(default)]
     pub updated_at: Option<i64>,
 }
 
@@ -182,7 +181,6 @@ impl From<openid::Userinfo> for UserInfo {
             picture: user.picture,
             email: user.email,
             gender: user.gender,
-            locale: user.locale,
             updated_at: user.updated_at,
         }
     }
