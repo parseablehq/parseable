@@ -36,7 +36,6 @@ pub enum Action {
     DeleteUser,
     PutUserRoles,
     GetUserRoles,
-    GetUserInfo,
     PutRole,
     GetRole,
     DeleteRole,
@@ -87,7 +86,6 @@ impl RoleBuilder {
                 | Action::ListUser
                 | Action::PutUserRoles
                 | Action::GetUserRoles
-                | Action::GetUserInfo
                 | Action::DeleteUser
                 | Action::GetAbout
                 | Action::QueryLLM
