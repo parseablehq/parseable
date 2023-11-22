@@ -309,7 +309,7 @@ async fn update_user_if_changed(
         .iter_mut()
         .find(|x| x.username() == user.username())
     {
-        *entry = user.clone();
+        entry.clone_from(&user);
         put_metadata(&metadata).await?;
     }
 

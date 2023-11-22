@@ -78,34 +78,34 @@ impl RoleBuilder {
         let mut perms = Vec::new();
         for action in self.actions {
             let perm = match action {
-                Action::Ingest => Permission::Stream(action, self.stream.clone().unwrap()),
                 Action::Query => Permission::StreamWithTag(
                     action,
                     self.stream.clone().unwrap(),
                     self.tag.clone(),
                 ),
-                Action::CreateStream => Permission::Unit(action),
-                Action::DeleteStream => Permission::Unit(action),
-                Action::ListStream => Permission::Unit(action),
-                Action::GetSchema => Permission::Stream(action, self.stream.clone().unwrap()),
-                Action::GetStats => Permission::Stream(action, self.stream.clone().unwrap()),
-                Action::GetRetention => Permission::Stream(action, self.stream.clone().unwrap()),
-                Action::PutRetention => Permission::Stream(action, self.stream.clone().unwrap()),
-                Action::PutAlert => Permission::Stream(action, self.stream.clone().unwrap()),
-                Action::GetAlert => Permission::Stream(action, self.stream.clone().unwrap()),
-                Action::PutUser => Permission::Unit(action),
-                Action::ListUser => Permission::Unit(action),
-                Action::PutUserRoles => Permission::Unit(action),
-                Action::GetUserRoles => Permission::Unit(action),
-                Action::GetUserInfo => Permission::Unit(action),
-                Action::DeleteUser => Permission::Unit(action),
-                Action::GetAbout => Permission::Unit(action),
-                Action::QueryLLM => Permission::Unit(action),
-                Action::PutRole => Permission::Unit(action),
-                Action::GetRole => Permission::Unit(action),
-                Action::DeleteRole => Permission::Unit(action),
-                Action::ListRole => Permission::Unit(action),
-                Action::All => Permission::Stream(action, self.stream.clone().unwrap()),
+                Action::PutUser
+                | Action::ListUser
+                | Action::PutUserRoles
+                | Action::GetUserRoles
+                | Action::GetUserInfo
+                | Action::DeleteUser
+                | Action::GetAbout
+                | Action::QueryLLM
+                | Action::PutRole
+                | Action::GetRole
+                | Action::DeleteRole
+                | Action::ListRole
+                | Action::CreateStream
+                | Action::DeleteStream
+                | Action::ListStream => Permission::Unit(action),
+                Action::Ingest
+                | Action::GetSchema
+                | Action::GetStats
+                | Action::GetRetention
+                | Action::PutRetention
+                | Action::PutAlert
+                | Action::GetAlert
+                | Action::All => Permission::Stream(action, self.stream.clone().unwrap()),
             };
             perms.push(perm);
         }
