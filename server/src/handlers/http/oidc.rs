@@ -144,17 +144,24 @@ pub async fn reply_login(
         .expect("OIDC provider did not return a sub which is currently required.");
     let user_info: user::UserInfo = user_info.into();
 
-    let group: Option<HashSet<String>> = claims
+    let group: HashSet<String> = claims
         .other
         .remove("groups")
         .map(serde_json::from_value)
-        .transpose()?;
+        .transpose()?
+        .unwrap_or_else(|| {
+            DEFAULT_ROLE
+                .lock()
+                .unwrap()
+                .clone()
+                .map(|role| HashSet::from([role]))
+                .unwrap_or_default()
+        });
 
     // User may not exist
     // create a new one depending on state of metadata
     let user = match (Users.get_user(&username), group) {
-        (Some(user), Some(group)) => update_user_if_changed(user, group, user_info).await?,
-        (Some(user), None) => user,
+        (Some(user), group) => update_user_if_changed(user, group, user_info).await?,
         (None, group) => put_user(&username, group, user_info).await?,
     };
     let id = Ulid::new();
@@ -262,18 +269,10 @@ async fn request_token(
 // update local cache
 async fn put_user(
     username: &str,
-    group: Option<HashSet<String>>,
+    group: HashSet<String>,
     user_info: user::UserInfo,
 ) -> Result<User, ObjectStorageError> {
     let mut metadata = get_metadata().await?;
-    let group = group.unwrap_or_else(|| {
-        DEFAULT_ROLE
-            .lock()
-            .unwrap()
-            .clone()
-            .map(|role| HashSet::from([role]))
-            .unwrap_or_default()
-    });
 
     let user = metadata
         .users
@@ -301,10 +300,19 @@ async fn update_user_if_changed(
     if user.roles == group && user.user_info == user_info {
         return Ok(user);
     }
-    let metadata = get_metadata().await?;
+
+    let mut metadata = get_metadata().await?;
     user.roles = group;
     user.user_info = user_info;
-    put_metadata(&metadata).await?;
+    if let Some(entry) = metadata
+        .users
+        .iter_mut()
+        .find(|x| x.username() == user.username())
+    {
+        *entry = user.clone();
+        put_metadata(&metadata).await?;
+    }
+
     Users.put_user(user.clone());
     Ok(user)
 }
