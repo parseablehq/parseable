@@ -152,10 +152,8 @@ impl Sessions {
         permissions: Vec<Permission>,
     ) {
         self.remove_expired_session(&user);
-        self.user_sessions
-            .entry(user.clone())
-            .and_modify(|sessions| sessions.push((key.clone(), expiry)))
-            .or_default();
+        let sessions = self.user_sessions.entry(user.clone()).or_default();
+        sessions.push((key.clone(), expiry));
         self.active_sessions.insert(key, (user, permissions));
     }
 

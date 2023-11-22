@@ -36,7 +36,7 @@ use crate::{
     option::CONFIG,
     rbac::{
         map::{SessionKey, DEFAULT_ROLE},
-        user::{User, UserType},
+        user::{self, User, UserType},
         Users,
     },
     storage::{self, ObjectStorageError, StorageMetadata},
@@ -138,7 +138,12 @@ pub async fn reply_login(
     else {
         return Ok(HttpResponse::Unauthorized().finish());
     };
-    let username = user_info.sub.unwrap();
+    let username = user_info
+        .sub
+        .clone()
+        .expect("OIDC provider did not return a sub which is currently required.");
+    let user_info: user::UserInfo = user_info.into();
+
     let group: Option<HashSet<String>> = claims
         .other
         .remove("groups")
@@ -148,9 +153,9 @@ pub async fn reply_login(
     // User may not exist
     // create a new one depending on state of metadata
     let user = match (Users.get_user(&username), group) {
-        (Some(user), Some(group)) => update_user_if_changed(user, group).await?,
+        (Some(user), Some(group)) => update_user_if_changed(user, group, user_info).await?,
         (Some(user), None) => user,
-        (None, group) => put_user(&username, group).await?,
+        (None, group) => put_user(&username, group, user_info).await?,
     };
     let id = Ulid::new();
     Users.new_session(&user, SessionKey::SessionId(id));
@@ -258,6 +263,7 @@ async fn request_token(
 async fn put_user(
     username: &str,
     group: Option<HashSet<String>>,
+    user_info: user::UserInfo,
 ) -> Result<User, ObjectStorageError> {
     let mut metadata = get_metadata().await?;
     let group = group.unwrap_or_else(|| {
@@ -275,7 +281,8 @@ async fn put_user(
         .find(|user| user.username() == username)
         .cloned()
         .unwrap_or_else(|| {
-            let user = User::new_oauth(username.to_owned(), group);
+            let mut user = User::new_oauth(username.to_owned(), group);
+            user.user_info = user_info;
             metadata.users.push(user.clone());
             user
         });
@@ -288,13 +295,15 @@ async fn put_user(
 async fn update_user_if_changed(
     mut user: User,
     group: HashSet<String>,
+    user_info: user::UserInfo,
 ) -> Result<User, ObjectStorageError> {
-    // update user if roles have changed
-    if user.roles == group {
+    // update user only if roles or userinfo has changed
+    if user.roles == group && user.user_info == user_info {
         return Ok(user);
     }
     let metadata = get_metadata().await?;
     user.roles = group;
+    user.user_info = user_info;
     put_metadata(&metadata).await?;
     Users.put_user(user.clone());
     Ok(user)

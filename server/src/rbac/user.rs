@@ -38,6 +38,7 @@ pub enum UserType {
 pub struct User {
     #[serde(flatten)]
     pub ty: UserType,
+    pub user_info: UserInfo,
     pub roles: HashSet<String>,
 }
 
@@ -51,6 +52,7 @@ impl User {
                     username,
                     password_hash: hash,
                 }),
+                user_info: UserInfo::default(),
                 roles: HashSet::new(),
             },
             password,
@@ -60,6 +62,7 @@ impl User {
     pub fn new_oauth(username: String, roles: HashSet<String>) -> Self {
         Self {
             ty: UserType::OAuth(OAuth { userid: username }),
+            user_info: UserInfo::default(),
             roles,
         }
     }
@@ -142,6 +145,7 @@ pub fn get_admin_user() -> User {
             username,
             password_hash: hashcode,
         }),
+        user_info: UserInfo::default(),
         roles: ["admin".to_string()].into(),
     }
 }
@@ -149,4 +153,37 @@ pub fn get_admin_user() -> User {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OAuth {
     userid: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UserInfo {
+    #[serde(default)]
+    /// User's full name for display purposes.
+    pub name: Option<String>,
+    #[serde(default)]
+    pub preferred_username: Option<String>,
+    #[serde(default)]
+    pub picture: Option<url::Url>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub gender: Option<String>,
+    #[serde(default)]
+    pub locale: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
+}
+
+impl From<openid::Userinfo> for UserInfo {
+    fn from(user: openid::Userinfo) -> Self {
+        UserInfo {
+            name: user.name,
+            preferred_username: user.preferred_username,
+            picture: user.picture,
+            email: user.email,
+            gender: user.gender,
+            locale: user.locale,
+            updated_at: user.updated_at,
+        }
+    }
 }

@@ -237,6 +237,13 @@ pub fn configure_routes(
                 ),
         )
         .service(
+            web::resource("/{username}/info").route(
+                web::get()
+                    .to(rbac::get_info)
+                    .authorize_for_user(Action::GetUserRoles),
+            ),
+        )
+        .service(
             web::resource("/{username}/generate-new-password")
                 // POST /user/{username}/generate-new-password => reset password for this user
                 .route(

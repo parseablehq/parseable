@@ -139,6 +139,16 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
     Ok(web::Json(res))
 }
 
+// Handler for GET /api/v1/user/{username}/info
+// returns user info for a user if that user exists
+pub async fn get_info(username: web::Path<String>) -> Result<impl Responder, RBACError> {
+    let Some(user) = Users.get_user(&username) else {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
+    Ok(web::Json(user.user_info))
+}
+
 // Handler for DELETE /api/v1/user/delete/{username}
 pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
