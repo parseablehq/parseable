@@ -301,7 +301,7 @@ async fn update_user_if_changed(
     };
 
     // update user only if roles or userinfo has changed
-    if roles == &group && &oauth_user.user_info == &user_info {
+    if roles == &group && oauth_user.user_info == user_info {
         return Ok(user);
     }
 
