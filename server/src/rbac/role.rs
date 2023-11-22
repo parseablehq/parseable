@@ -36,6 +36,7 @@ pub enum Action {
     DeleteUser,
     PutUserRoles,
     GetUserRoles,
+    GetUserInfo,
     PutRole,
     GetRole,
     DeleteRole,
@@ -50,7 +51,7 @@ pub enum Permission {
     Unit(Action),
     Stream(Action, String),
     StreamWithTag(Action, String, Option<String>),
-    SelfRole,
+    SelfUser,
 }
 
 // Currently Roles are tied to one stream
@@ -96,6 +97,7 @@ impl RoleBuilder {
                 Action::ListUser => Permission::Unit(action),
                 Action::PutUserRoles => Permission::Unit(action),
                 Action::GetUserRoles => Permission::Unit(action),
+                Action::GetUserInfo => Permission::Unit(action),
                 Action::DeleteUser => Permission::Unit(action),
                 Action::GetAbout => Permission::Unit(action),
                 Action::QueryLLM => Permission::Unit(action),
@@ -107,7 +109,7 @@ impl RoleBuilder {
             };
             perms.push(perm);
         }
-        perms.push(Permission::SelfRole);
+        perms.push(Permission::SelfUser);
         perms
     }
 }

@@ -238,9 +238,10 @@ pub fn configure_routes(
         )
         .service(
             web::resource("/{username}/info").route(
+                // GET /user/{username}/info => return user information
                 web::get()
                     .to(rbac::get_info)
-                    .authorize_for_user(Action::GetUserRoles),
+                    .authorize_for_user(Action::GetUserInfo),
             ),
         )
         .service(

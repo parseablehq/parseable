@@ -218,7 +218,12 @@ impl Sessions {
                         };
                         (action == required_action || action == Action::All) && ok_stream
                     }
-                    Permission::SelfRole if required_action == Action::GetUserRoles => {
+                    Permission::SelfUser
+                        if matches!(
+                            required_action,
+                            Action::GetUserRoles | Action::GetUserInfo
+                        ) =>
+                    {
                         context_user.map(|x| x == username).unwrap_or_default()
                     }
                     _ => false,
