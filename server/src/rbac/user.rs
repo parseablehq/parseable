@@ -57,9 +57,12 @@ impl User {
         )
     }
 
-    pub fn new_oauth(username: String, roles: HashSet<String>) -> Self {
+    pub fn new_oauth(username: String, roles: HashSet<String>, user_info: UserInfo) -> Self {
         Self {
-            ty: UserType::OAuth(OAuth { userid: username }),
+            ty: UserType::OAuth(OAuth {
+                userid: username,
+                user_info,
+            }),
             roles,
         }
     }
@@ -69,6 +72,7 @@ impl User {
             UserType::Native(Basic { ref username, .. }) => username,
             UserType::OAuth(OAuth {
                 userid: ref username,
+                ..
             }) => username,
         }
     }
@@ -148,5 +152,36 @@ pub fn get_admin_user() -> User {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OAuth {
-    userid: String,
+    pub userid: String,
+    pub user_info: UserInfo,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UserInfo {
+    #[serde(default)]
+    /// User's full name for display purposes.
+    pub name: Option<String>,
+    #[serde(default)]
+    pub preferred_username: Option<String>,
+    #[serde(default)]
+    pub picture: Option<url::Url>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub gender: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
+}
+
+impl From<openid::Userinfo> for UserInfo {
+    fn from(user: openid::Userinfo) -> Self {
+        UserInfo {
+            name: user.name,
+            preferred_username: user.preferred_username,
+            picture: user.picture,
+            email: user.email,
+            gender: user.gender,
+            updated_at: user.updated_at,
+        }
+    }
 }

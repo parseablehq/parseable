@@ -152,10 +152,8 @@ impl Sessions {
         permissions: Vec<Permission>,
     ) {
         self.remove_expired_session(&user);
-        self.user_sessions
-            .entry(user.clone())
-            .and_modify(|sessions| sessions.push((key.clone(), expiry)))
-            .or_default();
+        let sessions = self.user_sessions.entry(user.clone()).or_default();
+        sessions.push((key.clone(), expiry));
         self.active_sessions.insert(key, (user, permissions));
     }
 
@@ -220,7 +218,7 @@ impl Sessions {
                         };
                         (action == required_action || action == Action::All) && ok_stream
                     }
-                    Permission::SelfRole if required_action == Action::GetUserRoles => {
+                    Permission::SelfUser if required_action == Action::GetUserRoles => {
                         context_user.map(|x| x == username).unwrap_or_default()
                     }
                     _ => false,
