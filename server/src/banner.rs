@@ -79,11 +79,14 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     );
 }
 
+/// Prints information about the `ObjectStorage`.
+/// - Mode (`Local drive`, `S3 bucket`)
+/// - Staging (temporary landing point for incoming events)
+/// - Store (path where the data is stored)
+/// - Latency
 async fn storage_info(config: &Config) {
     let storage = config.storage();
-    let object_store = storage.get_object_store();
-
-    let latency = object_store.get_latency().await;
+    let latency = storage.get_object_store().get_latency().await;
 
     eprintln!(
         "
