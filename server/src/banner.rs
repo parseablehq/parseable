@@ -17,17 +17,21 @@
  *
  */
 
+use std::time::Duration;
+
 use crossterm::style::Stylize;
 
 use crate::about;
 use crate::utils::uid::Uid;
 use crate::{option::Config, storage::StorageMetadata};
 
+const ACCEPTABLE_LATENCY_SECONDS: u64 = 1;
+
 pub async fn print(config: &Config, meta: &StorageMetadata) {
     print_ascii_art();
     let scheme = config.parseable.get_scheme();
     status_info(config, &scheme, meta.deployment_id);
-    storage_info(config);
+    storage_info(config).await;
     about::print(config, meta).await;
     println!();
 }
@@ -79,16 +83,32 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     );
 }
 
-fn storage_info(config: &Config) {
+async fn storage_info(config: &Config) {
+    let storage = config.storage();
+    let object_store = storage.get_object_store();
+
+    let latency = object_store.get_latency().await;
+    let latency_text = format!("{:?}", latency);
+
     eprintln!(
         "
     {}
         Mode:               \"{}\"
         Staging:            \"{}\"
-        Store:              \"{}\"",
+        Store:              \"{}\"
+        Latency:            \"{}\"",
         "Storage:".to_string().bold(),
         config.mode_string(),
         config.staging_dir().to_string_lossy(),
-        config.storage().get_endpoint(),
+        storage.get_endpoint(),
+        if is_latency_acceptable(latency) {
+            latency_text.green()
+        } else {
+            latency_text.red()
+        }
     )
+}
+
+fn is_latency_acceptable(latency: Duration) -> bool {
+    latency <= Duration::new(ACCEPTABLE_LATENCY_SECONDS, 0)
 }
