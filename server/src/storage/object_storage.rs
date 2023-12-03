@@ -75,11 +75,10 @@ pub trait ObjectStorage: Sync + 'static {
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
 
     async fn get_latency(&self) -> Duration {
-        let start = Instant::now();
-
         let path = RelativePathBuf::from_path(".parseable.json").unwrap();
-        let _ = self.get_object(&path).await;
 
+        let start = Instant::now();
+        let _ = self.get_object(&path).await;
         start.elapsed()
     }
 
