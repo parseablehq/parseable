@@ -38,7 +38,13 @@ use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
 
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 // metadata file names in a Stream prefix
 pub(super) const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
@@ -67,6 +73,19 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
+
+    /// Returns the amount of time taken by the `ObjectStore` to perform a get
+    /// call.
+    async fn get_latency(&self) -> Duration {
+        // It's Ok to `unwrap` here. The hardcoded value will always Result in
+        // an `Ok`.
+        let path = RelativePathBuf::from_path(".parseable.json").unwrap();
+
+        let start = Instant::now();
+        let _ = self.get_object(&path).await;
+        start.elapsed()
+    }
+
     fn normalize_prefixes(&self, prefixes: Vec<String>) -> Vec<String>;
     fn query_prefixes(&self, prefixes: Vec<String>) -> Vec<ListingTableUrl>;
     fn store_url(&self) -> url::Url;

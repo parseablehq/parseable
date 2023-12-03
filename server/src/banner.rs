@@ -27,7 +27,7 @@ pub async fn print(config: &Config, meta: &StorageMetadata) {
     print_ascii_art();
     let scheme = config.parseable.get_scheme();
     status_info(config, &scheme, meta.deployment_id);
-    storage_info(config);
+    storage_info(config).await;
     about::print(config, meta).await;
     println!();
 }
@@ -79,16 +79,26 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     );
 }
 
-fn storage_info(config: &Config) {
+/// Prints information about the `ObjectStorage`.
+/// - Mode (`Local drive`, `S3 bucket`)
+/// - Staging (temporary landing point for incoming events)
+/// - Store (path where the data is stored)
+/// - Latency
+async fn storage_info(config: &Config) {
+    let storage = config.storage();
+    let latency = storage.get_object_store().get_latency().await;
+
     eprintln!(
         "
     {}
         Mode:               \"{}\"
         Staging:            \"{}\"
-        Store:              \"{}\"",
+        Store:              \"{}\"
+        Latency:            \"{:?}\"",
         "Storage:".to_string().bold(),
         config.mode_string(),
         config.staging_dir().to_string_lossy(),
-        config.storage().get_endpoint(),
+        storage.get_endpoint(),
+        latency
     )
 }
