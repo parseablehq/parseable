@@ -87,8 +87,8 @@ impl TypedStatistics {
     }
 }
 
-// Column statistics are used to track statistics for a column in a given file
-// This is similar to and derived from parquet statistics.
+/// Column statistics are used to track statistics for a column in a given file.
+/// This is similar to and derived from parquet statistics.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Column {
     pub name: String,

@@ -36,8 +36,7 @@ use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::utils::actix::extract_session_key_from_req;
 
-// Query Request thorugh http endpoint.
-// Implememts FromRequest
+/// Query Request through http endpoint.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {

@@ -170,8 +170,8 @@ pub async fn update_snapshot(
     storage.put_snapshot(stream_name, meta).await
 }
 
-// partition path to which this manifest belongs.
-// is useful when uploading manifest file
+/// Partition the path to which this manifest belongs.
+/// Useful when uploading the manifest file.
 fn partition_path(
     stream: &str,
     lower_bound: DateTime<Utc>,
