@@ -44,6 +44,9 @@ pub struct Utf8Type {
     pub max: String,
 }
 
+// Typed statistics are typed variant of statistics
+// Currently all parquet types are casted down to these 4 types
+// Binary types are assumed to be of valid Utf8
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum TypedStatistics {
     Bool(BoolType),
@@ -84,6 +87,8 @@ impl TypedStatistics {
     }
 }
 
+// Column statistics are used to track statistics for a column in a given file
+// This is similar to and derived from parquet statistics.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Column {
     pub name: String,

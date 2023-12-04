@@ -44,6 +44,9 @@ pub enum SortOrder {
 
 pub type SortInfo = (String, SortOrder);
 
+// File is one entry in a manifest which points to a single file.
+// Additionally it is meant to store the statistics for the file it
+// points to, this is used for pruning file at planning level.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct File {
     pub file_path: String,
@@ -54,6 +57,7 @@ pub struct File {
     pub sort_order_id: Vec<SortInfo>,
 }
 
+// A manifest file composes of multiple file entries.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Manifest {
     pub version: String,
