@@ -103,8 +103,6 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
-    /// Execute query on object storage(and if necessary on cache as well) with given stream information
-    /// TODO: find a way to query all selected parquet files together in a single context.
     pub async fn execute(&self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let df = QUERY_SESSION
             .execute_logical_plan(self.final_logical_plan())

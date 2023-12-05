@@ -16,7 +16,7 @@
  *
  */
 
-use std::{any::Any, ops::Bound, sync::Arc};
+use std::{any::Any, collections::HashMap, ops::Bound, pin::Pin, sync::Arc};
 
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
@@ -36,9 +36,13 @@ use datafusion::{
     prelude::{col, Column, Expr},
     scalar::ScalarValue,
 };
-use futures_util::{stream::FuturesOrdered, StreamExt, TryStreamExt};
+use futures_util::{
+    future,
+    stream::{FuturesOrdered, FuturesUnordered},
+    Future, StreamExt, TryStreamExt,
+};
 use itertools::Itertools;
-use object_store::{path::Path, ObjectStore};
+use object_store::{path::Path, ObjectMeta, ObjectStore};
 use url::Url;
 
 use crate::{
@@ -46,7 +50,8 @@ use crate::{
     event::{self, DEFAULT_TIMESTAMP_KEY},
     metadata::STREAM_INFO,
     option::CONFIG,
-    storage::ObjectStorage,
+    storage::{ObjectStorage, OBJECT_STORE_DATA_GRANULARITY},
+    utils::TimePeriod,
 };
 
 use super::table_provider;
@@ -93,7 +98,7 @@ struct StandardTableProvider {
 }
 
 impl StandardTableProvider {
-    async fn collect_scan_from_snapshot(
+    async fn collect_remote_scan(
         &self,
         glob_storage: Arc<dyn ObjectStorage + Send>,
         object_store: Arc<dyn ObjectStore>,
@@ -102,16 +107,27 @@ impl StandardTableProvider {
         limit: Option<usize>,
     ) -> Result<Vec<ListingTableUrl>, DataFusionError> {
         let time_filters = extract_primary_filter(filters);
-        let storage = glob_storage;
-        // todo can remove
         if time_filters.is_empty() {
             return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
         }
 
-        let snapshot = storage
+        // Fetch snapshot
+        let snapshot = glob_storage
             .get_snapshot(&self.stream)
             .await
             .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+
+        // Is query timerange is overlapping with older data.
+        if is_overlapping_query(&snapshot, &time_filters) {
+            return listing_scan(
+                self.stream.clone(),
+                glob_storage.clone(),
+                object_store,
+                &time_filters,
+            )
+            .await
+            .map(|prefixes| glob_storage.query_prefixes(prefixes));
+        }
 
         let items = snapshot.manifests(time_filters);
         let manifest_files = collect_manifest_files(
@@ -154,7 +170,7 @@ impl StandardTableProvider {
 
         Ok(manifest_files
             .iter()
-            .map(|x| storage.store_url().join(&x.file_path).unwrap())
+            .map(|x| glob_storage.store_url().join(&x.file_path).unwrap())
             .map(|x| ListingTableUrl::parse(x).unwrap())
             .collect())
     }
@@ -218,7 +234,7 @@ impl TableProvider for StandardTableProvider {
             .unwrap();
 
         let prefixes = self
-            .collect_scan_from_snapshot(
+            .collect_remote_scan(
                 CONFIG.storage().get_object_store(),
                 storage,
                 projection,
@@ -249,6 +265,215 @@ impl TableProvider for StandardTableProvider {
             Ok(TableProviderFilterPushDown::Inexact)
         }
     }
+}
+
+#[derive(Debug)]
+pub enum PartialTimeFilter {
+    Low(Bound<NaiveDateTime>),
+    High(Bound<NaiveDateTime>),
+    Eq(NaiveDateTime),
+}
+
+impl PartialTimeFilter {
+    fn try_from_expr(expr: &Expr) -> Option<Self> {
+        let Expr::BinaryExpr(binexpr) = expr else {
+            return None;
+        };
+        let (op, time) = extract_timestamp_bound(binexpr)?;
+        let value = match op {
+            Operator::Gt => PartialTimeFilter::Low(Bound::Excluded(time)),
+            Operator::GtEq => PartialTimeFilter::Low(Bound::Included(time)),
+            Operator::Lt => PartialTimeFilter::High(Bound::Excluded(time)),
+            Operator::LtEq => PartialTimeFilter::High(Bound::Included(time)),
+            Operator::Eq => PartialTimeFilter::Eq(time),
+            Operator::IsNotDistinctFrom => PartialTimeFilter::Eq(time),
+            _ => return None,
+        };
+        Some(value)
+    }
+
+    pub fn binary_expr(&self, left: Expr) -> Expr {
+        let (op, right) = match self {
+            PartialTimeFilter::Low(Bound::Excluded(time)) => {
+                (Operator::Gt, time.timestamp_millis())
+            }
+            PartialTimeFilter::Low(Bound::Included(time)) => {
+                (Operator::GtEq, time.timestamp_millis())
+            }
+            PartialTimeFilter::High(Bound::Excluded(time)) => {
+                (Operator::Lt, time.timestamp_millis())
+            }
+            PartialTimeFilter::High(Bound::Included(time)) => {
+                (Operator::LtEq, time.timestamp_millis())
+            }
+            PartialTimeFilter::Eq(time) => (Operator::Eq, time.timestamp_millis()),
+            _ => unimplemented!(),
+        };
+
+        Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(left),
+            op,
+            Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
+                Some(right),
+                None,
+            ))),
+        ))
+    }
+
+    fn is_greater_than(&self, other: &NaiveDateTime) -> bool {
+        match self {
+            PartialTimeFilter::Low(Bound::Excluded(time)) => time >= other,
+            PartialTimeFilter::Low(Bound::Included(time))
+            | PartialTimeFilter::High(Bound::Excluded(time))
+            | PartialTimeFilter::High(Bound::Included(time)) => time > other,
+            PartialTimeFilter::Eq(time) => time > other,
+            _ => unimplemented!(),
+        }
+    }
+}
+
+// accepts relative paths to resolve the narrative
+// returns list of prefixes sorted in descending order
+async fn listing_scan(
+    stream: String,
+    storage: Arc<dyn ObjectStorage + Send>,
+    client: Arc<dyn ObjectStore>,
+    time_filters: &[PartialTimeFilter],
+) -> Result<Vec<String>, DataFusionError> {
+    let start_time = time_filters
+        .iter()
+        .filter_map(|x| match x {
+            PartialTimeFilter::Low(Bound::Excluded(x)) => Some(x),
+            PartialTimeFilter::Low(Bound::Included(x)) => Some(x),
+            _ => None,
+        })
+        .min()
+        .cloned();
+
+    let end_time = time_filters
+        .iter()
+        .filter_map(|x| match x {
+            PartialTimeFilter::High(Bound::Excluded(x)) => Some(x),
+            PartialTimeFilter::High(Bound::Included(x)) => Some(x),
+            _ => None,
+        })
+        .max()
+        .cloned();
+
+    let Some((start_time, end_time)) = start_time.zip(end_time) else {
+        return Err(DataFusionError::NotImplemented(
+            "The time predicate is not supported because of possibly querying older data."
+                .to_string(),
+        ));
+    };
+
+    let prefixes = TimePeriod::new(
+        start_time.and_utc(),
+        end_time.and_utc(),
+        OBJECT_STORE_DATA_GRANULARITY,
+    )
+    .generate_prefixes();
+
+    let prefixes = prefixes
+        .into_iter()
+        .map(|entry| {
+            let path = relative_path::RelativePathBuf::from(format!("{}/{}", stream, entry));
+            storage.absolute_url(path.as_relative_path()).to_string()
+        })
+        .collect_vec();
+
+    let mut minute_resolve: HashMap<String, Vec<String>> = HashMap::new();
+    let mut all_resolve = Vec::new();
+
+    for prefix in prefixes {
+        let components = prefix.split_terminator('/');
+        if components.last().is_some_and(|x| x.starts_with("minute")) {
+            let hour_prefix = &prefix[0..prefix.rfind("minute").expect("minute exists")];
+            minute_resolve
+                .entry(hour_prefix.to_owned())
+                .and_modify(|list| list.push(prefix))
+                .or_default();
+        } else {
+            all_resolve.push(prefix)
+        }
+    }
+
+    type ResolveFuture = Pin<
+        Box<dyn Future<Output = Result<Vec<ObjectMeta>, object_store::Error>> + Send + 'static>,
+    >;
+
+    let tasks: FuturesUnordered<ResolveFuture> = FuturesUnordered::new();
+
+    for (listing_prefix, prefix) in minute_resolve {
+        let client = Arc::clone(&client);
+        tasks.push(Box::pin(async move {
+            let mut list = client
+                .list(Some(&object_store::path::Path::from(listing_prefix)))
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+
+            list.retain(|object| {
+                prefix.iter().any(|prefix| {
+                    object
+                        .location
+                        .prefix_matches(&object_store::path::Path::from(prefix.as_ref()))
+                })
+            });
+
+            Ok(list)
+        }));
+    }
+
+    for prefix in all_resolve {
+        let client = Arc::clone(&client);
+        tasks.push(Box::pin(async move {
+            client
+                .list(Some(&object_store::path::Path::from(prefix)))
+                .await?
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(Into::into)
+        }));
+    }
+
+    let res: Vec<Vec<String>> = tasks
+        .and_then(|res| {
+            future::ok(
+                res.into_iter()
+                    .map(|res| res.location.to_string())
+                    .collect_vec(),
+            )
+        })
+        .try_collect()
+        .await?;
+
+    let mut res = res.into_iter().flatten().collect_vec();
+    res.sort();
+    res.reverse();
+    Ok(res)
+}
+
+fn is_overlapping_query(
+    snapshot: &catalog::snapshot::Snapshot,
+    time_filters: &[PartialTimeFilter],
+) -> bool {
+    // This is for backwards compatiblity. Older table format relies on listing.
+    // if time is lower than 2nd smallest time bound then we fall back to old listing table code for now.
+    let Some(second_lowest) = snapshot
+        .manifest_list
+        .iter()
+        .map(|file| file.time_lower_bound)
+        .k_smallest(2)
+        .nth(1)
+    else {
+        return true;
+    };
+
+    // Query is overlapping when no lower bound exists such that it is greater than second lowest time in snapshot
+    !time_filters
+        .iter()
+        .all(|filter| filter.is_greater_than(&second_lowest.naive_utc()))
 }
 
 fn include_now(filters: &[Expr]) -> bool {
@@ -357,60 +582,6 @@ fn extract_primary_filter(filters: &[Expr]) -> Vec<PartialTimeFilter> {
         });
     });
     time_filters
-}
-
-#[derive(Debug)]
-pub enum PartialTimeFilter {
-    Low(Bound<NaiveDateTime>),
-    High(Bound<NaiveDateTime>),
-    Eq(NaiveDateTime),
-}
-
-impl PartialTimeFilter {
-    fn try_from_expr(expr: &Expr) -> Option<Self> {
-        let Expr::BinaryExpr(binexpr) = expr else {
-            return None;
-        };
-        let (op, time) = extract_timestamp_bound(binexpr)?;
-        let value = match op {
-            Operator::Gt => PartialTimeFilter::Low(Bound::Excluded(time)),
-            Operator::GtEq => PartialTimeFilter::Low(Bound::Included(time)),
-            Operator::Lt => PartialTimeFilter::High(Bound::Excluded(time)),
-            Operator::LtEq => PartialTimeFilter::High(Bound::Included(time)),
-            Operator::Eq => PartialTimeFilter::Eq(time),
-            Operator::IsNotDistinctFrom => PartialTimeFilter::Eq(time),
-            _ => return None,
-        };
-        Some(value)
-    }
-
-    pub fn binary_expr(&self, left: Expr) -> Expr {
-        let (op, right) = match self {
-            PartialTimeFilter::Low(Bound::Excluded(time)) => {
-                (Operator::Gt, time.timestamp_millis())
-            }
-            PartialTimeFilter::Low(Bound::Included(time)) => {
-                (Operator::GtEq, time.timestamp_millis())
-            }
-            PartialTimeFilter::High(Bound::Excluded(time)) => {
-                (Operator::Lt, time.timestamp_millis())
-            }
-            PartialTimeFilter::High(Bound::Included(time)) => {
-                (Operator::LtEq, time.timestamp_millis())
-            }
-            PartialTimeFilter::Eq(time) => (Operator::Eq, time.timestamp_millis()),
-            _ => unimplemented!(),
-        };
-
-        Expr::BinaryExpr(BinaryExpr::new(
-            Box::new(left),
-            op,
-            Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
-                Some(right),
-                None,
-            ))),
-        ))
-    }
 }
 
 trait ManifestExt: ManifestFile {

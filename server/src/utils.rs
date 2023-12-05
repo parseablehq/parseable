@@ -87,7 +87,6 @@ pub fn minute_to_prefix(minute: u32, data_granularity: u32) -> Option<String> {
     ))
 }
 
-#[allow(dead_code)]
 pub struct TimePeriod {
     start: DateTime<Utc>,
     end: DateTime<Utc>,
