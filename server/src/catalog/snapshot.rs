@@ -19,14 +19,12 @@
 use std::ops::Bound;
 
 use chrono::{DateTime, Utc};
-use ulid::Ulid;
 
 use crate::query::PartialTimeFilter;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     pub version: String,
-    pub id: Ulid,
     pub manifest_list: Vec<ManifestItem>,
 }
 
@@ -34,17 +32,12 @@ impl Default for Snapshot {
     fn default() -> Self {
         Self {
             version: "v1".to_string(),
-            id: Ulid::new(),
             manifest_list: Vec::default(),
         }
     }
 }
 
 impl super::Snapshot for Snapshot {
-    fn id(&self) -> Ulid {
-        self.id
-    }
-
     fn manifests(&self, time_predicates: Vec<PartialTimeFilter>) -> Vec<ManifestItem> {
         let mut manifests = self.manifest_list.clone();
         for predicate in time_predicates {

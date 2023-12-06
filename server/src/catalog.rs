@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
 use relative_path::RelativePathBuf;
-use ulid::Ulid;
 
 use crate::{
     catalog::manifest::Manifest,
@@ -37,7 +36,6 @@ pub mod snapshot;
 pub use manifest::create_from_parquet_file;
 
 pub trait Snapshot {
-    fn id(&self) -> Ulid;
     fn manifests(&self, time_predicates: Vec<PartialTimeFilter>) -> Vec<ManifestItem>;
 }
 
