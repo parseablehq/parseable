@@ -327,7 +327,6 @@ pub trait ObjectStorage: Sync + 'static {
                     .or_insert_with(|| compressed_size);
             });
 
-            let mut manifest_entries = Vec::new();
             for file in &parquet_files {
                 let filename = file
                     .file_name()
@@ -342,13 +341,10 @@ pub trait ObjectStorage: Sync + 'static {
                     file,
                 )
                 .unwrap();
-                manifest_entries.push(manifest);
-
                 self.upload_file(&objectstore_path, file).await?;
+                let store = CONFIG.storage().get_object_store();
+                catalog::update_snapshot(store, stream, manifest).await?;
             }
-
-            let store = CONFIG.storage().get_object_store();
-            catalog::update_snapshot(store, stream, manifest_entries).await?;
 
             for file in parquet_files {
                 let _ = fs::remove_file(file);

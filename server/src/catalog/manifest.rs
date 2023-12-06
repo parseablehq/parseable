@@ -74,17 +74,15 @@ impl Default for Manifest {
 }
 
 impl Manifest {
-    pub fn apply_change(&mut self, changes: Vec<File>) {
-        for change in changes {
-            if let Some(pos) = self
-                .files
-                .iter()
-                .position(|file| file.file_path == change.file_path)
-            {
-                self.files[pos] = change
-            } else {
-                self.files.push(change)
-            }
+    pub fn apply_change(&mut self, change: File) {
+        if let Some(pos) = self
+            .files
+            .iter()
+            .position(|file| file.file_path == change.file_path)
+        {
+            self.files[pos] = change
+        } else {
+            self.files.push(change)
         }
     }
 }

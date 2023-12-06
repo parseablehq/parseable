@@ -16,7 +16,7 @@
  *
  */
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
 use relative_path::RelativePathBuf;
@@ -74,7 +74,7 @@ impl ManifestFile for manifest::File {
 pub async fn update_snapshot(
     storage: Arc<dyn ObjectStorage + Send>,
     stream_name: &str,
-    changes: Vec<manifest::File>,
+    change: manifest::File,
 ) -> Result<(), ObjectStorageError> {
     fn get_file_bounds(file: &manifest::File) -> (DateTime<Utc>, DateTime<Utc>) {
         match file
@@ -102,39 +102,26 @@ pub async fn update_snapshot(
     let mut meta = storage.get_snapshot(stream_name).await?;
     let manifests = &mut meta.manifest_list;
 
-    let mut change_map: HashMap<Option<usize>, Vec<manifest::File>> = HashMap::new();
+    let (lower_bound, _) = get_file_bounds(&change);
+    let pos = manifests.iter().position(|item| {
+        item.time_lower_bound <= lower_bound && lower_bound < item.time_upper_bound
+    });
 
-    for change in changes {
-        let (change_lower_bound, _) = get_file_bounds(&change);
-
-        let pos = manifests.iter().position(|item| {
-            item.time_lower_bound <= change_lower_bound
-                && change_lower_bound < item.time_upper_bound
-        });
-        change_map.entry(pos).or_default().push(change);
-    }
-
-    let mut new_entries = Vec::new();
-    for (pos, changes) in change_map {
-        let Some(pos) = pos else {
-            new_entries.extend(changes);
-            continue;
-        };
+    // We update the manifest referenced by this position
+    // This updates an existing file so there is no need to create a snapshot entry.
+    if let Some(pos) = pos {
         let info = &mut manifests[pos];
         let path = partition_path(stream_name, info.time_lower_bound, info.time_upper_bound);
         let Some(mut manifest) = storage.get_manifest(&path).await? else {
-            new_entries.extend(changes);
-            continue;
+            return Err(ObjectStorageError::UnhandledError(
+                "Manifest found in snapshot but not in object-storage"
+                    .to_string()
+                    .into(),
+            ));
         };
-
-        manifest.apply_change(changes);
+        manifest.apply_change(change);
         storage.put_manifest(&path, manifest).await?;
-    }
-
-    let mut new_snapshot_entries = Vec::new();
-
-    for entry in new_entries {
-        let (lower_bound, _) = get_file_bounds(&entry);
+    } else {
         let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
         let upper_bound = lower_bound
             .date_naive()
@@ -148,7 +135,7 @@ pub async fn update_snapshot(
             .and_utc();
 
         let manifest = Manifest {
-            files: vec![entry],
+            files: vec![change],
             ..Manifest::default()
         };
 
@@ -156,18 +143,17 @@ pub async fn update_snapshot(
         storage
             .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())
             .await?;
-
         let path = storage.absolute_url(&path);
-        new_snapshot_entries.push(snapshot::ManifestItem {
+        let new_snapshot_entriy = snapshot::ManifestItem {
             manifest_path: path.to_string(),
             time_lower_bound: lower_bound,
             time_upper_bound: upper_bound,
-        })
+        };
+        manifests.push(new_snapshot_entriy);
+        storage.put_snapshot(stream_name, meta).await?;
     }
 
-    manifests.extend(new_snapshot_entries);
-
-    storage.put_snapshot(stream_name, meta).await
+    Ok(())
 }
 
 /// Partition the path to which this manifest belongs.
