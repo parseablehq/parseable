@@ -93,6 +93,7 @@ pub struct TimePeriod {
     data_granularity: u32,
 }
 
+#[allow(dead_code)]
 impl TimePeriod {
     pub fn new(start: DateTime<Utc>, end: DateTime<Utc>, data_granularity: u32) -> Self {
         Self {

@@ -19,13 +19,8 @@
 use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
-use crate::metadata::STREAM_INFO;
-use crate::query::Query;
-use chrono::{DateTime, Utc};
 
-use self::error::{
-    AlertValidationError, QueryValidationError, StreamNameValidationError, UsernameValidationError,
-};
+use self::error::{AlertValidationError, StreamNameValidationError, UsernameValidationError};
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
@@ -134,78 +129,7 @@ pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
     Ok(())
 }
 
-pub fn query(query: &str, start_time: &str, end_time: &str) -> Result<Query, QueryValidationError> {
-    if query.is_empty() {
-        return Err(QueryValidationError::EmptyQuery);
-    }
-
-    // convert query to lower case for validation only
-    // if validation succeeds, we use the original query
-    // since table names/fields are case sensitive
-    let query_lower = query.to_lowercase();
-
-    let tokens = query_lower.split(' ').collect::<Vec<&str>>();
-    if tokens.contains(&"join") {
-        return Err(QueryValidationError::ContainsJoin(query.to_string()));
-    }
-    if tokens.len() < 4 {
-        return Err(QueryValidationError::IncompleteQuery(query.to_string()));
-    }
-    if start_time.is_empty() {
-        return Err(QueryValidationError::EmptyStartTime);
-    }
-    if end_time.is_empty() {
-        return Err(QueryValidationError::EmptyEndTime);
-    }
-
-    // log stream name is located after the `from` keyword
-    let stream_name_index = tokens.iter().position(|&x| x == "from").unwrap() + 1;
-    // we currently don't support queries like "select name, address from stream1 and stream2"
-    // so if there is an `and` after the first log stream name, we return an error.
-    if tokens.len() > stream_name_index + 1 && tokens[stream_name_index + 1] == "and" {
-        return Err(QueryValidationError::MultipleStreams(query.to_string()));
-    }
-
-    let start: DateTime<Utc>;
-    let end: DateTime<Utc>;
-
-    if end_time == "now" {
-        end = Utc::now();
-        start = end - chrono::Duration::from_std(humantime::parse_duration(start_time)?)?;
-    } else {
-        start = DateTime::parse_from_rfc3339(start_time)
-            .map_err(|_| QueryValidationError::StartTimeParse)?
-            .into();
-        end = DateTime::parse_from_rfc3339(end_time)
-            .map_err(|_| QueryValidationError::EndTimeParse)?
-            .into();
-    };
-
-    if start.timestamp() > end.timestamp() {
-        return Err(QueryValidationError::StartTimeAfterEndTime);
-    }
-
-    let stream_name = tokens[stream_name_index].to_string();
-
-    if !STREAM_INFO.stream_initialized(&stream_name)? {
-        return Err(QueryValidationError::UninitializedStream);
-    }
-
-    let schema = STREAM_INFO.schema(&stream_name)?;
-
-    Ok(Query {
-        stream_name: tokens[stream_name_index].to_string(),
-        start,
-        end,
-        query: query.to_string(),
-        schema,
-        filter_tag: None,
-        fill_null: false,
-    })
-}
-
 pub mod error {
-    use crate::metadata::error::stream_info::MetadataError;
 
     #[derive(Debug, thiserror::Error)]
     pub enum AlertValidationError {
@@ -219,36 +143,6 @@ pub mod error {
         InvalidRuleRepeat,
         #[error("Alert must have at least one target")]
         NoTarget,
-    }
-
-    #[derive(Debug, thiserror::Error)]
-    pub enum QueryValidationError {
-        #[error("Query cannot be empty")]
-        EmptyQuery,
-        #[error("Start time cannot be empty")]
-        EmptyStartTime,
-        #[error("End time cannot be empty")]
-        EmptyEndTime,
-        #[error("Could not parse start time correctly")]
-        StartTimeParse,
-        #[error("Could not parse end time correctly")]
-        EndTimeParse,
-        #[error("While generating times for 'now' failed to parse duration")]
-        NotValidDuration(#[from] humantime::DurationError),
-        #[error("Parsed duration out of range")]
-        OutOfRange(#[from] chrono::OutOfRangeError),
-        #[error("Start time cannot be greater than the end time")]
-        StartTimeAfterEndTime,
-        #[error("Stream is not initialized yet. Post an event first.")]
-        UninitializedStream,
-        #[error("Query {0} is incomplete")]
-        IncompleteQuery(String),
-        #[error("Query contains join keyword which is not supported yet.")]
-        ContainsJoin(String),
-        #[error("Querying multiple streams is not supported yet")]
-        MultipleStreams(String),
-        #[error("Metadata Error: {0}")]
-        Metadata(#[from] MetadataError),
     }
 
     #[derive(Debug, thiserror::Error)]

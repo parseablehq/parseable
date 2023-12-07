@@ -99,6 +99,7 @@ humantime = "2.1.0"
 openid = { version = "0.12.0", default-features = false, features = ["rustls"] }
 url = "2.4.0"
 http-auth-basic = "0.3.3"
+serde_repr = "0.1.17"
 
 [build-dependencies]
 cargo_toml = "0.15"

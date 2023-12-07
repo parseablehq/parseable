@@ -17,86 +17,54 @@
  */
 
 mod filter_optimizer;
+mod stream_schema_provider;
 mod table_provider;
 
+use chrono::TimeZone;
 use chrono::{DateTime, Utc};
-use chrono::{TimeZone, Timelike};
-use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig};
+
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeVisitor, VisitRecursion};
+use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::logical_expr::{Explain, Filter, LogicalPlan, PlanType, ToStringifiedPlan};
 use datafusion::prelude::*;
-use futures_util::stream::FuturesUnordered;
-use futures_util::{future, Future, TryStreamExt};
 use itertools::Itertools;
-use object_store::path::Path as StorePath;
-use object_store::{ObjectMeta, ObjectStore};
-use serde_json::Value;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use std::ops::Add;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use sysinfo::{System, SystemExt};
 
-use crate::event::DEFAULT_TIMESTAMP_KEY;
+use crate::event;
 use crate::option::CONFIG;
-use crate::storage::{ObjectStorage, OBJECT_STORE_DATA_GRANULARITY};
-use crate::storage::{ObjectStorageError, StorageDir};
-use crate::utils::TimePeriod;
-use crate::validator;
+use crate::storage::{ObjectStorageProvider, StorageDir};
 
-use self::error::{ExecuteError, ParseError};
-use self::filter_optimizer::FilterOptimizerRule;
-use self::table_provider::QueryTableProvider;
+use self::error::ExecuteError;
 
-type Key = &'static str;
-fn get_value(value: &Value, key: Key) -> Result<&str, Key> {
-    value.get(key).and_then(|value| value.as_str()).ok_or(key)
-}
+use self::stream_schema_provider::GlobalSchemaProvider;
+pub use self::stream_schema_provider::PartialTimeFilter;
 
-// Query holds all values relevant to a query for a single log stream
+pub static QUERY_SESSION: Lazy<SessionContext> =
+    Lazy::new(|| Query::create_session_context(CONFIG.storage()));
+
+// A query request by client
 pub struct Query {
-    pub query: String,
-    pub stream_name: String,
-    pub schema: Arc<Schema>,
+    pub raw_logical_plan: LogicalPlan,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
     pub filter_tag: Option<Vec<String>>,
-    pub fill_null: bool,
 }
 
 impl Query {
-    // parse_query parses the SQL query and returns the log stream name on which
-    // this query is supposed to be executed
-    pub fn parse(query_json: Value) -> Result<Query, ParseError> {
-        // retrieve query, start and end time information from payload.
-        let query = get_value(&query_json, "query")?;
-        let start_time = get_value(&query_json, "startTime")?;
-        let end_time = get_value(&query_json, "endTime")?;
-
-        Ok(validator::query(query, start_time, end_time)?)
-    }
-
-    /// Return prefixes, each per day/hour/minutes as necessary
-    fn generate_prefixes(&self) -> Vec<String> {
-        TimePeriod::new(self.start, self.end, OBJECT_STORE_DATA_GRANULARITY).generate_prefixes()
-    }
-
-    fn get_prefixes(&self) -> Vec<String> {
-        self.generate_prefixes()
-            .into_iter()
-            .map(|key| format!("{}/{}", self.stream_name, key))
-            .collect()
-    }
-
     // create session context for this query
-    fn create_session_context(&self) -> SessionContext {
-        let config = SessionConfig::default();
-        let runtime_config = CONFIG
-            .storage()
+    pub fn create_session_context(
+        storage: Arc<dyn ObjectStorageProvider + Send>,
+    ) -> SessionContext {
+        let runtime_config = storage
             .get_datafusion_runtime()
             .with_disk_manager(DiskManagerConfig::NewOs);
 
@@ -112,56 +80,34 @@ impl Query {
 
         let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
         let runtime = Arc::new(RuntimeEnv::new(runtime_config).unwrap());
-        let mut state = SessionState::new_with_config_rt(config, runtime);
 
-        if let Some(tag) = &self.filter_tag {
-            let filter = FilterOptimizerRule {
-                column: crate::event::DEFAULT_TAGS_KEY.to_string(),
-                literals: tag.clone(),
-            };
-            state = state.add_optimizer_rule(Arc::new(filter))
-        }
+        let config = SessionConfig::default()
+            .with_parquet_pruning(true)
+            .with_prefer_existing_sort(true)
+            .with_round_robin_repartition(true);
+
+        let state = SessionState::new_with_config_rt(config, runtime);
+        let schema_provider = Arc::new(GlobalSchemaProvider {
+            storage: storage.get_object_store(),
+        });
+        state
+            .catalog_list()
+            .catalog(&state.config_options().catalog.default_catalog)
+            .expect("default catalog is provided by datafusion")
+            .register_schema(
+                &state.config_options().catalog.default_schema,
+                schema_provider,
+            )
+            .unwrap();
 
         SessionContext::new_with_state(state)
     }
 
-    /// Execute query on object storage(and if necessary on cache as well) with given stream information
-    /// TODO: find a way to query all selected parquet files together in a single context.
-    pub async fn execute(
-        &self,
-        storage: Arc<dyn ObjectStorage + Send>,
-    ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let ctx = self.create_session_context();
-        let unresolved_prefixes = self.get_prefixes();
-        let client = ctx
-            .runtime_env()
-            .object_store(Box::new(storage.store_url()))
-            .unwrap();
-        let prefixes =
-            resolve_paths(client, storage.normalize_prefixes(unresolved_prefixes)).await?;
+    pub async fn execute(&self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+        let df = QUERY_SESSION
+            .execute_logical_plan(self.final_logical_plan())
+            .await?;
 
-        let remote_listing_table = self.remote_query(prefixes, storage)?;
-
-        let current_minute = Utc::now()
-            .with_second(0)
-            .and_then(|x| x.with_nanosecond(0))
-            .expect("zeroed value is valid");
-
-        let memtable = if self.end > current_minute {
-            crate::event::STREAM_WRITERS.recordbatches_cloned(&self.stream_name, &self.schema)
-        } else {
-            None
-        };
-
-        let table =
-            QueryTableProvider::try_new(memtable, remote_listing_table, self.schema.clone())?;
-
-        ctx.register_table(&*self.stream_name, Arc::new(table))
-            .map_err(ObjectStorageError::DataFusionError)?;
-        // execute the query and collect results
-        let df = ctx.sql(self.query.as_str()).await?;
-        // dataframe qualifies name by adding table name before columns. \
-        // For now this is just actual names
         let fields = df
             .schema()
             .fields()
@@ -171,34 +117,123 @@ impl Query {
             .collect_vec();
 
         let results = df.collect().await?;
-
         Ok((results, fields))
     }
 
-    fn remote_query(
-        &self,
-        prefixes: Vec<String>,
-        storage: Arc<dyn ObjectStorage + Send>,
-    ) -> Result<Option<Arc<ListingTable>>, ExecuteError> {
-        let prefixes = storage.query_prefixes(prefixes);
-        if prefixes.is_empty() {
-            return Ok(None);
+    /// return logical plan with all time filters applied through
+    fn final_logical_plan(&self) -> LogicalPlan {
+        fn tag_filter(filters: Vec<String>) -> Option<Expr> {
+            filters
+                .iter()
+                .map(|literal| {
+                    Expr::Column(Column::from_name(event::DEFAULT_TAGS_KEY))
+                        .like(lit(format!("%{}%", literal)))
+                })
+                .reduce(or)
         }
-        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
-        let file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(false, true)]];
-        let listing_options = ListingOptions::new(Arc::new(file_format))
-            .with_file_extension(".parquet")
-            .with_file_sort_order(file_sort_order)
-            .with_collect_stat(true)
-            // enforce distribution will take care of parallelization
-            .with_target_partitions(1);
 
-        let config = ListingTableConfig::new_with_multi_paths(prefixes)
-            .with_listing_options(listing_options)
-            .with_schema(self.schema.clone());
+        fn transform(
+            plan: LogicalPlan,
+            start_time_filter: Expr,
+            end_time_filter: Expr,
+            filters: Option<Expr>,
+        ) -> LogicalPlan {
+            plan.transform(&|plan| match plan {
+                LogicalPlan::TableScan(table) => {
+                    let mut new_filters = vec![];
+                    if !table.filters.iter().any(|expr| {
+                        let Expr::BinaryExpr(binexpr) = expr else {return false};
+                        matches!(&*binexpr.left, Expr::Column(Column { name, .. }) if name == event::DEFAULT_TIMESTAMP_KEY)
+                    }) {
+                        new_filters.push(start_time_filter.clone());
+                        new_filters.push(end_time_filter.clone());
+                    }
 
-        let listing_table = Arc::new(ListingTable::try_new(config)?);
-        Ok(Some(listing_table))
+                    if let Some(tag_filters) = filters.clone() {
+                        new_filters.push(tag_filters)
+                    }
+
+                    let new_filter = new_filters.into_iter().reduce(and);
+
+                    if let Some(new_filter) = new_filter {
+                        let filter = Filter::try_new(new_filter, Arc::new(LogicalPlan::TableScan(table))).unwrap();
+                        Ok(Transformed::Yes(LogicalPlan::Filter(filter)))
+                    } else {
+                        Ok(Transformed::No(LogicalPlan::TableScan(table)))
+                    }
+                },
+                x => Ok(Transformed::No(x)),
+            })
+            .expect("transform only transforms the tablescan")
+        }
+
+        let filters = self.filter_tag.clone().and_then(tag_filter);
+        let start_time_filter =
+            PartialTimeFilter::Low(std::ops::Bound::Included(self.start.naive_utc())).binary_expr(
+                Expr::Column(Column::from_name(event::DEFAULT_TIMESTAMP_KEY)),
+            );
+        let end_time_filter = PartialTimeFilter::High(std::ops::Bound::Excluded(
+            self.end.add(chrono::Duration::milliseconds(1)).naive_utc(),
+        ))
+        .binary_expr(Expr::Column(Column::from_name(
+            event::DEFAULT_TIMESTAMP_KEY,
+        )));
+
+        // see https://github.com/apache/arrow-datafusion/pull/8400
+        // this can be eliminated in later version of datafusion but with slight caveat
+        // transform cannot modify stringified plans by itself
+        // we by knowing this plan is not in the optimization procees chose to overwrite the stringified plan
+        match self.raw_logical_plan.clone() {
+            LogicalPlan::Explain(plan) => {
+                let transformed = transform(
+                    plan.plan.as_ref().clone(),
+                    start_time_filter,
+                    end_time_filter,
+                    filters,
+                );
+                LogicalPlan::Explain(Explain {
+                    verbose: plan.verbose,
+                    stringified_plans: vec![
+                        transformed.to_stringified(PlanType::InitialLogicalPlan)
+                    ],
+                    plan: Arc::new(transformed),
+                    schema: plan.schema,
+                    logical_optimization_succeeded: plan.logical_optimization_succeeded,
+                })
+            }
+            x => transform(x, start_time_filter, end_time_filter, filters),
+        }
+    }
+
+    pub fn table_name(&self) -> Option<String> {
+        let mut visitor = TableScanVisitor::default();
+        let _ = self.raw_logical_plan.visit(&mut visitor);
+        visitor.into_inner().pop()
+    }
+}
+
+#[derive(Debug, Default)]
+struct TableScanVisitor {
+    tables: Vec<String>,
+}
+
+impl TableScanVisitor {
+    fn into_inner(self) -> Vec<String> {
+        self.tables
+    }
+}
+
+impl TreeNodeVisitor for TableScanVisitor {
+    type N = LogicalPlan;
+
+    fn pre_visit(&mut self, node: &Self::N) -> Result<VisitRecursion, DataFusionError> {
+        match node {
+            LogicalPlan::TableScan(table) => {
+                self.tables.push(table.table_name.table().to_string());
+                Ok(VisitRecursion::Stop)
+            }
+            _ => Ok(VisitRecursion::Continue),
+        }
     }
 }
 
@@ -243,103 +278,9 @@ fn time_from_path(path: &Path) -> DateTime<Utc> {
         .unwrap()
 }
 
-// accepts relative paths to resolve the narrative
-// returns list of prefixes sorted in descending order
-async fn resolve_paths(
-    client: Arc<dyn ObjectStore>,
-    prefixes: Vec<String>,
-) -> Result<Vec<String>, ObjectStorageError> {
-    let mut minute_resolve: HashMap<String, Vec<String>> = HashMap::new();
-    let mut all_resolve = Vec::new();
-
-    for prefix in prefixes {
-        let components = prefix.split_terminator('/');
-        if components.last().is_some_and(|x| x.starts_with("minute")) {
-            let hour_prefix = &prefix[0..prefix.rfind("minute").expect("minute exists")];
-            minute_resolve
-                .entry(hour_prefix.to_owned())
-                .and_modify(|list| list.push(prefix))
-                .or_default();
-        } else {
-            all_resolve.push(prefix)
-        }
-    }
-
-    type ResolveFuture = Pin<Box<dyn Future<Output = Result<Vec<ObjectMeta>, ObjectStorageError>>>>;
-
-    let tasks: FuturesUnordered<ResolveFuture> = FuturesUnordered::new();
-
-    for (listing_prefix, prefix) in minute_resolve {
-        let client = Arc::clone(&client);
-        tasks.push(Box::pin(async move {
-            let mut list = client
-                .list(Some(&StorePath::from(listing_prefix)))
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-
-            list.retain(|object| {
-                prefix.iter().any(|prefix| {
-                    object
-                        .location
-                        .prefix_matches(&StorePath::from(prefix.as_ref()))
-                })
-            });
-
-            Ok(list)
-        }));
-    }
-
-    for prefix in all_resolve {
-        let client = Arc::clone(&client);
-        tasks.push(Box::pin(async move {
-            client
-                .list(Some(&StorePath::from(prefix)))
-                .await?
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(Into::into)
-        }));
-    }
-
-    let res: Vec<Vec<String>> = tasks
-        .and_then(|res| {
-            future::ok(
-                res.into_iter()
-                    .map(|res| res.location.to_string())
-                    .collect_vec(),
-            )
-        })
-        .try_collect()
-        .await?;
-
-    let mut res = res.into_iter().flatten().collect_vec();
-    res.sort();
-    res.reverse();
-
-    Ok(res)
-}
-
 pub mod error {
+    use crate::storage::ObjectStorageError;
     use datafusion::error::DataFusionError;
-
-    use crate::{storage::ObjectStorageError, validator::error::QueryValidationError};
-
-    use super::Key;
-
-    #[derive(Debug, thiserror::Error)]
-    pub enum ParseError {
-        #[error("Key not found: {0}")]
-        Key(String),
-        #[error("Error parsing query: {0}")]
-        Validation(#[from] QueryValidationError),
-    }
-
-    impl From<Key> for ParseError {
-        fn from(key: Key) -> Self {
-            ParseError::Key(key.to_string())
-        }
-    }
 
     #[derive(Debug, thiserror::Error)]
     pub enum ExecuteError {
