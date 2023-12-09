@@ -35,7 +35,6 @@ use datafusion::prelude::*;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::ops::Add;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sysinfo::{System, SystemExt};
