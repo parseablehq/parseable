@@ -239,7 +239,7 @@ fn partitioned_files(
             .get(field.name())
             .and_then(|stats| stats.as_ref())
         else {
-            statistics.push(Default::default());
+            statistics.push(datafusion::common::ColumnStatistics::default());
             break;
         };
 
@@ -271,7 +271,7 @@ fn partitioned_files(
                 ScalarValue::Utf8(Some(stats.max.clone())),
             ),
             _ => {
-                statistics.push(Default::default());
+                statistics.push(datafusion::common::ColumnStatistics::default());
                 break;
             }
         };
