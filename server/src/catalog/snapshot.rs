@@ -38,7 +38,7 @@ impl Default for Snapshot {
 }
 
 impl super::Snapshot for Snapshot {
-    fn manifests(&self, time_predicates: Vec<PartialTimeFilter>) -> Vec<ManifestItem> {
+    fn manifests(&self, time_predicates: &[PartialTimeFilter]) -> Vec<ManifestItem> {
         let mut manifests = self.manifest_list.clone();
         for predicate in time_predicates {
             match predicate {

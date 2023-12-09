@@ -36,7 +36,7 @@ pub mod snapshot;
 pub use manifest::create_from_parquet_file;
 
 pub trait Snapshot {
-    fn manifests(&self, time_predicates: Vec<PartialTimeFilter>) -> Vec<ManifestItem>;
+    fn manifests(&self, time_predicates: &[PartialTimeFilter]) -> Vec<ManifestItem>;
 }
 
 pub trait ManifestFile {

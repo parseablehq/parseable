@@ -19,7 +19,6 @@
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::datasource::listing::ListingTable;
 
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::DataFusionError;
@@ -39,14 +38,14 @@ use crate::utils::arrow::reverse_reader::reverse;
 pub struct QueryTableProvider {
     staging: Option<MemTable>,
     // remote table
-    storage: Option<Arc<ListingTable>>,
+    storage: Option<Arc<dyn ExecutionPlan>>,
     schema: Arc<Schema>,
 }
 
 impl QueryTableProvider {
     pub fn try_new(
         staging: Option<Vec<RecordBatch>>,
-        storage: Option<Arc<ListingTable>>,
+        storage: Option<Arc<dyn ExecutionPlan>>,
         schema: Arc<Schema>,
     ) -> Result<Self, DataFusionError> {
         // in place reverse transform
@@ -85,11 +84,7 @@ impl QueryTableProvider {
         }
 
         if let Some(storage_listing) = self.storage.clone() {
-            exec.push(
-                storage_listing
-                    .scan(ctx, projection, filters, limit)
-                    .await?,
-            );
+            exec.push(storage_listing);
         }
 
         let exec: Arc<dyn ExecutionPlan> = if exec.is_empty() {
