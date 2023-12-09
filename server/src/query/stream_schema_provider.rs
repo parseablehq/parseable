@@ -150,6 +150,10 @@ impl StandardTableProvider {
             }
         }
 
+        if manifest_files.is_empty() {
+            return Ok(None);
+        }
+
         let (partitioned_files, statistics) = partitioned_files(manifest_files, &self.schema, 1);
 
         let filters = if let Some(expr) = conjunction(filters.to_vec()) {
