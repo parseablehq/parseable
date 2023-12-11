@@ -16,33 +16,35 @@
  *
  */
 
-use std::{any::Any, collections::HashMap, ops::Bound, pin::Pin, sync::Arc};
+use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
 
-use arrow_schema::SchemaRef;
+use arrow_schema::{DataType, Schema, SchemaRef, SortOptions};
 use bytes::Bytes;
 use chrono::{NaiveDateTime, Timelike, Utc};
 use datafusion::{
     catalog::schema::SchemaProvider,
-    common::tree_node::{TreeNode, VisitRecursion},
+    common::{
+        tree_node::{TreeNode, VisitRecursion},
+        ToDFSchema,
+    },
     datasource::{
-        file_format::parquet::ParquetFormat,
-        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
+        file_format::{parquet::ParquetFormat, FileFormat},
+        listing::PartitionedFile,
+        physical_plan::FileScanConfig,
         TableProvider,
     },
     error::DataFusionError,
-    execution::context::SessionState,
+    execution::{context::SessionState, object_store::ObjectStoreUrl},
     logical_expr::{BinaryExpr, Operator, TableProviderFilterPushDown, TableType},
-    physical_plan::ExecutionPlan,
-    prelude::{col, Column, Expr},
+    optimizer::utils::conjunction,
+    physical_expr::{create_physical_expr, PhysicalSortExpr},
+    physical_plan::{self, ExecutionPlan},
+    prelude::{Column, Expr},
     scalar::ScalarValue,
 };
-use futures_util::{
-    future,
-    stream::{FuturesOrdered, FuturesUnordered},
-    Future, StreamExt, TryStreamExt,
-};
+use futures_util::{stream::FuturesOrdered, StreamExt, TryStreamExt};
 use itertools::Itertools;
-use object_store::{path::Path, ObjectMeta, ObjectStore};
+use object_store::{path::Path, ObjectStore};
 use url::Url;
 
 use crate::{
@@ -50,11 +52,10 @@ use crate::{
     event::{self, DEFAULT_TIMESTAMP_KEY},
     metadata::STREAM_INFO,
     option::CONFIG,
-    storage::{ObjectStorage, OBJECT_STORE_DATA_GRANULARITY},
-    utils::TimePeriod,
+    storage::ObjectStorage,
 };
 
-use super::table_provider;
+use super::{listing_table_builder::ListingTableBuilder, table_provider::QueryTableProvider};
 
 // schema provider for stream based on global data
 pub struct GlobalSchemaProvider {
@@ -98,37 +99,18 @@ struct StandardTableProvider {
 }
 
 impl StandardTableProvider {
-    async fn collect_remote_scan(
+    #[allow(clippy::too_many_arguments)]
+    async fn remote_physical_plan(
         &self,
         glob_storage: Arc<dyn ObjectStorage + Send>,
         object_store: Arc<dyn ObjectStore>,
-        _projection: Option<&Vec<usize>>,
+        snapshot: &catalog::snapshot::Snapshot,
+        time_filters: &[PartialTimeFilter],
+        projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
-    ) -> Result<Vec<ListingTableUrl>, DataFusionError> {
-        let time_filters = extract_primary_filter(filters);
-        if time_filters.is_empty() {
-            return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
-        }
-
-        // Fetch snapshot
-        let snapshot = glob_storage
-            .get_snapshot(&self.stream)
-            .await
-            .map_err(|err| DataFusionError::Plan(err.to_string()))?;
-
-        // Is query timerange is overlapping with older data.
-        if is_overlapping_query(&snapshot, &time_filters) {
-            return listing_scan(
-                self.stream.clone(),
-                glob_storage.clone(),
-                object_store,
-                &time_filters,
-            )
-            .await
-            .map(|prefixes| glob_storage.query_prefixes(prefixes));
-        }
-
+        state: &SessionState,
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
         let items = snapshot.manifests(time_filters);
         let manifest_files = collect_manifest_files(
             object_store,
@@ -168,36 +150,152 @@ impl StandardTableProvider {
             }
         }
 
-        Ok(manifest_files
-            .iter()
-            .map(|x| glob_storage.store_url().join(&x.file_path).unwrap())
-            .map(|x| ListingTableUrl::parse(x).unwrap())
-            .collect())
-    }
-
-    fn remote_query(
-        &self,
-        prefixes: Vec<ListingTableUrl>,
-    ) -> Result<Option<Arc<ListingTable>>, DataFusionError> {
-        if prefixes.is_empty() {
+        if manifest_files.is_empty() {
             return Ok(None);
         }
 
+        let (partitioned_files, statistics) = partitioned_files(manifest_files, &self.schema, 1);
+
+        let filters = if let Some(expr) = conjunction(filters.to_vec()) {
+            let table_df_schema = self.schema.as_ref().clone().to_dfschema()?;
+            let filters = create_physical_expr(
+                &expr,
+                &table_df_schema,
+                &self.schema,
+                state.execution_props(),
+            )?;
+            Some(filters)
+        } else {
+            None
+        };
+
+        let sort_expr = PhysicalSortExpr {
+            expr: physical_plan::expressions::col(DEFAULT_TIMESTAMP_KEY, &self.schema)?,
+            options: SortOptions {
+                descending: true,
+                nulls_first: true,
+            },
+        };
+
         let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
-        let file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]];
-        let listing_options = ListingOptions::new(Arc::new(file_format))
-            .with_file_extension(".parquet")
-            .with_file_sort_order(file_sort_order)
-            .with_collect_stat(true)
-            .with_target_partitions(1);
+        // create the execution plan
+        let plan = file_format
+            .create_physical_plan(
+                state,
+                FileScanConfig {
+                    object_store_url: ObjectStoreUrl::parse(&glob_storage.store_url()).unwrap(),
+                    file_schema: self.schema.clone(),
+                    file_groups: partitioned_files,
+                    statistics,
+                    projection: projection.cloned(),
+                    limit,
+                    output_ordering: vec![vec![sort_expr]],
+                    table_partition_cols: Vec::new(),
+                    infinite_source: false,
+                },
+                filters.as_ref(),
+            )
+            .await?;
 
-        let config = ListingTableConfig::new_with_multi_paths(prefixes)
-            .with_listing_options(listing_options)
-            .with_schema(self.schema.clone());
-
-        let listing_table = Arc::new(ListingTable::try_new(config)?);
-        Ok(Some(listing_table))
+        Ok(Some(plan))
     }
+}
+
+fn partitioned_files(
+    manifest_files: Vec<catalog::manifest::File>,
+    table_schema: &Schema,
+    target_partition: usize,
+) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
+    let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
+    let mut column_statistics = HashMap::<String, Option<catalog::column::TypedStatistics>>::new();
+    let mut count = 0;
+
+    for (index, file) in manifest_files
+        .into_iter()
+        .enumerate()
+        .map(|(x, y)| (x % target_partition, y))
+    {
+        let catalog::manifest::File {
+            file_path,
+            num_rows,
+            columns,
+            ..
+        } = file;
+
+        partitioned_files[index].push(PartitionedFile::new(file_path, file.file_size));
+        columns.into_iter().for_each(|col| {
+            column_statistics
+                .entry(col.name)
+                .and_modify(|x| {
+                    if let Some((stats, col_stats)) = x.as_ref().cloned().zip(col.stats.clone()) {
+                        *x = Some(stats.update(col_stats));
+                    }
+                })
+                .or_insert_with(|| col.stats.as_ref().cloned());
+        });
+        count += num_rows;
+    }
+
+    let mut statistics = vec![];
+
+    for field in table_schema.fields() {
+        let Some(stats) = column_statistics
+            .get(field.name())
+            .and_then(|stats| stats.as_ref())
+        else {
+            statistics.push(datafusion::common::ColumnStatistics::default());
+            break;
+        };
+
+        let datatype = field.data_type();
+
+        let (min, max) = match (stats, datatype) {
+            (TypedStatistics::Bool(stats), DataType::Boolean) => (
+                ScalarValue::Boolean(Some(stats.min)),
+                ScalarValue::Boolean(Some(stats.max)),
+            ),
+            (TypedStatistics::Int(stats), DataType::Int32) => (
+                ScalarValue::Int32(Some(stats.min as i32)),
+                ScalarValue::Int32(Some(stats.max as i32)),
+            ),
+            (TypedStatistics::Int(stats), DataType::Int64) => (
+                ScalarValue::Int64(Some(stats.min)),
+                ScalarValue::Int64(Some(stats.max)),
+            ),
+            (TypedStatistics::Float(stats), DataType::Float32) => (
+                ScalarValue::Float32(Some(stats.min as f32)),
+                ScalarValue::Float32(Some(stats.max as f32)),
+            ),
+            (TypedStatistics::Float(stats), DataType::Float64) => (
+                ScalarValue::Float64(Some(stats.min)),
+                ScalarValue::Float64(Some(stats.max)),
+            ),
+            (TypedStatistics::String(stats), DataType::Utf8) => (
+                ScalarValue::Utf8(Some(stats.min.clone())),
+                ScalarValue::Utf8(Some(stats.max.clone())),
+            ),
+            _ => {
+                statistics.push(datafusion::common::ColumnStatistics::default());
+                break;
+            }
+        };
+
+        statistics.push(datafusion::common::ColumnStatistics {
+            null_count: None,
+            max_value: Some(max),
+            min_value: Some(min),
+            distinct_count: None,
+        })
+    }
+
+    let statistics = datafusion::common::Statistics {
+        num_rows: Some(count as usize),
+        total_byte_size: None,
+        column_statistics: Some(statistics),
+        is_exact: true,
+    };
+
+    (partitioned_files, statistics)
 }
 
 #[async_trait::async_trait]
@@ -221,6 +319,11 @@ impl TableProvider for StandardTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        let time_filters = extract_primary_filter(filters);
+        if time_filters.is_empty() {
+            return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
+        }
+
         let memtable = if include_now(filters) {
             event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
         } else {
@@ -233,23 +336,42 @@ impl TableProvider for StandardTableProvider {
             .get_store(&self.url)
             .unwrap();
 
-        let prefixes = self
-            .collect_remote_scan(
-                CONFIG.storage().get_object_store(),
+        let glob_storage = CONFIG.storage().get_object_store();
+
+        // Fetch snapshot
+        let snapshot = glob_storage
+            .get_snapshot(&self.stream)
+            .await
+            .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+
+        let remote_table = if is_overlapping_query(&snapshot, &time_filters) {
+            // Is query timerange is overlapping with older data.
+            if let Some(table) = ListingTableBuilder::new(self.stream.clone())
+                .populate_via_listing(glob_storage.clone(), storage, &time_filters)
+                .await?
+                .build(self.schema.clone(), |x| glob_storage.query_prefixes(x))?
+            {
+                Some(table.scan(state, projection, filters, limit).await?)
+            } else {
+                None
+            }
+        } else {
+            self.remote_physical_plan(
+                glob_storage,
                 storage,
+                &snapshot,
+                &time_filters,
                 projection,
                 filters,
                 limit,
+                state,
             )
-            .await?;
+            .await?
+        };
 
-        table_provider::QueryTableProvider::try_new(
-            memtable,
-            self.remote_query(prefixes)?,
-            self.schema(),
-        )?
-        .scan(state, projection, filters, limit)
-        .await
+        QueryTableProvider::try_new(memtable, remote_table, self.schema.clone())?
+            .scan(state, projection, filters, limit)
+            .await
     }
 
     fn supports_filter_pushdown(
@@ -330,128 +452,6 @@ impl PartialTimeFilter {
             _ => unimplemented!(),
         }
     }
-}
-
-// accepts relative paths to resolve the narrative
-// returns list of prefixes sorted in descending order
-async fn listing_scan(
-    stream: String,
-    storage: Arc<dyn ObjectStorage + Send>,
-    client: Arc<dyn ObjectStore>,
-    time_filters: &[PartialTimeFilter],
-) -> Result<Vec<String>, DataFusionError> {
-    let start_time = time_filters
-        .iter()
-        .filter_map(|x| match x {
-            PartialTimeFilter::Low(Bound::Excluded(x)) => Some(x),
-            PartialTimeFilter::Low(Bound::Included(x)) => Some(x),
-            _ => None,
-        })
-        .min()
-        .cloned();
-
-    let end_time = time_filters
-        .iter()
-        .filter_map(|x| match x {
-            PartialTimeFilter::High(Bound::Excluded(x)) => Some(x),
-            PartialTimeFilter::High(Bound::Included(x)) => Some(x),
-            _ => None,
-        })
-        .max()
-        .cloned();
-
-    let Some((start_time, end_time)) = start_time.zip(end_time) else {
-        return Err(DataFusionError::NotImplemented(
-            "The time predicate is not supported because of possibly querying older data."
-                .to_string(),
-        ));
-    };
-
-    let prefixes = TimePeriod::new(
-        start_time.and_utc(),
-        end_time.and_utc(),
-        OBJECT_STORE_DATA_GRANULARITY,
-    )
-    .generate_prefixes();
-
-    let prefixes = prefixes
-        .into_iter()
-        .map(|entry| {
-            let path = relative_path::RelativePathBuf::from(format!("{}/{}", stream, entry));
-            storage.absolute_url(path.as_relative_path()).to_string()
-        })
-        .collect_vec();
-
-    let mut minute_resolve: HashMap<String, Vec<String>> = HashMap::new();
-    let mut all_resolve = Vec::new();
-
-    for prefix in prefixes {
-        let components = prefix.split_terminator('/');
-        if components.last().is_some_and(|x| x.starts_with("minute")) {
-            let hour_prefix = &prefix[0..prefix.rfind("minute").expect("minute exists")];
-            minute_resolve
-                .entry(hour_prefix.to_owned())
-                .and_modify(|list| list.push(prefix))
-                .or_default();
-        } else {
-            all_resolve.push(prefix)
-        }
-    }
-
-    type ResolveFuture = Pin<
-        Box<dyn Future<Output = Result<Vec<ObjectMeta>, object_store::Error>> + Send + 'static>,
-    >;
-
-    let tasks: FuturesUnordered<ResolveFuture> = FuturesUnordered::new();
-
-    for (listing_prefix, prefix) in minute_resolve {
-        let client = Arc::clone(&client);
-        tasks.push(Box::pin(async move {
-            let mut list = client
-                .list(Some(&object_store::path::Path::from(listing_prefix)))
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-
-            list.retain(|object| {
-                prefix.iter().any(|prefix| {
-                    object
-                        .location
-                        .prefix_matches(&object_store::path::Path::from(prefix.as_ref()))
-                })
-            });
-
-            Ok(list)
-        }));
-    }
-
-    for prefix in all_resolve {
-        let client = Arc::clone(&client);
-        tasks.push(Box::pin(async move {
-            client
-                .list(Some(&object_store::path::Path::from(prefix)))
-                .await?
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(Into::into)
-        }));
-    }
-
-    let res: Vec<Vec<String>> = tasks
-        .and_then(|res| {
-            future::ok(
-                res.into_iter()
-                    .map(|res| res.location.to_string())
-                    .collect_vec(),
-            )
-        })
-        .try_collect()
-        .await?;
-
-    let mut res = res.into_iter().flatten().collect_vec();
-    res.sort();
-    res.reverse();
-    Ok(res)
 }
 
 fn is_overlapping_query(

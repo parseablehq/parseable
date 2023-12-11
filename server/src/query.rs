@@ -17,6 +17,7 @@
  */
 
 mod filter_optimizer;
+mod listing_table_builder;
 mod stream_schema_provider;
 mod table_provider;
 
@@ -34,7 +35,6 @@ use datafusion::prelude::*;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::ops::Add;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sysinfo::{System, SystemExt};
@@ -172,12 +172,10 @@ impl Query {
             PartialTimeFilter::Low(std::ops::Bound::Included(self.start.naive_utc())).binary_expr(
                 Expr::Column(Column::from_name(event::DEFAULT_TIMESTAMP_KEY)),
             );
-        let end_time_filter = PartialTimeFilter::High(std::ops::Bound::Excluded(
-            self.end.add(chrono::Duration::milliseconds(1)).naive_utc(),
-        ))
-        .binary_expr(Expr::Column(Column::from_name(
-            event::DEFAULT_TIMESTAMP_KEY,
-        )));
+        let end_time_filter =
+            PartialTimeFilter::High(std::ops::Bound::Excluded(self.end.naive_utc())).binary_expr(
+                Expr::Column(Column::from_name(event::DEFAULT_TIMESTAMP_KEY)),
+            );
 
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
