@@ -154,18 +154,16 @@ pub async fn put_alert(
 
     let schema = STREAM_INFO.schema(&stream_name)?;
     for alert in &alerts.alerts {
-        if let Some(columns) = alert.message.extract_column_names() {
-            for column in columns {
-                let is_valid = alert.message.valid(&schema, column);
-                if !is_valid {
-                    return Err(StreamError::InvalidAlertMessage(
-                        alert.name.to_owned(),
-                        column.to_string(),
-                    ));
-                }
-                if !alert.rule.valid_for_schema(&schema) {
-                    return Err(StreamError::InvalidAlert(alert.name.to_owned()));
-                }
+        for column in alert.message.extract_column_names() {
+            let is_valid = alert.message.valid(&schema, column);
+            if !is_valid {
+                return Err(StreamError::InvalidAlertMessage(
+                    alert.name.to_owned(),
+                    column.to_string(),
+                ));
+            }
+            if !alert.rule.valid_for_schema(&schema) {
+                return Err(StreamError::InvalidAlert(alert.name.to_owned()));
             }
         }
     }
