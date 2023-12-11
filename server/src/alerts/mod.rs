@@ -141,7 +141,6 @@ impl Message {
 
     pub fn extract_column_names(&self) -> Vec<&str> {
         // the message can have either no column name ({column_name} not present) or any number of {column_name} present
-        // return None if there is no column name present in the message
         Regex::new(r"\{(.*?)\}")
             .unwrap()
             .captures_iter(self.message.as_str())
@@ -149,7 +148,7 @@ impl Message {
             .collect()
     }
 
-    // returns the message with the column name(s) replaced with the value of the column
+    /// Returns the message with the column names replaced with the values in the column.
     fn get(&self, event: RecordBatch) -> String {
         let mut replace_message = self.message.clone();
         for column in self.extract_column_names() {
