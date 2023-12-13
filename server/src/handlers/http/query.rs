@@ -144,16 +144,16 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 
     Ok(HttpResponse::Ok()
         .content_type(ContentType::json())
-        .streaming(BlankYeildingStream::new(ticker, query_stream.boxed())))
+        .streaming(BlankYieldingStream::new(ticker, query_stream.boxed())))
 }
 
-struct BlankYeildingStream {
+struct BlankYieldingStream {
     resolved: bool,
     interval_stream: BoxStream<'static, Result<Bytes, QueryError>>,
     fut: BoxFuture<'static, Result<Bytes, QueryError>>,
 }
 
-impl BlankYeildingStream {
+impl BlankYieldingStream {
     fn new(
         interval: tokio::time::Interval,
         fut: BoxFuture<'static, Result<Bytes, QueryError>>,
@@ -168,7 +168,7 @@ impl BlankYeildingStream {
     }
 }
 
-impl Stream for BlankYeildingStream {
+impl Stream for BlankYieldingStream {
     type Item = Result<Bytes, QueryError>;
 
     fn poll_next(
