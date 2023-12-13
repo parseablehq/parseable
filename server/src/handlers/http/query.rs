@@ -43,6 +43,8 @@ use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::utils::actix::extract_session_key_from_req;
 
+const BLANK_BYTE_SEND_INTERVAL_SECS: u64 = 20;
+
 /// Query Request through http endpoint.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,7 +139,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     };
 
     // set ticker for yeilding blank line
-    let mut ticker = tokio::time::interval(Duration::from_secs(20));
+    let mut ticker = tokio::time::interval(Duration::from_secs(BLANK_BYTE_SEND_INTERVAL_SECS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // reset the ticker to avoid immediate tick
     ticker.reset();
