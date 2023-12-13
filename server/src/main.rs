@@ -40,7 +40,6 @@ mod oidc;
 mod option;
 mod query;
 mod rbac;
-mod response;
 mod stats;
 mod storage;
 mod utils;

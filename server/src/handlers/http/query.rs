@@ -18,22 +18,29 @@
 
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, Responder};
+use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
+use arrow_array::RecordBatch;
+use arrow_json::writer::record_batches_to_json_rows;
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
-use futures_util::Future;
+use futures_util::future::BoxFuture;
+use futures_util::stream::BoxStream;
+use futures_util::{Future, FutureExt, Stream, StreamExt};
 use http::StatusCode;
+use itertools::Itertools;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::query::error::ExecuteError;
 use crate::query::QUERY_SESSION;
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
-use crate::response::QueryResponse;
 use crate::utils::actix::extract_session_key_from_req;
 
 /// Query Request through http endpoint.
@@ -92,25 +99,94 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         }
     }
 
-    let time = Instant::now();
+    let query_stream = async move {
+        let time = Instant::now();
+        let (records, fields) = query.execute().await?;
+        if let Some(table) = table_name {
+            let time = time.elapsed().as_secs_f64();
+            QUERY_EXECUTE_TIME
+                .with_label_values(&[&table])
+                .observe(time);
+        }
 
-    let (records, fields) = query.execute().await?;
-    let response = QueryResponse {
-        records,
-        fields,
-        fill_null: query_request.send_null,
-        with_fields: query_request.fields,
+        let records: Vec<&RecordBatch> = records.iter().collect();
+        let mut json_records = record_batches_to_json_rows(&records).unwrap();
+        if query_request.send_null {
+            for map in &mut json_records {
+                for field in &fields {
+                    if !map.contains_key(field) {
+                        map.insert(field.clone(), Value::Null);
+                    }
+                }
+            }
+        }
+        let values = json_records.into_iter().map(Value::Object).collect_vec();
+        let response = if query_request.fields {
+            json!({
+                "fields": fields,
+                "records": values
+            })
+        } else {
+            Value::Array(values)
+        };
+
+        let bytes = serde_json::to_vec(&response)
+            .map(Bytes::from)
+            .expect("serializer can run for a valid json payload");
+        Result::<Bytes, QueryError>::Ok(bytes)
+    };
+
+    Ok(HttpResponse::Ok()
+        .content_type(ContentType::json())
+        .streaming(BlankYeildingStream::new(
+            tokio::time::interval(Duration::from_secs(20)),
+            query_stream.boxed(),
+        )))
+}
+
+struct BlankYeildingStream {
+    resolved: bool,
+    interval_stream: BoxStream<'static, Result<Bytes, QueryError>>,
+    fut: BoxFuture<'static, Result<Bytes, QueryError>>,
+}
+
+impl BlankYeildingStream {
+    fn new(
+        interval: tokio::time::Interval,
+        fut: BoxFuture<'static, Result<Bytes, QueryError>>,
+    ) -> Self {
+        Self {
+            resolved: false,
+            interval_stream: IntervalStream::new(interval)
+                .map(|_| Ok(Bytes::from_static(b"\n")))
+                .boxed(),
+            fut,
+        }
     }
-    .to_http();
+}
 
-    if let Some(table) = table_name {
-        let time = time.elapsed().as_secs_f64();
-        QUERY_EXECUTE_TIME
-            .with_label_values(&[&table])
-            .observe(time);
+impl Stream for BlankYeildingStream {
+    type Item = Result<Bytes, QueryError>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = Pin::get_mut(self);
+        if this.resolved {
+            // no more value to yeild as the inner future has yeilded already
+            return std::task::Poll::Ready(None);
+        }
+
+        // check if we can resolve this stream and no longer send empty bytes
+        match this.fut.poll_unpin(cx) {
+            std::task::Poll::Ready(x) => {
+                this.resolved = true;
+                std::task::Poll::Ready(Some(x))
+            }
+            std::task::Poll::Pending => this.interval_stream.poll_next_unpin(cx),
+        }
     }
-
-    Ok(response)
 }
 
 impl FromRequest for Query {
