@@ -136,12 +136,15 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         Result::<Bytes, QueryError>::Ok(bytes)
     };
 
+    // set ticker for yeilding blank line
+    let mut ticker = tokio::time::interval(Duration::from_secs(20));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // reset the ticker to avoid immediate tick
+    ticker.reset();
+
     Ok(HttpResponse::Ok()
         .content_type(ContentType::json())
-        .streaming(BlankYeildingStream::new(
-            tokio::time::interval(Duration::from_secs(20)),
-            query_stream.boxed(),
-        )))
+        .streaming(BlankYeildingStream::new(ticker, query_stream.boxed())))
 }
 
 struct BlankYeildingStream {
