@@ -236,57 +236,55 @@ fn partitioned_files(
         count += num_rows;
     }
 
-    let mut statistics = vec![];
+    let statistics = table_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let Some(stats) = column_statistics
+                .get(field.name())
+                .and_then(|stats| stats.as_ref())
+            else {
+                return datafusion::common::ColumnStatistics::default();
+            };
 
-    for field in table_schema.fields() {
-        let Some(stats) = column_statistics
-            .get(field.name())
-            .and_then(|stats| stats.as_ref())
-        else {
-            statistics.push(datafusion::common::ColumnStatistics::default());
-            break;
-        };
-
-        let datatype = field.data_type();
-
-        let (min, max) = match (stats, datatype) {
-            (TypedStatistics::Bool(stats), DataType::Boolean) => (
-                ScalarValue::Boolean(Some(stats.min)),
-                ScalarValue::Boolean(Some(stats.max)),
-            ),
-            (TypedStatistics::Int(stats), DataType::Int32) => (
-                ScalarValue::Int32(Some(stats.min as i32)),
-                ScalarValue::Int32(Some(stats.max as i32)),
-            ),
-            (TypedStatistics::Int(stats), DataType::Int64) => (
-                ScalarValue::Int64(Some(stats.min)),
-                ScalarValue::Int64(Some(stats.max)),
-            ),
-            (TypedStatistics::Float(stats), DataType::Float32) => (
-                ScalarValue::Float32(Some(stats.min as f32)),
-                ScalarValue::Float32(Some(stats.max as f32)),
-            ),
-            (TypedStatistics::Float(stats), DataType::Float64) => (
-                ScalarValue::Float64(Some(stats.min)),
-                ScalarValue::Float64(Some(stats.max)),
-            ),
-            (TypedStatistics::String(stats), DataType::Utf8) => (
-                ScalarValue::Utf8(Some(stats.min.clone())),
-                ScalarValue::Utf8(Some(stats.max.clone())),
-            ),
-            _ => {
-                statistics.push(datafusion::common::ColumnStatistics::default());
-                break;
+            let datatype = field.data_type();
+            let (min, max) = match (stats, datatype) {
+                (TypedStatistics::Bool(stats), DataType::Boolean) => (
+                    ScalarValue::Boolean(Some(stats.min)),
+                    ScalarValue::Boolean(Some(stats.max)),
+                ),
+                (TypedStatistics::Int(stats), DataType::Int32) => (
+                    ScalarValue::Int32(Some(stats.min as i32)),
+                    ScalarValue::Int32(Some(stats.max as i32)),
+                ),
+                (TypedStatistics::Int(stats), DataType::Int64) => (
+                    ScalarValue::Int64(Some(stats.min)),
+                    ScalarValue::Int64(Some(stats.max)),
+                ),
+                (TypedStatistics::Float(stats), DataType::Float32) => (
+                    ScalarValue::Float32(Some(stats.min as f32)),
+                    ScalarValue::Float32(Some(stats.max as f32)),
+                ),
+                (TypedStatistics::Float(stats), DataType::Float64) => (
+                    ScalarValue::Float64(Some(stats.min)),
+                    ScalarValue::Float64(Some(stats.max)),
+                ),
+                (TypedStatistics::String(stats), DataType::Utf8) => (
+                    ScalarValue::Utf8(Some(stats.min.clone())),
+                    ScalarValue::Utf8(Some(stats.max.clone())),
+                ),
+                _ => {
+                    return datafusion::common::ColumnStatistics::default();
+                }
+            };
+            datafusion::common::ColumnStatistics {
+                null_count: None,
+                max_value: Some(max),
+                min_value: Some(min),
+                distinct_count: None,
             }
-        };
-
-        statistics.push(datafusion::common::ColumnStatistics {
-            null_count: None,
-            max_value: Some(max),
-            min_value: Some(min),
-            distinct_count: None,
         })
-    }
+        .collect();
 
     let statistics = datafusion::common::Statistics {
         num_rows: Some(count as usize),
