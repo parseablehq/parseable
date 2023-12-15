@@ -97,6 +97,8 @@ pub fn create_from_parquet_file(
     };
 
     let file = std::fs::File::open(fs_file_path)?;
+    manifest_file.file_size = file.metadata()?.len();
+
     let file = parquet::file::serialized_reader::SerializedFileReader::new(file)?;
     let file_meta = file.metadata().file_metadata();
     let row_groups = file.metadata().row_groups();
@@ -105,9 +107,6 @@ pub fn create_from_parquet_file(
     manifest_file.ingestion_size = row_groups
         .iter()
         .fold(0, |acc, x| acc + x.total_byte_size() as u64);
-    manifest_file.file_size = row_groups
-        .iter()
-        .fold(0, |acc, x| acc + x.compressed_size() as u64);
 
     let columns = column_statistics(row_groups);
     manifest_file.columns = columns.into_values().collect();
