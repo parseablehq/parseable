@@ -9,6 +9,7 @@ use bytes::Bytes;
 use futures_util::{stream::BoxStream, Stream, StreamExt};
 use object_store::{
     path::Path, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
+    PutOptions, PutResult,
 };
 use tokio::io::AsyncWrite;
 
@@ -33,14 +34,29 @@ impl<T: ObjectStore> std::fmt::Display for MetricLayer<T> {
 
 #[async_trait]
 impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
-    async fn put(&self, location: &Path, bytes: Bytes) -> object_store::Result<()> {
+    async fn put(&self, location: &Path, bytes: Bytes) -> object_store::Result<PutResult> {
         let time = time::Instant::now();
-        self.inner.put(location, bytes).await?;
+        let res = self.inner.put(location, bytes).await?;
         let elapsed = time.elapsed().as_secs_f64();
         QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["PUT", "200"])
             .observe(elapsed);
-        return Ok(());
+        return Ok(res);
+    }
+
+    async fn put_opts(
+        &self,
+        location: &Path,
+        bytes: Bytes,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        let time = time::Instant::now();
+        let res = self.inner.put_opts(location, bytes, opts).await?;
+        let elapsed = time.elapsed().as_secs_f64();
+        QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["PUT", "200"])
+            .observe(elapsed);
+        return Ok(res);
     }
 
     // todo completly tracking multipart upload
@@ -70,20 +86,6 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
             .with_label_values(&["PUT_MULTIPART_ABORT", "200"])
             .observe(elapsed);
         Ok(())
-    }
-
-    async fn append(
-        &self,
-        location: &Path,
-    ) -> object_store::Result<Box<dyn AsyncWrite + Unpin + Send>> {
-        let time = time::Instant::now();
-        let write = self.inner.append(location).await?;
-        let elapsed = time.elapsed().as_secs_f64();
-        QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&["APPEND", "200"])
-            .observe(elapsed);
-
-        Ok(write)
     }
 
     async fn get(&self, location: &Path) -> object_store::Result<GetResult> {
@@ -161,33 +163,30 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         self.inner.delete_stream(locations)
     }
 
-    async fn list(
-        &self,
-        prefix: Option<&Path>,
-    ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
         let time = time::Instant::now();
-        let inner = self.inner.list(prefix).await?;
+        let inner = self.inner.list(prefix);
         let res = StreamMetricWrapper {
             time,
             labels: ["LIST", "200"],
             inner,
         };
-        Ok(Box::pin(res))
+        Box::pin(res)
     }
 
-    async fn list_with_offset(
+    fn list_with_offset(
         &self,
         prefix: Option<&Path>,
         offset: &Path,
-    ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
+    ) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
         let time = time::Instant::now();
-        let inner = self.inner.list_with_offset(prefix, offset).await?;
+        let inner = self.inner.list_with_offset(prefix, offset);
         let res = StreamMetricWrapper {
             time,
             labels: ["LIST_OFFSET", "200"],
             inner,
         };
-        Ok(Box::pin(res))
+        Box::pin(res)
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {

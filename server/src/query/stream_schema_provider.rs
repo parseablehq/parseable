@@ -24,6 +24,7 @@ use chrono::{NaiveDateTime, Timelike, Utc};
 use datafusion::{
     catalog::schema::SchemaProvider,
     common::{
+        stats::Precision,
         tree_node::{TreeNode, VisitRecursion},
         ToDFSchema,
     },
@@ -35,8 +36,9 @@ use datafusion::{
     },
     error::DataFusionError,
     execution::{context::SessionState, object_store::ObjectStoreUrl},
-    logical_expr::{BinaryExpr, Operator, TableProviderFilterPushDown, TableType},
-    optimizer::utils::conjunction,
+    logical_expr::{
+        utils::conjunction, BinaryExpr, Operator, TableProviderFilterPushDown, TableType,
+    },
     physical_expr::{create_physical_expr, PhysicalSortExpr},
     physical_plan::{self, ExecutionPlan},
     prelude::{Column, Expr},
@@ -245,20 +247,19 @@ fn partitioned_files(
                 .and_then(|stats| stats.as_ref())
                 .and_then(|stats| stats.clone().min_max_as_scalar(field.data_type()))
                 .map(|(min, max)| datafusion::common::ColumnStatistics {
-                    null_count: None,
-                    max_value: Some(max),
-                    min_value: Some(min),
-                    distinct_count: None,
+                    null_count: Precision::Absent,
+                    max_value: Precision::Exact(max),
+                    min_value: Precision::Exact(min),
+                    distinct_count: Precision::Absent,
                 })
                 .unwrap_or_default()
         })
         .collect();
 
     let statistics = datafusion::common::Statistics {
-        num_rows: Some(count as usize),
-        total_byte_size: None,
-        column_statistics: Some(statistics),
-        is_exact: true,
+        num_rows: Precision::Exact(count as usize),
+        total_byte_size: Precision::Absent,
+        column_statistics: statistics,
     };
 
     (partitioned_files, statistics)

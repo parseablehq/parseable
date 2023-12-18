@@ -130,7 +130,6 @@ impl ListingTableBuilder {
             tasks.push(Box::pin(async move {
                 let mut list = client
                     .list(Some(&object_store::path::Path::from(listing_prefix)))
-                    .await?
                     .try_collect::<Vec<_>>()
                     .await?;
 
@@ -151,7 +150,6 @@ impl ListingTableBuilder {
             tasks.push(Box::pin(async move {
                 client
                     .list(Some(&object_store::path::Path::from(prefix)))
-                    .await?
                     .try_collect::<Vec<_>>()
                     .await
                     .map_err(Into::into)

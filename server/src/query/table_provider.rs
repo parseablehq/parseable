@@ -92,7 +92,7 @@ impl QueryTableProvider {
                 Some(projection) => Arc::new(self.schema.project(projection)?),
                 None => self.schema.clone(),
             };
-            Arc::new(EmptyExec::new(false, schema))
+            Arc::new(EmptyExec::new(schema))
         } else if exec.len() == 1 {
             exec.pop().unwrap()
         } else {

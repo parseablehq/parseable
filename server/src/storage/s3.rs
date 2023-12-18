@@ -260,7 +260,7 @@ impl S3 {
     }
 
     async fn _delete_prefix(&self, key: &str) -> Result<(), ObjectStorageError> {
-        let object_stream = self.client.list(Some(&(key.into()))).await?;
+        let object_stream = self.client.list(Some(&(key.into())));
 
         object_stream
             .for_each_concurrent(None, |x| async {
@@ -335,6 +335,7 @@ impl S3 {
             self.client
                 .put(&key.into(), bytes.into())
                 .await
+                .map(|_| ())
                 .map_err(|err| err.into())
         };
 
