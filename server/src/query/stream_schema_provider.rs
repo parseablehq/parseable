@@ -48,7 +48,10 @@ use object_store::{path::Path, ObjectStore};
 use url::Url;
 
 use crate::{
-    catalog::{self, column::TypedStatistics, manifest::Manifest, ManifestFile, Snapshot},
+    catalog::{
+        self, column::TypedStatistics, manifest::Manifest, snapshot::ManifestItem, ManifestFile,
+        Snapshot,
+    },
     event::{self, DEFAULT_TIMESTAMP_KEY},
     metadata::STREAM_INFO,
     option::CONFIG,
@@ -310,7 +313,7 @@ impl TableProvider for StandardTableProvider {
             .await
             .map_err(|err| DataFusionError::Plan(err.to_string()))?;
 
-        let remote_table = if is_overlapping_query(&snapshot, &time_filters) {
+        let remote_table = if is_overlapping_query(&snapshot.manifest_list, &time_filters) {
             // Is query timerange is overlapping with older data.
             if let Some(table) = ListingTableBuilder::new(self.stream.clone())
                 .populate_via_listing(glob_storage.clone(), storage, &time_filters)
@@ -421,25 +424,20 @@ impl PartialTimeFilter {
 }
 
 fn is_overlapping_query(
-    snapshot: &catalog::snapshot::Snapshot,
+    manifest_list: &[ManifestItem],
     time_filters: &[PartialTimeFilter],
 ) -> bool {
     // This is for backwards compatiblity. Older table format relies on listing.
-    // if time is lower than 2nd smallest time bound then we fall back to old listing table code for now.
-    let Some(second_lowest) = snapshot
-        .manifest_list
-        .iter()
-        .map(|file| file.time_lower_bound)
-        .k_smallest(2)
-        .nth(1)
+    // if the time is lower than upper bound of first file then we consider it overlapping
+    let Some(first_entry_upper_bound) =
+        manifest_list.iter().map(|file| file.time_upper_bound).min()
     else {
         return true;
     };
 
-    // Query is overlapping when no lower bound exists such that it is greater than second lowest time in snapshot
     !time_filters
         .iter()
-        .all(|filter| filter.is_greater_than(&second_lowest.naive_utc()))
+        .all(|filter| filter.is_greater_than(&first_entry_upper_bound.naive_utc()))
 }
 
 fn include_now(filters: &[Expr]) -> bool {
@@ -653,5 +651,89 @@ fn satisfy_constraints(value: CastRes, op: Operator, stats: &TypedStatistics) ->
             matches(val, &stats.min, &stats.max, op)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Add;
+
+    use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
+
+    use crate::catalog::snapshot::ManifestItem;
+
+    use super::{is_overlapping_query, PartialTimeFilter};
+
+    fn datetime_min(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+        NaiveDate::from_ymd_opt(year, month, day)
+            .unwrap()
+            .and_time(NaiveTime::MIN)
+            .and_utc()
+    }
+
+    fn datetime_max(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+        NaiveDate::from_ymd_opt(year, month, day)
+            .unwrap()
+            .and_hms_milli_opt(23, 59, 59, 99)
+            .unwrap()
+            .and_utc()
+    }
+
+    fn manifest_items() -> Vec<ManifestItem> {
+        vec![
+            ManifestItem {
+                manifest_path: "1".to_string(),
+                time_lower_bound: datetime_min(2023, 12, 15),
+                time_upper_bound: datetime_max(2023, 12, 15),
+            },
+            ManifestItem {
+                manifest_path: "2".to_string(),
+                time_lower_bound: datetime_min(2023, 12, 16),
+                time_upper_bound: datetime_max(2023, 12, 16),
+            },
+            ManifestItem {
+                manifest_path: "3".to_string(),
+                time_lower_bound: datetime_min(2023, 12, 17),
+                time_upper_bound: datetime_max(2023, 12, 17),
+            },
+        ]
+    }
+
+    #[test]
+    fn bound_min_is_overlapping() {
+        let res = is_overlapping_query(
+            &manifest_items(),
+            &[PartialTimeFilter::Low(std::ops::Bound::Included(
+                datetime_min(2023, 12, 15).naive_utc(),
+            ))],
+        );
+
+        assert!(res)
+    }
+
+    #[test]
+    fn bound_min_plus_hour_is_overlapping() {
+        let res = is_overlapping_query(
+            &manifest_items(),
+            &[PartialTimeFilter::Low(std::ops::Bound::Included(
+                datetime_min(2023, 12, 15)
+                    .naive_utc()
+                    .add(Duration::hours(3)),
+            ))],
+        );
+
+        assert!(res)
+    }
+
+    #[test]
+    fn bound_next_day_min_is_not_overlapping() {
+        let res = is_overlapping_query(
+            &manifest_items(),
+            &[PartialTimeFilter::Low(std::ops::Bound::Included(
+                datetime_min(2023, 12, 16).naive_utc(),
+            ))],
+        );
+
+        assert!(!res)
     }
 }
