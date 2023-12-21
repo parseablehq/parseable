@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "0.7.1"
+version = "0.7.2"
 authors = ["Parseable Team <hi@parseable.io>"]
 edition = "2021"
 rust-version = "1.73"

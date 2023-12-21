@@ -18,6 +18,8 @@
 
 use std::cmp::{max, min};
 
+use arrow_schema::DataType;
+use datafusion::scalar::ScalarValue;
 use parquet::file::statistics::Statistics;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -84,6 +86,40 @@ impl TypedStatistics {
             }
             _ => panic!("Cannot update wrong types"),
         }
+    }
+
+    pub fn min_max_as_scalar(self, datatype: &DataType) -> Option<(ScalarValue, ScalarValue)> {
+        let (min, max) = match (self, datatype) {
+            (TypedStatistics::Bool(stats), DataType::Boolean) => (
+                ScalarValue::Boolean(Some(stats.min)),
+                ScalarValue::Boolean(Some(stats.max)),
+            ),
+            (TypedStatistics::Int(stats), DataType::Int32) => (
+                ScalarValue::Int32(Some(stats.min as i32)),
+                ScalarValue::Int32(Some(stats.max as i32)),
+            ),
+            (TypedStatistics::Int(stats), DataType::Int64) => (
+                ScalarValue::Int64(Some(stats.min)),
+                ScalarValue::Int64(Some(stats.max)),
+            ),
+            (TypedStatistics::Float(stats), DataType::Float32) => (
+                ScalarValue::Float32(Some(stats.min as f32)),
+                ScalarValue::Float32(Some(stats.max as f32)),
+            ),
+            (TypedStatistics::Float(stats), DataType::Float64) => (
+                ScalarValue::Float64(Some(stats.min)),
+                ScalarValue::Float64(Some(stats.max)),
+            ),
+            (TypedStatistics::String(stats), DataType::Utf8) => (
+                ScalarValue::Utf8(Some(stats.min)),
+                ScalarValue::Utf8(Some(stats.max)),
+            ),
+            _ => {
+                return None;
+            }
+        };
+
+        Some((min, max))
     }
 }
 
