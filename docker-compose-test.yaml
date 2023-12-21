@@ -43,6 +43,7 @@ services:
       - P_USERNAME=parseableadmin
       - P_PASSWORD=parseableadmin
       - P_CHECK_UPDATE=false
+      - P_PARQUET_COMPRESSION_ALGO=snappy
     networks:
       - parseable-internal
     healthcheck:
@@ -60,7 +61,7 @@ services:
 
   quest:
     image: ghcr.io/parseablehq/quest:main
-    command: ["load", "http://parseable:8000", "parseableadmin", "parseableadmin", "20"]
+    command: ["load", "http://parseable:8000", "parseableadmin", "parseableadmin", "20", "10", "5m", "minio:9000", "parseable", "supersecret", "parseable"]
     networks:
       - parseable-internal
     depends_on:
