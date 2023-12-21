@@ -61,7 +61,7 @@ services:
 
   quest:
     image: ghcr.io/parseablehq/quest:main
-    command: ["load", "http://parseable:8000", "parseableadmin", "parseableadmin", "20", "10", "5m", "http://minio:9000", "parseable", "supersecret", "parseable"]
+    command: ["load", "http://parseable:8000", "parseableadmin", "parseableadmin", "20", "10", "5m", "minio:9000", "parseable", "supersecret", "parseable"]
     networks:
       - parseable-internal
     depends_on:
