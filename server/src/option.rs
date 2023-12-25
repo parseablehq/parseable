@@ -29,6 +29,8 @@ use crate::oidc::{self, OpenidConfig};
 use crate::storage::{FSConfig, ObjectStorageProvider, S3Config, LOCAL_SYNC_INTERVAL};
 use crate::utils::validate_path_is_writeable;
 
+pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
+
 pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
 
 #[derive(Debug)]
@@ -606,6 +608,8 @@ pub mod validation {
 
     use human_size::SpecificSize;
 
+    use crate::option::MIN_CACHE_SIZE_BYTES;
+
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
             return Err("empty path".to_owned());
@@ -650,12 +654,20 @@ pub mod validation {
             SpecificSize::<T>::from_str(s).map(|x| x.to_bytes())
         }
 
-        parse_and_map::<multiples::Mebibyte>(s)
+        let size = parse_and_map::<multiples::Mebibyte>(s)
             .or(parse_and_map::<multiples::Megabyte>(s))
             .or(parse_and_map::<multiples::Gigibyte>(s))
             .or(parse_and_map::<multiples::Gigabyte>(s))
             .or(parse_and_map::<multiples::Tebibyte>(s))
             .or(parse_and_map::<multiples::Terabyte>(s))
-            .map_err(|_| "Could not parse given size".to_string())
+            .map_err(|_| "Could not parse given size".to_string())?;
+
+        if size < MIN_CACHE_SIZE_BYTES {
+            return Err(
+                "Specified value of cache size is smaller than current minimum of 1GiB".to_string(),
+            );
+        }
+
+        Ok(size)
     }
 }
