@@ -16,13 +16,13 @@
  *
  */
 
-use std::{io, path::PathBuf, sync::Arc};
+use std::{io, path::PathBuf};
 
 use fs_extra::file::CopyOptions;
 use futures_util::TryFutureExt;
 use hashlru::Cache;
 use itertools::{Either, Itertools};
-use object_store::ObjectStore;
+use object_store::{local::LocalFileSystem, ObjectStore};
 use once_cell::sync::OnceCell;
 use tokio::{fs, sync::Mutex};
 
@@ -49,7 +49,7 @@ impl LocalCache {
 }
 
 pub struct LocalCacheManager {
-    object_store: Arc<dyn ObjectStore>,
+    filesystem: LocalFileSystem,
     cache_path: PathBuf,
     cache_capacity: u64,
     copy_options: CopyOptions,
@@ -67,9 +67,8 @@ impl LocalCacheManager {
         Some(INSTANCE.get_or_init(|| {
             let cache_path = cache_path.clone();
             std::fs::create_dir_all(&cache_path).unwrap();
-            let object_store = Arc::new(object_store::local::LocalFileSystem::new());
             LocalCacheManager {
-                object_store,
+                filesystem: LocalFileSystem::new(),
                 cache_path,
                 cache_capacity: CONFIG.parseable.local_cache_size,
                 copy_options: CopyOptions {
@@ -85,7 +84,7 @@ impl LocalCacheManager {
     pub async fn get_cache(&self, stream: &str) -> Result<LocalCache, CacheError> {
         let path = cache_file_path(&self.cache_path, stream).unwrap();
         let res = self
-            .object_store
+            .filesystem
             .get(&path)
             .and_then(|resp| resp.bytes())
             .await;
@@ -100,7 +99,7 @@ impl LocalCacheManager {
     pub async fn put_cache(&self, stream: &str, cache: &LocalCache) -> Result<(), CacheError> {
         let path = cache_file_path(&self.cache_path, stream).unwrap();
         let bytes = serde_json::to_vec(cache)?.into();
-        Ok(self.object_store.put(&path, bytes).await?)
+        Ok(self.filesystem.put(&path, bytes).await?)
     }
 
     pub async fn move_to_cache(
