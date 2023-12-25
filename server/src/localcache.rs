@@ -35,6 +35,7 @@ pub struct LocalCache {
     version: String,
     current_size: u64,
     capacity: u64,
+    /// Mapping between storage path and cache path.
     files: Cache<String, PathBuf>,
 }
 

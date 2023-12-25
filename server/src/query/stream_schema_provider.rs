@@ -343,12 +343,15 @@ impl TableProvider for StandardTableProvider {
             return final_plan(vec![memory_exec], projection, self.schema.clone());
         }
 
+        // Based on entries in the manifest files, find them in the cache and create a physical plan.
         if let Some(cache_manager) = LocalCacheManager::global() {
             let (cached, remainder) = cache_manager
                 .partition_on_cached(&self.stream, manifest_files, |file| &file.file_path)
                 .await
                 .map_err(|err| DataFusionError::External(Box::new(err)))?;
 
+            // Assign remaining entries back to manifest list
+            // This is to be used for remote query
             manifest_files = remainder;
 
             let cached = cached
