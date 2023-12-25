@@ -34,23 +34,17 @@ pub const STREAM_CACHE_FILENAME: &str = ".cache.json";
 pub struct LocalCache {
     version: String,
     current_size: u64,
-    capacity: u64,
     /// Mapping between storage path and cache path.
     files: Cache<String, PathBuf>,
 }
 
 impl LocalCache {
-    fn new_with_size(capacity: u64) -> Self {
+    fn new() -> Self {
         Self {
             version: "v1".to_string(),
             current_size: 0,
-            capacity,
             files: Cache::new(100),
         }
-    }
-
-    fn can_push(&self, size: u64) -> bool {
-        self.capacity >= self.current_size + size
     }
 }
 
@@ -97,9 +91,7 @@ impl LocalCacheManager {
             .await;
         let cache = match res {
             Ok(bytes) => serde_json::from_slice(&bytes)?,
-            Err(object_store::Error::NotFound { .. }) => {
-                LocalCache::new_with_size(self.cache_capacity)
-            }
+            Err(object_store::Error::NotFound { .. }) => LocalCache::new(),
             Err(err) => return Err(err.into()),
         };
         Ok(cache)
@@ -125,7 +117,7 @@ impl LocalCacheManager {
         let file_size = std::fs::metadata(&cache_path)?.len();
         let mut cache = self.get_cache(stream).await?;
 
-        while !cache.can_push(file_size) {
+        while cache.current_size + file_size > self.cache_capacity {
             if let Some((_, file_for_removal)) = cache.files.pop_lru() {
                 let lru_file_size = std::fs::metadata(&file_for_removal)?.len();
                 cache.current_size = cache.current_size.saturating_sub(lru_file_size);
