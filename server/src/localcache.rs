@@ -72,7 +72,7 @@ impl LocalCacheManager {
         Some(INSTANCE.get_or_init(|| {
             let cache_path = cache_path.clone();
             std::fs::create_dir_all(&cache_path).unwrap();
-            let object_store = CONFIG.storage().get_store();
+            let object_store = Arc::new(object_store::local::LocalFileSystem::new());
             LocalCacheManager {
                 object_store,
                 cache_path,

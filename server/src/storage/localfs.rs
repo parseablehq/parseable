@@ -64,10 +64,6 @@ impl ObjectStorageProvider for FSConfig {
         Arc::new(LocalFS::new(self.root.clone()))
     }
 
-    fn get_store(&self) -> Arc<dyn object_store::ObjectStore> {
-        Arc::new(object_store::local::LocalFileSystem::new())
-    }
-
     fn get_endpoint(&self) -> String {
         self.root.to_str().unwrap().to_string()
     }

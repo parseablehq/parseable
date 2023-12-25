@@ -36,7 +36,6 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
-use object_store::ObjectStore;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
@@ -59,7 +58,6 @@ const MANIFEST_FILE: &str = "manifest.json";
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
     fn get_datafusion_runtime(&self) -> RuntimeConfig;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send>;
-    fn get_store(&self) -> Arc<dyn ObjectStore>;
     fn get_endpoint(&self) -> String;
     fn register_store_metrics(&self, handler: &PrometheusMetrics);
 }
