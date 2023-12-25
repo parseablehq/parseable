@@ -18,6 +18,7 @@
  */
 
 use crossterm::style::Stylize;
+use human_size::SpecificSize;
 
 use crate::about;
 use crate::utils::uid::Uid;
@@ -100,5 +101,20 @@ async fn storage_info(config: &Config) {
         config.staging_dir().to_string_lossy(),
         storage.get_endpoint(),
         latency
-    )
+    );
+
+    if let Some(path) = &config.parseable.local_cache_path {
+        let size: SpecificSize<human_size::Gigabyte> =
+            SpecificSize::new(config.parseable.local_cache_size as f64, human_size::Byte)
+                .unwrap()
+                .into();
+
+        eprintln!(
+            "
+        Cache:              \"{}\"
+        Cache Size:         \"{}\"",
+            path.display(),
+            size
+        );
+    }
 }
