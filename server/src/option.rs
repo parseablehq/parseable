@@ -654,6 +654,8 @@ pub mod validation {
             .or(parse_and_map::<multiples::Megabyte>(s))
             .or(parse_and_map::<multiples::Gigibyte>(s))
             .or(parse_and_map::<multiples::Gigabyte>(s))
+            .or(parse_and_map::<multiples::Tebibyte>(s))
+            .or(parse_and_map::<multiples::Terabyte>(s))
             .map_err(|_| "Could not parse given size".to_string())
     }
 }
