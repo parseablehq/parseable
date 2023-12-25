@@ -56,6 +56,7 @@ use crate::{
     event::{self, DEFAULT_TIMESTAMP_KEY},
     localcache::LocalCacheManager,
     metadata::STREAM_INFO,
+    metrics::QUERY_CACHE_HIT,
     option::CONFIG,
     storage::ObjectStorage,
 };
@@ -377,6 +378,7 @@ impl TableProvider for StandardTableProvider {
         }
 
         if manifest_files.is_empty() {
+            QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
             return final_plan(
                 vec![memory_exec, cache_exec],
                 projection,
