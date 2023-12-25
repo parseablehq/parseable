@@ -33,6 +33,7 @@ mod catalog;
 mod event;
 mod handlers;
 mod livetail;
+mod localcache;
 mod metadata;
 mod metrics;
 mod migration;

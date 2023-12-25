@@ -25,7 +25,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
-use fs_extra::file::{move_file, CopyOptions};
+use fs_extra::file::CopyOptions;
 use futures::{stream::FuturesUnordered, TryStreamExt};
 use relative_path::RelativePath;
 use tokio::fs::{self, DirEntry};
@@ -62,6 +62,10 @@ impl ObjectStorageProvider for FSConfig {
 
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
         Arc::new(LocalFS::new(self.root.clone()))
+    }
+
+    fn get_store(&self) -> Arc<dyn object_store::ObjectStore> {
+        Arc::new(object_store::local::LocalFileSystem::new())
     }
 
     fn get_endpoint(&self) -> String {
@@ -189,8 +193,7 @@ impl ObjectStorage for LocalFS {
         if let Some(path) = to_path.parent() {
             fs::create_dir_all(path).await?
         }
-        let _ = move_file(path, to_path, &op)?;
-
+        let _ = fs_extra::file::copy(path, to_path, &op)?;
         Ok(())
     }
 

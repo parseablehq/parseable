@@ -174,6 +174,12 @@ pub struct Server {
     /// for incoming events and local cache
     pub local_staging_path: PathBuf,
 
+    /// The local cache path is used for speeding up query on latest data
+    pub local_cache_path: Option<PathBuf>,
+
+    /// Size for local cache
+    pub local_cache_size: u64,
+
     /// Interval in seconds after which uncommited data would be
     /// uploaded to the storage platform.
     pub upload_interval: u64,
@@ -220,6 +226,7 @@ impl FromArgMatches for Server {
     }
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
+        self.local_cache_path = m.get_one::<PathBuf>(Self::CACHE).cloned();
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
@@ -235,6 +242,10 @@ impl FromArgMatches for Server {
             .get_one::<PathBuf>(Self::STAGING)
             .cloned()
             .expect("default value for staging");
+        self.local_cache_size = m
+            .get_one::<u64>(Self::CACHE_SIZE)
+            .cloned()
+            .expect("default value for cache size");
         self.upload_interval = m
             .get_one::<u64>(Self::UPLOAD_INTERVAL)
             .cloned()
@@ -319,6 +330,8 @@ impl Server {
     pub const ADDRESS: &'static str = "address";
     pub const DOMAIN_URI: &'static str = "origin";
     pub const STAGING: &'static str = "local-staging-path";
+    pub const CACHE: &'static str = "cache-path";
+    pub const CACHE_SIZE: &'static str = "cache-size";
     pub const UPLOAD_INTERVAL: &'static str = "upload-interval";
     pub const USERNAME: &'static str = "username";
     pub const PASSWORD: &'static str = "password";
@@ -383,6 +396,25 @@ impl Server {
                     .default_value("./staging")
                     .value_parser(validation::canonicalize_path)
                     .help("The local staging path is used as a temporary landing point for incoming events and local cache")
+                    .next_line_help(true),
+            )
+             .arg(
+                Arg::new(Self::CACHE)
+                    .long(Self::CACHE)
+                    .env("P_CACHE_DIR")
+                    .value_name("DIR")
+                    .value_parser(validation::canonicalize_path)
+                    .help("Local path to be used for caching latest files")
+                    .next_line_help(true),
+            )
+             .arg(
+                Arg::new(Self::CACHE_SIZE)
+                    .long(Self::CACHE_SIZE)
+                    .env("P_CACHE_SIZE")
+                    .value_name("size")
+                    .default_value("1Gib")
+                    .value_parser(validation::human_size_to_bytes)
+                    .help("Size for cache in human readable format (e.g 1GiB, 2GiB, 100MB)")
                     .next_line_help(true),
             )
             .arg(
@@ -569,7 +601,10 @@ pub mod validation {
         fs::{canonicalize, create_dir_all},
         net::ToSocketAddrs,
         path::PathBuf,
+        str::FromStr,
     };
+
+    use human_size::SpecificSize;
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
@@ -605,5 +640,20 @@ pub mod validation {
 
     pub fn url(s: &str) -> Result<url::Url, String> {
         url::Url::parse(s).map_err(|_| "Invalid URL provided".to_string())
+    }
+
+    pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
+        use human_size::multiples;
+        fn parse_and_map<T: human_size::Multiple>(
+            s: &str,
+        ) -> Result<u64, human_size::ParsingError> {
+            SpecificSize::<T>::from_str(s).map(|x| x.to_bytes())
+        }
+
+        parse_and_map::<multiples::Mebibyte>(s)
+            .or(parse_and_map::<multiples::Megabyte>(s))
+            .or(parse_and_map::<multiples::Gigibyte>(s))
+            .or(parse_and_map::<multiples::Gigabyte>(s))
+            .map_err(|_| "Could not parse given size".to_string())
     }
 }

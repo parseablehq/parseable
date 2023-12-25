@@ -24,6 +24,7 @@ use super::{
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
+    localcache::LocalCacheManager,
     metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
     option::CONFIG,
@@ -35,6 +36,7 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
+use object_store::ObjectStore;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
@@ -57,6 +59,7 @@ const MANIFEST_FILE: &str = "manifest.json";
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
     fn get_datafusion_runtime(&self) -> RuntimeConfig;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send>;
+    fn get_store(&self) -> Arc<dyn ObjectStore>;
     fn get_endpoint(&self) -> String;
     fn register_store_metrics(&self, handler: &PrometheusMetrics);
 }
@@ -334,20 +337,23 @@ pub trait ObjectStorage: Sync + 'static {
                     .to_str()
                     .expect("filename is valid string");
                 let file_suffix = str::replacen(filename, ".", "/", 3);
-                let objectstore_path = format!("{stream}/{file_suffix}");
-                let manifest = catalog::create_from_parquet_file(
-                    self.absolute_url(RelativePath::from_path(&objectstore_path).unwrap())
-                        .to_string(),
-                    file,
-                )
-                .unwrap();
-                self.upload_file(&objectstore_path, file).await?;
+                let stream_relative_path = format!("{stream}/{file_suffix}");
+                self.upload_file(&stream_relative_path, file).await?;
+                let absolute_path = self
+                    .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
+                    .to_string();
                 let store = CONFIG.storage().get_object_store();
+                let manifest =
+                    catalog::create_from_parquet_file(absolute_path.clone(), file).unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
-            }
-
-            for file in parquet_files {
-                let _ = fs::remove_file(file);
+                if let Some(manager) = LocalCacheManager::global() {
+                    manager
+                        .move_to_cache(stream, absolute_path, file.to_owned())
+                        .await
+                        .unwrap()
+                } else {
+                    let _ = fs::remove_file(file);
+                }
             }
         }
 

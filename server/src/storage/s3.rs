@@ -200,6 +200,12 @@ impl ObjectStorageProvider for S3Config {
         })
     }
 
+    fn get_store(&self) -> Arc<dyn ObjectStore> {
+        let s3 = self.get_default_builder().build().unwrap();
+        // limit objectstore to a concurrent request limit
+        Arc::new(LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS))
+    }
+
     fn get_endpoint(&self) -> String {
         format!("{}/{}", self.endpoint_url, self.bucket_name)
     }

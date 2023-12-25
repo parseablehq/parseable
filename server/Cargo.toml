@@ -96,10 +96,12 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 xz2 = { version = "*", features = ["static"] }
 nom = "7.1.3"
 humantime = "2.1.0"
+human-size = "0.4"
 openid = { version = "0.12.0", default-features = false, features = ["rustls"] }
 url = "2.4.0"
 http-auth-basic = "0.3.3"
 serde_repr = "0.1.17"
+hashlru = { version = "0.11.0", features = ["serde"] }
 
 [build-dependencies]
 cargo_toml = "0.15"
