@@ -110,9 +110,10 @@ async fn storage_info(config: &Config) {
                 .into();
 
         eprintln!(
-            "
-        Cache:              \"{}\"
+            "\
+    {:8}Cache:              \"{}\"
         Cache Size:         \"{}\"",
+            "",
             path.display(),
             size
         );
