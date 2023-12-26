@@ -48,6 +48,12 @@ impl LocalCache {
     }
 }
 
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct CacheMeta {
+    version: String,
+    size_capacity: u64,
+}
+
 pub struct LocalCacheManager {
     filesystem: LocalFileSystem,
     cache_path: PathBuf,
@@ -60,9 +66,7 @@ impl LocalCacheManager {
     pub fn global() -> Option<&'static LocalCacheManager> {
         static INSTANCE: OnceCell<LocalCacheManager> = OnceCell::new();
 
-        let Some(cache_path) = &CONFIG.parseable.local_cache_path else {
-            return None;
-        };
+        let cache_path = CONFIG.parseable.local_cache_path.as_ref()?;
 
         Some(INSTANCE.get_or_init(|| {
             let cache_path = cache_path.clone();
@@ -164,7 +168,7 @@ fn cache_file_path(
     stream: &str,
 ) -> Result<object_store::path::Path, object_store::path::Error> {
     let mut path = root.as_ref().join(stream);
-    path.set_file_name(STREAM_CACHE_FILENAME);
+    path.push(STREAM_CACHE_FILENAME);
     object_store::path::Path::from_absolute_path(path)
 }
 
