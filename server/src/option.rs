@@ -64,6 +64,15 @@ impl Config {
                         .exit()
                 }
 
+                if server.local_cache_path.is_some() {
+                    parseable_cli_command()
+                        .error(
+                            ErrorKind::ValueValidation,
+                            "Cannot use cache with local-store subcommand.",
+                        )
+                        .exit()
+                }
+
                 Config {
                     parseable: server,
                     storage: Arc::new(storage),
