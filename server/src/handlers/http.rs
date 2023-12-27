@@ -207,13 +207,13 @@ pub fn configure_routes(
                 .route(
                     web::put()
                         .to(logstream::put_enable_cache)
-                        .authorize_for_stream(Action::GetSchema),
+                        .authorize_for_stream(Action::PutCacheEnabled),
                 )
                 // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
                 .route(
                     web::get()
                         .to(logstream::get_cache_enabled)
-                        .authorize_for_stream(Action::GetSchema),
+                        .authorize_for_stream(Action::GetCacheEnabled),
                 ),
         );
 
