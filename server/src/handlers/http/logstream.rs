@@ -227,6 +227,33 @@ pub async fn put_retention(
     ))
 }
 
+pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let cache_enabled = STREAM_INFO.cache_enabled(&stream_name)?;
+    Ok((web::Json(cache_enabled), StatusCode::OK))
+}
+
+pub async fn put_enable_cache(
+    req: HttpRequest,
+    body: web::Json<bool>,
+) -> Result<impl Responder, StreamError> {
+    let enable_cache = body.into_inner();
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let storage = CONFIG.storage().get_object_store();
+
+    let mut stream_metadata = storage.get_stream_metadata(&stream_name).await?;
+    stream_metadata.cache_enabled = enable_cache;
+    storage
+        .put_stream_manifest(&stream_name, &stream_metadata)
+        .await?;
+
+    STREAM_INFO.set_stream_cache(&stream_name, enable_cache)?;
+    Ok((
+        format!("Cache setting updated for log stream {stream_name}"),
+        StatusCode::OK,
+    ))
+}
+
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 

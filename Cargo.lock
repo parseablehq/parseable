@@ -1794,12 +1794,31 @@ checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
 
 [[package]]
 name = "hashbrown"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43a3c133739dddd0d2990f9a4bdf8eb4b21ef50e4851ca85ab661199821d510e"
+dependencies = [
+ "ahash 0.8.3",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c6201b9ff9fd90a5a3bac2e56a830d0caa509576f0e503818ee82c181b3437a"
 dependencies = [
  "ahash 0.8.3",
  "allocator-api2",
+]
+
+[[package]]
+name = "hashlru"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec243be29f0218c651d6dc31eafb562c4363b2e96cd42a92b6948964d28f4c5a"
+dependencies = [
+ "hashbrown 0.13.2",
+ "serde",
 ]
 
 [[package]]
@@ -1888,6 +1907,12 @@ name = "httpdate"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4a1e36c821dbe04574f602848a19f742f4fb3c98d40449f11bcad18d6b17421"
+
+[[package]]
+name = "human-size"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9994b79e8c1a39b3166c63ae7823bb2b00831e2a96a31399c50fe69df408eaeb"
 
 [[package]]
 name = "humantime"
@@ -2671,10 +2696,12 @@ dependencies = [
  "fs_extra",
  "futures",
  "futures-util",
+ "hashlru",
  "hex",
  "hostname",
  "http",
  "http-auth-basic",
+ "human-size",
  "humantime",
  "humantime-serde",
  "itertools 0.10.5",

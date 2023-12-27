@@ -67,6 +67,14 @@ pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static QUERY_CACHE_HIT: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new("QUERY_CACHE_HIT", "Full Cache hit").namespace(METRICS_NAMESPACE),
+        &["stream"],
+    )
+    .expect("metric can be created")
+});
+
 pub static ALERTS_STATES: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new("alerts_states", "Alerts States").namespace(METRICS_NAMESPACE),
@@ -90,6 +98,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(QUERY_CACHE_HIT.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(ALERTS_STATES.clone()))

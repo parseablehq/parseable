@@ -33,6 +33,7 @@ mod catalog;
 mod event;
 mod handlers;
 mod livetail;
+mod localcache;
 mod metadata;
 mod metrics;
 mod migration;
@@ -48,6 +49,8 @@ mod validator;
 
 use option::CONFIG;
 
+use crate::localcache::LocalCacheManager;
+
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -59,6 +62,11 @@ async fn main() -> anyhow::Result<()> {
     banner::print(&CONFIG, &metadata).await;
     rbac::map::init(&metadata);
     metadata.set_global();
+    if let Some(cache_manager) = LocalCacheManager::global() {
+        cache_manager
+            .validate(CONFIG.parseable.local_cache_size)
+            .await?;
+    };
     let prometheus = metrics::build_metrics_handler();
     CONFIG.storage().register_store_metrics(&prometheus);
 

@@ -74,6 +74,8 @@ pub struct ObjectStoreFormat {
     pub stats: Stats,
     #[serde(default)]
     pub snapshot: Snapshot,
+    #[serde(default)]
+    pub cache_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -115,6 +117,7 @@ impl Default for ObjectStoreFormat {
             permissions: vec![Permisssion::new("parseable".to_string())],
             stats: Stats::default(),
             snapshot: Snapshot::default(),
+            cache_enabled: false,
         }
     }
 }

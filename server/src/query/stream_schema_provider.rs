@@ -18,6 +18,7 @@
 
 use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
 
+use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
 use bytes::Bytes;
 use chrono::{NaiveDateTime, Timelike, Utc};
@@ -31,18 +32,18 @@ use datafusion::{
         file_format::{parquet::ParquetFormat, FileFormat},
         listing::PartitionedFile,
         physical_plan::FileScanConfig,
-        TableProvider,
+        MemTable, TableProvider,
     },
     error::DataFusionError,
     execution::{context::SessionState, object_store::ObjectStoreUrl},
     logical_expr::{BinaryExpr, Operator, TableProviderFilterPushDown, TableType},
     optimizer::utils::conjunction,
     physical_expr::{create_physical_expr, PhysicalSortExpr},
-    physical_plan::{self, ExecutionPlan},
+    physical_plan::{self, empty::EmptyExec, union::UnionExec, ExecutionPlan, Statistics},
     prelude::{Column, Expr},
     scalar::ScalarValue,
 };
-use futures_util::{stream::FuturesOrdered, StreamExt, TryStreamExt};
+use futures_util::{stream::FuturesOrdered, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use object_store::{path::Path, ObjectStore};
 use url::Url;
@@ -53,12 +54,14 @@ use crate::{
         Snapshot,
     },
     event::{self, DEFAULT_TIMESTAMP_KEY},
+    localcache::LocalCacheManager,
     metadata::STREAM_INFO,
+    metrics::QUERY_CACHE_HIT,
     option::CONFIG,
     storage::ObjectStorage,
 };
 
-use super::{listing_table_builder::ListingTableBuilder, table_provider::QueryTableProvider};
+use super::listing_table_builder::ListingTableBuilder;
 
 // schema provider for stream based on global data
 pub struct GlobalSchemaProvider {
@@ -101,107 +104,101 @@ struct StandardTableProvider {
     url: Url,
 }
 
-impl StandardTableProvider {
-    #[allow(clippy::too_many_arguments)]
-    async fn remote_physical_plan(
-        &self,
-        glob_storage: Arc<dyn ObjectStorage + Send>,
-        object_store: Arc<dyn ObjectStore>,
-        snapshot: &catalog::snapshot::Snapshot,
-        time_filters: &[PartialTimeFilter],
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        limit: Option<usize>,
-        state: &SessionState,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
-        let items = snapshot.manifests(time_filters);
-        let manifest_files = collect_manifest_files(
-            object_store,
-            items
-                .into_iter()
-                .sorted_by_key(|file| file.time_lower_bound)
-                .map(|item| item.manifest_path)
-                .collect(),
+#[allow(clippy::too_many_arguments)]
+async fn create_parquet_physical_plan(
+    object_store_url: ObjectStoreUrl,
+    partitions: Vec<Vec<PartitionedFile>>,
+    statistics: Statistics,
+    schema: Arc<Schema>,
+    projection: Option<&Vec<usize>>,
+    filters: &[Expr],
+    limit: Option<usize>,
+    state: &SessionState,
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    let filters = if let Some(expr) = conjunction(filters.to_vec()) {
+        let table_df_schema = schema.as_ref().clone().to_dfschema()?;
+        let filters =
+            create_physical_expr(&expr, &table_df_schema, &schema, state.execution_props())?;
+        Some(filters)
+    } else {
+        None
+    };
+
+    let sort_expr = PhysicalSortExpr {
+        expr: physical_plan::expressions::col(DEFAULT_TIMESTAMP_KEY, &schema)?,
+        options: SortOptions {
+            descending: true,
+            nulls_first: true,
+        },
+    };
+
+    let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
+    // create the execution plan
+    let plan = file_format
+        .create_physical_plan(
+            state,
+            FileScanConfig {
+                object_store_url,
+                file_schema: schema.clone(),
+                file_groups: partitions,
+                statistics,
+                projection: projection.cloned(),
+                limit,
+                output_ordering: vec![vec![sort_expr]],
+                table_partition_cols: Vec::new(),
+                infinite_source: false,
+            },
+            filters.as_ref(),
         )
         .await?;
 
-        let mut manifest_files: Vec<_> = manifest_files
+    Ok(plan)
+}
+
+async fn collect_from_snapshot(
+    snapshot: &catalog::snapshot::Snapshot,
+    time_filters: &[PartialTimeFilter],
+    object_store: Arc<dyn ObjectStore>,
+    filters: &[Expr],
+    limit: Option<usize>,
+) -> Result<Vec<catalog::manifest::File>, DataFusionError> {
+    let items = snapshot.manifests(time_filters);
+    let manifest_files = collect_manifest_files(
+        object_store,
+        items
             .into_iter()
-            .flat_map(|file| file.files)
-            .rev()
-            .collect();
-
-        for filter in filters {
-            manifest_files.retain(|file| !file.can_be_pruned(filter))
-        }
-
-        if let Some(limit) = limit {
-            let limit = limit as u64;
-            let mut curr_limit = 0;
-            let mut pos = None;
-
-            for (index, file) in manifest_files.iter().enumerate() {
-                curr_limit += file.num_rows();
-                if curr_limit >= limit {
-                    pos = Some(index);
-                    break;
-                }
-            }
-
-            if let Some(pos) = pos {
-                manifest_files.truncate(pos + 1);
-            }
-        }
-
-        if manifest_files.is_empty() {
-            return Ok(None);
-        }
-
-        let (partitioned_files, statistics) = partitioned_files(manifest_files, &self.schema, 1);
-
-        let filters = if let Some(expr) = conjunction(filters.to_vec()) {
-            let table_df_schema = self.schema.as_ref().clone().to_dfschema()?;
-            let filters = create_physical_expr(
-                &expr,
-                &table_df_schema,
-                &self.schema,
-                state.execution_props(),
-            )?;
-            Some(filters)
-        } else {
-            None
-        };
-
-        let sort_expr = PhysicalSortExpr {
-            expr: physical_plan::expressions::col(DEFAULT_TIMESTAMP_KEY, &self.schema)?,
-            options: SortOptions {
-                descending: true,
-                nulls_first: true,
-            },
-        };
-
-        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
-        // create the execution plan
-        let plan = file_format
-            .create_physical_plan(
-                state,
-                FileScanConfig {
-                    object_store_url: ObjectStoreUrl::parse(&glob_storage.store_url()).unwrap(),
-                    file_schema: self.schema.clone(),
-                    file_groups: partitioned_files,
-                    statistics,
-                    projection: projection.cloned(),
-                    limit,
-                    output_ordering: vec![vec![sort_expr]],
-                    table_partition_cols: Vec::new(),
-                    infinite_source: false,
-                },
-                filters.as_ref(),
-            )
-            .await?;
-
-        Ok(Some(plan))
+            .sorted_by_key(|file| file.time_lower_bound)
+            .map(|item| item.manifest_path)
+            .collect(),
+    )
+    .await?;
+    let mut manifest_files: Vec<_> = manifest_files
+        .into_iter()
+        .flat_map(|file| file.files)
+        .rev()
+        .collect();
+    for filter in filters {
+        manifest_files.retain(|file| !file.can_be_pruned(filter))
     }
+    if let Some(limit) = limit {
+        let limit = limit as u64;
+        let mut curr_limit = 0;
+        let mut pos = None;
+
+        for (index, file) in manifest_files.iter().enumerate() {
+            curr_limit += file.num_rows();
+            if curr_limit >= limit {
+                pos = Some(index);
+                break;
+            }
+        }
+
+        if let Some(pos) = pos {
+            manifest_files.truncate(pos + 1);
+        }
+    }
+
+    Ok(manifest_files)
 }
 
 fn partitioned_files(
@@ -288,23 +285,32 @@ impl TableProvider for StandardTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        let mut memory_exec = None;
+        let mut cache_exec = None;
+
         let time_filters = extract_primary_filter(filters);
         if time_filters.is_empty() {
             return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
         }
 
-        let memtable = if include_now(filters) {
-            event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
-        } else {
-            None
+        if include_now(filters) {
+            if let Some(records) =
+                event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
+            {
+                let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
+                memory_exec = Some(
+                    reversed_mem_table
+                        .scan(state, projection, filters, limit)
+                        .await?,
+                );
+            }
         };
 
-        let storage = state
+        let object_store = state
             .runtime_env()
             .object_store_registry
             .get_store(&self.url)
             .unwrap();
-
         let glob_storage = CONFIG.storage().get_object_store();
 
         // Fetch snapshot
@@ -313,34 +319,94 @@ impl TableProvider for StandardTableProvider {
             .await
             .map_err(|err| DataFusionError::Plan(err.to_string()))?;
 
-        let remote_table = if is_overlapping_query(&snapshot.manifest_list, &time_filters) {
-            // Is query timerange is overlapping with older data.
-            if let Some(table) = ListingTableBuilder::new(self.stream.clone())
-                .populate_via_listing(glob_storage.clone(), storage, &time_filters)
-                .await?
-                .build(self.schema.clone(), |x| glob_storage.query_prefixes(x))?
-            {
-                Some(table.scan(state, projection, filters, limit).await?)
-            } else {
-                None
-            }
-        } else {
-            self.remote_physical_plan(
+        // Is query timerange is overlapping with older data.
+        if is_overlapping_query(&snapshot.manifest_list, &time_filters) {
+            return legacy_listing_table(
+                self.stream.clone(),
+                memory_exec,
                 glob_storage,
-                storage,
-                &snapshot,
+                object_store,
                 &time_filters,
+                self.schema.clone(),
+                state,
+                projection,
+                filters,
+                limit,
+            )
+            .await;
+        }
+
+        let mut manifest_files =
+            collect_from_snapshot(&snapshot, &time_filters, object_store, filters, limit).await?;
+
+        if manifest_files.is_empty() {
+            return final_plan(vec![memory_exec], projection, self.schema.clone());
+        }
+
+        // Based on entries in the manifest files, find them in the cache and create a physical plan.
+        if let Some(cache_manager) = LocalCacheManager::global() {
+            let (cached, remainder) = cache_manager
+                .partition_on_cached(&self.stream, manifest_files, |file| &file.file_path)
+                .await
+                .map_err(|err| DataFusionError::External(Box::new(err)))?;
+
+            // Assign remaining entries back to manifest list
+            // This is to be used for remote query
+            manifest_files = remainder;
+
+            let cached = cached
+                .into_iter()
+                .map(|(mut file, cache_path)| {
+                    let cache_path =
+                        object_store::path::Path::from_absolute_path(cache_path).unwrap();
+                    file.file_path = cache_path.to_string();
+                    file
+                })
+                .collect();
+
+            let (partitioned_files, statistics) = partitioned_files(cached, &self.schema, 1);
+            let plan = create_parquet_physical_plan(
+                ObjectStoreUrl::parse("file:///").unwrap(),
+                partitioned_files,
+                statistics,
+                self.schema.clone(),
                 projection,
                 filters,
                 limit,
                 state,
             )
-            .await?
-        };
+            .await?;
 
-        QueryTableProvider::try_new(memtable, remote_table, self.schema.clone())?
-            .scan(state, projection, filters, limit)
-            .await
+            cache_exec = Some(plan)
+        }
+
+        if manifest_files.is_empty() {
+            QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
+            return final_plan(
+                vec![memory_exec, cache_exec],
+                projection,
+                self.schema.clone(),
+            );
+        }
+
+        let (partitioned_files, statistics) = partitioned_files(manifest_files, &self.schema, 1);
+        let remote_exec = create_parquet_physical_plan(
+            ObjectStoreUrl::parse(&glob_storage.store_url()).unwrap(),
+            partitioned_files,
+            statistics,
+            self.schema.clone(),
+            projection,
+            filters,
+            limit,
+            state,
+        )
+        .await?;
+
+        Ok(final_plan(
+            vec![memory_exec, cache_exec, Some(remote_exec)],
+            projection,
+            self.schema.clone(),
+        )?)
     }
 
     fn supports_filter_pushdown(
@@ -356,6 +422,66 @@ impl TableProvider for StandardTableProvider {
             Ok(TableProviderFilterPushDown::Inexact)
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn legacy_listing_table(
+    stream: String,
+    mem_exec: Option<Arc<dyn ExecutionPlan>>,
+    glob_storage: Arc<dyn ObjectStorage + Send>,
+    object_store: Arc<dyn ObjectStore>,
+    time_filters: &[PartialTimeFilter],
+    schema: Arc<Schema>,
+    state: &SessionState,
+    projection: Option<&Vec<usize>>,
+    filters: &[Expr],
+    limit: Option<usize>,
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    let remote_table = ListingTableBuilder::new(stream)
+        .populate_via_listing(glob_storage.clone(), object_store, time_filters)
+        .and_then(|builder| async {
+            let table = builder.build(schema.clone(), |x| glob_storage.query_prefixes(x))?;
+            let res = match table {
+                Some(table) => Some(table.scan(state, projection, filters, limit).await?),
+                _ => None,
+            };
+            Ok(res)
+        })
+        .await?;
+
+    final_plan(vec![mem_exec, remote_table], projection, schema)
+}
+
+fn final_plan(
+    execution_plans: Vec<Option<Arc<dyn ExecutionPlan>>>,
+    projection: Option<&Vec<usize>>,
+    schema: Arc<Schema>,
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    let mut execution_plans = execution_plans.into_iter().flatten().collect_vec();
+    let exec: Arc<dyn ExecutionPlan> = if execution_plans.is_empty() {
+        let schema = match projection {
+            Some(projection) => Arc::new(schema.project(projection)?),
+            None => schema,
+        };
+        Arc::new(EmptyExec::new(false, schema))
+    } else if execution_plans.len() == 1 {
+        execution_plans.pop().unwrap()
+    } else {
+        Arc::new(UnionExec::new(execution_plans))
+    };
+
+    Ok(exec)
+}
+
+fn reversed_mem_table(
+    mut records: Vec<RecordBatch>,
+    schema: Arc<Schema>,
+) -> Result<MemTable, DataFusionError> {
+    records[..].reverse();
+    records
+        .iter_mut()
+        .for_each(|batch| *batch = crate::utils::arrow::reverse_reader::reverse(batch));
+    MemTable::try_new(schema, vec![records])
 }
 
 #[derive(Debug)]
