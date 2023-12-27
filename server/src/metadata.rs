@@ -42,6 +42,7 @@ pub struct StreamInfo(RwLock<HashMap<String, LogStreamMetadata>>);
 pub struct LogStreamMetadata {
     pub schema: HashMap<String, Arc<Field>>,
     pub alerts: Alerts,
+    pub cache_enabled: bool,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -78,6 +79,22 @@ impl StreamInfo {
 
     pub fn stream_initialized(&self, stream_name: &str) -> Result<bool, MetadataError> {
         Ok(!self.schema(stream_name)?.fields.is_empty())
+    }
+
+    pub fn cache_enabled(&self, stream_name: &str) -> Result<bool, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.cache_enabled)
+    }
+
+    pub fn set_stream_cache(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        let stream = map
+            .get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?;
+        stream.cache_enabled = enable;
+        Ok(())
     }
 
     pub fn schema(&self, stream_name: &str) -> Result<Arc<Schema>, MetadataError> {
@@ -131,6 +148,7 @@ impl StreamInfo {
         for stream in storage.list_streams().await? {
             let alerts = storage.get_alerts(&stream.name).await?;
             let schema = storage.get_schema(&stream.name).await?;
+            let meta = storage.get_stream_metadata(&stream.name).await?;
 
             let schema = update_schema_from_staging(&stream.name, schema);
             let schema = HashMap::from_iter(
@@ -140,7 +158,11 @@ impl StreamInfo {
                     .map(|v| (v.name().to_owned(), v.clone())),
             );
 
-            let metadata = LogStreamMetadata { schema, alerts };
+            let metadata = LogStreamMetadata {
+                schema,
+                alerts,
+                cache_enabled: meta.cache_enabled,
+            };
 
             let mut map = self.write().expect(LOCK_EXPECT);
 

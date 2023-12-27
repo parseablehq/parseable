@@ -29,6 +29,7 @@ use tokio::{fs, sync::Mutex};
 use crate::option::CONFIG;
 
 pub const STREAM_CACHE_FILENAME: &str = ".cache.json";
+pub const CACHE_META_FILENAME: &str = ".cache_meta.json";
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct LocalCache {
@@ -52,6 +53,15 @@ impl LocalCache {
 pub struct CacheMeta {
     version: String,
     size_capacity: u64,
+}
+
+impl CacheMeta {
+    fn new() -> Self {
+        Self {
+            version: "v1".to_string(),
+            size_capacity: 0,
+        }
+    }
 }
 
 pub struct LocalCacheManager {
@@ -83,6 +93,46 @@ impl LocalCacheManager {
                 semaphore: Mutex::new(()),
             }
         }))
+    }
+
+    pub async fn validate(&self, config_capacity: u64) -> Result<(), CacheError> {
+        fs::create_dir_all(&self.cache_path).await?;
+        let path = cache_meta_path(&self.cache_path).unwrap();
+        let resp = self
+            .filesystem
+            .get(&path)
+            .and_then(|resp| resp.bytes())
+            .await;
+
+        let updated_cache = match resp {
+            Ok(bytes) => {
+                let mut meta: CacheMeta = serde_json::from_slice(&bytes)?;
+                if !meta.size_capacity == config_capacity {
+                    meta.size_capacity = config_capacity;
+                    Some(meta)
+                } else {
+                    None
+                }
+            }
+            Err(object_store::Error::NotFound { .. }) => {
+                let mut meta = CacheMeta::new();
+                meta.size_capacity = config_capacity;
+                Some(meta)
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        if let Some(updated_cache) = updated_cache {
+            log::info!(
+                "Cache is updated to new size of {} Bytes",
+                &updated_cache.size_capacity
+            );
+            self.filesystem
+                .put(&path, serde_json::to_vec(&updated_cache)?.into())
+                .await?
+        }
+
+        Ok(())
     }
 
     pub async fn get_cache(&self, stream: &str) -> Result<LocalCache, CacheError> {
@@ -169,6 +219,13 @@ fn cache_file_path(
 ) -> Result<object_store::path::Path, object_store::path::Error> {
     let mut path = root.as_ref().join(stream);
     path.push(STREAM_CACHE_FILENAME);
+    object_store::path::Path::from_absolute_path(path)
+}
+
+fn cache_meta_path(
+    root: impl AsRef<std::path::Path>,
+) -> Result<object_store::path::Path, object_store::path::Error> {
+    let path = root.as_ref().join(CACHE_META_FILENAME);
     object_store::path::Path::from_absolute_path(path)
 }
 

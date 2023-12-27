@@ -36,6 +36,7 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
+use itertools::Itertools;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
@@ -197,6 +198,15 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(serde_json::from_slice(&stream_metadata).expect("parseable config is valid json"))
     }
 
+    async fn put_stream_manifest(
+        &self,
+        stream_name: &str,
+        manifest: &ObjectStoreFormat,
+    ) -> Result<(), ObjectStorageError> {
+        let path = stream_json_path(stream_name);
+        self.put_object(&path, to_bytes(manifest)).await
+    }
+
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
         let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
         let stream_metadata: Value =
@@ -219,7 +229,6 @@ pub trait ObjectStorage: Sync + 'static {
             .expect("is object")
             .get("retention")
             .cloned();
-
         if let Some(retention) = retention {
             Ok(serde_json::from_value(retention).unwrap())
         } else {
@@ -307,10 +316,15 @@ pub trait ObjectStorage: Sync + 'static {
         }
 
         let streams = STREAM_INFO.list_streams();
-
         let mut stream_stats = HashMap::new();
 
+        let cache_manager = LocalCacheManager::global();
+        let mut cache_updates: HashMap<&String, Vec<_>> = HashMap::new();
+
         for stream in &streams {
+            let cache_enabled = STREAM_INFO
+                .cache_enabled(stream)
+                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let dir = StorageDir::new(stream);
             let schema = convert_disk_files_to_parquet(stream, &dir)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
@@ -328,7 +342,7 @@ pub trait ObjectStorage: Sync + 'static {
                     .or_insert_with(|| compressed_size);
             });
 
-            for file in &parquet_files {
+            for file in parquet_files {
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")
@@ -336,19 +350,19 @@ pub trait ObjectStorage: Sync + 'static {
                     .expect("filename is valid string");
                 let file_suffix = str::replacen(filename, ".", "/", 3);
                 let stream_relative_path = format!("{stream}/{file_suffix}");
-                self.upload_file(&stream_relative_path, file).await?;
+                self.upload_file(&stream_relative_path, &file).await?;
                 let absolute_path = self
                     .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
                     .to_string();
                 let store = CONFIG.storage().get_object_store();
                 let manifest =
-                    catalog::create_from_parquet_file(absolute_path.clone(), file).unwrap();
+                    catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
-                if let Some(manager) = LocalCacheManager::global() {
-                    manager
-                        .move_to_cache(stream, absolute_path, file.to_owned())
-                        .await
-                        .unwrap()
+                if cache_enabled && cache_manager.is_some() {
+                    cache_updates
+                        .entry(stream)
+                        .or_default()
+                        .push((absolute_path, file))
                 } else {
                     let _ = fs::remove_file(file);
                 }
@@ -365,6 +379,24 @@ pub trait ObjectStorage: Sync + 'static {
                     log::warn!("Error updating stats to objectstore due to error [{}]", e);
                 }
             }
+        }
+
+        if let Some(manager) = cache_manager {
+            let cache_updates = cache_updates
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect_vec();
+
+            tokio::spawn(async move {
+                for (stream, files) in cache_updates {
+                    for (storage_path, file) in files {
+                        manager
+                            .move_to_cache(&stream, storage_path, file.to_owned())
+                            .await
+                            .unwrap()
+                    }
+                }
+            });
         }
 
         Ok(())
