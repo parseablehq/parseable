@@ -21,11 +21,11 @@ use std::{io, path::PathBuf};
 use fs_extra::file::CopyOptions;
 use futures_util::TryFutureExt;
 use hashlru::Cache;
+use human_size::{Byte, Gigibyte, SpecificSize};
 use itertools::{Either, Itertools};
 use object_store::{local::LocalFileSystem, ObjectStore};
 use once_cell::sync::OnceCell;
 use tokio::{fs, sync::Mutex};
-use human_size::{SpecificSize, Gigibyte, Byte};
 
 use crate::option::CONFIG;
 
@@ -100,7 +100,7 @@ impl LocalCacheManager {
     pub async fn validate(&self, config_capacity: u64) -> Result<(), CacheError> {
         fs::create_dir_all(&self.cache_path).await?;
         let path = cache_meta_path(&self.cache_path)
-        .map_err(|err| CacheError::ObjectStoreError(err.into()))?;
+            .map_err(|err| CacheError::ObjectStoreError(err.into()))?;
         let resp = self
             .filesystem
             .get(&path)
@@ -112,8 +112,14 @@ impl LocalCacheManager {
                 let mut meta: CacheMeta = serde_json::from_slice(&bytes)?;
                 if meta.size_capacity != config_capacity {
                     // log the change in cache size
-                    let configured_size_human: SpecificSize<Gigibyte> = SpecificSize::new(config_capacity as f64, Byte).unwrap().into();
-                    let current_size_human: SpecificSize<Gigibyte> = SpecificSize::new(meta.size_capacity as f64, Byte).unwrap().into();
+                    let configured_size_human: SpecificSize<Gigibyte> =
+                        SpecificSize::new(config_capacity as f64, Byte)
+                            .unwrap()
+                            .into();
+                    let current_size_human: SpecificSize<Gigibyte> =
+                        SpecificSize::new(meta.size_capacity as f64, Byte)
+                            .unwrap()
+                            .into();
                     log::warn!(
                         "Cache size is updated from {} to {}",
                         current_size_human,

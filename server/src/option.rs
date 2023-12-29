@@ -609,9 +609,9 @@ pub mod validation {
         str::FromStr,
     };
 
-    use human_size::{SpecificSize,multiples};
     use crate::option::MIN_CACHE_SIZE_BYTES;
     use crate::storage::LOCAL_SYNC_INTERVAL;
+    use human_size::{multiples, SpecificSize};
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
@@ -684,7 +684,9 @@ pub mod validation {
     }
 
     pub fn upload_interval(s: &str) -> Result<u64, String> {
-        let u = s.parse::<u64>().map_err(|_| "invalid upload interval".to_string())?;
+        let u = s
+            .parse::<u64>()
+            .map_err(|_| "invalid upload interval".to_string())?;
         if u < LOCAL_SYNC_INTERVAL {
             return Err("object storage upload interval must be 60 seconds or more".to_string());
         }

@@ -71,7 +71,7 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     eprintln!(
         "
     Welcome to Parseable Server! Deployment UID: \"{}\"",
-    id.to_string(),
+        id.to_string(),
     );
 
     eprintln!(
