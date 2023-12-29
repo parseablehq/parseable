@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 
 use crate::query::PartialTimeFilter;
 
+pub const CURRENT_SNAPSHOT_VERSION: &str = "v1";
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     pub version: String,
@@ -31,7 +32,7 @@ pub struct Snapshot {
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
-            version: "v1".to_string(),
+            version: CURRENT_SNAPSHOT_VERSION.to_string(),
             manifest_list: Vec::default(),
         }
     }

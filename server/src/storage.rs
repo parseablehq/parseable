@@ -30,9 +30,9 @@ mod s3;
 pub mod staging;
 mod store_metadata;
 
-pub use localfs::{FSConfig, LocalFS};
+pub use localfs::FSConfig;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
-pub use s3::{S3Config, S3};
+pub use s3::S3Config;
 pub use store_metadata::{
     put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
 };

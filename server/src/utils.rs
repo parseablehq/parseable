@@ -49,7 +49,7 @@ pub fn validate_path_is_writeable(path: &Path) -> anyhow::Result<()> {
     };
     let permissions = md.permissions();
     if permissions.readonly() {
-        anyhow::bail!("Staging directory {} is unwritable", path.display())
+        anyhow::bail!("Staging directory {} is not writable", path.display())
     }
     Ok(())
 }

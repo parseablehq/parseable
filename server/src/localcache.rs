@@ -21,6 +21,7 @@ use std::{io, path::PathBuf};
 use fs_extra::file::CopyOptions;
 use futures_util::TryFutureExt;
 use hashlru::Cache;
+use human_size::{Byte, Gigibyte, SpecificSize};
 use itertools::{Either, Itertools};
 use object_store::{local::LocalFileSystem, ObjectStore};
 use once_cell::sync::OnceCell;
@@ -30,6 +31,7 @@ use crate::option::CONFIG;
 
 pub const STREAM_CACHE_FILENAME: &str = ".cache.json";
 pub const CACHE_META_FILENAME: &str = ".cache_meta.json";
+pub const CURRENT_CACHE_VERSION: &str = "v1";
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct LocalCache {
@@ -42,7 +44,7 @@ pub struct LocalCache {
 impl LocalCache {
     fn new() -> Self {
         Self {
-            version: "v1".to_string(),
+            version: CURRENT_CACHE_VERSION.to_string(),
             current_size: 0,
             files: Cache::new(100),
         }
@@ -58,7 +60,7 @@ pub struct CacheMeta {
 impl CacheMeta {
     fn new() -> Self {
         Self {
-            version: "v1".to_string(),
+            version: CURRENT_CACHE_VERSION.to_string(),
             size_capacity: 0,
         }
     }
@@ -97,7 +99,8 @@ impl LocalCacheManager {
 
     pub async fn validate(&self, config_capacity: u64) -> Result<(), CacheError> {
         fs::create_dir_all(&self.cache_path).await?;
-        let path = cache_meta_path(&self.cache_path).unwrap();
+        let path = cache_meta_path(&self.cache_path)
+            .map_err(|err| CacheError::ObjectStoreError(err.into()))?;
         let resp = self
             .filesystem
             .get(&path)
@@ -107,7 +110,21 @@ impl LocalCacheManager {
         let updated_cache = match resp {
             Ok(bytes) => {
                 let mut meta: CacheMeta = serde_json::from_slice(&bytes)?;
-                if !meta.size_capacity == config_capacity {
+                if meta.size_capacity != config_capacity {
+                    // log the change in cache size
+                    let configured_size_human: SpecificSize<Gigibyte> =
+                        SpecificSize::new(config_capacity as f64, Byte)
+                            .unwrap()
+                            .into();
+                    let current_size_human: SpecificSize<Gigibyte> =
+                        SpecificSize::new(meta.size_capacity as f64, Byte)
+                            .unwrap()
+                            .into();
+                    log::warn!(
+                        "Cache size is updated from {} to {}",
+                        current_size_human,
+                        configured_size_human
+                    );
                     meta.size_capacity = config_capacity;
                     Some(meta)
                 } else {
@@ -123,10 +140,6 @@ impl LocalCacheManager {
         };
 
         if let Some(updated_cache) = updated_cache {
-            log::info!(
-                "Cache is updated to new size of {} Bytes",
-                &updated_cache.size_capacity
-            );
             self.filesystem
                 .put(&path, serde_json::to_vec(&updated_cache)?.into())
                 .await?

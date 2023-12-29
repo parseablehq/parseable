@@ -45,14 +45,17 @@ fn print_ascii_art() {
     "#;
 
     eprint!("{ascii_name}");
-    eprintln!(
-        "
-    Welcome to Parseable Server!"
-    );
 }
 
 fn status_info(config: &Config, scheme: &str, id: Uid) {
-    let url = format!("\"{}://{}\"", scheme, config.parseable.address).underlined();
+    let address = format!(
+        "\"{}://{}\" ({}), \":{}\" (gRPC)",
+        scheme,
+        config.parseable.address,
+        scheme.to_ascii_uppercase(),
+        config.parseable.grpc_port
+    );
+
     let mut credentials =
         String::from("\"As set in P_USERNAME and P_PASSWORD environment variables\"");
 
@@ -67,13 +70,19 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
 
     eprintln!(
         "
+    Welcome to Parseable Server! Deployment UID: \"{}\"",
+        id.to_string(),
+    );
+
+    eprintln!(
+        "
     {}
-        URL:                {}
+        Address:            {}
         Credentials:        {}
         Deployment UID:     \"{}\"
         LLM Status:         \"{}\"",
         "Server:".to_string().bold(),
-        url,
+        address,
         credentials,
         id.to_string(),
         llm_status
@@ -83,8 +92,8 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
 /// Prints information about the `ObjectStorage`.
 /// - Mode (`Local drive`, `S3 bucket`)
 /// - Staging (temporary landing point for incoming events)
-/// - Store (path where the data is stored)
-/// - Latency
+/// - Cache (local cache of data)
+/// - Store (path where the data is stored and its latency)
 async fn storage_info(config: &Config) {
     let storage = config.storage();
     let latency = storage.get_object_store().get_latency().await;
@@ -93,29 +102,32 @@ async fn storage_info(config: &Config) {
         "
     {}
         Mode:               \"{}\"
-        Staging:            \"{}\"
-        Store:              \"{}\"
-        Latency:            \"{:?}\"",
+        Staging:            \"{}\"",
         "Storage:".to_string().bold(),
         config.mode_string(),
         config.staging_dir().to_string_lossy(),
-        storage.get_endpoint(),
-        latency
     );
 
     if let Some(path) = &config.parseable.local_cache_path {
-        let size: SpecificSize<human_size::Gigabyte> =
+        let size: SpecificSize<human_size::Gigibyte> =
             SpecificSize::new(config.parseable.local_cache_size as f64, human_size::Byte)
                 .unwrap()
                 .into();
 
         eprintln!(
             "\
-    {:8}Cache:              \"{}\"
-        Cache Size:         \"{}\"",
+    {:8}Cache:              \"{}\", (size: {})",
             "",
             path.display(),
             size
         );
     }
+
+    eprintln!(
+        "\
+    {:8}Store:              \"{}\", (latency: {:?})",
+        "",
+        storage.get_endpoint(),
+        latency
+    );
 }
