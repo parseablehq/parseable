@@ -26,7 +26,7 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::oidc::{self, OpenidConfig};
-use crate::storage::{FSConfig, ObjectStorageProvider, S3Config, LOCAL_SYNC_INTERVAL};
+use crate::storage::{FSConfig, ObjectStorageProvider, S3Config};
 use crate::utils::validate_path_is_writeable;
 
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
@@ -96,12 +96,6 @@ impl Config {
                 }
             }
             _ => unreachable!(),
-        }
-    }
-
-    pub fn validate(&self) {
-        if CONFIG.parseable.upload_interval < LOCAL_SYNC_INTERVAL {
-            panic!("object storage upload_interval (P_STORAGE_UPLOAD_INTERVAL) must be 60 seconds or more");
         }
     }
 
@@ -285,7 +279,7 @@ impl FromArgMatches for Server {
         self.livetail_channel_capacity = m
             .get_one::<usize>(Self::LIVETAIL_CAPACITY)
             .cloned()
-            .expect("default for livetail port");
+            .expect("default for livetail capacity");
         // converts Gib to bytes before assigning
         self.query_memory_pool_size = m
             .get_one::<u8>(Self::QUERY_MEM_POOL_SIZE)
@@ -380,7 +374,7 @@ impl Server {
                     .env("P_TLS_CERT_PATH")
                     .value_name("PATH")
                     .value_parser(validation::file_path)
-                    .help("The location of TLS Cert file"),
+                    .help("Local path on this device where certificate file is located. Required to enable TLS"),
             )
             .arg(
                 Arg::new(Self::TLS_KEY)
@@ -388,7 +382,7 @@ impl Server {
                     .env("P_TLS_KEY_PATH")
                     .value_name("PATH")
                     .value_parser(validation::file_path)
-                    .help("The location of TLS Private Key file"),
+                    .help("Local path on this device where private key file is located. Required to enable TLS"),
             )
             .arg(
                 Arg::new(Self::ADDRESS)
@@ -397,7 +391,7 @@ impl Server {
                     .value_name("ADDR:PORT")
                     .default_value("0.0.0.0:8000")
                     .value_parser(validation::socket_addr)
-                    .help("The address on which the http server will listen."),
+                    .help("Address and port for Parseable HTTP(s) server"),
             )
             .arg(
                 Arg::new(Self::STAGING)
@@ -406,7 +400,7 @@ impl Server {
                     .value_name("DIR")
                     .default_value("./staging")
                     .value_parser(validation::canonicalize_path)
-                    .help("The local staging path is used as a temporary landing point for incoming events and local cache")
+                    .help("Local path on this device to be used as landing point for incoming events")
                     .next_line_help(true),
             )
              .arg(
@@ -415,7 +409,7 @@ impl Server {
                     .env("P_CACHE_DIR")
                     .value_name("DIR")
                     .value_parser(validation::canonicalize_path)
-                    .help("Local path to be used for caching latest files")
+                    .help("Local path on this device to be used for caching data")
                     .next_line_help(true),
             )
              .arg(
@@ -423,9 +417,9 @@ impl Server {
                     .long(Self::CACHE_SIZE)
                     .env("P_CACHE_SIZE")
                     .value_name("size")
-                    .default_value("1Gib")
-                    .value_parser(validation::human_size_to_bytes)
-                    .help("Size for cache in human readable format (e.g 1GiB, 2GiB, 100MB)")
+                    .default_value("1GiB")
+                    .value_parser(validation::cache_size)
+                    .help("Maximum allowed cache size for all streams combined (In human readable format, e.g 1GiB, 2GiB, 100MB)")
                     .next_line_help(true),
             )
             .arg(
@@ -434,8 +428,8 @@ impl Server {
                     .env("P_STORAGE_UPLOAD_INTERVAL")
                     .value_name("SECONDS")
                     .default_value("60")
-                    .value_parser(value_parser!(u64))
-                    .help("Interval in seconds after which un-committed data would be sent to the storage")
+                    .value_parser(validation::upload_interval)
+                    .help("Interval in seconds after which staging data would be sent to the storage")
                     .next_line_help(true),
             )
             .arg(
@@ -444,7 +438,7 @@ impl Server {
                     .env("P_USERNAME")
                     .value_name("STRING")
                     .required(true)
-                    .help("Username for the basic authentication on the server"),
+                    .help("Admin username to be set for this Parseable server"),
             )
             .arg(
                 Arg::new(Self::PASSWORD)
@@ -452,7 +446,7 @@ impl Server {
                     .env("P_PASSWORD")
                     .value_name("STRING")
                     .required(true)
-                    .help("Password for the basic authentication on the server"),
+                    .help("Admin password to be set for this Parseable server"),
             )
             .arg(
                 Arg::new(Self::CHECK_UPDATE)
@@ -462,7 +456,7 @@ impl Server {
                     .required(false)
                     .default_value("true")
                     .value_parser(value_parser!(bool))
-                    .help("Disable/Enable checking for updates"),
+                    .help("Enable/Disable checking for new Parseable release"),
             )
             .arg(
                 Arg::new(Self::SEND_ANALYTICS)
@@ -472,7 +466,7 @@ impl Server {
                     .required(false)
                     .default_value("true")
                     .value_parser(value_parser!(bool))
-                    .help("Disable/Enable sending anonymous user data"),
+                    .help("Enable/Disable anonymous telemetry data collection"),
             )
             .arg(
                 Arg::new(Self::OPEN_AI_KEY)
@@ -480,7 +474,7 @@ impl Server {
                     .env("P_OPENAI_API_KEY")
                     .value_name("STRING")
                     .required(false)
-                    .help("Set OpenAI key to enable llm feature"),
+                    .help("OpenAI key to enable llm features"),
             )
             .arg(
                 Arg::new(Self::OPENID_CLIENT_ID)
@@ -488,7 +482,7 @@ impl Server {
                     .env("P_OIDC_CLIENT_ID")
                     .value_name("STRING")
                     .required(false)
-                    .help("Set client id for oidc provider"),
+                    .help("Client id for OIDC provider"),
             )
             .arg(
                 Arg::new(Self::OPENID_CLIENT_SECRET)
@@ -496,7 +490,7 @@ impl Server {
                     .env("P_OIDC_CLIENT_SECRET")
                     .value_name("STRING")
                     .required(false)
-                    .help("Set client secret for oidc provider"),
+                    .help("Client secret for OIDC provider"),
             )
             .arg(
                 Arg::new(Self::OPENID_ISSUER)
@@ -505,7 +499,7 @@ impl Server {
                     .value_name("URl")
                     .required(false)
                     .value_parser(validation::url)
-                    .help("Set OIDC provider's host address."),
+                    .help("OIDC provider's host address"),
             )
             .arg(
                 Arg::new(Self::DOMAIN_URI)
@@ -514,7 +508,7 @@ impl Server {
                     .value_name("URL")
                     .required(false)
                     .value_parser(validation::url)
-                    .help("Set host global domain address"),
+                    .help("Parseable server global domain address"),
             )
             .arg(
                 Arg::new(Self::GRPC_PORT)
@@ -524,7 +518,7 @@ impl Server {
                     .default_value("8001")
                     .required(false)
                     .value_parser(value_parser!(u16))
-                    .help("Set port for livetail arrow flight server"),
+                    .help("Port for gRPC server"),
             )
             .arg(
                 Arg::new(Self::LIVETAIL_CAPACITY)
@@ -534,7 +528,7 @@ impl Server {
                     .default_value("1000")
                     .required(false)
                     .value_parser(value_parser!(usize))
-                    .help("Set port for livetail arrow flight server"),
+                    .help("Number of rows in livetail channel"),
             )
             .arg(
                 Arg::new(Self::QUERY_MEM_POOL_SIZE)
@@ -553,7 +547,7 @@ impl Server {
                     .required(false)
                     .default_value("16384")
                     .value_parser(value_parser!(usize))
-                    .help("Number of rows in a row groups"),
+                    .help("Number of rows in a row group"),
             )
             .arg(
                 Arg::new(Self::PARQUET_COMPRESSION_ALGO)
@@ -615,9 +609,9 @@ pub mod validation {
         str::FromStr,
     };
 
-    use human_size::SpecificSize;
-
+    use human_size::{SpecificSize,multiples};
     use crate::option::MIN_CACHE_SIZE_BYTES;
+    use crate::storage::LOCAL_SYNC_INTERVAL;
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
@@ -655,8 +649,7 @@ pub mod validation {
         url::Url::parse(s).map_err(|_| "Invalid URL provided".to_string())
     }
 
-    pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
-        use human_size::multiples;
+    fn human_size_to_bytes(s: &str) -> Result<u64, String> {
         fn parse_and_map<T: human_size::Multiple>(
             s: &str,
         ) -> Result<u64, human_size::ParsingError> {
@@ -678,5 +671,23 @@ pub mod validation {
         }
 
         Ok(size)
+    }
+
+    pub fn cache_size(s: &str) -> Result<u64, String> {
+        let size = human_size_to_bytes(s)?;
+        if size < MIN_CACHE_SIZE_BYTES {
+            return Err(
+                "Specified value of cache size is smaller than current minimum of 1GiB".to_string(),
+            );
+        }
+        Ok(size)
+    }
+
+    pub fn upload_interval(s: &str) -> Result<u64, String> {
+        let u = s.parse::<u64>().map_err(|_| "invalid upload interval".to_string())?;
+        if u < LOCAL_SYNC_INTERVAL {
+            return Err("object storage upload interval must be 60 seconds or more".to_string());
+        }
+        Ok(u)
     }
 }

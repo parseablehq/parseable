@@ -43,6 +43,7 @@ pub enum SortOrder {
 }
 
 pub type SortInfo = (String, SortOrder);
+pub const CURRENT_MANIFEST_VERSION: &str = "v1";
 
 /// An entry in a manifest which points to a single file.
 /// Additionally, it is meant to store the statistics for the file it
@@ -67,7 +68,7 @@ pub struct Manifest {
 impl Default for Manifest {
     fn default() -> Self {
         Self {
-            version: "v1".to_string(),
+            version: CURRENT_MANIFEST_VERSION.to_string(),
             files: Vec::default(),
         }
     }

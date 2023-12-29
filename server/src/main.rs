@@ -54,7 +54,6 @@ use crate::localcache::LocalCacheManager;
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    CONFIG.validate();
     let storage = CONFIG.storage().get_object_store();
     CONFIG.validate_staging()?;
     migration::run_metadata_migration(&CONFIG).await?;
