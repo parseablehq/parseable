@@ -29,8 +29,8 @@ use crate::storage::{ObjectStorage, StorageDir};
 use crate::utils::arrow::MergedRecordReader;
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
-use derive_more::{Deref, DerefMut};
 use chrono::prelude::*;
+use derive_more::{Deref, DerefMut};
 
 // TODO: make return type be of 'static lifetime instead of cloning
 // A read-write lock to allow multiple reads while and isolated write
@@ -44,7 +44,7 @@ pub struct LogStreamMetadata {
     pub schema: HashMap<String, Arc<Field>>,
     pub alerts: Alerts,
     pub cache_enabled: bool,
-    pub stream_init_time: String
+    pub stream_init_time: String,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -165,7 +165,12 @@ impl StreamInfo {
                 schema,
                 alerts,
                 cache_enabled: meta.cache_enabled,
-                stream_init_time: self.read().expect(LOCK_EXPECT).get(&stream.name).map(|v| v.stream_init_time.clone()).unwrap_or_default(),
+                stream_init_time: self
+                    .read()
+                    .expect(LOCK_EXPECT)
+                    .get(&stream.name)
+                    .map(|v| v.stream_init_time.clone())
+                    .unwrap_or_default(),
             };
 
             let mut map = self.write().expect(LOCK_EXPECT);
