@@ -205,7 +205,7 @@ pub enum QueryError {
     Unauthorized,
     #[error("Datafusion Error: {0}")]
     Datafusion(#[from] DataFusionError),
-    #[error("Query execution failed due to {0}")]
+    #[error("Execution Error: {0}")]
     Execute(#[from] ExecuteError),
 }
 
