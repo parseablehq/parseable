@@ -112,6 +112,14 @@ impl Config {
         &self.parseable.local_staging_path
     }
 
+    pub fn cache_size(&self) -> &u64 {
+        &self.parseable.local_cache_size
+    }
+
+    pub fn cache_dir(&self) -> &Option<PathBuf> {
+        &self.parseable.local_cache_path
+    }
+
     pub fn is_default_creds(&self) -> bool {
         self.parseable.username == Server::DEFAULT_USERNAME
             && self.parseable.password == Server::DEFAULT_PASSWORD
