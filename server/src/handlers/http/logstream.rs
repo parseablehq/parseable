@@ -253,7 +253,7 @@ pub async fn put_enable_cache(
 
     STREAM_INFO.set_stream_cache(&stream_name, enable_cache)?;
     Ok((
-        format!("Cache setting updated for log stream {stream_name}"),
+        format!("Cache set to {enable_cache} for log stream {stream_name}"),
         StatusCode::OK,
     ))
 }
