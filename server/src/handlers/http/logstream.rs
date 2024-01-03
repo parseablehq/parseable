@@ -241,6 +241,10 @@ pub async fn put_enable_cache(
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let storage = CONFIG.storage().get_object_store();
 
+    if CONFIG.parseable.local_cache_path.is_none() {
+        return Err(StreamError::CacheNotEnabled(stream_name));
+    }
+
     let mut stream_metadata = storage.get_stream_metadata(&stream_name).await?;
     stream_metadata.cache_enabled = enable_cache;
     storage
@@ -249,7 +253,7 @@ pub async fn put_enable_cache(
 
     STREAM_INFO.set_stream_cache(&stream_name, enable_cache)?;
     Ok((
-        format!("Cache setting updated for log stream {stream_name}"),
+        format!("Cache set to {enable_cache} for log stream {stream_name}"),
         StatusCode::OK,
     ))
 }
@@ -336,6 +340,10 @@ pub mod error {
         CreateStream(#[from] CreateStreamError),
         #[error("Log stream {0} does not exist")]
         StreamNotFound(String),
+        #[error(
+            "Caching not enabled at Parseable server config. Can't enable cache for stream {0}"
+        )]
+        CacheNotEnabled(String),
         #[error("Log stream is not initialized, send an event to this logstream and try again")]
         UninitializedLogstream,
         #[error("Storage Error {0}")]
@@ -370,6 +378,7 @@ pub mod error {
                 StreamError::CreateStream(CreateStreamError::Storage { .. }) => {
                     StatusCode::INTERNAL_SERVER_ERROR
                 }
+                StreamError::CacheNotEnabled(_) => StatusCode::BAD_REQUEST,
                 StreamError::StreamNotFound(_) => StatusCode::NOT_FOUND,
                 StreamError::Custom { status, .. } => *status,
                 StreamError::UninitializedLogstream => StatusCode::METHOD_NOT_ALLOWED,
