@@ -79,12 +79,10 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     {}
         Address:            {}
         Credentials:        {}
-        Deployment UID:     \"{}\"
         LLM Status:         \"{}\"",
         "Server:".to_string().bold(),
         address,
         credentials,
-        id.to_string(),
         llm_status
     );
 }
