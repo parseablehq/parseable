@@ -49,7 +49,11 @@ pub async fn about() -> Json<serde_json::Value> {
     let is_oidc_active = CONFIG.parseable.openid.is_some();
     let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
-    let cache_size: &u64 = CONFIG.cache_size();
+    let cache_size: &u64 = if CONFIG.parseable.local_cache_path.is_none(){
+        &0
+    } else {
+        CONFIG.cache_size()
+    };
     let cache_enabled: &bool = if CONFIG.parseable.local_cache_path.is_none(){
         &false
     } else {
@@ -78,3 +82,5 @@ pub async fn about() -> Json<serde_json::Value> {
         "store": store
     }))
 }
+
+
