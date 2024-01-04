@@ -16,7 +16,14 @@
  *
  */
 
+use chrono::{DateTime, Utc, TimeZone};
+use datafusion::error::DataFusionError;
+use datafusion::arrow::json::writer::record_batches_to_json_rows;
+use datafusion::arrow::record_batch::RecordBatch;
+
 use crate::metrics::{EVENTS_INGESTED, EVENTS_INGESTED_SIZE, STORAGE_SIZE};
+use crate::query;
+use crate::query::error::ExecuteError;
 
 /// Helper struct type created by copying stats values from metadata
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -70,4 +77,44 @@ fn event_labels<'a>(stream_name: &'a str, format: &'static str) -> [&'a str; 2] 
 
 fn storage_size_labels(stream_name: &str) -> [&str; 3] {
     ["data", stream_name, "parquet"]
+}
+
+pub async fn get_first_event_stats(stream_name: &str) -> Result<Option<String>, QueryError> {
+    let query_string = format!("SELECT p_timestamp FROM {} ORDER BY p_timestamp LIMIT 1", stream_name);
+    let first_time: DateTime<Utc> = Utc.timestamp_opt(0, 0).single().expect("Failed to get the first UTC time");
+    let now_time: DateTime<Utc> = Utc::now();
+    let session_state = query::QUERY_SESSION.state();
+    let logical_plan = session_state.create_logical_plan(&query_string).await?;
+   
+    let query = query::Query {
+        raw_logical_plan: logical_plan,
+        start: first_time,
+        end: now_time,
+        filter_tag: Some(Vec::new()),
+    };
+
+    let (records, _fields) = query.execute().await?;
+    let records_itr: Vec<&RecordBatch> = records.iter().collect();
+    let json_records = record_batches_to_json_rows(&records_itr).unwrap();
+
+    if let Some(single_record) = json_records.get(0) {
+        if let Some(p_timestamp_value) = single_record.get("p_timestamp") {
+            let p_timestamp_str = p_timestamp_value.as_str().unwrap_or_default();
+            return Ok(Some(p_timestamp_str.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum QueryError {
+    #[error("While generating times for 'now' failed to parse duration")]
+    NotValidDuration(#[from] humantime::DurationError),
+    #[error("Parsed duration out of range")]
+    OutOfRange(#[from] chrono::OutOfRangeError),
+    #[error("Datafusion Error: {0}")]
+    Datafusion(#[from] DataFusionError),
+    #[error("Query execution failed due to {0}")]
+    Execute(#[from] ExecuteError),
 }

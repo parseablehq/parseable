@@ -21,7 +21,7 @@ use std::fs;
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
 use chrono::Utc;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::alerts::Alerts;
 use crate::metadata::STREAM_INFO;
@@ -268,12 +268,20 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
+    let first_event_stats = stats::get_first_event_stats(&stream_name).await;
+    let first_event = match first_event_stats {
+        Ok(Some(value)) => json!(value),
+        Ok(None) => json!(null),
+        Err(_err) => json!(null),
+    };
+
     let time = Utc::now();
 
     let stats = serde_json::json!({
         "stream": stream_name,
         "time": time,
         "ingestion": {
+            "first_event": first_event,
             "count": stats.events,
             "size": format!("{} {}", stats.ingestion, "Bytes"),
             "format": "json"
