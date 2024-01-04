@@ -112,8 +112,8 @@ impl Config {
         &self.parseable.local_staging_path
     }
 
-    pub fn cache_size(&self) -> &u64 {
-        &self.parseable.local_cache_size
+    pub fn cache_size(&self) -> u64 {
+        self.parseable.local_cache_size
     }
 
     pub fn cache_dir(&self) -> &Option<PathBuf> {
