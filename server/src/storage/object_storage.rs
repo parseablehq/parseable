@@ -219,6 +219,14 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(stats)
     }
 
+    async fn get_whole_json(&self, stream_name: &str) -> Result<Value, ObjectStorageError> {
+        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
+        let stream_metadata: Value =
+            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
+
+        Ok(stream_metadata)
+    }
+
     async fn get_retention(&self, stream_name: &str) -> Result<Retention, ObjectStorageError> {
         let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
         let stream_metadata: Value =

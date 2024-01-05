@@ -266,8 +266,16 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
 
     let time = Utc::now();
 
+    let stream_init_time = &CONFIG
+        .storage()
+        .get_object_store()
+        .get_whole_json(&stream_name)
+        .await
+        .unwrap()["created-at"];
+
     let stats = serde_json::json!({
         "stream": stream_name,
+        "stream created at": stream_init_time,
         "time": time,
         "ingestion": {
             "count": stats.events,
