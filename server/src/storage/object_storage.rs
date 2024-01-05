@@ -119,6 +119,16 @@ pub trait ObjectStorage: Sync + 'static {
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
 
+        let stream_init_time = &CONFIG
+            .storage()
+            .get_object_store()
+            .get_whole_json(stream_name)
+            .await
+            .unwrap()["created-at"];
+        crate::metrics::STREAM_INIT_TIME
+            .write()
+            .expect("error while writing stream init value from storage to memory")
+            .insert(stream_name.to_owned(), stream_init_time.to_string());
         Ok(())
     }
 

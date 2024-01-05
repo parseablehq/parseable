@@ -18,6 +18,9 @@
 
 pub mod storage;
 
+use std::collections::HashMap;
+use std::sync::RwLock;
+
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use once_cell::sync::Lazy;
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
@@ -82,6 +85,9 @@ pub static ALERTS_STATES: Lazy<IntCounterVec> = Lazy::new(|| {
     )
     .expect("metric can be created")
 });
+
+pub static STREAM_INIT_TIME: Lazy<RwLock<HashMap<String, String>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 fn custom_metrics(registry: &Registry) {
     registry
@@ -150,6 +156,17 @@ pub async fn load_from_stats_from_storage() {
             .set(stats.ingestion as i64);
         STORAGE_SIZE
             .with_label_values(&["data", &stream_name, "parquet"])
-            .set(stats.storage as i64)
+            .set(stats.storage as i64);
+
+        let stream_init_time = &CONFIG
+            .storage()
+            .get_object_store()
+            .get_whole_json(&stream_name)
+            .await
+            .unwrap()["created-at"];
+        STREAM_INIT_TIME
+            .write()
+            .expect("error while writing stream init value from storage to memory")
+            .insert(stream_name, stream_init_time.to_string());
     }
 }

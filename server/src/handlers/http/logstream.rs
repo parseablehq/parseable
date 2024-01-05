@@ -25,6 +25,7 @@ use serde_json::Value;
 
 use crate::alerts::Alerts;
 use crate::metadata::STREAM_INFO;
+use crate::metrics::STREAM_INIT_TIME;
 use crate::option::CONFIG;
 use crate::storage::retention::{self, Retention};
 use crate::storage::{LogStream, StorageDir};
@@ -266,16 +267,9 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
 
     let time = Utc::now();
 
-    let stream_init_time = &CONFIG
-        .storage()
-        .get_object_store()
-        .get_whole_json(&stream_name)
-        .await
-        .unwrap()["created-at"];
-
     let stats = serde_json::json!({
         "stream": stream_name,
-        "stream created at": stream_init_time,
+        "stream created at": STREAM_INIT_TIME.read().expect("error while fetching stream created time from memory").get(&stream_name).unwrap(),
         "time": time,
         "ingestion": {
             "count": stats.events,
