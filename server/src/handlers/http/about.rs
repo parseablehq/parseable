@@ -17,9 +17,11 @@
  */
 
 use actix_web::web::Json;
+use human_size::SpecificSize;
 use serde_json::json;
 
 use crate::{about, option::CONFIG, storage::StorageMetadata, utils::update};
+use std::path::PathBuf;
 
 pub async fn about() -> Json<serde_json::Value> {
     let meta = StorageMetadata::global();
@@ -48,6 +50,21 @@ pub async fn about() -> Json<serde_json::Value> {
     let is_oidc_active = CONFIG.parseable.openid.is_some();
     let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
+    let cache_details: String = if CONFIG.cache_dir().is_none() {
+        "Disabled".to_string()
+    } else {
+        let cache_dir: &Option<PathBuf> = CONFIG.cache_dir();
+        let cache_size: SpecificSize<human_size::Gigibyte> =
+            SpecificSize::new(CONFIG.cache_size() as f64, human_size::Byte)
+                .unwrap()
+                .into();
+        format!(
+            "Enabled, Path: {} (Size: {})",
+            cache_dir.as_ref().unwrap().display(),
+            cache_size
+        )
+    };
+
     Json(json!({
         "version": current_version,
         "uiVersion": ui_version,
@@ -61,6 +78,7 @@ pub async fn about() -> Json<serde_json::Value> {
         "license": "AGPL-3.0-only",
         "mode": mode,
         "staging": staging,
+        "cache": cache_details,
         "grpcPort": grpc_port,
         "store": store
     }))

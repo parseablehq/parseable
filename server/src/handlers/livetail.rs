@@ -237,9 +237,5 @@ fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {
 }
 
 fn cross_origin_config() -> CorsLayer {
-    if cfg!(feature = "debug") {
-        CorsLayer::very_permissive().allow_credentials(true)
-    } else {
-        CorsLayer::new()
-    }
+    CorsLayer::very_permissive().allow_credentials(true)
 }
