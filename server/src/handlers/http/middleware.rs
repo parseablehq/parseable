@@ -22,9 +22,11 @@ use std::future::{ready, Ready};
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
-    Error, Route,
+    Error, Route
 };
+use actix_web::http::header::{self};
 use futures_util::future::LocalBoxFuture;
+use http::header::AUTHORIZATION;
 
 use crate::{
     option::CONFIG,
@@ -32,6 +34,22 @@ use crate::{
     rbac::{self, role::Action},
     utils::actix::extract_session_key,
 };
+use serde::{Deserialize, Serialize};
+use crate::handlers::{STREAM_NAME_HEADER_KEY,KINESIS_COMMON_ATTRIBUTES_KEY};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Message {
+    #[serde(rename = "commonAttributes")]
+    common_attributes: CommonAttributes
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct CommonAttributes {
+    #[serde(rename = "Authorization")]
+    authorization: String ,
+    #[serde(rename = "X-P-Stream")]
+    x_p_stream: String
+}
 
 pub trait RouteExt {
     fn authorize(self, action: Action) -> Self;
@@ -52,6 +70,7 @@ impl RouteExt for Route {
             action,
             method: auth_stream_context,
         })
+
     }
 
     fn authorize_for_user(self, action: Action) -> Self {
@@ -108,6 +127,20 @@ where
     forward_ready!(service);
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
+        if let Some((_, kinesis_common_attributes)) = req.request()
+                            .headers()
+                            .iter()
+                            .find(|&(key, _)| key == KINESIS_COMMON_ATTRIBUTES_KEY)
+            {
+                let attribute_value: &str = kinesis_common_attributes.to_str().unwrap();
+                let message: Message = serde_json::from_str(attribute_value).unwrap();
+                let common_attributes: CommonAttributes = message.common_attributes;
+                let authorization_header: String = common_attributes.authorization.clone();
+                let x_p_stream_header: String = common_attributes.x_p_stream.clone();
+                //println!("{},{}",message.commonAttributes.authorization.to_string(),message.commonAttributes.x_p_stream.to_string());
+                req.headers_mut().insert(header::HeaderName::from_static(AUTHORIZATION.as_str()), header::HeaderValue::from_str(&authorization_header).unwrap());
+                req.headers_mut().insert(header::HeaderName::from_static(STREAM_NAME_HEADER_KEY), header::HeaderValue::from_str(&x_p_stream_header).unwrap());
+            }
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
         let fut = self.service.call(req);
         Box::pin(async move {
