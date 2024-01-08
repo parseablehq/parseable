@@ -22,6 +22,7 @@ pub mod livetail;
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
+const AUTHORIZATION_KEY: &str = "authorization";
 const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";
 const SEPARATOR: char = '^';
 
