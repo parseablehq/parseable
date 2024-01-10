@@ -28,7 +28,7 @@ use crate::event::error::EventError;
 use crate::event::format::EventFormat;
 use crate::event::{self, format};
 use crate::handlers::{
-    LOG_SOURCE_KEY, LOG_SOURCE_VALUE_FOR_KINEIS, LOG_SOURCE_VALUE_FOR_OTEL, PREFIX_META,
+    LOG_SOURCE_KEY, LOG_SOURCE_KINEIS, LOG_SOURCE_OTEL, PREFIX_META,
     PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY,
 };
 use crate::metadata::STREAM_INFO;

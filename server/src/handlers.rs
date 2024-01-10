@@ -33,5 +33,5 @@ const SESSION_COOKIE_NAME: &str = "session";
 const USER_COOKIE_NAME: &str = "username";
 
 // constants for Log Source values for known sources
-const LOG_SOURCE_VALUE_FOR_KINEIS: &str = "kinesis";
-const LOG_SOURCE_VALUE_FOR_OTEL: &str = "otel";
+const LOG_SOURCE_KINESIS: &str = "kinesis";
+const LOG_SOURCE_OTEL: &str = "otel";
