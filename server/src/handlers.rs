@@ -24,9 +24,14 @@ const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const AUTHORIZATION_KEY: &str = "authorization";
 const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";
+const LOG_SOURCE_KEY: &str = "x-p-log-source";
 const SEPARATOR: char = '^';
 
 const OIDC_SCOPE: &str = "openid profile email";
 const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";
 const USER_COOKIE_NAME: &str = "username";
+
+// constants for Log Source values for known sources
+const LOG_SOURCE_VALUE_FOR_KINEIS: &str = "kinesis";
+const LOG_SOURCE_VALUE_FOR_OTEL: &str = "otel";

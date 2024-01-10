@@ -16,23 +16,25 @@
  *
  */
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use actix_web::http::header::ContentType;
-use actix_web::{HttpRequest, HttpResponse};
+use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_schema::Field;
 use bytes::Bytes;
 use http::StatusCode;
 use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use crate::event::error::EventError;
 use crate::event::format::EventFormat;
 use crate::event::{self, format};
-use crate::handlers::{PREFIX_META, PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY};
+use crate::handlers::{
+    LOG_SOURCE_KEY, LOG_SOURCE_VALUE_FOR_KINEIS, LOG_SOURCE_VALUE_FOR_OTEL, PREFIX_META,
+    PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY,
+};
 use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
+use super::kinesis;
 use super::logstream::error::CreateStreamError;
 
 // Handler for POST /api/v1/ingest
@@ -46,11 +48,36 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
         create_stream_if_not_exists(&stream_name).await?;
-        push_logs(stream_name, req, body).await?;
+
+        flatten_and_push_logs(req, body, stream_name).await?;
         Ok(HttpResponse::Ok().finish())
     } else {
         Err(PostError::Header(ParseHeaderError::MissingStreamName))
     }
+}
+
+async fn flatten_and_push_logs(
+    req: HttpRequest,
+    body: Bytes,
+    stream_name: String,
+) -> Result<(), PostError> {
+    //flatten logs
+    if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY) {
+        let mut json: Vec<BTreeMap<String, Value>> = Vec::new();
+        let log_source: String = log_source.to_str().unwrap().to_owned();
+        match log_source.as_str() {
+            LOG_SOURCE_VALUE_FOR_KINEIS => json = kinesis::flatten_kinesis_logs(&body),
+            LOG_SOURCE_VALUE_FOR_OTEL => {}
+            _ => {}
+        }
+        for record in json.iter_mut() {
+            let body: Bytes = serde_json::to_vec(record).unwrap().into();
+            push_logs(stream_name.to_string(), req.clone(), body).await?;
+        }
+    } else {
+        push_logs(stream_name.to_string(), req, body).await?;
+    }
+    Ok(())
 }
 
 // Handler for POST /api/v1/logstream/{logstream}
@@ -58,7 +85,8 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
 // fails if the logstream does not exist
 pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    push_logs(stream_name, req, body).await?;
+
+    flatten_and_push_logs(req, body, stream_name).await?;
     Ok(HttpResponse::Ok().finish())
 }
 

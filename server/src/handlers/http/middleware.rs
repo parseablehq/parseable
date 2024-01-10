@@ -27,7 +27,10 @@ use actix_web::{
 };
 use futures_util::future::LocalBoxFuture;
 
-use crate::handlers::{AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, STREAM_NAME_HEADER_KEY};
+use crate::handlers::{
+    AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_VALUE_FOR_KINEIS,
+    STREAM_NAME_HEADER_KEY,
+};
 use crate::{
     option::CONFIG,
     rbac::Users,
@@ -148,6 +151,10 @@ where
                 HeaderName::from_static(STREAM_NAME_HEADER_KEY),
                 header::HeaderValue::from_str(&message.common_attributes.x_p_stream.clone())
                     .unwrap(),
+            );
+            req.headers_mut().insert(
+                HeaderName::from_static(LOG_SOURCE_KEY),
+                header::HeaderValue::from_static(LOG_SOURCE_VALUE_FOR_KINEIS),
             );
         }
 
