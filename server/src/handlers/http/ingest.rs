@@ -28,8 +28,8 @@ use crate::event::error::EventError;
 use crate::event::format::EventFormat;
 use crate::event::{self, format};
 use crate::handlers::{
-    LOG_SOURCE_KEY, LOG_SOURCE_KINEIS, LOG_SOURCE_OTEL, PREFIX_META,
-    PREFIX_TAGS, SEPARATOR, STREAM_NAME_HEADER_KEY,
+    LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+    STREAM_NAME_HEADER_KEY,
 };
 use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
@@ -66,8 +66,8 @@ async fn flatten_and_push_logs(
         let mut json: Vec<BTreeMap<String, Value>> = Vec::new();
         let log_source: String = log_source.to_str().unwrap().to_owned();
         match log_source.as_str() {
-            LOG_SOURCE_VALUE_FOR_KINEIS => json = kinesis::flatten_kinesis_logs(&body),
-            LOG_SOURCE_VALUE_FOR_OTEL => {}
+            LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
+            LOG_SOURCE_OTEL => {}
             _ => {}
         }
         for record in json.iter_mut() {

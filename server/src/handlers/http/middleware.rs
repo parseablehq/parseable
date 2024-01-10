@@ -28,7 +28,7 @@ use actix_web::{
 use futures_util::future::LocalBoxFuture;
 
 use crate::handlers::{
-    AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_VALUE_FOR_KINEIS,
+    AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
     STREAM_NAME_HEADER_KEY,
 };
 use crate::{
@@ -154,7 +154,7 @@ where
             );
             req.headers_mut().insert(
                 HeaderName::from_static(LOG_SOURCE_KEY),
-                header::HeaderValue::from_static(LOG_SOURCE_VALUE_FOR_KINEIS),
+                header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
             );
         }
 
