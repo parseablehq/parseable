@@ -156,12 +156,12 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
         ObjectStorageError::UnhandledError(err)
     })?;
 
-    if overwrite_staging {
-        put_staging_metadata(&metadata)?;
-    }
-
     if overwrite_remote {
         put_remote_metadata(&metadata).await?;
+    }
+
+    if overwrite_staging {
+        put_staging_metadata(&metadata)?;
     }
 
     Ok(metadata)
