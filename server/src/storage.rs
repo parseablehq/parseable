@@ -140,6 +140,10 @@ pub enum ObjectStorageError {
     #[error("{0} not found")]
     NoSuchKey(String),
 
+    // custom
+    #[error("{0}")]
+    Custom(String),
+
     // Could not connect to object storage
     #[error("Connection Error: {0}")]
     ConnectionError(Box<dyn std::error::Error + Send + Sync + 'static>),
