@@ -256,12 +256,13 @@ impl S3 {
             .with_label_values(&["PUT", status])
             .observe(time);
 
-
         if let Err(object_store::Error::NotFound { source, .. }) = &resp {
-                let source_str = source.to_string();
-                if source_str.contains("<Code>NoSuchBucket</Code>") {
-                    return Err(ObjectStorageError::Custom(format!("Bucket '{}' does not exist in S3.", self.bucket).to_string()));
-                }
+            let source_str = source.to_string();
+            if source_str.contains("<Code>NoSuchBucket</Code>") {
+                return Err(ObjectStorageError::Custom(
+                    format!("Bucket '{}' does not exist in S3.", self.bucket).to_string(),
+                ));
+            }
         }
 
         resp.map(|_| ()).map_err(|err| err.into())

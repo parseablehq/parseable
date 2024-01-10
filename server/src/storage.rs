@@ -140,7 +140,7 @@ pub enum ObjectStorageError {
     #[error("{0} not found")]
     NoSuchKey(String),
 
-    // custom 
+    // custom
     #[error("{0}")]
     Custom(String),
 
