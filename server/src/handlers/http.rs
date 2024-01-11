@@ -40,6 +40,7 @@ use self::middleware::{DisAllowRootUser, RouteExt};
 mod about;
 mod health_check;
 mod ingest;
+mod kinesis;
 mod llm;
 mod logstream;
 mod middleware;
