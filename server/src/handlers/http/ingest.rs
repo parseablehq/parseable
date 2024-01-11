@@ -68,7 +68,10 @@ async fn flatten_and_push_logs(
         match log_source.as_str() {
             LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
             LOG_SOURCE_OTEL => {}
-            _ => {}
+            _ => {
+                log::warn!("Unknown log source: {}", log_source);
+                push_logs(stream_name.to_string(), req.clone(), body).await?;
+            }
         }
         for record in json.iter_mut() {
             let body: Bytes = serde_json::to_vec(record).unwrap().into();
