@@ -21,8 +21,8 @@ use clap::{command, value_parser, Arg, ArgGroup, Args, Command, FromArgMatches};
 
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
-use std::path::PathBuf;
 use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 use url::Url;
 
@@ -611,10 +611,10 @@ impl From<Compression> for parquet::basic::Compression {
 
 pub mod validation {
     use std::{
+        env, io,
         net::ToSocketAddrs,
-        path::{PathBuf, Path},
+        path::{Path, PathBuf},
         str::FromStr,
-        env,io
     };
 
     use path_clean::PathClean;
@@ -638,20 +638,20 @@ pub mod validation {
     }
     pub fn absolute_path(path: impl AsRef<Path>) -> io::Result<PathBuf> {
         let path = path.as_ref();
-    
+
         let absolute_path = if path.is_absolute() {
             path.to_path_buf()
         } else {
             env::current_dir()?.join(path)
-        }.clean();
-    
+        }
+        .clean();
+
         Ok(absolute_path)
     }
 
     pub fn canonicalize_path(s: &str) -> Result<PathBuf, String> {
         let path = PathBuf::from(s);
-        let absolute_path = absolute_path(&path);
-        Ok(absolute_path.unwrap())
+        Ok(absolute_path(path).unwrap())
     }
 
     pub fn socket_addr(s: &str) -> Result<String, String> {
