@@ -1,5 +1,5 @@
 /*
- * Parseable Server (C) 2022 - 2023 Parseable, Inc.
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -22,9 +22,9 @@ pub mod livetail;
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
-const AUTHORIZATION_KEY: &str = "authorization";
-const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";
 const LOG_SOURCE_KEY: &str = "x-p-log-source";
+
+const AUTHORIZATION_KEY: &str = "authorization";
 const SEPARATOR: char = '^';
 
 const OIDC_SCOPE: &str = "openid profile email";
@@ -32,6 +32,12 @@ const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";
 const USER_COOKIE_NAME: &str = "username";
 
-// constants for Log Source values for known sources
+// constants for log Source values for known sources and formats
 const LOG_SOURCE_KINESIS: &str = "kinesis";
+
+// OpenTelemetry sends data in JSON format with
+// specification as explained here https://opentelemetry.io/docs/specs/otel/logs/data-model/
 const LOG_SOURCE_OTEL: &str = "otel";
+
+// AWS Kinesis constants
+const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";
