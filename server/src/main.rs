@@ -58,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
     CONFIG.validate_staging()?;
     migration::run_metadata_migration(&CONFIG).await?;
     let metadata = storage::resolve_parseable_metadata().await?;
+
     banner::print(&CONFIG, &metadata).await;
     rbac::map::init(&metadata);
     metadata.set_global();

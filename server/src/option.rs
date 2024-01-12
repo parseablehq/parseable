@@ -43,7 +43,6 @@ pub struct Config {
 impl Config {
     fn new() -> Self {
         let cli = parseable_cli_command().get_matches();
-
         match cli.subcommand() {
             Some(("local-store", m)) => {
                 let server = match Server::from_arg_matches(m) {
@@ -51,7 +50,7 @@ impl Config {
                     Err(err) => err.exit(),
                 };
                 let storage = match FSConfig::from_arg_matches(m) {
-                    Ok(server) => server,
+                    Ok(storage) => storage,
                     Err(err) => err.exit(),
                 };
 
@@ -85,7 +84,7 @@ impl Config {
                     Err(err) => err.exit(),
                 };
                 let storage = match S3Config::from_arg_matches(m) {
-                    Ok(server) => server,
+                    Ok(storage) => storage,
                     Err(err) => err.exit(),
                 };
 

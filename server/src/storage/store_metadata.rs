@@ -100,13 +100,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
     let remote_metadata = storage.get_metadata().await?;
 
     let check = match (staging_metadata, remote_metadata) {
-        (Some(staging), Some(remote)) => {
-            if staging.deployment_id == remote.deployment_id {
-                EnvChange::None(remote)
-            } else {
-                EnvChange::DeploymentMismatch
-            }
-        }
+        (Some(_staging), Some(remote)) => EnvChange::None(remote),
         (None, Some(remote)) => EnvChange::NewStaging(remote),
         (Some(_), None) => EnvChange::NewRemote,
         (None, None) => EnvChange::CreateBoth,
@@ -116,16 +110,14 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
     let mut overwrite_staging = false;
     let mut overwrite_remote = false;
 
-    const MISMATCH: &str = "Could not start the server because metadata file found in staging directory does not match one in the storage";
     let res = match check {
         EnvChange::None(metadata) => {
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
             Ok(metadata)
-        }
-        EnvChange::DeploymentMismatch => Err(MISMATCH),
+        },
         EnvChange::NewRemote => {
-            Err("Could not start the server because metadata not found in storage")
+            Err("Could not start the server because staging directory indicates stale data from previous deployment, please choose an empty staging directory and restart the server")
         }
         EnvChange::NewStaging(mut metadata) => {
             create_dir_all(CONFIG.staging_dir())?;
@@ -171,9 +163,8 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvChange {
     /// No change in env i.e both staging and remote have same id  
+    /// or deployment id of staging is not matching with that of remote
     None(StorageMetadata),
-    /// Mismatch in deployment id. Cannot use this staging for this remote
-    DeploymentMismatch,
     /// Metadata not found in storage. Treated as possible misconfiguration on user side.
     NewRemote,
     /// If a new staging is found then we just copy remote metadata to this staging.

@@ -32,7 +32,7 @@ use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
 use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
-use crate::{option::validation, utils::validate_path_is_writeable};
+use crate::utils::validate_path_is_writeable;
 
 use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
 
@@ -49,8 +49,7 @@ pub struct FSConfig {
     #[arg(
         env = "P_FS_DIR",
         value_name = "filesystem path",
-        default_value = "./data",
-        value_parser = validation::canonicalize_path
+        default_value = "./data"
     )]
     pub root: PathBuf,
 }
@@ -187,7 +186,7 @@ impl ObjectStorage for LocalFS {
         };
         let to_path = self.root.join(key);
         if let Some(path) = to_path.parent() {
-            fs::create_dir_all(path).await?
+            fs::create_dir_all(path).await?;
         }
         let _ = fs_extra::file::copy(path, to_path, &op)?;
         Ok(())
