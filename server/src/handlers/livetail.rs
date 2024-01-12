@@ -193,14 +193,8 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
     };
 
     let config = match identity {
-        Some(id) => {
-            log::info!("TLS enabled");
-            ServerTlsConfig::new().identity(id)
-        }
-        None => {
-            log::info!("TLS disabled");
-            ServerTlsConfig::new()
-        }
+        Some(id) => ServerTlsConfig::new().identity(id),
+        None => ServerTlsConfig::new(),
     };
 
     // rust is treating closures for map_err ad different types? so I have to do this
@@ -208,28 +202,21 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let server = Server::builder();
     match server.tls_config(config) {
-        Ok(server) => {
-            return server
-                .accept_http1(true)
-                .layer(cors)
-                .layer(GrpcWebLayer::new())
-                .add_service(svc)
-                .serve(addr)
-                .map_err(err_map_fn);
-        }
+        Ok(server) => server
+            .accept_http1(true)
+            .layer(cors)
+            .layer(GrpcWebLayer::new())
+            .add_service(svc)
+            .serve(addr)
+            .map_err(err_map_fn),
 
-        Err(err) => {
-            log::warn!("TLS disabled due to missing certificate or key");
-            log::warn!("Error: {:?}", err);
-            log::warn!("Proceeding without TLS");
-            return Server::builder()
-                .accept_http1(true)
-                .layer(cors)
-                .layer(GrpcWebLayer::new())
-                .add_service(svc)
-                .serve(addr)
-                .map_err(err_map_fn);
-        }
+        Err(_) => Server::builder()
+            .accept_http1(true)
+            .layer(cors)
+            .layer(GrpcWebLayer::new())
+            .add_service(svc)
+            .serve(addr)
+            .map_err(err_map_fn),
     }
 }
 
