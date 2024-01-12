@@ -66,7 +66,7 @@ impl StorageMetadata {
         Self {
             version: "v3".to_string(),
             mode: CONFIG.storage_name.to_owned(),
-            staging: CONFIG.staging_dir().canonicalize().unwrap(),
+            staging: CONFIG.staging_dir().to_path_buf(),
             storage: CONFIG.storage().get_endpoint(),
             deployment_id: uid::gen(),
             users: Vec::new(),
@@ -130,7 +130,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
         }
         EnvChange::CreateBoth => {
             create_dir_all(CONFIG.staging_dir())?;
-            let metadata = StorageMetadata::new();
+           let metadata = StorageMetadata::new();
             // new metadata needs to be set on both staging and remote
             overwrite_remote = true;
             overwrite_staging = true;

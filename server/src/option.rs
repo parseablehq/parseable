@@ -21,7 +21,8 @@ use clap::{command, value_parser, Arg, ArgGroup, Args, Command, FromArgMatches};
 
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::env;
 use std::sync::Arc;
 use url::Url;
 
@@ -107,7 +108,7 @@ impl Config {
         self.storage.clone()
     }
 
-    pub fn staging_dir(&self) -> &Path {
+    pub fn staging_dir(&self) -> &PathBuf {
         &self.parseable.local_staging_path
     }
 
@@ -610,11 +611,13 @@ impl From<Compression> for parquet::basic::Compression {
 
 pub mod validation {
     use std::{
-        fs::{canonicalize, create_dir_all},
         net::ToSocketAddrs,
-        path::PathBuf,
+        path::{PathBuf, Path},
         str::FromStr,
+        env,io
     };
+
+    use path_clean::PathClean;
 
     use crate::option::MIN_CACHE_SIZE_BYTES;
     use crate::storage::LOCAL_SYNC_INTERVAL;
@@ -633,16 +636,22 @@ pub mod validation {
 
         Ok(path)
     }
+    pub fn absolute_path(path: impl AsRef<Path>) -> io::Result<PathBuf> {
+        let path = path.as_ref();
+    
+        let absolute_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            env::current_dir()?.join(path)
+        }.clean();
+    
+        Ok(absolute_path)
+    }
 
     pub fn canonicalize_path(s: &str) -> Result<PathBuf, String> {
         let path = PathBuf::from(s);
-
-        create_dir_all(&path)
-            .map_err(|err| err.to_string())
-            .and_then(|_| {
-                canonicalize(&path)
-                    .map_err(|_| "Cannot use the path provided as an absolute path".to_string())
-            })
+        let absolute_path = absolute_path(&path);
+        Ok(absolute_path.unwrap())
     }
 
     pub fn socket_addr(s: &str) -> Result<String, String> {

@@ -32,7 +32,7 @@ use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
 use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
-use crate::utils::validate_path_is_writeable;
+use crate::{option::validation, utils::validate_path_is_writeable};
 
 use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
 
@@ -49,7 +49,8 @@ pub struct FSConfig {
     #[arg(
         env = "P_FS_DIR",
         value_name = "filesystem path",
-        default_value = "./data"
+        default_value = "./data",
+        value_parser = validation::canonicalize_path
     )]
     pub root: PathBuf,
 }
