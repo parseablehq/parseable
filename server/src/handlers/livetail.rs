@@ -26,7 +26,7 @@ use futures_util::{Future, StreamExt, TryFutureExt, TryStreamExt};
 use http_auth_basic::Credentials;
 use rand::distributions::{Alphanumeric, DistString};
 use tonic::metadata::MetadataMap;
-use tonic::transport::Server;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
 
 use arrow_flight::{
@@ -176,13 +176,61 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let cors = cross_origin_config();
 
-    Server::builder()
-        .accept_http1(true)
-        .layer(cors)
-        .layer(GrpcWebLayer::new())
-        .add_service(svc)
-        .serve(addr)
-        .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send>)
+    let identity = match (
+        &CONFIG.parseable.tls_cert_path,
+        &CONFIG.parseable.tls_key_path,
+    ) {
+        (Some(cert), Some(key)) => {
+            match (std::fs::read_to_string(cert), std::fs::read_to_string(key)) {
+                (Ok(cert_file), Ok(key_file)) => {
+                    let identity = Identity::from_pem(cert_file, key_file);
+                    Some(identity)
+                }
+                _ => None,
+            }
+        }
+        (_, _) => None,
+    };
+
+    let config = match identity {
+        Some(id) => {
+            log::info!("TLS enabled");
+            ServerTlsConfig::new().identity(id)
+        }
+        None => {
+            log::info!("TLS disabled");
+            ServerTlsConfig::new()
+        }
+    };
+
+    // rust is treating closures for map_err ad different types? so I have to do this
+    let err_map_fn = |err| Box::new(err) as Box<dyn std::error::Error + Send>;
+
+    let server = Server::builder();
+    match server.tls_config(config) {
+        Ok(server) => {
+            return server
+                .accept_http1(true)
+                .layer(cors)
+                .layer(GrpcWebLayer::new())
+                .add_service(svc)
+                .serve(addr)
+                .map_err(err_map_fn);
+        }
+
+        Err(err) => {
+            log::warn!("TLS disabled due to missing certificate or key");
+            log::warn!("Error: {:?}", err);
+            log::warn!("Proceeding without TLS");
+            return Server::builder()
+                .accept_http1(true)
+                .layer(cors)
+                .layer(GrpcWebLayer::new())
+                .add_service(svc)
+                .serve(addr)
+                .map_err(err_map_fn);
+        }
+    }
 }
 
 fn extract_stream(body: &serde_json::Value) -> Result<&str, Status> {
