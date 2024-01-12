@@ -1,5 +1,5 @@
 /*
- * Parseable Server (C) 2022 - 2023 Parseable, Inc.
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -37,6 +37,30 @@ struct Data {
     data: String,
 }
 
+// Flatten Kinesis logs is used to flatten the Kinesis logs into a queryable JSON format.
+// Kinesis logs are in the format
+// {
+//     "requestId": "9b848d8a-2d89-474b-b073-04b8e5232210",
+//     "timestamp": 1705026780451,
+//     "records": [
+//         {
+//             "data": "eyJDSEFOR0UiOi0wLjQ1LCJQUklDRSI6NS4zNiwiVElDS0VSX1NZTUJPTCI6IkRFRyIsIlNFQ1RPUiI6IkVORVJHWSJ9"
+//         }
+//     ]
+// }
+// The data field is base64 encoded JSON (there can be multiple data fields), and there is a requestId and timestamp field.
+// Kinesis logs are flattened to the following format:
+// {
+//     "CHANGE": 3.16,
+//     "PRICE": 73.76,
+//     "SECTOR": "RETAIL",
+//     "TICKER_SYMBOL": "WMT",
+//     "p_metadata": "",
+//     "p_tags": "",
+//     "p_timestamp": "2024-01-11T09:08:34.290",
+//     "requestId": "b858288a-f5d8-4181-a746-3f3dd716be8a",
+//     "timestamp": "1704964113659"
+// }
 pub fn flatten_kinesis_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let body_str = std::str::from_utf8(body).unwrap();
     let message: Message = serde_json::from_str(body_str).unwrap();
