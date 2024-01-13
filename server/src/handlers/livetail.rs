@@ -192,31 +192,34 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
         (_, _) => None,
     };
 
-    let config = match identity {
-        Some(id) => ServerTlsConfig::new().identity(id),
-        None => ServerTlsConfig::new(),
-    };
+    let config = identity.map(|id| ServerTlsConfig::new().identity(id));
 
-    // rust is treating closures for map_err ad different types? so I have to do this
+    // rust is treating closures as different types
     let err_map_fn = |err| Box::new(err) as Box<dyn std::error::Error + Send>;
 
-    let server = Server::builder();
-    match server.tls_config(config) {
-        Ok(server) => server
-            .accept_http1(true)
-            .layer(cors)
-            .layer(GrpcWebLayer::new())
-            .add_service(svc)
-            .serve(addr)
-            .map_err(err_map_fn),
+    // match on config to decide if we want to use tls or not
+    match config {
+        Some(config) => {
+            let server = match Server::builder().tls_config(config) {
+                Ok(server) => server,
+                Err(_) => Server::builder(),
+            };
 
-        Err(_) => Server::builder()
+            server
+                .accept_http1(true)
+                .layer(cors)
+                .layer(GrpcWebLayer::new())
+                .add_service(svc)
+                .serve(addr)
+                .map_err(err_map_fn)
+        }
+        None => Server::builder()
             .accept_http1(true)
             .layer(cors)
             .layer(GrpcWebLayer::new())
             .add_service(svc)
             .serve(addr)
-            .map_err(err_map_fn),
+            .map_err(err_map_fn)
     }
 }
 
