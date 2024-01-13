@@ -26,7 +26,7 @@ use futures_util::{Future, StreamExt, TryFutureExt, TryStreamExt};
 use http_auth_basic::Credentials;
 use rand::distributions::{Alphanumeric, DistString};
 use tonic::metadata::MetadataMap;
-use tonic::transport::Server;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
 
 use arrow_flight::{
@@ -176,13 +176,51 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let cors = cross_origin_config();
 
-    Server::builder()
-        .accept_http1(true)
-        .layer(cors)
-        .layer(GrpcWebLayer::new())
-        .add_service(svc)
-        .serve(addr)
-        .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send>)
+    let identity = match (
+        &CONFIG.parseable.tls_cert_path,
+        &CONFIG.parseable.tls_key_path,
+    ) {
+        (Some(cert), Some(key)) => {
+            match (std::fs::read_to_string(cert), std::fs::read_to_string(key)) {
+                (Ok(cert_file), Ok(key_file)) => {
+                    let identity = Identity::from_pem(cert_file, key_file);
+                    Some(identity)
+                }
+                _ => None,
+            }
+        }
+        (_, _) => None,
+    };
+
+    let config = identity.map(|id| ServerTlsConfig::new().identity(id));
+
+    // rust is treating closures as different types
+    let err_map_fn = |err| Box::new(err) as Box<dyn std::error::Error + Send>;
+
+    // match on config to decide if we want to use tls or not
+    match config {
+        Some(config) => {
+            let server = match Server::builder().tls_config(config) {
+                Ok(server) => server,
+                Err(_) => Server::builder(),
+            };
+
+            server
+                .accept_http1(true)
+                .layer(cors)
+                .layer(GrpcWebLayer::new())
+                .add_service(svc)
+                .serve(addr)
+                .map_err(err_map_fn)
+        }
+        None => Server::builder()
+            .accept_http1(true)
+            .layer(cors)
+            .layer(GrpcWebLayer::new())
+            .add_service(svc)
+            .serve(addr)
+            .map_err(err_map_fn),
+    }
 }
 
 fn extract_stream(body: &serde_json::Value) -> Result<&str, Status> {
