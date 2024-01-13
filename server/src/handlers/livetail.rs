@@ -219,7 +219,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
             .layer(GrpcWebLayer::new())
             .add_service(svc)
             .serve(addr)
-            .map_err(err_map_fn)
+            .map_err(err_map_fn),
     }
 }
 
