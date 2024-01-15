@@ -100,7 +100,13 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
     let remote_metadata = storage.get_metadata().await?;
 
     let check = match (staging_metadata, remote_metadata) {
-        (Some(_staging), Some(remote)) => EnvChange::None(remote),
+        (Some(staging), Some(remote)) => {
+            if staging.deployment_id == remote.deployment_id {
+                EnvChange::None(remote)
+            } else {
+                EnvChange::NewRemote
+            }
+        }
         (None, Some(remote)) => EnvChange::NewStaging(remote),
         (Some(_), None) => EnvChange::NewRemote,
         (None, None) => EnvChange::CreateBoth,
@@ -130,7 +136,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
         }
         EnvChange::CreateBoth => {
             create_dir_all(CONFIG.staging_dir())?;
-           let metadata = StorageMetadata::new();
+            let metadata = StorageMetadata::new();
             // new metadata needs to be set on both staging and remote
             overwrite_remote = true;
             overwrite_staging = true;
