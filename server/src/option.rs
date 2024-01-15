@@ -21,7 +21,8 @@ use clap::{command, value_parser, Arg, ArgGroup, Args, Command, FromArgMatches};
 
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
-use std::path::{Path, PathBuf};
+use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 use url::Url;
 
@@ -43,7 +44,6 @@ pub struct Config {
 impl Config {
     fn new() -> Self {
         let cli = parseable_cli_command().get_matches();
-
         match cli.subcommand() {
             Some(("local-store", m)) => {
                 let server = match Server::from_arg_matches(m) {
@@ -51,7 +51,7 @@ impl Config {
                     Err(err) => err.exit(),
                 };
                 let storage = match FSConfig::from_arg_matches(m) {
-                    Ok(server) => server,
+                    Ok(storage) => storage,
                     Err(err) => err.exit(),
                 };
 
@@ -85,7 +85,7 @@ impl Config {
                     Err(err) => err.exit(),
                 };
                 let storage = match S3Config::from_arg_matches(m) {
-                    Ok(server) => server,
+                    Ok(storage) => storage,
                     Err(err) => err.exit(),
                 };
 
@@ -108,7 +108,7 @@ impl Config {
         self.storage.clone()
     }
 
-    pub fn staging_dir(&self) -> &Path {
+    pub fn staging_dir(&self) -> &PathBuf {
         &self.parseable.local_staging_path
     }
 
@@ -611,11 +611,13 @@ impl From<Compression> for parquet::basic::Compression {
 
 pub mod validation {
     use std::{
-        fs::{canonicalize, create_dir_all},
+        env, io,
         net::ToSocketAddrs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         str::FromStr,
     };
+
+    use path_clean::PathClean;
 
     use crate::option::MIN_CACHE_SIZE_BYTES;
     use crate::storage::LOCAL_SYNC_INTERVAL;
@@ -634,16 +636,22 @@ pub mod validation {
 
         Ok(path)
     }
+    pub fn absolute_path(path: impl AsRef<Path>) -> io::Result<PathBuf> {
+        let path = path.as_ref();
+
+        let absolute_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            env::current_dir()?.join(path)
+        }
+        .clean();
+
+        Ok(absolute_path)
+    }
 
     pub fn canonicalize_path(s: &str) -> Result<PathBuf, String> {
         let path = PathBuf::from(s);
-
-        create_dir_all(&path)
-            .map_err(|err| err.to_string())
-            .and_then(|_| {
-                canonicalize(&path)
-                    .map_err(|_| "Cannot use the path provided as an absolute path".to_string())
-            })
+        Ok(absolute_path(path).unwrap())
     }
 
     pub fn socket_addr(s: &str) -> Result<String, String> {

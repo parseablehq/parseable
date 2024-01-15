@@ -187,7 +187,7 @@ impl ObjectStorage for LocalFS {
         };
         let to_path = self.root.join(key);
         if let Some(path) = to_path.parent() {
-            fs::create_dir_all(path).await?
+            fs::create_dir_all(path).await?;
         }
         let _ = fs_extra::file::copy(path, to_path, &op)?;
         Ok(())
