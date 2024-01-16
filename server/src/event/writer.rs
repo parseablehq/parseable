@@ -78,10 +78,18 @@ impl WriterTable {
 
         match hashmap_guard.get(stream_name) {
             Some(stream_writer) => {
-                stream_writer
-                    .lock()
-                    .unwrap() // /yyyyyyyyyyy
-                    .push(stream_name, schema_key, record)?;
+                loop {
+                    match stream_writer.lock() {
+                        Ok(mut stream_writer) => {
+                            stream_writer.push(stream_name, schema_key, record)?;
+                            break;
+                        }
+                        Err(_ /*poisoned */) => {
+                            std::thread::sleep(Duration::from_millis(100));
+                            continue;
+                        }
+                    }
+                }
             }
             None => {
                 drop(hashmap_guard);
