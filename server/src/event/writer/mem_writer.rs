@@ -25,6 +25,8 @@ use itertools::Itertools;
 
 use crate::utils::arrow::adapt_batch;
 
+static BUF_SIZE: &str = "P_BUFFER_SIZE";
+
 /// Structure to keep recordbatches in memory.
 ///
 /// Any new schema is updated in the schema map.
@@ -90,8 +92,8 @@ struct MutableBuffer {
 
 impl MutableBuffer {
     fn push(&mut self, rb: RecordBatch) -> Option<Vec<RecordBatch>> {
-        let buf_size = std::env::var("P_BUFFER_SIZE")
-            .unwrap_or("16384".to_owned())
+        let buf_size = std::env::var(BUF_SIZE)
+            .unwrap_or_else(|_| String::from("16384"))
             .parse::<usize>()
             .unwrap();
 
