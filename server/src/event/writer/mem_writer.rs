@@ -23,7 +23,7 @@ use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
 
-use crate::{utils::arrow::adapt_batch, option::CONFIG};
+use crate::{option::CONFIG, utils::arrow::adapt_batch};
 
 /// Structure to keep recordbatches in memory.
 ///
