@@ -23,7 +23,6 @@ mod mem_writer;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
-    time::Duration,
 };
 
 use crate::utils;
@@ -78,18 +77,10 @@ impl WriterTable {
 
         match hashmap_guard.get(stream_name) {
             Some(stream_writer) => {
-                loop {
-                    match stream_writer.lock() {
-                        Ok(mut stream_writer) => {
-                            stream_writer.push(stream_name, schema_key, record)?;
-                            break;
-                        }
-                        Err(_ /*poisoned */) => {
-                            std::thread::sleep(Duration::from_millis(100));
-                            continue;
-                        }
-                    }
-                }
+                stream_writer
+                    .lock()
+                    .unwrap()
+                    .push(stream_name, schema_key, record)?;
             }
             None => {
                 drop(hashmap_guard);
@@ -130,21 +121,17 @@ impl WriterTable {
         stream_name: &str,
         schema: &Arc<Schema>,
     ) -> Option<Vec<RecordBatch>> {
-        let read_guard = self.0.read().unwrap();
-        let stream_guard = read_guard.get(stream_name)?;
+        let records = self
+            .0
+            .read()
+            .unwrap()
+            .get(stream_name)?
+            .lock()
+            .unwrap()
+            .mem
+            .recordbatch_cloned(schema);
 
-        loop {
-            match stream_guard.lock() {
-                Ok(guard) => {
-                    let records = guard.mem.recordbatch_cloned(schema);
-                    return Some(records);
-                }
-                Err(_ /*poisoned */) => {
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-            }
-        }
+        Some(records)
     }
 }
 
