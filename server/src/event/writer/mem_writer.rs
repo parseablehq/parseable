@@ -23,9 +23,7 @@ use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
 
-use crate::utils::arrow::adapt_batch;
-
-static BUF_SIZE: &str = "P_BUFFER_SIZE";
+use crate::{utils::arrow::adapt_batch, option::CONFIG};
 
 /// Structure to keep recordbatches in memory.
 ///
@@ -92,13 +90,10 @@ struct MutableBuffer {
 
 impl MutableBuffer {
     fn push(&mut self, rb: RecordBatch) -> Option<Vec<RecordBatch>> {
-        let buf_size = std::env::var(BUF_SIZE)
-            .unwrap_or_else(|_| String::from("16384"))
-            .parse::<usize>()
-            .unwrap();
+        let maxima = CONFIG.parseable.records_per_request;
 
-        if self.rows + rb.num_rows() >= buf_size {
-            let left = buf_size - self.rows;
+        if self.rows + rb.num_rows() >= maxima {
+            let left = maxima - self.rows;
             let right = rb.num_rows() - left;
             let left_slice = rb.slice(0, left);
             let right_slice = if left < rb.num_rows() {
