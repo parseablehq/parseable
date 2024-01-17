@@ -30,15 +30,15 @@ use crate::utils::arrow::adapt_batch;
 /// Any new schema is updated in the schema map.
 /// Recordbatches are pushed to mutable buffer first and then concated together and pushed to read buffer
 #[derive(Debug)]
-pub struct MemWriter<const N: usize> {
+pub struct MemWriter {
     schema: Schema,
     // for checking uniqueness of schema
     schema_map: HashSet<String>,
     read_buffer: Vec<RecordBatch>,
-    mutable_buffer: MutableBuffer<N>,
+    mutable_buffer: MutableBuffer,
 }
 
-impl<const N: usize> Default for MemWriter<N> {
+impl Default for MemWriter {
     fn default() -> Self {
         Self {
             schema: Schema::empty(),
@@ -49,7 +49,7 @@ impl<const N: usize> Default for MemWriter<N> {
     }
 }
 
-impl<const N: usize> MemWriter<N> {
+impl MemWriter {
     pub fn push(&mut self, schema_key: &str, rb: RecordBatch) {
         if !self.schema_map.contains(schema_key) {
             self.schema_map.insert(schema_key.to_owned());
@@ -83,15 +83,20 @@ fn concat_records(schema: &Arc<Schema>, record: &[RecordBatch]) -> RecordBatch {
 }
 
 #[derive(Debug, Default)]
-struct MutableBuffer<const N: usize> {
+struct MutableBuffer {
     pub inner: Vec<RecordBatch>,
     pub rows: usize,
 }
 
-impl<const N: usize> MutableBuffer<N> {
+impl MutableBuffer {
     fn push(&mut self, rb: RecordBatch) -> Option<Vec<RecordBatch>> {
-        if self.rows + rb.num_rows() >= N {
-            let left = N - self.rows;
+        let buf_size = std::env::var("P_BUFFER_SIZE")
+            .unwrap_or("16384".to_owned())
+            .parse::<usize>()
+            .unwrap();
+
+        if self.rows + rb.num_rows() >= buf_size {
+            let left = buf_size - self.rows;
             let right = rb.num_rows() - left;
             let left_slice = rb.slice(0, left);
             let right_slice = if left < rb.num_rows() {
