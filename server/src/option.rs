@@ -111,20 +111,20 @@ impl Config {
         let has_parseable_json = obj_store.get_object(&rel_path).await.is_ok();
 
         let has_dirs = match obj_store.list_dirs_in_storage().await {
-            Ok(dirs) => dirs.is_empty(),
+            Ok(dirs) => !dirs.is_empty(),
             Err(_) => false,
         };
 
         let has_streams = obj_store.list_streams().await.is_ok();
 
-        if has_dirs || has_parseable_json && has_streams {
+        if !has_dirs || has_parseable_json && has_streams {
             Ok(())
         } else if has_parseable_json && !has_streams {
             Err(ObjectStorageError::Custom(
                 "Could not start the server because storage contains stale data from previous deployment, please choose an empty storage and restart the server. Join us on Parseable Slack to report this incident : launchpass.com/parseable"
                 .to_owned(),
             ))
-        } else if !has_parseable_json && !has_streams && !has_dirs {
+        } else if !has_parseable_json && !has_streams && has_dirs {
             Err(ObjectStorageError::Custom(
                 "Storage contains some stale data, Please provide an Empty Storage".to_owned(),
             ))
