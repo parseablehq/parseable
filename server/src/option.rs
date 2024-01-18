@@ -230,7 +230,7 @@ pub struct Server {
     /// Parquet compression algorithm
     pub parquet_compression: Compression,
 
-    /// Max value a record can be before spliting the request
+    /// Max value a record can be before splitting the request
     pub records_per_request: usize,
 }
 
@@ -251,7 +251,7 @@ impl FromArgMatches for Server {
         let openid_issuer = m.get_one::<Url>(Self::OPENID_ISSUER).cloned();
 
         self.records_per_request = m
-            .get_one(Self::RECORDS_PER_REQUEST)
+            .get_one(Self::BUFFER_SIZE)
             .cloned()
             .expect("default value for records per request");
         self.address = m
@@ -369,7 +369,7 @@ impl Server {
     pub const PARQUET_COMPRESSION_ALGO: &'static str = "compression-algo";
     pub const DEFAULT_USERNAME: &'static str = "admin";
     pub const DEFAULT_PASSWORD: &'static str = "admin";
-    pub const RECORDS_PER_REQUEST: &'static str = "records-per-request";
+    pub const BUFFER_SIZE: &'static str = "buffer-size";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -518,14 +518,14 @@ impl Server {
                     .help("OIDC provider's host address"),
             )
             .arg(
-                Arg::new(Self::RECORDS_PER_REQUEST)
-                    .long(Self::RECORDS_PER_REQUEST)
-                    .env("P_RECORDS_PER_REQUEST")
+                Arg::new(Self::BUFFER_SIZE)
+                    .long(Self::BUFFER_SIZE)
+                    .env("P_BUFFER_SIZE")
                     .value_name("NUMBER")
                     .default_value("16384")
                     .required(false)
                     .value_parser(value_parser!(usize))
-                    .help("maximum size records are split up per request"),
+                    .help("buffer size for internal request buffer"),
             )
             .arg(
                 Arg::new(Self::DOMAIN_URI)
