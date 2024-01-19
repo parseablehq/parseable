@@ -23,22 +23,22 @@ use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
 
-use crate::{option::CONFIG, utils::arrow::adapt_batch};
+use crate::utils::arrow::adapt_batch;
 
 /// Structure to keep recordbatches in memory.
 ///
 /// Any new schema is updated in the schema map.
 /// Recordbatches are pushed to mutable buffer first and then concated together and pushed to read buffer
 #[derive(Debug)]
-pub struct MemWriter {
+pub struct MemWriter<const N: usize> {
     schema: Schema,
     // for checking uniqueness of schema
     schema_map: HashSet<String>,
     read_buffer: Vec<RecordBatch>,
-    mutable_buffer: MutableBuffer,
+    mutable_buffer: MutableBuffer<N>,
 }
 
-impl Default for MemWriter {
+impl<const N: usize> Default for MemWriter<N> {
     fn default() -> Self {
         Self {
             schema: Schema::empty(),
@@ -49,7 +49,7 @@ impl Default for MemWriter {
     }
 }
 
-impl MemWriter {
+impl<const N: usize> MemWriter<N> {
     pub fn push(&mut self, schema_key: &str, rb: RecordBatch) {
         if !self.schema_map.contains(schema_key) {
             self.schema_map.insert(schema_key.to_owned());
@@ -83,17 +83,15 @@ fn concat_records(schema: &Arc<Schema>, record: &[RecordBatch]) -> RecordBatch {
 }
 
 #[derive(Debug, Default)]
-struct MutableBuffer {
+struct MutableBuffer<const N: usize> {
     pub inner: Vec<RecordBatch>,
     pub rows: usize,
 }
 
-impl MutableBuffer {
+impl<const N: usize> MutableBuffer<N> {
     fn push(&mut self, rb: RecordBatch) -> Option<Vec<RecordBatch>> {
-        let maxima = CONFIG.parseable.records_per_request;
-
-        if self.rows + rb.num_rows() >= maxima {
-            let left = maxima - self.rows;
+        if self.rows + rb.num_rows() >= N {
+            let left = N - self.rows;
             let right = rb.num_rows() - left;
             let left_slice = rb.slice(0, left);
             let right_slice = if left < rb.num_rows() {
