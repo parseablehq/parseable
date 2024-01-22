@@ -23,8 +23,6 @@ pub mod json;
 pub mod uid;
 pub mod update;
 
-use std::path::Path;
-
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 
 #[allow(dead_code)]
@@ -41,17 +39,6 @@ pub fn hostname_unchecked() -> String {
 #[allow(dead_code)]
 pub fn capitalize_ascii(s: &str) -> String {
     s[0..1].to_uppercase() + &s[1..]
-}
-
-pub fn validate_path_is_writeable(path: &Path) -> anyhow::Result<()> {
-    let Ok(md) = std::fs::metadata(path) else {
-        anyhow::bail!("Could not read metadata for staging dir")
-    };
-    let permissions = md.permissions();
-    if permissions.readonly() {
-        anyhow::bail!("Staging directory {} is not writable", path.display())
-    }
-    Ok(())
 }
 
 /// Convert minutes to a slot range
@@ -263,7 +250,7 @@ mod tests {
         ]
     )]
     #[case::same_hour_with_00_to_59_minute_block(
-        "2022-06-11T16:00:00+00:00", "2022-06-11T16:59:59+00:00",   
+        "2022-06-11T16:00:00+00:00", "2022-06-11T16:59:59+00:00",
         &["date=2022-06-11/hour=16/"]
     )]
     #[case::same_date_different_hours_coherent_minute(
@@ -274,14 +261,14 @@ mod tests {
         ]
     )]
     #[case::same_date_different_hours_incoherent_minutes(
-        "2022-06-11T15:59:00+00:00", "2022-06-11T16:01:00+00:00", 
+        "2022-06-11T15:59:00+00:00", "2022-06-11T16:01:00+00:00",
         &[
             "date=2022-06-11/hour=15/minute=59/",
             "date=2022-06-11/hour=16/minute=00/"
         ]
     )]
     #[case::same_date_different_hours_whole_hours_between_incoherent_minutes(
-        "2022-06-11T15:59:00+00:00", "2022-06-11T17:01:00+00:00", 
+        "2022-06-11T15:59:00+00:00", "2022-06-11T17:01:00+00:00",
         &[
             "date=2022-06-11/hour=15/minute=59/",
             "date=2022-06-11/hour=16/",
@@ -289,14 +276,14 @@ mod tests {
         ]
     )]
     #[case::different_date_coherent_hours_and_minutes(
-        "2022-06-11T00:00:00+00:00", "2022-06-13T00:00:00+00:00", 
+        "2022-06-11T00:00:00+00:00", "2022-06-13T00:00:00+00:00",
         &[
             "date=2022-06-11/",
             "date=2022-06-12/"
         ]
     )]
     #[case::different_date_incoherent_hours_coherent_minutes(
-        "2022-06-11T23:00:01+00:00", "2022-06-12T01:59:59+00:00", 
+        "2022-06-11T23:00:01+00:00", "2022-06-12T01:59:59+00:00",
         &[
             "date=2022-06-11/hour=23/",
             "date=2022-06-12/hour=00/",
@@ -304,7 +291,7 @@ mod tests {
         ]
     )]
     #[case::different_date_incoherent_hours_incoherent_minutes(
-        "2022-06-11T23:59:59+00:00", "2022-06-12T00:01:00+00:00", 
+        "2022-06-11T23:59:59+00:00", "2022-06-12T00:01:00+00:00",
         &[
             "date=2022-06-11/hour=23/minute=59/",
             "date=2022-06-12/hour=00/minute=00/"

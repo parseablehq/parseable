@@ -92,8 +92,8 @@ impl StorageMetadata {
     }
 }
 
-// always returns remote metadata as it is source of truth
-// overwrites staging metadata while updating storage info
+/// always returns remote metadata as it is source of truth
+/// overwrites staging metadata while updating storage info
 pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStorageError> {
     let staging_metadata = get_staging_metadata()?;
     let storage = CONFIG.storage().get_object_store();
@@ -168,7 +168,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
 // variant contain remote metadata
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvChange {
-    /// No change in env i.e both staging and remote have same id  
+    /// No change in env i.e both staging and remote have same id
     /// or deployment id of staging is not matching with that of remote
     None(StorageMetadata),
     /// Metadata not found in storage. Treated as possible misconfiguration on user side.

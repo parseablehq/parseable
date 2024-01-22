@@ -27,8 +27,7 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::oidc::{self, OpenidConfig};
-use crate::storage::{FSConfig, ObjectStorageProvider, S3Config};
-use crate::utils::validate_path_is_writeable;
+use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
 
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
 
@@ -99,9 +98,36 @@ impl Config {
         }
     }
 
-    pub fn validate_staging(&self) -> anyhow::Result<()> {
-        let staging_path = self.staging_dir();
-        validate_path_is_writeable(staging_path)
+    pub async fn validate(&self) -> Result<(), ObjectStorageError> {
+        let obj_store = self.storage.get_object_store();
+        let rel_path = relative_path::RelativePathBuf::from(".parseable.json");
+
+        let has_parseable_json = obj_store.get_object(&rel_path).await.is_ok();
+
+        let has_dirs = match obj_store.list_dirs_in_storage().await {
+            Ok(dirs) => !dirs.is_empty(),
+            Err(_) => false,
+        };
+
+        let has_streams = obj_store.list_streams().await.is_ok();
+
+        if !has_dirs || has_parseable_json && has_streams {
+            Ok(())
+        } else if has_parseable_json && !has_streams {
+            Err(ObjectStorageError::Custom(
+                "Could not start the server because storage contains stale data from previous deployment, please choose an empty storage and restart the server.\nJoin us on Parseable Slack to report this incident : launchpass.com/parseable"
+                .to_owned(),
+            ))
+        } else if !has_parseable_json && !has_streams && has_dirs {
+            Err(ObjectStorageError::Custom(
+                "Could not start the server because storage contains some stale data, please provide an empty storage and restart the server.\nJoin us on Parseable Slack to report this incident : launchpass.com/parseable".to_owned(),
+            ))
+        } else {
+            Err(ObjectStorageError::Custom(
+                "Could not start the server because storage contains stale data from previous deployment.\nJoin us on Parseable Slack to report this incident : launchpass.com/parseable"
+                .to_owned()
+            ))
+        }
     }
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {

@@ -55,9 +55,9 @@ use crate::localcache::LocalCacheManager;
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let storage = CONFIG.storage().get_object_store();
+    CONFIG.validate().await?;
     migration::run_metadata_migration(&CONFIG).await?;
     let metadata = storage::resolve_parseable_metadata().await?;
-    CONFIG.validate_staging()?;
     banner::print(&CONFIG, &metadata).await;
     rbac::map::init(&metadata);
     metadata.set_global();
