@@ -126,11 +126,11 @@ impl Config {
             ))
         } else if !has_parseable_json && !has_streams && has_dirs {
             Err(ObjectStorageError::Custom(
-                "Storage contains some stale data, Please provide an Empty Storage".to_owned(),
+                "Could not start the server because storage contains some stale data, Please provide an Empty Storage".to_owned(),
             ))
         } else {
             Err(ObjectStorageError::Custom(
-                "Parseable config is missing, but streams are present in Storage.\nJoin us on Parseable Slack"
+                "Could not start the server because storage contains stale data from previous deployment.\nJoin us on Parseable Slack"
                 .to_owned()
             ))
         }
