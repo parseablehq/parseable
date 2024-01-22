@@ -272,13 +272,16 @@ pub fn configure_routes(
     );
 
     let role_api = web::scope("/role")
+        // GET Role List
         .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
         .service(
+            // PUT and GET Default Role
             resource("/default")
                 .route(web::put().to(role::put_default).authorize(Action::PutRole))
                 .route(web::get().to(role::get_default).authorize(Action::GetRole)),
         )
         .service(
+            // PUT, GET, DELETE Roles
             resource("/{name}")
                 .route(web::put().to(role::put).authorize(Action::PutRole))
                 .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
@@ -295,15 +298,26 @@ pub fn configure_routes(
         oauth_api = oauth_api.app_data(web::Data::from(client))
     }
 
-    // Deny request if username is same as the env variable P_USERNAME.
-    cfg.service(
-        // Base path "{url}/api/v1"
-        web::scope(&base_path())
-            // POST "/query" ==> Get results of the SQL query passed in request body
+    // Base path "{url}/api/v1"
+    let web_scope = web::scope(&base_path());
+
+    let web_scope = if CONFIG.parseable.mode == crate::option::Mode::Query
+        || CONFIG.parseable.mode == crate::option::Mode::All
+    {
+        // In Query Mode
+        // POST "/query" ==> Get results of the SQL query passed in request body
+        web_scope
             .service(
                 web::resource("/query")
                     .route(web::post().to(query::query).authorize(Action::Query)),
             )
+            .service(user_api)
+            .service(llm_query_api)
+            .service(oauth_api)
+            .service(role_api)
+    } else {
+        // In Ingest Mode
+        web_scope
             // POST "/ingest" ==> Post logs to given log stream based on header
             .service(
                 web::resource("/ingest")
@@ -314,6 +328,11 @@ pub fn configure_routes(
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
+    };
+
+    // Deny request if username is same as the env variable P_USERNAME.
+    cfg.service(
+        web_scope
             // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
             .service(web::resource("/liveness").route(web::get().to(health_check::liveness)))
             // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
@@ -334,14 +353,15 @@ pub fn configure_routes(
                         // logstream API
                         logstream_api,
                     ),
-            )
-            .service(user_api)
-            .service(llm_query_api)
-            .service(oauth_api)
-            .service(role_api),
-    )
+            ),
+    );
     // GET "/" ==> Serve the static frontend directory
-    .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
+    if CONFIG.parseable.mode == crate::option::Mode::Query
+        || CONFIG.parseable.mode == crate::option::Mode::All
+    {
+        cfg.service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
+    }
+    // .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
 }
 
 fn base_path() -> String {
