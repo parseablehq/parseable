@@ -268,10 +268,17 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
+    let hash_map = STREAM_INFO.read().unwrap();
+    let stream_creation_time = &hash_map
+        .get(&stream_name)
+        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?
+        .created_at;
+
     let time = Utc::now();
 
     let stats = serde_json::json!({
         "stream": stream_name,
+        "creation_time": stream_creation_time,
         "time": time,
         "ingestion": {
             "count": stats.events,
@@ -307,7 +314,15 @@ pub async fn create_stream(stream_name: String) -> Result<(), CreateStreamError>
     if let Err(err) = storage.create_stream(&stream_name).await {
         return Err(CreateStreamError::Storage { stream_name, err });
     }
-    metadata::STREAM_INFO.add_stream(stream_name.to_string());
+
+    let stream_meta = CONFIG
+        .storage()
+        .get_object_store()
+        .get_stream_metadata(&stream_name)
+        .await;
+    let created_at = stream_meta.unwrap().created_at;
+
+    metadata::STREAM_INFO.add_stream(stream_name.to_string(), created_at);
 
     Ok(())
 }
