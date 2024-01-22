@@ -26,7 +26,7 @@ use once_cell::sync::OnceCell;
 use std::io;
 
 use crate::{
-    option::CONFIG,
+    option::{CONFIG, JOIN_COMMUNITY},
     rbac::{role::model::DefaultPrivilege, user::User},
     storage::ObjectStorageError,
     utils::uid,
@@ -145,11 +145,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
     };
 
     let metadata = res.map_err(|err| {
-        let err = format!(
-            "{}. {}",
-            err,
-            "Join us on Parseable Slack to report this incident : https://launchpass.com/parseable"
-        );
+        let err = format!("{}. {}", err, JOIN_COMMUNITY);
         let err: Box<dyn std::error::Error + Send + Sync + 'static> = err.into();
         ObjectStorageError::UnhandledError(err)
     })?;

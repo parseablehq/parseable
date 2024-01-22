@@ -104,7 +104,7 @@ pub fn print_about(
     eprintln!(
         "
         Commit:             \"{commit_hash}\"
-        Docs:               \"https://www.parseable.io/docs\""
+        Docs:               \"https://logg.ing/docs\""
     );
 }
 
