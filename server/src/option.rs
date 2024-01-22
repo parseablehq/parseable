@@ -28,7 +28,6 @@ use url::Url;
 
 use crate::oidc::{self, OpenidConfig};
 use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
-use crate::utils::validate_path_is_writeable;
 
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
 
@@ -98,9 +97,6 @@ impl Config {
             _ => unreachable!(),
         }
     }
-
-
-
 
     pub async fn validate(&self) -> Result<(), ObjectStorageError> {
         let obj_store = self.storage.get_object_store();

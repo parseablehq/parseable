@@ -32,7 +32,7 @@ use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
 use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
-use crate::{option::validation, utils::validate_path_is_writeable};
+use crate::option::validation;
 
 use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
 
@@ -139,8 +139,8 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
-        fs::create_dir_all(&self.root).await?;
-        validate_path_is_writeable(&self.root)
+        fs::create_dir_all(&self.root)
+            .await
             .map_err(|e| ObjectStorageError::UnhandledError(e.into()))
     }
 
