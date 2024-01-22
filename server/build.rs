@@ -29,6 +29,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         .git_sha(true)
         .emit()?;
 
+    tonic_build::configure()
+    .build_client(true)
+    .build_server(true)
+    .compile(
+        &[
+            "src/handlers/http/opentelemetry-proto/opentelemetry/proto/common/v1/common.proto",
+                "src/handlers/http/opentelemetry-proto/opentelemetry/proto/resource/v1/resource.proto",
+                "src/handlers/http/opentelemetry-proto/opentelemetry/proto/logs/v1/logs.proto",
+                "src/handlers/http/opentelemetry-proto/opentelemetry/proto/collector/logs/v1/logs_service.proto",
+        ],
+        &["src/handlers/http/opentelemetry-proto"],
+    )?;
+
     Ok(())
 }
 
