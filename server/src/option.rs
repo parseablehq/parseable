@@ -121,16 +121,16 @@ impl Config {
             Ok(())
         } else if has_parseable_json && !has_streams {
             Err(ObjectStorageError::Custom(
-                "Could not start the server because storage contains stale data from previous deployment, please choose an empty storage and restart the server. Join us on Parseable Slack to report this incident : launchpass.com/parseable"
+                "Could not start the server because storage contains stale data from previous deployment, please choose an empty storage and restart the server.\nJoin us on Parseable Slack to report this incident : launchpass.com/parseable"
                 .to_owned(),
             ))
         } else if !has_parseable_json && !has_streams && has_dirs {
             Err(ObjectStorageError::Custom(
-                "Could not start the server because storage contains some stale data, Please provide an Empty Storage".to_owned(),
+                "Could not start the server because storage contains some stale data, Please provide an Empty Storage.\nJoin us on Parseable Slack to report this incident : launchpass.com/parseable".to_owned(),
             ))
         } else {
             Err(ObjectStorageError::Custom(
-                "Could not start the server because storage contains stale data from previous deployment.\nJoin us on Parseable Slack"
+                "Could not start the server because storage contains stale data from previous deployment.\nJoin us on Parseable Slack to report this incident : launchpass.com/parseable"
                 .to_owned()
             ))
         }
