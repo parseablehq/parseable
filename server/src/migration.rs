@@ -32,6 +32,8 @@ use crate::{
     storage::{ObjectStorage, ObjectStorageError},
 };
 
+/// Migrate the metdata from v1 or v2 to v3
+/// This is a one time migration
 pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
     let object_store = config.storage().get_object_store();
     let storage_metadata = get_storage_metadata(&*object_store).await?;
