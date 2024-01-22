@@ -361,12 +361,14 @@ impl FromArgMatches for Server {
             .get_one::<String>(Self::MODE)
             // .cloned()
             //.expect("default for mode")
-            .expect("Mode not set").as_str() {
-                "query" => Mode::Query,
-                "ingest" => Mode::Ingest,
-                "all" => Mode::All,
-                _ => unreachable!(),
-            };
+            .expect("Mode not set")
+            .as_str()
+        {
+            "query" => Mode::Query,
+            "ingest" => Mode::Ingest,
+            "all" => Mode::All,
+            _ => unreachable!(),
+        };
 
         Ok(())
     }

@@ -32,7 +32,7 @@ use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
-use crate::option::{CONFIG, Mode};
+use crate::option::{Mode, CONFIG};
 use crate::rbac::role::Action;
 
 use self::middleware::{DisAllowRootUser, RouteExt};
@@ -301,59 +301,26 @@ pub fn configure_routes(
     // Base path "{url}/api/v1"
     let web_scope = web::scope(&base_path());
 
-    // let web_scope = match CONFIG.parseable.mode {
-    //     Mode::Query | Mode::All => {
+    // match based on what mode the server is running in
+    let web_scope = match CONFIG.parseable.mode {
+        Mode::Query => {
             // In Query Mode
             // POST "/query" ==> Get results of the SQL query passed in request body
-    //         web_scope
-    //         .service(
-    //             web::resource("/query")
-    //                 .route(web::post().to(query::query).authorize(Action::Query)),
-    //         )
-    //         .service(user_api)
-    //         .service(llm_query_api)
-    //         .service(oauth_api)
-    //         .service(role_api)
-    //     }
+            web_scope
+                .service(
+                    web::resource("/query")
+                        .route(web::post().to(query::query).authorize(Action::Query)),
+                )
+                .service(user_api)
+                .service(llm_query_api)
+                .service(oauth_api)
+                .service(role_api)
+        }
 
-    //     Mode::Ingest | Mode::All => {
+        Mode::Ingest => {
             // In Ingest Mode
-    //         web_scope
             // POST "/ingest" ==> Post logs to given log stream based on header
-    //         .service(
-    //             web::resource("/ingest")
-    //                 .route(
-    //                     web::post()
-    //                         .to(ingest::ingest)
-    //                         .authorize_for_stream(Action::Ingest),
-    //                 )
-    //                 .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
-    //         )
-    //     }
-    // };
-
-    let web_scope = if CONFIG.parseable.mode == crate::option::Mode::Query
-        || CONFIG.parseable.mode == crate::option::Mode::All
-    {
-        // In Query Mode
-        // POST "/query" ==> Get results of the SQL query passed in request body
-        web_scope
-            .service(
-                web::resource("/query")
-                    .route(web::post().to(query::query).authorize(Action::Query)),
-            )
-            .service(user_api)
-            .service(llm_query_api)
-            .service(oauth_api)
-            .service(role_api)
-    } else {
-        unreachable!("Invalid mode")
-    };
-    let web_scope = if CONFIG.parseable.mode == crate::option::Mode::Ingest || CONFIG.parseable.mode == crate::option::Mode::All {
-        // In Ingest Mode
-        web_scope
-            // POST "/ingest" ==> Post logs to given log stream based on header
-            .service(
+            web_scope.service(
                 web::resource("/ingest")
                     .route(
                         web::post()
@@ -362,8 +329,30 @@ pub fn configure_routes(
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
-    } else {
-        unreachable!("Invalid mode")
+        }
+
+        Mode::All => {
+            // In Query Mode
+            // POST "/query" ==> Get results of the SQL query passed in request body
+            web_scope
+                .service(
+                    web::resource("/query")
+                        .route(web::post().to(query::query).authorize(Action::Query)),
+                )
+                .service(
+                    web::resource("/ingest")
+                        .route(
+                            web::post()
+                                .to(ingest::ingest)
+                                .authorize_for_stream(Action::Ingest),
+                        )
+                        .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                )
+                .service(user_api)
+                .service(llm_query_api)
+                .service(oauth_api)
+                .service(role_api)
+        }
     };
 
     // Deny request if username is same as the env variable P_USERNAME.
@@ -392,10 +381,12 @@ pub fn configure_routes(
             ),
     );
     // GET "/" ==> Serve the static frontend directory
-    if CONFIG.parseable.mode == crate::option::Mode::Query
-        || CONFIG.parseable.mode == crate::option::Mode::All
-    {
-        cfg.service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
+    match CONFIG.parseable.mode {
+        Mode::Query | Mode::All => {
+            cfg.service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
+        }
+
+        _ => {}
     }
     // .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
 }
