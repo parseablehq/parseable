@@ -253,7 +253,7 @@ pub struct Server {
     pub parquet_compression: Compression,
 
     /// Mode of operation
-    pub mode: String,
+    pub mode: Mode,
 }
 
 impl FromArgMatches for Server {
@@ -357,11 +357,16 @@ impl FromArgMatches for Server {
             _ => None,
         };
 
-        self.mode = m
+        self.mode = match m
             .get_one::<String>(Self::MODE)
-            .cloned()
+            // .cloned()
             //.expect("default for mode")
-            .expect("Mode not set");
+            .expect("Mode not set").as_str() {
+                "query" => Mode::Query,
+                "ingest" => Mode::Ingest,
+                "all" => Mode::All,
+                _ => unreachable!(),
+            };
 
         Ok(())
     }
@@ -624,6 +629,14 @@ impl Server {
                     .multiple(true)
         )
     }
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub enum Mode {
+    Query,
+    Ingest,
+    #[default]
+    All,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
