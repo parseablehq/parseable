@@ -103,6 +103,9 @@ http-auth-basic = "0.3.3"
 serde_repr = "0.1.17"
 hashlru = { version = "0.11.0", features = ["serde"] }
 path-clean = "1.0.1"
+prost-build = "0.12.3"
+tonic-build = "0.10.2"
+prost = "0.12.3"
 
 [build-dependencies]
 cargo_toml = "0.15"
