@@ -99,12 +99,10 @@ impl Config {
         }
     }
 
-    pub fn validate_staging(&self) -> anyhow::Result<()> {
-        let staging_path = self.staging_dir();
-        validate_path_is_writeable(staging_path)
-    }
 
-    pub async fn validate_storage(&self) -> Result<(), ObjectStorageError> {
+
+
+    pub async fn validate(&self) -> Result<(), ObjectStorageError> {
         let obj_store = self.storage.get_object_store();
         let rel_path = relative_path::RelativePathBuf::from(".parseable.json");
 
