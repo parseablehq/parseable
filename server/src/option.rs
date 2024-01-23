@@ -598,7 +598,7 @@ impl Server {
                     .long(Self::MODE)
                     .env("P_MODE")
                     .value_name("STRING")
-                    .required(true)
+                    .required(false)
                     .default_value("all")
                     .value_parser([
                         "query",
