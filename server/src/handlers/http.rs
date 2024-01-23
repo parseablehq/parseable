@@ -41,6 +41,8 @@ mod about;
 mod health_check;
 mod ingest;
 mod kinesis;
+mod proto;
+mod otel;
 mod llm;
 mod logstream;
 mod middleware;
