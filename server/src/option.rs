@@ -359,8 +359,6 @@ impl FromArgMatches for Server {
 
         self.mode = match m
             .get_one::<String>(Self::MODE)
-            // .cloned()
-            //.expect("default for mode")
             .expect("Mode not set")
             .as_str()
         {
