@@ -601,7 +601,7 @@ impl Server {
                     .env("P_MODE")
                     .value_name("STRING")
                     .required(true)
-                    // .default_value("all")
+                    .default_value("all")
                     .value_parser([
                         "query",
                         "ingest",
