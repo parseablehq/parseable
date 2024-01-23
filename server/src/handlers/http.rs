@@ -32,10 +32,10 @@ use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
-use crate::option::{Mode, CONFIG};
+use crate::option::CONFIG;
 use crate::rbac::role::Action;
 
-use self::middleware::{DisAllowRootUser, RouteExt};
+use self::middleware::{DisAllowRootUser, ModeFilter, RouteExt};
 
 mod about;
 mod health_check;
@@ -76,6 +76,7 @@ pub async fn run_http(
             .wrap(actix_web::middleware::Logger::default())
             .wrap(actix_web::middleware::Compress::default())
             .wrap(cross_origin_config())
+            .wrap(ModeFilter)
     };
 
     let ssl_acceptor = match (
@@ -298,29 +299,18 @@ pub fn configure_routes(
         oauth_api = oauth_api.app_data(web::Data::from(client))
     }
 
-    // Base path "{url}/api/v1"
-    let web_scope = web::scope(&base_path());
-
-    // match based on what mode the server is running in
-    let web_scope = match CONFIG.parseable.mode {
-        Mode::Query => {
-            // In Query Mode
+    // Deny request if username is same as the env variable P_USERNAME.
+    cfg.service(
+        // Base path "{url}/api/v1"
+        web::scope(&base_path())
+            // .wrap(PathFilter)
             // POST "/query" ==> Get results of the SQL query passed in request body
-            web_scope
-                .service(
-                    web::resource("/query")
-                        .route(web::post().to(query::query).authorize(Action::Query)),
-                )
-                .service(user_api)
-                .service(llm_query_api)
-                .service(oauth_api)
-                .service(role_api)
-        }
-
-        Mode::Ingest => {
-            // In Ingest Mode
+            .service(
+                web::resource("/query")
+                    .route(web::post().to(query::query).authorize(Action::Query)),
+            )
             // POST "/ingest" ==> Post logs to given log stream based on header
-            web_scope.service(
+            .service(
                 web::resource("/ingest")
                     .route(
                         web::post()
@@ -329,35 +319,6 @@ pub fn configure_routes(
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
-        }
-
-        Mode::All => {
-            // In Query Mode
-            // POST "/query" ==> Get results of the SQL query passed in request body
-            web_scope
-                .service(
-                    web::resource("/query")
-                        .route(web::post().to(query::query).authorize(Action::Query)),
-                )
-                .service(
-                    web::resource("/ingest")
-                        .route(
-                            web::post()
-                                .to(ingest::ingest)
-                                .authorize_for_stream(Action::Ingest),
-                        )
-                        .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
-                )
-                .service(user_api)
-                .service(llm_query_api)
-                .service(oauth_api)
-                .service(role_api)
-        }
-    };
-
-    // Deny request if username is same as the env variable P_USERNAME.
-    cfg.service(
-        web_scope
             // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
             .service(web::resource("/liveness").route(web::get().to(health_check::liveness)))
             // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
@@ -378,17 +339,14 @@ pub fn configure_routes(
                         // logstream API
                         logstream_api,
                     ),
-            ),
-    );
+            )
+            .service(user_api)
+            .service(llm_query_api)
+            .service(oauth_api)
+            .service(role_api),
+    )
     // GET "/" ==> Serve the static frontend directory
-    match CONFIG.parseable.mode {
-        Mode::Query | Mode::All => {
-            cfg.service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
-        }
-
-        _ => {}
-    }
-    // .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
+    .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
 }
 
 fn base_path() -> String {
