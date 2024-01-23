@@ -169,7 +169,7 @@ impl ObjectStorage for LocalFS {
         Ok(logstreams)
     }
 
-    async fn list_dirs_in_storage(&self) -> Result<Vec<String>, ObjectStorageError> {
+    async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
         let dirs = ReadDirStream::new(fs::read_dir(&self.root).await?)
             .try_collect::<Vec<DirEntry>>()
             .await?

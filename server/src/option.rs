@@ -30,7 +30,8 @@ use crate::oidc::{self, OpenidConfig};
 use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
 
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
-
+pub const JOIN_COMMUNITY: &str =
+    "Join us on Parseable Slack community for questions : https://logg.ing/community";
 pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
 
 #[derive(Debug)]
@@ -104,30 +105,25 @@ impl Config {
 
         let has_parseable_json = obj_store.get_object(&rel_path).await.is_ok();
 
-        let has_dirs = match obj_store.list_dirs_in_storage().await {
+        // Lists all the directories in the root of the bucket/directory
+        // can be a stream (if it contains .stream.json file) or not
+        let has_dirs = match obj_store.list_dirs().await {
             Ok(dirs) => !dirs.is_empty(),
             Err(_) => false,
         };
 
         let has_streams = obj_store.list_streams().await.is_ok();
 
-        if !has_dirs || has_parseable_json && has_streams {
-            Ok(())
-        } else if has_parseable_json && !has_streams {
-            Err(ObjectStorageError::Custom(
-                "Could not start the server because storage contains stale data from previous deployment, please choose an empty storage and restart the server.\nJoin us on Parseable Slack to report this incident : launchpass.com/parseable"
-                .to_owned(),
-            ))
-        } else if !has_parseable_json && !has_streams && has_dirs {
-            Err(ObjectStorageError::Custom(
-                "Could not start the server because storage contains some stale data, please provide an empty storage and restart the server.\nJoin us on Parseable Slack to report this incident : launchpass.com/parseable".to_owned(),
-            ))
-        } else {
-            Err(ObjectStorageError::Custom(
-                "Could not start the server because storage contains stale data from previous deployment.\nJoin us on Parseable Slack to report this incident : launchpass.com/parseable"
-                .to_owned()
-            ))
+        if has_streams || !has_dirs && !has_parseable_json {
+            return Ok(());
         }
+
+        if self.mode_string() == "Local drive" {
+            return Err(ObjectStorageError::Custom(format!("Could not start the server because directory '{}' contains stale data, please use an empty directory, and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)));
+        }
+
+        // S3 bucket mode
+        Err(ObjectStorageError::Custom(format!("Could not start the server because bucket '{}' contains stale data, please use an empty bucket and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)))
     }
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
@@ -185,7 +181,7 @@ fn parseable_cli_command() -> Command {
         .next_line_help(false)
         .help_template(
             r#"
-{about} Join the community at https://launchpass.com/parseable.
+{about} Join the community at https://logg.ing/community.
 
 {all-args}
         "#,
