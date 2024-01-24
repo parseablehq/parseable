@@ -18,6 +18,7 @@
 */
 
 pub mod format;
+mod reader;
 mod writer;
 
 use arrow_array::RecordBatch;
