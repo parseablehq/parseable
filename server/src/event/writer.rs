@@ -25,8 +25,7 @@ use std::{
 };
 
 use crate::{
-    event::reader,
-    storage::StorageDir,
+    storage::{staging::get_staged_records, StorageDir},
     utils::arrow::{adapt_batch, replace_columns},
 };
 
@@ -122,7 +121,7 @@ impl WriterTable {
         stream_name: &str,
         schema: &Arc<Schema>,
     ) -> Option<Vec<RecordBatch>> {
-        let records = reader::get_staged_records(&StorageDir::new(stream_name))
+        let records = get_staged_records(&StorageDir::new(stream_name))
             .ok()?
             .into_iter()
             .map(|rb| adapt_batch(schema, &rb))
