@@ -18,7 +18,6 @@
  */
 
 mod file_writer;
-mod mem_writer;
 
 use std::{
     collections::HashMap,
