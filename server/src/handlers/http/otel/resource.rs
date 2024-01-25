@@ -1,6 +1,6 @@
+use crate::handlers::http::proto::common::v1::KeyValue;
 /// Resource information.
 use serde::{Deserialize, Serialize};
-use crate::handlers::http::proto::common::v1::KeyValue;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Resource {
     /// Set of attributes that describe the resource.
@@ -10,7 +10,7 @@ pub struct Resource {
     pub attributes: Option<Vec<KeyValue>>,
     /// dropped_attributes_count is the number of dropped attributes. If the value is 0, then
     /// no attributes were dropped.
-    
+
     #[serde(rename = "droppedAttributesCount")]
-    pub dropped_attributes_count: Option<u32>
+    pub dropped_attributes_count: Option<u32>,
 }

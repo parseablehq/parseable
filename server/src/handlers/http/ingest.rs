@@ -35,8 +35,8 @@ use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
 use super::kinesis;
-use super::otel;
 use super::logstream::error::CreateStreamError;
+use super::otel;
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header

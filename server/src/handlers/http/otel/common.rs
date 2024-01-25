@@ -1,7 +1,7 @@
 /// AnyValue is used to represent any type of attribute value. AnyValue may contain a
 /// primitive value such as a string or integer or it may contain an arbitrary nested
 /// object containing arrays, key-value lists and primitives.
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AnyValue {
     /// The value is one of the listed fields. It is valid for all values to be unspecified

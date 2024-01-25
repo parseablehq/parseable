@@ -1,3 +1,7 @@
+use crate::handlers::http::proto::common::v1::InstrumentationScope;
+use crate::handlers::http::proto::common::v1::KeyValue;
+use crate::handlers::http::proto::common::v1::Value;
+use crate::handlers::http::proto::resource::v1::Resource;
 /// LogsData represents the logs data that can be stored in a persistent storage,
 /// OR can be embedded by other protocols that transfer OTLP logs data but do not
 /// implement the OTLP protocol.
@@ -9,10 +13,6 @@
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
 use serde::{Deserialize, Serialize};
-use crate::handlers::http::proto::resource::v1::Resource;
-use crate::handlers::http::proto::common::v1::InstrumentationScope;
-use crate::handlers::http::proto::common::v1::Value;
-use crate::handlers::http::proto::common::v1::KeyValue;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LogsData {
     /// An array of ResourceLogs.
@@ -85,6 +85,7 @@ pub struct LogRecord {
     /// it is known at the source. \[Optional\].
     #[serde(rename = "severityText")]
     pub severity_text: Option<String>,
+    pub name: Option<String>,
     /// A value containing the body of the log record. Can be for example a human-readable
     /// string message (including multi-line) describing the event in a free form or it can
     /// be a structured data composed of arrays and maps of other values. \[Optional\].

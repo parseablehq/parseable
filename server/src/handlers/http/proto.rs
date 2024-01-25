@@ -1,5 +1,3 @@
-
-
 /// Common types used across all event types.
 pub mod common {
     pub mod v1 {
