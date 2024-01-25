@@ -25,9 +25,13 @@ use std::{
     sync::{Arc, Mutex, RwLock},
 };
 
-use crate::utils;
+use crate::{
+    event::reader,
+    storage::StorageDir,
+    utils::arrow::{adapt_batch, replace_columns},
+};
 
-use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
+use self::{errors::StreamWriterError, file_writer::FileWriter};
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_schema::Schema;
 use chrono::Utc;
@@ -38,7 +42,6 @@ pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 
 #[derive(Default)]
 pub struct Writer {
-    pub mem: MemWriter<16384>,
     pub disk: FileWriter,
 }
 
@@ -49,7 +52,7 @@ impl Writer {
         schema_key: &str,
         rb: RecordBatch,
     ) -> Result<(), StreamWriterError> {
-        let rb = utils::arrow::replace_columns(
+        let rb = replace_columns(
             rb.schema(),
             &rb,
             &[0],
@@ -57,7 +60,6 @@ impl Writer {
         );
 
         self.disk.push(stream_name, schema_key, &rb)?;
-        self.mem.push(schema_key, rb);
         Ok(())
     }
 }
@@ -121,15 +123,12 @@ impl WriterTable {
         stream_name: &str,
         schema: &Arc<Schema>,
     ) -> Option<Vec<RecordBatch>> {
-        let records = self
-            .0
-            .read()
-            .unwrap()
-            .get(stream_name)?
-            .lock()
-            .unwrap()
-            .mem
-            .recordbatch_cloned(schema);
+        let records =
+            reader::get_staged_records(&StorageDir::new(stream_name))
+                .ok()?
+                .into_iter()
+                .map(|rb| adapt_batch(schema, &rb))
+                .collect();
 
         Some(records)
     }
