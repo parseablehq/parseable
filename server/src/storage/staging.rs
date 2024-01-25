@@ -116,6 +116,7 @@ impl StorageDir {
         grouped_arrow_file
     }
 
+    /// Returns a HashMap of a PathBuf of a parquet file to the vector on arrows file
     pub fn arrow_files_grouped_exclude_time(
         &self,
         exclude: NaiveDateTime,
@@ -218,7 +219,6 @@ pub fn convert_disk_files_to_parquet(
         }
 
         writer.close()?;
-
         for file in files {
             if fs::remove_file(file).is_err() {
                 log::error!("Failed to delete file. Unstable state");
