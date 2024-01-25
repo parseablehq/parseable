@@ -29,18 +29,53 @@ fn main() -> Result<(), Box<dyn Error>> {
         .git_sha(true)
         .emit()?;
 
-    tonic_build::configure()
-    .build_client(true)
-    .build_server(true)
-    .compile(
-        &[
-            "src/handlers/http/opentelemetry-proto/opentelemetry/proto/common/v1/common.proto",
-                "src/handlers/http/opentelemetry-proto/opentelemetry/proto/resource/v1/resource.proto",
-                "src/handlers/http/opentelemetry-proto/opentelemetry/proto/logs/v1/logs.proto",
-                "src/handlers/http/opentelemetry-proto/opentelemetry/proto/collector/logs/v1/logs_service.proto",
-        ],
-        &["src/handlers/http/opentelemetry-proto"],
-    )?;
+    // prost_build::Config::new()
+    //     .out_dir("src/handlers/http/otel")
+    //     .type_attribute("LogsData", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("ResourceLogs", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("ScopeLogs", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("LogRecord", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("KeyValue", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("Resource", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("InstrumentationScope", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("Value", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("ArrayValue", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("KeyValueList", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("AnyValue", "#[derive(Serialize, Deserialize)] ")
+    //     .type_attribute("any_value::Value", "#[derive(Serialize, Deserialize)] ")
+    //     .compile_protos(&[
+    //                  "src/handlers/http/otel/opentelemetry/proto/common/v1/common.proto",
+    //                      "src/handlers/http/otel/opentelemetry/proto/resource/v1/resource.proto",
+    //                      "src/handlers/http/otel/opentelemetry/proto/logs/v1/logs.proto",
+    //                      "src/handlers/http/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto",
+    //              ],
+    //             &["src/handlers/http/otel"])?;
+
+    // tonic_build::configure()
+    // .build_client(true)
+    // .build_server(true)
+    // .type_attribute("LogsData", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("resource_logs", "#[serde(rename = \"resourceLogs\")]")
+    // .type_attribute("ResourceLogs", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("ScopeLogs", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("LogRecord", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("KeyValue", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("Resource", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("InstrumentationScope", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("Value", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("ArrayValue", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("KeyValueList", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("AnyValue", "#[derive(Serialize, Deserialize)] ")
+    // .type_attribute("any_value::Value", "#[derive(Serialize, Deserialize)] ")
+    // .compile(
+    //     &[
+    //         "src/handlers/http/otel/opentelemetry/proto/common/v1/common.proto",
+    //             "src/handlers/http/otel/opentelemetry/proto/resource/v1/resource.proto",
+    //             "src/handlers/http/otel/opentelemetry/proto/logs/v1/logs.proto",
+    //             "src/handlers/http/otel/opentelemetry/proto/collector/logs/v1/logs_service.proto",
+    //     ],
+    //     &["src/handlers/http/otel"],
+    // )?;
 
     Ok(())
 }

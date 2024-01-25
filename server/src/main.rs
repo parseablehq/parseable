@@ -24,7 +24,6 @@ use tokio::sync::oneshot::error::TryRecvError;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-
 mod about;
 mod alerts;
 mod analytics;
