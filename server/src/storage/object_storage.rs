@@ -408,9 +408,40 @@ pub trait ObjectStorage: Sync + 'static {
     }
 }
 
+/// Commits a schema to the object storage.
+///
+/// This function takes a schema and a storage object, and commits the schema to the storage.
+/// If the schema already exists in the storage, it is updated.
+///
+/// # Arguments
+///
+/// * `stream_name` - The name of the stream to which the schema belongs.
+/// * `schema` - The schema to be committed to the storage.
+/// * `time` - the time at which the parquet file in staging was created
+///
+/// # Returns
+///
+/// A `Result<(), ObjectStorageError>` indicating the success or failure of the operation.
+/// Returns a `ObjectStorageError` if the schema could not be committed.
+///
+/// # Example
+///
+/// ```
+/// let stream_name = "demo";
+/// let schema = <schema object>;
+/// let time = <chrono::NaiveDateTime object>;
+/// let result = commit_schema_to_storage(stream_name, schema, time);
+/// match result {
+///     Ok(()) => println!("Successfully committed schema to storage."),
+///     Err(e) => println!("Error committing schema to storage: {:?}", e),
+/// }
+/// ```
+///
+/// This function is defined in [server/src/object_storage.rs](server/src/object_storage.rs).
 async fn commit_schema_to_storage(
     stream_name: &str,
     schema: Schema,
+    time: Option<chrono::NaiveDateTime>,
 ) -> Result<(), ObjectStorageError> {
     let storage = CONFIG.storage().get_object_store();
     let stream_schema = storage.get_schema(stream_name).await?;
