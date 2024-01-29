@@ -335,7 +335,7 @@ pub trait ObjectStorage: Sync + 'static {
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {
-                commit_schema_to_storage(stream, schema).await?;
+                commit_schema_to_storage(stream, schema, time).await?;
             }
 
             let parquet_files = dir.parquet_files();
