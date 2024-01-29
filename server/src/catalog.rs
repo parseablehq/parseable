@@ -139,7 +139,7 @@ pub async fn update_snapshot(
 
         let path = partition_path(stream_name, lower_bound, upper_bound).join("manifest.json");
         storage
-            .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())
+            .put_object(&path, serde_json::to_vec(&manifest).unwrap().into(), None)
             .await?;
         let path = storage.absolute_url(&path);
         let new_snapshot_entriy = snapshot::ManifestItem {

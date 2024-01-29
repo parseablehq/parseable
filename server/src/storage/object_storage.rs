@@ -102,7 +102,7 @@ pub trait ObjectStorage: Sync + 'static {
         schema: &Schema,
         time: Option<chrono::NaiveDateTime>,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(&schema_path(stream_name), to_bytes(schema))
+        self.put_object(&schema_path(stream_name), to_bytes(schema), time)
             .await?;
 
         Ok(())
@@ -116,10 +116,10 @@ pub trait ObjectStorage: Sync + 'static {
 
         let format_json = to_bytes(&format);
 
-        self.put_object(&schema_path(stream_name), to_bytes(&Schema::empty()))
+        self.put_object(&schema_path(stream_name), to_bytes(&Schema::empty()), None)
             .await?;
 
-        self.put_object(&stream_json_path(stream_name), format_json)
+        self.put_object(&stream_json_path(stream_name), format_json, None)
             .await?;
 
         Ok(())
@@ -130,7 +130,7 @@ pub trait ObjectStorage: Sync + 'static {
         stream_name: &str,
         alerts: &Alerts,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(&alert_json_path(stream_name), to_bytes(alerts))
+        self.put_object(&alert_json_path(stream_name), to_bytes(alerts), None)
             .await
     }
 
@@ -143,7 +143,8 @@ pub trait ObjectStorage: Sync + 'static {
 
         stream_metadata["stats"] = stats;
 
-        self.put_object(&path, to_bytes(&stream_metadata)).await
+        self.put_object(&path, to_bytes(&stream_metadata), None)
+            .await
     }
 
     async fn put_retention(
@@ -160,14 +161,15 @@ pub trait ObjectStorage: Sync + 'static {
 
         stream_metadata["retention"] = stats;
 
-        self.put_object(&path, to_bytes(&stream_metadata)).await
+        self.put_object(&path, to_bytes(&stream_metadata), None)
+            .await
     }
 
     async fn put_metadata(
         &self,
         parseable_metadata: &StorageMetadata,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(&parseable_json_path(), to_bytes(parseable_metadata))
+        self.put_object(&parseable_json_path(), to_bytes(parseable_metadata), None)
             .await
     }
 
@@ -207,7 +209,7 @@ pub trait ObjectStorage: Sync + 'static {
         manifest: &ObjectStoreFormat,
     ) -> Result<(), ObjectStorageError> {
         let path = stream_json_path(stream_name);
-        self.put_object(&path, to_bytes(manifest)).await
+        self.put_object(&path, to_bytes(manifest), None).await
     }
 
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
@@ -291,7 +293,7 @@ pub trait ObjectStorage: Sync + 'static {
         manifest: Manifest,
     ) -> Result<(), ObjectStorageError> {
         let path = manifest_path(path.as_str());
-        self.put_object(&path, to_bytes(&manifest)).await
+        self.put_object(&path, to_bytes(&manifest), None).await
     }
 
     async fn get_snapshot(&self, stream: &str) -> Result<Snapshot, ObjectStorageError> {
@@ -309,7 +311,7 @@ pub trait ObjectStorage: Sync + 'static {
     ) -> Result<(), ObjectStorageError> {
         let mut stream_meta = self.get_stream_metadata(stream).await?;
         stream_meta.snapshot = snapshot;
-        self.put_object(&stream_json_path(stream), to_bytes(&stream_meta))
+        self.put_object(&stream_json_path(stream), to_bytes(&stream_meta), None)
             .await
     }
 

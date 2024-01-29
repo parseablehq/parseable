@@ -103,26 +103,30 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         Some("v1") => {
             let new_stream_metadata = stream_metadata_migration::v1_v3(stream_metadata);
             storage
-                .put_object(&path, to_bytes(&new_stream_metadata))
+                .put_object(&path, to_bytes(&new_stream_metadata), None)
                 .await?;
 
             let schema_path = RelativePathBuf::from_iter([stream, ".schema"]);
             let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema).ok();
             let map = schema_migration::v1_v3(schema)?;
-            storage.put_object(&schema_path, to_bytes(&map)).await?;
+            storage
+                .put_object(&schema_path, to_bytes(&map), None)
+                .await?;
         }
         Some("v2") => {
             let new_stream_metadata = stream_metadata_migration::v2_v3(stream_metadata);
             storage
-                .put_object(&path, to_bytes(&new_stream_metadata))
+                .put_object(&path, to_bytes(&new_stream_metadata), None)
                 .await?;
 
             let schema_path = RelativePathBuf::from_iter([stream, ".schema"]);
             let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema)?;
             let map = schema_migration::v2_v3(schema)?;
-            storage.put_object(&schema_path, to_bytes(&map)).await?;
+            storage
+                .put_object(&schema_path, to_bytes(&map), None)
+                .await?;
         }
         _ => (),
     }
@@ -174,7 +178,7 @@ pub async fn put_remote_metadata(
 ) -> anyhow::Result<()> {
     let path = RelativePathBuf::from_iter([".parseable.json"]);
     let metadata = serde_json::to_vec(metadata)?.into();
-    Ok(storage.put_object(&path, metadata).await?)
+    Ok(storage.put_object(&path, metadata, None).await?)
 }
 
 pub fn put_staging_metadata(config: &Config, metadata: &serde_json::Value) -> anyhow::Result<()> {
