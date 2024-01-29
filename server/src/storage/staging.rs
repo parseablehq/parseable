@@ -42,7 +42,7 @@ use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
     metrics,
     option::CONFIG,
-    storage::OBJECT_STORE_DATA_GRANULARITY,
+    storage::{ObjectStorageError, OBJECT_STORE_DATA_GRANULARITY},
     utils::{self, arrow::merged_reader::MergedReverseRecordReader},
 };
 
@@ -61,7 +61,7 @@ impl StorageDir {
         Self { data_path }
     }
 
-    pub fn file_time_suffix(time: NaiveDateTime, extention: &str) -> String {
+    pub fn file_time_suffix(time: &NaiveDateTime, extention: &str) -> String {
         let uri = utils::date_to_prefix(time.date())
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
@@ -70,7 +70,7 @@ impl StorageDir {
         format!("{local_uri}{hostname}.{extention}")
     }
 
-    fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
+    fn filename_by_time(stream_hash: &str, time: &NaiveDateTime) -> String {
         format!(
             "{}.{}",
             stream_hash,
@@ -80,7 +80,7 @@ impl StorageDir {
 
     fn filename_by_current_time(stream_hash: &str) -> String {
         let datetime = Utc::now();
-        Self::filename_by_time(stream_hash, datetime.naive_utc())
+        Self::filename_by_time(stream_hash, &datetime.naive_utc())
     }
 
     pub fn path_by_current_time(&self, stream_hash: &str) -> PathBuf {
@@ -121,7 +121,7 @@ impl StorageDir {
     /// Returns a HashMap of a PathBuf of a parquet file to the vector on arrows file
     pub fn arrow_files_grouped_exclude_time(
         &self,
-        exclude: NaiveDateTime,
+        exclude: &NaiveDateTime,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
         let hot_filename = StorageDir::file_time_suffix(exclude, ARROW_FILE_EXTENSION);
         // hashmap <time, vec[paths]> but exclude where hot filename matches
@@ -174,7 +174,7 @@ impl StorageDir {
 }
 
 #[allow(unused)]
-pub fn to_parquet_path(stream_name: &str, time: NaiveDateTime) -> PathBuf {
+pub fn to_parquet_path(stream_name: &str, time: &NaiveDateTime) -> PathBuf {
     let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
     let dir = StorageDir::file_time_suffix(time, PARQUET_FILE_EXTENSION);
 
