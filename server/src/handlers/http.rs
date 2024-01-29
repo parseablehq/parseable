@@ -46,7 +46,6 @@ mod logstream;
 mod middleware;
 mod oidc;
 mod otel;
-mod proto;
 mod query;
 mod rbac;
 mod role;

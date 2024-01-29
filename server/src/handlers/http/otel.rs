@@ -1,13 +1,32 @@
+/*
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use bytes::Bytes;
 use serde_json::Value;
 mod common;
 mod log;
+mod proto;
 mod resource;
 use std::collections::BTreeMap;
 
 fn collect_json_from_any_value(
     key: &String,
-    value: super::proto::common::v1::Value,
+    value: super::otel::proto::common::v1::Value,
 ) -> BTreeMap<String, Value> {
     let mut value_json: BTreeMap<String, Value> = BTreeMap::new();
     if value.str_val.is_some() {
@@ -61,7 +80,7 @@ fn collect_json_from_any_value(
 }
 
 fn collect_json_from_values(
-    values: &Option<super::proto::common::v1::Value>,
+    values: &Option<super::otel::proto::common::v1::Value>,
     key: &String,
 ) -> BTreeMap<String, Value> {
     let mut value_json: BTreeMap<String, Value> = BTreeMap::new();

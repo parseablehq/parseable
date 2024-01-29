@@ -16,20 +16,23 @@
  *
  */
 
-use crate::handlers::http::otel::proto::common::v1::KeyValue;
-use serde::{Deserialize, Serialize};
+/// Common types used across all event types.
+pub mod common {
+    pub mod v1 {
+        include!("common.rs");
+    }
+}
 
-#[derive(Serialize, Deserialize, Debug)]
-/// Resource information.
-pub struct Resource {
-    /// Set of attributes that describe the resource.
-    /// Attribute keys MUST be unique (it is not allowed to have more than one
-    /// attribute with the same key).
-    #[serde(rename = "attributes")]
-    pub attributes: Option<Vec<KeyValue>>,
-    /// dropped_attributes_count is the number of dropped attributes. If the value is 0, then
-    /// no attributes were dropped.
+/// Generated types used for logs.
+pub mod logs {
+    pub mod v1 {
+        include!("log.rs");
+    }
+}
 
-    #[serde(rename = "droppedAttributesCount")]
-    pub dropped_attributes_count: Option<u32>,
+/// Generated types used in resources.
+pub mod resource {
+    pub mod v1 {
+        include!("resource.rs");
+    }
 }

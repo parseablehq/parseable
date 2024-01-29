@@ -1,7 +1,28 @@
-use crate::handlers::http::proto::common::v1::InstrumentationScope;
-use crate::handlers::http::proto::common::v1::KeyValue;
-use crate::handlers::http::proto::common::v1::Value;
-use crate::handlers::http::proto::resource::v1::Resource;
+/*
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
+use crate::handlers::http::otel::proto::common::v1::InstrumentationScope;
+use crate::handlers::http::otel::proto::common::v1::KeyValue;
+use crate::handlers::http::otel::proto::common::v1::Value;
+use crate::handlers::http::otel::proto::resource::v1::Resource;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
 /// LogsData represents the logs data that can be stored in a persistent storage,
 /// OR can be embedded by other protocols that transfer OTLP logs data but do not
 /// implement the OTLP protocol.
@@ -12,8 +33,6 @@ use crate::handlers::http::proto::resource::v1::Resource;
 ///
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
-use serde::{Deserialize, Serialize};
-#[derive(Serialize, Deserialize, Debug)]
 pub struct LogsData {
     /// An array of ResourceLogs.
     /// For data coming from a single resource this array will typically contain
@@ -23,8 +42,9 @@ pub struct LogsData {
     #[serde(rename = "resourceLogs")]
     pub resource_logs: Option<Vec<ResourceLogs>>,
 }
-/// A collection of ScopeLogs from a Resource.
+
 #[derive(Serialize, Deserialize, Debug)]
+/// A collection of ScopeLogs from a Resource.
 pub struct ResourceLogs {
     /// The resource for the logs in this message.
     /// If this field is not set then resource info is unknown.
@@ -37,8 +57,9 @@ pub struct ResourceLogs {
     #[serde(rename = "schemaUrl")]
     pub schema_url: Option<String>,
 }
-/// A collection of Logs produced by a Scope.
+
 #[derive(Serialize, Deserialize, Debug)]
+/// A collection of Logs produced by a Scope.
 pub struct ScopeLogs {
     /// The instrumentation scope information for the logs in this message.
     /// Semantically when InstrumentationScope isn't set, it is equivalent with
@@ -51,9 +72,10 @@ pub struct ScopeLogs {
     #[serde(rename = "schemaUrl")]
     pub schema_url: Option<String>,
 }
+
+#[derive(Serialize, Deserialize, Debug)]
 /// A log record according to OpenTelemetry Log Data Model:
 /// <https://github.com/open-telemetry/oteps/blob/main/text/logs/0097-log-data-model.md>
-#[derive(Serialize, Deserialize, Debug)]
 pub struct LogRecord {
     /// time_unix_nano is the time when the event occurred.
     /// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
