@@ -331,7 +331,7 @@ pub trait ObjectStorage: Sync + 'static {
                 .cache_enabled(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let dir = StorageDir::new(stream);
-            let schema = convert_disk_files_to_parquet(stream, &dir)
+            let (time, schema) = convert_disk_files_to_parquet(stream, &dir)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {
