@@ -24,6 +24,7 @@ mod proto;
 mod resource;
 use std::collections::BTreeMap;
 
+// Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
 fn collect_json_from_any_value(
     key: &String,
     value: super::otel::proto::common::v1::Value,
@@ -53,6 +54,9 @@ fn collect_json_from_any_value(
             Value::String(value.double_val.as_ref().unwrap().to_owned()),
         );
     }
+
+    //ArrayValue is a vector of AnyValue
+    //traverse by recursively calling the same function
     if value.array_val.is_some() {
         let array_val = value.array_val.as_ref().unwrap();
         let values = &array_val.values;
@@ -62,6 +66,9 @@ fn collect_json_from_any_value(
             value_json = collect_json_from_any_value(key, value.clone());
         }
     }
+
+    //KeyValueList is a vector of KeyValue
+    //traverse through each element in the vector
     if value.kv_list_val.is_some() {
         let kv_list_val = value.kv_list_val.unwrap();
         for key_value in kv_list_val.values {
@@ -79,6 +86,7 @@ fn collect_json_from_any_value(
     value_json
 }
 
+//traverse through Value by calling function ollect_json_from_any_value
 fn collect_json_from_values(
     values: &Option<super::otel::proto::common::v1::Value>,
     key: &String,
