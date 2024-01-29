@@ -108,7 +108,7 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                         let key = &attribute.key;
                         let value = &attribute.value;
                         let value_json =
-                            collect_json_from_values(value, &format!("resource_attribute_{}", key));
+                            collect_json_from_values(value, &format!("resource_{}", key));
                         for key in value_json.keys() {
                             otel_json.insert(key.to_owned(), value_json[key].to_owned());
                         }
@@ -148,7 +148,7 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                                 let value = &attribute.value;
                                 let value_json = collect_json_from_values(
                                     value,
-                                    &format!("instrumentation_scope_attribute_{}", key),
+                                    &format!("instrumentation_scope_{}", key),
                                 );
                                 for key in value_json.keys() {
                                     otel_json.insert(key.to_owned(), value_json[key].to_owned());
