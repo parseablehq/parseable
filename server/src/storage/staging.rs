@@ -21,7 +21,6 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    process,
     sync::Arc,
 };
 
@@ -37,6 +36,7 @@ use parquet::{
     format::SortingColumn,
     schema::types::ColumnPath,
 };
+use relative_path::RelativePath;
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
