@@ -70,6 +70,7 @@ pub trait ObjectStorage: Sync + 'static {
         &self,
         path: &RelativePath,
         resource: Bytes,
+        time: Option<chrono::NaiveDateTime>,
     ) -> Result<(), ObjectStorageError>;
     async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError>;
     async fn check(&self) -> Result<(), ObjectStorageError>;
@@ -99,6 +100,7 @@ pub trait ObjectStorage: Sync + 'static {
         &self,
         stream_name: &str,
         schema: &Schema,
+        time: Option<chrono::NaiveDateTime>,
     ) -> Result<(), ObjectStorageError> {
         self.put_object(&schema_path(stream_name), to_bytes(schema))
             .await?;
