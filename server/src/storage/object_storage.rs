@@ -415,7 +415,7 @@ async fn commit_schema_to_storage(
     let storage = CONFIG.storage().get_object_store();
     let stream_schema = storage.get_schema(stream_name).await?;
     let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
-    storage.put_schema(stream_name, &new_schema).await
+    storage.put_schema(stream_name, &new_schema, time).await
 }
 
 #[inline(always)]
