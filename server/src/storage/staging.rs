@@ -181,14 +181,41 @@ pub fn to_parquet_path(stream_name: &str, time: &NaiveDateTime) -> PathBuf {
     data_path.join(dir)
 }
 
+/// Converts arrows files in the staging directory to Parquet format.
+///
+/// This function takes a stream name and converts all the arrows files associated to Parquet format.
+/// The converted Parquet files are saved in the same directory.
+///
+/// # Arguments
+///
+/// * `stream` - A string slice representing the the stream.
+/// * `dir` - A shared reference to `StorageDir` struct.
+///
+/// # Returns
+///
+/// A `Result<(Option<chrono::NaiveDateTime, Option<Schema>), MoveDataError>` indicating the success or failure of the operation. Returns a `ConversionError` if the conversion could not be performed.
+///
+/// # Example
+///
+/// ```
+/// let stream_name = "demo";
+/// let dir = StorageDir::new(stream_name);
+/// let result = convert_disk_files_to_parquet(stream_name, &dir);
+/// match result {
+///     Ok(_) => println!("Successfully converted files to Parquet."),
+///     Err(e) => println!("Error converting files to Parquet: {:?}", e),
+/// }
+/// ```
+///
+/// This function is defined in [server/src/staging.rs](server/src/staging.rs).
 pub fn convert_disk_files_to_parquet(
     stream: &str,
     dir: &StorageDir,
-) -> Result<Option<Schema>, MoveDataError> {
+) -> Result<(Option<NaiveDateTime>, Option<Schema>), MoveDataError> {
     let mut schemas = Vec::new();
 
     let time = chrono::Utc::now().naive_utc();
-    let staging_files = dir.arrow_files_grouped_exclude_time(time);
+    let staging_files = dir.arrow_files_grouped_exclude_time(&time);
     if staging_files.is_empty() {
         metrics::STAGING_FILES.with_label_values(&[stream]).set(0);
     }
@@ -221,18 +248,12 @@ pub fn convert_disk_files_to_parquet(
         }
 
         writer.close()?;
-        for file in files {
-            if fs::remove_file(file).is_err() {
-                log::error!("Failed to delete file. Unstable state");
-                process::abort()
-            }
-        }
     }
 
     if !schemas.is_empty() {
-        Ok(Some(Schema::try_merge(schemas).unwrap()))
+        Ok((Some(time), Some(Schema::try_merge(schemas).unwrap())))
     } else {
-        Ok(None)
+        Ok((None, None))
     }
 }
 
