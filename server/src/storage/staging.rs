@@ -314,6 +314,61 @@ pub fn get_staged_records(dir: &StorageDir) -> Result<Vec<RecordBatch>, &'static
     Ok(record_reader.merged_iter(schema).collect_vec())
 }
 
+/// Unlinks (deletes) arrow files from the staging directory.
+///
+/// This function takes a list of arrow files and removes them from the staging directory.
+///
+/// # Arguments
+///
+/// * `path` - shared reference to `RelativePath` struct.
+/// * `time` - shared reference to `Option<NaiveDateTime>` struct used to filter out the arrow files.
+///
+/// # Returns
+/// Returns a `Result<(), ObjectStorageError>` indicating the success or failure of the operation.
+/// Returns a `Custom` error if the file could not be deleted.
+///
+/// # Example
+///
+/// ```
+/// let path = <relative path>;
+/// let time = Some(chrono::NaiveDateTime);
+/// let result = unlink_arrow_files(&path, &time);
+/// match result {
+///     Ok(_) => println!("Successfully unlinked arrow files."),
+///     Err(e) => println!("Error unlinking arrow files: {:?}", e),
+/// }
+/// ```
+///
+/// This function is defined in [server/src/staging.rs](server/src/staging.rs).
+pub async fn unlink_arrow_files(
+    path: &RelativePath,
+    time: &Option<NaiveDateTime>,
+) -> Result<(), ObjectStorageError> {
+    if let Some(time) = time {
+        // I am getting the stream name in a hacky way rightnow. deal with it later
+        let stream = path.as_str().split('/').rev().nth(1).unwrap();
+        let staging_dir = StorageDir::new(stream);
+        // unlink the consolidated arrow files
+        let arrow_files_to_unlink = staging_dir.arrow_files_grouped_exclude_time(time);
+        let arrow_files_to_unlink = arrow_files_to_unlink
+            .iter()
+            .map(|x| x.1)
+            .collect_vec()
+            .into_iter()
+            .flatten()
+            .collect_vec();
+
+        for file in arrow_files_to_unlink {
+            if tokio::fs::remove_file(file).await.is_err() {
+                return Err(ObjectStorageError::Custom(
+                    "Failed to delete file. Unstable state".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum MoveDataError {
     #[error("Unable to create recordbatch stream")]
