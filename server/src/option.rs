@@ -251,6 +251,9 @@ pub struct Server {
 
     /// Parquet compression algorithm
     pub parquet_compression: Compression,
+
+    /// Mode of operation
+    pub mode: Mode,
 }
 
 impl FromArgMatches for Server {
@@ -354,6 +357,17 @@ impl FromArgMatches for Server {
             _ => None,
         };
 
+        self.mode = match m
+            .get_one::<String>(Self::MODE)
+            .expect("Mode not set")
+            .as_str()
+        {
+            "query" => Mode::Query,
+            "ingest" => Mode::Ingest,
+            "all" => Mode::All,
+            _ => unreachable!(),
+        };
+
         Ok(())
     }
 }
@@ -382,6 +396,7 @@ impl Server {
     pub const QUERY_MEM_POOL_SIZE: &'static str = "query-mempool-size";
     pub const ROW_GROUP_SIZE: &'static str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &'static str = "compression-algo";
+    pub const MODE: &'static str = "mode";
     pub const DEFAULT_USERNAME: &'static str = "admin";
     pub const DEFAULT_PASSWORD: &'static str = "admin";
 
@@ -578,6 +593,18 @@ impl Server {
                     .default_value("16384")
                     .value_parser(value_parser!(usize))
                     .help("Number of rows in a row group"),
+            ).arg(
+                Arg::new(Self::MODE)
+                    .long(Self::MODE)
+                    .env("P_MODE")
+                    .value_name("STRING")
+                    .required(false)
+                    .default_value("all")
+                    .value_parser([
+                        "query",
+                        "ingest",
+                        "all"])
+                    .help("Mode of operation"),
             )
             .arg(
                 Arg::new(Self::PARQUET_COMPRESSION_ALGO)
@@ -602,6 +629,14 @@ impl Server {
                     .multiple(true)
         )
     }
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub enum Mode {
+    Query,
+    Ingest,
+    #[default]
+    All,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

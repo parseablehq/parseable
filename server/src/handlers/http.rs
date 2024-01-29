@@ -35,7 +35,7 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 use crate::option::CONFIG;
 use crate::rbac::role::Action;
 
-use self::middleware::{DisAllowRootUser, RouteExt};
+use self::middleware::{DisAllowRootUser, ModeFilter, RouteExt};
 
 mod about;
 mod health_check;
@@ -76,6 +76,7 @@ pub async fn run_http(
             .wrap(actix_web::middleware::Logger::default())
             .wrap(actix_web::middleware::Compress::default())
             .wrap(cross_origin_config())
+            .wrap(ModeFilter)
     };
 
     let ssl_acceptor = match (
@@ -272,13 +273,16 @@ pub fn configure_routes(
     );
 
     let role_api = web::scope("/role")
+        // GET Role List
         .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
         .service(
+            // PUT and GET Default Role
             resource("/default")
                 .route(web::put().to(role::put_default).authorize(Action::PutRole))
                 .route(web::get().to(role::get_default).authorize(Action::GetRole)),
         )
         .service(
+            // PUT, GET, DELETE Roles
             resource("/{name}")
                 .route(web::put().to(role::put).authorize(Action::PutRole))
                 .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
@@ -299,6 +303,7 @@ pub fn configure_routes(
     cfg.service(
         // Base path "{url}/api/v1"
         web::scope(&base_path())
+            // .wrap(PathFilter)
             // POST "/query" ==> Get results of the SQL query passed in request body
             .service(
                 web::resource("/query")
