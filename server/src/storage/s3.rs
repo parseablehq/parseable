@@ -247,14 +247,15 @@ impl S3 {
         &self,
         path: &RelativePath,
         resource: Bytes,
+        time: Option<chrono::NaiveDateTime>,
     ) -> Result<(), ObjectStorageError> {
-        let time = Instant::now();
+        let curr_time = Instant::now();
         let resp = self.client.put(&to_path(path), resource).await;
         let status = if resp.is_ok() { "200" } else { "400" };
-        let time = time.elapsed().as_secs_f64();
+        let curr_time = curr_time.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME
             .with_label_values(&["PUT", status])
-            .observe(time);
+            .observe(curr_time);
 
         if let Err(object_store::Error::NotFound { source, .. }) = &resp {
             let source_str = source.to_string();
@@ -265,6 +266,7 @@ impl S3 {
             }
         }
 
+        crate::storage::staging::unlink_arrow_files(path, &time).await?;
         resp.map(|_| ()).map_err(|err| err.into())
     }
 
@@ -407,8 +409,9 @@ impl ObjectStorage for S3 {
         &self,
         path: &RelativePath,
         resource: Bytes,
+        time: Option<chrono::NaiveDateTime>,
     ) -> Result<(), ObjectStorageError> {
-        self._put_object(path, resource)
+        self._put_object(path, resource, time)
             .await
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
 

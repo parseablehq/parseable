@@ -110,25 +110,55 @@ impl ObjectStorage for LocalFS {
         res
     }
 
+    /// Writes an object to the local file system.
+    ///
+    /// This function takes a path and an object, and writes the object to the file at the given path.
+    /// If the file already exists, it is overwritten.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - &RelativePath
+    /// * `resource` - Bytes
+    /// * `time` - Option<chrono::NaiveDateTime>
+    ///
+    /// # Returns
+    ///
+    /// A `Result<(), ObjectStorageError>` indicating the success or failure of the operation. Returns an `ObjectStorageError` if the file could not be written.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let path = RelativePath::new("/path/to/file");
+    /// let object = "Hello, world!".as_bytes();
+    /// let result = put_object(path, object);
+    /// match result {
+    ///     Ok(()) => println!("Successfully wrote object to file."),
+    ///     Err(e) => println!("Error writing object to file: {:?}", e),
+    /// }
+    /// ```
+    ///
+    /// This function is defined in [server/src/localfs.rs](server/src/localfs.rs).
     async fn put_object(
         &self,
         path: &RelativePath,
         resource: Bytes,
+        time: Option<chrono::NaiveDateTime>,
     ) -> Result<(), ObjectStorageError> {
-        let time = Instant::now();
+        let curr_time = Instant::now();
+        let absolute_path = self.path_in_root(path);
 
-        let path = self.path_in_root(path);
-        if let Some(parent) = path.parent() {
+        // parent is a &Path for the data directory +
+        // the appropriate subdirectories appended to it, ie parquet file path
+        if let Some(parent) = absolute_path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        let res = fs::write(path, resource).await;
-
+        let res = fs::write(absolute_path.clone(), resource).await;
         let status = if res.is_ok() { "200" } else { "400" };
-        let time = time.elapsed().as_secs_f64();
+        let curr_time = curr_time.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME
             .with_label_values(&["PUT", status])
-            .observe(time);
-
+            .observe(curr_time);
+        crate::storage::staging::unlink_arrow_files(path, &time).await?;
         res.map_err(Into::into)
     }
 
