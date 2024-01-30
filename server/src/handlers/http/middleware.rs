@@ -307,7 +307,7 @@ where
                 if cond {
                     Box::pin(async {
                         Err(actix_web::error::ErrorUnauthorized(
-                            "Ingest API cannot be accessed in Query Mode",
+                            "Ingestion API cannot be accessed in Query Mode",
                         ))
                     })
                 } else {
