@@ -299,15 +299,23 @@ where
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let path = req.path();
         let mode = &CONFIG.parseable.mode;
-
         // change error messages based on mode
         match mode {
             Mode::Query => {
-                let cond = path.split('/').any(|x| x == "ingest");
-                if cond {
+                // In Query mode, only allows /ingest endpoint, and /logstream endpoint with GET method
+                let base_cond = path.split('/').any(|x| x == "ingest");
+                let logstream_cond =
+                    !(path.split('/').any(|x| x == "logstream") && req.method() == "GET");
+                if base_cond {
                     Box::pin(async {
                         Err(actix_web::error::ErrorUnauthorized(
-                            "Ingest API cannot be accessed in Query Mode",
+                            "Ingestion API cannot be accessed in Query Mode",
+                        ))
+                    })
+                } else if logstream_cond {
+                    Box::pin(async {
+                        Err(actix_web::error::ErrorUnauthorized(
+                            "Logstream cannot be changed in Query Mode",
                         ))
                     })
                 } else {
