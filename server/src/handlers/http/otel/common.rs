@@ -32,11 +32,11 @@ pub struct Value {
     #[serde(rename = "stringValue")]
     pub str_val: Option<String>,
     #[serde(rename = "boolValue")]
-    pub bool_val: Option<String>,
+    pub bool_val: Option<bool>,
     #[serde(rename = "intValue")]
-    pub int_val: Option<String>,
+    pub int_val: Option<i64>,
     #[serde(rename = "doubleValue")]
-    pub double_val: Option<String>,
+    pub double_val: Option<f64>,
     #[serde(rename = "arrayValue")]
     pub array_val: Option<ArrayValue>,
     #[serde(rename = "keyVauleList")]

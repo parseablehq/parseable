@@ -188,33 +188,34 @@ impl SeverityNumber {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            SeverityNumber::Unspecified => "SEVERITY_NUMBER_UNSPECIFIED",
-            SeverityNumber::Trace => "SEVERITY_NUMBER_TRACE",
-            SeverityNumber::Trace2 => "SEVERITY_NUMBER_TRACE2",
-            SeverityNumber::Trace3 => "SEVERITY_NUMBER_TRACE3",
-            SeverityNumber::Trace4 => "SEVERITY_NUMBER_TRACE4",
-            SeverityNumber::Debug => "SEVERITY_NUMBER_DEBUG",
-            SeverityNumber::Debug2 => "SEVERITY_NUMBER_DEBUG2",
-            SeverityNumber::Debug3 => "SEVERITY_NUMBER_DEBUG3",
-            SeverityNumber::Debug4 => "SEVERITY_NUMBER_DEBUG4",
-            SeverityNumber::Info => "SEVERITY_NUMBER_INFO",
-            SeverityNumber::Info2 => "SEVERITY_NUMBER_INFO2",
-            SeverityNumber::Info3 => "SEVERITY_NUMBER_INFO3",
-            SeverityNumber::Info4 => "SEVERITY_NUMBER_INFO4",
-            SeverityNumber::Warn => "SEVERITY_NUMBER_WARN",
-            SeverityNumber::Warn2 => "SEVERITY_NUMBER_WARN2",
-            SeverityNumber::Warn3 => "SEVERITY_NUMBER_WARN3",
-            SeverityNumber::Warn4 => "SEVERITY_NUMBER_WARN4",
-            SeverityNumber::Error => "SEVERITY_NUMBER_ERROR",
-            SeverityNumber::Error2 => "SEVERITY_NUMBER_ERROR2",
-            SeverityNumber::Error3 => "SEVERITY_NUMBER_ERROR3",
-            SeverityNumber::Error4 => "SEVERITY_NUMBER_ERROR4",
-            SeverityNumber::Fatal => "SEVERITY_NUMBER_FATAL",
-            SeverityNumber::Fatal2 => "SEVERITY_NUMBER_FATAL2",
-            SeverityNumber::Fatal3 => "SEVERITY_NUMBER_FATAL3",
-            SeverityNumber::Fatal4 => "SEVERITY_NUMBER_FATAL4",
+    pub fn as_str_name(severity_number: i32) -> &'static str {
+        match severity_number {
+            0 => "SEVERITY_NUMBER_UNSPECIFIED",
+            1 => "SEVERITY_NUMBER_TRACE",
+            2 => "SEVERITY_NUMBER_TRACE2",
+            3 => "SEVERITY_NUMBER_TRACE3",
+            4 => "SEVERITY_NUMBER_TRACE4",
+            5 => "SEVERITY_NUMBER_DEBUG",
+            6 => "SEVERITY_NUMBER_DEBUG2",
+            7 => "SEVERITY_NUMBER_DEBUG3",
+            8 => "SEVERITY_NUMBER_DEBUG4",
+            9 => "SEVERITY_NUMBER_INFO",
+            10 => "SEVERITY_NUMBER_INFO2",
+            11 => "SEVERITY_NUMBER_INFO3",
+            12 => "SEVERITY_NUMBER_INFO4",
+            13 => "SEVERITY_NUMBER_WARN",
+            14 => "SEVERITY_NUMBER_WARN2",
+            15 => "SEVERITY_NUMBER_WARN3",
+            16 => "SEVERITY_NUMBER_WARN4",
+            17 => "SEVERITY_NUMBER_ERROR",
+            18 => "SEVERITY_NUMBER_ERROR2",
+            19 => "SEVERITY_NUMBER_ERROR3",
+            20 => "SEVERITY_NUMBER_ERROR4",
+            21 => "SEVERITY_NUMBER_FATAL",
+            22 => "SEVERITY_NUMBER_FATAL2",
+            23 => "SEVERITY_NUMBER_FATAL3",
+            24 => "SEVERITY_NUMBER_FATAL4",
+            _ => "Invalid severity number",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -269,10 +270,11 @@ impl LogRecordFlags {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            LogRecordFlags::DoNotUse => "LOG_RECORD_FLAGS_DO_NOT_USE",
-            LogRecordFlags::TraceFlagsMask => "LOG_RECORD_FLAGS_TRACE_FLAGS_MASK",
+    pub fn as_str_name(flag: u32) -> &'static str {
+        match flag {
+            0 => "LOG_RECORD_FLAGS_DO_NOT_USE",
+            255 => "LOG_RECORD_FLAGS_TRACE_FLAGS_MASK",
+            _ => "Invalid flag",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.

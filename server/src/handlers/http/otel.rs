@@ -24,6 +24,8 @@ mod proto;
 mod resource;
 use std::collections::BTreeMap;
 
+use self::log::{LogRecordFlags, SeverityNumber};
+
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
 fn collect_json_from_any_value(
     key: &String,
@@ -39,19 +41,19 @@ fn collect_json_from_any_value(
     if value.bool_val.is_some() {
         value_json.insert(
             key.to_string(),
-            Value::String(value.bool_val.as_ref().unwrap().to_owned()),
+            Value::Bool(value.bool_val.unwrap()),
         );
     }
     if value.int_val.is_some() {
         value_json.insert(
             key.to_string(),
-            Value::String(value.int_val.as_ref().unwrap().to_owned()),
+            Value::Number(serde_json::Number::from(value.int_val.unwrap())),
         );
     }
     if value.double_val.is_some() {
         value_json.insert(
             key.to_string(),
-            Value::String(value.double_val.as_ref().unwrap().to_owned()),
+            Value::Number(serde_json::Number::from_f64(value.double_val.unwrap()).unwrap()),
         );
     }
 
@@ -125,7 +127,7 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                 if resource.dropped_attributes_count.is_some() {
                     otel_json.insert(
                         "resource_dropped_attributes_count".to_string(),
-                        Value::String(resource.dropped_attributes_count.unwrap().to_string()),
+                        Value::Number(serde_json::Number::from(resource.dropped_attributes_count.unwrap())),
                     );
                 }
             }
@@ -166,12 +168,7 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                         if instrumentation_scope.dropped_attributes_count.is_some() {
                             otel_json.insert(
                                 "instrumentation_scope_dropped_attributes_count".to_string(),
-                                Value::String(
-                                    instrumentation_scope
-                                        .dropped_attributes_count
-                                        .unwrap()
-                                        .to_string(),
-                                ),
+                                Value::Number(serde_json::Number::from(instrumentation_scope.dropped_attributes_count.unwrap())),
                             );
                         }
                     }
@@ -199,12 +196,21 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                             );
                         }
                         if log_record.severity_number.is_some() {
+                            let severity_number: i32 = log_record.severity_number.unwrap();
                             log_record_json.insert(
                                 "severity_number".to_string(),
-                                Value::String(
-                                    log_record.severity_number.as_ref().unwrap().to_string(),
+                                Value::Number(
+                                    serde_json::Number::from(severity_number),
                                 ),
                             );
+                            if log_record.severity_text.is_none() {
+                                log_record_json.insert(
+                                    "severity_text".to_string(),
+                                    Value::String(
+                                        SeverityNumber::as_str_name(severity_number).to_string(),
+                                    ),
+                                );
+                            }
                         }
                         if log_record.severity_text.is_some() {
                             log_record_json.insert(
@@ -214,6 +220,7 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                                 ),
                             );
                         }
+                        
 
                         if log_record.name.is_some() {
                             log_record_json.insert(
@@ -246,16 +253,25 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                         if log_record.dropped_attributes_count.is_some() {
                             log_record_json.insert(
                                 "log_record_dropped_attributes_count".to_string(),
-                                Value::String(
-                                    log_record.dropped_attributes_count.unwrap().to_string(),
-                                ),
+                                
+                                    Value::Number(serde_json::Number::from(log_record.dropped_attributes_count.unwrap())),
+                                
                             );
                         }
 
                         if log_record.flags.is_some() {
+                            let flags: u32 = log_record.flags.unwrap();
                             log_record_json.insert(
-                                "flags".to_string(),
-                                Value::String(log_record.flags.unwrap().to_string()),
+                                "flags_number".to_string(),
+                                Value::Number(
+                                    serde_json::Number::from(flags),
+                                ),
+                            );
+                            log_record_json.insert(
+                                "flags_string".to_string(),
+                                Value::String(
+                                    LogRecordFlags::as_str_name(flags).to_string(),
+                                ),
                             );
                         }
 
