@@ -39,10 +39,7 @@ fn collect_json_from_any_value(
         );
     }
     if value.bool_val.is_some() {
-        value_json.insert(
-            key.to_string(),
-            Value::Bool(value.bool_val.unwrap()),
-        );
+        value_json.insert(key.to_string(), Value::Bool(value.bool_val.unwrap()));
     }
     if value.int_val.is_some() {
         value_json.insert(
@@ -127,7 +124,9 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                 if resource.dropped_attributes_count.is_some() {
                     otel_json.insert(
                         "resource_dropped_attributes_count".to_string(),
-                        Value::Number(serde_json::Number::from(resource.dropped_attributes_count.unwrap())),
+                        Value::Number(serde_json::Number::from(
+                            resource.dropped_attributes_count.unwrap(),
+                        )),
                     );
                 }
             }
@@ -168,7 +167,9 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                         if instrumentation_scope.dropped_attributes_count.is_some() {
                             otel_json.insert(
                                 "instrumentation_scope_dropped_attributes_count".to_string(),
-                                Value::Number(serde_json::Number::from(instrumentation_scope.dropped_attributes_count.unwrap())),
+                                Value::Number(serde_json::Number::from(
+                                    instrumentation_scope.dropped_attributes_count.unwrap(),
+                                )),
                             );
                         }
                     }
@@ -199,9 +200,7 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                             let severity_number: i32 = log_record.severity_number.unwrap();
                             log_record_json.insert(
                                 "severity_number".to_string(),
-                                Value::Number(
-                                    serde_json::Number::from(severity_number),
-                                ),
+                                Value::Number(serde_json::Number::from(severity_number)),
                             );
                             if log_record.severity_text.is_none() {
                                 log_record_json.insert(
@@ -220,7 +219,6 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                                 ),
                             );
                         }
-                        
 
                         if log_record.name.is_some() {
                             log_record_json.insert(
@@ -253,9 +251,9 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                         if log_record.dropped_attributes_count.is_some() {
                             log_record_json.insert(
                                 "log_record_dropped_attributes_count".to_string(),
-                                
-                                    Value::Number(serde_json::Number::from(log_record.dropped_attributes_count.unwrap())),
-                                
+                                Value::Number(serde_json::Number::from(
+                                    log_record.dropped_attributes_count.unwrap(),
+                                )),
                             );
                         }
 
@@ -263,15 +261,11 @@ pub fn flatten_otel_logs(body: Bytes) -> Vec<BTreeMap<String, Value>> {
                             let flags: u32 = log_record.flags.unwrap();
                             log_record_json.insert(
                                 "flags_number".to_string(),
-                                Value::Number(
-                                    serde_json::Number::from(flags),
-                                ),
+                                Value::Number(serde_json::Number::from(flags)),
                             );
                             log_record_json.insert(
                                 "flags_string".to_string(),
-                                Value::String(
-                                    LogRecordFlags::as_str_name(flags).to_string(),
-                                ),
+                                Value::String(LogRecordFlags::as_str_name(flags).to_string()),
                             );
                         }
 
