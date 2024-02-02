@@ -41,6 +41,7 @@ pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 #[derive(Default)]
 pub struct Writer {
     pub disk: FileWriter,
+    pub in_memory: Vec<RecordBatch>,
 }
 
 impl Writer {
@@ -58,6 +59,7 @@ impl Writer {
         );
 
         self.disk.push(stream_name, schema_key, &rb)?;
+        self.in_memory.push(rb);
         Ok(())
     }
 }
