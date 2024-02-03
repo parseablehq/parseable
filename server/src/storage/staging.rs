@@ -46,7 +46,7 @@ use crate::{
     utils::{self, arrow::merged_reader::MergedReverseRecordReader},
 };
 
-const ARROW_FILE_EXTENSION: &str = "data.arrows";
+pub const ARROW_FILE_EXTENSION: &str = "data.arrows";
 const PARQUET_FILE_EXTENSION: &str = "data.parquet";
 
 #[derive(Debug)]
@@ -300,8 +300,20 @@ fn parquet_writer_props() -> WriterPropertiesBuilder {
 /// See [StorageDir](server/src/storage/staging.rs) for more information about StorageDir struct
 /// See [MergedReverseRecordReader](server/src/utils/arrow/merged_reader.rs) for more information about MergedReverseRecordReader struct
 /// This function is defined in [server/src/reader.rs](server/src/reader.rs).
-pub fn get_staged_records(dir: &StorageDir) -> Result<Vec<RecordBatch>, &'static str> {
-    let staging_files = dir.arrow_files();
+pub fn get_staged_records(dir: &StorageDir, exclude: &NaiveDateTime) -> Result<Vec<RecordBatch>, &'static str> {
+    // let staging_files = dir.arrow_files();
+    let hot_filename = StorageDir::file_time_suffix(exclude, ARROW_FILE_EXTENSION);
+
+    let mut staging_files = dir.arrow_files();
+
+    staging_files.retain(|path| {
+        !path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with(&hot_filename)
+    });
 
     let record_reader = match MergedReverseRecordReader::try_new(&staging_files) {
         Ok(mrbr) => mrbr,

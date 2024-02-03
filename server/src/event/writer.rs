@@ -34,6 +34,7 @@ use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_schema::Schema;
 use chrono::Utc;
 use derive_more::{Deref, DerefMut};
+use itertools::Itertools;
 use once_cell::sync::Lazy;
 
 pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
@@ -113,8 +114,9 @@ impl WriterTable {
         let map = std::mem::take(&mut *table);
         drop(table);
         for writer in map.into_values() {
-            let writer = writer.into_inner().unwrap();
+            let mut writer = writer.into_inner().unwrap();
             writer.disk.close_all();
+            writer.in_memory.clear();
         }
     }
 
@@ -123,13 +125,33 @@ impl WriterTable {
         stream_name: &str,
         schema: &Arc<Schema>,
     ) -> Option<Vec<RecordBatch>> {
-        let records = get_staged_records(&StorageDir::new(stream_name))
-            .ok()?
-            .into_iter()
+        // let records = get_staged_records(&StorageDir::new(stream_name))
+        //     .ok()?
+        //     .into_iter()
+        //     .map(|rb| adapt_batch(schema, &rb))
+        //     .collect();
+        let dir = StorageDir::new(stream_name);
+        let exclude = chrono::Utc::now().naive_utc();
+        let mut records = get_staged_records(&dir, &exclude).unwrap();
+        let in_mem_records = self.get_in_memory_records(stream_name);
+        let mut in_mem_records = in_mem_records
+            .iter()
             .map(|rb| adapt_batch(schema, &rb))
-            .collect();
+            .collect_vec();
+        records.append(&mut in_mem_records);
 
         Some(records)
+    }
+
+    fn get_in_memory_records(&self, stream_name: &str) -> Vec<RecordBatch> {
+        self.read()
+            .unwrap()
+            .get(stream_name)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .in_memory
+            .clone()
     }
 }
 
