@@ -18,6 +18,7 @@
  */
 
 mod file_writer;
+mod mem_writer;
 
 use std::{
     collections::HashMap,
@@ -25,13 +26,16 @@ use std::{
 };
 
 use crate::{
-    storage::{staging::get_staged_records, StorageDir},
-    utils::arrow::{adapt_batch, replace_columns},
+    storage::{
+        staging::{get_staged_records, ARROW_FILE_EXTENSION},
+        StorageDir,
+    },
+    utils::arrow::{adapt_batch, merged_reader::MergedReverseRecordReader, replace_columns},
 };
 
-use self::{errors::StreamWriterError, file_writer::FileWriter};
+use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
-use arrow_schema::Schema;
+use arrow_schema::{ArrowError, Schema};
 use chrono::Utc;
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
@@ -42,7 +46,7 @@ pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 #[derive(Default)]
 pub struct Writer {
     pub disk: FileWriter,
-    pub in_memory: Vec<RecordBatch>,
+    pub mem: MemWriter,
 }
 
 impl Writer {
@@ -60,8 +64,42 @@ impl Writer {
         );
 
         self.disk.push(stream_name, schema_key, &rb)?;
-        self.in_memory.push(rb);
+        self.mem.push(schema_key, rb);
         Ok(())
+    }
+
+    fn get_staged_records(&self, stream_name: &str, schema: &Arc<Schema>) -> Result<Vec<RecordBatch>, &'static str> {
+        // Get the files data
+        let staging_dir = &StorageDir::new(stream_name);
+        let hot_filename =
+            StorageDir::file_time_suffix(&chrono::Utc::now().naive_utc(), ARROW_FILE_EXTENSION);
+
+            // get all the paths for arrow files
+        let mut arrow_files = staging_dir.arrow_files();
+
+        // filter the files that are hot
+        arrow_files.retain(|path| {
+            !path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with(&hot_filename)
+        });
+
+        let record_reader = match MergedReverseRecordReader::try_new(&arrow_files) {
+            Ok(reader) => reader,
+            Err(_) => return Err("Failed to create Merged Record Reader"),
+        };
+
+        let merged_schema = Arc::new(record_reader.merged_schema());
+        let mut records = record_reader.merged_iter(merged_schema.clone()).collect_vec();
+
+        let mut mem_records = self.mem.recordbatches_cloned(&merged_schema);
+
+        records.append(&mut mem_records);
+
+        Ok(records)
     }
 }
 
@@ -116,7 +154,7 @@ impl WriterTable {
         for writer in map.into_values() {
             let mut writer = writer.into_inner().unwrap();
             writer.disk.close_all();
-            writer.in_memory.clear();
+            writer.mem.clear();
         }
     }
 
@@ -133,7 +171,7 @@ impl WriterTable {
         let dir = StorageDir::new(stream_name);
         let exclude = chrono::Utc::now().naive_utc();
         let mut records = get_staged_records(&dir, &exclude).unwrap();
-        let in_mem_records = self.get_in_memory_records(stream_name);
+        let in_mem_records = self.get_in_memory_records(stream_name, schema);
         let mut in_mem_records = in_mem_records
             .iter()
             .map(|rb| adapt_batch(schema, &rb))
@@ -143,15 +181,15 @@ impl WriterTable {
         Some(records)
     }
 
-    fn get_in_memory_records(&self, stream_name: &str) -> Vec<RecordBatch> {
+    fn get_in_memory_records(&self, stream_name: &str, schema: &Arc<Schema>) -> Vec<RecordBatch> {
         self.read()
             .unwrap()
             .get(stream_name)
             .unwrap()
             .lock()
             .unwrap()
-            .in_memory
-            .clone()
+            .mem
+            .recordbatches_cloned(schema)
     }
 }
 

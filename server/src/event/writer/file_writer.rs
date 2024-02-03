@@ -20,12 +20,15 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use derive_more::{Deref, DerefMut};
+use itertools::Itertools;
 
-use crate::storage::staging::StorageDir;
+use crate::storage::staging::{StorageDir, ARROW_FILE_EXTENSION};
+use crate::utils::arrow::merged_reader::MergedReverseRecordReader;
 
 use super::errors::StreamWriterError;
 
