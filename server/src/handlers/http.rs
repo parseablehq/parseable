@@ -32,7 +32,7 @@ use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
-use crate::{modal::{ingest_server::IngestServer, parseable_server::ParseableServer, query_server::QueryServer, server::SuperServer}, option::CONFIG};
+use crate::{modal::{ingest_server::IngestServer, parseable_server::ParseableServer, query_server::QueryServer, server::Server}, option::CONFIG};
 use crate::rbac::role::Action;
 
 use self::middleware::{DisAllowRootUser, ModeFilter, RouteExt};
@@ -65,7 +65,7 @@ pub async fn run_http(
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
         Mode::Query => Arc::new(QueryServer::default()),
         Mode::Ingest => Arc::new(IngestServer::default()),
-        Mode::All => Arc::new(SuperServer::default()),
+        Mode::All => Arc::new(Server::default()),
     };
 
     server.start(prometheus, oidc_client).await?;

@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use crate::option::CONFIG;
 
 use super::parseable_server::{OpenIdClient, ParseableServer};
-use super::server::SuperServer;
+use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
@@ -93,22 +93,22 @@ impl QueryServer {
     pub fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>) {
         let generated = generate();
 
-        let user_scope = SuperServer::get_user_webscope();
-        let llm_scope = SuperServer::get_llm_webscope();
-        let role_scope = SuperServer::get_user_role_webscope();
-        let oauth_scope = SuperServer::get_oauth_webscope(oidc_client);
+        let user_scope = Server::get_user_webscope();
+        let llm_scope = Server::get_llm_webscope();
+        let role_scope = Server::get_user_role_webscope();
+        let oauth_scope = Server::get_oauth_webscope(oidc_client);
 
         config
             .service(
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body
-                    .service(SuperServer::get_query_factory())
+                    .service(Server::get_query_factory())
                     // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
-                    .service(SuperServer::get_liveness_factory())
+                    .service(Server::get_liveness_factory())
                     // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
-                    .service(SuperServer::get_readiness_factory())
+                    .service(Server::get_readiness_factory())
                     // GET "/about" ==> Returns information about instance
-                    .service(SuperServer::get_about_factory())
+                    .service(Server::get_about_factory())
                     .service(
                         web::scope("/logstream").service(
                             // GET "/logstream" ==> Get list of all Log Streams on the server

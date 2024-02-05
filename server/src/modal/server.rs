@@ -52,10 +52,10 @@ use super::parseable_server::ParseableServer;
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 #[derive(Default)]
-pub struct SuperServer;
+pub struct Server;
 
 #[async_trait(?Send)]
-impl ParseableServer for SuperServer {
+impl ParseableServer for Server {
     async fn start(
         &self,
         prometheus: PrometheusMetrics,
@@ -74,7 +74,7 @@ impl ParseableServer for SuperServer {
         let create_app_fn = move || {
             App::new()
                 .wrap(prometheus.clone())
-                .configure(|cfg| SuperServer::configure_routes(cfg, oidc_client.clone()))
+                .configure(|cfg| Server::configure_routes(cfg, oidc_client.clone()))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())
                 .wrap(cross_origin_config())
@@ -129,7 +129,7 @@ impl ParseableServer for SuperServer {
     }
 }
 
-impl SuperServer {
+impl Server {
     fn configure_routes(config: &mut web::ServiceConfig, oidc_client: Option<OpenIdClient>) {
         let generated = generate();
 

@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use super::parseable_server::OpenIdClient;
 use super::parseable_server::ParseableServer;
-use super::server::SuperServer;
+use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
 
 use actix_web::{web, App, HttpServer};
@@ -90,8 +90,8 @@ impl ParseableServer for IngestServer {
 impl IngestServer {
     // configure the api routes
     fn configure_routes(config: &mut web::ServiceConfig, _odic_client: Option<OpenIdClient>) {
-        let logstream_scope = SuperServer::get_logstream_webscope();
-        let ingest_factory = SuperServer::get_ingest_factory();
+        let logstream_scope = Server::get_logstream_webscope();
+        let ingest_factory = Server::get_ingest_factory();
 
         config
             .service(
@@ -99,9 +99,9 @@ impl IngestServer {
                 web::scope(&base_path()).service(ingest_factory),
             )
             // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
-            .service(SuperServer::get_liveness_factory())
+            .service(Server::get_liveness_factory())
             // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
-            .service(SuperServer::get_readiness_factory())
+            .service(Server::get_readiness_factory())
             .service(logstream_scope);
     }
 }
