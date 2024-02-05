@@ -54,9 +54,9 @@ pub async fn run_http(
     oidc_client: Option<crate::oidc::OpenidConfig>,
 ) -> anyhow::Result<()> {
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
-        Mode::Query => Arc::new(QueryServer::default()),
-        Mode::Ingest => Arc::new(IngestServer::default()),
-        Mode::All => Arc::new(Server::default()),
+        Mode::Query => Arc::new(QueryServer),
+        Mode::Ingest => Arc::new(IngestServer),
+        Mode::All => Arc::new(Server),
     };
 
     server.start(prometheus, oidc_client).await?;
