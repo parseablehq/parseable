@@ -25,6 +25,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+mod cli;
 mod about;
 mod alerts;
 mod analytics;

@@ -17,16 +17,15 @@
  */
 
 use clap::error::ErrorKind;
-use clap::{command, value_parser, Arg, ArgGroup, Args, Command, FromArgMatches};
+use clap::{command, Args, Command, FromArgMatches};
 
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-use url::Url;
 
-use crate::oidc::{self, OpenidConfig};
+use crate::cli::Cli;
 use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
 
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
@@ -36,18 +35,18 @@ pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
 
 #[derive(Debug)]
 pub struct Config {
-    pub parseable: Server,
+    pub parseable: Cli,
     storage: Arc<dyn ObjectStorageProvider + Send + Sync>,
     pub storage_name: &'static str,
 }
 
 impl Config {
     fn new() -> Self {
-        let cli = parseable_cli_command().get_matches();
+        let cli = create_parseable_cli_command().get_matches();
         match cli.subcommand() {
             Some(("local-store", m)) => {
-                let server = match Server::from_arg_matches(m) {
-                    Ok(server) => server,
+                let cli = match Cli::from_arg_matches(m) {
+                    Ok(cli) => cli,
                     Err(err) => err.exit(),
                 };
                 let storage = match FSConfig::from_arg_matches(m) {
@@ -55,8 +54,8 @@ impl Config {
                     Err(err) => err.exit(),
                 };
 
-                if server.local_staging_path == storage.root {
-                    parseable_cli_command()
+                if cli.local_staging_path == storage.root {
+                    create_parseable_cli_command()
                         .error(
                             ErrorKind::ValueValidation,
                             "Cannot use same path for storage and staging",
@@ -64,8 +63,8 @@ impl Config {
                         .exit()
                 }
 
-                if server.local_cache_path.is_some() {
-                    parseable_cli_command()
+                if cli.local_cache_path.is_some() {
+                    create_parseable_cli_command()
                         .error(
                             ErrorKind::ValueValidation,
                             "Cannot use cache with local-store subcommand.",
@@ -74,14 +73,14 @@ impl Config {
                 }
 
                 Config {
-                    parseable: server,
+                    parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "drive",
                 }
             }
             Some(("s3-store", m)) => {
-                let server = match Server::from_arg_matches(m) {
-                    Ok(server) => server,
+                let cli = match Cli::from_arg_matches(m) {
+                    Ok(cli) => cli,
                     Err(err) => err.exit(),
                 };
                 let storage = match S3Config::from_arg_matches(m) {
@@ -90,7 +89,7 @@ impl Config {
                 };
 
                 Config {
-                    parseable: server,
+                    parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "s3",
                 }
@@ -118,7 +117,7 @@ impl Config {
             return Ok(());
         }
 
-        if self.mode_string() == "Local drive" {
+        if self.get_storage_mode_string() == "Local drive" {
             return Err(ObjectStorageError::Custom(format!("Could not start the server because directory '{}' contains stale data, please use an empty directory, and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)));
         }
 
@@ -143,14 +142,14 @@ impl Config {
     }
 
     pub fn is_default_creds(&self) -> bool {
-        self.parseable.username == Server::DEFAULT_USERNAME
-            && self.parseable.password == Server::DEFAULT_PASSWORD
+        self.parseable.username == Cli::DEFAULT_USERNAME
+            && self.parseable.password == Cli::DEFAULT_PASSWORD
     }
 
     // returns the string representation of the storage mode
     // drive --> Local drive
     // s3 --> S3 bucket
-    pub fn mode_string(&self) -> &str {
+    pub fn get_storage_mode_string(&self) -> &str {
         let mut mode = "S3 bucket";
         if self.storage_name == "drive" {
             mode = "Local drive";
@@ -159,18 +158,18 @@ impl Config {
     }
 }
 
-fn parseable_cli_command() -> Command {
-    let local = Server::get_clap_command("local-store");
+fn create_parseable_cli_command() -> Command {
+    let local = Cli::create_cli_command_with_clap("local-store");
     let local = <FSConfig as Args>::augment_args_for_update(local);
 
     let local = local
-        .mut_arg(Server::USERNAME, |arg| {
-            arg.required(false).default_value(Server::DEFAULT_USERNAME)
+        .mut_arg(Cli::USERNAME, |arg| {
+            arg.required(false).default_value(Cli::DEFAULT_USERNAME)
         })
-        .mut_arg(Server::PASSWORD, |arg| {
-            arg.required(false).default_value(Server::DEFAULT_PASSWORD)
+        .mut_arg(Cli::PASSWORD, |arg| {
+            arg.required(false).default_value(Cli::DEFAULT_PASSWORD)
         });
-    let s3 = Server::get_clap_command("s3-store");
+    let s3 = Cli::create_cli_command_with_clap("s3-store");
     let s3 = <S3Config as Args>::augment_args_for_update(s3);
 
     command!()

@@ -102,7 +102,7 @@ async fn storage_info(config: &Config) {
         Mode:               \"{}\"
         Staging:            \"{}\"",
         "Storage:".to_string().bold(),
-        config.mode_string(),
+        config.get_storage_mode_string(),
         config.staging_dir().to_string_lossy(),
     );
 
