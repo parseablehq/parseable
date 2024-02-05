@@ -26,8 +26,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::cli::Cli;
-use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
 use crate::storage::PARSEABLE_METADATA_FILE_NAME;
+use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
 pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";

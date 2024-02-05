@@ -20,7 +20,10 @@ use super::{
     retention::Retention, staging::convert_disk_files_to_parquet, LogStream, ObjectStorageError,
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
-use super::{ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME};
+use super::{
+    ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME,
+};
 
 use crate::{
     alerts::Alerts,

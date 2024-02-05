@@ -34,7 +34,9 @@ use tokio_stream::wrappers::ReadDirStream;
 use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::option::validation;
 
-use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, STREAM_METADATA_FILE_NAME};
+use super::{
+    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, STREAM_METADATA_FILE_NAME,
+};
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(

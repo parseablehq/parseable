@@ -29,7 +29,10 @@ use serde::Serialize;
 
 use crate::{
     option::Config,
-    storage::{ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME},
+    storage::{
+        ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
+        STREAM_METADATA_FILE_NAME,
+    },
 };
 
 /// Migrate the metdata from v1 or v2 to v3

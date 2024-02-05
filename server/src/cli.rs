@@ -16,13 +16,15 @@
  *
  */
 
-
 use clap::{value_parser, Arg, ArgGroup, Command, FromArgMatches};
 use std::path::PathBuf;
 
 use url::Url;
 
-use crate::{oidc::{self, OpenidConfig}, option::{validation, Compression, Mode}};
+use crate::{
+    oidc::{self, OpenidConfig},
+    option::{validation, Compression, Mode},
+};
 
 #[derive(Debug, Default)]
 pub struct Cli {
