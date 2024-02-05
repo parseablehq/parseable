@@ -230,6 +230,16 @@ impl ObjectStorage for LocalFS {
     fn store_url(&self) -> url::Url {
         url::Url::parse("file:///").unwrap()
     }
+
+    fn get_bucket_name(&self) -> String {
+        self.root
+            .iter()
+            .last()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
 }
 
 async fn dir_with_stream(

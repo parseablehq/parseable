@@ -482,6 +482,10 @@ impl ObjectStorage for S3 {
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>())
     }
+
+    fn get_bucket_name(&self) -> String {
+        self.bucket.clone()
+    }
 }
 
 impl From<object_store::Error> for ObjectStorageError {
