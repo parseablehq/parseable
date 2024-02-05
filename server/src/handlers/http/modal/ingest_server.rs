@@ -104,6 +104,18 @@ impl IngestServer {
             .service(logstream_scope);
     }
 
+    #[inline(always)]
+    fn get_ingestor_address(&self) -> Option<(String, String)> {
+        // this might cause an issue down the line
+        // best is to make the Cli Struct better, but thats a chore
+        CONFIG
+            .parseable
+            .address
+            .split(":")
+            .map(|string| string.to_owned())
+            .collect_tuple()
+    }
+}
 
 #[derive(Serialize, Debug, Deserialize)]
 struct IngesterMetadata {
