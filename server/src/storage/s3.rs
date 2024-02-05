@@ -42,7 +42,7 @@ use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
 use super::metrics_layer::MetricLayer;
-use super::{object_storage, ObjectStorageProvider};
+use super::{ ObjectStorageProvider, PARSEABLE_METADATA_FILE_NAME, STREAM_METADATA_FILE_NAME};
 
 // in bytes
 const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
@@ -304,7 +304,7 @@ impl S3 {
         let stream_json_check = FuturesUnordered::new();
 
         for dir in &dirs {
-            let key = format!("{}/{}", dir, object_storage::STREAM_METADATA_FILE_NAME);
+            let key = format!("{}/{}", dir, STREAM_METADATA_FILE_NAME);
             let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
             stream_json_check.push(task);
         }
@@ -424,7 +424,7 @@ impl ObjectStorage for S3 {
     async fn check(&self) -> Result<(), ObjectStorageError> {
         Ok(self
             .client
-            .head(&object_storage::PARSEABLE_METADATA_FILE_NAME.into())
+            .head(&PARSEABLE_METADATA_FILE_NAME.into())
             .await
             .map(|_| ())?)
     }

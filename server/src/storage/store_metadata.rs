@@ -32,7 +32,7 @@ use crate::{
     utils::uid,
 };
 
-use super::object_storage::PARSEABLE_METADATA_FILE_NAME;
+use super::PARSEABLE_METADATA_FILE_NAME;
 
 // Expose some static variables for internal usage
 pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();

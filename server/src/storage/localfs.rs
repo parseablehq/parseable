@@ -34,7 +34,7 @@ use tokio_stream::wrappers::ReadDirStream;
 use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::option::validation;
 
-use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
+use super::{LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, STREAM_METADATA_FILE_NAME};
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -248,7 +248,7 @@ async fn dir_with_stream(
 
     if entry.file_type().await?.is_dir() {
         let path = entry.path();
-        let stream_json_path = path.join(object_storage::STREAM_METADATA_FILE_NAME);
+        let stream_json_path = path.join(STREAM_METADATA_FILE_NAME);
         if stream_json_path.exists() {
             Ok(Some(dir_name))
         } else {

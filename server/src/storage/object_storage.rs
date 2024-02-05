@@ -20,6 +20,7 @@ use super::{
     retention::Retention, staging::convert_disk_files_to_parquet, LogStream, ObjectStorageError,
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
+use super::{ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME};
 
 use crate::{
     alerts::Alerts,
@@ -77,7 +78,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn get_latency(&self) -> Duration {
         // It's Ok to `unwrap` here. The hardcoded value will always Result in
         // an `Ok`.
-        let path = RelativePathBuf::from_path(".parseable.json").unwrap();
+        let path = RelativePathBuf::from_path(PARSEABLE_METADATA_FILE_NAME).unwrap();
 
         let start = Instant::now();
         let _ = self.get_object(&path).await;
