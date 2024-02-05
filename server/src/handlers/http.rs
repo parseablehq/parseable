@@ -37,18 +37,18 @@ use crate::rbac::role::Action;
 
 use self::middleware::{DisAllowRootUser, ModeFilter, RouteExt};
 
-mod about;
-mod health_check;
-mod ingest;
+pub(crate) mod about;
+pub(crate) mod health_check;
+pub(crate) mod ingest;
 mod kinesis;
-mod llm;
-mod logstream;
-mod middleware;
-mod oidc;
+pub(crate) mod llm;
+pub(crate) mod logstream;
+pub(crate) mod middleware;
+pub(crate) mod oidc;
 mod otel;
-mod query;
-mod rbac;
-mod role;
+pub(crate) mod query;
+pub(crate) mod rbac;
+pub(crate) mod role;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -350,7 +350,7 @@ pub fn configure_routes(
     .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
 }
 
-fn base_path() -> String {
+pub(crate) fn base_path() -> String {
     format!("{API_BASE_PATH}/{API_VERSION}")
 }
 
@@ -358,7 +358,7 @@ pub fn metrics_path() -> String {
     format!("{}/metrics", base_path())
 }
 
-fn cross_origin_config() -> Cors {
+pub(crate) fn cross_origin_config() -> Cors {
     if cfg!(feature = "debug") {
         Cors::permissive().block_on_origin_mismatch(false)
     } else {
