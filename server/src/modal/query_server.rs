@@ -38,6 +38,7 @@ use super::ssl_acceptor::get_ssl_acceptor;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
+#[derive(Default)]
 pub struct QueryServer;
 
 #[async_trait(?Send)]

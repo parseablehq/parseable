@@ -36,6 +36,7 @@ use crate::{
     option::CONFIG,
 };
 
+#[derive(Default)]
 pub struct IngestServer;
 
 #[async_trait(?Send)]

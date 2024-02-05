@@ -50,6 +50,8 @@ use super::parseable_server::OpenIdClient;
 use super::parseable_server::ParseableServer;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+
+#[derive(Default)]
 pub struct SuperServer;
 
 #[async_trait(?Send)]
