@@ -49,13 +49,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-// metadata file names in a Stream prefix
-pub(super) const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
-pub(super) const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
-const SCHEMA_FILE_NAME: &str = ".schema";
-const ALERT_FILE_NAME: &str = ".alert.json";
-const MANIFEST_FILE: &str = "manifest.json";
-
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
     fn get_datafusion_runtime(&self) -> RuntimeConfig;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send>;
