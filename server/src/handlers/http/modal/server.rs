@@ -48,6 +48,8 @@ use crate::{
 use super::parseable_server::OpenIdClient;
 use super::parseable_server::ParseableServer;
 
+pub const DEFAULT_VERSION: &str = "v3";
+
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 #[derive(Default)]
