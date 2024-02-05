@@ -1,136 +1,101 @@
-/*
- * Parseable Server (C) 2022 - 2024 Parseable, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- */
+use std::{fs::File, io::BufReader, sync::Arc};
 
-use std::fs::File;
-use std::io::BufReader;
-use std::sync::Arc;
-
-use actix_cors::Cors;
-use actix_web::{
-    web::{self, resource},
-    App, HttpServer,
-};
+use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
-use actix_web_static_files::ResourceFiles;
-use log::info;
+use async_trait::async_trait;
 use openid::Discovered;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
-use crate::option::CONFIG;
-use crate::rbac::role::Action;
+use crate::{handlers::http::{ingest, llm, logstream, middleware::{DisAllowRootUser, RouteExt}, rbac, role, MAX_EVENT_PAYLOAD_SIZE}, oidc, option::CONFIG, rbac::role::Action};
 
-use self::middleware::{DisAllowRootUser, ModeFilter, RouteExt};
-
-mod about;
-mod health_check;
-mod ingest;
-mod kinesis;
-mod llm;
-mod logstream;
-mod middleware;
-mod oidc;
-mod otel;
-mod query;
-mod rbac;
-mod role;
+use super::parseable_server::{cross_origin_config, ParseableServer, API_BASE_PATH, API_VERSION};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+pub struct SuperServer;
 
-pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
-pub const API_BASE_PATH: &str = "/api";
-pub const API_VERSION: &str = "v1";
 
-pub async fn run_http(
-    prometheus: PrometheusMetrics,
-    oidc_client: Option<crate::oidc::OpenidConfig>,
-) -> anyhow::Result<()> {
-    let oidc_client = match oidc_client {
-        Some(config) => {
-            let client = config
-                .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
-                .await?;
-            Some(Arc::new(client))
-        }
-        None => None,
-    };
 
-    let create_app = move || {
-        App::new()
-            .wrap(prometheus.clone())
-            .configure(|cfg| configure_routes(cfg, oidc_client.clone()))
-            .wrap(actix_web::middleware::Logger::default())
-            .wrap(actix_web::middleware::Compress::default())
-            .wrap(cross_origin_config())
-            .wrap(ModeFilter)
-    };
-
-    let ssl_acceptor = match (
-        &CONFIG.parseable.tls_cert_path,
-        &CONFIG.parseable.tls_key_path,
-    ) {
-        (Some(cert), Some(key)) => {
-            // init server config builder with safe defaults
-            let config = ServerConfig::builder()
-                .with_safe_defaults()
-                .with_no_client_auth();
-
-            // load TLS key/cert files
-            let cert_file = &mut BufReader::new(File::open(cert)?);
-            let key_file = &mut BufReader::new(File::open(key)?);
-
-            // convert files to key/cert objects
-            let cert_chain = certs(cert_file)?.into_iter().map(Certificate).collect();
-
-            let mut keys: Vec<PrivateKey> = pkcs8_private_keys(key_file)?
-                .into_iter()
-                .map(PrivateKey)
-                .collect();
-
-            // exit if no keys could be parsed
-            if keys.is_empty() {
-                anyhow::bail!("Could not locate PKCS 8 private keys.");
+#[async_trait]
+impl ParseableServer for SuperServer {
+    async fn start(
+        &self,
+        prometheus: PrometheusMetrics,
+        oidc_client: Option<oidc::OpenidConfig>,
+    ) -> anyhow::Result<()> {
+        let oidc_client = match oidc_client {
+            Some(config) => {
+                let client = config
+                    .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
+                    .await?;
+                Some(Arc::new(client))
             }
+            None => None,
+        };
 
-            let server_config = config.with_single_cert(cert_chain, keys.remove(0))?;
+        // use app here
+        // app.configure(|config| )
+        let create_app = move || {
+            App::new()
+                .wrap(prometheus.clone())
+                .configure(|cfg| configure_routes(cfg, oidc_client.clone()))
+                .wrap(actix_web::middleware::Logger::default())
+                .wrap(actix_web::middleware::Compress::default())
+                .wrap(cross_origin_config())
+        };
 
-            Some(server_config)
+        let ssl_acceptor = match (
+            &CONFIG.parseable.tls_cert_path,
+            &CONFIG.parseable.tls_key_path,
+        ) {
+            (Some(cert), Some(key)) => {
+                // init server config builder with safe defaults
+                let config = ServerConfig::builder()
+                    .with_safe_defaults()
+                    .with_no_client_auth();
+
+                // load TLS key/cert files
+                let cert_file = &mut BufReader::new(File::open(cert)?);
+                let key_file = &mut BufReader::new(File::open(key)?);
+
+                // convert files to key/cert objects
+                let cert_chain = certs(cert_file)?.into_iter().map(Certificate).collect();
+
+                let mut keys: Vec<PrivateKey> = pkcs8_private_keys(key_file)?
+                    .into_iter()
+                    .map(PrivateKey)
+                    .collect();
+
+                // exit if no keys could be parsed
+                if keys.is_empty() {
+                    anyhow::bail!("Could not locate PKCS 8 private keys.");
+                }
+
+                let server_config = config.with_single_cert(cert_chain, keys.remove(0))?;
+
+                Some(server_config)
+            }
+            (_, _) => None,
+        };
+
+        // concurrent workers equal to number of cores on the cpu
+        let http_server = HttpServer::new(create_app).workers(num_cpus::get());
+        if let Some(config) = ssl_acceptor {
+            http_server
+                .bind_rustls(&CONFIG.parseable.address, config)?
+                .run()
+                .await?;
+        } else {
+            http_server.bind(&CONFIG.parseable.address)?.run().await?;
         }
-        (_, _) => None,
-    };
 
-    // concurrent workers equal to number of cores on the cpu
-    let http_server = HttpServer::new(create_app).workers(num_cpus::get());
-    if let Some(config) = ssl_acceptor {
-        http_server
-            .bind_rustls(&CONFIG.parseable.address, config)?
-            .run()
-            .await?;
-    } else {
-        http_server.bind(&CONFIG.parseable.address)?.run().await?;
+        Ok(())
     }
-
-    Ok(())
 }
 
 pub fn configure_routes(
     cfg: &mut web::ServiceConfig,
-    oidc_client: Option<Arc<openid::Client<Discovered, crate::oidc::Claims>>>,
+    oidc_client: Option<Arc<openid::Client<Discovered, oidc::Claims>>>,
 ) {
     let generated = generate();
 
@@ -275,25 +240,25 @@ pub fn configure_routes(
 
     let role_api = web::scope("/role")
         // GET Role List
-        .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+        .service(web::resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
         .service(
             // PUT and GET Default Role
-            resource("/default")
+            web::resource("/default")
                 .route(web::put().to(role::put_default).authorize(Action::PutRole))
                 .route(web::get().to(role::get_default).authorize(Action::GetRole)),
         )
         .service(
             // PUT, GET, DELETE Roles
-            resource("/{name}")
+            web::resource("/{name}")
                 .route(web::put().to(role::put).authorize(Action::PutRole))
                 .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                 .route(web::get().to(role::get).authorize(Action::GetRole)),
         );
 
     let mut oauth_api = web::scope("/o")
-        .service(resource("/login").route(web::get().to(oidc::login)))
-        .service(resource("/logout").route(web::get().to(oidc::logout)))
-        .service(resource("/code").route(web::get().to(oidc::reply_login)));
+        .service(web::resource("/login").route(web::get().to(crate::handlers::http::oidc::login)))
+        .service(web::resource("/logout").route(web::get().to(crate::handlers::http::oidc::logout)))
+        .service(web::resource("/code").route(web::get().to(crate::handlers::http::oidc::reply_login)));
 
     if let Some(client) = oidc_client {
         info!("Registered oidc client");
@@ -348,20 +313,4 @@ pub fn configure_routes(
     )
     // GET "/" ==> Serve the static frontend directory
     .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
-}
-
-fn base_path() -> String {
-    format!("{API_BASE_PATH}/{API_VERSION}")
-}
-
-pub fn metrics_path() -> String {
-    format!("{}/metrics", base_path())
-}
-
-fn cross_origin_config() -> Cors {
-    if cfg!(feature = "debug") {
-        Cors::permissive().block_on_origin_mismatch(false)
-    } else {
-        Cors::default().block_on_origin_mismatch(false)
-    }
 }

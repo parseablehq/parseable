@@ -46,6 +46,7 @@ mod stats;
 mod storage;
 mod utils;
 mod validator;
+mod modal;
 
 use option::CONFIG;
 
