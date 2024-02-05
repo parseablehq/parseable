@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{
-    about, base_path, cross_origin_config, logstream, query, API_BASE_PATH, API_VERSION,
+    base_path, cross_origin_config, logstream, API_BASE_PATH, API_VERSION,
 };
 use crate::rbac::role::Action;
 use actix_web::web::ServiceConfig;
