@@ -18,17 +18,23 @@
 
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
+use crate::utils::hostname_unchecked;
 
 use std::sync::Arc;
 
 use super::parseable_server::OpenIdClient;
 use super::parseable_server::ParseableServer;
 use super::server::Server;
+use super::server::DEFAULT_VERSION;
 use super::ssl_acceptor::get_ssl_acceptor;
 
 use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
+use itertools::Itertools;
+use relative_path::RelativePathBuf;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::{
     handlers::http::{base_path, cross_origin_config},
@@ -81,6 +87,24 @@ impl ParseableServer for IngestServer {
         } else {
             http_server.bind(&CONFIG.parseable.address)?.run().await?;
         }
+
+        let store = CONFIG.storage().get_object_store();
+
+        let (address, port) = self
+            .get_ingestor_address()
+            .unwrap_or(("0.0.0.0".to_string(), "8000".to_string()));
+        let path =
+            RelativePathBuf::from(format!(".ingestor.{}.{}.json", hostname_unchecked(), port));
+
+        let resource = IngesterMetadata::new(
+            address,
+            port,
+            CONFIG.parseable.domain_address.clone().unwrap().to_string(),
+            DEFAULT_VERSION.to_string(),
+            store.get_bucket_name(),
+        );
+
+        store.put_object(&path, resource);
 
         Ok(())
     }
