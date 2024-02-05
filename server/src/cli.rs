@@ -363,9 +363,6 @@ impl FromArgMatches for Cli {
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
-        let openid_client_id = m.get_one::<String>(Self::OPENID_CLIENT_ID).cloned();
-        let openid_client_secret = m.get_one::<String>(Self::OPENID_CLIENT_SECRET).cloned();
-        let openid_issuer = m.get_one::<Url>(Self::OPENID_ISSUER).cloned();
 
         self.address = m
             .get_one::<String>(Self::ADDRESS)
@@ -431,6 +428,10 @@ impl FromArgMatches for Cli {
             "zstd" => Compression::ZSTD,
             _ => unreachable!(),
         };
+
+        let openid_client_id = m.get_one::<String>(Self::OPENID_CLIENT_ID).cloned();
+        let openid_client_secret = m.get_one::<String>(Self::OPENID_CLIENT_SECRET).cloned();
+        let openid_issuer = m.get_one::<Url>(Self::OPENID_ISSUER).cloned();
 
         self.openid = match (openid_client_id, openid_client_secret, openid_issuer) {
             (Some(id), Some(secret), Some(issuer)) => {
