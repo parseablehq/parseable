@@ -103,4 +103,31 @@ impl IngestServer {
             .service(Server::get_readiness_factory())
             .service(logstream_scope);
     }
+
+
+#[derive(Serialize, Debug, Deserialize)]
+struct IngesterMetadata {
+    version: String,
+    address: String,
+    port: String,
+    origin: String,
+    bucket_name: String,
+}
+
+impl IngesterMetadata {
+    pub fn new(
+        address: String,
+        port: String,
+        origin: String,
+        version: String,
+        bucket_name: String,
+    ) -> Self {
+        Self {
+            address,
+            port,
+            origin,
+            version,
+            bucket_name,
+        }
+    }
 }
