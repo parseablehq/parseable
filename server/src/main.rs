@@ -37,6 +37,7 @@ mod localcache;
 mod metadata;
 mod metrics;
 mod migration;
+mod modal;
 mod oidc;
 mod option;
 mod query;
@@ -46,7 +47,6 @@ mod stats;
 mod storage;
 mod utils;
 mod validator;
-mod modal;
 
 use option::CONFIG;
 
