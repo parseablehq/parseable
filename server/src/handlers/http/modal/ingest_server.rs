@@ -16,7 +16,6 @@
  *
  */
 
-
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
 

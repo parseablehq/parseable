@@ -16,7 +16,6 @@
  *
  */
 
-
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;

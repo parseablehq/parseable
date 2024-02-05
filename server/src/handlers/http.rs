@@ -23,7 +23,7 @@ use actix_web_prometheus::PrometheusMetrics;
 
 use crate::option::CONFIG;
 
-use crate::handlers::http::server::{
+use crate::handlers::http::modal::{
     ingest_server::IngestServer, parseable_server::ParseableServer, query_server::QueryServer,
     server::Server,
 };
@@ -36,12 +36,12 @@ mod kinesis;
 pub(crate) mod llm;
 pub(crate) mod logstream;
 pub(crate) mod middleware;
+mod modal;
 pub(crate) mod oidc;
 mod otel;
 pub(crate) mod query;
 pub(crate) mod rbac;
 pub(crate) mod role;
-mod server;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 

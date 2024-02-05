@@ -16,7 +16,6 @@
  *
  */
 
-
 use actix_web::web;
 use std::sync::Arc;
 
