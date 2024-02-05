@@ -16,26 +16,17 @@
  *
  */
 
-use std::fs::File;
-use std::io::BufReader;
 use std::sync::Arc;
 
 use actix_cors::Cors;
-use actix_web::{
-    web::{self, resource},
-    App, HttpServer,
-};
 use actix_web_prometheus::PrometheusMetrics;
-use actix_web_static_files::ResourceFiles;
-use log::info;
-use openid::Discovered;
-use rustls::{Certificate, PrivateKey, ServerConfig};
-use rustls_pemfile::{certs, pkcs8_private_keys};
 
-use crate::{modal::{ingest_server::IngestServer, parseable_server::ParseableServer, query_server::QueryServer, server::Server}, option::CONFIG};
-use crate::rbac::role::Action;
+use crate::option::CONFIG;
 
-use self::middleware::{DisAllowRootUser, ModeFilter, RouteExt};
+use crate::handlers::http::server::{
+    ingest_server::IngestServer, parseable_server::ParseableServer, query_server::QueryServer,
+    server::Server,
+};
 use crate::option::Mode;
 
 pub(crate) mod about;
@@ -50,6 +41,7 @@ mod otel;
 pub(crate) mod query;
 pub(crate) mod rbac;
 pub(crate) mod role;
+mod server;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -61,7 +53,6 @@ pub async fn run_http(
     prometheus: PrometheusMetrics,
     oidc_client: Option<crate::oidc::OpenidConfig>,
 ) -> anyhow::Result<()> {
-
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
         Mode::Query => Arc::new(QueryServer::default()),
         Mode::Ingest => Arc::new(IngestServer::default()),
@@ -71,7 +62,6 @@ pub async fn run_http(
     server.start(prometheus, oidc_client).await?;
     Ok(())
 }
-
 
 pub(crate) fn base_path() -> String {
     format!("{API_BASE_PATH}/{API_VERSION}")

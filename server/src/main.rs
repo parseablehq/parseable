@@ -38,7 +38,6 @@ mod localcache;
 mod metadata;
 mod metrics;
 mod migration;
-mod modal;
 mod oidc;
 mod option;
 mod query;
