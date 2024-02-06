@@ -400,8 +400,8 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(())
     }
 
-        // pick a better name
-        fn get_bucket_name(&self) -> String;
+    // pick a better name
+    fn get_bucket_name(&self) -> String;
 }
 
 async fn commit_schema_to_storage(
