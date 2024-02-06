@@ -34,6 +34,8 @@ use async_trait::async_trait;
 
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::{
     handlers::http::{
@@ -376,3 +378,30 @@ impl Server {
         web::resource("/about").route(web::get().to(about::about).authorize(Action::GetAbout))
     }
 }
+#[derive(Serialize, Debug, Deserialize)]
+pub struct IngesterMetadata {
+    version: String,
+    address: String,
+    port: String,
+    origin: String,
+    bucket_name: String,
+}
+
+impl IngesterMetadata {
+    pub fn new(
+        address: String,
+        port: String,
+        origin: String,
+        version: String,
+        bucket_name: String,
+    ) -> Self {
+        Self {
+            address,
+            port,
+            origin,
+            version,
+            bucket_name,
+        }
+    }
+}
+

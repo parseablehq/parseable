@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use super::parseable_server::OpenIdClient;
 use super::parseable_server::ParseableServer;
+use super::server::IngesterMetadata;
 use super::server::Server;
 use super::server::DEFAULT_VERSION;
 use super::ssl_acceptor::get_ssl_acceptor;
@@ -33,8 +34,6 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
-use serde::Deserialize;
-use serde::Serialize;
 
 use crate::{
     handlers::http::{base_path, cross_origin_config},
@@ -141,31 +140,7 @@ impl IngestServer {
             .map(|string| string.to_owned())
             .collect_tuple()
     }
-}
 
-#[derive(Serialize, Debug, Deserialize)]
-struct IngesterMetadata {
-    version: String,
-    address: String,
-    port: String,
-    origin: String,
-    bucket_name: String,
-}
 
-impl IngesterMetadata {
-    pub fn new(
-        address: String,
-        port: String,
-        origin: String,
-        version: String,
-        bucket_name: String,
-    ) -> Self {
-        Self {
-            address,
-            port,
-            origin,
-            version,
-            bucket_name,
-        }
     }
 }
