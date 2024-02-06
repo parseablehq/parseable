@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // track all parquet files already in the data directory
-    storage::retention::load_retention_from_global().await;
+    storage::retention::load_retention_from_global();
     // load data from stats back to prometheus metrics
     metrics::load_from_stats_from_storage().await;
 

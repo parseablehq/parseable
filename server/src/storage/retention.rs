@@ -43,40 +43,47 @@ fn async_runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-pub async fn load_retention_from_global() {
+pub fn load_retention_from_global() {
     log::info!("loading retention for all streams");
-    for stream in STREAM_INFO.list_streams() {
-        let res = CONFIG
-            .storage()
-            .get_object_store()
-            .get_retention(&stream)
-            .await;
-        match res {
-            Ok(config) => {
-                if config.tasks.is_empty() {
-                    log::info!("skipping loading retention for {stream}");
-                    continue;
-                }
-                init_scheduler(&stream, config)
-            }
-            Err(err) => log::warn!("failed to load retention config for {stream} due to {err:?}"),
-        }
-    }
+    init_scheduler();
 }
 
-pub fn init_scheduler(stream: &str, config: Retention) {
-    log::info!("Setting up schedular for {stream}");
+pub fn init_scheduler() {
+    log::info!("Setting up schedular");
     let mut scheduler = AsyncScheduler::new();
-    for Task { action, days, .. } in config.tasks.into_iter() {
-        let func = match action {
-            Action::Delete => {
-                let stream = stream.to_string();
-                move || action::delete(stream.clone(), u32::from(days))
-            }
-        };
+    let func = move || async {
+        for stream in STREAM_INFO.list_streams() {
+            let res = CONFIG
+                .storage()
+                .get_object_store()
+                .get_retention(&stream)
+                .await;
 
-        scheduler.every(1.day()).at("00:00").run(func);
-    }
+            match res {
+                Ok(config) => {
+                    for Task { action, days, .. } in config.tasks.into_iter() {
+                        match action {
+                            Action::Delete => {
+                                let stream = stream.to_string();
+                                thread::spawn(move || {
+                                    let rt = tokio::runtime::Runtime::new().unwrap();
+                                    rt.block_on(async {
+                                        // Run the asynchronous delete action
+                                        action::delete(stream.clone(), u32::from(days)).await;
+                                    });
+                                });
+                            }
+                        };
+                    }
+                }
+                Err(err) => {
+                    log::warn!("failed to load retention config for {stream} due to {err:?}")
+                }
+            };
+        }
+    };
+
+    scheduler.every(1.day()).at("00:00").run(func);
 
     let handler = thread::spawn(|| {
         let rt = async_runtime();
@@ -183,7 +190,7 @@ mod action {
     use crate::option::CONFIG;
 
     pub(super) async fn delete(stream_name: String, days: u32) {
-        log::info!("running retention task - delete");
+        log::info!("running retention task - delete for stream={stream_name}");
         let retain_until = get_retain_until(Utc::now().date_naive(), days as u64);
 
         let Ok(dates) = CONFIG
