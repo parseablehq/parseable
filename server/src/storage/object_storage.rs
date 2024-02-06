@@ -63,6 +63,8 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
+    async fn get_objects(&self, base_path: &RelativePath)
+        -> Result<Vec<Bytes>, ObjectStorageError>;
     async fn put_object(
         &self,
         path: &RelativePath,
@@ -289,6 +291,7 @@ pub trait ObjectStorage: Sync + 'static {
         self.put_object(&path, to_bytes(&manifest)).await
     }
 
+    // gets the snapshot of the stream
     async fn get_snapshot(&self, stream: &str) -> Result<Snapshot, ObjectStorageError> {
         let path = stream_json_path(stream);
         let bytes = self.get_object(&path).await?;

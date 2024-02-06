@@ -38,6 +38,7 @@ use std::path::Path as StdPath;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::handlers::http::modal::INGESTOR_FILE_EXTENSION;
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
@@ -222,7 +223,6 @@ impl S3 {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let instant = Instant::now();
 
-        let resp = self.client.get(&to_path(path)).await;
         let resp = self.client.get(&to_object_store_path(path)).await;
 
         match resp {
@@ -250,7 +250,6 @@ impl S3 {
         resource: Bytes,
     ) -> Result<(), ObjectStorageError> {
         let time = Instant::now();
-        let resp = self.client.put(&to_path(path), resource).await;
         let resp = self.client.put(&to_object_store_path(path), resource).await;
         let status = if resp.is_ok() { "200" } else { "400" };
         let time = time.elapsed().as_secs_f64();
@@ -403,6 +402,52 @@ impl S3 {
 impl ObjectStorage for S3 {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         Ok(self._get_object(path).await?)
+    }
+
+    // TBD  is this the right way or the api calls are too many?
+    async fn get_objects(
+        &self,
+        base_path: &RelativePath,
+    ) -> Result<Vec<Bytes>, ObjectStorageError> {
+        let instant = Instant::now();
+
+        let mut list_stream = self
+            .client
+            .list(Some(&to_object_store_path(base_path)))
+            .await?;
+
+        let mut res = vec![];
+
+        while let Some(meta) = list_stream.next().await.transpose()? {
+            let ingestor_file = meta
+                .location
+                .extension()
+                .unwrap_or(".not")
+                .eq(INGESTOR_FILE_EXTENSION);
+
+            if !ingestor_file {
+                continue;
+            }
+
+            let byts = self
+                .get_object(
+                    &RelativePath::from_path(meta.location.as_ref()).map_err(|err| {
+                        ObjectStorageError::Custom(
+                            format!("Error while getting files: {:}", err).into(),
+                        )
+                    })?,
+                )
+                .await?;
+
+            res.push(byts);
+        }
+
+        let instant = instant.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", "200"])
+            .observe(instant);
+
+        Ok(res)
     }
 
     async fn put_object(

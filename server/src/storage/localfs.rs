@@ -31,8 +31,11 @@ use relative_path::RelativePath;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::option::validation;
+use crate::{
+    handlers::http::modal::INGESTOR_FILE_EXTENSION,
+    metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics},
+};
 
 use super::{
     LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, STREAM_METADATA_FILE_NAME,
@@ -110,6 +113,42 @@ impl ObjectStorage for LocalFS {
             .with_label_values(&["GET", status])
             .observe(time);
         res
+    }
+
+    // ! get object for local-storage is broken
+    async fn get_objects(
+        &self,
+        base_path: &RelativePath,
+    ) -> Result<Vec<Bytes>, ObjectStorageError> {
+        let time = Instant::now();
+        let path = self.path_in_root(base_path);
+        let mut entries = fs::read_dir(path).await?;
+        let mut res = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let ingestor_file = entry
+                .path()
+                .extension()
+                .unwrap_or_default()    // I have no idea what the default is Add a test to check it out
+                .to_str()
+                .unwrap()
+                .eq(INGESTOR_FILE_EXTENSION);
+            dbg!(&ingestor_file);
+            if !ingestor_file {
+                continue;
+            }
+
+            let file = fs::read(entry.path()).await?;
+            res.push(file.into());
+        }
+
+        // maybe change the return code
+        let status = if res.is_empty() { "200" } else { "400" };
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", status])
+            .observe(time);
+
+        Ok(res)
     }
 
     async fn put_object(

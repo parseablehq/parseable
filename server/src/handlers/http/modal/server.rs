@@ -56,7 +56,7 @@ pub struct Server;
 #[async_trait(?Send)]
 impl ParseableServer for Server {
     async fn start(
-        &self,
+        &mut self,
         prometheus: PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {

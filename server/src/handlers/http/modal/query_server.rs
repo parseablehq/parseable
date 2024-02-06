@@ -16,38 +16,44 @@
  *
  */
 
-use actix_web::web;
-use std::sync::Arc;
-
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{
     base_path, cross_origin_config, logstream, API_BASE_PATH, API_VERSION,
 };
 use crate::rbac::role::Action;
+use actix_web::web;
 use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
+use itertools::Itertools;
+use relative_path::RelativePathBuf;
+use std::sync::Arc;
 
 use crate::option::CONFIG;
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
-use super::{OpenIdClient, ParseableServer};
+use super::{IngesterMetadata, OpenIdClient, ParseableServer};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
-#[derive(Default)]
-pub struct QueryServer;
+type IngesterMetadataArr = Vec<IngesterMetadata>;
+type IngesterMetadataPtr = Arc<IngesterMetadataArr>;
+
+#[derive(Default, Debug)]
+pub struct QueryServer(IngesterMetadataPtr);
 
 #[async_trait(?Send)]
 impl ParseableServer for QueryServer {
     async fn start(
-        &self,
+        &mut self,
         prometheus: actix_web_prometheus::PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        let store = CONFIG.storage().get_object_store();
+
+        // ! get object for local-storage is broken
+        self.0 = self.get_ingestor_info().await?;
 
         let oidc_client = match oidc_client {
             Some(config) => {
@@ -104,9 +110,7 @@ impl QueryServer {
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body
                     .service(Server::get_query_factory())
-                    // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
                     .service(Server::get_liveness_factory())
-                    // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
                     .service(Server::get_readiness_factory())
                     // GET "/about" ==> Returns information about instance
                     .service(Server::get_about_factory())
@@ -124,5 +128,23 @@ impl QueryServer {
                     .service(role_scope),
             )
             .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
+    }
+
+    async fn get_ingestor_info(&self) -> anyhow::Result<IngesterMetadataPtr> {
+        let store = CONFIG.storage().get_object_store();
+
+        let root_path = RelativePathBuf::from("");
+
+        // ! get object for local-storage is broken
+        let arr = store
+            .get_objects(&root_path)
+            .await?
+            .to_vec()
+            .iter()
+            // this unwrap will most definateley shoot me in the foot later
+            .map(|x| serde_json::from_slice::<IngesterMetadata>(x).unwrap_or_default())
+            .collect_vec();
+
+        Ok(Arc::new(arr))
     }
 }

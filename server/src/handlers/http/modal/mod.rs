@@ -33,6 +33,7 @@ use serde::Serialize;
 pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
 
 pub const DEFAULT_VERSION: &str = "v3";
+pub const INGESTOR_FILE_EXTENSION: &str = "ingestor.json";
 
 #[async_trait(?Send)]
 pub trait ParseableServer {
@@ -40,13 +41,13 @@ pub trait ParseableServer {
 
     /// configure the server
     async fn start(
-        &self,
+        &mut self,
         prometheus: PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()>;
 }
 
-#[derive(Serialize, Debug, Deserialize)]
+#[derive(Serialize, Debug, Deserialize, Default)]
 pub struct IngesterMetadata {
     version: String,
     address: String,
