@@ -378,6 +378,7 @@ impl Server {
         web::resource("/about").route(web::get().to(about::about).authorize(Action::GetAbout))
     }
 }
+
 #[derive(Serialize, Debug, Deserialize)]
 pub struct IngesterMetadata {
     version: String,
@@ -405,3 +406,35 @@ impl IngesterMetadata {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use actix_web::body::MessageBody;
+    use rstest::rstest;
+
+    use super::{IngesterMetadata, DEFAULT_VERSION};
+
+    #[rstest]
+    fn check_resource() {
+        let im = IngesterMetadata::new(
+            "0.0.0.0".to_string(),
+            "8000".to_string(),
+            "https://localhost:8000".to_string(),
+            DEFAULT_VERSION.to_string(),
+            "somebucket".to_string(),
+        );
+
+        let lhs = serde_json::to_string(&im)
+            .unwrap()
+            .try_into_bytes()
+            .unwrap();
+        let rhs = br#"{"version":"v3",
+"address":"0.0.0.0",
+"port":"8000",
+"origin":"https://localhost:8000",
+"bucket_name":"somebucket"}"#
+            .try_into_bytes()
+            .unwrap();
+
+        assert_eq!(lhs, rhs);
+    }
+}

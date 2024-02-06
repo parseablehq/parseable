@@ -20,6 +20,8 @@ use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
 use crate::utils::hostname_unchecked;
 
+use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use super::parseable_server::OpenIdClient;
@@ -29,11 +31,12 @@ use super::server::Server;
 use super::server::DEFAULT_VERSION;
 use super::ssl_acceptor::get_ssl_acceptor;
 
+use actix_web::body::MessageBody;
 use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
-use itertools::Itertools;
 use relative_path::RelativePathBuf;
+use url::Url;
 
 use crate::{
     handlers::http::{base_path, cross_origin_config},
@@ -61,6 +64,9 @@ impl ParseableServer for IngestServer {
 
             None => None,
         };
+
+        // set the ingestor metadata
+        self.set_ingestor_metadata().await?;
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
@@ -90,24 +96,6 @@ impl ParseableServer for IngestServer {
             http_server.bind(&CONFIG.parseable.address)?.run().await?;
         }
 
-        let store = CONFIG.storage().get_object_store();
-
-        let (address, port) = self
-            .get_ingestor_address()
-            .unwrap_or(("0.0.0.0".to_string(), "8000".to_string()));
-        let path =
-            RelativePathBuf::from(format!(".ingestor.{}.{}.json", hostname_unchecked(), port));
-
-        let resource = IngesterMetadata::new(
-            address,
-            port,
-            CONFIG.parseable.domain_address.clone().unwrap().to_string(),
-            DEFAULT_VERSION.to_string(),
-            store.get_bucket_name(),
-        );
-
-        store.put_object(&path, resource);
-
         Ok(())
     }
 }
@@ -130,17 +118,44 @@ impl IngestServer {
     }
 
     #[inline(always)]
-    fn get_ingestor_address(&self) -> Option<(String, String)> {
+    fn get_ingestor_address(&self) -> SocketAddr {
         // this might cause an issue down the line
         // best is to make the Cli Struct better, but thats a chore
-        CONFIG
-            .parseable
-            .address
-            .split(":")
-            .map(|string| string.to_owned())
-            .collect_tuple()
+        (CONFIG.parseable.address.clone())
+            .parse::<SocketAddr>()
+            .unwrap()
     }
 
+    async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
+        let store = CONFIG.storage().get_object_store();
 
+        let sock = self.get_ingestor_address();
+        let path = RelativePathBuf::from(format!(
+            ".ingestor.{}.{}.json",
+            hostname_unchecked(),
+            sock.port()
+        ));
+
+        let resource = IngesterMetadata::new(
+            sock.ip().to_string(),
+            sock.port().to_string(),
+            CONFIG
+                .parseable
+                .domain_address
+                .clone()
+                .unwrap_or(Url::parse("https://0.0.0.0:8000").unwrap())
+                .to_string(),
+            DEFAULT_VERSION.to_string(),
+            store.get_bucket_name(),
+        );
+
+        let resource = serde_json::to_string(&resource)
+            .unwrap()
+            .try_into_bytes()
+            .unwrap();
+
+        store.put_object(&path, resource).await?;
+
+        Ok(())
     }
 }
