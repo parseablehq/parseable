@@ -21,15 +21,14 @@ use crate::handlers::http::API_VERSION;
 use crate::utils::hostname_unchecked;
 
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::Arc;
 
-use super::parseable_server::OpenIdClient;
-use super::parseable_server::ParseableServer;
-use super::server::IngesterMetadata;
 use super::server::Server;
-use super::server::DEFAULT_VERSION;
 use super::ssl_acceptor::get_ssl_acceptor;
+use super::IngesterMetadata;
+use super::OpenIdClient;
+use super::ParseableServer;
+use super::DEFAULT_VERSION;
 
 use actix_web::body::MessageBody;
 use actix_web::{web, App, HttpServer};
@@ -131,7 +130,7 @@ impl IngestServer {
 
         let sock = self.get_ingestor_address();
         let path = RelativePathBuf::from(format!(
-            ".ingestor.{}.{}.json",
+            "{}.{}.ingestor.json",
             hostname_unchecked(),
             sock.port()
         ));

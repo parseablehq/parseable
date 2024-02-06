@@ -34,8 +34,6 @@ use async_trait::async_trait;
 
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use serde::Deserialize;
-use serde::Serialize;
 
 use crate::{
     handlers::http::{
@@ -47,10 +45,8 @@ use crate::{
     rbac::role::Action,
 };
 
-use super::parseable_server::OpenIdClient;
-use super::parseable_server::ParseableServer;
-
-pub const DEFAULT_VERSION: &str = "v3";
+use super::OpenIdClient;
+use super::ParseableServer;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -376,65 +372,5 @@ impl Server {
     // get the about factory
     pub fn get_about_factory() -> Resource {
         web::resource("/about").route(web::get().to(about::about).authorize(Action::GetAbout))
-    }
-}
-
-#[derive(Serialize, Debug, Deserialize)]
-pub struct IngesterMetadata {
-    version: String,
-    address: String,
-    port: String,
-    origin: String,
-    bucket_name: String,
-}
-
-impl IngesterMetadata {
-    pub fn new(
-        address: String,
-        port: String,
-        origin: String,
-        version: String,
-        bucket_name: String,
-    ) -> Self {
-        Self {
-            address,
-            port,
-            origin,
-            version,
-            bucket_name,
-        }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use actix_web::body::MessageBody;
-    use rstest::rstest;
-
-    use super::{IngesterMetadata, DEFAULT_VERSION};
-
-    #[rstest]
-    fn check_resource() {
-        let im = IngesterMetadata::new(
-            "0.0.0.0".to_string(),
-            "8000".to_string(),
-            "https://localhost:8000".to_string(),
-            DEFAULT_VERSION.to_string(),
-            "somebucket".to_string(),
-        );
-
-        let lhs = serde_json::to_string(&im)
-            .unwrap()
-            .try_into_bytes()
-            .unwrap();
-        let rhs = br#"{"version":"v3",
-"address":"0.0.0.0",
-"port":"8000",
-"origin":"https://localhost:8000",
-"bucket_name":"somebucket"}"#
-            .try_into_bytes()
-            .unwrap();
-
-        assert_eq!(lhs, rhs);
     }
 }

@@ -31,9 +31,9 @@ use async_trait::async_trait;
 
 use crate::option::CONFIG;
 
-use super::parseable_server::{OpenIdClient, ParseableServer};
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
+use super::{OpenIdClient, ParseableServer};
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -47,6 +47,8 @@ impl ParseableServer for QueryServer {
         prometheus: actix_web_prometheus::PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
+        let store = CONFIG.storage().get_object_store();
+
         let oidc_client = match oidc_client {
             Some(config) => {
                 let client = config

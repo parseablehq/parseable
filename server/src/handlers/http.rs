@@ -24,8 +24,7 @@ use actix_web_prometheus::PrometheusMetrics;
 use crate::option::CONFIG;
 
 use crate::handlers::http::modal::{
-    ingest_server::IngestServer, parseable_server::ParseableServer, query_server::QueryServer,
-    server::Server,
+    ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
 };
 use crate::option::Mode;
 
