@@ -209,7 +209,7 @@ impl ObjectStorageProvider for S3Config {
     }
 }
 
-fn to_path(path: &RelativePath) -> StorePath {
+fn to_object_store_path(path: &RelativePath) -> StorePath {
     StorePath::from(path.as_str())
 }
 
@@ -223,6 +223,7 @@ impl S3 {
         let instant = Instant::now();
 
         let resp = self.client.get(&to_path(path)).await;
+        let resp = self.client.get(&to_object_store_path(path)).await;
 
         match resp {
             Ok(resp) => {
@@ -250,6 +251,7 @@ impl S3 {
     ) -> Result<(), ObjectStorageError> {
         let time = Instant::now();
         let resp = self.client.put(&to_path(path), resource).await;
+        let resp = self.client.put(&to_object_store_path(path), resource).await;
         let status = if resp.is_ok() { "200" } else { "400" };
         let time = time.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME
