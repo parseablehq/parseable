@@ -168,6 +168,7 @@ impl Server {
     }
 
     // get the logstream web scope
+    // all except the GET route
     pub fn get_logstream_webscope() -> Scope {
         web::scope("/{logstream}")
             .service(
@@ -359,11 +360,13 @@ impl Server {
     }
 
     // get the live check
+    // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
     pub fn get_liveness_factory() -> Resource {
         web::resource("/liveness").route(web::get().to(health_check::liveness))
     }
 
     // get the readiness check
+    // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
     pub fn get_readiness_factory() -> Resource {
         web::resource("/readiness").route(web::get().to(health_check::readiness))
     }

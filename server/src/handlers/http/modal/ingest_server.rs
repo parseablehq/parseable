@@ -51,6 +51,7 @@ impl ParseableServer for IngestServer {
         prometheus: PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
+        // get the oidc client
         let oidc_client = match oidc_client {
             Some(config) => {
                 let client = config
@@ -62,11 +63,13 @@ impl ParseableServer for IngestServer {
             None => None,
         };
 
+        // get the ssl stuff
         let ssl = get_ssl_acceptor(
             &CONFIG.parseable.tls_cert_path,
             &CONFIG.parseable.tls_key_path,
         )?;
 
+        // fn that creates the app
         let create_app_fn = move || {
             App::new()
                 .wrap(prometheus.clone())
@@ -112,7 +115,8 @@ impl ParseableServer for IngestServer {
 
 impl IngestServer {
     // configure the api routes
-    fn configure_routes(config: &mut web::ServiceConfig, _odic_client: Option<OpenIdClient>) {
+    // odic_client is not used
+    fn configure_routes(config: &mut web::ServiceConfig, _oidc_client: Option<OpenIdClient>) {
         let logstream_scope = Server::get_logstream_webscope();
         let ingest_factory = Server::get_ingest_factory();
 
@@ -121,9 +125,7 @@ impl IngestServer {
                 // Base path "{url}/api/v1"
                 web::scope(&base_path()).service(ingest_factory),
             )
-            // GET "/liveness" ==> Liveness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-a-liveness-command
             .service(Server::get_liveness_factory())
-            // GET "/readiness" ==> Readiness check as per https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes
             .service(Server::get_readiness_factory())
             .service(logstream_scope);
     }
