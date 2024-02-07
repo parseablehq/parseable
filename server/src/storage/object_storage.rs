@@ -63,8 +63,11 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
-    async fn get_objects(&self, base_path: &RelativePath)
-        -> Result<Vec<Bytes>, ObjectStorageError>;
+    // want to make it more generic with a filter function
+    async fn get_objects(
+        &self,
+        base_path: Option<&RelativePath>,
+    ) -> Result<Vec<Bytes>, ObjectStorageError>;
     async fn put_object(
         &self,
         path: &RelativePath,

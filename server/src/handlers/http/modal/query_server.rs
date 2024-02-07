@@ -52,7 +52,6 @@ impl ParseableServer for QueryServer {
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
 
-        // ! get object for local-storage is broken
         self.0 = self.get_ingestor_info().await?;
 
         let oidc_client = match oidc_client {

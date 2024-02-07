@@ -32,6 +32,7 @@ use serde::Deserialize;
 use serde::Serialize;
 pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
 
+// to be decided on what the Default version should be
 pub const DEFAULT_VERSION: &str = "v3";
 pub const INGESTOR_FILE_EXTENSION: &str = "ingestor.json";
 
@@ -49,11 +50,11 @@ pub trait ParseableServer {
 
 #[derive(Serialize, Debug, Deserialize, Default)]
 pub struct IngesterMetadata {
-    version: String,
-    address: String,
-    port: String,
-    origin: String,
-    bucket_name: String,
+    pub version: String,
+    pub address: String,
+    pub port: String,
+    pub origin: String, // domain
+    pub bucket_name: String,
 }
 
 impl IngesterMetadata {

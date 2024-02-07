@@ -79,6 +79,7 @@ impl ObjectStorageProvider for FSConfig {
 }
 
 pub struct LocalFS {
+    // absolute path of the data directory
     root: PathBuf,
 }
 
@@ -115,7 +116,6 @@ impl ObjectStorage for LocalFS {
         res
     }
 
-    // ! get object for local-storage is broken
     async fn get_objects(
         &self,
         base_path: &RelativePath,
@@ -132,7 +132,6 @@ impl ObjectStorage for LocalFS {
                 .to_str()
                 .unwrap()
                 .eq(INGESTOR_FILE_EXTENSION);
-            dbg!(&ingestor_file);
             if !ingestor_file {
                 continue;
             }
