@@ -98,6 +98,9 @@ impl Config {
         }
     }
 
+    // validate the storage, if the proper path for staging directory is provided
+    // if the proper data directory is provided, or s3 bucket is provided etc
+    // probably change name to validate_storage or something
     pub async fn validate(&self) -> Result<(), ObjectStorageError> {
         let obj_store = self.storage.get_object_store();
         let rel_path = relative_path::RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
@@ -150,11 +153,10 @@ impl Config {
     // drive --> Local drive
     // s3 --> S3 bucket
     pub fn get_storage_mode_string(&self) -> &str {
-        let mut mode = "S3 bucket";
         if self.storage_name == "drive" {
-            mode = "Local drive";
+            return "Local drive";
         }
-        mode
+        "S3 bucket"
     }
 }
 
