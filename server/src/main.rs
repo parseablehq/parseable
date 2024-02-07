@@ -55,9 +55,9 @@ use crate::localcache::LocalCacheManager;
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let storage = CONFIG.storage().get_object_store();
+    CONFIG.validate().await?;
     migration::run_metadata_migration(&CONFIG).await?;
     let metadata = storage::resolve_parseable_metadata().await?;
-    CONFIG.validate_staging()?;
     banner::print(&CONFIG, &metadata).await;
     rbac::map::init(&metadata);
     metadata.set_global();
@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // track all parquet files already in the data directory
-    storage::retention::load_retention_from_global().await;
+    storage::retention::load_retention_from_global();
     // load data from stats back to prometheus metrics
     metrics::load_from_stats_from_storage().await;
 

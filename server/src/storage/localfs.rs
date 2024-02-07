@@ -32,7 +32,7 @@ use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
 use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
-use crate::{option::validation, utils::validate_path_is_writeable};
+use crate::option::validation;
 
 use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
 
@@ -139,8 +139,8 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
-        fs::create_dir_all(&self.root).await?;
-        validate_path_is_writeable(&self.root)
+        fs::create_dir_all(&self.root)
+            .await
             .map_err(|e| ObjectStorageError::UnhandledError(e.into()))
     }
 
@@ -167,6 +167,23 @@ impl ObjectStorage for LocalFS {
             .collect();
 
         Ok(logstreams)
+    }
+
+    async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
+        let dirs = ReadDirStream::new(fs::read_dir(&self.root).await?)
+            .try_collect::<Vec<DirEntry>>()
+            .await?
+            .into_iter()
+            .map(dir_name);
+
+        let dirs = FuturesUnordered::from_iter(dirs)
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+
+        Ok(dirs)
     }
 
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {

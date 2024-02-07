@@ -27,11 +27,11 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::oidc::{self, OpenidConfig};
-use crate::storage::{FSConfig, ObjectStorageProvider, S3Config};
-use crate::utils::validate_path_is_writeable;
+use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
 
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
-
+pub const JOIN_COMMUNITY: &str =
+    "Join us on Parseable Slack community for questions : https://logg.ing/community";
 pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
 
 #[derive(Debug)]
@@ -99,9 +99,31 @@ impl Config {
         }
     }
 
-    pub fn validate_staging(&self) -> anyhow::Result<()> {
-        let staging_path = self.staging_dir();
-        validate_path_is_writeable(staging_path)
+    pub async fn validate(&self) -> Result<(), ObjectStorageError> {
+        let obj_store = self.storage.get_object_store();
+        let rel_path = relative_path::RelativePathBuf::from(".parseable.json");
+
+        let has_parseable_json = obj_store.get_object(&rel_path).await.is_ok();
+
+        // Lists all the directories in the root of the bucket/directory
+        // can be a stream (if it contains .stream.json file) or not
+        let has_dirs = match obj_store.list_dirs().await {
+            Ok(dirs) => !dirs.is_empty(),
+            Err(_) => false,
+        };
+
+        let has_streams = obj_store.list_streams().await.is_ok();
+
+        if has_streams || !has_dirs && !has_parseable_json {
+            return Ok(());
+        }
+
+        if self.mode_string() == "Local drive" {
+            return Err(ObjectStorageError::Custom(format!("Could not start the server because directory '{}' contains stale data, please use an empty directory, and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)));
+        }
+
+        // S3 bucket mode
+        Err(ObjectStorageError::Custom(format!("Could not start the server because bucket '{}' contains stale data, please use an empty bucket and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)))
     }
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
@@ -159,7 +181,7 @@ fn parseable_cli_command() -> Command {
         .next_line_help(false)
         .help_template(
             r#"
-{about} Join the community at https://launchpass.com/parseable.
+{about} Join the community at https://logg.ing/community.
 
 {all-args}
         "#,
@@ -229,6 +251,9 @@ pub struct Server {
 
     /// Parquet compression algorithm
     pub parquet_compression: Compression,
+
+    /// Mode of operation
+    pub mode: Mode,
 }
 
 impl FromArgMatches for Server {
@@ -332,6 +357,17 @@ impl FromArgMatches for Server {
             _ => None,
         };
 
+        self.mode = match m
+            .get_one::<String>(Self::MODE)
+            .expect("Mode not set")
+            .as_str()
+        {
+            "query" => Mode::Query,
+            "ingest" => Mode::Ingest,
+            "all" => Mode::All,
+            _ => unreachable!(),
+        };
+
         Ok(())
     }
 }
@@ -360,6 +396,7 @@ impl Server {
     pub const QUERY_MEM_POOL_SIZE: &'static str = "query-mempool-size";
     pub const ROW_GROUP_SIZE: &'static str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &'static str = "compression-algo";
+    pub const MODE: &'static str = "mode";
     pub const DEFAULT_USERNAME: &'static str = "admin";
     pub const DEFAULT_PASSWORD: &'static str = "admin";
 
@@ -556,6 +593,18 @@ impl Server {
                     .default_value("16384")
                     .value_parser(value_parser!(usize))
                     .help("Number of rows in a row group"),
+            ).arg(
+                Arg::new(Self::MODE)
+                    .long(Self::MODE)
+                    .env("P_MODE")
+                    .value_name("STRING")
+                    .required(false)
+                    .default_value("all")
+                    .value_parser([
+                        "query",
+                        "ingest",
+                        "all"])
+                    .help("Mode of operation"),
             )
             .arg(
                 Arg::new(Self::PARQUET_COMPRESSION_ALGO)
@@ -580,6 +629,14 @@ impl Server {
                     .multiple(true)
         )
     }
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub enum Mode {
+    Query,
+    Ingest,
+    #[default]
+    All,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

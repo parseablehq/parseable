@@ -470,6 +470,18 @@ impl ObjectStorage for S3 {
     fn store_url(&self) -> url::Url {
         url::Url::parse(&format!("s3://{}", self.bucket)).unwrap()
     }
+
+    async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
+        let pre = object_store::path::Path::from("/");
+        let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+
+        Ok(resp
+            .common_prefixes
+            .iter()
+            .flat_map(|path| path.parts())
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>())
+    }
 }
 
 impl From<object_store::Error> for ObjectStorageError {

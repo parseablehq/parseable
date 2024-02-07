@@ -26,7 +26,7 @@ use serde_json::Value;
 use crate::alerts::Alerts;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
-use crate::storage::retention::{self, Retention};
+use crate::storage::retention::Retention;
 use crate::storage::{LogStream, StorageDir};
 use crate::{event, stats};
 use crate::{metadata, validator};
@@ -218,8 +218,6 @@ pub async fn put_retention(
         .get_object_store()
         .put_retention(&stream_name, &retention)
         .await?;
-
-    retention::init_scheduler(&stream_name, retention);
 
     Ok((
         format!("set retention configuration for log stream {stream_name}"),

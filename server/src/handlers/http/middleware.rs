@@ -27,9 +27,12 @@ use actix_web::{
 };
 use futures_util::future::LocalBoxFuture;
 
-use crate::handlers::{
-    AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
-    STREAM_NAME_HEADER_KEY,
+use crate::{
+    handlers::{
+        AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
+        STREAM_NAME_HEADER_KEY,
+    },
+    option::Mode,
 };
 use crate::{
     option::CONFIG,
@@ -250,5 +253,108 @@ where
             }
             fut.await
         })
+    }
+}
+
+/// ModeFilterMiddleware factory
+pub struct ModeFilter;
+
+/// PathFilterMiddleware needs to implement Service trait
+impl<S, B> Transform<S, ServiceRequest> for ModeFilter
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type InitError = ();
+    type Transform = ModeFilterMiddleware<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(ModeFilterMiddleware { service }))
+    }
+}
+
+/// Actual middleware service
+pub struct ModeFilterMiddleware<S> {
+    service: S,
+}
+
+/// Impl the service trait for the middleware service
+impl<S, B> Service<ServiceRequest> for ModeFilterMiddleware<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    // impl poll_ready
+    actix_web::dev::forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let path = req.path();
+        let mode = &CONFIG.parseable.mode;
+        // change error messages based on mode
+        match mode {
+            Mode::Query => {
+                // In Query mode, only allows /ingest endpoint, and /logstream endpoint with GET method
+                let base_cond = path.split('/').any(|x| x == "ingest");
+                let logstream_cond =
+                    !(path.split('/').any(|x| x == "logstream") && req.method() == "GET");
+                if base_cond {
+                    Box::pin(async {
+                        Err(actix_web::error::ErrorUnauthorized(
+                            "Ingestion API cannot be accessed in Query Mode",
+                        ))
+                    })
+                } else if logstream_cond {
+                    Box::pin(async {
+                        Err(actix_web::error::ErrorUnauthorized(
+                            "Logstream cannot be changed in Query Mode",
+                        ))
+                    })
+                } else {
+                    let fut = self.service.call(req);
+
+                    Box::pin(async move {
+                        let res = fut.await?;
+                        Ok(res)
+                    })
+                }
+            }
+
+            Mode::Ingest => {
+                let accessable_endpoints = ["ingest", "logstream", "liveness", "readiness"];
+                let cond = path.split('/').any(|x| accessable_endpoints.contains(&x));
+                if !cond {
+                    Box::pin(async {
+                        Err(actix_web::error::ErrorUnauthorized(
+                            "Only Ingestion API can be accessed in Ingest Mode",
+                        ))
+                    })
+                } else {
+                    let fut = self.service.call(req);
+
+                    Box::pin(async move {
+                        let res = fut.await?;
+                        Ok(res)
+                    })
+                }
+            }
+
+            Mode::All => {
+                let fut = self.service.call(req);
+
+                Box::pin(async move {
+                    let res = fut.await?;
+                    Ok(res)
+                })
+            }
+        }
     }
 }

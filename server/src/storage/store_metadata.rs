@@ -26,7 +26,7 @@ use once_cell::sync::OnceCell;
 use std::io;
 
 use crate::{
-    option::CONFIG,
+    option::{CONFIG, JOIN_COMMUNITY},
     rbac::{role::model::DefaultPrivilege, user::User},
     storage::ObjectStorageError,
     utils::uid,
@@ -92,8 +92,8 @@ impl StorageMetadata {
     }
 }
 
-// always returns remote metadata as it is source of truth
-// overwrites staging metadata while updating storage info
+/// always returns remote metadata as it is source of truth
+/// overwrites staging metadata while updating storage info
 pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStorageError> {
     let staging_metadata = get_staging_metadata()?;
     let storage = CONFIG.storage().get_object_store();
@@ -145,11 +145,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
     };
 
     let metadata = res.map_err(|err| {
-        let err = format!(
-            "{}. {}",
-            err,
-            "Join us on Parseable Slack to report this incident : https://launchpass.com/parseable"
-        );
+        let err = format!("{}. {}", err, JOIN_COMMUNITY);
         let err: Box<dyn std::error::Error + Send + Sync + 'static> = err.into();
         ObjectStorageError::UnhandledError(err)
     })?;
@@ -168,7 +164,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
 // variant contain remote metadata
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvChange {
-    /// No change in env i.e both staging and remote have same id  
+    /// No change in env i.e both staging and remote have same id
     /// or deployment id of staging is not matching with that of remote
     None(StorageMetadata),
     /// Metadata not found in storage. Treated as possible misconfiguration on user side.
