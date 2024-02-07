@@ -198,6 +198,7 @@ impl ObjectStorageProvider for S3Config {
         Arc::new(S3 {
             client: s3,
             bucket: self.bucket_name.clone(),
+            root: StorePath::from(""),
         })
     }
 
@@ -217,6 +218,7 @@ fn to_object_store_path(path: &RelativePath) -> StorePath {
 pub struct S3 {
     client: LimitStore<AmazonS3>,
     bucket: String,
+    root: StorePath
 }
 
 impl S3 {
