@@ -211,9 +211,10 @@ impl ObjectStorage for LocalFS {
     }
 
     fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path {
-        object_store::path::Path::parse(
-            format!("{}", self.root.join(RelativePath::new(prefix).as_str()).display()),
-        )
+        object_store::path::Path::parse(format!(
+            "{}",
+            self.root.join(RelativePath::new(prefix).as_str()).display()
+        ))
         .unwrap()
     }
 
