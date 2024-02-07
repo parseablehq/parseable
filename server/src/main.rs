@@ -50,6 +50,7 @@ mod validator;
 use option::CONFIG;
 
 use crate::localcache::LocalCacheManager;
+pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
@@ -129,7 +130,7 @@ fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sende
             rt.block_on(async {
                 let mut scheduler = AsyncScheduler::new();
                 scheduler
-                    .every((CONFIG.parseable.upload_interval as u32).seconds())
+                    .every(STORAGE_UPLOAD_INTERVAL.seconds())
                     // Extra time interval is added so that this schedular does not race with local sync.
                     .plus(5u32.seconds())
                     .run(|| async {

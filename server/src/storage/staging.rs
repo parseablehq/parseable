@@ -134,16 +134,12 @@ impl StorageDir {
                 .ends_with(&hot_filename)
         });
 
-        //check if arrow files is not empty, fetch the parquet file path from last file from sorted arrow file list
-        if !(arrow_files.is_empty()) {
-            arrow_files.sort();
-            let key = Self::arrow_path_to_parquet(arrow_files.last().unwrap());
-            for arrow_file_path in arrow_files {
-                grouped_arrow_file
-                    .entry(key.clone())
-                    .or_default()
-                    .push(arrow_file_path);
-            }
+        for arrow_file_path in arrow_files {
+            let key = Self::arrow_path_to_parquet(&arrow_file_path);
+            grouped_arrow_file
+                .entry(key)
+                .or_default()
+                .push(arrow_file_path);
         }
 
         grouped_arrow_file
