@@ -51,10 +51,6 @@ pub struct Cli {
     /// Size for local cache
     pub local_cache_size: u64,
 
-    /// Interval in seconds after which uncommited data would be
-    /// uploaded to the storage platform.
-    pub upload_interval: u64,
-
     /// Username for the basic authentication on the server
     pub username: String,
 
@@ -101,7 +97,6 @@ impl Cli {
     pub const STAGING: &'static str = "local-staging-path";
     pub const CACHE: &'static str = "cache-path";
     pub const CACHE_SIZE: &'static str = "cache-size";
-    pub const UPLOAD_INTERVAL: &'static str = "upload-interval";
     pub const USERNAME: &'static str = "username";
     pub const PASSWORD: &'static str = "password";
     pub const CHECK_UPDATE: &'static str = "check-update";
@@ -187,16 +182,7 @@ impl Cli {
                     .help("Maximum allowed cache size for all streams combined (In human readable format, e.g 1GiB, 2GiB, 100MB)")
                     .next_line_help(true),
             )
-            .arg(
-                Arg::new(Self::UPLOAD_INTERVAL)
-                    .long(Self::UPLOAD_INTERVAL)
-                    .env("P_STORAGE_UPLOAD_INTERVAL")
-                    .value_name("SECONDS")
-                    .default_value("60")
-                    .value_parser(validation::upload_interval)
-                    .help("Interval in seconds after which staging data would be sent to the storage")
-                    .next_line_help(true),
-            )
+
             .arg(
                 Arg::new(Self::USERNAME)
                     .long(Self::USERNAME)
@@ -376,10 +362,6 @@ impl FromArgMatches for Cli {
             .get_one::<u64>(Self::CACHE_SIZE)
             .cloned()
             .expect("default value for cache size");
-        self.upload_interval = m
-            .get_one::<u64>(Self::UPLOAD_INTERVAL)
-            .cloned()
-            .expect("default value for upload");
         self.username = m
             .get_one::<String>(Self::USERNAME)
             .cloned()
