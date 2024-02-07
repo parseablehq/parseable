@@ -118,20 +118,27 @@ impl ObjectStorage for LocalFS {
 
     async fn get_objects(
         &self,
-        base_path: &RelativePath,
+        base_path: Option<&RelativePath>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let time = Instant::now();
-        let path = self.path_in_root(base_path);
-        let mut entries = fs::read_dir(path).await?;
+
+        let prefix = if let Some(path) = base_path {
+            path.to_path(&self.root)
+        } else {
+            self.root.clone()
+        };
+
+        let mut entries = fs::read_dir(&prefix).await?;
         let mut res = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
             let ingestor_file = entry
                 .path()
-                .extension()
-                .unwrap_or_default()    // I have no idea what the default is Add a test to check it out
+                .file_name()
+                .unwrap_or_default()
                 .to_str()
-                .unwrap()
-                .eq(INGESTOR_FILE_EXTENSION);
+                .unwrap_or_default()
+                .contains(INGESTOR_FILE_EXTENSION);
+
             if !ingestor_file {
                 continue;
             }

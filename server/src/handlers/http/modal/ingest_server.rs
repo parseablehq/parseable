@@ -18,7 +18,6 @@
 
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
-use crate::utils::hostname_unchecked;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -131,9 +130,14 @@ impl IngestServer {
         let sock = self.get_ingestor_address();
         let path = RelativePathBuf::from(format!(
             "{}.{}.ingestor.json",
-            hostname_unchecked(),
+            sock.ip(), // this might be wrong
             sock.port()
         ));
+
+        if let Ok(_) = store.get_object(&path).await {
+            println!("Ingestor metadata already exists");
+            return Ok(());
+        };
 
         let resource = IngesterMetadata::new(
             sock.ip().to_string(),
@@ -142,7 +146,7 @@ impl IngestServer {
                 .parseable
                 .domain_address
                 .clone()
-                .unwrap_or(Url::parse("https://0.0.0.0:8000").unwrap())
+                .unwrap_or(Url::parse(&format!("https://{}:{}", sock.ip(), sock.port())).unwrap())
                 .to_string(),
             DEFAULT_VERSION.to_string(),
             store.get_bucket_name(),

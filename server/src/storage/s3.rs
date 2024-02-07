@@ -409,13 +409,19 @@ impl ObjectStorage for S3 {
     // TBD  is this the right way or the api calls are too many?
     async fn get_objects(
         &self,
-        base_path: &RelativePath,
+        base_path: Option<&RelativePath>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let instant = Instant::now();
 
+        let prefix = if let Some(base_path) = base_path {
+            to_object_store_path(base_path)
+        } else {
+            self.root.clone()
+        };
+
         let mut list_stream = self
             .client
-            .list(Some(&to_object_store_path(base_path)))
+            .list(Some(&prefix))
             .await?;
 
         let mut res = vec![];
@@ -423,9 +429,9 @@ impl ObjectStorage for S3 {
         while let Some(meta) = list_stream.next().await.transpose()? {
             let ingestor_file = meta
                 .location
-                .extension()
-                .unwrap_or(".not")
-                .eq(INGESTOR_FILE_EXTENSION);
+                .filename()
+                .unwrap_or_default()
+                .contains(INGESTOR_FILE_EXTENSION);
 
             if !ingestor_file {
                 continue;
