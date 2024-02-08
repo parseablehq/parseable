@@ -64,6 +64,8 @@ async fn main() -> anyhow::Result<()> {
 
     migration::run_migration(&CONFIG).await?;
 
+    // when do we do this ingestor only most likely
+    // needs to be updated every so often(when and how)
     let storage = CONFIG.storage().get_object_store();
     if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
         log::warn!("could not populate local metadata. {:?}", e);
@@ -84,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
         analytics::init_analytics_scheduler();
     }
 
+    // this is supposed to happen only in query and super servers
     tokio::spawn(handlers::livetail::server());
 
     let app = handlers::http::run_http(prometheus, CONFIG.parseable.openid.clone());

@@ -49,6 +49,7 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
             .and_then(|version| version.as_str())
     }
 
+    // if storage metadata is none do nothing
     if let Some(storage_metadata) = storage_metadata {
         match get_version(&storage_metadata) {
             Some("v1") => {
@@ -63,6 +64,7 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
         }
     }
 
+    // if staging metadata is none do nothing
     if let Some(staging_metadata) = staging_metadata {
         match get_version(&staging_metadata) {
             Some("v1") => {
