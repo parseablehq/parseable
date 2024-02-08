@@ -48,7 +48,6 @@ pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    let storage = CONFIG.storage().get_object_store();
     CONFIG.validate().await?;
     migration::run_metadata_migration(&CONFIG).await?;
     let metadata = storage::resolve_parseable_metadata().await?;
@@ -65,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
 
     migration::run_migration(&CONFIG).await?;
 
+    let storage = CONFIG.storage().get_object_store();
     if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
         log::warn!("could not populate local metadata. {:?}", e);
     }

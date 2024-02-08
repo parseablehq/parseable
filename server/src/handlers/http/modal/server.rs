@@ -16,12 +16,22 @@
  *
  */
 
+use crate::analytics;
+use crate::banner;
+use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
+use crate::localcache::LocalCacheManager;
+use crate::metadata;
+use crate::metrics;
+use crate::migration;
+use crate::rbac;
+use crate::storage;
+use crate::sync;
 use std::{fs::File, io::BufReader, sync::Arc};
 
 use actix_web::web::resource;
@@ -37,18 +47,17 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 
 use crate::{
     handlers::http::{
-        cross_origin_config, ingest, llm, logstream,
+        self, cross_origin_config, ingest, llm, logstream,
         middleware::{DisAllowRootUser, RouteExt},
-        oidc, rbac, role, MAX_EVENT_PAYLOAD_SIZE,
+        oidc, role, MAX_EVENT_PAYLOAD_SIZE,
     },
     option::CONFIG,
     rbac::role::Action,
 };
 
+use super::generate;
 use super::OpenIdClient;
 use super::ParseableServer;
-
-include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 #[derive(Default)]
 pub struct Server;
@@ -305,16 +314,24 @@ impl Server {
             .service(
                 web::resource("")
                     // GET /user => List all users
-                    .route(web::get().to(rbac::list_users).authorize(Action::ListUser)),
+                    .route(
+                        web::get()
+                            .to(http::rbac::list_users)
+                            .authorize(Action::ListUser),
+                    ),
             )
             .service(
                 web::resource("/{username}")
                     // PUT /user/{username} => Create a new user
-                    .route(web::post().to(rbac::post_user).authorize(Action::PutUser))
+                    .route(
+                        web::post()
+                            .to(http::rbac::post_user)
+                            .authorize(Action::PutUser),
+                    )
                     // DELETE /user/{username} => Delete a user
                     .route(
                         web::delete()
-                            .to(rbac::delete_user)
+                            .to(http::rbac::delete_user)
                             .authorize(Action::DeleteUser),
                     )
                     .wrap(DisAllowRootUser),
@@ -324,13 +341,13 @@ impl Server {
                     // PUT /user/{username}/roles => Put roles for user
                     .route(
                         web::put()
-                            .to(rbac::put_role)
+                            .to(http::rbac::put_role)
                             .authorize(Action::PutUserRoles)
                             .wrap(DisAllowRootUser),
                     )
                     .route(
                         web::get()
-                            .to(rbac::get_role)
+                            .to(http::rbac::get_role)
                             .authorize_for_user(Action::GetUserRoles),
                     ),
             )
@@ -339,7 +356,7 @@ impl Server {
                     // POST /user/{username}/generate-new-password => reset password for this user
                     .route(
                         web::post()
-                            .to(rbac::post_gen_password)
+                            .to(http::rbac::post_gen_password)
                             .authorize(Action::PutUser)
                             .wrap(DisAllowRootUser),
                     ),
@@ -372,5 +389,68 @@ impl Server {
     // get the about factory
     pub fn get_about_factory() -> Resource {
         web::resource("/about").route(web::get().to(about::about).authorize(Action::GetAbout))
+    }
+
+    pub async fn initialize(&mut self) -> anyhow::Result<()> {
+        migration::run_metadata_migration(&CONFIG).await?;
+        let metadata = storage::resolve_parseable_metadata().await?;
+        banner::print(&CONFIG, &metadata).await;
+        rbac::map::init(&metadata);
+        metadata.set_global();
+
+        if let Some(cache_manager) = LocalCacheManager::global() {
+            cache_manager
+                .validate(CONFIG.parseable.local_cache_size)
+                .await?;
+        };
+
+        let prometheus = metrics::build_metrics_handler();
+        CONFIG.storage().register_store_metrics(&prometheus);
+
+        migration::run_migration(&CONFIG).await?;
+
+        let storage = CONFIG.storage().get_object_store();
+        if let Err(err) = metadata::STREAM_INFO.load(&*storage).await {
+            log::warn!("could not populate local metadata. {:?}", err);
+        }
+
+        storage::retention::load_retention_from_global();
+        metrics::fetch_stats_from_storage().await;
+
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();
+        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
+            sync::object_store_sync();
+
+        if CONFIG.parseable.send_analytics {
+            analytics::init_analytics_scheduler();
+        }
+
+        tokio::spawn(handlers::livetail::server());
+
+        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+
+        tokio::pin!(app);
+        loop {
+            tokio::select! {
+                e = &mut app => {
+                    // actix server finished .. stop other threads and stop the server
+                    remote_sync_inbox.send(()).unwrap_or(());
+                    localsync_inbox.send(()).unwrap_or(());
+                    localsync_handler.join().unwrap_or(());
+                    remote_sync_handler.join().unwrap_or(());
+                    return e
+                },
+                _ = &mut localsync_outbox => {
+                    // crash the server if localsync fails for any reason
+                    // panic!("Local Sync thread died. Server will fail now!")
+                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
+                },
+                _ = &mut remote_sync_outbox => {
+                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
+                    remote_sync_handler.join().unwrap_or(());
+                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync();
+                }
+            };
+        }
     }
 }

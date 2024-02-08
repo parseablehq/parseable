@@ -36,6 +36,8 @@ pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
 pub const DEFAULT_VERSION: &str = "v3";
 pub const INGESTOR_FILE_EXTENSION: &str = "ingestor.json";
 
+include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+
 #[async_trait(?Send)]
 pub trait ParseableServer {
     // async fn validate(&self) -> Result<(), ObjectStorageError>;

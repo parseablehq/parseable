@@ -16,8 +16,17 @@
  *
  */
 
+use crate::analytics;
+use crate::banner;
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
+use crate::localcache::LocalCacheManager;
+use crate::metadata;
+use crate::metrics;
+use crate::storage;
+use crate::storage::ObjectStorageError;
+use crate::storage::PARSEABLE_METADATA_FILE_NAME;
+use crate::sync;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -46,22 +55,14 @@ pub struct IngestServer;
 
 #[async_trait(?Send)]
 impl ParseableServer for IngestServer {
+    // we dont need oidc client here its just here to satisfy the trait
     async fn start(
         &mut self,
         prometheus: PrometheusMetrics,
-        oidc_client: Option<crate::oidc::OpenidConfig>,
+        _oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        // get the oidc client
-        let oidc_client = match oidc_client {
-            Some(config) => {
-                let client = config
-                    .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
-                    .await?;
-                Some(Arc::new(client))
-            }
-
-            None => None,
-        };
+        // check for querier state. Is it there, or was it there in the past
+        self.check_querier_state().await?;
 
         // set the ingestor metadata
         self.set_ingestor_metadata().await?;
@@ -76,7 +77,7 @@ impl ParseableServer for IngestServer {
         let create_app_fn = move || {
             App::new()
                 .wrap(prometheus.clone())
-                .configure(|config| IngestServer::configure_routes(config, oidc_client.clone()))
+                .configure(|config| IngestServer::configure_routes(config, None))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())
                 .wrap(cross_origin_config())
@@ -100,7 +101,6 @@ impl ParseableServer for IngestServer {
 
 impl IngestServer {
     // configure the api routes
-    // odic_client is not used
     fn configure_routes(config: &mut web::ServiceConfig, _oidc_client: Option<OpenIdClient>) {
         let logstream_scope = Server::get_logstream_webscope();
         let ingest_factory = Server::get_ingest_factory();
@@ -124,9 +124,11 @@ impl IngestServer {
             .unwrap()
     }
 
+    // create the ingestor metadata and put the .ingestor.json file in the object store
     async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
 
+        // remove ip adn go with the domain name
         let sock = self.get_ingestor_address();
         let path = RelativePathBuf::from(format!(
             "{}.{}.ingestor.json",
@@ -146,7 +148,9 @@ impl IngestServer {
                 .parseable
                 .domain_address
                 .clone()
-                .unwrap_or_else(|| Url::parse(&format!("https://{}:{}", sock.ip(), sock.port())).unwrap())
+                .unwrap_or_else(|| {
+                    Url::parse(&format!("https://{}:{}", sock.ip(), sock.port())).unwrap()
+                })
                 .to_string(),
             DEFAULT_VERSION.to_string(),
             store.get_bucket_name(),
@@ -160,5 +164,84 @@ impl IngestServer {
         store.put_object(&path, resource).await?;
 
         Ok(())
+    }
+
+    // check for querier state. Is it there, or was it there in the past
+    // this should happen before the set the ingestor metadata
+    async fn check_querier_state(&self) -> anyhow::Result<(), ObjectStorageError> {
+        // how do we check for querier state?
+        // based on the work flow of the system, the querier will always need to start first
+        // i.e the querier will create the `.parseable.json` file
+
+        let store = CONFIG.storage().get_object_store();
+        let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
+
+        match store.get_object(&path).await {
+            Ok(_) => Ok(()),
+            Err(_) => Err(ObjectStorageError::Custom(
+                "Querier Server has not been started yet. Please start the querier server first."
+                    .to_string(),
+            )),
+        }
+    }
+
+    pub async fn initialize(&mut self) -> anyhow::Result<()> {
+        // to get the .parseable.json file in staging
+        let meta = storage::resolve_parseable_metadata().await?;
+        banner::print(&CONFIG, &meta).await;
+
+        // set the info in the global metadata
+        meta.set_global();
+
+        if let Some(cache_manager) = LocalCacheManager::global() {
+            cache_manager
+                .validate(CONFIG.parseable.local_cache_size)
+                .await?;
+        };
+
+        let prom = metrics::build_metrics_handler();
+        CONFIG.storage().register_store_metrics(&prom);
+
+        let storage = CONFIG.storage().get_object_store();
+        if let Err(err) = metadata::STREAM_INFO.load(&*storage).await {
+            log::warn!("could not populate local metadata. {:?}", err);
+        }
+
+        metrics::fetch_stats_from_storage().await;
+
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();
+        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
+            sync::object_store_sync();
+
+        // all internal data structures populated now.
+        // start the analytics scheduler if enabled
+        if CONFIG.parseable.send_analytics {
+            analytics::init_analytics_scheduler();
+        }
+        let app = self.start(prom, CONFIG.parseable.openid.clone());
+        tokio::pin!(app);
+        loop {
+            tokio::select! {
+                e = &mut app => {
+                    // actix server finished .. stop other threads and stop the server
+                    remote_sync_inbox.send(()).unwrap_or(());
+                    localsync_inbox.send(()).unwrap_or(());
+                    localsync_handler.join().unwrap_or(());
+                    remote_sync_handler.join().unwrap_or(());
+                    return e
+                },
+                _ = &mut localsync_outbox => {
+                    // crash the server if localsync fails for any reason
+                    // panic!("Local Sync thread died. Server will fail now!")
+                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
+                },
+                _ = &mut remote_sync_outbox => {
+                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
+                    remote_sync_handler.join().unwrap_or(());
+                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync();
+                }
+
+            };
+        }
     }
 }

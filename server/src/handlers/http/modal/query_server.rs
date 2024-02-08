@@ -21,6 +21,7 @@ use crate::handlers::http::{
     base_path, cross_origin_config, logstream, API_BASE_PATH, API_VERSION,
 };
 use crate::rbac::role::Action;
+use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
 use actix_web::http::header;
 use actix_web::web;
 use actix_web::web::ServiceConfig;
@@ -36,9 +37,7 @@ use crate::option::CONFIG;
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
-use super::{IngesterMetadata, OpenIdClient, ParseableServer};
-
-include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+use super::{generate, IngesterMetadata, OpenIdClient, ParseableServer};
 
 type IngesterMetadataArr = Vec<IngesterMetadata>;
 type IngesterMetaPtr = Arc<IngesterMetadataArr>;
@@ -167,9 +166,59 @@ impl QueryServer {
             .send()
             .await;
 
-        match reqw {
-            Ok(_) => true,
-            Err(_) => false,
+        reqw.is_ok()
+    }
+
+    async fn initialize(&mut self) -> anyhow::Result<()> {
+        migration::run_metadata_migration(&CONFIG).await?;
+
+        let metadata = storage::resolve_parseable_metadata().await?;
+        banner::print(&CONFIG, &metadata).await;
+
+        // initialize the rbac map
+        rbac::map::init(&metadata);
+
+        // keep metadata info in mem
+        metadata.set_global();
+
+        let prometheus = metrics::build_metrics_handler();
+        CONFIG.storage().register_store_metrics(&prometheus);
+
+        migration::run_migration(&CONFIG).await?;
+
+        // when do we do this
+        let storage = CONFIG.storage().get_object_store();
+        if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
+            log::warn!("could not populate local metadata. {:?}", e);
+        }
+
+        // track all parquet files already in the data directory
+        storage::retention::load_retention_from_global();
+
+        // load data from stats back to prometheus metrics
+        metrics::fetch_stats_from_storage().await;
+
+        // all internal data structures populated now.
+        // start the analytics scheduler if enabled
+        if CONFIG.parseable.send_analytics {
+            analytics::init_analytics_scheduler();
+        }
+
+        // how does livetail work?
+        // tokio::spawn(handlers::livetail::server());
+
+        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+
+        tokio::pin!(app);
+
+        // this never actually loops
+        // rather than pinning we can just await?
+        loop {
+            tokio::select! {
+                err= &mut app => {
+                    return err;
+                },
+            }
         }
     }
 }

@@ -218,7 +218,7 @@ fn to_object_store_path(path: &RelativePath) -> StorePath {
 pub struct S3 {
     client: LimitStore<AmazonS3>,
     bucket: String,
-    root: StorePath
+    root: StorePath,
 }
 
 impl S3 {
@@ -419,10 +419,7 @@ impl ObjectStorage for S3 {
             self.root.clone()
         };
 
-        let mut list_stream = self
-            .client
-            .list(Some(&prefix))
-            .await?;
+        let mut list_stream = self.client.list(Some(&prefix)).await?;
 
         let mut res = vec![];
 
@@ -439,10 +436,8 @@ impl ObjectStorage for S3 {
 
             let byts = self
                 .get_object(
-                    &RelativePath::from_path(meta.location.as_ref()).map_err(|err| {
-                        ObjectStorageError::Custom(
-                            format!("Error while getting files: {:}", err).into(),
-                        )
+                    RelativePath::from_path(meta.location.as_ref()).map_err(|err| {
+                        ObjectStorageError::Custom(format!("Error while getting files: {:}", err))
                     })?,
                 )
                 .await?;
