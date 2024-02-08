@@ -134,7 +134,7 @@ impl IngestServer {
             sock.port()
         ));
 
-        if let Ok(_) = store.get_object(&path).await {
+        if store.get_object(&path).await.is_ok() {
             println!("Ingestor metadata already exists");
             return Ok(());
         };
@@ -146,7 +146,7 @@ impl IngestServer {
                 .parseable
                 .domain_address
                 .clone()
-                .unwrap_or(Url::parse(&format!("https://{}:{}", sock.ip(), sock.port())).unwrap())
+                .unwrap_or_else(|| Url::parse(&format!("https://{}:{}", sock.ip(), sock.port())).unwrap())
                 .to_string(),
             DEFAULT_VERSION.to_string(),
             store.get_bucket_name(),

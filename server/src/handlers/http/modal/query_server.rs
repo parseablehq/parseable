@@ -148,7 +148,6 @@ impl QueryServer {
         let store = CONFIG.storage().get_object_store();
 
         let root_path = RelativePathBuf::from("");
-        dbg!(&root_path);
         let arr = store
             .get_objects(Some(&root_path))
             .await?
