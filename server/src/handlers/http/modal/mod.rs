@@ -21,6 +21,7 @@ pub mod query_server;
 pub mod server;
 pub mod ssl_acceptor;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use actix_web_prometheus::PrometheusMetrics;

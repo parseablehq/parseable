@@ -18,8 +18,6 @@
 
 use crate::analytics;
 use crate::banner;
-use crate::handlers::http::API_BASE_PATH;
-use crate::handlers::http::API_VERSION;
 use crate::localcache::LocalCacheManager;
 use crate::metadata;
 use crate::metrics;
@@ -29,7 +27,6 @@ use crate::storage::PARSEABLE_METADATA_FILE_NAME;
 use crate::sync;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
@@ -185,6 +182,7 @@ impl IngestServer {
         }
     }
 
+    #[allow(unused)]
     pub async fn initialize(&mut self) -> anyhow::Result<()> {
         // to get the .parseable.json file in staging
         let meta = storage::resolve_parseable_metadata().await?;

@@ -111,8 +111,6 @@ impl ParseableServer for QueryServer {
 impl QueryServer {
     // configure the api routes
     pub fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>) {
-        let generated = generate();
-
         let user_scope = Server::get_user_webscope();
         let llm_scope = Server::get_llm_webscope();
         let role_scope = Server::get_user_role_webscope();
@@ -140,7 +138,7 @@ impl QueryServer {
                     .service(oauth_scope)
                     .service(role_scope),
             )
-            .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
+            .service(Server::get_generated());
     }
 
     async fn get_ingestor_info(&self) -> anyhow::Result<IngesterMetaPtr> {
@@ -168,7 +166,7 @@ impl QueryServer {
 
         reqw.is_ok()
     }
-
+    #[allow(unused)]
     async fn initialize(&mut self) -> anyhow::Result<()> {
         migration::run_metadata_migration(&CONFIG).await?;
 
@@ -207,18 +205,20 @@ impl QueryServer {
         // how does livetail work?
         // tokio::spawn(handlers::livetail::server());
 
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+        self.start(prometheus, CONFIG.parseable.openid.clone()).await?;
 
-        tokio::pin!(app);
+        // tokio::pin!(app);
 
-        // this never actually loops
-        // rather than pinning we can just await?
-        loop {
-            tokio::select! {
-                err= &mut app => {
-                    return err;
-                },
-            }
-        }
+        // // this never actually loops
+        // // rather than pinning we can just await?
+        // loop {
+        //     tokio::select! {
+        //         err= &mut app => {
+        //             return err;
+        //         },
+        //     }
+        // }
+
+        Ok(())
     }
 }

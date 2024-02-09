@@ -166,7 +166,7 @@ impl Server {
                     .service(Self::get_oauth_webscope(oidc_client)),
             )
             // GET "/" ==> Serve the static frontend directory
-            .service(ResourceFiles::new("/", generated).resolve_not_found_to_root());
+            .service(Self::get_generated());
     }
 
     // get the query factory
@@ -391,6 +391,11 @@ impl Server {
         web::resource("/about").route(web::get().to(about::about).authorize(Action::GetAbout))
     }
 
+    pub fn get_generated() -> ResourceFiles {
+        ResourceFiles::new("/", generate()).resolve_not_found_to_root()
+    }
+
+    #[allow(unused)]
     pub async fn initialize(&mut self) -> anyhow::Result<()> {
         migration::run_metadata_migration(&CONFIG).await?;
         let metadata = storage::resolve_parseable_metadata().await?;
