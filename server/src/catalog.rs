@@ -199,7 +199,7 @@ pub async fn get_first_event(
     };
 
     if let Some(first_event) = manifest.files.first() {
-        let (lower_bound, _) = get_file_bounds(&first_event);
+        let (lower_bound, _) = get_file_bounds(first_event);
         let first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
         return Ok(Some(first_event_at));
     }
