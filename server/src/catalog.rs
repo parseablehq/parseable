@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, Local, NaiveDateTime, NaiveTime, Utc};
 use relative_path::RelativePathBuf;
 
 use crate::{
@@ -69,33 +69,33 @@ impl ManifestFile for manifest::File {
     }
 }
 
+fn get_file_bounds(file: &manifest::File) -> (DateTime<Utc>, DateTime<Utc>) {
+    match file
+        .columns()
+        .iter()
+        .find(|col| col.name == "p_timestamp")
+        .unwrap()
+        .stats
+        .clone()
+        .unwrap()
+    {
+        column::TypedStatistics::Int(stats) => (
+            NaiveDateTime::from_timestamp_millis(stats.min)
+                .unwrap()
+                .and_utc(),
+            NaiveDateTime::from_timestamp_millis(stats.min)
+                .unwrap()
+                .and_utc(),
+        ),
+        _ => unreachable!(),
+    }
+}
+
 pub async fn update_snapshot(
     storage: Arc<dyn ObjectStorage + Send>,
     stream_name: &str,
     change: manifest::File,
 ) -> Result<(), ObjectStorageError> {
-    fn get_file_bounds(file: &manifest::File) -> (DateTime<Utc>, DateTime<Utc>) {
-        match file
-            .columns()
-            .iter()
-            .find(|col| col.name == "p_timestamp")
-            .unwrap()
-            .stats
-            .clone()
-            .unwrap()
-        {
-            column::TypedStatistics::Int(stats) => (
-                NaiveDateTime::from_timestamp_millis(stats.min)
-                    .unwrap()
-                    .and_utc(),
-                NaiveDateTime::from_timestamp_millis(stats.min)
-                    .unwrap()
-                    .and_utc(),
-            ),
-            _ => unreachable!(),
-        }
-    }
-
     // get current snapshot
     let mut meta = storage.get_snapshot(stream_name).await?;
     let manifests = &mut meta.manifest_list;
@@ -152,6 +152,58 @@ pub async fn update_snapshot(
     }
 
     Ok(())
+}
+
+pub async fn remove_manifest_from_snapshot(
+    storage: Arc<dyn ObjectStorage + Send>,
+    stream_name: &str,
+    dates: Vec<String>,
+) -> Result<(), ObjectStorageError> {
+
+    // get current snapshot
+    let mut meta = storage.get_snapshot(stream_name).await?;
+    let manifests = &mut meta.manifest_list;
+
+    // Filter out items whose manifest_path contains any of the dates_to_delete
+    manifests.retain(|item| {
+        !dates.iter().any(|date| item.manifest_path.contains(date))
+    });
+
+    storage.put_snapshot(stream_name, meta).await?;
+    Ok(())
+}
+
+pub async fn get_first_event(
+    storage: Arc<dyn ObjectStorage + Send>,
+    stream_name: &str
+) -> Result<Option<String>, ObjectStorageError> {
+
+    // get current snapshot
+    let mut meta = storage.get_snapshot(stream_name).await?;
+    let manifests = &mut meta.manifest_list;
+
+    if manifests.is_empty() {
+        log::info!("No manifest found for stream {stream_name}");
+        return Err(ObjectStorageError::Custom("No manifest found".to_string()));
+    }
+
+    let manifest = &manifests[0];
+
+    let path = partition_path(stream_name, manifest.time_lower_bound, manifest.time_upper_bound);
+    let Some(manifest) = storage.get_manifest(&path).await? else {
+        return Err(ObjectStorageError::UnhandledError(
+            "Manifest found in snapshot but not in object-storage"
+                .to_string()
+                .into(),
+        ));
+    };
+
+    if let Some(first_event) = manifest.files.first() {
+        let (lower_bound, _) = get_file_bounds(&first_event);
+        let first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
+        return Ok(Some(first_event_at));
+    }
+    Ok(None)
 }
 
 /// Partition the path to which this manifest belongs.

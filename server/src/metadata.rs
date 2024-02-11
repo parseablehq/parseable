@@ -45,6 +45,7 @@ pub struct LogStreamMetadata {
     pub alerts: Alerts,
     pub cache_enabled: bool,
     pub created_at: String,
+    pub first_event_at: Option<String>,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -128,6 +129,19 @@ impl StreamInfo {
             })
     }
 
+    pub fn set_first_event_at(
+        &self,
+        stream_name: &str,
+        first_event_at: Option<String>,
+    ) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        map.get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.first_event_at = first_event_at;
+            })
+    }
+
     pub fn add_stream(&self, stream_name: String, created_at: String) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
@@ -170,6 +184,7 @@ impl StreamInfo {
                 alerts,
                 cache_enabled: meta.cache_enabled,
                 created_at: meta.created_at,
+                first_event_at: meta.first_event_at,
             };
 
             let mut map = self.write().expect(LOCK_EXPECT);
