@@ -215,10 +215,6 @@ pub struct Server {
     /// Size for local cache
     pub local_cache_size: u64,
 
-    /// Interval in seconds after which uncommited data would be
-    /// uploaded to the storage platform.
-    pub upload_interval: u64,
-
     /// Username for the basic authentication on the server
     pub username: String,
 
@@ -284,10 +280,6 @@ impl FromArgMatches for Server {
             .get_one::<u64>(Self::CACHE_SIZE)
             .cloned()
             .expect("default value for cache size");
-        self.upload_interval = m
-            .get_one::<u64>(Self::UPLOAD_INTERVAL)
-            .cloned()
-            .expect("default value for upload");
         self.username = m
             .get_one::<String>(Self::USERNAME)
             .cloned()
@@ -381,7 +373,6 @@ impl Server {
     pub const STAGING: &'static str = "local-staging-path";
     pub const CACHE: &'static str = "cache-path";
     pub const CACHE_SIZE: &'static str = "cache-size";
-    pub const UPLOAD_INTERVAL: &'static str = "upload-interval";
     pub const USERNAME: &'static str = "username";
     pub const PASSWORD: &'static str = "password";
     pub const CHECK_UPDATE: &'static str = "check-update";
@@ -465,16 +456,6 @@ impl Server {
                     .default_value("1GiB")
                     .value_parser(validation::cache_size)
                     .help("Maximum allowed cache size for all streams combined (In human readable format, e.g 1GiB, 2GiB, 100MB)")
-                    .next_line_help(true),
-            )
-            .arg(
-                Arg::new(Self::UPLOAD_INTERVAL)
-                    .long(Self::UPLOAD_INTERVAL)
-                    .env("P_STORAGE_UPLOAD_INTERVAL")
-                    .value_name("SECONDS")
-                    .default_value("60")
-                    .value_parser(validation::upload_interval)
-                    .help("Interval in seconds after which staging data would be sent to the storage")
                     .next_line_help(true),
             )
             .arg(
@@ -677,7 +658,6 @@ pub mod validation {
     use path_clean::PathClean;
 
     use crate::option::MIN_CACHE_SIZE_BYTES;
-    use crate::storage::LOCAL_SYNC_INTERVAL;
     use human_size::{multiples, SpecificSize};
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
@@ -754,15 +734,5 @@ pub mod validation {
             );
         }
         Ok(size)
-    }
-
-    pub fn upload_interval(s: &str) -> Result<u64, String> {
-        let u = s
-            .parse::<u64>()
-            .map_err(|_| "invalid upload interval".to_string())?;
-        if u < LOCAL_SYNC_INTERVAL {
-            return Err("object storage upload interval must be 60 seconds or more".to_string());
-        }
-        Ok(u)
     }
 }
