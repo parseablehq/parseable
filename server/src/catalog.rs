@@ -159,15 +159,12 @@ pub async fn remove_manifest_from_snapshot(
     stream_name: &str,
     dates: Vec<String>,
 ) -> Result<(), ObjectStorageError> {
-
     // get current snapshot
     let mut meta = storage.get_snapshot(stream_name).await?;
     let manifests = &mut meta.manifest_list;
 
     // Filter out items whose manifest_path contains any of the dates_to_delete
-    manifests.retain(|item| {
-        !dates.iter().any(|date| item.manifest_path.contains(date))
-    });
+    manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
 
     storage.put_snapshot(stream_name, meta).await?;
     Ok(())
@@ -175,9 +172,8 @@ pub async fn remove_manifest_from_snapshot(
 
 pub async fn get_first_event(
     storage: Arc<dyn ObjectStorage + Send>,
-    stream_name: &str
+    stream_name: &str,
 ) -> Result<Option<String>, ObjectStorageError> {
-
     // get current snapshot
     let mut meta = storage.get_snapshot(stream_name).await?;
     let manifests = &mut meta.manifest_list;
@@ -189,7 +185,11 @@ pub async fn get_first_event(
 
     let manifest = &manifests[0];
 
-    let path = partition_path(stream_name, manifest.time_lower_bound, manifest.time_upper_bound);
+    let path = partition_path(
+        stream_name,
+        manifest.time_lower_bound,
+        manifest.time_upper_bound,
+    );
     let Some(manifest) = storage.get_manifest(&path).await? else {
         return Err(ObjectStorageError::UnhandledError(
             "Manifest found in snapshot but not in object-storage"

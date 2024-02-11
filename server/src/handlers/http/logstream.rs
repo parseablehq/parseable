@@ -270,7 +270,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stream_meta = &hash_map
         .get(&stream_name)
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
-     
+
     let time = Utc::now();
 
     let stats = serde_json::json!({

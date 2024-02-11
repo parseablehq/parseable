@@ -172,8 +172,8 @@ pub trait ObjectStorage: Sync + 'static {
             serde_json::to_value(first_event_at).expect("first_event_at is perfectly serializable");
         let mut stream_metadata: serde_json::Value =
             serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
-        
-        stream_metadata["first-event-at"] = first_event_ts;        
+
+        stream_metadata["first-event-at"] = first_event_ts;
 
         self.put_object(&path, to_bytes(&stream_metadata)).await
     }

@@ -187,7 +187,11 @@ mod action {
     use itertools::Itertools;
     use relative_path::RelativePathBuf;
 
-    use crate::{catalog::{self, remove_manifest_from_snapshot}, metadata, option::CONFIG};
+    use crate::{
+        catalog::{self, remove_manifest_from_snapshot},
+        metadata,
+        option::CONFIG,
+    };
 
     pub(super) async fn delete(stream_name: String, days: u32) {
         log::info!("running retention task - delete for stream={stream_name}");
@@ -236,10 +240,10 @@ mod action {
 
         if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name).await {
             if let Err(err) = CONFIG
-            .storage()
-            .get_object_store()
-            .put_first_event_at(&stream_name, &first_event_at)
-            .await
+                .storage()
+                .get_object_store()
+                .put_first_event_at(&stream_name, &first_event_at)
+                .await
             {
                 log::error!(
                     "Failed to update first_event_at in metadata for stream {:?} {err:?}",
@@ -247,7 +251,8 @@ mod action {
                 );
             }
 
-            if let Err(err) = metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
+            if let Err(err) =
+                metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
             {
                 log::error!(
                     "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
@@ -255,7 +260,6 @@ mod action {
                 );
             }
         }
-
     }
 
     fn get_retain_until(current_date: NaiveDate, days: u64) -> NaiveDate {

@@ -70,7 +70,7 @@ pub struct ObjectStoreFormat {
     #[serde(rename = "created-at")]
     pub created_at: String,
     #[serde(rename = "first-event-at")]
-    pub first_event_at: Option<String>,    
+    pub first_event_at: Option<String>,
     pub owner: Owner,
     pub permissions: Vec<Permisssion>,
     pub stats: Stats,
