@@ -43,12 +43,15 @@ pub(crate) mod query;
 pub(crate) mod rbac;
 pub(crate) mod role;
 
-include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+// this needs to be removed from here. It is in modal->mod.rs
+// include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "/api";
 pub const API_VERSION: &str = "v1";
 
+#[allow(unused)]
+/// to be removed
 pub async fn run_http(
     prometheus: PrometheusMetrics,
     oidc_client: Option<crate::oidc::OpenidConfig>,
