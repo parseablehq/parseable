@@ -16,17 +16,12 @@
  *
  */
 
-use crate::handlers::http::middleware::RouteExt;
-use crate::handlers::http::{
-    base_path, cross_origin_config, logstream, API_BASE_PATH, API_VERSION,
-};
-use crate::rbac::role::Action;
+use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
 use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
 use actix_web::http::header;
 use actix_web::web;
 use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
-use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
@@ -37,13 +32,13 @@ use crate::option::CONFIG;
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
-use super::{generate, IngesterMetadata, OpenIdClient, ParseableServer};
+use super::{IngesterMetadata, OpenIdClient, ParseableServer};
 
 type IngesterMetadataArr = Vec<IngesterMetadata>;
-type IngesterMetaPtr = Arc<IngesterMetadataArr>;
+type IngesterMetaArrPtr = Arc<IngesterMetadataArr>;
 
 #[derive(Default, Debug)]
-pub struct QueryServer(IngesterMetaPtr);
+pub struct QueryServer(IngesterMetaArrPtr);
 
 #[async_trait(?Send)]
 impl ParseableServer for QueryServer {
@@ -59,12 +54,16 @@ impl ParseableServer for QueryServer {
             // yes the format macro does not need the '/' ingester.origin already
             // has '/' because Url::Parse will add it if it is not present
             // uri should be something like `http://address/api/v1/liveness`
-            let uri = Url::parse(&format!("{}{}/liveness", &ingester.origin, base_path()))?;
+            let uri = Url::parse(&format!(
+                "{}{}/liveness",
+                &ingester.domain_name,
+                base_path()
+            ))?;
 
             if !Self::check_liveness(uri).await {
-                eprintln!("Ingestor at {} is not reachable", &ingester.origin);
+                eprintln!("Ingestor at {} is not reachable", &ingester.domain_name);
             } else {
-                println!("Ingestor at {} is up and running", &ingester.origin);
+                println!("Ingestor at {} is up and running", &ingester.domain_name);
             }
         }
 

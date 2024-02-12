@@ -139,7 +139,6 @@ impl IngestServer {
         };
 
         let resource = IngesterMetadata::new(
-            sock.ip().to_string(),
             sock.port().to_string(),
             CONFIG
                 .parseable
