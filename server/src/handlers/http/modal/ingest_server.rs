@@ -94,12 +94,17 @@ impl ParseableServer for IngestServer {
 
         Ok(())
     }
+
+    /// implement the init method will just invoke the initialize method
+    async fn init(&mut self) -> anyhow::Result<()> {
+        self.initialize().await
+    }
 }
 
 impl IngestServer {
     // configure the api routes
     fn configure_routes(config: &mut web::ServiceConfig, _oidc_client: Option<OpenIdClient>) {
-        let logstream_scope = Server::get_logstream_webscope();
+        let _logstream_scope = Server::get_logstream_webscope();
         let ingest_factory = Server::get_ingest_factory();
 
         config
@@ -108,8 +113,9 @@ impl IngestServer {
                 web::scope(&base_path()).service(ingest_factory),
             )
             .service(Server::get_liveness_factory())
-            .service(Server::get_readiness_factory())
-            .service(logstream_scope);
+            .service(Server::get_readiness_factory());
+        // add metrics here
+        // .service(logstream_scope);
     }
 
     #[inline(always)]
@@ -181,8 +187,7 @@ impl IngestServer {
         }
     }
 
-    #[allow(unused)]
-    pub async fn initialize(&mut self) -> anyhow::Result<()> {
+    async fn initialize(&mut self) -> anyhow::Result<()> {
         // to get the .parseable.json file in staging
         let meta = storage::resolve_parseable_metadata().await?;
         banner::print(&CONFIG, &meta).await;

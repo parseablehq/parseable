@@ -48,6 +48,8 @@ pub trait ParseableServer {
         prometheus: PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()>;
+
+    async fn init(&mut self) -> anyhow::Result<()>;
 }
 
 #[derive(Serialize, Debug, Deserialize, Default)]

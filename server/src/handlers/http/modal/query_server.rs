@@ -105,12 +105,16 @@ impl ParseableServer for QueryServer {
 
         Ok(())
     }
+
+    /// implementation of init should just invoke a call to initialize
+    async fn init(&mut self) -> anyhow::Result<()> {
+        self.initialize().await
+    }
 }
 
 impl QueryServer {
     // configure the api routes
-    pub fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>) {
-        let user_scope = Server::get_user_webscope();
+    fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>) {
         let llm_scope = Server::get_llm_webscope();
         let role_scope = Server::get_user_role_webscope();
         let oauth_scope = Server::get_oauth_webscope(oidc_client);
@@ -124,15 +128,8 @@ impl QueryServer {
                     .service(Server::get_readiness_factory())
                     // GET "/about" ==> Returns information about instance
                     .service(Server::get_about_factory())
-                    .service(
-                        web::scope("/logstream").service(
-                            // GET "/logstream" ==> Get list of all Log Streams on the server
-                            web::resource("").route(
-                                web::get().to(logstream::list).authorize(Action::ListStream),
-                            ),
-                        ),
-                    )
-                    .service(user_scope)
+                    .service(Server::get_logstream_webscope())
+                    .service(Server::get_user_webscope())
                     .service(llm_scope)
                     .service(oauth_scope)
                     .service(role_scope),
@@ -140,7 +137,7 @@ impl QueryServer {
             .service(Server::get_generated());
     }
 
-    async fn get_ingestor_info(&self) -> anyhow::Result<IngesterMetaPtr> {
+    async fn get_ingestor_info(&self) -> anyhow::Result<IngesterMetaArrPtr> {
         let store = CONFIG.storage().get_object_store();
 
         let root_path = RelativePathBuf::from("");
@@ -165,7 +162,8 @@ impl QueryServer {
 
         reqw.is_ok()
     }
-    #[allow(unused)]
+
+    /// initialize the server, run migrations as needed and start the server
     async fn initialize(&mut self) -> anyhow::Result<()> {
         migration::run_metadata_migration(&CONFIG).await?;
 
@@ -201,10 +199,8 @@ impl QueryServer {
             analytics::init_analytics_scheduler();
         }
 
-        // how does livetail work?
-        // tokio::spawn(handlers::livetail::server());
-
-        self.start(prometheus, CONFIG.parseable.openid.clone()).await?;
+        self.start(prometheus, CONFIG.parseable.openid.clone())
+            .await?;
 
         // tokio::pin!(app);
 

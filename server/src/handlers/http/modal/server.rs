@@ -55,6 +55,7 @@ use crate::{
     rbac::role::Action,
 };
 
+// use super::generate;
 use super::generate;
 use super::OpenIdClient;
 use super::ParseableServer;
@@ -135,12 +136,16 @@ impl ParseableServer for Server {
 
         Ok(())
     }
+
+    /// implementation of init should just invoke a call to initialize
+    async fn init(&mut self) -> anyhow::Result<()> {
+        self.initialize().await
+    }
 }
 
 impl Server {
     fn configure_routes(config: &mut web::ServiceConfig, oidc_client: Option<OpenIdClient>) {
-        let generated = generate();
-
+        // there might be a bug in the configure routes method
         config
             .service(
                 web::scope(&base_path())
@@ -150,17 +155,7 @@ impl Server {
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
                     .service(Self::get_about_factory())
-                    .service(
-                        web::scope("/logstream")
-                            .service(
-                                // GET "/logstream" ==> Get list of all Log Streams on the server
-                                web::resource("").route(
-                                    web::get().to(logstream::list).authorize(Action::ListStream),
-                                ),
-                            )
-                            .service(Self::get_logstream_webscope()),
-                    )
-                    .service(Self::get_user_webscope())
+                    .service(Self::get_logstream_webscope())
                     .service(Self::get_llm_webscope())
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_oauth_webscope(oidc_client)),
@@ -175,90 +170,97 @@ impl Server {
     }
 
     // get the logstream web scope
-    // all except the GET route
     pub fn get_logstream_webscope() -> Scope {
-        web::scope("/{logstream}")
+        web::scope("/logstream")
             .service(
+                // GET "/logstream" ==> Get list of all Log Streams on the server
                 web::resource("")
-                    // PUT "/logstream/{logstream}" ==> Create log stream
-                    .route(
-                        web::put()
-                            .to(logstream::put_stream)
-                            .authorize_for_stream(Action::CreateStream),
-                    )
-                    // POST "/logstream/{logstream}" ==> Post logs to given log stream
-                    .route(
-                        web::post()
-                            .to(ingest::post_event)
-                            .authorize_for_stream(Action::Ingest),
-                    )
-                    // DELETE "/logstream/{logstream}" ==> Delete log stream
-                    .route(
-                        web::delete()
-                            .to(logstream::delete)
-                            .authorize_for_stream(Action::DeleteStream),
-                    )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .route(web::get().to(logstream::list).authorize(Action::ListStream)),
             )
             .service(
-                web::resource("/alert")
-                    // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
-                    .route(
-                        web::put()
-                            .to(logstream::put_alert)
-                            .authorize_for_stream(Action::PutAlert),
+                web::scope("/{logstream}")
+                    .service(
+                        web::resource("")
+                            // PUT "/logstream/{logstream}" ==> Create log stream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_stream)
+                                    .authorize_for_stream(Action::CreateStream),
+                            )
+                            // POST "/logstream/{logstream}" ==> Post logs to given log stream
+                            .route(
+                                web::post()
+                                    .to(ingest::post_event)
+                                    .authorize_for_stream(Action::Ingest),
+                            )
+                            // DELETE "/logstream/{logstream}" ==> Delete log stream
+                            .route(
+                                web::delete()
+                                    .to(logstream::delete)
+                                    .authorize_for_stream(Action::DeleteStream),
+                            )
+                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
-                    // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
-                    .route(
-                        web::get()
-                            .to(logstream::get_alert)
-                            .authorize_for_stream(Action::GetAlert),
-                    ),
-            )
-            .service(
-                // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
-                web::resource("/schema").route(
-                    web::get()
-                        .to(logstream::schema)
-                        .authorize_for_stream(Action::GetSchema),
-                ),
-            )
-            .service(
-                // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
-                web::resource("/stats").route(
-                    web::get()
-                        .to(logstream::get_stats)
-                        .authorize_for_stream(Action::GetStats),
-                ),
-            )
-            .service(
-                web::resource("/retention")
-                    // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
-                    .route(
-                        web::put()
-                            .to(logstream::put_retention)
-                            .authorize_for_stream(Action::PutRetention),
+                    .service(
+                        web::resource("/alert")
+                            // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_alert)
+                                    .authorize_for_stream(Action::PutAlert),
+                            )
+                            // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
+                            .route(
+                                web::get()
+                                    .to(logstream::get_alert)
+                                    .authorize_for_stream(Action::GetAlert),
+                            ),
                     )
-                    // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
-                    .route(
-                        web::get()
-                            .to(logstream::get_retention)
-                            .authorize_for_stream(Action::GetRetention),
-                    ),
-            )
-            .service(
-                web::resource("/cache")
-                    // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
-                    .route(
-                        web::put()
-                            .to(logstream::put_enable_cache)
-                            .authorize_for_stream(Action::PutCacheEnabled),
+                    .service(
+                        // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
+                        web::resource("/schema").route(
+                            web::get()
+                                .to(logstream::schema)
+                                .authorize_for_stream(Action::GetSchema),
+                        ),
                     )
-                    // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
-                    .route(
-                        web::get()
-                            .to(logstream::get_cache_enabled)
-                            .authorize_for_stream(Action::GetCacheEnabled),
+                    .service(
+                        // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
+                        web::resource("/stats").route(
+                            web::get()
+                                .to(logstream::get_stats)
+                                .authorize_for_stream(Action::GetStats),
+                        ),
+                    )
+                    .service(
+                        web::resource("/retention")
+                            // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_retention)
+                                    .authorize_for_stream(Action::PutRetention),
+                            )
+                            // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
+                            .route(
+                                web::get()
+                                    .to(logstream::get_retention)
+                                    .authorize_for_stream(Action::GetRetention),
+                            ),
+                    )
+                    .service(
+                        web::resource("/cache")
+                            // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_enable_cache)
+                                    .authorize_for_stream(Action::PutCacheEnabled),
+                            )
+                            // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
+                            .route(
+                                web::get()
+                                    .to(logstream::get_cache_enabled)
+                                    .authorize_for_stream(Action::GetCacheEnabled),
+                            ),
                     ),
             )
     }
@@ -395,8 +397,7 @@ impl Server {
         ResourceFiles::new("/", generate()).resolve_not_found_to_root()
     }
 
-    #[allow(unused)]
-    pub async fn initialize(&mut self) -> anyhow::Result<()> {
+    async fn initialize(&mut self) -> anyhow::Result<()> {
         migration::run_metadata_migration(&CONFIG).await?;
         let metadata = storage::resolve_parseable_metadata().await?;
         banner::print(&CONFIG, &metadata).await;
