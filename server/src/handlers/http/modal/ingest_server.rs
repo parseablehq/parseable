@@ -18,9 +18,12 @@
 
 use crate::analytics;
 use crate::banner;
+use crate::handlers::http::logstream;
+use crate::handlers::http::middleware::RouteExt;
 use crate::localcache::LocalCacheManager;
 use crate::metadata;
 use crate::metrics;
+use crate::rbac::role::Action;
 use crate::storage;
 use crate::storage::ObjectStorageError;
 use crate::storage::PARSEABLE_METADATA_FILE_NAME;
@@ -36,6 +39,7 @@ use super::ParseableServer;
 use super::DEFAULT_VERSION;
 
 use actix_web::body::MessageBody;
+use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
@@ -124,6 +128,28 @@ impl IngestServer {
             )
             .service(Server::get_liveness_factory())
             .service(Server::get_readiness_factory())
+            .service(Self::get_metrics_webscope());
+    }
+
+    fn get_metrics_webscope() -> Scope {
+        web::scope("/logstream").service(
+            web::scope("/{logstream}")
+                .service(
+                    // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
+                    web::resource("/schema").route(
+                        web::get()
+                            .to(logstream::schema)
+                            .authorize_for_stream(Action::GetSchema),
+                    ),
+                )
+                .service(
+                    web::resource("/stats").route(
+                        web::get()
+                            .to(logstream::get_stats)
+                            .authorize_for_stream(Action::GetStats),
+                    ),
+                ),
+        )
     }
 
     #[inline(always)]
