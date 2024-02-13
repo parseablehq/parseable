@@ -48,7 +48,7 @@ pub struct StaticStorageMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StorageMetadata {
     pub version: String,
-    pub storage_mode: String,
+    pub mode: String,
     pub staging: PathBuf,
     pub storage: String,
     #[serde(default = "crate::utils::uid::gen")]
@@ -65,7 +65,7 @@ impl StorageMetadata {
     pub fn new() -> Self {
         Self {
             version: "v3".to_string(),
-            storage_mode: CONFIG.storage_name.to_owned(),
+            mode: CONFIG.storage_name.to_owned(),
             staging: CONFIG.staging_dir().to_path_buf(),
             storage: CONFIG.storage().get_endpoint(),
             deployment_id: uid::gen(),
@@ -84,7 +84,7 @@ impl StorageMetadata {
 
     pub fn set_global(self) {
         let metadata = StaticStorageMetadata {
-            mode: self.storage_mode,
+            mode: self.mode,
             deployment_id: self.deployment_id,
         };
 
