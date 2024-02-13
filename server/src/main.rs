@@ -57,7 +57,7 @@ pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    CONFIG.validate().await?;
+    CONFIG.validate_storage().await?;
 
     let server: Arc<RwLock<dyn ParseableServer>> = match CONFIG.parseable.mode {
         Mode::Query => {

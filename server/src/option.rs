@@ -100,8 +100,7 @@ impl Config {
 
     // validate the storage, if the proper path for staging directory is provided
     // if the proper data directory is provided, or s3 bucket is provided etc
-    // probably change name to validate_storage or something
-    pub async fn validate(&self) -> Result<(), ObjectStorageError> {
+    pub async fn validate_storage(&self) -> Result<(), ObjectStorageError> {
         let obj_store = self.storage.get_object_store();
         let rel_path = relative_path::RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
 
