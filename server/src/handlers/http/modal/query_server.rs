@@ -108,7 +108,19 @@ impl ParseableServer for QueryServer {
 
     /// implementation of init should just invoke a call to initialize
     async fn init(&mut self) -> anyhow::Result<()> {
+        // self.validate()?;
         self.initialize().await
+    }
+
+    #[allow(unused)]
+    fn validate(&self) -> anyhow::Result<()> {
+        if CONFIG.get_storage_mode_string() == "Local drive" {
+            return Err(anyhow::anyhow!(
+                "Query Server cannot be started in local storage mode. Please start the server in a supported storage mode.",
+            ));
+        }
+
+        Ok(())
     }
 }
 

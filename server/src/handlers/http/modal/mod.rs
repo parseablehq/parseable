@@ -50,6 +50,8 @@ pub trait ParseableServer {
     ) -> anyhow::Result<()>;
 
     async fn init(&mut self) -> anyhow::Result<()>;
+
+    fn validate(&self) -> anyhow::Result<()>;
 }
 
 #[derive(Serialize, Debug, Deserialize, Default)]

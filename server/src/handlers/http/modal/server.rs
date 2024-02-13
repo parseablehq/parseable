@@ -141,6 +141,10 @@ impl ParseableServer for Server {
     async fn init(&mut self) -> anyhow::Result<()> {
         self.initialize().await
     }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 impl Server {
