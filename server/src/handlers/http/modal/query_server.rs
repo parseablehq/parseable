@@ -134,7 +134,6 @@ impl QueryServer {
                     .service(Server::get_query_factory())
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
-                    // GET "/about" ==> Returns information about instance
                     .service(Server::get_about_factory())
                     .service(Server::get_logstream_webscope())
                     .service(Server::get_user_webscope())

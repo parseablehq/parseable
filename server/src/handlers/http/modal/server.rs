@@ -397,6 +397,7 @@ impl Server {
         web::resource("/about").route(web::get().to(about::about).authorize(Action::GetAbout))
     }
 
+    // GET "/" ==> Serve the static frontend directory
     pub fn get_generated() -> ResourceFiles {
         ResourceFiles::new("/", generate()).resolve_not_found_to_root()
     }
