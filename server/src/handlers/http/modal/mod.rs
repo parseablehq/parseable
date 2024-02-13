@@ -28,6 +28,7 @@ use async_trait::async_trait;
 use openid::Discovered;
 
 use crate::oidc;
+use base64::Engine;
 use serde::Deserialize;
 use serde::Serialize;
 pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
@@ -60,15 +61,28 @@ pub struct IngesterMetadata {
     pub port: String,
     pub domain_name: String,
     pub bucket_name: String,
+    pub token: String,
 }
 
 impl IngesterMetadata {
-    pub fn new(port: String, domain_name: String, version: String, bucket_name: String) -> Self {
+    pub fn new(
+        port: String,
+        domain_name: String,
+        version: String,
+        bucket_name: String,
+        username: String,
+        password: String,
+    ) -> Self {
+        let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
+
+        let token = format!("Basic {}", token);
+
         Self {
             port,
             domain_name,
             version,
             bucket_name,
+            token,
         }
     }
 }
@@ -87,18 +101,17 @@ mod test {
             "https://localhost:8000".to_string(),
             DEFAULT_VERSION.to_string(),
             "somebucket".to_string(),
+            "admin".to_string(),
+            "admin".to_string(),
         );
 
         let lhs = serde_json::to_string(&im)
             .unwrap()
             .try_into_bytes()
             .unwrap();
-        let rhs = br#"{"version":"v3",
-"port":"8000",
-"domain_name":"https://localhost:8000",
-"bucket_name":"somebucket"}"#
-            .try_into_bytes()
-            .unwrap();
+        let rhs = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4="}"#
+                .try_into_bytes()
+                .unwrap();
 
         assert_eq!(lhs, rhs);
     }
