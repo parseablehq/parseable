@@ -127,10 +127,6 @@ impl ParseableServer for QueryServer {
 impl QueryServer {
     // configure the api routes
     fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>) {
-        let llm_scope = Server::get_llm_webscope();
-        let role_scope = Server::get_user_role_webscope();
-        let oauth_scope = Server::get_oauth_webscope(oidc_client);
-
         config
             .service(
                 web::scope(&base_path())
@@ -142,9 +138,9 @@ impl QueryServer {
                     .service(Server::get_about_factory())
                     .service(Server::get_logstream_webscope())
                     .service(Server::get_user_webscope())
-                    .service(llm_scope)
-                    .service(oauth_scope)
-                    .service(role_scope),
+                    .service(Server::get_llm_webscope())
+                    .service(Server::get_oauth_webscope(oidc_client))
+                    .service(Server::get_user_role_webscope()),
             )
             .service(Server::get_generated());
     }
@@ -161,6 +157,9 @@ impl QueryServer {
             // this unwrap will most definateley shoot me in the foot later
             .map(|x| serde_json::from_slice::<IngesterMetadata>(x).unwrap_or_default())
             .collect_vec();
+
+        // validate the ingester metadata
+        // TODO: add validation logic here
 
         Ok(Arc::new(arr))
     }

@@ -117,18 +117,13 @@ impl ParseableServer for IngestServer {
 impl IngestServer {
     // configure the api routes
     fn configure_routes(config: &mut web::ServiceConfig, _oidc_client: Option<OpenIdClient>) {
-        let _logstream_scope = Server::get_logstream_webscope();
-        let ingest_factory = Server::get_ingest_factory();
-
         config
             .service(
                 // Base path "{url}/api/v1"
-                web::scope(&base_path()).service(ingest_factory),
+                web::scope(&base_path()).service(Server::get_ingest_factory()),
             )
             .service(Server::get_liveness_factory())
-            .service(Server::get_readiness_factory());
-        // add metrics here
-        // .service(logstream_scope);
+            .service(Server::get_readiness_factory())
     }
 
     #[inline(always)]
