@@ -160,11 +160,11 @@ impl Server {
                     .service(Self::get_readiness_factory())
                     .service(Self::get_about_factory())
                     .service(Self::get_logstream_webscope())
+                    .service(Self::get_user_webscope())
                     .service(Self::get_llm_webscope())
-                    .service(Self::get_user_role_webscope())
-                    .service(Self::get_oauth_webscope(oidc_client)),
+                    .service(Self::get_oauth_webscope(oidc_client))
+                    .service(Self::get_user_role_webscope()),
             )
-            // GET "/" ==> Serve the static frontend directory
             .service(Self::get_generated());
     }
 
