@@ -165,7 +165,7 @@ impl IngestServer {
         // remove ip adn go with the domain name
         let sock = self.get_ingestor_address();
         let path = RelativePathBuf::from(format!(
-            "{}.{}.ingestor.json",
+            "ingestor.{}.{}.json",
             sock.ip(), // this might be wrong
             sock.port()
         ));
