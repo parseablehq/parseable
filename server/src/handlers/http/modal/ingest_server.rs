@@ -62,9 +62,6 @@ impl ParseableServer for IngestServer {
         prometheus: PrometheusMetrics,
         _oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        // check for querier state. Is it there, or was it there in the past
-        self.check_querier_state().await?;
-
         // set the ingestor metadata
         self.set_ingestor_metadata().await?;
 
@@ -217,13 +214,15 @@ impl IngestServer {
         match store.get_object(&path).await {
             Ok(_) => Ok(()),
             Err(_) => Err(ObjectStorageError::Custom(
-                "Querier Server has not been started yet. Please start the querier server first."
+                "Query Server has not been started yet. Please start the querier server first."
                     .to_string(),
             )),
         }
     }
 
     async fn initialize(&mut self) -> anyhow::Result<()> {
+        // check for querier state. Is it there, or was it there in the past
+        self.check_querier_state().await?;
         // to get the .parseable.json file in staging
         let meta = storage::resolve_parseable_metadata().await?;
         banner::print(&CONFIG, &meta).await;
