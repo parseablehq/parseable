@@ -198,6 +198,16 @@ pub enum Mode {
     All,
 }
 
+impl Mode {
+    pub fn to_str(&self) -> &str {
+        match self {
+            Mode::Query => "Query Server",
+            Mode::Ingest => "Ingest Server",
+            Mode::All => "All",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 pub enum Compression {
