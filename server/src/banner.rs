@@ -35,13 +35,13 @@ pub async fn print(config: &Config, meta: &StorageMetadata) {
 
 fn print_ascii_art() {
     let ascii_name = r#"
-    `7MM"""Mq.                                             *MM        `7MM           
-      MM   `MM.                                             MM          MM           
-      MM   ,M9  ,6"Yb.  `7Mb,od8 ,pP"Ybd  .gP"Ya   ,6"Yb.   MM,dMMb.    MM   .gP"Ya  
-      MMmmdM9  8)   MM    MM' "' 8I   `" ,M'   Yb 8)   MM   MM    `Mb   MM  ,M'   Yb 
-      MM        ,pm9MM    MM     `YMMMa. 8M""""""  ,pm9MM   MM     M8   MM  8M"""""" 
-      MM       8M   MM    MM     L.   I8 YM.    , 8M   MM   MM.   ,M9   MM  YM.    , 
-    .JMML.     `Moo9^Yo..JMML.   M9mmmP'  `Mbmmd' `Moo9^Yo. P^YbmdP'  .JMML. `Mbmmd'       
+    `7MM"""Mq.                                             *MM        `7MM
+      MM   `MM.                                             MM          MM
+      MM   ,M9  ,6"Yb.  `7Mb,od8 ,pP"Ybd  .gP"Ya   ,6"Yb.   MM,dMMb.    MM   .gP"Ya
+      MMmmdM9  8)   MM    MM' "' 8I   `" ,M'   Yb 8)   MM   MM    `Mb   MM  ,M'   Yb
+      MM        ,pm9MM    MM     `YMMMa. 8M""""""  ,pm9MM   MM     M8   MM  8M""""""
+      MM       8M   MM    MM     L.   I8 YM.    , 8M   MM   MM.   ,M9   MM  YM.    ,
+    .JMML.     `Moo9^Yo..JMML.   M9mmmP'  `Mbmmd' `Moo9^Yo. P^YbmdP'  .JMML. `Mbmmd'
     "#;
 
     eprint!("{ascii_name}");
@@ -77,13 +77,15 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     eprintln!(
         "
     {}
-        Address:            {}
-        Credentials:        {}
-        LLM Status:         \"{}\"",
+        Address:\t\t\t\t\t{}
+        Credentials:\t\t\t\t\t{}
+        Server Mode:\t\t\t\t\t\"{}\"
+        LLM Status:\t\t\t\t\t\"{}\"",
         "Server:".to_string().bold(),
         address,
         credentials,
-        llm_status
+        llm_status,
+        config.parseable.mode.to_str()
     );
 }
 
@@ -99,8 +101,8 @@ async fn storage_info(config: &Config) {
     eprintln!(
         "
     {}
-        Mode:               \"{}\"
-        Staging:            \"{}\"",
+        Storage Mode:\t\t\t\t\t\"{}\"
+        Staging Path:\t\t\t\t\t\"{}\"",
         "Storage:".to_string().bold(),
         config.get_storage_mode_string(),
         config.staging_dir().to_string_lossy(),
@@ -114,7 +116,7 @@ async fn storage_info(config: &Config) {
 
         eprintln!(
             "\
-    {:8}Cache:              \"{}\", (size: {})",
+    {:8}Cache:\t\t\t\t\t\"{}\", (size: {})",
             "",
             path.display(),
             size
@@ -123,7 +125,7 @@ async fn storage_info(config: &Config) {
 
     eprintln!(
         "\
-    {:8}Store:              \"{}\", (latency: {:?})",
+    {:8}Store:\t\t\t\t\t\t\"{}\", (latency: {:?})",
         "",
         storage.get_endpoint(),
         latency
