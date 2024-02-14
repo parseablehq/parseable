@@ -130,8 +130,12 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             metadata.staging = CONFIG.staging_dir().canonicalize()?;
             // this flag is set to true so that metadata is copied to staging
             overwrite_staging = true;
-            // overwrite remote because staging dir has changed.
-            overwrite_remote = true;
+            // overwrite remote in all and query mode
+            // because staging dir has changed.
+            match CONFIG.parseable.mode {
+                Mode::All | Mode::Query => overwrite_remote = true,
+                _ => (),
+            }
 
             Ok(metadata)
         }
