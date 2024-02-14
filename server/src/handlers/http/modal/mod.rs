@@ -55,7 +55,7 @@ pub trait ParseableServer {
     fn validate(&self) -> anyhow::Result<()>;
 }
 
-#[derive(Serialize, Debug, Deserialize, Default)]
+#[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq)]
 pub struct IngesterMetadata {
     pub version: String,
     pub port: String,
@@ -95,7 +95,23 @@ mod test {
     use super::{IngesterMetadata, DEFAULT_VERSION};
 
     #[rstest]
-    fn check_resource() {
+    fn test_deserialize_resource() {
+        let lhs: IngesterMetadata = IngesterMetadata::new(
+            "8000".to_string(),
+            "https://localhost:8000".to_string(),
+            DEFAULT_VERSION.to_string(),
+            "somebucket".to_string(),
+            "admin".to_string(),
+            "admin".to_string(),
+        );
+
+        let rhs = serde_json::from_slice::<IngesterMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4="}"#).unwrap();
+
+        assert_eq!(rhs, lhs);
+    }
+
+    #[rstest]
+    fn test_serialize_resource() {
         let im = IngesterMetadata::new(
             "8000".to_string(),
             "https://localhost:8000".to_string(),
