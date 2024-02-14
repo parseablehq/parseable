@@ -70,8 +70,8 @@ impl IngesterMetadata {
         domain_name: String,
         version: String,
         bucket_name: String,
-        username: String,
-        password: String,
+        username: &str,
+        password: &str,
     ) -> Self {
         let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
 
@@ -101,8 +101,8 @@ mod test {
             "https://localhost:8000".to_string(),
             DEFAULT_VERSION.to_string(),
             "somebucket".to_string(),
-            "admin".to_string(),
-            "admin".to_string(),
+            "admin",
+            "admin",
         );
 
         let rhs = serde_json::from_slice::<IngesterMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4="}"#).unwrap();
@@ -117,8 +117,8 @@ mod test {
             "https://localhost:8000".to_string(),
             DEFAULT_VERSION.to_string(),
             "somebucket".to_string(),
-            "admin".to_string(),
-            "admin".to_string(),
+            "admin",
+            "admin",
         );
 
         let lhs = serde_json::to_string(&im)

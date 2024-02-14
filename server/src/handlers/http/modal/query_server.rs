@@ -47,7 +47,7 @@ impl ParseableServer for QueryServer {
         prometheus: actix_web_prometheus::PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        self.0 = self.get_ingestor_info().await?;
+        self.get_ingestor_info().await?;
 
         // on subsequent runs, the qurier should check if the ingestor is up and running or not
         for ingester in self.0.iter() {
@@ -144,7 +144,7 @@ impl QueryServer {
             .service(Server::get_generated());
     }
 
-    async fn get_ingestor_info(&self) -> anyhow::Result<IngesterMetaArrPtr> {
+    async fn get_ingestor_info(&mut self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
 
         let root_path = RelativePathBuf::from("");
@@ -157,10 +157,11 @@ impl QueryServer {
             .map(|x| serde_json::from_slice::<IngesterMetadata>(x).unwrap_or_default())
             .collect_vec();
 
-        // validate the ingester metadata
         // TODO: add validation logic here
+        // validate the ingester metadata
 
-        Ok(Arc::new(arr))
+        self.0 = Arc::new(arr.clone());
+        Ok(())
     }
 
     pub async fn check_liveness(uri: Url) -> bool {

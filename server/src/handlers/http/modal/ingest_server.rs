@@ -187,8 +187,8 @@ impl IngestServer {
                 .to_string(),
             DEFAULT_VERSION.to_string(),
             store.get_bucket_name(),
-            CONFIG.parseable.username.clone(),
-            CONFIG.parseable.password.clone(), // is this secure?
+            &CONFIG.parseable.username,
+            &CONFIG.parseable.password, // is this secure?
         );
 
         let resource = serde_json::to_string(&resource)
