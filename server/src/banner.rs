@@ -84,8 +84,8 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
         "Server:".to_string().bold(),
         address,
         credentials,
-        llm_status,
-        config.parseable.mode.to_str()
+        config.parseable.mode.to_str(),
+        llm_status
     );
 }
 
