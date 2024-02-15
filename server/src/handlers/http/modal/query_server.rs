@@ -147,6 +147,7 @@ impl QueryServer {
             .service(Server::get_generated());
     }
 
+    // update the .query.json file and return the new IngesterMetadataArr
     async fn get_ingestor_info() -> anyhow::Result<IngesterMetadataArr> {
         let store = CONFIG.storage().get_object_store();
 
@@ -218,18 +219,6 @@ impl QueryServer {
 
         self.start(prometheus, CONFIG.parseable.openid.clone())
             .await?;
-
-        // tokio::pin!(app);
-
-        // // this never actually loops
-        // // rather than pinning we can just await?
-        // loop {
-        //     tokio::select! {
-        //         err= &mut app => {
-        //             return err;
-        //         },
-        //     }
-        // }
 
         Ok(())
     }
