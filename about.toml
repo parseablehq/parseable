@@ -1,0 +1,19 @@
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "NOASSERTION",
+    "AGPL-3.0",
+    "GPL-3.0",
+    "BSD-2-Clause",
+    "BSL-1.0",
+    "OpenSSL",
+    "Unicode-DFS-2016",
+]
+
+workarounds = [
+    "ring",
+    "rustls",
+]
