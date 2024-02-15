@@ -83,7 +83,7 @@ fn get_file_bounds(file: &manifest::File) -> (DateTime<Utc>, DateTime<Utc>) {
             NaiveDateTime::from_timestamp_millis(stats.min)
                 .unwrap()
                 .and_utc(),
-            NaiveDateTime::from_timestamp_millis(stats.min)
+            NaiveDateTime::from_timestamp_millis(stats.max)
                 .unwrap()
                 .and_utc(),
         ),
