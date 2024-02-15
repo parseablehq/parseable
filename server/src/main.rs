@@ -44,7 +44,6 @@ use std::sync::Arc;
 
 use handlers::http::modal::ParseableServer;
 use option::{Mode, CONFIG};
-use tokio::sync::RwLock;
 
 use crate::{
     handlers::http::modal::{
@@ -59,18 +58,18 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     CONFIG.validate_storage().await?;
 
-    let server: Arc<RwLock<dyn ParseableServer>> = match CONFIG.parseable.mode {
+    let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
         Mode::Query => {
             dbg!("Mode::Query");
-            Arc::new(RwLock::new(QueryServer::default()))
+            Arc::new(QueryServer::default())
         }
         Mode::Ingest => {
             dbg!("Mode::Ingest");
-            Arc::new(RwLock::new(IngestServer))
+            Arc::new(IngestServer)
         }
         Mode::All => {
             dbg!("Mode::All");
-            Arc::new(RwLock::new(Server))
+            Arc::new(Server)
         }
     };
 
@@ -78,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     // MODE == Query / Ingest and storage = local-store
 
     // But does an RwLock Make sence? maybe figure something out
-    server.write().await.init().await?;
+    server.init().await?;
 
     Ok(())
 }
