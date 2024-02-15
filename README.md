@@ -92,3 +92,4 @@ But with log data growing exponentially, today's log data challenges involve who
 ### Supported by
 
 <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
+<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=cb5c7633-1c88-4792-be58-6228c476cef5" />
