@@ -33,7 +33,7 @@ use tokio_stream::wrappers::ReadDirStream;
 
 use crate::option::validation;
 use crate::{
-    handlers::http::modal::INGESTOR_FILE_EXTENSION,
+
     metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics},
 };
 
@@ -137,7 +137,7 @@ impl ObjectStorage for LocalFS {
                 .unwrap_or_default()
                 .to_str()
                 .unwrap_or_default()
-                .contains(INGESTOR_FILE_EXTENSION);
+                .contains("ingestor");
 
             if !ingestor_file {
                 continue;

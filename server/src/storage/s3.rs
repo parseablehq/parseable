@@ -38,7 +38,6 @@ use std::path::Path as StdPath;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::handlers::http::modal::INGESTOR_FILE_EXTENSION;
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
@@ -428,7 +427,7 @@ impl ObjectStorage for S3 {
                 .location
                 .filename()
                 .unwrap_or_default()
-                .contains(INGESTOR_FILE_EXTENSION);
+                .contains("ingestor");
 
             if !ingestor_file {
                 continue;

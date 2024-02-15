@@ -35,7 +35,6 @@ pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
 
 // to be decided on what the Default version should be
 pub const DEFAULT_VERSION: &str = "v3";
-pub const INGESTOR_FILE_EXTENSION: &str = "ingestor.json";
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
