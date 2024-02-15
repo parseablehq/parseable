@@ -217,10 +217,22 @@ impl QueryServer {
             analytics::init_analytics_scheduler();
         }
 
+        // spawn the sync thread
+        tokio::spawn(Self::sync_ingestor_metadata());
+
         self.start(prometheus, CONFIG.parseable.openid.clone())
             .await?;
 
         Ok(())
+    }
+
+    async fn sync_ingestor_metadata() {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60 / 10));
+        loop {
+            interval.tick().await;
+            dbg!("Tick");
+            Self::get_ingestor_info().await.unwrap();
+        }
     }
 
     async fn get_meta_file() -> TokioFile {
