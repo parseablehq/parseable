@@ -34,8 +34,8 @@ use crate::handlers::{
 use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
-use super::kinesis;
 use super::logstream::error::CreateStreamError;
+use super::{kinesis, otel};
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
@@ -67,7 +67,7 @@ async fn flatten_and_push_logs(
         let log_source: String = log_source.to_str().unwrap().to_owned();
         match log_source.as_str() {
             LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
-            LOG_SOURCE_OTEL => {}
+            LOG_SOURCE_OTEL => json = otel::flatten_otel_logs(&body),
             _ => {
                 log::warn!("Unknown log source: {}", log_source);
                 push_logs(stream_name.to_string(), req.clone(), body).await?;
