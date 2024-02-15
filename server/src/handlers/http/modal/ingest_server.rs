@@ -23,6 +23,7 @@ use crate::handlers::http::middleware::RouteExt;
 use crate::localcache::LocalCacheManager;
 use crate::metadata;
 use crate::metrics;
+use crate::rbac;
 use crate::rbac::role::Action;
 use crate::storage;
 use crate::storage::ObjectStorageError;
@@ -226,6 +227,8 @@ impl IngestServer {
         // to get the .parseable.json file in staging
         let meta = storage::resolve_parseable_metadata().await?;
         banner::print(&CONFIG, &meta).await;
+
+        rbac::map::init(&meta);
 
         // set the info in the global metadata
         meta.set_global();

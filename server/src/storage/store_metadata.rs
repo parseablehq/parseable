@@ -134,9 +134,10 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             // because staging dir has changed.
             match CONFIG.parseable.mode {
                 Mode::All | Mode::Query => overwrite_remote = true,
-                _ => (),
+                _ => {
+                    metadata.staging = CONFIG.staging_dir().to_path_buf();
+                },
             }
-
             Ok(metadata)
         }
         EnvChange::CreateBoth => {
