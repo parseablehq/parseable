@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
         Mode::Query => {
             dbg!("Mode::Query");
-            Arc::new(QueryServer::default())
+            Arc::new(QueryServer)
         }
         Mode::Ingest => {
             dbg!("Mode::Ingest");

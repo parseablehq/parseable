@@ -31,11 +31,8 @@ use relative_path::RelativePath;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
+use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::option::validation;
-use crate::{
-
-    metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics},
-};
 
 use super::{
     LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, STREAM_METADATA_FILE_NAME,

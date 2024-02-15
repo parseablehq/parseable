@@ -16,18 +16,7 @@
  *
  */
 
-use std::sync::Arc;
-
 use actix_cors::Cors;
-use actix_web_prometheus::PrometheusMetrics;
-use tokio::sync::Mutex;
-
-use crate::option::CONFIG;
-
-use crate::handlers::http::modal::{
-    ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
-};
-use crate::option::Mode;
 
 pub(crate) mod about;
 pub(crate) mod health_check;
@@ -49,31 +38,6 @@ pub(crate) mod role;
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "/api";
 pub const API_VERSION: &str = "v1";
-
-#[allow(unused)]
-/// to be removed
-pub async fn run_http(
-    prometheus: PrometheusMetrics,
-    oidc_client: Option<crate::oidc::OpenidConfig>,
-) -> anyhow::Result<()> {
-    let server: Arc<Mutex<dyn ParseableServer>> = match CONFIG.parseable.mode {
-        Mode::Query => {
-            dbg!("Mode::Query");
-            Arc::new(Mutex::new(QueryServer::default()))
-        }
-        Mode::Ingest => {
-            dbg!("Mode::Ingest");
-            Arc::new(Mutex::new(IngestServer))
-        }
-        Mode::All => {
-            dbg!("Mode::All");
-            Arc::new(Mutex::new(Server))
-        }
-    };
-
-    server.try_lock()?.start(prometheus, oidc_client).await?;
-    Ok(())
-}
 
 pub(crate) fn base_path() -> String {
     format!("{API_BASE_PATH}/{API_VERSION}")
