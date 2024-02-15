@@ -66,7 +66,7 @@ pub struct Server;
 #[async_trait(?Send)]
 impl ParseableServer for Server {
     async fn start(
-        &mut self,
+        &self,
         prometheus: PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
@@ -138,7 +138,7 @@ impl ParseableServer for Server {
     }
 
     /// implementation of init should just invoke a call to initialize
-    async fn init(&mut self) -> anyhow::Result<()> {
+    async fn init(&self) -> anyhow::Result<()> {
         self.initialize().await
     }
 
@@ -402,7 +402,7 @@ impl Server {
         ResourceFiles::new("/", generate()).resolve_not_found_to_root()
     }
 
-    async fn initialize(&mut self) -> anyhow::Result<()> {
+    async fn initialize(&self) -> anyhow::Result<()> {
         migration::run_metadata_migration(&CONFIG).await?;
         let metadata = storage::resolve_parseable_metadata().await?;
         banner::print(&CONFIG, &metadata).await;

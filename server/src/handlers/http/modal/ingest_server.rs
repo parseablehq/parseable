@@ -59,7 +59,7 @@ pub struct IngestServer;
 impl ParseableServer for IngestServer {
     // we dont need oidc client here its just here to satisfy the trait
     async fn start(
-        &mut self,
+        &self,
         prometheus: PrometheusMetrics,
         _oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
@@ -98,7 +98,7 @@ impl ParseableServer for IngestServer {
     }
 
     /// implement the init method will just invoke the initialize method
-    async fn init(&mut self) -> anyhow::Result<()> {
+    async fn init(&self) -> anyhow::Result<()> {
         // self.validate()?;
         self.initialize().await
     }
@@ -221,7 +221,7 @@ impl IngestServer {
         }
     }
 
-    async fn initialize(&mut self) -> anyhow::Result<()> {
+    async fn initialize(&self) -> anyhow::Result<()> {
         // check for querier state. Is it there, or was it there in the past
         self.check_querier_state().await?;
         // to get the .parseable.json file in staging

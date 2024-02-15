@@ -44,12 +44,12 @@ pub trait ParseableServer {
 
     /// configure the server
     async fn start(
-        &mut self,
+        &self,
         prometheus: PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()>;
 
-    async fn init(&mut self) -> anyhow::Result<()>;
+    async fn init(&self) -> anyhow::Result<()>;
 
     fn validate(&self) -> anyhow::Result<()>;
 }

@@ -26,7 +26,10 @@ use async_trait::async_trait;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use url::Url;
+
+use tokio::fs::File as TokioFile;
 
 use crate::option::CONFIG;
 
@@ -35,22 +38,22 @@ use super::ssl_acceptor::get_ssl_acceptor;
 use super::{IngesterMetadata, OpenIdClient, ParseableServer};
 
 type IngesterMetadataArr = Vec<IngesterMetadata>;
-type IngesterMetaArrPtr = Arc<IngesterMetadataArr>;
 
 #[derive(Default, Debug)]
-pub struct QueryServer(IngesterMetaArrPtr);
+pub struct QueryServer;
 
 #[async_trait(?Send)]
 impl ParseableServer for QueryServer {
     async fn start(
-        &mut self,
+        &self,
         prometheus: actix_web_prometheus::PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        self.get_ingestor_info().await?;
+        let data = Self::get_ingestor_info().await?;
 
         // on subsequent runs, the qurier should check if the ingestor is up and running or not
-        for ingester in self.0.iter() {
+        for ingester in data.iter() {
+            dbg!(&ingester);
             // yes the format macro does not need the '/' ingester.origin already
             // has '/' because Url::Parse will add it if it is not present
             // uri should be something like `http://address/api/v1/liveness`
@@ -107,7 +110,7 @@ impl ParseableServer for QueryServer {
     }
 
     /// implementation of init should just invoke a call to initialize
-    async fn init(&mut self) -> anyhow::Result<()> {
+    async fn init(&self) -> anyhow::Result<()> {
         // self.validate()?;
         self.initialize().await
     }
@@ -144,14 +147,13 @@ impl QueryServer {
             .service(Server::get_generated());
     }
 
-    async fn get_ingestor_info(&mut self) -> anyhow::Result<()> {
+    async fn get_ingestor_info() -> anyhow::Result<IngesterMetadataArr> {
         let store = CONFIG.storage().get_object_store();
 
         let root_path = RelativePathBuf::from("");
         let arr = store
             .get_objects(Some(&root_path))
             .await?
-            .to_vec()
             .iter()
             // this unwrap will most definateley shoot me in the foot later
             .map(|x| serde_json::from_slice::<IngesterMetadata>(x).unwrap_or_default())
@@ -160,8 +162,11 @@ impl QueryServer {
         // TODO: add validation logic here
         // validate the ingester metadata
 
-        self.0 = Arc::new(arr.clone());
-        Ok(())
+        let mut f = Self::get_meta_file().await;
+        // writer the arr in f
+        f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
+
+        Ok(arr)
     }
 
     pub async fn check_liveness(uri: Url) -> bool {
@@ -175,8 +180,9 @@ impl QueryServer {
     }
 
     /// initialize the server, run migrations as needed and start the server
-    async fn initialize(&mut self) -> anyhow::Result<()> {
+    async fn initialize(&self) -> anyhow::Result<()> {
         migration::run_metadata_migration(&CONFIG).await?;
+        tokio::fs::File::create(CONFIG.staging_dir().join(".query.json")).await?;
 
         let metadata = storage::resolve_parseable_metadata().await?;
         banner::print(&CONFIG, &metadata).await;
@@ -226,5 +232,16 @@ impl QueryServer {
         // }
 
         Ok(())
+    }
+
+    async fn get_meta_file() -> TokioFile {
+        let meta_path = CONFIG.staging_dir().join(".query.json");
+
+        tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(meta_path)
+            .await
+            .unwrap()
     }
 }
