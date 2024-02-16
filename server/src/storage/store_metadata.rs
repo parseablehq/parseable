@@ -92,6 +92,7 @@ impl StorageMetadata {
     }
 }
 
+/// deals with the staging directory creation and metadata resolution
 /// always returns remote metadata as it is source of truth
 /// overwrites staging metadata while updating storage info
 pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStorageError> {

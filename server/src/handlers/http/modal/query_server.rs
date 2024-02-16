@@ -183,9 +183,8 @@ impl QueryServer {
     /// initialize the server, run migrations as needed and start the server
     async fn initialize(&self) -> anyhow::Result<()> {
         migration::run_metadata_migration(&CONFIG).await?;
-        tokio::fs::File::create(CONFIG.staging_dir().join(".query.json")).await?;
-
         let metadata = storage::resolve_parseable_metadata().await?;
+        tokio::fs::File::create(CONFIG.staging_dir().join(".query.json")).await?;
         banner::print(&CONFIG, &metadata).await;
 
         // initialize the rbac map
