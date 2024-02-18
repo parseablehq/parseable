@@ -32,9 +32,7 @@ use crate::handlers::{
     STREAM_NAME_HEADER_KEY,
 };
 use crate::metadata::STREAM_INFO;
-use crate::option::CONFIG;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
-use crate::{catalog, metadata};
 
 use super::kinesis;
 use super::logstream::error::CreateStreamError;
@@ -50,32 +48,6 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
         create_stream_if_not_exists(&stream_name).await?;
-
-        if first_event_at_empty(&stream_name) {
-            let store = CONFIG.storage().get_object_store();
-            if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name).await {
-                if let Err(err) = CONFIG
-                    .storage()
-                    .get_object_store()
-                    .put_first_event_at(&stream_name, &first_event_at)
-                    .await
-                {
-                    log::error!(
-                        "Failed to update first_event_at in metadata for stream {:?} {err:?}",
-                        stream_name
-                    );
-                }
-
-                if let Err(err) =
-                    metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
-                {
-                    log::error!(
-                        "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
-                        stream_name
-                    );
-                }
-            }
-        }
 
         flatten_and_push_logs(req, body, stream_name).await?;
         Ok(HttpResponse::Ok().finish())
@@ -170,17 +142,6 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
     }
     super::logstream::create_stream(stream_name.to_string()).await?;
     Ok(())
-}
-
-// Check if the first_event_at is empty
-pub fn first_event_at_empty(stream_name: &str) -> bool {
-    let hash_map = STREAM_INFO.read().unwrap();
-    if let Some(stream_info) = hash_map.get(stream_name) {
-        if let Some(first_event_at) = &stream_info.first_event_at {
-            return first_event_at.is_empty();
-        }
-    }
-    true
 }
 
 #[derive(Debug, thiserror::Error)]
