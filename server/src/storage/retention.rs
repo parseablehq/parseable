@@ -83,9 +83,15 @@ pub fn init_scheduler() {
         }
     };
 
+    // Execute once on startup
+    thread::spawn(move || {
+        let rt = async_runtime();
+        rt.block_on(func());
+    });
+
     scheduler.every(1.day()).at("00:00").run(func);
 
-    let handler = thread::spawn(|| {
+    let scheduler_handler = thread::spawn(|| {
         let rt = async_runtime();
         rt.block_on(async move {
             loop {
@@ -95,7 +101,7 @@ pub fn init_scheduler() {
         });
     });
 
-    *SCHEDULER_HANDLER.lock().unwrap() = Some(handler);
+    *SCHEDULER_HANDLER.lock().unwrap() = Some(scheduler_handler);
     log::info!("Scheduler is initialized")
 }
 
