@@ -134,12 +134,6 @@ struct TaskView {
     duration: String,
 }
 
-impl Retention {
-    pub fn new() -> Self {
-        Self { tasks: Vec::new() }
-    }
-}
-
 impl TryFrom<Vec<TaskView>> for Retention {
     type Error = String;
 
