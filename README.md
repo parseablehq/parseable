@@ -89,6 +89,24 @@ But with log data growing exponentially, today's log data challenges involve who
 
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
 
+### License report
+
+A license report lists all the licenses of all dependencies in a project. You can use [cargo-about ↗︎](https://embarkstudios.github.io/cargo-about/) to generate a license report for the Parseable.
+
+If not already installed, install `cargo-about` using the below command.
+
+```sh
+cargo install --locked cargo-about && cargo about init
+```
+
+To generate a license report, run the below command.
+
+```sh
+cargo about generate about.hbs > parseable-license.html
+```
+
+You can see the license report at [parseable-license.html ↗︎](./parseable-license.html).
+
 ### Supported by
 
 <a href="https://fossunited.org/" target="_blank"><img src="http://fossunited.org/files/fossunited-badge.svg"></a>
