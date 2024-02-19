@@ -105,7 +105,7 @@ To generate a license report, run the below command.
 cargo about generate about.hbs > parseable-license.html
 ```
 
-You can see the license report at [parseable-license.html ↗︎](./parseable-license.html).
+You can see the license report in the file parseable-license.html.
 
 ### Supported by
 
