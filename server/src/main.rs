@@ -75,8 +75,9 @@ async fn main() -> anyhow::Result<()> {
 
     // add logic for graceful shutdown if
     // MODE == Query / Ingest and storage = local-store
+    // option.rs ln: 161
+    // CONFIG.run_time_mode_validation()?;
 
-    // But does an RwLock Make sence? maybe figure something out
     server.init().await?;
 
     Ok(())

@@ -24,7 +24,8 @@ use relative_path::RelativePathBuf;
 use crate::{
     catalog::manifest::Manifest,
     query::PartialTimeFilter,
-    storage::{ObjectStorage, ObjectStorageError},
+    storage::{ObjectStorage, ObjectStorageError, MANIFEST_FILE},
+    utils::get_address,
 };
 
 use self::{column::Column, snapshot::ManifestItem};
@@ -137,7 +138,9 @@ pub async fn update_snapshot(
             ..Manifest::default()
         };
 
-        let path = partition_path(stream_name, lower_bound, upper_bound).join("manifest.json");
+        let addr = get_address();
+        let mainfest_file_name = format!("{}.{}.{}", addr.0, addr.1, MANIFEST_FILE);
+        let path = partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
         storage
             .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())
             .await?;

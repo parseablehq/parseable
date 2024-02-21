@@ -25,6 +25,7 @@ use super::{
     STREAM_METADATA_FILE_NAME,
 };
 
+use crate::utils::get_address;
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
@@ -266,6 +267,7 @@ pub trait ObjectStorage: Sync + 'static {
         }
     }
 
+    // get the manifest info
     async fn get_manifest(
         &self,
         path: &RelativePath,
@@ -449,5 +451,7 @@ fn alert_json_path(stream_name: &str) -> RelativePathBuf {
 
 #[inline(always)]
 fn manifest_path(prefix: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([prefix, MANIFEST_FILE])
+    let addr = get_address();
+    let mainfest_file_name = format!("{}.{}.{}", addr.0, addr.1, MANIFEST_FILE);
+    RelativePathBuf::from_iter([prefix, &mainfest_file_name])
 }
