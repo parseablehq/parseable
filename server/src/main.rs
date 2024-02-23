@@ -58,17 +58,15 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     CONFIG.validate_storage().await?;
 
+    // these are empty ptrs so mem footprint should be minimal
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
         Mode::Query => {
-            dbg!("Mode::Query");
             Arc::new(QueryServer)
         }
         Mode::Ingest => {
-            dbg!("Mode::Ingest");
             Arc::new(IngestServer)
         }
         Mode::All => {
-            dbg!("Mode::All");
             Arc::new(Server)
         }
     };

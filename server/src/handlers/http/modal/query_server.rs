@@ -166,7 +166,6 @@ impl QueryServer {
         let mut f = Self::get_meta_file().await;
         // writer the arr in f
         let write_size = f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
-        dbg!(write_size);
         Ok(arr)
     }
 
