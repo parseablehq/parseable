@@ -183,7 +183,7 @@ impl IngestServer {
                 .domain_address
                 .clone()
                 .unwrap_or_else(|| {
-                    Url::parse(&format!("https://{}:{}", sock.ip(), sock.port())).unwrap()
+                    Url::parse(&format!("http://{}:{}", sock.ip(), sock.port())).unwrap()
                 })
                 .to_string(),
             DEFAULT_VERSION.to_string(),

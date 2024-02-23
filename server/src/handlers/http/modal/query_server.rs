@@ -217,7 +217,7 @@ impl QueryServer {
         }
 
         // spawn the sync thread
-        tokio::spawn(Self::sync_ingestor_metadata());
+        // tokio::spawn(Self::sync_ingestor_metadata());
 
         self.start(prometheus, CONFIG.parseable.openid.clone())
             .await?;
