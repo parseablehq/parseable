@@ -40,7 +40,7 @@ pub async fn about() -> Json<serde_json::Value> {
     let current_version = format!("v{}", current_release.released_version);
     let commit = current_release.commit_hash;
     let deployment_id = meta.deployment_id.to_string();
-    let mode = CONFIG.mode_string();
+    let mode = CONFIG.get_storage_mode_string();
     let staging = CONFIG.staging_dir();
     let grpc_port = CONFIG.parseable.grpc_port;
 

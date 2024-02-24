@@ -120,9 +120,8 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
             ),
             status: StatusCode::BAD_REQUEST,
         });
-    } else {
-        create_stream(stream_name).await?;
     }
+    create_stream(stream_name).await?;
 
     Ok(("log stream created", StatusCode::OK))
 }
