@@ -141,34 +141,33 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
             ),
             status: StatusCode::BAD_REQUEST,
         });
-    } else {
-        if !body.is_empty() {
-            if static_schema_flag == "true" {
-                let body_str = std::str::from_utf8(&body).unwrap();
-                let static_schema: StaticSchema = serde_json::from_str(body_str).unwrap();
-                let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
-                if let Ok(parsed_schema) = parsed_schema {
-                    schema = parsed_schema;
-                } else {
-                    return Err(StreamError::Custom {
-                        msg: format!(
-                            "unable to commit static schema, logstream {stream_name} not created"
-                        ),
-                        status: StatusCode::BAD_REQUEST,
-                    });
-                }
+    }
+    if !body.is_empty() {
+        if static_schema_flag == "true" {
+            let body_str = std::str::from_utf8(&body).unwrap();
+            let static_schema: StaticSchema = serde_json::from_str(body_str).unwrap();
+            let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
+            if let Ok(parsed_schema) = parsed_schema {
+                schema = parsed_schema;
+            } else {
+                return Err(StreamError::Custom {
+                    msg: format!(
+                        "unable to commit static schema, logstream {stream_name} not created"
+                    ),
+                    status: StatusCode::BAD_REQUEST,
+                });
             }
-        } else if static_schema_flag == "true" {
-            return Err(StreamError::Custom {
+        }
+    } else if static_schema_flag == "true" {
+        return Err(StreamError::Custom {
                     msg: format!(
                         "please provide schema in the request body for static schema logstream {stream_name}"
                     ),
                     status: StatusCode::BAD_REQUEST,
                 });
-        }
-
-        create_stream(stream_name, time_partition, static_schema_flag, schema).await?;
     }
+
+    create_stream(stream_name, time_partition, static_schema_flag, schema).await?;
 
     Ok(("log stream created", StatusCode::OK))
 }

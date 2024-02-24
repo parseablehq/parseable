@@ -40,6 +40,13 @@ pub use store_metadata::{
 use self::retention::Retention;
 pub use self::staging::StorageDir;
 
+// metadata file names in a Stream prefix
+pub const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
+pub const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
+pub const SCHEMA_FILE_NAME: &str = ".schema";
+pub const ALERT_FILE_NAME: &str = ".alert.json";
+pub const MANIFEST_FILE: &str = "manifest.json";
+
 /// local sync interval to move data.records to /tmp dir of that stream.
 /// 60 sec is a reasonable value.
 pub const LOCAL_SYNC_INTERVAL: u64 = 60;

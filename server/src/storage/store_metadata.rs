@@ -26,13 +26,13 @@ use once_cell::sync::OnceCell;
 use std::io;
 
 use crate::{
-    option::{CONFIG, JOIN_COMMUNITY},
+    option::{Mode, CONFIG, JOIN_COMMUNITY},
     rbac::{role::model::DefaultPrivilege, user::User},
     storage::ObjectStorageError,
     utils::uid,
 };
 
-use super::object_storage::PARSEABLE_METADATA_FILE_NAME;
+use super::PARSEABLE_METADATA_FILE_NAME;
 
 // Expose some static variables for internal usage
 pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();
@@ -92,6 +92,7 @@ impl StorageMetadata {
     }
 }
 
+/// deals with the staging directory creation and metadata resolution
 /// always returns remote metadata as it is source of truth
 /// overwrites staging metadata while updating storage info
 pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStorageError> {
@@ -130,15 +131,26 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             metadata.staging = CONFIG.staging_dir().canonicalize()?;
             // this flag is set to true so that metadata is copied to staging
             overwrite_staging = true;
-            // overwrite remote because staging dir has changed.
-            overwrite_remote = true;
+            // overwrite remote in all and query mode
+            // because staging dir has changed.
+            match CONFIG.parseable.mode {
+                Mode::All | Mode::Query => overwrite_remote = true,
+                _ => {
+                    metadata.staging = CONFIG.staging_dir().to_path_buf();
+                },
+            }
             Ok(metadata)
         }
         EnvChange::CreateBoth => {
             create_dir_all(CONFIG.staging_dir())?;
             let metadata = StorageMetadata::new();
-            // new metadata needs to be set on both staging and remote
-            overwrite_remote = true;
+            // new metadata needs to be set
+            // if mode is query or all then both staging and remote
+            match CONFIG.parseable.mode {
+                Mode::All | Mode::Query => overwrite_remote = true,
+                _ => (),
+            }
+            // else only staging
             overwrite_staging = true;
             Ok(metadata)
         }
