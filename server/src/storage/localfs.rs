@@ -34,7 +34,9 @@ use tokio_stream::wrappers::ReadDirStream;
 use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::option::validation;
 
-use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
+use super::{
+    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, STREAM_METADATA_FILE_NAME,
+};
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -74,6 +76,7 @@ impl ObjectStorageProvider for FSConfig {
 }
 
 pub struct LocalFS {
+    // absolute path of the data directory
     root: PathBuf,
 }
 
@@ -108,6 +111,47 @@ impl ObjectStorage for LocalFS {
             .with_label_values(&["GET", status])
             .observe(time);
         res
+    }
+
+    async fn get_objects(
+        &self,
+        base_path: Option<&RelativePath>,
+    ) -> Result<Vec<Bytes>, ObjectStorageError> {
+        let time = Instant::now();
+
+        let prefix = if let Some(path) = base_path {
+            path.to_path(&self.root)
+        } else {
+            self.root.clone()
+        };
+
+        let mut entries = fs::read_dir(&prefix).await?;
+        let mut res = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let ingestor_file = entry
+                .path()
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+                .contains("ingestor");
+
+            if !ingestor_file {
+                continue;
+            }
+
+            let file = fs::read(entry.path()).await?;
+            res.push(file.into());
+        }
+
+        // maybe change the return code
+        let status = if res.is_empty() { "200" } else { "400" };
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", status])
+            .observe(time);
+
+        Ok(res)
     }
 
     async fn put_object(
@@ -228,6 +272,16 @@ impl ObjectStorage for LocalFS {
     fn store_url(&self) -> url::Url {
         url::Url::parse("file:///").unwrap()
     }
+
+    fn get_bucket_name(&self) -> String {
+        self.root
+            .iter()
+            .last()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
 }
 
 async fn dir_with_stream(
@@ -248,7 +302,7 @@ async fn dir_with_stream(
 
     if entry.file_type().await?.is_dir() {
         let path = entry.path();
-        let stream_json_path = path.join(object_storage::STREAM_METADATA_FILE_NAME);
+        let stream_json_path = path.join(STREAM_METADATA_FILE_NAME);
         if stream_json_path.exists() {
             Ok(Some(dir_name))
         } else {

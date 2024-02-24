@@ -90,10 +90,10 @@ pub fn print_about(
     eprint!(
         "
     {}
-        Version:            \"v{}\"",
+        Version:\t\t\t\t\t\"v{}\"",
         "About:".to_string().bold(),
         current_version,
-    );
+    ); // "        " "                                        "
 
     if let Some(latest_release) = latest_release {
         if latest_release.version > current_version {
@@ -103,8 +103,8 @@ pub fn print_about(
 
     eprintln!(
         "
-        Commit:             \"{commit_hash}\"
-        Docs:               \"https://logg.ing/docs\""
+        Commit:\t\t\t\t\t\t\"{commit_hash}\"
+        Docs:\t\t\t\t\t\t\"https://logg.ing/docs\""
     );
 }
 
