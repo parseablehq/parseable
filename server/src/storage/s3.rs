@@ -42,7 +42,7 @@ use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
 
 use super::metrics_layer::MetricLayer;
-use super::{object_storage, ObjectStorageProvider};
+use super::{ObjectStorageProvider, PARSEABLE_METADATA_FILE_NAME, STREAM_METADATA_FILE_NAME};
 
 // in bytes
 const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
@@ -197,6 +197,7 @@ impl ObjectStorageProvider for S3Config {
         Arc::new(S3 {
             client: s3,
             bucket: self.bucket_name.clone(),
+            root: StorePath::from(""),
         })
     }
 
@@ -209,20 +210,21 @@ impl ObjectStorageProvider for S3Config {
     }
 }
 
-fn to_path(path: &RelativePath) -> StorePath {
+fn to_object_store_path(path: &RelativePath) -> StorePath {
     StorePath::from(path.as_str())
 }
 
 pub struct S3 {
     client: LimitStore<AmazonS3>,
     bucket: String,
+    root: StorePath,
 }
 
 impl S3 {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let instant = Instant::now();
 
-        let resp = self.client.get(&to_path(path)).await;
+        let resp = self.client.get(&to_object_store_path(path)).await;
 
         match resp {
             Ok(resp) => {
@@ -249,7 +251,7 @@ impl S3 {
         resource: Bytes,
     ) -> Result<(), ObjectStorageError> {
         let time = Instant::now();
-        let resp = self.client.put(&to_path(path), resource).await;
+        let resp = self.client.put(&to_object_store_path(path), resource).await;
         let status = if resp.is_ok() { "200" } else { "400" };
         let time = time.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME
@@ -304,7 +306,7 @@ impl S3 {
         let stream_json_check = FuturesUnordered::new();
 
         for dir in &dirs {
-            let key = format!("{}/{}", dir, object_storage::STREAM_METADATA_FILE_NAME);
+            let key = format!("{}/{}", dir, STREAM_METADATA_FILE_NAME);
             let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
             stream_json_check.push(task);
         }
@@ -403,6 +405,53 @@ impl ObjectStorage for S3 {
         Ok(self._get_object(path).await?)
     }
 
+    // TBD  is this the right way or the api calls are too many?
+    async fn get_objects(
+        &self,
+        base_path: Option<&RelativePath>,
+    ) -> Result<Vec<Bytes>, ObjectStorageError> {
+        let instant = Instant::now();
+
+        let prefix = if let Some(base_path) = base_path {
+            to_object_store_path(base_path)
+        } else {
+            self.root.clone()
+        };
+
+        let mut list_stream = self.client.list(Some(&prefix)).await?;
+
+        let mut res = vec![];
+
+        while let Some(meta) = list_stream.next().await.transpose()? {
+            let ingestor_file = meta
+                .location
+                .filename()
+                .unwrap_or_default()
+                .contains("ingestor");
+
+            if !ingestor_file {
+                continue;
+            }
+
+            let byts = self
+                .get_object(
+                    RelativePath::from_path(meta.location.as_ref()).map_err(|err| {
+                        ObjectStorageError::Custom(format!("Error while getting files: {:}", err))
+                    })?,
+                )
+                .await?;
+
+            res.push(byts);
+        }
+
+        let instant = instant.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", "200"])
+            .observe(instant);
+
+        Ok(res)
+    }
+
     async fn put_object(
         &self,
         path: &RelativePath,
@@ -424,7 +473,7 @@ impl ObjectStorage for S3 {
     async fn check(&self) -> Result<(), ObjectStorageError> {
         Ok(self
             .client
-            .head(&object_storage::PARSEABLE_METADATA_FILE_NAME.into())
+            .head(&PARSEABLE_METADATA_FILE_NAME.into())
             .await
             .map(|_| ())?)
     }
@@ -481,6 +530,10 @@ impl ObjectStorage for S3 {
             .flat_map(|path| path.parts())
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>())
+    }
+
+    fn get_bucket_name(&self) -> String {
+        self.bucket.clone()
     }
 }
 

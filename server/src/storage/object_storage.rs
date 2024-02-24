@@ -20,7 +20,12 @@ use super::{
     retention::Retention, staging::convert_disk_files_to_parquet, LogStream, ObjectStorageError,
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
+use super::{
+    ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME,
+};
 
+use crate::utils::get_address;
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
@@ -49,13 +54,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-// metadata file names in a Stream prefix
-pub(super) const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
-pub(super) const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
-const SCHEMA_FILE_NAME: &str = ".schema";
-const ALERT_FILE_NAME: &str = ".alert.json";
-const MANIFEST_FILE: &str = "manifest.json";
-
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
     fn get_datafusion_runtime(&self) -> RuntimeConfig;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send>;
@@ -66,6 +64,11 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
+    // want to make it more generic with a filter function
+    async fn get_objects(
+        &self,
+        base_path: Option<&RelativePath>,
+    ) -> Result<Vec<Bytes>, ObjectStorageError>;
     async fn put_object(
         &self,
         path: &RelativePath,
@@ -84,7 +87,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn get_latency(&self) -> Duration {
         // It's Ok to `unwrap` here. The hardcoded value will always Result in
         // an `Ok`.
-        let path = RelativePathBuf::from_path(".parseable.json").unwrap();
+        let path = RelativePathBuf::from_path(PARSEABLE_METADATA_FILE_NAME).unwrap();
 
         let start = Instant::now();
         let _ = self.get_object(&path).await;
@@ -281,6 +284,7 @@ pub trait ObjectStorage: Sync + 'static {
         }
     }
 
+    // get the manifest info
     async fn get_manifest(
         &self,
         path: &RelativePath,
@@ -309,6 +313,7 @@ pub trait ObjectStorage: Sync + 'static {
         self.put_object(&path, to_bytes(&manifest)).await
     }
 
+    // gets the snapshot of the stream
     async fn get_snapshot(&self, stream: &str) -> Result<Snapshot, ObjectStorageError> {
         let path = stream_json_path(stream);
         let bytes = self.get_object(&path).await?;
@@ -419,6 +424,9 @@ pub trait ObjectStorage: Sync + 'static {
 
         Ok(())
     }
+
+    // pick a better name
+    fn get_bucket_name(&self) -> String;
 }
 
 async fn commit_schema_to_storage(
@@ -460,5 +468,7 @@ fn alert_json_path(stream_name: &str) -> RelativePathBuf {
 
 #[inline(always)]
 fn manifest_path(prefix: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([prefix, MANIFEST_FILE])
+    let addr = get_address();
+    let mainfest_file_name = format!("{}.{}.{}", addr.0, addr.1, MANIFEST_FILE);
+    RelativePathBuf::from_iter([prefix, &mainfest_file_name])
 }

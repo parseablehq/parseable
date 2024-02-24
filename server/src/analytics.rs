@@ -90,7 +90,7 @@ impl Report {
             cpu_count,
             memory_total_bytes: mem_total,
             platform: platform().to_string(),
-            mode: CONFIG.mode_string().to_string(),
+            mode: CONFIG.get_storage_mode_string().to_string(),
             version: current().released_version.to_string(),
             commit_hash: current().commit_hash,
             metrics: build_metrics(),

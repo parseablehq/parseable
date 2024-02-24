@@ -17,12 +17,11 @@
  *
  */
 
-use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc};
-
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::Schema;
 use itertools::kmerge_by;
+use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc};
 
 use super::{
     adapt_batch,
