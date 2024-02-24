@@ -20,6 +20,7 @@
 use std::{
     collections::HashMap,
     fs,
+    net::SocketAddr,
     path::{Path, PathBuf},
     process,
     sync::Arc,
@@ -159,6 +160,16 @@ impl StorageDir {
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
         let filename = path.file_name().unwrap().to_str().unwrap();
         let (_, filename) = filename.split_once('.').unwrap();
+
+        let port = CONFIG
+            .parseable
+            .address
+            .clone()
+            .parse::<SocketAddr>()
+            .unwrap()
+            .port();
+        let filename = filename.rsplit_once('.').unwrap();
+        let filename = format!("{}.{}.{}", filename.0, port, filename.1);
         let mut parquet_path = path.to_owned();
         parquet_path.set_file_name(filename);
         parquet_path.set_extension("parquet");
