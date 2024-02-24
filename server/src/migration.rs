@@ -29,7 +29,10 @@ use serde::Serialize;
 
 use crate::{
     option::Config,
-    storage::{ObjectStorage, ObjectStorageError},
+    storage::{
+        ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
+        STREAM_METADATA_FILE_NAME,
+    },
 };
 
 /// Migrate the metdata from v1 or v2 to v3
@@ -46,6 +49,7 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
             .and_then(|version| version.as_str())
     }
 
+    // if storage metadata is none do nothing
     if let Some(storage_metadata) = storage_metadata {
         match get_version(&storage_metadata) {
             Some("v1") => {
@@ -60,6 +64,7 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
         }
     }
 
+    // if staging metadata is none do nothing
     if let Some(staging_metadata) = staging_metadata {
         match get_version(&staging_metadata) {
             Some("v1") => {
@@ -89,7 +94,7 @@ pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
 }
 
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
-    let path = RelativePathBuf::from_iter([stream, ".stream.json"]);
+    let path = RelativePathBuf::from_iter([stream, STREAM_METADATA_FILE_NAME]);
     let stream_metadata = storage.get_object(&path).await?;
     let stream_metadata: serde_json::Value =
         serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
@@ -106,7 +111,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 .put_object(&path, to_bytes(&new_stream_metadata))
                 .await?;
 
-            let schema_path = RelativePathBuf::from_iter([stream, ".schema"]);
+            let schema_path = RelativePathBuf::from_iter([stream, SCHEMA_FILE_NAME]);
             let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema).ok();
             let map = schema_migration::v1_v3(schema)?;
@@ -118,7 +123,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 .put_object(&path, to_bytes(&new_stream_metadata))
                 .await?;
 
-            let schema_path = RelativePathBuf::from_iter([stream, ".schema"]);
+            let schema_path = RelativePathBuf::from_iter([stream, SCHEMA_FILE_NAME]);
             let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema)?;
             let map = schema_migration::v2_v3(schema)?;
@@ -138,7 +143,7 @@ fn to_bytes(any: &(impl ?Sized + Serialize)) -> Bytes {
 }
 
 pub fn get_staging_metadata(config: &Config) -> anyhow::Result<Option<serde_json::Value>> {
-    let path = config.staging_dir().join(".parseable.json");
+    let path = config.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {
@@ -153,7 +158,7 @@ pub fn get_staging_metadata(config: &Config) -> anyhow::Result<Option<serde_json
 async fn get_storage_metadata(
     storage: &dyn ObjectStorage,
 ) -> anyhow::Result<Option<serde_json::Value>> {
-    let path = RelativePathBuf::from_iter([".parseable.json"]);
+    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
     match storage.get_object(&path).await {
         Ok(bytes) => Ok(Some(
             serde_json::from_slice(&bytes).expect("parseable config is valid json"),
@@ -172,13 +177,13 @@ pub async fn put_remote_metadata(
     storage: &dyn ObjectStorage,
     metadata: &serde_json::Value,
 ) -> anyhow::Result<()> {
-    let path = RelativePathBuf::from_iter([".parseable.json"]);
+    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
     let metadata = serde_json::to_vec(metadata)?.into();
     Ok(storage.put_object(&path, metadata).await?)
 }
 
 pub fn put_staging_metadata(config: &Config, metadata: &serde_json::Value) -> anyhow::Result<()> {
-    let path = config.staging_dir().join(".parseable.json");
+    let path = config.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
