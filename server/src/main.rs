@@ -60,15 +60,11 @@ async fn main() -> anyhow::Result<()> {
 
     // these are empty ptrs so mem footprint should be minimal
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
-        Mode::Query => {
-            Arc::new(QueryServer)
-        }
-        Mode::Ingest => {
-            Arc::new(IngestServer)
-        }
-        Mode::All => {
-            Arc::new(Server)
-        }
+        Mode::Query => Arc::new(QueryServer),
+
+        Mode::Ingest => Arc::new(IngestServer),
+
+        Mode::All => Arc::new(Server),
     };
 
     // add logic for graceful shutdown if

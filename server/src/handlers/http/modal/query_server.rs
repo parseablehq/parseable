@@ -53,7 +53,7 @@ impl ParseableServer for QueryServer {
 
         // on subsequent runs, the qurier should check if the ingestor is up and running or not
         for ingester in data.iter() {
-            dbg!(&ingester);
+            // dbg!(&ingester);
             // yes the format macro does not need the '/' ingester.origin already
             // has '/' because Url::Parse will add it if it is not present
             // uri should be something like `http://address/api/v1/liveness`
@@ -165,7 +165,7 @@ impl QueryServer {
 
         let mut f = Self::get_meta_file().await;
         // writer the arr in f
-        let write_size = f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
+        let _ = f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
         Ok(arr)
     }
 
@@ -224,11 +224,12 @@ impl QueryServer {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn sync_ingestor_metadata() {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60 / 10));
         loop {
             interval.tick().await;
-            dbg!("Tick");
+            // dbg!("Tick");
             Self::get_ingestor_info().await.unwrap();
         }
     }
