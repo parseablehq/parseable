@@ -69,6 +69,8 @@ pub struct ObjectStoreFormat {
     pub objectstore_format: String,
     #[serde(rename = "created-at")]
     pub created_at: String,
+    #[serde(rename = "first-event-at")]
+    pub first_event_at: Option<String>,
     pub owner: Owner,
     pub permissions: Vec<Permisssion>,
     pub stats: Stats,
@@ -113,6 +115,7 @@ impl Default for ObjectStoreFormat {
             version: CURRENT_SCHEMA_VERSION.to_string(),
             objectstore_format: CURRENT_OBJECT_STORE_VERSION.to_string(),
             created_at: Local::now().to_rfc3339(),
+            first_event_at: None,
             owner: Owner::new("".to_string(), "".to_string()),
             permissions: vec![Permisssion::new("parseable".to_string())],
             stats: Stats::default(),
