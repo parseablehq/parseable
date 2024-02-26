@@ -161,6 +161,23 @@ pub trait ObjectStorage: Sync + 'static {
         self.put_object(&path, to_bytes(&stream_metadata)).await
     }
 
+    async fn put_first_event_at(
+        &self,
+        stream_name: &str,
+        first_event_at: &str,
+    ) -> Result<(), ObjectStorageError> {
+        let path = stream_json_path(stream_name);
+        let stream_metadata = self.get_object(&path).await?;
+        let first_event_ts =
+            serde_json::to_value(first_event_at).expect("first_event_at is perfectly serializable");
+        let mut stream_metadata: serde_json::Value =
+            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
+
+        stream_metadata["first-event-at"] = first_event_ts;
+
+        self.put_object(&path, to_bytes(&stream_metadata)).await
+    }
+
     async fn put_metadata(
         &self,
         parseable_metadata: &StorageMetadata,

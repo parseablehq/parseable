@@ -18,6 +18,7 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
+use chrono::Local;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -43,6 +44,8 @@ pub struct LogStreamMetadata {
     pub schema: HashMap<String, Arc<Field>>,
     pub alerts: Alerts,
     pub cache_enabled: bool,
+    pub created_at: String,
+    pub first_event_at: Option<String>,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -126,9 +129,27 @@ impl StreamInfo {
             })
     }
 
-    pub fn add_stream(&self, stream_name: String) {
+    pub fn set_first_event_at(
+        &self,
+        stream_name: &str,
+        first_event_at: Option<String>,
+    ) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        map.get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.first_event_at = first_event_at;
+            })
+    }
+
+    pub fn add_stream(&self, stream_name: String, created_at: String) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
+            created_at: if created_at.is_empty() {
+                Local::now().to_rfc3339()
+            } else {
+                created_at.clone()
+            },
             ..Default::default()
         };
         map.insert(stream_name, metadata);
@@ -162,6 +183,8 @@ impl StreamInfo {
                 schema,
                 alerts,
                 cache_enabled: meta.cache_enabled,
+                created_at: meta.created_at,
+                first_event_at: meta.first_event_at,
             };
 
             let mut map = self.write().expect(LOCK_EXPECT);
