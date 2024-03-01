@@ -106,19 +106,33 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(())
     }
 
-    async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
+    async fn create_stream(&self, stream_name: &str, time_partition: &str, time_partition_format: &str, time_partition_timezone: &str) -> Result<(), ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
         format.set_id(CONFIG.parseable.username.clone());
         let permission = Permisssion::new(CONFIG.parseable.username.clone());
         format.permissions = vec![permission];
-
+        if time_partition.is_empty() {
+            format.time_partition = None;
+        } else {
+            format.time_partition = Some(time_partition.to_string());
+        }
+        if time_partition_format.is_empty() {
+            format.time_partition_format = None;
+        } else {
+            format.time_partition_format = Some(time_partition_format.to_string());
+        }
+        if time_partition_timezone.is_empty() {
+            format.time_partition_timezone = None;
+        } else {
+            format.time_partition_timezone = Some(time_partition_timezone.to_string());
+        }
         let format_json = to_bytes(&format);
-
         self.put_object(&schema_path(stream_name), to_bytes(&Schema::empty()))
             .await?;
 
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
+        
 
         Ok(())
     }

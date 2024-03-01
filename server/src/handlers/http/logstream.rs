@@ -30,7 +30,7 @@ use crate::storage::retention::Retention;
 use crate::storage::{LogStream, StorageDir};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
-
+use crate::handlers::{TIME_PARTITION_FORMAT_KEY, TIME_PARTITION_KEY, TIME_PARTITION_TIMEZONE_KEY};
 use self::error::{CreateStreamError, StreamError};
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
@@ -110,6 +110,36 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 }
 
 pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    let mut time_partition: String = String::new();
+    let mut time_partition_format: String = String::new();
+    let mut time_partition_timezone: String = String::new();
+    if let Some((_, time_partition_name)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == TIME_PARTITION_KEY)
+    {
+        time_partition = time_partition_name.to_str().unwrap().to_owned();
+        println!("time_partition: {:?}", time_partition);
+
+        if let Some((_, header_time_partition_format)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == TIME_PARTITION_FORMAT_KEY){
+            time_partition_format = header_time_partition_format.to_str().unwrap().to_owned();
+            println!("time_partition_format: {:?}", time_partition_format);
+        }else {
+            return Err(StreamError::TimePartitionFormatMissing(time_partition));
+        }
+        if let Some((_, header_time_partition_timezone)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == TIME_PARTITION_TIMEZONE_KEY){
+            time_partition_timezone = header_time_partition_timezone.to_str().unwrap().to_owned();
+            println!("time_partition_timezone: {:?}", time_partition_timezone);
+        }else {
+           // return Err(StreamError::TimePartitionTimeZoneMissing(time_partition));
+        }
+    }
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if metadata::STREAM_INFO.stream_exists(&stream_name) {
@@ -121,7 +151,7 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
             status: StatusCode::BAD_REQUEST,
         });
     } else {
-        create_stream(stream_name).await?;
+        create_stream(stream_name, time_partition, time_partition_format, time_partition_timezone).await?;
     }
 
     Ok(("log stream created", StatusCode::OK))
@@ -328,24 +358,33 @@ fn remove_id_from_alerts(value: &mut Value) {
     }
 }
 
-pub async fn create_stream(stream_name: String) -> Result<(), CreateStreamError> {
+pub async fn create_stream(stream_name: String, time_partition: String, time_partition_format: String, time_partition_timezone: String) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     validator::stream_name(&stream_name)?;
 
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage.create_stream(&stream_name).await {
+    if let Err(err) = storage.create_stream(&stream_name, &time_partition, &time_partition_format, &time_partition_timezone).await {
         return Err(CreateStreamError::Storage { stream_name, err });
     }
 
-    let stream_meta = CONFIG
+
+    let stream_meta: Result<crate::storage::ObjectStoreFormat, crate::storage::ObjectStorageError> = CONFIG
         .storage()
         .get_object_store()
         .get_stream_metadata(&stream_name)
         .await;
-    let created_at = stream_meta.unwrap().created_at;
-
-    metadata::STREAM_INFO.add_stream(stream_name.to_string(), created_at);
+    let stream_meta = stream_meta.unwrap();
+    let created_at = stream_meta.created_at;
+    let mut time_partition: String = String::new(); // Initialize time_partition with an empty string
+    let mut time_partition_format: String = String::new();
+    let mut time_partition_timezone: String = String::new();
+    if stream_meta.time_partition.is_some() && stream_meta.time_partition_format.is_some() && stream_meta.time_partition_timezone.is_some(){
+        time_partition = stream_meta.time_partition.unwrap();
+        time_partition_format = stream_meta.time_partition_format.unwrap();
+        time_partition_timezone = stream_meta.time_partition_timezone.unwrap();
+    }
+    metadata::STREAM_INFO.add_stream(stream_name.to_string(), created_at, time_partition, time_partition_format, time_partition_timezone);
 
     Ok(())
 }
@@ -405,6 +444,10 @@ pub mod error {
         InvalidRetentionConfig(serde_json::Error),
         #[error("{msg}")]
         Custom { msg: String, status: StatusCode },
+        #[error("X-P-Time-Partition-Format header is missing for \"{0}\" X-P-Time-Partition header")]
+        TimePartitionFormatMissing(String),
+        #[error("X-P-Time-Partition-TimeZone header is missing for \"{0}\" X-P-Time-Partition header")]
+        TimePartitionTimeZoneMissing(String),
     }
 
     impl actix_web::ResponseError for StreamError {
@@ -427,6 +470,8 @@ pub mod error {
                 StreamError::InvalidAlert(_) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidAlertMessage(_, _) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidRetentionConfig(_) => StatusCode::BAD_REQUEST,
+                StreamError::TimePartitionFormatMissing(_) => StatusCode::BAD_REQUEST,
+                StreamError::TimePartitionTimeZoneMissing(_) => StatusCode::BAD_REQUEST
             }
         }
 

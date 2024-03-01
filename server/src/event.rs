@@ -27,7 +27,7 @@ use itertools::Itertools;
 use std::sync::Arc;
 
 use crate::metadata;
-
+use chrono::NaiveDateTime;
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
 
@@ -42,6 +42,7 @@ pub struct Event {
     pub origin_format: &'static str,
     pub origin_size: u64,
     pub is_first_event: bool,
+    pub parsed_timestamp: NaiveDateTime,
 }
 
 // Events holds the schema related to a each event for a single log stream
@@ -54,7 +55,7 @@ impl Event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        Self::process_event(&self.stream_name, &key, self.rb.clone())?;
+        Self::process_event(&self.stream_name, &key, self.rb.clone(), self.parsed_timestamp)?;
 
         metadata::STREAM_INFO.update_stats(
             &self.stream_name,
@@ -81,8 +82,9 @@ impl Event {
         stream_name: &str,
         schema_key: &str,
         rb: RecordBatch,
+        parsed_timestamp: NaiveDateTime,
     ) -> Result<(), EventError> {
-        STREAM_WRITERS.append_to_local(stream_name, schema_key, rb)?;
+        STREAM_WRITERS.append_to_local(stream_name, schema_key, rb, parsed_timestamp)?;
         Ok(())
     }
 }

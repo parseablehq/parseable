@@ -30,7 +30,7 @@ use crate::utils;
 use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_schema::Schema;
-use chrono::Utc;
+use chrono::NaiveDateTime;
 use derive_more::{Deref, DerefMut};
 use once_cell::sync::Lazy;
 
@@ -48,15 +48,17 @@ impl Writer {
         stream_name: &str,
         schema_key: &str,
         rb: RecordBatch,
+        parsed_timestamp: NaiveDateTime
     ) -> Result<(), StreamWriterError> {
+        
         let rb = utils::arrow::replace_columns(
             rb.schema(),
             &rb,
             &[0],
-            &[Arc::new(get_timestamp_array(rb.num_rows()))],
+            &[Arc::new(get_timestamp_array(rb.num_rows(), parsed_timestamp))],
         );
 
-        self.disk.push(stream_name, schema_key, &rb)?;
+        self.disk.push(stream_name, schema_key, &rb, parsed_timestamp)?;
         self.mem.push(schema_key, rb);
         Ok(())
     }
@@ -72,6 +74,7 @@ impl WriterTable {
         stream_name: &str,
         schema_key: &str,
         record: RecordBatch,
+        parsed_timestamp: NaiveDateTime
     ) -> Result<(), StreamWriterError> {
         let hashmap_guard = self.read().unwrap();
 
@@ -80,7 +83,7 @@ impl WriterTable {
                 stream_writer
                     .lock()
                     .unwrap()
-                    .push(stream_name, schema_key, record)?;
+                    .push(stream_name, schema_key, record, parsed_timestamp)?;
             }
             None => {
                 drop(hashmap_guard);
@@ -91,10 +94,10 @@ impl WriterTable {
                     writer
                         .lock()
                         .unwrap()
-                        .push(stream_name, schema_key, record)?;
+                        .push(stream_name, schema_key, record, parsed_timestamp)?;
                 } else {
                     let mut writer = Writer::default();
-                    writer.push(stream_name, schema_key, record)?;
+                    writer.push(stream_name, schema_key, record, parsed_timestamp)?;
                     map.insert(stream_name.to_owned(), Mutex::new(writer));
                 }
             }
@@ -135,8 +138,11 @@ impl WriterTable {
     }
 }
 
-fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
-    TimestampMillisecondArray::from_value(Utc::now().timestamp_millis(), size)
+fn get_timestamp_array(size: usize, parsed_timestamp: NaiveDateTime) -> TimestampMillisecondArray {
+    println!("parsed_timestamp: {:?}", parsed_timestamp);
+    println!("parsed_timestamp: {:?}", parsed_timestamp.timestamp_millis());
+    TimestampMillisecondArray::from_value(parsed_timestamp.timestamp_millis(), size)
+    
 }
 
 pub mod errors {

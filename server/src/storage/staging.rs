@@ -26,7 +26,7 @@ use std::{
 };
 
 use arrow_schema::{ArrowError, Schema};
-use chrono::{NaiveDateTime, Timelike, Utc};
+use chrono::{NaiveDateTime, Timelike};
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -76,14 +76,13 @@ impl StorageDir {
         )
     }
 
-    fn filename_by_current_time(stream_hash: &str) -> String {
-        let datetime = Utc::now();
-        Self::filename_by_time(stream_hash, datetime.naive_utc())
+    fn filename_by_current_time(stream_hash: &str, parsed_timestamp: NaiveDateTime) -> String {
+        Self::filename_by_time(stream_hash, parsed_timestamp)
     }
 
-    pub fn path_by_current_time(&self, stream_hash: &str) -> PathBuf {
+    pub fn path_by_current_time(&self, stream_hash: &str, parsed_timestamp: NaiveDateTime) -> PathBuf {
         self.data_path
-            .join(Self::filename_by_current_time(stream_hash))
+            .join(Self::filename_by_current_time(stream_hash, parsed_timestamp))
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
