@@ -183,7 +183,7 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
     if STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
     }
-    super::logstream::create_stream(stream_name.to_string(), String::new()).await?;
+    super::logstream::create_stream(stream_name.to_string(), String::default()).await?;
     Ok(())
 }
 
@@ -282,7 +282,7 @@ mod tests {
             .append_header((PREFIX_META.to_string() + "C", "meta1"))
             .to_http_request();
 
-        let (size, rb, _, _) = into_event_batch(
+        let (size, rb, ..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
@@ -329,7 +329,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) = into_event_batch(
+        let (_, rb, ..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
@@ -367,7 +367,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) = into_event_batch(
+        let (_, rb, ..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             schema,
@@ -429,7 +429,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) = into_event_batch(
+        let (_, rb, ..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             schema,
@@ -476,7 +476,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) = into_event_batch(
+        let (_, rb, ..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
@@ -530,7 +530,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) = into_event_batch(
+        let (_, rb, ..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
@@ -584,7 +584,7 @@ mod tests {
         );
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) = into_event_batch(
+        let (_, rb, ..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             schema,
@@ -630,7 +630,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) = into_event_batch(
+        let (_, rb, ..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
@@ -715,7 +715,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) = into_event_batch(
+        let (_, rb,..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),

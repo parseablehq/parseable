@@ -109,7 +109,7 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 }
 
 pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let mut time_partition: String = String::new();
+    let mut time_partition: String = String::default();
     if let Some((_, time_partition_name)) = req
         .headers()
         .iter()
