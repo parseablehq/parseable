@@ -311,7 +311,7 @@ async fn dir_with_stream(
             Mode::Ingest => {
                 let (ip, port) = get_address();
                 let file_name = format!(
-                    "ingestor.{}.{}.{}",
+                    "ingestor.{}.{}{}",
                     &ip.to_string(),
                     &port.to_string(),
                     STREAM_METADATA_FILE_NAME
