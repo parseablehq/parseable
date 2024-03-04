@@ -148,7 +148,7 @@ impl QueryServer {
     }
 
     // update the .query.json file and return the new IngesterMetadataArr
-    async fn get_ingestor_info() -> anyhow::Result<IngesterMetadataArr> {
+    pub async fn get_ingestor_info() -> anyhow::Result<IngesterMetadataArr> {
         let store = CONFIG.storage().get_object_store();
 
         let root_path = RelativePathBuf::from("");
