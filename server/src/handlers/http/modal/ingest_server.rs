@@ -124,6 +124,7 @@ impl IngestServer {
                 // Base path "{url}/api/v1"
                 web::scope(&base_path()).service(Server::get_ingest_factory()),
             )
+            .service(Self::logstream_api())
             .service(Server::get_liveness_factory())
             .service(Server::get_readiness_factory())
             .service(Self::get_metrics_webscope());
@@ -157,6 +158,26 @@ impl IngestServer {
         (CONFIG.parseable.address.clone())
             .parse::<SocketAddr>()
             .unwrap()
+    }
+
+    fn logstream_api() -> Scope {
+        web::scope("/logstream")
+            .service(
+                // GET "/logstream" ==> Get list of all Log Streams on the server
+                web::resource("")
+                    .route(web::get().to(logstream::list).authorize(Action::ListStream)),
+            )
+            .service(
+                web::scope("/{logstream}").service(
+                    web::resource("")
+                        // PUT "/logstream/{logstream}" ==> Create log stream
+                        .route(
+                            web::put()
+                                .to(logstream::put_stream)
+                                .authorize_for_stream(Action::CreateStream),
+                        ),
+                ),
+            )
     }
 
     // create the ingestor metadata and put the .ingestor.json file in the object store
