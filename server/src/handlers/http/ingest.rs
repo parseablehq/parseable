@@ -715,7 +715,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb,..) = into_event_batch(
+        let (_, rb, ..) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
