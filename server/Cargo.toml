@@ -1,7 +1,7 @@
 [package]
 name = "parseable"
 version = "0.9.0"
-authors = ["Parseable Team <hi@parseable.io>"]
+authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2021"
 rust-version = "1.73"
 categories = ["logging", "observability", "log analytics"]
@@ -120,8 +120,8 @@ maplit = "1.0"
 rstest = "0.16"
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/v0.5/build.zip"
-assets-sha1 = "afa4d4c4fe125424303b4018d39faa2f4dce3af2"
+assets-url = "https://github.com/parseablehq/console/releases/download/v0.5.1/build.zip"
+assets-sha1 = "13dcc8cb4a0edbebb84b5923bee75c981ebac5de"
 
 [features]
 debug = []
