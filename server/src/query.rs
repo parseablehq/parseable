@@ -43,7 +43,7 @@ use crate::option::CONFIG;
 use crate::storage::{ObjectStorageProvider, StorageDir};
 
 use self::error::ExecuteError;
-
+use crate::metadata::STREAM_INFO;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
 
@@ -51,6 +51,7 @@ pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(CONFIG.storage()));
 
 // A query request by client
+#[derive(Debug)]
 pub struct Query {
     pub raw_logical_plan: LogicalPlan,
     pub start: DateTime<Utc>,
@@ -102,10 +103,11 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
-    pub async fn execute(&self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    pub async fn execute(&self, stream_name: String) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan())
+            .execute_logical_plan(self.final_logical_plan(stream_name))
             .await?;
+        println!("df: {:?}", df);
 
         let fields = df
             .schema()
@@ -120,8 +122,11 @@ impl Query {
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self) -> LogicalPlan {
+    fn final_logical_plan(&self, stream_name: String) -> LogicalPlan {
         let filters = self.filter_tag.clone().and_then(tag_filter);
+        println!("filters: {:?}", filters);
+        println!("start time: {:?}", self.start.naive_utc());
+        println!("end time: {:?}", self.end.naive_utc());
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -133,7 +138,9 @@ impl Query {
                     self.start.naive_utc(),
                     self.end.naive_utc(),
                     filters,
+                    stream_name
                 );
+                println!("transformed : {:?}", transformed);
                 LogicalPlan::Explain(Explain {
                     verbose: plan.verbose,
                     stringified_plans: vec![
@@ -144,7 +151,7 @@ impl Query {
                     logical_optimization_succeeded: plan.logical_optimization_succeeded,
                 })
             }
-            x => transform(x, self.start.naive_utc(), self.end.naive_utc(), filters),
+            x => transform(x, self.start.naive_utc(), self.end.naive_utc(), filters, stream_name),
         }
     }
 
@@ -195,22 +202,33 @@ fn transform(
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
     filters: Option<Expr>,
+    stream_name: String
 ) -> LogicalPlan {
     plan.transform(&|plan| match plan {
         LogicalPlan::TableScan(table) => {
+            let hash_map = STREAM_INFO.read().unwrap();
+            // let time_partition = hash_map
+            // .get(&stream_name)
+            // .ok_or(PostError::StreamNotFound(stream_name.clone()))?
+            // .time_partition
+            // .clone();
+            
             let mut new_filters = vec![];
             if !table_contains_any_time_filters(&table) {
-                let start_time_filter = PartialTimeFilter::Low(std::ops::Bound::Included(
+                
+                let start_time_filter =  PartialTimeFilter::Low(std::ops::Bound::Included(
                     start_time,
                 ))
                 .binary_expr(Expr::Column(Column::new(
                     Some(table.table_name.to_owned_reference()),
-                    event::DEFAULT_TIMESTAMP_KEY,
+                   // event::DEFAULT_TIMESTAMP_KEY,
+                    "timestamp",
                 )));
                 let end_time_filter = PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
                     .binary_expr(Expr::Column(Column::new(
                         Some(table.table_name.to_owned_reference()),
-                        event::DEFAULT_TIMESTAMP_KEY,
+                     //  event::DEFAULT_TIMESTAMP_KEY,
+                       "timestamp",
                     )));
                 new_filters.push(start_time_filter);
                 new_filters.push(end_time_filter);
@@ -219,9 +237,9 @@ fn transform(
             if let Some(tag_filters) = filters.clone() {
                 new_filters.push(tag_filters)
             }
-
+            println!("new_filters: {:?}", new_filters);
             let new_filter = new_filters.into_iter().reduce(and);
-
+            println!("new_filter: {:?}", new_filter);
             if let Some(new_filter) = new_filter {
                 let filter =
                     Filter::try_new(new_filter, Arc::new(LogicalPlan::TableScan(table))).unwrap();

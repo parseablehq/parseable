@@ -106,7 +106,7 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(())
     }
 
-    async fn create_stream(&self, stream_name: &str, time_partition: &str, time_partition_format: &str, time_partition_timezone: &str) -> Result<(), ObjectStorageError> {
+    async fn create_stream(&self, stream_name: &str, time_partition: &str) -> Result<(), ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
         format.set_id(CONFIG.parseable.username.clone());
         let permission = Permisssion::new(CONFIG.parseable.username.clone());
@@ -116,16 +116,7 @@ pub trait ObjectStorage: Sync + 'static {
         } else {
             format.time_partition = Some(time_partition.to_string());
         }
-        if time_partition_format.is_empty() {
-            format.time_partition_format = None;
-        } else {
-            format.time_partition_format = Some(time_partition_format.to_string());
-        }
-        if time_partition_timezone.is_empty() {
-            format.time_partition_timezone = None;
-        } else {
-            format.time_partition_timezone = Some(time_partition_timezone.to_string());
-        }
+        
         let format_json = to_bytes(&format);
         self.put_object(&schema_path(stream_name), to_bytes(&Schema::empty()))
             .await?;
@@ -283,6 +274,7 @@ pub trait ObjectStorage: Sync + 'static {
         path: &RelativePath,
     ) -> Result<Option<Manifest>, ObjectStorageError> {
         let path = manifest_path(path.as_str());
+        println!("path: {:?}", path);
         match self.get_object(&path).await {
             Ok(bytes) => Ok(Some(
                 serde_json::from_slice(&bytes).expect("manifest is valid json"),
@@ -306,12 +298,13 @@ pub trait ObjectStorage: Sync + 'static {
         self.put_object(&path, to_bytes(&manifest)).await
     }
 
-    async fn get_snapshot(&self, stream: &str) -> Result<Snapshot, ObjectStorageError> {
+    
+
+    async fn get_snapshot(&self, stream: &str) -> Result<ObjectStoreFormat, ObjectStorageError> {
         let path = stream_json_path(stream);
         let bytes = self.get_object(&path).await?;
         Ok(serde_json::from_slice::<ObjectStoreFormat>(&bytes)
-            .expect("snapshot is valid json")
-            .snapshot)
+            .expect("snapshot is valid json"))
     }
 
     async fn put_snapshot(
@@ -369,10 +362,11 @@ pub trait ObjectStorage: Sync + 'static {
                 let absolute_path = self
                     .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
                     .to_string();
+                let manifest_file_path = get_stream_manifest_path(stream_relative_path);
                 let store = CONFIG.storage().get_object_store();
                 let manifest =
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
-                catalog::update_snapshot(store, stream, manifest).await?;
+                catalog::update_snapshot(store, stream, manifest,&manifest_file_path).await?;
                 if cache_enabled && cache_manager.is_some() {
                     cache_updates
                         .entry(stream)
@@ -418,6 +412,7 @@ pub trait ObjectStorage: Sync + 'static {
     }
 }
 
+
 async fn commit_schema_to_storage(
     stream_name: &str,
     schema: Schema,
@@ -458,4 +453,10 @@ fn alert_json_path(stream_name: &str) -> RelativePathBuf {
 #[inline(always)]
 fn manifest_path(prefix: &str) -> RelativePathBuf {
     RelativePathBuf::from_iter([prefix, MANIFEST_FILE])
+}
+
+fn get_stream_manifest_path(stream_relative_path: String) -> String{
+    let v: Vec<&str> = stream_relative_path.split("/").collect();
+    let manifest_path = format!("{}/{}", v[0], v[1]);
+    manifest_path
 }

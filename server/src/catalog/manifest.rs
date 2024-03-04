@@ -112,7 +112,6 @@ pub fn create_from_parquet_file(
     let columns = column_statistics(row_groups);
     manifest_file.columns = columns.into_values().collect();
     let mut sort_orders = sort_order(row_groups);
-
     if let Some(last_sort_order) = sort_orders.pop() {
         if sort_orders
             .into_iter()
@@ -131,6 +130,7 @@ fn sort_order(
     let mut sort_orders = Vec::new();
     for row_group in row_groups {
         let sort_order = row_group.sorting_columns().unwrap();
+        println!("sort_order: {:?}", sort_order);
         let sort_order = sort_order
             .iter()
             .map(|sort_order| {
@@ -155,7 +155,8 @@ fn sort_order(
             })
             .collect_vec();
 
-        sort_orders.push(sort_order)
+        sort_orders.push(sort_order);
+        
     }
     sort_orders
 }

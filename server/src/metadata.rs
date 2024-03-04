@@ -47,8 +47,6 @@ pub struct LogStreamMetadata {
     pub created_at: String,
     pub first_event_at: Option<String>,
     pub time_partition: Option<String>,
-    pub time_partition_format: Option<String>,
-    pub time_partition_timezone: Option<String>
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -145,7 +143,7 @@ impl StreamInfo {
             })
     }
 
-    pub fn add_stream(&self, stream_name: String, created_at: String, time_partition: String, time_partition_format: String, time_partition_timezone: String) {
+    pub fn add_stream(&self, stream_name: String, created_at: String, time_partition: String) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
             created_at: if created_at.is_empty() {
@@ -157,16 +155,6 @@ impl StreamInfo {
                 None
             } else {
                 Some(time_partition.clone())
-            },
-            time_partition_format: if time_partition_format.is_empty() {
-                None
-            } else {
-                Some(time_partition_format.clone())
-            },
-            time_partition_timezone: if time_partition_timezone.is_empty() {
-                None
-            } else {
-                Some(time_partition_timezone.clone())
             },
             ..Default::default()
         };
@@ -204,8 +192,6 @@ impl StreamInfo {
                 created_at: meta.created_at,
                 first_event_at: meta.first_event_at,
                 time_partition: meta.time_partition,
-                time_partition_format: meta.time_partition_format,
-                time_partition_timezone: meta.time_partition_timezone
             };
 
             let mut map = self.write().expect(LOCK_EXPECT);

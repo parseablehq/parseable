@@ -43,7 +43,7 @@ use crate::{
     storage::OBJECT_STORE_DATA_GRANULARITY,
     utils::{self, arrow::merged_reader::MergedReverseRecordReader},
 };
-
+use rand::Rng;
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 const PARQUET_FILE_EXTENSION: &str = "data.parquet";
 
@@ -65,7 +65,15 @@ impl StorageDir {
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");
         let hostname = utils::hostname_unchecked();
-        format!("{local_uri}{hostname}.{extention}")
+        if extention == PARQUET_FILE_EXTENSION {
+            let mut rng = rand::thread_rng();
+            let n: u64 = rng.gen();
+            format!("{local_uri}{hostname}{n}.{extention}")
+        }
+        else{
+            format!("{local_uri}{hostname}.{extention}")
+        }
+        
     }
 
     fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
@@ -156,10 +164,13 @@ impl StorageDir {
     }
 
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
-        let filename = path.file_name().unwrap().to_str().unwrap();
-        let (_, filename) = filename.split_once('.').unwrap();
+        let file_stem = path.file_stem().unwrap().to_str().unwrap();
+        let mut rng = rand::thread_rng();
+        let n: u64 = rng.gen();
+        let (_, filename) = file_stem.split_once('.').unwrap();
+        let filename_with_random = format!("{}.{}.{}",filename, n, "arrows");
         let mut parquet_path = path.to_owned();
-        parquet_path.set_file_name(filename);
+        parquet_path.set_file_name(filename_with_random);
         parquet_path.set_extension("parquet");
         parquet_path
     }

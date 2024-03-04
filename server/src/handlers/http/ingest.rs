@@ -107,16 +107,8 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
             .ok_or(PostError::StreamNotFound(stream_name.clone()))?
             .time_partition
             .clone();
-        println!("time_partition: {:?}", time_partition);
-
-        let time_partition_format = hash_map
-            .get(&stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
-            .time_partition_format
-            .clone();
-        println!("time_partition: {:?}", time_partition_format);
         
-        into_event_batch(req, body, schema, time_partition, time_partition_format)?
+        into_event_batch(req, body, schema, time_partition)?
     };
 
     event::Event {
@@ -138,31 +130,27 @@ fn into_event_batch(
     body: Bytes,
     schema: HashMap<String, Arc<Field>>,
     time_partition: Option<String>,
-    time_partition_format: Option<String>,
 ) -> Result<(usize, arrow_array::RecordBatch, bool, NaiveDateTime ), PostError> {
     let tags = collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?;
     let size = body.len();
     let body: Value = serde_json::from_slice(&body)?;
-    let body_timestamp_format: &str = "%Y-%m-%dT%H:%M:%S%Z";
     let mut ingestion_prefix_timestamp = Utc::now().naive_utc();
-    if time_partition.is_some() && time_partition_format.is_some(){
+    if time_partition.is_some(){
         let body_timestamp = body.get(&time_partition.clone().unwrap().to_string());
         if body_timestamp.is_some(){
             if body_timestamp.unwrap().to_owned().as_str().unwrap().parse::<DateTime<Utc>>().is_ok(){
                 ingestion_prefix_timestamp = body_timestamp.unwrap().to_owned().as_str().unwrap().parse::<DateTime<Utc>>().unwrap().naive_utc();
-                println!("ingestion_prefix_timestamp: {:?}", ingestion_prefix_timestamp);
                 
             }
             else{
-                return Err(PostError::Invalid(anyhow::Error::msg(format!("field {} is not in the correct format {}", body_timestamp.unwrap().to_owned().as_str().unwrap(), body_timestamp_format))));
+                return Err(PostError::Invalid(anyhow::Error::msg(format!("field {} is not in the correct format", body_timestamp.unwrap().to_owned().as_str().unwrap()))));
             }
 
         }else{
             return Err(PostError::Invalid(anyhow::Error::msg(format!("field {} is not part of the log", time_partition.unwrap()))));
         }
     }
-    println!("ingestion_prefix_timestamp: {:?}", ingestion_prefix_timestamp);
     let event = format::json::Event {
         data: body,
         tags,
@@ -178,7 +166,7 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
     if STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
     }
-    super::logstream::create_stream(stream_name.to_string(), String::new(), String::new(), String::new()).await?;
+    super::logstream::create_stream(stream_name.to_string(), String::new()).await?;
     Ok(())
 }
 
@@ -282,7 +270,6 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
             None,
-            None,
         )
         .unwrap();
 
@@ -330,7 +317,6 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
             None,
-            None,
         )
         .unwrap();
 
@@ -365,8 +351,7 @@ mod tests {
         let req = TestRequest::default().to_http_request();
 
         let (_, rb, _, _) =
-            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,
-            None).unwrap();
+            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
@@ -400,7 +385,7 @@ mod tests {
 
         assert!(
             into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,
-            None)
+            )
                 .is_err()
         );
     }
@@ -422,7 +407,7 @@ mod tests {
 
         let (_, rb, _, _) =
             into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,
-            None).unwrap();
+            ).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -439,7 +424,7 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
             None,
-            None,
+            
         )
         .is_err())
     }
@@ -468,7 +453,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),None,
-            None,
+            
         )
         .unwrap();
 
@@ -522,7 +507,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),None,
-            None,
+            
         )
         .unwrap();
 
@@ -574,7 +559,7 @@ mod tests {
 
         let (_, rb, _,_) =
             into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,
-            None).unwrap();
+            ).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -618,7 +603,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),None,
-            None,
+            
         )
         .unwrap();
 
@@ -667,7 +652,7 @@ mod tests {
 
         assert!(
             into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,
-            None,)
+            )
                 .is_err()
         );
     }
@@ -701,7 +686,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),None,
-            None,
+            
         )
         .unwrap();
 

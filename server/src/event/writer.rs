@@ -30,7 +30,7 @@ use crate::utils;
 use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_schema::Schema;
-use chrono::NaiveDateTime;
+use chrono::{NaiveDateTime, Utc};
 use derive_more::{Deref, DerefMut};
 use once_cell::sync::Lazy;
 
@@ -55,9 +55,9 @@ impl Writer {
             rb.schema(),
             &rb,
             &[0],
-            &[Arc::new(get_timestamp_array(rb.num_rows(), parsed_timestamp))],
+            &[Arc::new(get_timestamp_array(rb.num_rows()))],
         );
-
+        
         self.disk.push(stream_name, schema_key, &rb, parsed_timestamp)?;
         self.mem.push(schema_key, rb);
         Ok(())
@@ -138,10 +138,8 @@ impl WriterTable {
     }
 }
 
-fn get_timestamp_array(size: usize, parsed_timestamp: NaiveDateTime) -> TimestampMillisecondArray {
-    println!("parsed_timestamp: {:?}", parsed_timestamp);
-    println!("parsed_timestamp: {:?}", parsed_timestamp.timestamp_millis());
-    TimestampMillisecondArray::from_value(parsed_timestamp.timestamp_millis(), size)
+fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
+    TimestampMillisecondArray::from_value(Utc::now().timestamp_millis(), size)
     
 }
 
