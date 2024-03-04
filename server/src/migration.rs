@@ -95,7 +95,6 @@ pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
 
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
     let path = stream_json_path(stream);
-    dbg!(&path);
 
     let stream_metadata = storage.get_object(&path).await?;
     let stream_metadata: serde_json::Value =

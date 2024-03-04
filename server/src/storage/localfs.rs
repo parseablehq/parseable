@@ -321,8 +321,6 @@ async fn dir_with_stream(
             Mode::Query | Mode::All => path.join(STREAM_METADATA_FILE_NAME),
         };
 
-        dbg!(&stream_json_path);
-
         if stream_json_path.exists() {
             Ok(Some(dir_name))
         } else {
