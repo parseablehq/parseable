@@ -23,15 +23,14 @@ use actix_web::{web, HttpRequest, Responder};
 use chrono::Utc;
 use serde_json::Value;
 
+use self::error::{CreateStreamError, StreamError};
 use crate::alerts::Alerts;
+use crate::handlers::TIME_PARTITION_KEY;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
-use crate::storage::retention::Retention;
-use crate::storage::{LogStream, StorageDir};
+use crate::storage::{retention::Retention, LogStream, StorageDir};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
-use crate::handlers::TIME_PARTITION_KEY;
-use self::error::{CreateStreamError, StreamError};
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -117,7 +116,6 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
         .find(|&(key, _)| key == TIME_PARTITION_KEY)
     {
         time_partition = time_partition_name.to_str().unwrap().to_owned();
-        
     }
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
@@ -337,7 +335,10 @@ fn remove_id_from_alerts(value: &mut Value) {
     }
 }
 
-pub async fn create_stream(stream_name: String, time_partition: String) -> Result<(), CreateStreamError> {
+pub async fn create_stream(
+    stream_name: String,
+    time_partition: String,
+) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     validator::stream_name(&stream_name)?;
 
@@ -347,15 +348,15 @@ pub async fn create_stream(stream_name: String, time_partition: String) -> Resul
         return Err(CreateStreamError::Storage { stream_name, err });
     }
 
-
-    let stream_meta: Result<crate::storage::ObjectStoreFormat, crate::storage::ObjectStorageError> = CONFIG
-        .storage()
-        .get_object_store()
-        .get_stream_metadata(&stream_name)
-        .await;
+    let stream_meta: Result<crate::storage::ObjectStoreFormat, crate::storage::ObjectStorageError> =
+        CONFIG
+            .storage()
+            .get_object_store()
+            .get_stream_metadata(&stream_name)
+            .await;
     let stream_meta = stream_meta.unwrap();
     let created_at = stream_meta.created_at;
-    
+
     metadata::STREAM_INFO.add_stream(stream_name.to_string(), created_at, time_partition);
 
     Ok(())

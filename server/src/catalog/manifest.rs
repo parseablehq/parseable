@@ -130,7 +130,6 @@ fn sort_order(
     let mut sort_orders = Vec::new();
     for row_group in row_groups {
         let sort_order = row_group.sorting_columns().unwrap();
-        println!("sort_order: {:?}", sort_order);
         let sort_order = sort_order
             .iter()
             .map(|sort_order| {
@@ -156,7 +155,6 @@ fn sort_order(
             .collect_vec();
 
         sort_orders.push(sort_order);
-        
     }
     sort_orders
 }

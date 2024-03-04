@@ -19,11 +19,11 @@
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_schema::Field;
 use bytes::Bytes;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use http::StatusCode;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use chrono::{DateTime, Utc, NaiveDateTime};
 
 use crate::event::error::EventError;
 use crate::event::format::EventFormat;
@@ -107,7 +107,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
             .ok_or(PostError::StreamNotFound(stream_name.clone()))?
             .time_partition
             .clone();
-        
+
         into_event_batch(req, body, schema, time_partition)?
     };
 
@@ -123,39 +123,56 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
     .await?;
 
     Ok(())
-}    
+}
 
 fn into_event_batch(
     req: HttpRequest,
     body: Bytes,
     schema: HashMap<String, Arc<Field>>,
     time_partition: Option<String>,
-) -> Result<(usize, arrow_array::RecordBatch, bool, NaiveDateTime ), PostError> {
+) -> Result<(usize, arrow_array::RecordBatch, bool, NaiveDateTime), PostError> {
     let tags = collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?;
     let size = body.len();
     let body: Value = serde_json::from_slice(&body)?;
     let mut ingestion_prefix_timestamp = Utc::now().naive_utc();
-    if time_partition.is_some(){
-        let body_timestamp = body.get(&time_partition.clone().unwrap().to_string());
-        if body_timestamp.is_some(){
-            if body_timestamp.unwrap().to_owned().as_str().unwrap().parse::<DateTime<Utc>>().is_ok(){
-                ingestion_prefix_timestamp = body_timestamp.unwrap().to_owned().as_str().unwrap().parse::<DateTime<Utc>>().unwrap().naive_utc();
-                
-            }
-            else{
-                return Err(PostError::Invalid(anyhow::Error::msg(format!("field {} is not in the correct format", body_timestamp.unwrap().to_owned().as_str().unwrap()))));
-            }
 
-        }else{
-            return Err(PostError::Invalid(anyhow::Error::msg(format!("field {} is not part of the log", time_partition.unwrap()))));
+    if time_partition.is_some() {
+        let body_timestamp = body.get(&time_partition.clone().unwrap().to_string());
+        if body_timestamp.is_some() {
+            if body_timestamp
+                .unwrap()
+                .to_owned()
+                .as_str()
+                .unwrap()
+                .parse::<DateTime<Utc>>()
+                .is_ok()
+            {
+                ingestion_prefix_timestamp = body_timestamp
+                    .unwrap()
+                    .to_owned()
+                    .as_str()
+                    .unwrap()
+                    .parse::<DateTime<Utc>>()
+                    .unwrap()
+                    .naive_utc();
+            } else {
+                return Err(PostError::Invalid(anyhow::Error::msg(format!(
+                    "field {} is not in the correct datetime format",
+                    body_timestamp.unwrap().to_owned().as_str().unwrap()
+                ))));
+            }
+        } else {
+            return Err(PostError::Invalid(anyhow::Error::msg(format!(
+                "ingestion failed as field {} is not part of the log",
+                time_partition.unwrap()
+            ))));
         }
     }
     let event = format::json::Event {
         data: body,
         tags,
         metadata,
-
     };
     let (rb, is_first) = event.into_recordbatch(schema)?;
     Ok((size, rb, is_first, ingestion_prefix_timestamp))
@@ -350,8 +367,13 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) =
-            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,).unwrap();
+        let (_, rb, _, _) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            schema,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
@@ -383,11 +405,13 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(
-            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,
-            )
-                .is_err()
-        );
+        assert!(into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            schema,
+            None,
+        )
+        .is_err());
     }
 
     #[test]
@@ -405,9 +429,13 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _, _) =
-            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,
-            ).unwrap();
+        let (_, rb, _, _) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            schema,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -424,7 +452,6 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
             None,
-            
         )
         .is_err())
     }
@@ -452,8 +479,8 @@ mod tests {
         let (_, rb, _, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            HashMap::default(),None,
-            
+            HashMap::default(),
+            None,
         )
         .unwrap();
 
@@ -503,11 +530,11 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _,_) = into_event_batch(
+        let (_, rb, _, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            HashMap::default(),None,
-            
+            HashMap::default(),
+            None,
         )
         .unwrap();
 
@@ -557,9 +584,13 @@ mod tests {
         );
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _,_) =
-            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,
-            ).unwrap();
+        let (_, rb, _, _) = into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            schema,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -599,11 +630,11 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _,_) = into_event_batch(
+        let (_, rb, _, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            HashMap::default(),None,
-            
+            HashMap::default(),
+            None,
         )
         .unwrap();
 
@@ -650,11 +681,13 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(
-            into_event_batch(req, Bytes::from(serde_json::to_vec(&json).unwrap()), schema,None,
-            )
-                .is_err()
-        );
+        assert!(into_event_batch(
+            req,
+            Bytes::from(serde_json::to_vec(&json).unwrap()),
+            schema,
+            None,
+        )
+        .is_err());
     }
 
     #[test]
@@ -682,11 +715,11 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (_, rb, _,_) = into_event_batch(
+        let (_, rb, _, _) = into_event_batch(
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
-            HashMap::default(),None,
-            
+            HashMap::default(),
+            None,
         )
         .unwrap();
 

@@ -149,12 +149,12 @@ impl StreamInfo {
             created_at: if created_at.is_empty() {
                 Local::now().to_rfc3339()
             } else {
-                created_at.clone()
+                created_at
             },
             time_partition: if time_partition.is_empty() {
                 None
             } else {
-                Some(time_partition.clone())
+                Some(time_partition)
             },
             ..Default::default()
         };

@@ -22,7 +22,10 @@ use chrono::{DateTime, Local, NaiveDateTime, NaiveTime, Utc};
 use relative_path::RelativePathBuf;
 
 use crate::{
-    catalog::manifest::Manifest, event::DEFAULT_TIMESTAMP_KEY, query::PartialTimeFilter, storage::{ObjectStorage, ObjectStorageError}
+    catalog::manifest::Manifest,
+    event::DEFAULT_TIMESTAMP_KEY,
+    query::PartialTimeFilter,
+    storage::{ObjectStorage, ObjectStorageError},
 };
 
 use self::{column::Column, snapshot::ManifestItem};
@@ -67,64 +70,62 @@ impl ManifestFile for manifest::File {
     }
 }
 
-fn get_file_bounds(file: &manifest::File, partition_column: String) -> (DateTime<Utc>, DateTime<Utc>) {
-    if partition_column == DEFAULT_TIMESTAMP_KEY.to_string(){
+fn get_file_bounds(
+    file: &manifest::File,
+    partition_column: String,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    if partition_column == *DEFAULT_TIMESTAMP_KEY.to_string() {
         match file
-        .columns()
-        .iter()
-        .find(|col| col.name == partition_column)
-        .unwrap()
-        .stats
-        .clone()
-        .unwrap()
-    {
-        column::TypedStatistics::Int(stats) => (
-            NaiveDateTime::from_timestamp_millis(stats.min)
-                .unwrap()
-                .and_utc(),
-            NaiveDateTime::from_timestamp_millis(stats.max)
-                .unwrap()
-                .and_utc(),
-        ),
-        _ => unreachable!(),
+            .columns()
+            .iter()
+            .find(|col| col.name == partition_column)
+            .unwrap()
+            .stats
+            .clone()
+            .unwrap()
+        {
+            column::TypedStatistics::Int(stats) => (
+                NaiveDateTime::from_timestamp_millis(stats.min)
+                    .unwrap()
+                    .and_utc(),
+                NaiveDateTime::from_timestamp_millis(stats.max)
+                    .unwrap()
+                    .and_utc(),
+            ),
+            _ => unreachable!(),
+        }
+    } else {
+        match file
+            .columns()
+            .iter()
+            .find(|col| col.name == partition_column)
+            .unwrap()
+            .stats
+            .clone()
+            .unwrap()
+        {
+            column::TypedStatistics::String(stats) => (
+                stats.min.parse::<DateTime<Utc>>().unwrap(),
+                stats.max.parse::<DateTime<Utc>>().unwrap(),
+            ),
+            _ => unreachable!(),
+        }
     }
-}
-else{
-    match file
-    .columns()
-    .iter()
-    .find(|col| col.name == partition_column)
-    .unwrap()
-    .stats
-    .clone()
-    .unwrap()
-{
-    column::TypedStatistics::String(stats) => (
-        stats.min.parse::<DateTime<Utc>>().unwrap(),
-        stats.max.parse::<DateTime<Utc>>().unwrap(),
-    ),
-    _ => unreachable!(),
-}
-}
-    
-    
 }
 
 pub async fn update_snapshot(
     storage: Arc<dyn ObjectStorage + Send>,
     stream_name: &str,
     change: manifest::File,
-    manifest_file_path: &str,
 ) -> Result<(), ObjectStorageError> {
     // get current snapshot
-    let mut meta = storage.get_snapshot(stream_name).await?;
+    let mut meta = storage.get_object_store_format(stream_name).await?;
     let manifests = &mut meta.snapshot.manifest_list;
     let time_partition = meta.time_partition;
     let mut _lower_bound = Utc::now();
     if time_partition.is_none() {
         (_lower_bound, _) = get_file_bounds(&change, DEFAULT_TIMESTAMP_KEY.to_string());
-    }
-    else{
+    } else {
         (_lower_bound, _) = get_file_bounds(&change, time_partition.unwrap().to_string());
     }
     let pos = manifests.iter().position(|item| {
@@ -135,8 +136,9 @@ pub async fn update_snapshot(
     // This updates an existing file so there is no need to create a snapshot entry.
     if let Some(pos) = pos {
         let info = &mut manifests[pos];
-        let manifest_path = partition_path(stream_name, info.time_lower_bound, info.time_upper_bound);
-        
+        let manifest_path =
+            partition_path(stream_name, info.time_lower_bound, info.time_upper_bound);
+
         let Some(mut manifest) = storage.get_manifest(&manifest_path).await? else {
             return Err(ObjectStorageError::UnhandledError(
                 "Manifest found in snapshot but not in object-storage"
@@ -165,9 +167,6 @@ pub async fn update_snapshot(
         };
 
         let path = partition_path(stream_name, lower_bound, upper_bound).join("manifest.json");
-        // println!("path: {:?}", path);
-        // let manifest_path = relative_path::RelativePathBuf::from(manifest_file_path).join("manifest.json");
-        // println!("manifest_path: {:?}", manifest_path);
         storage
             .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())
             .await?;
@@ -190,7 +189,7 @@ pub async fn remove_manifest_from_snapshot(
     dates: Vec<String>,
 ) -> Result<(), ObjectStorageError> {
     // get current snapshot
-    let mut meta = storage.get_snapshot(stream_name).await?;
+    let mut meta = storage.get_object_store_format(stream_name).await?;
     let manifests = &mut meta.snapshot.manifest_list;
 
     // Filter out items whose manifest_path contains any of the dates_to_delete
@@ -205,7 +204,7 @@ pub async fn get_first_event(
     stream_name: &str,
 ) -> Result<Option<String>, ObjectStorageError> {
     // get current snapshot
-    let mut meta = storage.get_snapshot(stream_name).await?;
+    let mut meta = storage.get_object_store_format(stream_name).await?;
     let manifests = &mut meta.snapshot.manifest_list;
 
     if manifests.is_empty() {

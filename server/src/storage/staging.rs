@@ -65,15 +65,7 @@ impl StorageDir {
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");
         let hostname = utils::hostname_unchecked();
-        if extention == PARQUET_FILE_EXTENSION {
-            let mut rng = rand::thread_rng();
-            let n: u64 = rng.gen();
-            format!("{local_uri}{hostname}{n}.{extention}")
-        }
-        else{
-            format!("{local_uri}{hostname}.{extention}")
-        }
-        
+        format!("{local_uri}{hostname}.{extention}")
     }
 
     fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
@@ -88,9 +80,15 @@ impl StorageDir {
         Self::filename_by_time(stream_hash, parsed_timestamp)
     }
 
-    pub fn path_by_current_time(&self, stream_hash: &str, parsed_timestamp: NaiveDateTime) -> PathBuf {
-        self.data_path
-            .join(Self::filename_by_current_time(stream_hash, parsed_timestamp))
+    pub fn path_by_current_time(
+        &self,
+        stream_hash: &str,
+        parsed_timestamp: NaiveDateTime,
+    ) -> PathBuf {
+        self.data_path.join(Self::filename_by_current_time(
+            stream_hash,
+            parsed_timestamp,
+        ))
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
@@ -166,11 +164,11 @@ impl StorageDir {
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
         let file_stem = path.file_stem().unwrap().to_str().unwrap();
         let mut rng = rand::thread_rng();
-        let n: u64 = rng.gen();
+        let random_number: u64 = rng.gen();
         let (_, filename) = file_stem.split_once('.').unwrap();
-        let filename_with_random = format!("{}.{}.{}",filename, n, "arrows");
+        let filename_with_random_number = format!("{}.{}.{}", filename, random_number, "arrows");
         let mut parquet_path = path.to_owned();
-        parquet_path.set_file_name(filename_with_random);
+        parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
         parquet_path
     }

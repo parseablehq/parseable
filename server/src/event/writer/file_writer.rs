@@ -17,13 +17,13 @@
  *
  */
 
+use arrow_array::RecordBatch;
+use arrow_ipc::writer::StreamWriter;
+use chrono::NaiveDateTime;
+use derive_more::{Deref, DerefMut};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
-use chrono::NaiveDateTime;
-use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
-use derive_more::{Deref, DerefMut};
 
 use crate::storage::staging::StorageDir;
 
@@ -44,9 +44,10 @@ impl FileWriter {
         stream_name: &str,
         schema_key: &str,
         record: &RecordBatch,
-        parsed_timestamp: NaiveDateTime
+        parsed_timestamp: NaiveDateTime,
     ) -> Result<(), StreamWriterError> {
-        let (path, writer) = init_new_stream_writer_file(stream_name, schema_key, record, parsed_timestamp)?;
+        let (path, writer) =
+            init_new_stream_writer_file(stream_name, schema_key, record, parsed_timestamp)?;
         self.insert(
             schema_key.to_owned(),
             ArrowWriter {

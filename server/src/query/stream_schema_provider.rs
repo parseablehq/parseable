@@ -40,7 +40,7 @@ use datafusion::{
     optimizer::utils::conjunction,
     physical_expr::{create_physical_expr, PhysicalSortExpr},
     physical_plan::{self, empty::EmptyExec, union::UnionExec, ExecutionPlan, Statistics},
-    prelude::{Column, Expr},
+    prelude::Expr,
     scalar::ScalarValue,
 };
 use futures_util::{stream::FuturesOrdered, StreamExt, TryFutureExt, TryStreamExt};
@@ -287,9 +287,7 @@ impl TableProvider for StandardTableProvider {
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut memory_exec = None;
         let mut cache_exec = None;
-        println!("filters: {:?}", filters);
         let time_filters = extract_primary_filter(filters);
-        println!("time_filters: {:?}", time_filters);
         if time_filters.is_empty() {
             return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
         }
@@ -316,7 +314,7 @@ impl TableProvider for StandardTableProvider {
 
         // Fetch snapshot
         let object_store_format = glob_storage
-            .get_snapshot(&self.stream)
+            .get_object_store_format(&self.stream)
             .await
             .map_err(|err| DataFusionError::Plan(err.to_string()))?;
 
@@ -512,31 +510,51 @@ impl PartialTimeFilter {
         Some(value)
     }
 
-    pub fn binary_expr(&self, left: Expr) -> Expr {
+    pub fn binary_expr_default_timestamp_key(&self, left: Expr) -> Expr {
         let (op, right) = match self {
             PartialTimeFilter::Low(Bound::Excluded(time)) => {
-                (Operator::Gt, time)
+                (Operator::Gt, time.timestamp_millis())
             }
             PartialTimeFilter::Low(Bound::Included(time)) => {
-                (Operator::GtEq, time)
+                (Operator::GtEq, time.timestamp_millis())
             }
             PartialTimeFilter::High(Bound::Excluded(time)) => {
-                (Operator::Lt, time)
+                (Operator::Lt, time.timestamp_millis())
             }
             PartialTimeFilter::High(Bound::Included(time)) => {
-                (Operator::LtEq, time)
+                (Operator::LtEq, time.timestamp_millis())
             }
-            PartialTimeFilter::Eq(time) => (Operator::Eq, time),
+            PartialTimeFilter::Eq(time) => (Operator::Eq, time.timestamp_millis()),
             _ => unimplemented!(),
         };
-        
 
         Expr::BinaryExpr(BinaryExpr::new(
             Box::new(left),
             op,
-            Box::new(Expr::Literal(ScalarValue::Utf8(
-                Some(format!("{:?}", right)),
+            Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
+                Some(right),
+                None,
             ))),
+        ))
+    }
+
+    pub fn binary_expr_timestamp_partition_key(&self, left: Expr) -> Expr {
+        let (op, right) = match self {
+            PartialTimeFilter::Low(Bound::Excluded(time)) => (Operator::Gt, time),
+            PartialTimeFilter::Low(Bound::Included(time)) => (Operator::GtEq, time),
+            PartialTimeFilter::High(Bound::Excluded(time)) => (Operator::Lt, time),
+            PartialTimeFilter::High(Bound::Included(time)) => (Operator::LtEq, time),
+            PartialTimeFilter::Eq(time) => (Operator::Eq, time),
+            _ => unimplemented!(),
+        };
+
+        Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(left),
+            op,
+            Box::new(Expr::Literal(ScalarValue::Utf8(Some(format!(
+                "{:?}",
+                right
+            ))))),
         ))
     }
 
@@ -616,18 +634,13 @@ fn expr_in_boundary(filter: &Expr) -> bool {
 }
 
 fn extract_from_lit(expr: &Expr) -> Option<NaiveDateTime> {
-    println!("expr: {:?}", expr);
     if let Expr::Literal(value) = expr {
-        println!("value: {:?}", value);
         match value {
             ScalarValue::TimestampMillisecond(Some(value), _) => {
                 Some(NaiveDateTime::from_timestamp_millis(*value).unwrap())
-            },
-            ScalarValue::Utf8(Some(str_value)) => {
-                println!("str_value: {:?}", str_value);
-                Some(str_value.parse::<NaiveDateTime>().unwrap())
             }
-            
+            ScalarValue::Utf8(Some(str_value)) => Some(str_value.parse::<NaiveDateTime>().unwrap()),
+
             _ => None,
         }
     } else {
@@ -636,20 +649,8 @@ fn extract_from_lit(expr: &Expr) -> Option<NaiveDateTime> {
 }
 
 fn extract_timestamp_bound(binexpr: &BinaryExpr) -> Option<(Operator, NaiveDateTime)> {
-    println!("binexpr: {:?}", binexpr);
-    println!("binexpr.left: {:?}", binexpr.left);
-    println!("binexpr.right: {:?}", binexpr.right);
-
     let time = extract_from_lit(&binexpr.right)?;
-    println!("time: {:?}", time);
     Some((binexpr.op, time))
-    // if matches!(&*binexpr.left, Expr::Column(Column { name, .. }) if name == DEFAULT_TIMESTAMP_KEY)
-    // {
-    //     let time = extract_from_lit(&binexpr.right)?;
-    //     Some((binexpr.op, time))
-    // } else {
-    //     None
-    // }
 }
 
 async fn collect_manifest_files(

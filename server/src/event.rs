@@ -26,10 +26,10 @@ use itertools::Itertools;
 
 use std::sync::Arc;
 
-use crate::metadata;
-use chrono::NaiveDateTime;
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
+use crate::metadata;
+use chrono::NaiveDateTime;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 pub const DEFAULT_TAGS_KEY: &str = "p_tags";
@@ -55,7 +55,12 @@ impl Event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        Self::process_event(&self.stream_name, &key, self.rb.clone(), self.parsed_timestamp)?;
+        Self::process_event(
+            &self.stream_name,
+            &key,
+            self.rb.clone(),
+            self.parsed_timestamp,
+        )?;
 
         metadata::STREAM_INFO.update_stats(
             &self.stream_name,
