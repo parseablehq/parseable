@@ -16,6 +16,7 @@
  *
  */
 
+use crate::handlers::http::logstream::error::StreamError;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
 use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
 use actix_web::http::header;
@@ -23,6 +24,7 @@ use actix_web::web;
 use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
+use http::StatusCode;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use std::sync::Arc;
@@ -31,7 +33,7 @@ use url::Url;
 
 use tokio::fs::File as TokioFile;
 
-use crate::option::CONFIG;
+use crate::option::{Mode, CONFIG};
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
@@ -241,5 +243,71 @@ impl QueryServer {
             .open(meta_path)
             .await
             .unwrap()
+    }
+
+    // forward the request to all ingestors to keep them in sync
+    pub async fn sync_streams_with_ingestors(stream_name: &str) -> Result<(), StreamError> {
+        // TODO: implment a transactional sync to rollback if any of the ingestors fail
+        match &CONFIG.parseable.mode {
+            Mode::Query => {
+                let ingestor_infos = Self::get_ingestor_info()
+                    .await
+                    .map_err(|err| {
+                        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+                        StreamError::Custom {
+                            msg: format!("failed to get ingestor info\n{:?}", err),
+                            status: StatusCode::INTERNAL_SERVER_ERROR,
+                        }
+                    })?;
+
+                for ingester in ingestor_infos {
+                    let url = format!(
+                        "{}{}/logstream/{}",
+                        ingester.domain_name.to_string().trim_end_matches('/'),
+                        base_path(),
+                        stream_name
+                    );
+
+                    let client = reqwest::Client::new();
+                    let res = client
+                        .put(&url)
+                        .header("Content-Type", "application/json")
+                        .header("Authorization", ingester.token)
+                        .send()
+                        .await
+                        .map_err(|err| {
+                            log::error!(
+                                "Fatal: failed to forward create stream request to ingestor: {}\n Error: {:?}",
+                                ingester.domain_name,
+                                err
+                            );
+                            StreamError::Custom {
+                                msg: format!(
+                                    "failed to forward create stream request to ingestor: {}\n Error: {:?}",
+                                    ingester.domain_name,
+                                    err
+                                ),
+                                status: StatusCode::INTERNAL_SERVER_ERROR,
+                            }
+                        })?;
+
+                    if !res.status().is_success() {
+                        log::error!(
+                            "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                            ingester.domain_name,res
+                        );
+                        return Err(StreamError::Custom {
+                            msg: format!(
+                                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                                ingester.domain_name,res.text().await.unwrap_or_default()
+                            ),
+                            status: StatusCode::INTERNAL_SERVER_ERROR,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }

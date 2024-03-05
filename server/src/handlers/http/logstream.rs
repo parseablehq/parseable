@@ -24,7 +24,6 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::alerts::Alerts;
-use crate::handlers::http::base_path;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 use crate::storage::retention::Retention;
@@ -114,7 +113,6 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 
 pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    dbg!(&stream_name);
     if metadata::STREAM_INFO.stream_exists(&stream_name) {
         // Error if the log stream already exists
         return Err(StreamError::Custom {
@@ -125,65 +123,7 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
         });
     }
     create_stream(stream_name.clone()).await?;
-
-    // forward the request to all ingestors to keep them in sync
-    // in ingest mode, the user wont be able to create a stream
-    // to be changed create_stream_if_not_exists func ingest.rs:139
-
-    let ii = query_server::QueryServer::get_ingestor_info()
-        .await
-        .map_err(|err| {
-            log::error!("failed to get ingestor info: {:?}", err);
-            StreamError::Custom {
-                msg: format!("failed to get ingestor info\n{}", err),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?;
-
-    // TODO: remember to add the guard for mode here
-    for ingester in ii {
-        let url = format!(
-            "{}{}/logstream/{}",
-            ingester.domain_name.to_string().trim_end_matches('/'),
-            base_path(),
-            stream_name
-        );
-        dbg!(&url);
-        // format!("http://{}:{}/api/v1/logstream/{}", ingester.domain_name, ingester.port, stream_name);
-        let client = reqwest::Client::new();
-        let res = client
-            .put(&url)
-            .header("Authorization", ingester.token)
-            .send()
-            .await
-            .map_err(|err| {
-                log::error!(
-                    "failed to forward create stream request to ingestor: {:?}",
-                    err
-                );
-                StreamError::Custom {
-                    msg: format!(
-                        "failed to forward create stream request to ingestor\n{:?}",
-                        err
-                    ),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-            })?;
-
-        if !res.status().is_success() {
-            log::error!(
-                "failed to forward create stream request to ingestor: {:?}",
-                res
-            );
-            return Err(StreamError::Custom {
-                msg: format!(
-                    "failed to forward create stream request to ingestor\n{:?}",
-                    res.text().await.unwrap_or_default()
-                ),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            });
-        }
-    }
+    query_server::QueryServer::sync_streams_with_ingestors(&stream_name).await?;
 
     Ok(("log stream created", StatusCode::OK))
 }
@@ -407,7 +347,6 @@ pub async fn create_stream(stream_name: String) -> Result<(), CreateStreamError>
     let created_at = stream_meta.unwrap().created_at;
 
     metadata::STREAM_INFO.add_stream(stream_name.to_string(), created_at);
-
     Ok(())
 }
 
