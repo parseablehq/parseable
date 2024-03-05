@@ -54,16 +54,8 @@ impl ParseableServer for QueryServer {
         // on subsequent runs, the qurier should check if the ingestor is up and running or not
         for ingester in data.iter() {
             // dbg!(&ingester);
-            // yes the format macro does not need the '/' ingester.origin already
-            // has '/' because Url::Parse will add it if it is not present
-            // uri should be something like `http://address/api/v1/liveness`
-            let uri = Url::parse(&format!(
-                "{}{}/liveness",
-                &ingester.domain_name,
-                base_path()
-            ))?;
 
-            if !Self::check_liveness(uri).await {
+            if !Self::check_liveness(&ingester.domain_name).await {
                 eprintln!("Ingestor at {} is not reachable", &ingester.domain_name);
             } else {
                 println!("Ingestor at {} is up and running", &ingester.domain_name);
@@ -169,7 +161,13 @@ impl QueryServer {
         Ok(arr)
     }
 
-    pub async fn check_liveness(uri: Url) -> bool {
+    pub async fn check_liveness(domain_name: &str) -> bool {
+        let uri = Url::parse(&format!(
+            "{}{}/liveness",
+            domain_name,
+            base_path()
+        )).unwrap();
+
         let reqw = reqwest::Client::new()
             .get(uri)
             .header(header::CONTENT_TYPE, "application/json")
