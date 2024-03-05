@@ -169,15 +169,40 @@ impl IngestServer {
                     .route(web::get().to(logstream::list).authorize(Action::ListStream)),
             )
             .service(
-                web::scope("/{logstream}").service(
-                    web::resource("")
-                        // PUT "/logstream/{logstream}" ==> Create log stream
-                        .route(
-                            web::put()
-                                .to(logstream::put_stream)
-                                .authorize_for_stream(Action::CreateStream),
+                web::scope("/{logstream}")
+                    .service(
+                        web::resource("")
+                            // PUT "/logstream/{logstream}" ==> Create log stream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_stream)
+                                    .authorize_for_stream(Action::CreateStream),
+                            ),
+                    )
+                    .service(
+                        // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
+                        web::resource("/stats").route(
+                            web::get()
+                                .to(logstream::get_stats)
+                                .authorize_for_stream(Action::GetStats),
                         ),
-                ),
+                    )
+                    // ! this should not be needed
+                    .service(
+                        web::resource("/retention")
+                            // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_retention)
+                                    .authorize_for_stream(Action::PutRetention),
+                            )
+                            // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
+                            .route(
+                                web::get()
+                                    .to(logstream::get_retention)
+                                    .authorize_for_stream(Action::GetRetention),
+                            ),
+                    ),
             )
     }
 
