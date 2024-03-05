@@ -166,11 +166,7 @@ impl QueryServer {
     }
 
     pub async fn check_liveness(domain_name: &str) -> bool {
-        let uri = Url::parse(&format!(
-            "{}{}/liveness",
-            domain_name,
-            base_path()
-        )).unwrap();
+        let uri = Url::parse(&format!("{}{}/liveness", domain_name, base_path())).unwrap();
 
         let reqw = reqwest::Client::new()
             .get(uri)
@@ -248,30 +244,29 @@ impl QueryServer {
     }
 
     // forward the request to all ingestors to keep them in sync
+    // BUG: If any ingestor is offline this will error out the entire request
     pub async fn sync_streams_with_ingestors(stream_name: &str) -> Result<(), StreamError> {
         // TODO: implment a transactional sync to rollback if any of the ingestors fail
-        match &CONFIG.parseable.mode {
-            Mode::Query => {
-                let ingestor_infos = Self::get_ingestor_info()
-                    .await
-                    .map_err(|err| {
-                        log::error!("Fatal: failed to get ingestor info: {:?}", err);
-                        StreamError::Custom {
-                            msg: format!("failed to get ingestor info\n{:?}", err),
-                            status: StatusCode::INTERNAL_SERVER_ERROR,
-                        }
-                    })?;
+        // ? Lower cognitive load by moving the mode filter to the calling function
+        if CONFIG.parseable.mode == Mode::Query {
+            let ingestor_infos = Self::get_ingestor_info().await.map_err(|err| {
+                log::error!("Fatal: failed to get ingestor info: {:?}", err);
+                StreamError::Custom {
+                    msg: format!("failed to get ingestor info\n{:?}", err),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                }
+            })?;
 
-                for ingester in ingestor_infos {
-                    let url = format!(
-                        "{}{}/logstream/{}",
-                        ingester.domain_name.to_string().trim_end_matches('/'),
-                        base_path(),
-                        stream_name
-                    );
+            for ingester in ingestor_infos {
+                let url = format!(
+                    "{}{}/logstream/{}",
+                    ingester.domain_name.to_string().trim_end_matches('/'),
+                    base_path(),
+                    stream_name
+                );
 
-                    let client = reqwest::Client::new();
-                    let res = client
+                let client = reqwest::Client::new();
+                let res = client
                         .put(&url)
                         .header("Content-Type", "application/json")
                         .header("Authorization", ingester.token)
@@ -293,30 +288,26 @@ impl QueryServer {
                             }
                         })?;
 
-                    if !res.status().is_success() {
-                        log::error!(
+                if !res.status().is_success() {
+                    log::error!(
                             "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
                             ingester.domain_name,res
                         );
-                        return Err(StreamError::Custom {
+                    return Err(StreamError::Custom {
                             msg: format!(
                                 "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
                                 ingester.domain_name,res.text().await.unwrap_or_default()
                             ),
                             status: StatusCode::INTERNAL_SERVER_ERROR,
                         });
-                    }
                 }
             }
-            _ => {}
         }
         Ok(())
     }
 
     // BUG: If any ingestor is offline this will error out the entire request
-    pub async fn fetch_stats_from_ingestors(
-        stream_name: &str,
-    ) -> Result<QuriedStats, StreamError> {
+    pub async fn fetch_stats_from_ingestors(stream_name: &str) -> Result<QuriedStats, StreamError> {
         // ? Lower cognitive load by moving the mode filter to the calling function
         let mut stats = Vec::new();
 
@@ -398,11 +389,9 @@ impl QueryServer {
         let stream_name = stats[0].stream.clone();
         let min_first_event_at = stats
             .iter()
-            .map(|x| {
-                match x.first_event_at.as_ref() {
-                    Some(fea) => fea.parse::<DateTime<Utc>>().unwrap_or_default(),
-                    None => Utc::now(),
-                }
+            .map(|x| match x.first_event_at.as_ref() {
+                Some(fea) => fea.parse::<DateTime<Utc>>().unwrap_or_default(),
+                None => Utc::now(),
             })
             .min()
             .unwrap_or(Utc::now());
@@ -413,26 +402,33 @@ impl QueryServer {
             stats
                 .iter()
                 .map(|x| &x.ingestion)
-                .fold(IngestionStats::default(), |acc, x| {
-                    IngestionStats {
+                .fold(IngestionStats::default(), |acc, x| IngestionStats {
                     count: acc.count + x.count,
                     size: format!(
                         "{}",
-                        acc.size.split(' ').collect_vec()[0].parse::<u64>().unwrap_or_default()
-                            + x.size.split(' ').collect_vec()[0].parse::<u64>().unwrap_or_default()
+                        acc.size.split(' ').collect_vec()[0]
+                            .parse::<u64>()
+                            .unwrap_or_default()
+                            + x.size.split(' ').collect_vec()[0]
+                                .parse::<u64>()
+                                .unwrap_or_default()
                     ),
                     format: x.format.clone(),
-                }});
+                });
 
         let cumulative_storage =
             stats
                 .iter()
-                .map(|x| & x.storage)
+                .map(|x| &x.storage)
                 .fold(StorageStats::default(), |acc, x| StorageStats {
                     size: format!(
                         "{}",
-                        acc.size.split(' ').collect_vec()[0].parse::<u64>().unwrap_or_default()
-                            + x.size.split(' ').collect_vec()[0].parse::<u64>().unwrap_or_default()
+                        acc.size.split(' ').collect_vec()[0]
+                            .parse::<u64>()
+                            .unwrap_or_default()
+                            + x.size.split(' ').collect_vec()[0]
+                                .parse::<u64>()
+                                .unwrap_or_default()
                     ),
                     format: x.format.clone(),
                 });
