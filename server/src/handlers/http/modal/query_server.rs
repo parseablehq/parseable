@@ -24,9 +24,11 @@ use actix_web::web;
 use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use http::StatusCode;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use url::Url;
@@ -309,5 +311,201 @@ impl QueryServer {
             _ => {}
         }
         Ok(())
+    }
+
+    // BUG: If any ingestor is offline this will error out the entire request
+    pub async fn fetch_stats_from_ingestors(
+        stream_name: &str,
+    ) -> Result<QuriedStats, StreamError> {
+        // ? Lower cognitive load by moving the mode filter to the calling function
+        let mut stats = Vec::new();
+
+        let ingestor_infos = Self::get_ingestor_info().await.map_err(|err| {
+            log::error!("Fatal: failed to get ingestor info: {:?}", err);
+            StreamError::Custom {
+                msg: format!("failed to get ingestor info\n{:?}", err),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        })?;
+
+        for ingester in ingestor_infos {
+            let url = format!(
+                "{}{}/logstream/{}/stats",
+                ingester.domain_name.to_string().trim_end_matches('/'),
+                base_path(),
+                stream_name
+            );
+
+            let client = reqwest::Client::new();
+            let res = client
+                .get(&url)
+                .header("Content-Type", "application/json")
+                .header("Authorization", ingester.token)
+                .send()
+                .await
+                .map_err(|err| {
+                    log::error!(
+                        "Fatal: failed to fetch stats from ingestor: {}\n Error: {:?}",
+                        ingester.domain_name,
+                        err
+                    );
+
+                    StreamError::Custom {
+                        msg: format!(
+                            "failed to fetch stats from ingestor: {}\n Error: {:?}",
+                            ingester.domain_name, err
+                        ),
+                        status: StatusCode::INTERNAL_SERVER_ERROR,
+                    }
+                })?;
+
+            if !res.status().is_success() {
+                log::error!(
+                    "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                    ingester.domain_name,res
+                );
+                return Err(StreamError::Custom {
+                    msg: format!(
+                        "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                        ingester.domain_name,res.text().await.unwrap_or_default()
+                    ),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                });
+            }
+
+            match serde_json::from_str::<Vec<QuriedStats>>(&res.text().await.unwrap()) {
+                Ok(mut stat) => stats.append(&mut stat),
+                Err(err) => {
+                    log::error!(
+                        "Could not parse stats from ingestor: {}\n Error: {:?}",
+                        ingester.domain_name,
+                        err
+                    );
+                    continue;
+                }
+            }
+        }
+        let stats = Self::merge_quried_stats(stats);
+        Ok(stats)
+    }
+
+    pub fn merge_quried_stats(stats: Vec<QuriedStats>) -> QuriedStats {
+        let min_creation_time = stats
+            .iter()
+            .map(|x| x.creation_time.parse::<DateTime<Utc>>().unwrap())
+            .min()
+            .unwrap_or_default();
+        let stream_name = stats[0].stream.clone();
+        let min_first_event_at = stats
+            .iter()
+            .map(|x| {
+                match x.first_event_at.as_ref() {
+                    Some(fea) => fea.parse::<DateTime<Utc>>().unwrap_or_default(),
+                    None => Utc::now(),
+                }
+            })
+            .min()
+            .unwrap_or(Utc::now());
+
+        let min_time = stats.iter().map(|x| x.time).min().unwrap_or(Utc::now());
+
+        let cumulative_ingestion =
+            stats
+                .iter()
+                .map(|x| &x.ingestion)
+                .fold(IngestionStats::default(), |acc, x| {
+                    IngestionStats {
+                    count: acc.count + x.count,
+                    size: format!(
+                        "{}",
+                        acc.size.split(' ').collect_vec()[0].parse::<u64>().unwrap_or_default()
+                            + x.size.split(' ').collect_vec()[0].parse::<u64>().unwrap_or_default()
+                    ),
+                    format: x.format.clone(),
+                }});
+
+        let cumulative_storage =
+            stats
+                .iter()
+                .map(|x| & x.storage)
+                .fold(StorageStats::default(), |acc, x| StorageStats {
+                    size: format!(
+                        "{}",
+                        acc.size.split(' ').collect_vec()[0].parse::<u64>().unwrap_or_default()
+                            + x.size.split(' ').collect_vec()[0].parse::<u64>().unwrap_or_default()
+                    ),
+                    format: x.format.clone(),
+                });
+
+        QuriedStats::new(
+            &stream_name,
+            &min_creation_time.to_string(),
+            Some(min_first_event_at.to_string()),
+            min_time,
+            cumulative_ingestion,
+            cumulative_storage,
+        )
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct QuriedStats {
+    pub stream: String,
+    pub creation_time: String,
+    pub first_event_at: Option<String>,
+    pub time: DateTime<Utc>,
+    pub ingestion: IngestionStats,
+    pub storage: StorageStats,
+}
+
+impl QuriedStats {
+    pub fn new(
+        stream: &str,
+        creation_time: &str,
+        first_event_at: Option<String>,
+        time: DateTime<Utc>,
+        ingestion: IngestionStats,
+        storage: StorageStats,
+    ) -> Self {
+        Self {
+            stream: stream.to_string(),
+            creation_time: creation_time.to_string(),
+            first_event_at,
+            time,
+            ingestion,
+            storage,
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct IngestionStats {
+    pub count: u64,
+    pub size: String,
+    pub format: String,
+}
+
+impl IngestionStats {
+    pub fn new(count: u64, size: String, format: &str) -> Self {
+        Self {
+            count,
+            size,
+            format: format.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct StorageStats {
+    size: String,
+    format: String,
+}
+
+impl StorageStats {
+    pub fn new(size: String, format: &str) -> Self {
+        Self {
+            size,
+            format: format.to_string(),
+        }
     }
 }
