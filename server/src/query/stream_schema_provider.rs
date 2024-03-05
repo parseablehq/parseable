@@ -287,12 +287,24 @@ impl TableProvider for StandardTableProvider {
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut memory_exec = None;
         let mut cache_exec = None;
-        let time_filters = extract_primary_filter(filters);
+        let object_store = state
+            .runtime_env()
+            .object_store_registry
+            .get_store(&self.url)
+            .unwrap();
+        let glob_storage = CONFIG.storage().get_object_store();
+
+        let object_store_format = glob_storage
+            .get_object_store_format(&self.stream)
+            .await
+            .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+        let time_partition = object_store_format.time_partition;
+        let time_filters = extract_primary_filter(filters, time_partition.clone());
         if time_filters.is_empty() {
             return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
         }
 
-        if include_now(filters) {
+        if include_now(filters, time_partition) {
             if let Some(records) =
                 event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
             {
@@ -305,19 +317,7 @@ impl TableProvider for StandardTableProvider {
             }
         };
 
-        let object_store = state
-            .runtime_env()
-            .object_store_registry
-            .get_store(&self.url)
-            .unwrap();
-        let glob_storage = CONFIG.storage().get_object_store();
-
         // Fetch snapshot
-        let object_store_format = glob_storage
-            .get_object_store_format(&self.stream)
-            .await
-            .map_err(|err| DataFusionError::Plan(err.to_string()))?;
-
         let snapshot = object_store_format.snapshot;
 
         // Is query timerange is overlapping with older data.
@@ -493,11 +493,11 @@ pub enum PartialTimeFilter {
 }
 
 impl PartialTimeFilter {
-    fn try_from_expr(expr: &Expr) -> Option<Self> {
+    fn try_from_expr(expr: &Expr, time_partition: Option<String>) -> Option<Self> {
         let Expr::BinaryExpr(binexpr) = expr else {
             return None;
         };
-        let (op, time) = extract_timestamp_bound(binexpr)?;
+        let (op, time) = extract_timestamp_bound(binexpr.clone(), time_partition)?;
         let value = match op {
             Operator::Gt => PartialTimeFilter::Low(Bound::Excluded(time)),
             Operator::GtEq => PartialTimeFilter::Low(Bound::Included(time)),
@@ -587,14 +587,14 @@ fn is_overlapping_query(
         .all(|filter| filter.is_greater_than(&first_entry_upper_bound.naive_utc()))
 }
 
-fn include_now(filters: &[Expr]) -> bool {
+fn include_now(filters: &[Expr], time_partition: Option<String>) -> bool {
     let current_minute = Utc::now()
         .with_second(0)
         .and_then(|x| x.with_nanosecond(0))
         .expect("zeroed value is valid")
         .naive_utc();
 
-    let time_filters = extract_primary_filter(filters);
+    let time_filters = extract_primary_filter(filters, time_partition);
 
     let upper_bound_matches = time_filters.iter().any(|filter| match filter {
         PartialTimeFilter::High(Bound::Excluded(time))
@@ -619,7 +619,7 @@ fn expr_in_boundary(filter: &Expr) -> bool {
     let Expr::BinaryExpr(binexpr) = filter else {
         return false;
     };
-    let Some((op, time)) = extract_timestamp_bound(binexpr) else {
+    let Some((op, time)) = extract_timestamp_bound(binexpr.clone(), None) else {
         return false;
     };
 
@@ -633,14 +633,23 @@ fn expr_in_boundary(filter: &Expr) -> bool {
         )
 }
 
-fn extract_from_lit(expr: &Expr) -> Option<NaiveDateTime> {
-    if let Expr::Literal(value) = expr {
+fn extract_from_lit(expr: BinaryExpr, time_partition: Option<String>) -> Option<NaiveDateTime> {
+    let mut column_name: String = String::default();
+    if let Expr::Column(column) = *expr.left {
+        column_name = column.name;
+    }
+    if let Expr::Literal(value) = *expr.right {
         match value {
             ScalarValue::TimestampMillisecond(Some(value), _) => {
-                Some(NaiveDateTime::from_timestamp_millis(*value).unwrap())
+                Some(NaiveDateTime::from_timestamp_millis(value).unwrap())
             }
-            ScalarValue::Utf8(Some(str_value)) => Some(str_value.parse::<NaiveDateTime>().unwrap()),
-
+            ScalarValue::Utf8(Some(str_value)) => {
+                if time_partition.is_some() && column_name == time_partition.unwrap() {
+                    Some(str_value.parse::<NaiveDateTime>().unwrap())
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     } else {
@@ -648,9 +657,11 @@ fn extract_from_lit(expr: &Expr) -> Option<NaiveDateTime> {
     }
 }
 
-fn extract_timestamp_bound(binexpr: &BinaryExpr) -> Option<(Operator, NaiveDateTime)> {
-    let time = extract_from_lit(&binexpr.right)?;
-    Some((binexpr.op, time))
+fn extract_timestamp_bound(
+    binexpr: BinaryExpr,
+    time_partition: Option<String>,
+) -> Option<(Operator, NaiveDateTime)> {
+    Some((binexpr.op, extract_from_lit(binexpr, time_partition)?))
 }
 
 async fn collect_manifest_files(
@@ -676,11 +687,14 @@ async fn collect_manifest_files(
 }
 
 // extract start time and end time from filter preficate
-fn extract_primary_filter(filters: &[Expr]) -> Vec<PartialTimeFilter> {
+fn extract_primary_filter(
+    filters: &[Expr],
+    time_partition: Option<String>,
+) -> Vec<PartialTimeFilter> {
     let mut time_filters = Vec::new();
     filters.iter().for_each(|expr| {
         let _ = expr.apply(&mut |expr| {
-            let time = PartialTimeFilter::try_from_expr(expr);
+            let time = PartialTimeFilter::try_from_expr(expr, time_partition.clone());
             if let Some(time) = time {
                 time_filters.push(time);
                 Ok(VisitRecursion::Stop)
