@@ -122,9 +122,10 @@ impl IngestServer {
         config
             .service(
                 // Base path "{url}/api/v1"
-                web::scope(&base_path()).service(Server::get_ingest_factory()),
+                web::scope(&base_path())
+                    .service(Server::get_ingest_factory())
+                    .service(Self::logstream_api()),
             )
-            .service(Self::logstream_api())
             .service(Server::get_liveness_factory())
             .service(Server::get_readiness_factory())
             .service(Self::get_metrics_webscope());
