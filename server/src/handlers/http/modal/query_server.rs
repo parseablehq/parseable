@@ -112,7 +112,6 @@ impl ParseableServer for QueryServer {
         self.initialize().await
     }
 
-    #[allow(unused)]
     fn validate(&self) -> anyhow::Result<()> {
         if CONFIG.get_storage_mode_string() == "Local drive" {
             return Err(anyhow::anyhow!(

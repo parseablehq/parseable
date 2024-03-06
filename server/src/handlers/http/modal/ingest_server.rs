@@ -104,7 +104,6 @@ impl ParseableServer for IngestServer {
         self.initialize().await
     }
 
-    #[allow(unused)]
     fn validate(&self) -> anyhow::Result<()> {
         if CONFIG.get_storage_mode_string() == "Local drive" {
             return Err(anyhow::Error::msg(
@@ -229,7 +228,7 @@ impl IngestServer {
             DEFAULT_VERSION.to_string(),
             store.get_bucket_name(),
             &CONFIG.parseable.username,
-            &CONFIG.parseable.password, // is this secure?
+            &CONFIG.parseable.password,
         );
 
         let resource = serde_json::to_string(&resource)
