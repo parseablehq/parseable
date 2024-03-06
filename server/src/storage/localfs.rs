@@ -132,15 +132,15 @@ impl ObjectStorage for LocalFS {
         let mut entries = fs::read_dir(&prefix).await?;
         let mut res = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
-            let ingestor_file = entry
+            let ingester_file = entry
                 .path()
                 .file_name()
                 .unwrap_or_default()
                 .to_str()
                 .unwrap_or_default()
-                .contains("ingestor");
+                .contains("ingester");
 
-            if !ingestor_file {
+            if !ingester_file {
                 continue;
             }
 
@@ -311,7 +311,7 @@ async fn dir_with_stream(
             Mode::Ingest => {
                 let (ip, port) = get_address();
                 let file_name = format!(
-                    "ingestor.{}.{}{}",
+                    "ingester.{}.{}{}",
                     &ip.to_string(),
                     &port.to_string(),
                     STREAM_METADATA_FILE_NAME

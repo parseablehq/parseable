@@ -440,7 +440,7 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
     match &CONFIG.parseable.mode {
         Mode::Ingest => {
             let (ip, port) = get_address();
-            let file_name = format!("ingestor.{}.{}{}", ip, port, STREAM_METADATA_FILE_NAME);
+            let file_name = format!("ingester.{}.{}{}", ip, port, STREAM_METADATA_FILE_NAME);
             RelativePathBuf::from_iter([stream_name, &file_name])
         }
         Mode::Query | Mode::All => {

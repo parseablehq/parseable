@@ -123,7 +123,7 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
         });
     }
     if CONFIG.parseable.mode == Mode::Query {
-        query_server::QueryServer::sync_streams_with_ingestors(&stream_name).await?;
+        query_server::QueryServer::sync_streams_with_ingesters(&stream_name).await?;
     }
 
     create_stream(stream_name.clone()).await?;
@@ -285,7 +285,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
     if CONFIG.parseable.mode == Mode::Query {
-        let stats = query_server::QueryServer::fetch_stats_from_ingestors(&stream_name).await?;
+        let stats = query_server::QueryServer::fetch_stats_from_ingesters(&stream_name).await?;
         let stats = serde_json::to_value(stats).unwrap();
         return Ok((web::Json(stats), StatusCode::OK));
     }

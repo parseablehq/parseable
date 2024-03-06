@@ -64,8 +64,8 @@ impl ParseableServer for IngestServer {
         prometheus: PrometheusMetrics,
         _oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        // set the ingestor metadata
-        self.set_ingestor_metadata().await?;
+        // set the ingester metadata
+        self.set_ingester_metadata().await?;
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
@@ -154,7 +154,7 @@ impl IngestServer {
     }
 
     #[inline(always)]
-    fn get_ingestor_address(&self) -> SocketAddr {
+    fn get_ingester_address(&self) -> SocketAddr {
         // this might cause an issue down the line
         // best is to make the Cli Struct better, but thats a chore
         (CONFIG.parseable.address.clone())
@@ -198,20 +198,20 @@ impl IngestServer {
             )
     }
 
-    // create the ingestor metadata and put the .ingestor.json file in the object store
-    async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
+    // create the ingester metadata and put the .ingester.json file in the object store
+    async fn set_ingester_metadata(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
 
         // remove ip adn go with the domain name
-        let sock = self.get_ingestor_address();
+        let sock = self.get_ingester_address();
         let path = RelativePathBuf::from(format!(
-            "ingestor.{}.{}.json",
+            "ingester.{}.{}.json",
             sock.ip(), // this might be wrong
             sock.port()
         ));
 
         if store.get_object(&path).await.is_ok() {
-            println!("Ingestor metadata already exists");
+            println!("Ingester metadata already exists");
             return Ok(());
         };
 
@@ -243,7 +243,7 @@ impl IngestServer {
     }
 
     // check for querier state. Is it there, or was it there in the past
-    // this should happen before the set the ingestor metadata
+    // this should happen before the set the ingester metadata
     async fn check_querier_state(&self) -> anyhow::Result<(), ObjectStorageError> {
         // how do we check for querier state?
         // based on the work flow of the system, the querier will always need to start first

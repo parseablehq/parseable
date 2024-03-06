@@ -310,7 +310,7 @@ impl S3 {
         let file_name = match &CONFIG.parseable.mode {
             Mode::Ingest => {
                 let (ip, port) = get_address();
-                format!("ingestor.{}.{}{}", ip, port, STREAM_METADATA_FILE_NAME)
+                format!("ingester.{}.{}{}", ip, port, STREAM_METADATA_FILE_NAME)
             }
             Mode::All | Mode::Query => STREAM_METADATA_FILE_NAME.to_string(),
         };
@@ -433,13 +433,13 @@ impl ObjectStorage for S3 {
         let mut res = vec![];
 
         while let Some(meta) = list_stream.next().await.transpose()? {
-            let ingestor_file = meta
+            let ingester_file = meta
                 .location
                 .filename()
                 .unwrap_or_default()
-                .contains("ingestor");
+                .contains("ingester");
 
-            if !ingestor_file {
+            if !ingester_file {
                 continue;
             }
 

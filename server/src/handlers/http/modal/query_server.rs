@@ -54,16 +54,16 @@ impl ParseableServer for QueryServer {
         prometheus: actix_web_prometheus::PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        let data = Self::get_ingestor_info().await?;
+        let data = Self::get_ingester_info().await?;
 
-        // on subsequent runs, the qurier should check if the ingestor is up and running or not
+        // on subsequent runs, the qurier should check if the ingester is up and running or not
         for ingester in data.iter() {
             // dbg!(&ingester);
 
             if !Self::check_liveness(&ingester.domain_name).await {
-                eprintln!("Ingestor at {} is not reachable", &ingester.domain_name);
+                eprintln!("Ingester at {} is not reachable", &ingester.domain_name);
             } else {
-                println!("Ingestor at {} is up and running", &ingester.domain_name);
+                println!("Ingester at {} is up and running", &ingester.domain_name);
             }
         }
 
@@ -145,7 +145,7 @@ impl QueryServer {
     }
 
     // update the .query.json file and return the new IngesterMetadataArr
-    pub async fn get_ingestor_info() -> anyhow::Result<IngesterMetadataArr> {
+    pub async fn get_ingester_info() -> anyhow::Result<IngesterMetadataArr> {
         let store = CONFIG.storage().get_object_store();
 
         let root_path = RelativePathBuf::from("");
@@ -215,7 +215,7 @@ impl QueryServer {
         }
 
         // spawn the sync thread
-        // tokio::spawn(Self::sync_ingestor_metadata());
+        // tokio::spawn(Self::sync_ingester_metadata());
 
         self.start(prometheus, CONFIG.parseable.openid.clone())
             .await?;
@@ -224,12 +224,12 @@ impl QueryServer {
     }
 
     #[allow(dead_code)]
-    async fn sync_ingestor_metadata() {
+    async fn sync_ingester_metadata() {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60 / 10));
         loop {
             interval.tick().await;
             // dbg!("Tick");
-            Self::get_ingestor_info().await.unwrap();
+            Self::get_ingester_info().await.unwrap();
         }
     }
 
@@ -244,18 +244,18 @@ impl QueryServer {
             .unwrap()
     }
 
-    // forward the request to all ingestors to keep them in sync
-    pub async fn sync_streams_with_ingestors(stream_name: &str) -> Result<(), StreamError> {
-        let ingestor_infos = Self::get_ingestor_info().await.map_err(|err| {
-            log::error!("Fatal: failed to get ingestor info: {:?}", err);
+    // forward the request to all ingesters to keep them in sync
+    pub async fn sync_streams_with_ingesters(stream_name: &str) -> Result<(), StreamError> {
+        let ingester_infos = Self::get_ingester_info().await.map_err(|err| {
+            log::error!("Fatal: failed to get ingester info: {:?}", err);
             StreamError::Custom {
-                msg: format!("failed to get ingestor info\n{:?}", err),
+                msg: format!("failed to get ingester info\n{:?}", err),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
             }
         })?;
 
         let mut errored = false;
-        for ingester in ingestor_infos.iter() {
+        for ingester in ingester_infos.iter() {
             let url = format!(
                 "{}{}/logstream/{}",
                 ingester.domain_name.to_string().trim_end_matches('/'),
@@ -273,7 +273,7 @@ impl QueryServer {
         }
 
         if errored {
-            for ingester in ingestor_infos {
+            for ingester in ingester_infos {
                 let url = format!(
                     "{}{}/logstream/{}",
                     ingester.domain_name.to_string().trim_end_matches('/'),
@@ -286,7 +286,7 @@ impl QueryServer {
 
             // this might be a bit too much
             return Err(StreamError::Custom {
-                msg: "Failed to sync stream with ingestors".to_string(),
+                msg: "Failed to sync stream with ingesters".to_string(),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
             });
         }
@@ -294,20 +294,20 @@ impl QueryServer {
         Ok(())
     }
 
-    pub async fn fetch_stats_from_ingestors(
+    pub async fn fetch_stats_from_ingesters(
         stream_name: &str,
     ) -> Result<QueriedStats, StreamError> {
         let mut stats = Vec::new();
 
-        let ingestor_infos = Self::get_ingestor_info().await.map_err(|err| {
-            log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        let ingester_infos = Self::get_ingester_info().await.map_err(|err| {
+            log::error!("Fatal: failed to get ingester info: {:?}", err);
             StreamError::Custom {
-                msg: format!("failed to get ingestor info\n{:?}", err),
+                msg: format!("failed to get ingester info\n{:?}", err),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
             }
         })?;
 
-        for ingester in ingestor_infos {
+        for ingester in ingester_infos {
             let url = format!(
                 "{}{}/logstream/{}/stats",
                 ingester.domain_name.to_string().trim_end_matches('/'),
@@ -321,7 +321,7 @@ impl QueryServer {
                         Ok(stat) => stats.push(stat),
                         Err(err) => {
                             log::error!(
-                                "Could not parse stats from ingestor: {}\n Error: {:?}",
+                                "Could not parse stats from ingester: {}\n Error: {:?}",
                                 ingester.domain_name,
                                 err
                             );
@@ -330,12 +330,12 @@ impl QueryServer {
                     }
                 }
                 Ok(None) => {
-                    log::error!("Ingestor at {} is not reachable", &ingester.domain_name);
+                    log::error!("Ingester at {} is not reachable", &ingester.domain_name);
                     continue;
                 }
                 Err(err) => {
                     log::error!(
-                        "Fatal: failed to fetch stats from ingestor: {}\n Error: {:?}",
+                        "Fatal: failed to fetch stats from ingester: {}\n Error: {:?}",
                         ingester.domain_name,
                         err
                     );
@@ -365,14 +365,14 @@ impl QueryServer {
             .await
             .map_err(|err| {
                 log::error!(
-                    "Fatal: failed to fetch stats from ingestor: {}\n Error: {:?}",
+                    "Fatal: failed to fetch stats from ingester: {}\n Error: {:?}",
                     ingester.domain_name,
                     err
                 );
 
                 StreamError::Custom {
                     msg: format!(
-                        "failed to fetch stats from ingestor: {}\n Error: {:?}",
+                        "failed to fetch stats from ingester: {}\n Error: {:?}",
                         ingester.domain_name, err
                     ),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -381,13 +381,13 @@ impl QueryServer {
 
         if !res.status().is_success() {
             log::error!(
-                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
                 ingester.domain_name,
                 res
             );
             return Err(StreamError::Custom {
                 msg: format!(
-                    "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                    "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
                     ingester.domain_name,res.text().await.unwrap_or_default()
                 ),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -414,13 +414,13 @@ impl QueryServer {
             .await
             .map_err(|err| {
                 log::error!(
-                    "Fatal: failed to forward create stream request to ingestor: {}\n Error: {:?}",
+                    "Fatal: failed to forward create stream request to ingester: {}\n Error: {:?}",
                     ingester.domain_name,
                     err
                 );
                 StreamError::Custom {
                     msg: format!(
-                        "failed to forward create stream request to ingestor: {}\n Error: {:?}",
+                        "failed to forward create stream request to ingester: {}\n Error: {:?}",
                         ingester.domain_name, err
                     ),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -429,13 +429,13 @@ impl QueryServer {
 
         if !res.status().is_success() {
             log::error!(
-                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
                 ingester.domain_name,
                 res
             );
             return Err(StreamError::Custom {
                             msg: format!(
-                                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                                "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
                                 ingester.domain_name,res.text().await.unwrap_or_default()
                             ),
                             status: StatusCode::INTERNAL_SERVER_ERROR,
