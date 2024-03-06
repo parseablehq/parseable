@@ -39,7 +39,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
+use crate::option::{Mode, CONFIG};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
+use crate::utils::get_address;
 
 use super::metrics_layer::MetricLayer;
 use super::{ObjectStorageProvider, PARSEABLE_METADATA_FILE_NAME, STREAM_METADATA_FILE_NAME};
@@ -305,8 +307,16 @@ impl S3 {
 
         let stream_json_check = FuturesUnordered::new();
 
+        let file_name = match &CONFIG.parseable.mode {
+            Mode::Ingest => {
+                let (ip, port) = get_address();
+                format!("ingester.{}.{}{}", ip, port, STREAM_METADATA_FILE_NAME)
+            }
+            Mode::All | Mode::Query => STREAM_METADATA_FILE_NAME.to_string(),
+        };
+
         for dir in &dirs {
-            let key = format!("{}/{}", dir, STREAM_METADATA_FILE_NAME);
+            let key = format!("{}/{}", dir, file_name);
             let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
             stream_json_check.push(task);
         }
@@ -423,13 +433,13 @@ impl ObjectStorage for S3 {
         let mut res = vec![];
 
         while let Some(meta) = list_stream.next().await.transpose()? {
-            let ingestor_file = meta
+            let ingester_file = meta
                 .location
                 .filename()
                 .unwrap_or_default()
-                .contains("ingestor");
+                .contains("ingester");
 
-            if !ingestor_file {
+            if !ingester_file {
                 continue;
             }
 

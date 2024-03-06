@@ -25,13 +25,15 @@ use serde_json::Value;
 
 use crate::alerts::Alerts;
 use crate::metadata::STREAM_INFO;
-use crate::option::CONFIG;
+use crate::option::{Mode, CONFIG};
 use crate::storage::retention::Retention;
 use crate::storage::{LogStream, StorageDir};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
 
 use self::error::{CreateStreamError, StreamError};
+
+use super::modal::query_server::{self, IngestionStats, QueriedStats, StorageStats};
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -111,7 +113,6 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 
 pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
     if metadata::STREAM_INFO.stream_exists(&stream_name) {
         // Error if the log stream already exists
         return Err(StreamError::Custom {
@@ -121,7 +122,11 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
             status: StatusCode::BAD_REQUEST,
         });
     }
-    create_stream(stream_name).await?;
+    if CONFIG.parseable.mode == Mode::Query {
+        query_server::QueryServer::sync_streams_with_ingesters(&stream_name).await?;
+    }
+
+    create_stream(stream_name.clone()).await?;
 
     Ok(("log stream created", StatusCode::OK))
 }
@@ -279,30 +284,62 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
+    if CONFIG.parseable.mode == Mode::Query {
+        let stats = query_server::QueryServer::fetch_stats_from_ingesters(&stream_name).await?;
+        let stats = serde_json::to_value(stats).unwrap();
+        return Ok((web::Json(stats), StatusCode::OK));
+    }
+
     let hash_map = STREAM_INFO.read().unwrap();
     let stream_meta = &hash_map
         .get(&stream_name)
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
     let time = Utc::now();
+    let qstats = match &stream_meta.first_event_at {
+        Some(first_event_at) => {
+            let ingestion_stats = IngestionStats::new(
+                stats.events,
+                format!("{} {}", stats.ingestion, "Bytes"),
+                "json",
+            );
+            let storage_stats =
+                StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
 
-    let stats = serde_json::json!({
-        "stream": stream_name,
-        "creation_time": &stream_meta.created_at,
-        "first_event_at": Some(&stream_meta.first_event_at),
-        "time": time,
-        "ingestion": {
-            "count": stats.events,
-            "size": format!("{} {}", stats.ingestion, "Bytes"),
-            "format": "json"
-        },
-        "storage": {
-            "size": format!("{} {}", stats.storage, "Bytes"),
-            "format": "parquet"
+            QueriedStats::new(
+                &stream_name,
+                &stream_meta.created_at,
+                Some(first_event_at.to_owned()),
+                time,
+                ingestion_stats,
+                storage_stats,
+            )
         }
-    });
 
-    Ok((web::Json(stats), StatusCode::OK))
+        // ? this case should not happen
+        None => {
+            let ingestion_stats = IngestionStats::new(
+                stats.events,
+                format!("{} {}", stats.ingestion, "Bytes"),
+                "json",
+            );
+            let storage_stats =
+                StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
+
+            QueriedStats::new(
+                &stream_name,
+                &stream_meta.created_at,
+                Some('0'.to_string()),
+                time,
+                ingestion_stats,
+                storage_stats,
+            )
+        }
+    };
+
+    let out_stats = serde_json::to_value(qstats).unwrap();
+
+    Ok((web::Json(out_stats), StatusCode::OK))
 }
 
 // Check if the first_event_at is empty
@@ -345,7 +382,6 @@ pub async fn create_stream(stream_name: String) -> Result<(), CreateStreamError>
     let created_at = stream_meta.unwrap().created_at;
 
     metadata::STREAM_INFO.add_stream(stream_name.to_string(), created_at);
-
     Ok(())
 }
 

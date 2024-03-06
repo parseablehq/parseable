@@ -31,8 +31,12 @@ use relative_path::RelativePath;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::option::validation;
+use crate::{
+    metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics},
+    option::{Mode, CONFIG},
+    utils::get_address,
+};
 
 use super::{
     LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, STREAM_METADATA_FILE_NAME,
@@ -128,15 +132,15 @@ impl ObjectStorage for LocalFS {
         let mut entries = fs::read_dir(&prefix).await?;
         let mut res = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
-            let ingestor_file = entry
+            let ingester_file = entry
                 .path()
                 .file_name()
                 .unwrap_or_default()
                 .to_str()
                 .unwrap_or_default()
-                .contains("ingestor");
+                .contains("ingester");
 
-            if !ingestor_file {
+            if !ingester_file {
                 continue;
             }
 
@@ -302,7 +306,21 @@ async fn dir_with_stream(
 
     if entry.file_type().await?.is_dir() {
         let path = entry.path();
-        let stream_json_path = path.join(STREAM_METADATA_FILE_NAME);
+
+        let stream_json_path = match &CONFIG.parseable.mode {
+            Mode::Ingest => {
+                let (ip, port) = get_address();
+                let file_name = format!(
+                    "ingester.{}.{}{}",
+                    &ip.to_string(),
+                    &port.to_string(),
+                    STREAM_METADATA_FILE_NAME
+                );
+                path.join(file_name)
+            }
+            Mode::Query | Mode::All => path.join(STREAM_METADATA_FILE_NAME),
+        };
+
         if stream_json_path.exists() {
             Ok(Some(dir_name))
         } else {

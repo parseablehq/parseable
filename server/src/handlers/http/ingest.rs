@@ -32,6 +32,7 @@ use crate::handlers::{
     STREAM_NAME_HEADER_KEY,
 };
 use crate::metadata::STREAM_INFO;
+use crate::option::{Mode, CONFIG};
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
 use super::logstream::error::CreateStreamError;
@@ -140,7 +141,18 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
     if STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
     }
-    super::logstream::create_stream(stream_name.to_string()).await?;
+
+    match &CONFIG.parseable.mode {
+        Mode::All | Mode::Query => {
+            super::logstream::create_stream(stream_name.to_string()).await?;
+        }
+        Mode::Ingest => {
+            return Err(PostError::Invalid(anyhow::anyhow!(
+                "Stream {} not found. Has it been created?",
+                stream_name
+            )));
+        }
+    }
     Ok(())
 }
 
