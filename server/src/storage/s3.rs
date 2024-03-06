@@ -39,9 +39,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
-use crate::option::{Mode, CONFIG};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
-use crate::utils::get_address;
 
 use super::metrics_layer::MetricLayer;
 use super::{ObjectStorageProvider, PARSEABLE_METADATA_FILE_NAME, STREAM_METADATA_FILE_NAME};
@@ -307,13 +305,8 @@ impl S3 {
 
         let stream_json_check = FuturesUnordered::new();
 
-        let file_name = match &CONFIG.parseable.mode {
-            Mode::Ingest => {
-                let (ip, port) = get_address();
-                format!("ingester.{}.{}{}", ip, port, STREAM_METADATA_FILE_NAME)
-            }
-            Mode::All | Mode::Query => STREAM_METADATA_FILE_NAME.to_string(),
-        };
+        // even in ingest mode, we should only look for the global stream metadata file
+        let file_name = STREAM_METADATA_FILE_NAME.to_string();
 
         for dir in &dirs {
             let key = format!("{}/{}", dir, file_name);
