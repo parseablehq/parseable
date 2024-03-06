@@ -33,7 +33,7 @@ use crate::{metadata, validator};
 
 use self::error::{CreateStreamError, StreamError};
 
-use super::modal::query_server::{self, IngestionStats, QueryServer, QuriedStats, StorageStats};
+use super::modal::query_server::{self, IngestionStats, QueryServer, QueriedStats, StorageStats};
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -285,7 +285,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let s = if CONFIG.parseable.mode == Mode::Query {
         query_server::QueryServer::fetch_stats_from_ingestors(&stream_name).await?
     } else {
-        QuriedStats::default()
+        QueriedStats::default()
     };
 
     let hash_map = STREAM_INFO.read().unwrap();
@@ -304,7 +304,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             let storage_stats =
                 StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
 
-            vec![QuriedStats::new(
+            vec![QueriedStats::new(
                 &stream_name,
                 &stream_meta.created_at,
                 Some(first_event_at.to_owned()),
@@ -324,7 +324,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             let storage_stats =
                 StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
 
-            vec![QuriedStats::new(
+            vec![QueriedStats::new(
                 &stream_name,
                 &stream_meta.created_at,
                 None,

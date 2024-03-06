@@ -307,7 +307,7 @@ impl QueryServer {
     }
 
     // BUG: If any ingestor is offline this will error out the entire request
-    pub async fn fetch_stats_from_ingestors(stream_name: &str) -> Result<QuriedStats, StreamError> {
+    pub async fn fetch_stats_from_ingestors(stream_name: &str) -> Result<QueriedStats, StreamError> {
         // ? Lower cognitive load by moving the mode filter to the calling function
         let mut stats = Vec::new();
 
@@ -364,7 +364,7 @@ impl QueryServer {
                 });
             }
 
-            match serde_json::from_str::<Vec<QuriedStats>>(&res.text().await.unwrap()) {
+            match serde_json::from_str::<Vec<QueriedStats>>(&res.text().await.unwrap()) {
                 Ok(mut stat) => stats.append(&mut stat),
                 Err(err) => {
                     log::error!(
@@ -380,7 +380,7 @@ impl QueryServer {
         Ok(stats)
     }
 
-    pub fn merge_quried_stats(stats: Vec<QuriedStats>) -> QuriedStats {
+    pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
         let min_creation_time = stats
             .iter()
             .map(|x| x.creation_time.parse::<DateTime<Utc>>().unwrap())
@@ -433,7 +433,7 @@ impl QueryServer {
                     format: x.format.clone(),
                 });
 
-        QuriedStats::new(
+        QueriedStats::new(
             &stream_name,
             &min_creation_time.to_string(),
             Some(min_first_event_at.to_string()),
@@ -445,7 +445,7 @@ impl QueryServer {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct QuriedStats {
+pub struct QueriedStats {
     pub stream: String,
     pub creation_time: String,
     pub first_event_at: Option<String>,
@@ -454,7 +454,7 @@ pub struct QuriedStats {
     pub storage: StorageStats,
 }
 
-impl QuriedStats {
+impl QueriedStats {
     pub fn new(
         stream: &str,
         creation_time: &str,
