@@ -31,8 +31,6 @@ use crate::storage::ObjectStorageError;
 use crate::storage::PARSEABLE_METADATA_FILE_NAME;
 use crate::sync;
 
-use std::net::SocketAddr;
-
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
 use super::IngesterMetadata;
@@ -151,15 +149,6 @@ impl IngestServer {
         )
     }
 
-    #[inline(always)]
-    fn get_ingester_address(&self) -> SocketAddr {
-        // this might cause an issue down the line
-        // best is to make the Cli Struct better, but thats a chore
-        (CONFIG.parseable.address.clone())
-            .parse::<SocketAddr>()
-            .unwrap()
-    }
-
     fn logstream_api() -> Scope {
         web::scope("/logstream")
             .service(
@@ -201,7 +190,7 @@ impl IngestServer {
         let store = CONFIG.storage().get_object_store();
 
         // remove ip adn go with the domain name
-        let sock = self.get_ingester_address();
+        let sock = Server::get_server_address();
         let path = RelativePathBuf::from(format!(
             "ingester.{}.{}.json",
             sock.ip(), // this might be wrong
