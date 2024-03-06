@@ -186,22 +186,6 @@ impl IngestServer {
                                 .to(logstream::get_stats)
                                 .authorize_for_stream(Action::GetStats),
                         ),
-                    )
-                    // ! this should not be needed
-                    .service(
-                        web::resource("/retention")
-                            // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
-                            .route(
-                                web::put()
-                                    .to(logstream::put_retention)
-                                    .authorize_for_stream(Action::PutRetention),
-                            )
-                            // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
-                            .route(
-                                web::get()
-                                    .to(logstream::get_retention)
-                                    .authorize_for_stream(Action::GetRetention),
-                            ),
                     ),
             )
     }
