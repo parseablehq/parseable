@@ -58,8 +58,6 @@ impl ParseableServer for QueryServer {
 
         // on subsequent runs, the qurier should check if the ingester is up and running or not
         for ingester in data.iter() {
-            // dbg!(&ingester);
-
             if !Self::check_liveness(&ingester.domain_name).await {
                 eprintln!("Ingester at {} is not reachable", &ingester.domain_name);
             } else {
