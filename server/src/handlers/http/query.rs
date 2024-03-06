@@ -19,7 +19,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use futures_util::Future;
@@ -36,8 +36,10 @@ use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::utils::actix::extract_session_key_from_req;
 
+use super::send_query_request_to_ingestor;
+
 /// Query Request through http endpoint.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     query: String,
@@ -52,6 +54,15 @@ pub struct Query {
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
+    // create a new query to send to the ingestors
+    let mut mmem= vec![];
+    if let Some(query) = transform_query_for_ingestor(&query_request) {
+        mmem = send_query_request_to_ingestor(&query)
+            .await
+            .map_err(|err| QueryError::Custom(err.to_string()))?;
+    }
+
+    // let rbj = arrow_json::ReaderBuilder::new();
     let creds = extract_session_key_from_req(&req).expect("expects basic auth");
     let permissions = Users.get_permissions(&creds);
     let session_state = QUERY_SESSION.state();
@@ -94,7 +105,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 
     let time = Instant::now();
 
-    let (records, fields) = query.execute().await?;
+    let (records, fields) = query.execute(Some(mmem)).await?;
     let response = QueryResponse {
         records,
         fields,
@@ -183,6 +194,24 @@ async fn into_query(
     })
 }
 
+fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
+    let end_time = DateTime::parse_from_rfc3339(&query.end_time).ok()?;
+    let start_time = end_time - chrono::Duration::minutes(1);
+
+    dbg!(start_time.minute());
+
+    let q = Query {
+        query: query.query.clone(),
+        fields: query.fields,
+        filter_tags: query.filter_tags.clone(),
+        send_null: query.send_null,
+        start_time: start_time.to_rfc3339(),
+        end_time: end_time.to_rfc3339(),
+    };
+
+    Some(q)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
     #[error("Query cannot be empty")]
@@ -207,6 +236,8 @@ pub enum QueryError {
     Datafusion(#[from] DataFusionError),
     #[error("Execution Error: {0}")]
     Execute(#[from] ExecuteError),
+    #[error("Query Error: {0}")]
+    Custom(String),
 }
 
 impl actix_web::ResponseError for QueryError {

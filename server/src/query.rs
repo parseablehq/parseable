@@ -33,6 +33,7 @@ use datafusion::logical_expr::{Explain, Filter, LogicalPlan, PlanType, ToStringi
 use datafusion::prelude::*;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -102,10 +103,17 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
-    pub async fn execute(&self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    pub async fn execute(&self, mem: Option<Vec<Value>>) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let df = QUERY_SESSION
             .execute_logical_plan(self.final_logical_plan())
             .await?;
+
+        let schema = df.schema();
+        if let Some(mem) = mem {
+            let mem = arrow_json::ReaderBuilder::new(schema.clone())
+            .build(mem.iter().map(|x| serde_json::to_string(x).unwrap()).collect());
+
+        }
 
         let fields = df
             .schema()

@@ -17,6 +17,9 @@
  */
 
 use actix_cors::Cors;
+use serde_json::Value;
+
+use self::{modal::query_server::QueryServer, query::Query};
 
 pub(crate) mod about;
 pub(crate) mod health_check;
@@ -54,4 +57,27 @@ pub(crate) fn cross_origin_config() -> Cors {
 
 pub fn base_path_without_preceding_slash() -> String {
     base_path().trim_start_matches('/').to_string()
+}
+
+pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec<Value>> {
+    // send the query request to the ingestor
+    let mut res = vec![];
+    let ima = QueryServer::get_ingestor_info().await.unwrap();
+
+    for im in ima {
+        let uri = format!("{}{}/{}",im.domain_name, base_path(), "query");
+        let reqw = reqwest::Client::new()
+            .post(uri)
+            .json(query)
+            .basic_auth("admin", Some("admin"))
+            .send()
+            .await?;
+
+        if reqw.status().is_success() {
+            let v: Value = serde_json::from_slice(&reqw.bytes().await?)?;
+            res.push(v);
+        }
+    }
+
+    Ok(res)
 }
