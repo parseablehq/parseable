@@ -20,6 +20,7 @@ use crate::analytics;
 use crate::banner;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::RouteExt;
+use crate::handlers::http::MAX_EVENT_PAYLOAD_SIZE;
 use crate::localcache::LocalCacheManager;
 use crate::metadata;
 use crate::metrics;
@@ -177,7 +178,14 @@ impl IngestServer {
                                 web::put()
                                     .to(logstream::put_stream)
                                     .authorize_for_stream(Action::CreateStream),
-                            ),
+                            )
+                            // DELETE "/logstream/{logstream}" ==> Delete log stream
+                            .route(
+                                web::delete()
+                                    .to(logstream::delete)
+                                    .authorize_for_stream(Action::DeleteStream),
+                            )
+                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
                     .service(
                         // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
