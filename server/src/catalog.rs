@@ -81,7 +81,7 @@ fn get_file_bounds(
             .find(|col| col.name == partition_column)
             .unwrap()
             .stats
-            .clone()
+            .as_ref()
             .unwrap()
         {
             column::TypedStatistics::Int(stats) => (
@@ -101,7 +101,7 @@ fn get_file_bounds(
             .find(|col| col.name == partition_column)
             .unwrap()
             .stats
-            .clone()
+            .as_ref()
             .unwrap()
         {
             column::TypedStatistics::String(stats) => (
