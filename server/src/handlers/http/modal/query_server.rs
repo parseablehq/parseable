@@ -28,6 +28,7 @@ use chrono::{DateTime, Utc};
 use http::StatusCode;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
+use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -35,7 +36,7 @@ use url::Url;
 
 use tokio::fs::File as TokioFile;
 
-use crate::option::{Mode, CONFIG};
+use crate::option::CONFIG;
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
@@ -244,19 +245,34 @@ impl QueryServer {
     }
 
     // forward the request to all ingestors to keep them in sync
-    // BUG: If any ingestor is offline this will error out the entire request
     pub async fn sync_streams_with_ingestors(stream_name: &str) -> Result<(), StreamError> {
-        // TODO: implment a transactional sync to rollback if any of the ingestors fail
-        // ? Lower cognitive load by moving the mode filter to the calling function
-        if CONFIG.parseable.mode == Mode::Query {
-            let ingestor_infos = Self::get_ingestor_info().await.map_err(|err| {
-                log::error!("Fatal: failed to get ingestor info: {:?}", err);
-                StreamError::Custom {
-                    msg: format!("failed to get ingestor info\n{:?}", err),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-            })?;
+        let ingestor_infos = Self::get_ingestor_info().await.map_err(|err| {
+            log::error!("Fatal: failed to get ingestor info: {:?}", err);
+            StreamError::Custom {
+                msg: format!("failed to get ingestor info\n{:?}", err),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        })?;
 
+        let mut errored = false;
+        for ingester in ingestor_infos.iter() {
+            let url = format!(
+                "{}{}/logstream/{}",
+                ingester.domain_name.to_string().trim_end_matches('/'),
+                base_path(),
+                stream_name
+            );
+
+            match Self::send_stream_sync_request(&url, ingester.clone()).await {
+                Ok(_) => continue,
+                Err(_) => {
+                    errored = true;
+                    break;
+                }
+            }
+        }
+
+        if errored {
             for ingester in ingestor_infos {
                 let url = format!(
                     "{}{}/logstream/{}",
@@ -265,50 +281,22 @@ impl QueryServer {
                     stream_name
                 );
 
-                let client = reqwest::Client::new();
-                let res = client
-                        .put(&url)
-                        .header("Content-Type", "application/json")
-                        .header("Authorization", ingester.token)
-                        .send()
-                        .await
-                        .map_err(|err| {
-                            log::error!(
-                                "Fatal: failed to forward create stream request to ingestor: {}\n Error: {:?}",
-                                ingester.domain_name,
-                                err
-                            );
-                            StreamError::Custom {
-                                msg: format!(
-                                    "failed to forward create stream request to ingestor: {}\n Error: {:?}",
-                                    ingester.domain_name,
-                                    err
-                                ),
-                                status: StatusCode::INTERNAL_SERVER_ERROR,
-                            }
-                        })?;
-
-                if !res.status().is_success() {
-                    log::error!(
-                            "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
-                            ingester.domain_name,res
-                        );
-                    return Err(StreamError::Custom {
-                            msg: format!(
-                                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
-                                ingester.domain_name,res.text().await.unwrap_or_default()
-                            ),
-                            status: StatusCode::INTERNAL_SERVER_ERROR,
-                        });
-                }
+                Self::send_stream_rollback_request(&url, ingester.clone()).await?;
             }
+
+            // this might be a bit too much
+            return Err(StreamError::Custom {
+                msg: "Failed to sync stream with ingestors".to_string(),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            });
         }
+
         Ok(())
     }
 
-    // BUG: If any ingestor is offline this will error out the entire request
-    pub async fn fetch_stats_from_ingestors(stream_name: &str) -> Result<QueriedStats, StreamError> {
-        // ? Lower cognitive load by moving the mode filter to the calling function
+    pub async fn fetch_stats_from_ingestors(
+        stream_name: &str,
+    ) -> Result<QueriedStats, StreamError> {
         let mut stats = Vec::new();
 
         let ingestor_infos = Self::get_ingestor_info().await.map_err(|err| {
@@ -327,57 +315,183 @@ impl QueryServer {
                 stream_name
             );
 
-            let client = reqwest::Client::new();
-            let res = client
-                .get(&url)
-                .header("Content-Type", "application/json")
-                .header("Authorization", ingester.token)
-                .send()
-                .await
-                .map_err(|err| {
+            match Self::send_stats_request(&url, ingester.clone()).await {
+                Ok(Some(res)) => {
+                    match serde_json::from_str::<QueriedStats>(&res.text().await.unwrap()) {
+                        Ok(stat) => stats.push(stat),
+                        Err(err) => {
+                            log::error!(
+                                "Could not parse stats from ingestor: {}\n Error: {:?}",
+                                ingester.domain_name,
+                                err
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    log::error!("Ingestor at {} is not reachable", &ingester.domain_name);
+                    continue;
+                }
+                Err(err) => {
                     log::error!(
                         "Fatal: failed to fetch stats from ingestor: {}\n Error: {:?}",
                         ingester.domain_name,
                         err
                     );
-
-                    StreamError::Custom {
-                        msg: format!(
-                            "failed to fetch stats from ingestor: {}\n Error: {:?}",
-                            ingester.domain_name, err
-                        ),
-                        status: StatusCode::INTERNAL_SERVER_ERROR,
-                    }
-                })?;
-
-            if !res.status().is_success() {
-                log::error!(
-                    "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
-                    ingester.domain_name,res
-                );
-                return Err(StreamError::Custom {
-                    msg: format!(
-                        "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
-                        ingester.domain_name,res.text().await.unwrap_or_default()
-                    ),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                });
-            }
-
-            match serde_json::from_str::<Vec<QueriedStats>>(&res.text().await.unwrap()) {
-                Ok(mut stat) => stats.append(&mut stat),
-                Err(err) => {
-                    log::error!(
-                        "Could not parse stats from ingestor: {}\n Error: {:?}",
-                        ingester.domain_name,
-                        err
-                    );
-                    continue;
+                    return Err(err);
                 }
             }
         }
         let stats = Self::merge_quried_stats(stats);
+
         Ok(stats)
+    }
+
+    async fn send_stats_request(
+        url: &str,
+        ingester: IngesterMetadata,
+    ) -> Result<Option<Response>, StreamError> {
+        if !Self::check_liveness(&ingester.domain_name).await {
+            return Ok(None);
+        }
+
+        let client = reqwest::Client::new();
+        let res = client
+            .get(url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", ingester.token)
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to fetch stats from ingestor: {}\n Error: {:?}",
+                    ingester.domain_name,
+                    err
+                );
+
+                StreamError::Custom {
+                    msg: format!(
+                        "failed to fetch stats from ingestor: {}\n Error: {:?}",
+                        ingester.domain_name, err
+                    ),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                }
+            })?;
+
+        if !res.status().is_success() {
+            log::error!(
+                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                ingester.domain_name,
+                res
+            );
+            return Err(StreamError::Custom {
+                msg: format!(
+                    "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                    ingester.domain_name,res.text().await.unwrap_or_default()
+                ),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            });
+        }
+
+        Ok(Some(res))
+    }
+
+    async fn send_stream_sync_request(
+        url: &str,
+        ingester: IngesterMetadata,
+    ) -> Result<(), StreamError> {
+        if !Self::check_liveness(&ingester.domain_name).await {
+            return Ok(());
+        }
+
+        let client = reqwest::Client::new();
+        let res = client
+            .put(url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", ingester.token)
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to forward create stream request to ingestor: {}\n Error: {:?}",
+                    ingester.domain_name,
+                    err
+                );
+                StreamError::Custom {
+                    msg: format!(
+                        "failed to forward create stream request to ingestor: {}\n Error: {:?}",
+                        ingester.domain_name, err
+                    ),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                }
+            })?;
+
+        if !res.status().is_success() {
+            log::error!(
+                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                ingester.domain_name,
+                res
+            );
+            return Err(StreamError::Custom {
+                            msg: format!(
+                                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                                ingester.domain_name,res.text().await.unwrap_or_default()
+                            ),
+                            status: StatusCode::INTERNAL_SERVER_ERROR,
+                        });
+        }
+
+        Ok(())
+    }
+
+    async fn send_stream_rollback_request(
+        url: &str,
+        ingester: IngesterMetadata,
+    ) -> Result<(), StreamError> {
+        if !Self::check_liveness(&ingester.domain_name).await {
+            return Ok(());
+        }
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .delete(url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", ingester.token)
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to rollback stream creation: {}\n Error: {:?}",
+                    ingester.domain_name,
+                    err
+                );
+                StreamError::Custom {
+                    msg: format!(
+                        "failed to rollback stream creation: {}\n Error: {:?}",
+                        ingester.domain_name, err
+                    ),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                }
+            })?;
+
+        if !resp.status().is_success() {
+            log::error!(
+                "failed to rollback stream creation: {}\nResponse Returned: {:?}",
+                ingester.domain_name,
+                resp
+            );
+            return Err(StreamError::Custom {
+                msg: format!(
+                    "failed to rollback stream creation: {}\nResponse Returned: {:?}",
+                    ingester.domain_name,
+                    resp.text().await.unwrap_or_default()
+                ),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            });
+        }
+
+        Ok(())
     }
 
     pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {

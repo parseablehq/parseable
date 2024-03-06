@@ -33,7 +33,7 @@ use crate::{metadata, validator};
 
 use self::error::{CreateStreamError, StreamError};
 
-use super::modal::query_server::{self, IngestionStats, QueryServer, QueriedStats, StorageStats};
+use super::modal::query_server::{self, IngestionStats, QueriedStats, StorageStats};
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -122,8 +122,11 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
             status: StatusCode::BAD_REQUEST,
         });
     }
+    if CONFIG.parseable.mode == Mode::Query {
+        query_server::QueryServer::sync_streams_with_ingestors(&stream_name).await?;
+    }
+
     create_stream(stream_name.clone()).await?;
-    query_server::QueryServer::sync_streams_with_ingestors(&stream_name).await?;
 
     Ok(("log stream created", StatusCode::OK))
 }
@@ -281,12 +284,11 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    // ! there can be an early return here
-    let s = if CONFIG.parseable.mode == Mode::Query {
-        query_server::QueryServer::fetch_stats_from_ingestors(&stream_name).await?
-    } else {
-        QueriedStats::default()
-    };
+    if CONFIG.parseable.mode == Mode::Query {
+        let stats = query_server::QueryServer::fetch_stats_from_ingestors(&stream_name).await?;
+        let stats = serde_json::to_value(stats).unwrap();
+        return Ok((web::Json(stats), StatusCode::OK));
+    }
 
     let hash_map = STREAM_INFO.read().unwrap();
     let stream_meta = &hash_map
@@ -294,7 +296,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
     let time = Utc::now();
-    let mut qstats = match &stream_meta.first_event_at {
+    let qstats = match &stream_meta.first_event_at {
         Some(first_event_at) => {
             let ingestion_stats = IngestionStats::new(
                 stats.events,
@@ -304,14 +306,14 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             let storage_stats =
                 StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
 
-            vec![QueriedStats::new(
+            QueriedStats::new(
                 &stream_name,
                 &stream_meta.created_at,
                 Some(first_event_at.to_owned()),
                 time,
                 ingestion_stats,
                 storage_stats,
-            )]
+            )
         }
 
         // ? this case should not happen
@@ -324,25 +326,18 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             let storage_stats =
                 StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
 
-            vec![QueriedStats::new(
+            QueriedStats::new(
                 &stream_name,
                 &stream_meta.created_at,
-                None,
+                Some('0'.to_string()),
                 time,
                 ingestion_stats,
                 storage_stats,
-            )]
+            )
         }
     };
 
-    let out_stats = match &CONFIG.parseable.mode {
-        Mode::Query => {
-            qstats.push(s);
-            let qstats = QueryServer::merge_quried_stats(qstats);
-            serde_json::to_value(qstats).unwrap()
-        }
-        _ => serde_json::to_value(qstats).unwrap(),
-    };
+    let out_stats = serde_json::to_value(qstats).unwrap();
 
     Ok((web::Json(out_stats), StatusCode::OK))
 }
