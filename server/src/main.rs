@@ -68,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // MODE == Query / Ingest and storage = local-store
+    server.validate()?;
     server.init().await?;
 
     Ok(())

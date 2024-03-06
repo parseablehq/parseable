@@ -507,9 +507,9 @@ impl QueryServer {
                 None => Utc::now(),
             })
             .min()
-            .unwrap_or(Utc::now());
+            .unwrap_or_else(Utc::now);
 
-        let min_time = stats.iter().map(|x| x.time).min().unwrap_or(Utc::now());
+        let min_time = stats.iter().map(|x| x.time).min().unwrap_or_else(Utc::now);
 
         let cumulative_ingestion =
             stats
