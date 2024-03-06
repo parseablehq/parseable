@@ -215,6 +215,7 @@ impl IngestServer {
             return Ok(());
         };
 
+        let scheme = CONFIG.parseable.get_scheme();
         let resource = IngesterMetadata::new(
             sock.port().to_string(),
             CONFIG
@@ -222,7 +223,7 @@ impl IngestServer {
                 .domain_address
                 .clone()
                 .unwrap_or_else(|| {
-                    Url::parse(&format!("http://{}:{}", sock.ip(), sock.port())).unwrap()
+                    Url::parse(&format!("{}://{}:{}", scheme, sock.ip(), sock.port())).unwrap()
                 })
                 .to_string(),
             DEFAULT_VERSION.to_string(),
