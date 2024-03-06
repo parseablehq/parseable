@@ -16,15 +16,6 @@
  *
  */
 
-use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
-use arrow_schema::Field;
-use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use http::StatusCode;
-use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
-
 use crate::event::error::EventError;
 use crate::event::format::EventFormat;
 use crate::event::{self, format};
@@ -33,8 +24,17 @@ use crate::handlers::{
     STREAM_NAME_HEADER_KEY,
 };
 use crate::metadata::STREAM_INFO;
+use crate::option::CONFIG;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use crate::utils::json::convert_array_to_object;
+use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
+use arrow_schema::Field;
+use bytes::Bytes;
+use chrono::{DateTime, Utc};
+use http::StatusCode;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use super::logstream::error::CreateStreamError;
 use super::{kinesis, otel};
@@ -95,35 +95,28 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
 }
 
 async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
-    let hash_map = STREAM_INFO.read().unwrap();
-    let schema = hash_map
-        .get(&stream_name)
-        .ok_or(PostError::StreamNotFound(stream_name.clone()))?
-        .schema
-        .clone();
-
-    let time_partition = hash_map
-        .get(&stream_name)
-        .ok_or(PostError::StreamNotFound(stream_name.clone()))?
-        .time_partition
-        .clone();
+    let glob_storage = CONFIG.storage().get_object_store();
+    let object_store_format = glob_storage
+        .get_object_store_format(&stream_name)
+        .await
+        .map_err(|_err| PostError::StreamNotFound(stream_name.clone()))?;
+    let time_partition = object_store_format.time_partition;
     let body_val: Value = serde_json::from_slice(&body)?;
     let size: usize = body.len();
     let mut parsed_timestamp = Utc::now().naive_utc();
     if time_partition.is_none() {
-        let (rb, is_first_event) = into_event_batch(req, body_val, schema)?;
+        let stream = stream_name.clone();
+        let (rb, is_first_event) = get_stream_schema(stream.clone(), req, body_val)?;
         event::Event {
             rb,
-            stream_name,
+            stream_name: stream,
             origin_format: "json",
             origin_size: size as u64,
             is_first_event,
             parsed_timestamp,
         }
-        
-
         .process()
-        .await?
+        .await?;
     } else {
         let data = convert_array_to_object(body_val.clone())?;
         for value in data {
@@ -146,7 +139,8 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
                         .unwrap()
                         .naive_utc();
 
-                    let (rb, is_first_event) = into_event_batch(req.clone(), value, schema.clone())?;
+                    let (rb, is_first_event) =
+                        get_stream_schema(stream_name.clone(), req.clone(), value)?;
                     event::Event {
                         rb,
                         stream_name: stream_name.clone(),
@@ -174,6 +168,20 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
     Ok(())
 }
 
+fn get_stream_schema(
+    stream_name: String,
+    req: HttpRequest,
+    body: Value,
+) -> Result<(arrow_array::RecordBatch, bool), PostError> {
+    let hash_map = STREAM_INFO.read().unwrap();
+    let schema = hash_map
+        .get(&stream_name)
+        .ok_or(PostError::StreamNotFound(stream_name))?
+        .schema
+        .clone();
+    into_event_batch(req, body, schema)
+}
+
 fn into_event_batch(
     req: HttpRequest,
     body: Value,
@@ -197,7 +205,7 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
     if STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
     }
-    super::logstream::create_stream(stream_name.to_string(), String::default()).await?;
+    super::logstream::create_stream(stream_name.to_string(), "").await?;
     Ok(())
 }
 

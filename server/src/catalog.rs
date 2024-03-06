@@ -74,7 +74,7 @@ fn get_file_bounds(
     file: &manifest::File,
     partition_column: String,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
-    if partition_column == *DEFAULT_TIMESTAMP_KEY.to_string() {
+    if partition_column == DEFAULT_TIMESTAMP_KEY {
         match file
             .columns()
             .iter()
@@ -122,14 +122,18 @@ pub async fn update_snapshot(
     let mut meta = storage.get_object_store_format(stream_name).await?;
     let manifests = &mut meta.snapshot.manifest_list;
     let time_partition = meta.time_partition;
-    let mut _lower_bound = Utc::now();
-    if time_partition.is_none() {
-        (_lower_bound, _) = get_file_bounds(&change, DEFAULT_TIMESTAMP_KEY.to_string());
-    } else {
-        (_lower_bound, _) = get_file_bounds(&change, time_partition.unwrap().to_string());
-    }
+    let lower_bound = match time_partition {
+        Some(time_partition) => {
+            let (lower_bound, _) = get_file_bounds(&change, time_partition);
+            lower_bound
+        }
+        None => {
+            let (lower_bound, _) = get_file_bounds(&change, DEFAULT_TIMESTAMP_KEY.to_string());
+            lower_bound
+        }
+    };
     let pos = manifests.iter().position(|item| {
-        item.time_lower_bound <= _lower_bound && _lower_bound < item.time_upper_bound
+        item.time_lower_bound <= lower_bound && lower_bound < item.time_upper_bound
     });
 
     // We update the manifest referenced by this position
@@ -149,7 +153,7 @@ pub async fn update_snapshot(
         manifest.apply_change(change);
         storage.put_manifest(&manifest_path, manifest).await?;
     } else {
-        let lower_bound = _lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
+        let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
         let upper_bound = lower_bound
             .date_naive()
             .and_time(

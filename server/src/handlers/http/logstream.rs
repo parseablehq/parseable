@@ -109,14 +109,15 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 }
 
 pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let mut time_partition: String = String::default();
-    if let Some((_, time_partition_name)) = req
+    let time_partition = if let Some((_, time_partition_name)) = req
         .headers()
         .iter()
         .find(|&(key, _)| key == TIME_PARTITION_KEY)
     {
-        time_partition = time_partition_name.to_str().unwrap().to_owned();
-    }
+        time_partition_name.to_str().unwrap()
+    } else {
+        ""
+    };
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if metadata::STREAM_INFO.stream_exists(&stream_name) {
@@ -337,27 +338,30 @@ fn remove_id_from_alerts(value: &mut Value) {
 
 pub async fn create_stream(
     stream_name: String,
-    time_partition: String,
+    time_partition: &str,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     validator::stream_name(&stream_name)?;
 
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage.create_stream(&stream_name, &time_partition).await {
+    if let Err(err) = storage.create_stream(&stream_name, time_partition).await {
         return Err(CreateStreamError::Storage { stream_name, err });
     }
 
-    let stream_meta: Result<crate::storage::ObjectStoreFormat, crate::storage::ObjectStorageError> =
-        CONFIG
-            .storage()
-            .get_object_store()
-            .get_stream_metadata(&stream_name)
-            .await;
+    let stream_meta = CONFIG
+        .storage()
+        .get_object_store()
+        .get_stream_metadata(&stream_name)
+        .await;
     let stream_meta = stream_meta.unwrap();
     let created_at = stream_meta.created_at;
 
-    metadata::STREAM_INFO.add_stream(stream_name.to_string(), created_at, time_partition);
+    metadata::STREAM_INFO.add_stream(
+        stream_name.to_string(),
+        created_at,
+        time_partition.to_string(),
+    );
 
     Ok(())
 }
