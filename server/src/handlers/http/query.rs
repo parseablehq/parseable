@@ -56,7 +56,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let permissions = Users.get_permissions(&creds);
     let session_state = QUERY_SESSION.state();
     let mut query = into_query(&query_request, &session_state).await?;
-
     // check authorization of this query if it references physical table;
     let table_name = query.table_name();
     if let Some(ref table) = table_name {
@@ -94,7 +93,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 
     let time = Instant::now();
 
-    let (records, fields) = query.execute().await?;
+    let (records, fields) = query.execute(table_name.clone().unwrap()).await?;
     let response = QueryResponse {
         records,
         fields,

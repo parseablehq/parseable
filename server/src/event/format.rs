@@ -53,14 +53,14 @@ pub trait EventFormat: Sized {
             return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
         };
 
-        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
+        if get_field(&schema, DEFAULT_METADATA_KEY).is_some() {
             return Err(anyhow!(
                 "field {} is a reserved field",
                 DEFAULT_METADATA_KEY
             ));
         };
 
-        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
+        if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
                 "field {} is a reserved field",
                 DEFAULT_TIMESTAMP_KEY

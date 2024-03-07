@@ -106,14 +106,22 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(())
     }
 
-    async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
+    async fn create_stream(
+        &self,
+        stream_name: &str,
+        time_partition: &str,
+    ) -> Result<(), ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
         format.set_id(CONFIG.parseable.username.clone());
         let permission = Permisssion::new(CONFIG.parseable.username.clone());
         format.permissions = vec![permission];
+        if time_partition.is_empty() {
+            format.time_partition = None;
+        } else {
+            format.time_partition = Some(time_partition.to_string());
+        }
 
         let format_json = to_bytes(&format);
-
         self.put_object(&schema_path(stream_name), to_bytes(&Schema::empty()))
             .await?;
 
@@ -292,12 +300,13 @@ pub trait ObjectStorage: Sync + 'static {
         self.put_object(&path, to_bytes(&manifest)).await
     }
 
-    async fn get_snapshot(&self, stream: &str) -> Result<Snapshot, ObjectStorageError> {
+    async fn get_object_store_format(
+        &self,
+        stream: &str,
+    ) -> Result<ObjectStoreFormat, ObjectStorageError> {
         let path = stream_json_path(stream);
         let bytes = self.get_object(&path).await?;
-        Ok(serde_json::from_slice::<ObjectStoreFormat>(&bytes)
-            .expect("snapshot is valid json")
-            .snapshot)
+        Ok(serde_json::from_slice::<ObjectStoreFormat>(&bytes).expect("snapshot is valid json"))
     }
 
     async fn put_snapshot(

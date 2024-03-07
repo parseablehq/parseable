@@ -26,7 +26,7 @@ use std::{
 };
 
 use arrow_schema::{ArrowError, Schema};
-use chrono::{NaiveDateTime, Timelike, Utc};
+use chrono::{NaiveDateTime, Timelike};
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -43,7 +43,7 @@ use crate::{
     storage::OBJECT_STORE_DATA_GRANULARITY,
     utils::{self, arrow::merged_reader::MergedReverseRecordReader},
 };
-
+use rand::Rng;
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 const PARQUET_FILE_EXTENSION: &str = "data.parquet";
 
@@ -76,14 +76,19 @@ impl StorageDir {
         )
     }
 
-    fn filename_by_current_time(stream_hash: &str) -> String {
-        let datetime = Utc::now();
-        Self::filename_by_time(stream_hash, datetime.naive_utc())
+    fn filename_by_current_time(stream_hash: &str, parsed_timestamp: NaiveDateTime) -> String {
+        Self::filename_by_time(stream_hash, parsed_timestamp)
     }
 
-    pub fn path_by_current_time(&self, stream_hash: &str) -> PathBuf {
-        self.data_path
-            .join(Self::filename_by_current_time(stream_hash))
+    pub fn path_by_current_time(
+        &self,
+        stream_hash: &str,
+        parsed_timestamp: NaiveDateTime,
+    ) -> PathBuf {
+        self.data_path.join(Self::filename_by_current_time(
+            stream_hash,
+            parsed_timestamp,
+        ))
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
@@ -157,10 +162,13 @@ impl StorageDir {
     }
 
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
-        let filename = path.file_name().unwrap().to_str().unwrap();
-        let (_, filename) = filename.split_once('.').unwrap();
+        let file_stem = path.file_stem().unwrap().to_str().unwrap();
+        let mut rng = rand::thread_rng();
+        let random_number: u64 = rng.gen();
+        let (_, filename) = file_stem.split_once('.').unwrap();
+        let filename_with_random_number = format!("{}.{}.{}", filename, random_number, "arrows");
         let mut parquet_path = path.to_owned();
-        parquet_path.set_file_name(filename);
+        parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
         parquet_path
     }
