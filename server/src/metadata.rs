@@ -46,6 +46,7 @@ pub struct LogStreamMetadata {
     pub cache_enabled: bool,
     pub created_at: String,
     pub first_event_at: Option<String>,
+    pub time_partition: Option<String>,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -142,13 +143,18 @@ impl StreamInfo {
             })
     }
 
-    pub fn add_stream(&self, stream_name: String, created_at: String) {
+    pub fn add_stream(&self, stream_name: String, created_at: String, time_partition: String) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
             created_at: if created_at.is_empty() {
                 Local::now().to_rfc3339()
             } else {
-                created_at.clone()
+                created_at
+            },
+            time_partition: if time_partition.is_empty() {
+                None
+            } else {
+                Some(time_partition)
             },
             ..Default::default()
         };
@@ -185,6 +191,7 @@ impl StreamInfo {
                 cache_enabled: meta.cache_enabled,
                 created_at: meta.created_at,
                 first_event_at: meta.first_event_at,
+                time_partition: meta.time_partition,
             };
 
             let mut map = self.write().expect(LOCK_EXPECT);

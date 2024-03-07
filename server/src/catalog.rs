@@ -23,6 +23,7 @@ use relative_path::RelativePathBuf;
 
 use crate::{
     catalog::manifest::Manifest,
+    event::DEFAULT_TIMESTAMP_KEY,
     query::PartialTimeFilter,
     storage::{ObjectStorage, ObjectStorageError},
 };
@@ -69,25 +70,46 @@ impl ManifestFile for manifest::File {
     }
 }
 
-fn get_file_bounds(file: &manifest::File) -> (DateTime<Utc>, DateTime<Utc>) {
-    match file
-        .columns()
-        .iter()
-        .find(|col| col.name == "p_timestamp")
-        .unwrap()
-        .stats
-        .clone()
-        .unwrap()
-    {
-        column::TypedStatistics::Int(stats) => (
-            NaiveDateTime::from_timestamp_millis(stats.min)
-                .unwrap()
-                .and_utc(),
-            NaiveDateTime::from_timestamp_millis(stats.max)
-                .unwrap()
-                .and_utc(),
-        ),
-        _ => unreachable!(),
+fn get_file_bounds(
+    file: &manifest::File,
+    partition_column: String,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    if partition_column == DEFAULT_TIMESTAMP_KEY {
+        match file
+            .columns()
+            .iter()
+            .find(|col| col.name == partition_column)
+            .unwrap()
+            .stats
+            .as_ref()
+            .unwrap()
+        {
+            column::TypedStatistics::Int(stats) => (
+                NaiveDateTime::from_timestamp_millis(stats.min)
+                    .unwrap()
+                    .and_utc(),
+                NaiveDateTime::from_timestamp_millis(stats.max)
+                    .unwrap()
+                    .and_utc(),
+            ),
+            _ => unreachable!(),
+        }
+    } else {
+        match file
+            .columns()
+            .iter()
+            .find(|col| col.name == partition_column)
+            .unwrap()
+            .stats
+            .as_ref()
+            .unwrap()
+        {
+            column::TypedStatistics::String(stats) => (
+                stats.min.parse::<DateTime<Utc>>().unwrap(),
+                stats.max.parse::<DateTime<Utc>>().unwrap(),
+            ),
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -97,10 +119,19 @@ pub async fn update_snapshot(
     change: manifest::File,
 ) -> Result<(), ObjectStorageError> {
     // get current snapshot
-    let mut meta = storage.get_snapshot(stream_name).await?;
-    let manifests = &mut meta.manifest_list;
-
-    let (lower_bound, _) = get_file_bounds(&change);
+    let mut meta = storage.get_object_store_format(stream_name).await?;
+    let manifests = &mut meta.snapshot.manifest_list;
+    let time_partition = meta.time_partition;
+    let lower_bound = match time_partition {
+        Some(time_partition) => {
+            let (lower_bound, _) = get_file_bounds(&change, time_partition);
+            lower_bound
+        }
+        None => {
+            let (lower_bound, _) = get_file_bounds(&change, DEFAULT_TIMESTAMP_KEY.to_string());
+            lower_bound
+        }
+    };
     let pos = manifests.iter().position(|item| {
         item.time_lower_bound <= lower_bound && lower_bound < item.time_upper_bound
     });
@@ -109,8 +140,10 @@ pub async fn update_snapshot(
     // This updates an existing file so there is no need to create a snapshot entry.
     if let Some(pos) = pos {
         let info = &mut manifests[pos];
-        let path = partition_path(stream_name, info.time_lower_bound, info.time_upper_bound);
-        let Some(mut manifest) = storage.get_manifest(&path).await? else {
+        let manifest_path =
+            partition_path(stream_name, info.time_lower_bound, info.time_upper_bound);
+
+        let Some(mut manifest) = storage.get_manifest(&manifest_path).await? else {
             return Err(ObjectStorageError::UnhandledError(
                 "Manifest found in snapshot but not in object-storage"
                     .to_string()
@@ -118,7 +151,7 @@ pub async fn update_snapshot(
             ));
         };
         manifest.apply_change(change);
-        storage.put_manifest(&path, manifest).await?;
+        storage.put_manifest(&manifest_path, manifest).await?;
     } else {
         let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
         let upper_bound = lower_bound
@@ -148,7 +181,7 @@ pub async fn update_snapshot(
             time_upper_bound: upper_bound,
         };
         manifests.push(new_snapshot_entriy);
-        storage.put_snapshot(stream_name, meta).await?;
+        storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
 
     Ok(())
@@ -160,13 +193,13 @@ pub async fn remove_manifest_from_snapshot(
     dates: Vec<String>,
 ) -> Result<(), ObjectStorageError> {
     // get current snapshot
-    let mut meta = storage.get_snapshot(stream_name).await?;
-    let manifests = &mut meta.manifest_list;
+    let mut meta = storage.get_object_store_format(stream_name).await?;
+    let manifests = &mut meta.snapshot.manifest_list;
 
     // Filter out items whose manifest_path contains any of the dates_to_delete
     manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
 
-    storage.put_snapshot(stream_name, meta).await?;
+    storage.put_snapshot(stream_name, meta.snapshot).await?;
     Ok(())
 }
 
@@ -175,8 +208,8 @@ pub async fn get_first_event(
     stream_name: &str,
 ) -> Result<Option<String>, ObjectStorageError> {
     // get current snapshot
-    let mut meta = storage.get_snapshot(stream_name).await?;
-    let manifests = &mut meta.manifest_list;
+    let mut meta = storage.get_object_store_format(stream_name).await?;
+    let manifests = &mut meta.snapshot.manifest_list;
 
     if manifests.is_empty() {
         log::info!("No manifest found for stream {stream_name}");
@@ -199,7 +232,7 @@ pub async fn get_first_event(
     };
 
     if let Some(first_event) = manifest.files.first() {
-        let (lower_bound, _) = get_file_bounds(first_event);
+        let (lower_bound, _) = get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
         let first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
         return Ok(Some(first_event_at));
     }
