@@ -43,7 +43,12 @@ impl QueryResponse {
                 }
             }
         }
-        let values = json_records.into_iter().map(Value::Object).collect_vec();
+        let mut values = json_records.into_iter().map(Value::Object).collect_vec();
+
+        if let Some(mut imem) = imem {
+            values.append(&mut imem);
+        }
+
         let response = if self.with_fields {
             json!({
                 "fields": self.fields,

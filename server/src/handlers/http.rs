@@ -59,23 +59,51 @@ pub fn base_path_without_preceding_slash() -> String {
     base_path().trim_start_matches('/').to_string()
 }
 
+pub async fn send_schema_request(stream_name: &str) -> anyhow::Result<Vec<arrow_schema::Schema>> {
+    let mut res = vec![];
+    let ima = QueryServer::get_ingester_info().await.unwrap();
+
+    for im in ima {
+        // todo:
+        let uri = format!("{}api/v1/logstream/{}/schema", im.domain_name, stream_name);
+        let reqw = reqwest::Client::new()
+            .get(uri)
+            .header(http::header::AUTHORIZATION, im.token.clone())
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .send()
+            .await?;
+
+        if reqw.status().is_success() {
+            let v = serde_json::from_slice(&reqw.bytes().await?)?;
+            res.push(v);
+        }
+    }
+
+    Ok(res)
+}
+
 pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec<Value>> {
     // send the query request to the ingestor
     let mut res = vec![];
     let ima = QueryServer::get_ingester_info().await.unwrap();
 
-    for im in ima {
-        let uri = format!("{}{}/{}",im.domain_name, base_path(), "query");
+    for im in ima.iter() {
+        let uri = format!("{}api/v1/{}", im.domain_name, "query");
         let reqw = reqwest::Client::new()
             .post(uri)
             .json(query)
-            .basic_auth("admin", Some("admin"))
+            .header(http::header::AUTHORIZATION, im.token.clone())
+            .header(http::header::CONTENT_TYPE, "application/json")
             .send()
             .await?;
 
         if reqw.status().is_success() {
             let v: Value = serde_json::from_slice(&reqw.bytes().await?)?;
-            res.push(v);
+            if let Some(arr) = v.as_array() {
+                for val in arr {
+                    res.push(val.clone())
+                }
+            }
         }
     }
 

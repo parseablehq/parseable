@@ -173,7 +173,7 @@ impl QueryServer {
 
         let mut f = Self::get_meta_file().await;
         // writer the arr in f
-        let write_size = f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
+        let _ = f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
         Ok(arr)
     }
 
@@ -224,9 +224,11 @@ impl QueryServer {
     /// initialize the server, run migrations as needed and start the server
     async fn initialize(&self) -> anyhow::Result<()> {
         migration::run_metadata_migration(&CONFIG).await?;
-        tokio::fs::File::create(CONFIG.staging_dir().join(".query.json")).await?;
 
         let metadata = storage::resolve_parseable_metadata().await?;
+        // do not commit the below line
+        tokio::fs::File::create(CONFIG.staging_dir().join(".query.json")).await?;
+
         banner::print(&CONFIG, &metadata).await;
 
         // initialize the rbac map

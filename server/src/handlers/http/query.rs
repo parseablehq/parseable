@@ -19,24 +19,30 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
-use chrono::{DateTime, Timelike, Utc};
+use arrow_schema::Schema;
+use chrono::{DateTime, Utc};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use futures_util::Future;
 use http::StatusCode;
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Instant;
 
+use crate::event::commit_schema;
+use crate::handlers::http::send_schema_request;
 use crate::metrics::QUERY_EXECUTE_TIME;
+use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
 use crate::query::QUERY_SESSION;
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
+use crate::storage::object_storage::commit_schema_to_storage;
 use crate::utils::actix::extract_session_key_from_req;
 
-use super::send_query_request_to_ingestor;
+use super::send_request_to_ingestor;
 
 /// Query Request through http endpoint.
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -54,19 +60,41 @@ pub struct Query {
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
-    // create a new query to send to the ingestors
-    let mut mmem= vec![];
-    if let Some(query) = transform_query_for_ingestor(&query_request) {
-        mmem = send_query_request_to_ingestor(&query)
-            .await
-            .map_err(|err| QueryError::Custom(err.to_string()))?;
-    }
-
-    // let rbj = arrow_json::ReaderBuilder::new();
-    let creds = extract_session_key_from_req(&req).expect("expects basic auth");
-    let permissions = Users.get_permissions(&creds);
     let session_state = QUERY_SESSION.state();
     let mut query = into_query(&query_request, &session_state).await?;
+
+    if CONFIG.parseable.mode == Mode::Query {
+        if let Ok(schs) = send_schema_request(&query.table_name().unwrap()).await {
+            let new_schema =
+                Schema::try_merge(schs).map_err(|err| QueryError::Custom(err.to_string()))?;
+
+            commit_schema(&query.table_name().unwrap(), Arc::new(new_schema.clone()))
+                .map_err(|err| QueryError::Custom(format!("Error committing schema: {}", err)))?;
+
+            commit_schema_to_storage(&query.table_name().unwrap(), new_schema)
+                .await
+                .map_err(|err| {
+                    QueryError::Custom(format!("Error committing schema to storage\nError:{err}"))
+                })?;
+        }
+    }
+
+    let mmem = if CONFIG.parseable.mode == Mode::Query {
+        // create a new query to send to the ingestors
+        if let Some(que) = transform_query_for_ingestor(&query_request) {
+            let vals = send_request_to_ingestor(&que)
+                .await
+                .map_err(|err| QueryError::Custom(err.to_string()))?;
+            Some(vals)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let creds = extract_session_key_from_req(&req).expect("expects basic auth");
+    let permissions = Users.get_permissions(&creds);
 
     // check authorization of this query if it references physical table;
     let table_name = query.table_name();
@@ -105,14 +133,14 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 
     let time = Instant::now();
 
-    let (records, fields) = query.execute(Some(mmem)).await?;
+    let (records, fields) = query.execute().await?;
     let response = QueryResponse {
         records,
         fields,
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
     }
-    .to_http();
+    .to_http(mmem);
 
     if let Some(table) = table_name {
         let time = time.elapsed().as_secs_f64();
@@ -195,14 +223,31 @@ async fn into_query(
 }
 
 fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
-    let end_time = DateTime::parse_from_rfc3339(&query.end_time).ok()?;
+    if query.query.is_empty() {
+        return None;
+    }
+
+    if query.start_time.is_empty() {
+        return None;
+    }
+
+    if query.end_time.is_empty() {
+        return None;
+    }
+
+    let end_time: DateTime<Utc> = if query.end_time == "now" {
+        Utc::now()
+    } else {
+        DateTime::parse_from_rfc3339(&query.end_time)
+            .ok()?
+            .with_timezone(&Utc)
+    };
+
     let start_time = end_time - chrono::Duration::minutes(1);
-
-    dbg!(start_time.minute());
-
+    // when transforming the query, the ingestors are forced to return an array of values
     let q = Query {
         query: query.query.clone(),
-        fields: query.fields,
+        fields: false,
         filter_tags: query.filter_tags.clone(),
         send_null: query.send_null,
         start_time: start_time.to_rfc3339(),
@@ -236,7 +281,7 @@ pub enum QueryError {
     Datafusion(#[from] DataFusionError),
     #[error("Execution Error: {0}")]
     Execute(#[from] ExecuteError),
-    #[error("Query Error: {0}")]
+    #[error("Error: {0}")]
     Custom(String),
 }
 
