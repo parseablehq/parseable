@@ -33,29 +33,6 @@ entries:
     version: 0.0.1
   parseable:
   - apiVersion: v2
-    appVersion: v0.9
-    created: "2024-03-04T21:18:31.640709815+05:30"
-    dependencies:
-    - condition: vector.enabled
-      name: vector
-      repository: https://helm.vector.dev
-      version: 0.20.1
-    - condition: fluent-bit.enabled
-      name: fluent-bit
-      repository: https://fluent.github.io/helm-charts
-      version: 0.25.0
-    description: Helm chart for Parseable Server
-    digest: c7c5a62069594e422bd9b9ce4c45a531148df8298bdbea82192bf317186de468
-    maintainers:
-    - email: hi@parseable.com
-      name: Parseable Team
-      url: https://parseable.com
-    name: parseable
-    type: application
-    urls:
-    - https://charts.parseable.com/helm-releases/parseable-0.9.tgz
-    version: "0.9"
-  - apiVersion: v2
     appVersion: v0.9.0
     created: "2024-03-04T21:18:31.638535002+05:30"
     dependencies:
