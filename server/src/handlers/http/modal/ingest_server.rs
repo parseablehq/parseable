@@ -120,6 +120,7 @@ impl IngestServer {
             .service(
                 // Base path "{url}/api/v1"
                 web::scope(&base_path())
+                    .service(Server::get_query_factory())
                     .service(Server::get_ingest_factory())
                     .service(Self::logstream_api()),
             )

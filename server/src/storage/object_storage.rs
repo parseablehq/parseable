@@ -203,10 +203,20 @@ pub trait ObjectStorage: Sync + 'static {
             Ok(data) => data,
             Err(_) => {
                 // ! this is hard coded for now
-                let bytes = self.get_object(&RelativePathBuf::from_iter([stream_name, STREAM_METADATA_FILE_NAME])).await?;
-                self.put_stream_manifest(stream_name, &serde_json::from_slice::<ObjectStoreFormat>(&bytes).expect("parseable config is valid json")).await?;
+                let bytes = self
+                    .get_object(&RelativePathBuf::from_iter([
+                        stream_name,
+                        STREAM_METADATA_FILE_NAME,
+                    ]))
+                    .await?;
+                self.put_stream_manifest(
+                    stream_name,
+                    &serde_json::from_slice::<ObjectStoreFormat>(&bytes)
+                        .expect("parseable config is valid json"),
+                )
+                .await?;
                 bytes
-            },
+            }
         };
 
         Ok(serde_json::from_slice(&stream_metadata).expect("parseable config is valid json"))
