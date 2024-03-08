@@ -557,17 +557,6 @@ impl PartialTimeFilter {
             ))))),
         ))
     }
-
-    fn is_greater_than(&self, other: &NaiveDateTime) -> bool {
-        match self {
-            PartialTimeFilter::Low(Bound::Excluded(time)) => time >= other,
-            PartialTimeFilter::Low(Bound::Included(time))
-            | PartialTimeFilter::High(Bound::Excluded(time))
-            | PartialTimeFilter::High(Bound::Included(time)) => time > other,
-            PartialTimeFilter::Eq(time) => time > other,
-            _ => unimplemented!(),
-        }
-    }
 }
 
 fn is_overlapping_query(
@@ -575,16 +564,27 @@ fn is_overlapping_query(
     time_filters: &[PartialTimeFilter],
 ) -> bool {
     // This is for backwards compatiblity. Older table format relies on listing.
-    // if the time is lower than upper bound of first file then we consider it overlapping
-    let Some(first_entry_upper_bound) =
-        manifest_list.iter().map(|file| file.time_upper_bound).min()
+    // if the start time is lower than lower bound of first file then we consider it overlapping
+
+    let Some(first_entry_lower_bound) =
+        manifest_list.iter().map(|file| file.time_lower_bound).min()
     else {
         return true;
     };
 
-    !time_filters
-        .iter()
-        .all(|filter| filter.is_greater_than(&first_entry_upper_bound.naive_utc()))
+    for filter in time_filters {
+        match filter {
+            PartialTimeFilter::Low(Bound::Excluded(time))
+            | PartialTimeFilter::Low(Bound::Included(time)) => {
+                if time < &first_entry_lower_bound.naive_utc() {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    false
 }
 
 fn include_now(filters: &[Expr], time_partition: Option<String>) -> bool {
