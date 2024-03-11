@@ -19,7 +19,6 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
-use arrow_json::reader::infer_json_schema_from_iterator;
 use chrono::{DateTime, Utc};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
@@ -30,10 +29,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-// Eshan's Code Under test
-#[allow(unused_imports)]
 use arrow_schema::Schema;
-#[allow(unused_imports)]
 use crate::handlers::http::send_schema_request;
 
 use crate::event::commit_schema;
@@ -68,21 +64,21 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let session_state = QUERY_SESSION.state();
     let mut query = into_query(&query_request, &session_state).await?;
 
-    // if CONFIG.parseable.mode == Mode::Query {
-    //     if let Ok(schs) = send_schema_request(&query.table_name().unwrap()).await {
-    //         let new_schema =
-    //             Schema::try_merge(schs).map_err(|err| QueryError::Custom(err.to_string()))?;
+    if CONFIG.parseable.mode == Mode::Query {
+        if let Ok(schs) = send_schema_request(&query.table_name().unwrap()).await {
+            let new_schema =
+                Schema::try_merge(schs).map_err(|err| QueryError::Custom(err.to_string()))?;
 
-    //         commit_schema(&query.table_name().unwrap(), Arc::new(new_schema.clone()))
-    //             .map_err(|err| QueryError::Custom(format!("Error committing schema: {}", err)))?;
+            commit_schema(&query.table_name().unwrap(), Arc::new(new_schema.clone()))
+                .map_err(|err| QueryError::Custom(format!("Error committing schema: {}", err)))?;
 
-    //         commit_schema_to_storage(&query.table_name().unwrap(), new_schema)
-    //             .await
-    //             .map_err(|err| {
-    //                 QueryError::Custom(format!("Error committing schema to storage\nError:{err}"))
-    //             })?;
-    //     }
-    // }
+            commit_schema_to_storage(&query.table_name().unwrap(), new_schema)
+                .await
+                .map_err(|err| {
+                    QueryError::Custom(format!("Error committing schema to storage\nError:{err}"))
+                })?;
+        }
+    }
 
     let mmem = if CONFIG.parseable.mode == Mode::Query {
         // create a new query to send to the ingestors
@@ -90,18 +86,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
             let vals = send_request_to_ingestor(&que)
                 .await
                 .map_err(|err| QueryError::Custom(err.to_string()))?;
-            let infered_schema = infer_json_schema_from_iterator(vals.iter().map(Ok)).map_err(|err| {
-                QueryError::Custom(format!("Error inferring schema from iterator\nError:{err}"))
-            })?;
-
-            commit_schema(&query.table_name().unwrap(), Arc::new(infered_schema.clone()))
-                .map_err(|err| QueryError::Custom(format!("Error committing schema: {}", err)))?;
-
-            commit_schema_to_storage(&query.table_name().unwrap(), infered_schema)
-                .await
-                .map_err(|err| {
-                    QueryError::Custom(format!("Error committing schema to storage\nError:{err}"))
-                })?;
 
             Some(vals)
         } else {

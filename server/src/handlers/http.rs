@@ -59,13 +59,12 @@ pub fn base_path_without_preceding_slash() -> String {
     base_path().trim_start_matches('/').to_string()
 }
 
-
 pub async fn send_schema_request(stream_name: &str) -> anyhow::Result<Vec<arrow_schema::Schema>> {
     let mut res = vec![];
     let ima = QueryServer::get_ingester_info().await.unwrap();
 
     for im in ima {
-        // todo:
+        // TODO: when you rebase the code from the Cluster Info PR update this uri generation
         let uri = format!("{}api/v1/logstream/{}/schema", im.domain_name, stream_name);
         let reqw = reqwest::Client::new()
             .get(uri)
@@ -89,6 +88,7 @@ pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec
     let ima = QueryServer::get_ingester_info().await.unwrap();
 
     for im in ima.iter() {
+        // TODO: when you rebase the code from the Cluster Info PR update this uri generation
         let uri = format!("{}api/v1/{}", im.domain_name, "query");
         let reqw = reqwest::Client::new()
             .post(uri)
@@ -100,6 +100,8 @@ pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec
 
         if reqw.status().is_success() {
             let v: Value = serde_json::from_slice(&reqw.bytes().await?)?;
+            // the value returned is an array of json objects
+            // so it needs to be flattened
             if let Some(arr) = v.as_array() {
                 for val in arr {
                     res.push(val.clone())
