@@ -62,7 +62,7 @@ pub fn base_path_without_preceding_slash() -> String {
 pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec<Value>> {
     // send the query request to the ingestor
     let mut res = vec![];
-    let ima = QueryServer::get_ingestor_info().await.unwrap();
+    let ima = QueryServer::get_ingester_info().await.unwrap();
 
     for im in ima {
         let uri = format!("{}{}/{}",im.domain_name, base_path(), "query");
