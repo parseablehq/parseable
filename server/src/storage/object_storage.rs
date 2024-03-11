@@ -25,6 +25,7 @@ use super::{
     STREAM_METADATA_FILE_NAME,
 };
 
+use crate::option::Mode;
 use crate::utils::get_address;
 use crate::{
     alerts::Alerts,
@@ -198,7 +199,26 @@ pub trait ObjectStorage: Sync + 'static {
         &self,
         stream_name: &str,
     ) -> Result<ObjectStoreFormat, ObjectStorageError> {
-        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
+        let stream_metadata = match self.get_object(&stream_json_path(stream_name)).await {
+            Ok(data) => data,
+            Err(_) => {
+                // ! this is hard coded for now
+                let bytes = self
+                    .get_object(&RelativePathBuf::from_iter([
+                        stream_name,
+                        STREAM_METADATA_FILE_NAME,
+                    ]))
+                    .await?;
+                self.put_stream_manifest(
+                    stream_name,
+                    &serde_json::from_slice::<ObjectStoreFormat>(&bytes)
+                        .expect("parseable config is valid json"),
+                )
+                .await?;
+                bytes
+            }
+        };
+
         Ok(serde_json::from_slice(&stream_metadata).expect("parseable config is valid json"))
     }
 
@@ -435,8 +455,17 @@ fn schema_path(stream_name: &str) -> RelativePathBuf {
 }
 
 #[inline(always)]
-fn stream_json_path(stream_name: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([stream_name, STREAM_METADATA_FILE_NAME])
+pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
+    match &CONFIG.parseable.mode {
+        Mode::Ingest => {
+            let (ip, port) = get_address();
+            let file_name = format!("ingester.{}.{}{}", ip, port, STREAM_METADATA_FILE_NAME);
+            RelativePathBuf::from_iter([stream_name, &file_name])
+        }
+        Mode::Query | Mode::All => {
+            RelativePathBuf::from_iter([stream_name, STREAM_METADATA_FILE_NAME])
+        }
+    }
 }
 
 #[inline(always)]

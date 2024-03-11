@@ -305,8 +305,11 @@ impl S3 {
 
         let stream_json_check = FuturesUnordered::new();
 
+        // even in ingest mode, we should only look for the global stream metadata file
+        let file_name = STREAM_METADATA_FILE_NAME.to_string();
+
         for dir in &dirs {
-            let key = format!("{}/{}", dir, STREAM_METADATA_FILE_NAME);
+            let key = format!("{}/{}", dir, file_name);
             let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
             stream_json_check.push(task);
         }
@@ -423,13 +426,13 @@ impl ObjectStorage for S3 {
         let mut res = vec![];
 
         while let Some(meta) = list_stream.next().await.transpose()? {
-            let ingestor_file = meta
+            let ingester_file = meta
                 .location
                 .filename()
                 .unwrap_or_default()
-                .contains("ingestor");
+                .contains("ingester");
 
-            if !ingestor_file {
+            if !ingester_file {
                 continue;
             }
 

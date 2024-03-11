@@ -20,6 +20,7 @@ use crate::analytics;
 use crate::banner;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::RouteExt;
+use crate::handlers::http::MAX_EVENT_PAYLOAD_SIZE;
 use crate::localcache::LocalCacheManager;
 use crate::metadata;
 use crate::metrics;
@@ -29,8 +30,6 @@ use crate::storage;
 use crate::storage::ObjectStorageError;
 use crate::storage::PARSEABLE_METADATA_FILE_NAME;
 use crate::sync;
-
-use std::net::SocketAddr;
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
@@ -63,8 +62,8 @@ impl ParseableServer for IngestServer {
         prometheus: PrometheusMetrics,
         _oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        // set the ingestor metadata
-        self.set_ingestor_metadata().await?;
+        // set the ingester metadata
+        self.set_ingester_metadata().await?;
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
@@ -99,11 +98,9 @@ impl ParseableServer for IngestServer {
 
     /// implement the init method will just invoke the initialize method
     async fn init(&self) -> anyhow::Result<()> {
-        // self.validate()?;
         self.initialize().await
     }
 
-    #[allow(unused)]
     fn validate(&self) -> anyhow::Result<()> {
         if CONFIG.get_storage_mode_string() == "Local drive" {
             return Err(anyhow::Error::msg(
@@ -122,7 +119,10 @@ impl IngestServer {
         config
             .service(
                 // Base path "{url}/api/v1"
-                web::scope(&base_path()).service(Server::get_ingest_factory()),
+                web::scope(&base_path())
+                    .service(Server::get_query_factory())
+                    .service(Server::get_ingest_factory())
+                    .service(Self::logstream_api()),
             )
             .service(Server::get_liveness_factory())
             .service(Server::get_readiness_factory())
@@ -150,32 +150,60 @@ impl IngestServer {
         )
     }
 
-    #[inline(always)]
-    fn get_ingestor_address(&self) -> SocketAddr {
-        // this might cause an issue down the line
-        // best is to make the Cli Struct better, but thats a chore
-        (CONFIG.parseable.address.clone())
-            .parse::<SocketAddr>()
-            .unwrap()
+    fn logstream_api() -> Scope {
+        web::scope("/logstream")
+            .service(
+                // GET "/logstream" ==> Get list of all Log Streams on the server
+                web::resource("")
+                    .route(web::get().to(logstream::list).authorize(Action::ListStream)),
+            )
+            .service(
+                web::scope("/{logstream}")
+                    .service(
+                        web::resource("")
+                            // PUT "/logstream/{logstream}" ==> Create log stream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_stream)
+                                    .authorize_for_stream(Action::CreateStream),
+                            )
+                            // DELETE "/logstream/{logstream}" ==> Delete log stream
+                            .route(
+                                web::delete()
+                                    .to(logstream::delete)
+                                    .authorize_for_stream(Action::DeleteStream),
+                            )
+                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    )
+                    .service(
+                        // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
+                        web::resource("/stats").route(
+                            web::get()
+                                .to(logstream::get_stats)
+                                .authorize_for_stream(Action::GetStats),
+                        ),
+                    ),
+            )
     }
 
-    // create the ingestor metadata and put the .ingestor.json file in the object store
-    async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
+    // create the ingester metadata and put the .ingester.json file in the object store
+    async fn set_ingester_metadata(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
 
         // remove ip adn go with the domain name
-        let sock = self.get_ingestor_address();
+        let sock = Server::get_server_address();
         let path = RelativePathBuf::from(format!(
-            "ingestor.{}.{}.json",
+            "ingester.{}.{}.json",
             sock.ip(), // this might be wrong
             sock.port()
         ));
 
         if store.get_object(&path).await.is_ok() {
-            println!("Ingestor metadata already exists");
+            println!("Ingester metadata already exists");
             return Ok(());
         };
 
+        let scheme = CONFIG.parseable.get_scheme();
         let resource = IngesterMetadata::new(
             sock.port().to_string(),
             CONFIG
@@ -183,13 +211,13 @@ impl IngestServer {
                 .domain_address
                 .clone()
                 .unwrap_or_else(|| {
-                    Url::parse(&format!("http://{}:{}", sock.ip(), sock.port())).unwrap()
+                    Url::parse(&format!("{}://{}:{}", scheme, sock.ip(), sock.port())).unwrap()
                 })
                 .to_string(),
             DEFAULT_VERSION.to_string(),
             store.get_bucket_name(),
             &CONFIG.parseable.username,
-            &CONFIG.parseable.password, // is this secure?
+            &CONFIG.parseable.password,
         );
 
         let resource = serde_json::to_string(&resource)
@@ -203,7 +231,7 @@ impl IngestServer {
     }
 
     // check for querier state. Is it there, or was it there in the past
-    // this should happen before the set the ingestor metadata
+    // this should happen before the set the ingester metadata
     async fn check_querier_state(&self) -> anyhow::Result<(), ObjectStorageError> {
         // how do we check for querier state?
         // based on the work flow of the system, the querier will always need to start first

@@ -30,8 +30,8 @@ use serde::Serialize;
 use crate::{
     option::Config,
     storage::{
-        ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
-        STREAM_METADATA_FILE_NAME,
+        object_storage::stream_json_path, ObjectStorage, ObjectStorageError,
+        PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
     },
 };
 
@@ -94,7 +94,8 @@ pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
 }
 
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
-    let path = RelativePathBuf::from_iter([stream, STREAM_METADATA_FILE_NAME]);
+    let path = stream_json_path(stream);
+
     let stream_metadata = storage.get_object(&path).await?;
     let stream_metadata: serde_json::Value =
         serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
