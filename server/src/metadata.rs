@@ -92,6 +92,13 @@ impl StreamInfo {
             .map(|metadata| metadata.cache_enabled)
     }
 
+    pub fn get_time_partition(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.time_partition.clone())
+    }
+
     pub fn set_stream_cache(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         let stream = map
