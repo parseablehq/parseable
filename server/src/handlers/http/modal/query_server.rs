@@ -17,11 +17,13 @@
  */
 
 use crate::handlers::http::logstream::error::StreamError;
-use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
+use crate::handlers::http::{
+    base_path, base_path_without_preceding_slash, cross_origin_config, API_BASE_PATH, API_VERSION,
+};
 use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
 use actix_web::http::header;
-use actix_web::web;
 use actix_web::web::ServiceConfig;
+use actix_web::{web, Responder};
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -135,9 +137,15 @@ impl QueryServer {
                     .service(Server::get_user_webscope())
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
-                    .service(Server::get_user_role_webscope()),
+                    .service(Server::get_user_role_webscope())
+                    .service(Self::get_cluster_info_web_scope()),
             )
             .service(Server::get_generated());
+    }
+
+    fn get_cluster_info_web_scope() -> actix_web::Scope {
+        web::scope("/cluster")
+            .service(web::resource("/info").route(web::get().to(Self::get_cluster_info)))
     }
 
     // update the .query.json file and return the new IngesterMetadataArr
@@ -163,7 +171,7 @@ impl QueryServer {
     }
 
     pub async fn check_liveness(domain_name: &str) -> bool {
-        let uri = Url::parse(&format!("{}{}/liveness", domain_name, base_path())).unwrap();
+        let uri = Url::parse(&format!("{}liveness", domain_name)).unwrap();
 
         let reqw = reqwest::Client::new()
             .get(uri)
@@ -172,6 +180,38 @@ impl QueryServer {
             .await;
 
         reqw.is_ok()
+    }
+
+    async fn get_cluster_info() -> Result<impl Responder, StreamError> {
+        let ingester_infos = Self::get_ingester_info().await.map_err(|err| {
+            log::error!("Fatal: failed to get ingester info: {:?}", err);
+            StreamError::Custom {
+                msg: format!("failed to get ingester info\n{:?}", err),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        })?;
+
+        let mut infos = vec![];
+
+        for ingester in ingester_infos {
+            let uri = Url::parse(&format!("{}liveness", ingester.domain_name))
+                .expect("should always be a valid url");
+
+            let reqw = reqwest::Client::new()
+                .get(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .send()
+                .await;
+
+            infos.push(ClusterInfo::new(
+                &ingester.domain_name,
+                reqw.is_ok(),
+                reqw.as_ref().err().map(|e| e.to_string()),
+                reqw.ok().map(|r| r.status().to_string()),
+            ));
+        }
+
+        Ok(actix_web::HttpResponse::Ok().json(infos))
     }
 
     /// initialize the server, run migrations as needed and start the server
@@ -254,8 +294,8 @@ impl QueryServer {
         for ingester in ingester_infos.iter() {
             let url = format!(
                 "{}{}/logstream/{}",
-                ingester.domain_name.to_string().trim_end_matches('/'),
-                base_path(),
+                ingester.domain_name,
+                base_path_without_preceding_slash(),
                 stream_name
             );
 
@@ -272,8 +312,8 @@ impl QueryServer {
             for ingester in ingester_infos {
                 let url = format!(
                     "{}{}/logstream/{}",
-                    ingester.domain_name.to_string().trim_end_matches('/'),
-                    base_path(),
+                    ingester.domain_name,
+                    base_path_without_preceding_slash(),
                     stream_name
                 );
 
@@ -306,8 +346,8 @@ impl QueryServer {
         for ingester in ingester_infos {
             let url = format!(
                 "{}{}/logstream/{}/stats",
-                ingester.domain_name.to_string().trim_end_matches('/'),
-                base_path(),
+                ingester.domain_name,
+                base_path_without_preceding_slash(),
                 stream_name
             );
 
@@ -612,6 +652,30 @@ impl StorageStats {
         Self {
             size,
             format: format.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ClusterInfo {
+    domain_name: String,
+    reachable: bool,
+    error: Option<String>,  // error message if the ingester is not reachable
+    status: Option<String>, // status message if the ingester is reachable
+}
+
+impl ClusterInfo {
+    fn new(
+        domain_name: &str,
+        reachable: bool,
+        error: Option<String>,
+        status: Option<String>,
+    ) -> Self {
+        Self {
+            domain_name: domain_name.to_string(),
+            reachable,
+            error,
+            status,
         }
     }
 }
