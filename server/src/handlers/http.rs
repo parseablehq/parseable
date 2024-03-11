@@ -32,9 +32,6 @@ pub(crate) mod query;
 pub(crate) mod rbac;
 pub(crate) mod role;
 
-// this needs to be removed from here. It is in modal->mod.rs
-// include!(concat!(env!("OUT_DIR"), "/generated.rs"));
-
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "/api";
 pub const API_VERSION: &str = "v1";

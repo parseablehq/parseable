@@ -128,15 +128,15 @@ impl ObjectStorage for LocalFS {
         let mut entries = fs::read_dir(&prefix).await?;
         let mut res = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
-            let ingestor_file = entry
+            let ingester_file = entry
                 .path()
                 .file_name()
                 .unwrap_or_default()
                 .to_str()
                 .unwrap_or_default()
-                .contains("ingestor");
+                .contains("ingester");
 
-            if !ingestor_file {
+            if !ingester_file {
                 continue;
             }
 
@@ -302,7 +302,10 @@ async fn dir_with_stream(
 
     if entry.file_type().await?.is_dir() {
         let path = entry.path();
+
+        // even in ingest mode, we should only look for the global stream metadata file
         let stream_json_path = path.join(STREAM_METADATA_FILE_NAME);
+
         if stream_json_path.exists() {
             Ok(Some(dir_name))
         } else {

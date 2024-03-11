@@ -157,18 +157,6 @@ impl Config {
         }
         "S3 bucket"
     }
-
-    #[allow(dead_code)]
-    pub fn run_time_mode_validation(&self) -> anyhow::Result<()> {
-        let check = (self.parseable.mode == Mode::Ingest || self.parseable.mode == Mode::Query)
-            && self.storage_name == "drive";
-
-        if check {
-            anyhow::bail!(format!("Cannot start the server in {} mode with local storage, please use S3 bucket for storage", self.parseable.mode.to_str()))
-        }
-
-        Ok(())
-    }
 }
 
 fn create_parseable_cli_command() -> Command {

@@ -68,11 +68,8 @@ async fn main() -> anyhow::Result<()> {
         Mode::All => Arc::new(Server),
     };
 
-    // add logic for graceful shutdown if
     // MODE == Query / Ingest and storage = local-store
-    // option.rs ln: 161
-    // CONFIG.run_time_mode_validation()?;
-
+    server.validate()?;
     server.init().await?;
 
     Ok(())

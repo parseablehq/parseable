@@ -32,6 +32,7 @@ use crate::migration;
 use crate::rbac;
 use crate::storage;
 use crate::sync;
+use std::net::SocketAddr;
 use std::{fs::File, io::BufReader, sync::Arc};
 
 use actix_web::web::resource;
@@ -471,5 +472,14 @@ impl Server {
                 }
             };
         }
+    }
+
+    #[inline(always)]
+    pub fn get_server_address() -> SocketAddr {
+        // this might cause an issue down the line
+        // best is to make the Cli Struct better, but thats a chore
+        (CONFIG.parseable.address.clone())
+            .parse::<SocketAddr>()
+            .unwrap()
     }
 }

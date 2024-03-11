@@ -20,11 +20,13 @@ use self::error::{CreateStreamError, StreamError};
 use crate::alerts::Alerts;
 use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::metadata::STREAM_INFO;
-use crate::option::CONFIG;
+use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
+
+use super::modal::query_server::{self, IngestionStats, QueriedStats, StorageStats};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
 use arrow_schema::{Field, Schema};
@@ -311,8 +313,20 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
+    if CONFIG.parseable.mode == Mode::Query {
+        let stats = query_server::QueryServer::fetch_stats_from_ingesters(&stream_name).await?;
+        let stats = serde_json::to_value(stats).unwrap();
+        return Ok((web::Json(stats), StatusCode::OK));
+    }
+
+    let hash_map = STREAM_INFO.read().unwrap();
+    let stream_meta = &hash_map
+        .get(&stream_name)
+        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
+
     let time = Utc::now();
 
+    /* // ! broken / update
     let stats = serde_json::json!({
         "stream": stream_name,
         "time": time,
@@ -326,8 +340,51 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             "format": "parquet"
         }
     });
+    */
+    let qstats = match &stream_meta.first_event_at {
+        Some(first_event_at) => {
+            let ingestion_stats = IngestionStats::new(
+                stats.events,
+                format!("{} {}", stats.ingestion, "Bytes"),
+                "json",
+            );
+            let storage_stats =
+                StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
 
-    Ok((web::Json(stats), StatusCode::OK))
+            QueriedStats::new(
+                &stream_name,
+                &stream_meta.created_at,
+                Some(first_event_at.to_owned()),
+                time,
+                ingestion_stats,
+                storage_stats,
+            )
+        }
+
+        // ? this case should not happen
+        None => {
+            let ingestion_stats = IngestionStats::new(
+                stats.events,
+                format!("{} {}", stats.ingestion, "Bytes"),
+                "json",
+            );
+            let storage_stats =
+                StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
+
+            QueriedStats::new(
+                &stream_name,
+                &stream_meta.created_at,
+                Some('0'.to_string()),
+                time,
+                ingestion_stats,
+                storage_stats,
+            )
+        }
+    };
+
+    let out_stats = serde_json::to_value(qstats).unwrap();
+
+    Ok((web::Json(out_stats), StatusCode::OK))
 }
 
 // Check if the first_event_at is empty
