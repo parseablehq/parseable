@@ -176,6 +176,14 @@ impl IngestServer {
                             .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
                     .service(
+                        // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
+                        web::resource("/schema").route(
+                            web::get()
+                                .to(logstream::schema)
+                                .authorize_for_stream(Action::GetSchema),
+                        ),
+                    )
+                    .service(
                         // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
                         web::resource("/stats").route(
                             web::get()

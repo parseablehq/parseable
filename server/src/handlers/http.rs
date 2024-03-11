@@ -59,6 +59,7 @@ pub fn base_path_without_preceding_slash() -> String {
     base_path().trim_start_matches('/').to_string()
 }
 
+
 pub async fn send_schema_request(stream_name: &str) -> anyhow::Result<Vec<arrow_schema::Schema>> {
     let mut res = vec![];
     let ima = QueryServer::get_ingester_info().await.unwrap();

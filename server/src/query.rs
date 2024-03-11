@@ -51,6 +51,7 @@ pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(CONFIG.storage()));
 
 // A query request by client
+#[derive(Debug)]
 pub struct Query {
     pub raw_logical_plan: LogicalPlan,
     pub start: DateTime<Utc>,
@@ -102,10 +103,7 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
-    pub async fn execute(
-        &self,
-        mem: Option<Vec<Value>>,
-    ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    pub async fn execute(&self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let df = QUERY_SESSION
             .execute_logical_plan(self.final_logical_plan())
             .await?;
