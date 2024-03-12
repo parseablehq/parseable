@@ -335,8 +335,11 @@ pub trait ObjectStorage: Sync + 'static {
             let cache_enabled = STREAM_INFO
                 .cache_enabled(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+            let time_partition = STREAM_INFO
+                .get_time_partition(stream)
+                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let dir = StorageDir::new(stream);
-            let schema = convert_disk_files_to_parquet(stream, &dir)
+            let schema = convert_disk_files_to_parquet(stream, &dir, time_partition)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {

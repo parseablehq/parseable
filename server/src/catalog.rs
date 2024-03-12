@@ -210,7 +210,7 @@ pub async fn get_first_event(
     // get current snapshot
     let mut meta = storage.get_object_store_format(stream_name).await?;
     let manifests = &mut meta.snapshot.manifest_list;
-
+    let time_partition = meta.time_partition;
     if manifests.is_empty() {
         log::info!("No manifest found for stream {stream_name}");
         return Err(ObjectStorageError::Custom("No manifest found".to_string()));
@@ -232,9 +232,15 @@ pub async fn get_first_event(
     };
 
     if let Some(first_event) = manifest.files.first() {
-        let (lower_bound, _) = get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
-        let first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
-        return Ok(Some(first_event_at));
+        if let Some(time_partition) = time_partition {
+            let (lower_bound, _) = get_file_bounds(first_event, time_partition);
+            let first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
+            return Ok(Some(first_event_at));
+        } else {
+            let (lower_bound, _) = get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
+            let first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
+            return Ok(Some(first_event_at));
+        }
     }
     Ok(None)
 }

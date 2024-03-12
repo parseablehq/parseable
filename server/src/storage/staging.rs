@@ -43,7 +43,7 @@ use crate::{
     storage::OBJECT_STORE_DATA_GRANULARITY,
     utils::{self, arrow::merged_reader::MergedReverseRecordReader},
 };
-use rand::Rng;
+use rand::distributions::DistString;
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 const PARQUET_FILE_EXTENSION: &str = "data.parquet";
 
@@ -163,10 +163,10 @@ impl StorageDir {
 
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
         let file_stem = path.file_stem().unwrap().to_str().unwrap();
-        let mut rng = rand::thread_rng();
-        let random_number: u64 = rng.gen();
+        let random_string =
+            rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
         let (_, filename) = file_stem.split_once('.').unwrap();
-        let filename_with_random_number = format!("{}.{}.{}", filename, random_number, "arrows");
+        let filename_with_random_number = format!("{}.{}.{}", filename, random_string, "arrows");
         let mut parquet_path = path.to_owned();
         parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
@@ -185,6 +185,7 @@ pub fn to_parquet_path(stream_name: &str, time: NaiveDateTime) -> PathBuf {
 pub fn convert_disk_files_to_parquet(
     stream: &str,
     dir: &StorageDir,
+    time_partition: Option<String>,
 ) -> Result<Option<Schema>, MoveDataError> {
     let mut schemas = Vec::new();
 
@@ -209,10 +210,15 @@ pub fn convert_disk_files_to_parquet(
         }
 
         let record_reader = MergedReverseRecordReader::try_new(&files).unwrap();
+        let merged_schema = record_reader.merged_schema();
+        let mut index_time_partition: usize = 0;
+        if let Some(time_partition) = time_partition.as_ref() {
+            index_time_partition = merged_schema.index_of(time_partition).unwrap();
+        }
 
         let parquet_file = fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
-        let props = parquet_writer_props().build();
-        let merged_schema = record_reader.merged_schema();
+        let props = parquet_writer_props(time_partition.clone(), index_time_partition).build();
+
         schemas.push(merged_schema.clone());
         let schema = Arc::new(merged_schema);
         let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
@@ -238,19 +244,39 @@ pub fn convert_disk_files_to_parquet(
     }
 }
 
-fn parquet_writer_props() -> WriterPropertiesBuilder {
-    WriterProperties::builder()
-        .set_max_row_group_size(CONFIG.parseable.row_group_size)
-        .set_compression(CONFIG.parseable.parquet_compression.into())
-        .set_column_encoding(
-            ColumnPath::new(vec![DEFAULT_TIMESTAMP_KEY.to_string()]),
-            Encoding::DELTA_BINARY_PACKED,
-        )
-        .set_sorting_columns(Some(vec![SortingColumn {
-            column_idx: 0,
-            descending: true,
-            nulls_first: true,
-        }]))
+fn parquet_writer_props(
+    time_partition: Option<String>,
+    index_time_partition: usize,
+) -> WriterPropertiesBuilder {
+    let index_time_partition: i32 = index_time_partition as i32;
+
+    if let Some(time_partition) = time_partition {
+        WriterProperties::builder()
+            .set_max_row_group_size(CONFIG.parseable.row_group_size)
+            .set_compression(CONFIG.parseable.parquet_compression.into())
+            .set_column_encoding(
+                ColumnPath::new(vec![time_partition]),
+                Encoding::DELTA_BYTE_ARRAY,
+            )
+            .set_sorting_columns(Some(vec![SortingColumn {
+                column_idx: index_time_partition,
+                descending: true,
+                nulls_first: true,
+            }]))
+    } else {
+        WriterProperties::builder()
+            .set_max_row_group_size(CONFIG.parseable.row_group_size)
+            .set_compression(CONFIG.parseable.parquet_compression.into())
+            .set_column_encoding(
+                ColumnPath::new(vec![DEFAULT_TIMESTAMP_KEY.to_string()]),
+                Encoding::DELTA_BINARY_PACKED,
+            )
+            .set_sorting_columns(Some(vec![SortingColumn {
+                column_idx: index_time_partition,
+                descending: true,
+                nulls_first: true,
+            }]))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
