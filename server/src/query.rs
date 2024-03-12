@@ -130,6 +130,7 @@ impl Query {
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
         // we by knowing this plan is not in the optimization procees chose to overwrite the stringified plan
+
         match self.raw_logical_plan.clone() {
             LogicalPlan::Explain(plan) => {
                 let transformed = transform(
@@ -221,7 +222,7 @@ fn transform(
                 .clone();
 
             let mut new_filters = vec![];
-            if !table_contains_any_time_filters(&table) {
+            if !table_contains_any_time_filters(&table, &time_partition) {
                 let mut _start_time_filter: Expr;
                 let mut _end_time_filter: Expr;
                 match time_partition {
@@ -276,7 +277,10 @@ fn transform(
     .expect("transform only transforms the tablescan")
 }
 
-fn table_contains_any_time_filters(table: &datafusion::logical_expr::TableScan) -> bool {
+fn table_contains_any_time_filters(
+    table: &datafusion::logical_expr::TableScan,
+    time_partition: &Option<String>,
+) -> bool {
     table
         .filters
         .iter()
@@ -287,7 +291,11 @@ fn table_contains_any_time_filters(table: &datafusion::logical_expr::TableScan) 
                 None
             }
         })
-        .any(|expr| matches!(&*expr.left, Expr::Column(Column { name, .. }) if (name == event::DEFAULT_TIMESTAMP_KEY)))
+        .any(|expr| {
+            matches!(&*expr.left, Expr::Column(Column { name, .. }) 
+            if ((time_partition.is_some() && name == time_partition.as_ref().unwrap()) || 
+            (!time_partition.is_some() && name == event::DEFAULT_TIMESTAMP_KEY)))
+        })
 }
 
 #[allow(dead_code)]

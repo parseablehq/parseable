@@ -25,7 +25,7 @@ use datafusion::{
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
     error::DataFusionError,
-    logical_expr::col,
+    logical_expr::{col, Expr},
 };
 use futures_util::{future, stream::FuturesUnordered, Future, TryStreamExt};
 use itertools::Itertools;
@@ -183,13 +183,19 @@ impl ListingTableBuilder {
         self,
         schema: Arc<Schema>,
         map: impl Fn(Vec<String>) -> Vec<ListingTableUrl>,
+        time_partition: Option<String>,
     ) -> Result<Option<Arc<ListingTable>>, DataFusionError> {
         if self.listing.is_empty() {
             return Ok(None);
         }
-
+        let file_sort_order: Vec<Vec<Expr>>;
         let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
-        let file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]];
+        if let Some(time_partition) = time_partition {
+            file_sort_order = vec![vec![col(time_partition).sort(true, false)]];
+        } else {
+            file_sort_order = vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]];
+        }
+
         let listing_options = ListingOptions::new(Arc::new(file_format))
             .with_file_extension(".parquet")
             .with_file_sort_order(file_sort_order)

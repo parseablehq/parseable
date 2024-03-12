@@ -16,8 +16,6 @@
  *
  */
 
-use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
-
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
 use bytes::Bytes;
@@ -46,6 +44,7 @@ use datafusion::{
 use futures_util::{stream::FuturesOrdered, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use object_store::{path::Path, ObjectStore};
+use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
 use url::Url;
 
 use crate::{
@@ -114,6 +113,7 @@ async fn create_parquet_physical_plan(
     filters: &[Expr],
     limit: Option<usize>,
     state: &SessionState,
+    time_partition: Option<String>,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let filters = if let Some(expr) = conjunction(filters.to_vec()) {
         let table_df_schema = schema.as_ref().clone().to_dfschema()?;
@@ -125,14 +125,18 @@ async fn create_parquet_physical_plan(
     };
 
     let sort_expr = PhysicalSortExpr {
-        expr: physical_plan::expressions::col(DEFAULT_TIMESTAMP_KEY, &schema)?,
+        expr: if let Some(time_partition) = time_partition {
+            physical_plan::expressions::col(&time_partition, &schema)?
+        } else {
+            physical_plan::expressions::col(DEFAULT_TIMESTAMP_KEY, &schema)?
+        },
         options: SortOptions {
             descending: true,
             nulls_first: true,
         },
     };
-
     let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
+
     // create the execution plan
     let plan = file_format
         .create_physical_plan(
@@ -151,7 +155,6 @@ async fn create_parquet_physical_plan(
             filters.as_ref(),
         )
         .await?;
-
     Ok(plan)
 }
 
@@ -209,7 +212,6 @@ fn partitioned_files(
     let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
     let mut column_statistics = HashMap::<String, Option<catalog::column::TypedStatistics>>::new();
     let mut count = 0;
-
     for (index, file) in manifest_files
         .into_iter()
         .enumerate()
@@ -221,7 +223,6 @@ fn partitioned_files(
             columns,
             ..
         } = file;
-
         partitioned_files[index].push(PartitionedFile::new(file_path, file.file_size));
         columns.into_iter().for_each(|col| {
             column_statistics
@@ -235,7 +236,6 @@ fn partitioned_files(
         });
         count += num_rows;
     }
-
     let statistics = table_schema
         .fields()
         .iter()
@@ -304,7 +304,7 @@ impl TableProvider for StandardTableProvider {
             return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
         }
 
-        if include_now(filters, time_partition) {
+        if include_now(filters, time_partition.clone()) {
             if let Some(records) =
                 event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
             {
@@ -333,6 +333,7 @@ impl TableProvider for StandardTableProvider {
                 projection,
                 filters,
                 limit,
+                time_partition.clone(),
             )
             .await;
         }
@@ -375,6 +376,7 @@ impl TableProvider for StandardTableProvider {
                 filters,
                 limit,
                 state,
+                time_partition.clone(),
             )
             .await?;
 
@@ -400,6 +402,7 @@ impl TableProvider for StandardTableProvider {
             filters,
             limit,
             state,
+            time_partition.clone(),
         )
         .await?;
 
@@ -437,11 +440,16 @@ async fn legacy_listing_table(
     projection: Option<&Vec<usize>>,
     filters: &[Expr],
     limit: Option<usize>,
+    time_partition: Option<String>,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let remote_table = ListingTableBuilder::new(stream)
         .populate_via_listing(glob_storage.clone(), object_store, time_filters)
         .and_then(|builder| async {
-            let table = builder.build(schema.clone(), |x| glob_storage.query_prefixes(x))?;
+            let table = builder.build(
+                schema.clone(),
+                |x| glob_storage.query_prefixes(x),
+                time_partition,
+            )?;
             let res = match table {
                 Some(table) => Some(table.scan(state, projection, filters, limit).await?),
                 _ => None,
@@ -459,6 +467,7 @@ fn final_plan(
     schema: Arc<Schema>,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let mut execution_plans = execution_plans.into_iter().flatten().collect_vec();
+
     let exec: Arc<dyn ExecutionPlan> = if execution_plans.is_empty() {
         let schema = match projection {
             Some(projection) => Arc::new(schema.project(projection)?),
@@ -470,7 +479,6 @@ fn final_plan(
     } else {
         Arc::new(UnionExec::new(execution_plans))
     };
-
     Ok(exec)
 }
 
@@ -557,17 +565,6 @@ impl PartialTimeFilter {
             ))))),
         ))
     }
-
-    fn is_greater_than(&self, other: &NaiveDateTime) -> bool {
-        match self {
-            PartialTimeFilter::Low(Bound::Excluded(time)) => time >= other,
-            PartialTimeFilter::Low(Bound::Included(time))
-            | PartialTimeFilter::High(Bound::Excluded(time))
-            | PartialTimeFilter::High(Bound::Included(time)) => time > other,
-            PartialTimeFilter::Eq(time) => time > other,
-            _ => unimplemented!(),
-        }
-    }
 }
 
 fn is_overlapping_query(
@@ -575,16 +572,26 @@ fn is_overlapping_query(
     time_filters: &[PartialTimeFilter],
 ) -> bool {
     // This is for backwards compatiblity. Older table format relies on listing.
-    // if the time is lower than upper bound of first file then we consider it overlapping
-    let Some(first_entry_upper_bound) =
-        manifest_list.iter().map(|file| file.time_upper_bound).min()
+    // if the start time is lower than lower bound of first file then we consider it overlapping
+    let Some(first_entry_lower_bound) =
+        manifest_list.iter().map(|file| file.time_lower_bound).min()
     else {
         return true;
     };
 
-    !time_filters
-        .iter()
-        .all(|filter| filter.is_greater_than(&first_entry_upper_bound.naive_utc()))
+    for filter in time_filters {
+        match filter {
+            PartialTimeFilter::Low(Bound::Excluded(time))
+            | PartialTimeFilter::Low(Bound::Included(time)) => {
+                if time < &first_entry_lower_bound.naive_utc() {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    false
 }
 
 fn include_now(filters: &[Expr], time_partition: Option<String>) -> bool {
@@ -862,7 +869,7 @@ mod tests {
         let res = is_overlapping_query(
             &manifest_items(),
             &[PartialTimeFilter::Low(std::ops::Bound::Included(
-                datetime_min(2023, 12, 15).naive_utc(),
+                datetime_min(2023, 12, 14).naive_utc(),
             ))],
         );
 
@@ -874,7 +881,7 @@ mod tests {
         let res = is_overlapping_query(
             &manifest_items(),
             &[PartialTimeFilter::Low(std::ops::Bound::Included(
-                datetime_min(2023, 12, 15)
+                datetime_min(2023, 12, 14)
                     .naive_utc()
                     .add(Duration::hours(3)),
             ))],
