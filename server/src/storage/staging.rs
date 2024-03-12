@@ -163,7 +163,8 @@ impl StorageDir {
 
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
         let file_stem = path.file_stem().unwrap().to_str().unwrap();
-        let random_string =  rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
+        let random_string =
+            rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
         let (_, filename) = file_stem.split_once('.').unwrap();
         let filename_with_random_number = format!("{}.{}.{}", filename, random_string, "arrows");
         let mut parquet_path = path.to_owned();

@@ -236,13 +236,11 @@ pub async fn get_first_event(
             let (lower_bound, _) = get_file_bounds(first_event, time_partition);
             let first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
             return Ok(Some(first_event_at));
-        }
-        else{
+        } else {
             let (lower_bound, _) = get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
             let first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
             return Ok(Some(first_event_at));
         }
-        
     }
     Ok(None)
 }
