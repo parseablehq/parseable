@@ -869,7 +869,7 @@ mod tests {
         let res = is_overlapping_query(
             &manifest_items(),
             &[PartialTimeFilter::Low(std::ops::Bound::Included(
-                datetime_min(2023, 12, 15).naive_utc(),
+                datetime_min(2023, 12, 14).naive_utc(),
             ))],
         );
 
@@ -881,7 +881,7 @@ mod tests {
         let res = is_overlapping_query(
             &manifest_items(),
             &[PartialTimeFilter::Low(std::ops::Bound::Included(
-                datetime_min(2023, 12, 15)
+                datetime_min(2023, 12, 14)
                     .naive_utc()
                     .add(Duration::hours(3)),
             ))],
