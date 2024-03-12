@@ -43,7 +43,7 @@ use crate::{
     storage::OBJECT_STORE_DATA_GRANULARITY,
     utils::{self, arrow::merged_reader::MergedReverseRecordReader},
 };
-use rand::Rng;
+use rand::distributions::DistString;
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 const PARQUET_FILE_EXTENSION: &str = "data.parquet";
 
@@ -163,10 +163,9 @@ impl StorageDir {
 
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
         let file_stem = path.file_stem().unwrap().to_str().unwrap();
-        let mut rng = rand::thread_rng();
-        let random_number: u64 = rng.gen();
+        let random_string =  rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
         let (_, filename) = file_stem.split_once('.').unwrap();
-        let filename_with_random_number = format!("{}.{}.{}", filename, random_number, "arrows");
+        let filename_with_random_number = format!("{}.{}.{}", filename, random_string, "arrows");
         let mut parquet_path = path.to_owned();
         parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
