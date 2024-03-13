@@ -426,11 +426,7 @@ impl ObjectStorage for S3 {
         let mut res = vec![];
 
         while let Some(meta) = list_stream.next().await.transpose()? {
-            let ingester_file = meta
-                .location
-                .filename()
-                .unwrap_or_default()
-                .contains("ingester");
+            let ingester_file = meta.location.filename().unwrap().starts_with("ingester");
 
             if !ingester_file {
                 continue;
