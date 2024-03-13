@@ -116,6 +116,8 @@ impl Query {
             .cloned()
             .collect_vec();
 
+        dbg!(&fields);
+
         if fields.is_empty() {
             return Ok((vec![], fields));
         }

@@ -104,7 +104,7 @@ pub async fn send_query_request_to_ingester(query: &Query) -> anyhow::Result<Vec
             // so it needs to be flattened
             if let Some(arr) = v.as_array() {
                 for val in arr {
-                    res.push(val.clone())
+                    res.push(val.to_owned())
                 }
             }
         }

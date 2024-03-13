@@ -22,6 +22,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 use itertools::Itertools;
 use serde_json::{json, Value};
 
+use crate::handlers::http::query::query_response_flatten;
+
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
     pub fields: Vec<String>,
@@ -48,6 +50,15 @@ impl QueryResponse {
         if let Some(mut imem) = imem {
             values.append(&mut imem);
         }
+
+        // if values.iter().all(|v| {
+        //     v.as_object()
+        //         .expect("Should always be an object")
+        //         .keys()
+        //         .all(|key| key.starts_with("COUNT"))
+        // }) {
+        //     values = query_response_flatten(values)
+        // }
 
         let response = if self.with_fields {
             json!({

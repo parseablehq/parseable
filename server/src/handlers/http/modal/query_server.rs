@@ -171,9 +171,10 @@ impl QueryServer {
         // TODO: add validation logic here
         // validate the ingester metadata
 
-        let mut f = Self::get_meta_file().await;
+        // ! Not Needed
+        // let mut f = Self::get_meta_file().await;
         // writer the arr in f
-        let _ = f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
+        // let _ = f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
         Ok(arr)
     }
 

@@ -24,6 +24,8 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use futures_util::Future;
 use http::StatusCode;
+use itertools::Itertools;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -64,6 +66,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let session_state = QUERY_SESSION.state();
     let mut query = into_query(&query_request, &session_state).await?;
 
+    // Bug: this is being called always
     if CONFIG.parseable.mode == Mode::Query {
         if let Ok(schs) = send_schema_request(&query.table_name().unwrap()).await {
             let new_schema =
@@ -300,4 +303,60 @@ impl actix_web::ResponseError for QueryError {
             .insert_header(ContentType::plaintext())
             .body(self.to_string())
     }
+}
+
+#[allow(unused)]
+pub fn query_response_flatten(values: Vec<Value>) -> Vec<Value> {
+    let mut sum = 0;
+    let mut key = String::new();
+    let mut result = vec![];
+    for value in &values {
+        if let Some(obj) = value.as_object() {
+            if obj.keys().all(|key| key.starts_with("COUNT")) {
+                key = obj.keys().next().unwrap().to_string();
+                for v in obj.values() {
+                    if let Some(num_str) = v.as_str() {
+                        if let Ok(num) = num_str.parse::<u64>() {
+                            sum += num;
+                        }
+                    }
+                }
+
+                result = vec![serde_json::json!({ key: sum })];
+            }
+        }
+    }
+
+    result = values;
+
+    // let result = serde_json::json!({ key: sum });
+    dbg!(&result);
+    result
+
+    // let mut key = String::new();
+    // let mut out = 0;
+
+    // let it = res.iter_mut().map(|x| {
+    //     x.as_object_mut().expect("Should always be an object")
+    // }).collect_vec();
+
+    // for obj in it {
+    //     if obj.keys().all(|x| x.starts_with("COUNT")) {
+    //         key = obj.keys().next().unwrap().to_string();
+    //         // get all the values, parse them and sum them
+    //         let o = obj.values().map(|x|{
+    //             x.as_str()
+    //             .expect("Should always be a string")
+    //             .parse::<u64>()
+    //             .expect("Should always be a number, Hence parseable")
+    //         }).sum::<u64>();
+
+    //         serde_json::json!({
+    //             key: o
+    //         })
+    //     } else {
+    //         res
+    //     }
+
+    // }
 }
