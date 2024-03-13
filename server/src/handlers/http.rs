@@ -82,8 +82,8 @@ pub async fn send_schema_request(stream_name: &str) -> anyhow::Result<Vec<arrow_
     Ok(res)
 }
 
-pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec<Value>> {
-    // send the query request to the ingestor
+pub async fn send_query_request_to_ingester(query: &Query) -> anyhow::Result<Vec<Value>> {
+    // send the query request to the ingester
     let mut res = vec![];
     let ima = QueryServer::get_ingester_info().await.unwrap();
 

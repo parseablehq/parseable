@@ -43,7 +43,7 @@ use crate::response::QueryResponse;
 use crate::storage::object_storage::commit_schema_to_storage;
 use crate::utils::actix::extract_session_key_from_req;
 
-use super::send_request_to_ingestor;
+use super::send_query_request_to_ingester;
 
 /// Query Request through http endpoint.
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -81,9 +81,9 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     }
 
     let mmem = if CONFIG.parseable.mode == Mode::Query {
-        // create a new query to send to the ingestors
-        if let Some(que) = transform_query_for_ingestor(&query_request) {
-            let vals = send_request_to_ingestor(&que)
+        // create a new query to send to the ingesters
+        if let Some(que) = transform_query_for_ingester(&query_request) {
+            let vals = send_query_request_to_ingester(&que)
                 .await
                 .map_err(|err| QueryError::Custom(err.to_string()))?;
 
@@ -224,7 +224,7 @@ async fn into_query(
     })
 }
 
-fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
+fn transform_query_for_ingester(query: &Query) -> Option<Query> {
     if query.query.is_empty() {
         return None;
     }
@@ -246,7 +246,7 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
     };
 
     let start_time = end_time - chrono::Duration::minutes(1);
-    // when transforming the query, the ingestors are forced to return an array of values
+    // when transforming the query, the ingesters are forced to return an array of values
     let q = Query {
         query: query.query.clone(),
         fields: false,
