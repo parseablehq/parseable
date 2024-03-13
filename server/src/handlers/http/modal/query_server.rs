@@ -17,9 +17,11 @@
  */
 
 use crate::handlers::http::logstream::error::StreamError;
+use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{
     base_path, base_path_without_preceding_slash, cross_origin_config, API_BASE_PATH, API_VERSION,
 };
+use crate::rbac::role::Action;
 use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
 use actix_web::http::header;
 use actix_web::web::ServiceConfig;
@@ -144,8 +146,13 @@ impl QueryServer {
     }
 
     fn get_cluster_info_web_scope() -> actix_web::Scope {
-        web::scope("/cluster")
-            .service(web::resource("/info").route(web::get().to(Self::get_cluster_info)))
+        web::scope("/cluster").service(
+            web::resource("/info").route(
+                web::get()
+                    .to(Self::get_cluster_info)
+                    .authorize(Action::ListCluster),
+            ),
+        )
     }
 
     // update the .query.json file and return the new IngesterMetadataArr
