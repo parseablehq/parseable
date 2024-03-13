@@ -51,3 +51,7 @@ pub(crate) fn cross_origin_config() -> Cors {
         Cors::default().block_on_origin_mismatch(false)
     }
 }
+
+pub fn base_path_without_preceding_slash() -> String {
+    base_path().trim_start_matches('/').to_string()
+}
