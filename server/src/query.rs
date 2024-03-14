@@ -38,14 +38,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sysinfo::{System, SystemExt};
 
-use crate::event;
-use crate::option::CONFIG;
-use crate::storage::{ObjectStorageProvider, StorageDir};
-
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
-use crate::metadata::STREAM_INFO;
+use crate::event;
+use crate::option::CONFIG;
+use crate::storage::{ObjectStorageProvider, StorageDir};
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(CONFIG.storage()));
@@ -107,8 +105,12 @@ impl Query {
         &self,
         stream_name: String,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+        let store = CONFIG.storage().get_object_store();
+        let object_store_format = store.get_object_store_format(&stream_name).await?;
+        let time_partition = object_store_format.time_partition;
+
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(stream_name))
+            .execute_logical_plan(self.final_logical_plan(&time_partition))
             .await?;
 
         let fields = df
@@ -124,7 +126,7 @@ impl Query {
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self, stream_name: String) -> LogicalPlan {
+    fn final_logical_plan(&self, time_partition: &Option<String>) -> LogicalPlan {
         let filters = self.filter_tag.clone().and_then(tag_filter);
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
@@ -138,7 +140,7 @@ impl Query {
                     self.start.naive_utc(),
                     self.end.naive_utc(),
                     filters,
-                    stream_name,
+                    time_partition,
                 );
                 LogicalPlan::Explain(Explain {
                     verbose: plan.verbose,
@@ -155,7 +157,7 @@ impl Query {
                 self.start.naive_utc(),
                 self.end.naive_utc(),
                 filters,
-                stream_name,
+                time_partition,
             ),
         }
     }
@@ -207,22 +209,12 @@ fn transform(
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
     filters: Option<Expr>,
-    stream_name: String,
+    time_partition: &Option<String>,
 ) -> LogicalPlan {
     plan.transform(&|plan| match plan {
         LogicalPlan::TableScan(table) => {
-            let hash_map = STREAM_INFO.read().unwrap();
-            let time_partition = hash_map
-                .get(&stream_name)
-                .ok_or(DataFusionError::Execution(format!(
-                    "stream not found {}",
-                    stream_name.clone()
-                )))?
-                .time_partition
-                .clone();
-
             let mut new_filters = vec![];
-            if !table_contains_any_time_filters(&table, &time_partition) {
+            if !table_contains_any_time_filters(&table, time_partition) {
                 let mut _start_time_filter: Expr;
                 let mut _end_time_filter: Expr;
                 match time_partition {
@@ -292,7 +284,7 @@ fn table_contains_any_time_filters(
             }
         })
         .any(|expr| {
-            matches!(&*expr.left, Expr::Column(Column { name, .. }) 
+            matches!(&*expr.left, Expr::Column(Column { name, .. })
             if ((time_partition.is_some() && name == time_partition.as_ref().unwrap()) || 
             (!time_partition.is_some() && name == event::DEFAULT_TIMESTAMP_KEY)))
         })

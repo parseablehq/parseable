@@ -23,7 +23,6 @@ const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const LOG_SOURCE_KEY: &str = "x-p-log-source";
-const TIME_PARTITION_KEY: &str = "x-p-time-partition";
 const AUTHORIZATION_KEY: &str = "authorization";
 const SEPARATOR: char = '^';
 
