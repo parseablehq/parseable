@@ -17,6 +17,7 @@
  */
 
 use actix_cors::Cors;
+use arrow_schema::Schema;
 use serde_json::Value;
 
 use self::{modal::query_server::QueryServer, query::Query};
@@ -59,7 +60,7 @@ pub fn base_path_without_preceding_slash() -> String {
     base_path().trim_start_matches('/').to_string()
 }
 
-pub async fn send_schema_request(stream_name: &str) -> anyhow::Result<Vec<arrow_schema::Schema>> {
+pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
     let mut res = vec![];
     let ima = QueryServer::get_ingester_info().await.unwrap();
 
@@ -79,7 +80,9 @@ pub async fn send_schema_request(stream_name: &str) -> anyhow::Result<Vec<arrow_
         }
     }
 
-    Ok(res)
+    let new_schema = Schema::try_merge(res)?;
+
+    Ok(new_schema)
 }
 
 pub async fn send_query_request_to_ingester(query: &Query) -> anyhow::Result<Vec<Value>> {
