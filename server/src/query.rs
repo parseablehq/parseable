@@ -307,6 +307,11 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
             .unwrap()
             .keys()
             .all(|key| key.starts_with("COUNT"))
+    }) && objects.iter().all(|obj| {
+        obj.as_object()
+            .unwrap()
+            .keys()
+            .all(|key| key == objects[0].as_object().unwrap().keys().next().unwrap())
     });
 
     if flag {
@@ -365,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flat() {
+    fn test_flat_simple() {
         let val = vec![
             json!({
                 "COUNT(*)": 1
@@ -390,10 +395,17 @@ mod tests {
     }
 
     #[test]
-    fn test_flat_single() {
+    fn test_flat_same_multi() {
         let val = vec![json!({"COUNT(ALPHA)": 1}), json!({"COUNT(ALPHA)": 2})];
         let out = flatten_objects_for_count(val.clone());
         assert_eq!(vec![json!({"COUNT(ALPHA)": 3})], out);
+    }
+
+    #[test]
+    fn test_flat_diff_multi() {
+        let val = vec![json!({"COUNT(ALPHA)": 1}), json!({"COUNT(BETA)": 2})];
+        let out = flatten_objects_for_count(val.clone());
+        assert_eq!(out, val);
     }
 
     #[test]
