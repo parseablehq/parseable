@@ -35,10 +35,7 @@ use relative_path::RelativePathBuf;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 use url::Url;
-
-use tokio::fs::File as TokioFile;
 
 use crate::option::CONFIG;
 
@@ -170,11 +167,6 @@ impl QueryServer {
 
         // TODO: add validation logic here
         // validate the ingester metadata
-
-        // ! Not Needed
-        // let mut f = Self::get_meta_file().await;
-        // writer the arr in f
-        // let _ = f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
         Ok(arr)
     }
 
@@ -278,17 +270,6 @@ impl QueryServer {
             // dbg!("Tick");
             Self::get_ingester_info().await.unwrap();
         }
-    }
-
-    async fn get_meta_file() -> TokioFile {
-        let meta_path = CONFIG.staging_dir().join(".query.json");
-
-        tokio::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(meta_path)
-            .await
-            .unwrap()
     }
 
     // forward the request to all ingesters to keep them in sync

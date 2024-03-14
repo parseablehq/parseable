@@ -51,14 +51,6 @@ impl QueryResponse {
             values.append(&mut imem);
         }
 
-        // if values.iter().all(|v| {
-        //     v.as_object()
-        //         .expect("Should always be an object")
-        //         .keys()
-        //         .all(|key| key.starts_with("COUNT"))
-        // }) {
-        //     values = query_response_flatten(values)
-        // }
 
         let response = if self.with_fields {
             json!({
