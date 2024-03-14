@@ -38,12 +38,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sysinfo::{System, SystemExt};
 
-use crate::event;
-use crate::option::CONFIG;
-use crate::storage::{ObjectStorageProvider, StorageDir};
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
+use crate::event;
+use crate::option::CONFIG;
+use crate::storage::{ObjectStorageProvider, StorageDir};
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(CONFIG.storage()));
