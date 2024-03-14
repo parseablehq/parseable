@@ -126,29 +126,7 @@ impl IngestServer {
                     .service(Server::get_about_factory()),
             )
             .service(Server::get_liveness_factory())
-            .service(Server::get_readiness_factory())
-            .service(Self::get_metrics_webscope());
-    }
-
-    fn get_metrics_webscope() -> Scope {
-        web::scope("/logstream").service(
-            web::scope("/{logstream}")
-                .service(
-                    // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
-                    web::resource("/schema").route(
-                        web::get()
-                            .to(logstream::schema)
-                            .authorize_for_stream(Action::GetSchema),
-                    ),
-                )
-                .service(
-                    web::resource("/stats").route(
-                        web::get()
-                            .to(logstream::get_stats)
-                            .authorize_for_stream(Action::GetStats),
-                    ),
-                ),
-        )
+            .service(Server::get_readiness_factory());
     }
 
     fn logstream_api() -> Scope {
@@ -175,6 +153,14 @@ impl IngestServer {
                                     .authorize_for_stream(Action::DeleteStream),
                             )
                             .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    )
+                    .service(
+                        // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
+                        web::resource("/schema").route(
+                            web::get()
+                                .to(logstream::schema)
+                                .authorize_for_stream(Action::GetSchema),
+                        ),
                     )
                     .service(
                         // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream

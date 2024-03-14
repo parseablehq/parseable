@@ -33,6 +33,7 @@ use datafusion::logical_expr::{Explain, Filter, LogicalPlan, PlanType, ToStringi
 use datafusion::prelude::*;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -51,6 +52,7 @@ pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(CONFIG.storage()));
 
 // A query request by client
+#[derive(Debug)]
 pub struct Query {
     pub raw_logical_plan: LogicalPlan,
     pub start: DateTime<Utc>,
@@ -114,6 +116,10 @@ impl Query {
             .map(|f| f.name())
             .cloned()
             .collect_vec();
+
+        if fields.is_empty() {
+            return Ok((vec![], fields));
+        }
 
         let results = df.collect().await?;
         Ok((results, fields))
@@ -290,6 +296,45 @@ fn time_from_path(path: &Path) -> DateTime<Utc> {
         .unwrap()
 }
 
+pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
+    if objects.is_empty() {
+        return objects;
+    }
+
+    // check if all the keys start with "COUNT"
+    let flag = objects.iter().all(|obj| {
+        obj.as_object()
+            .unwrap()
+            .keys()
+            .all(|key| key.starts_with("COUNT"))
+    });
+
+    if flag {
+        let mut accum = 0u64;
+        let key = objects[0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+
+        for obj in objects {
+            let count = obj.as_object().unwrap().keys().fold(0, |acc, key| {
+                let value = obj.as_object().unwrap().get(key).unwrap().as_u64().unwrap();
+                acc + value
+            });
+            accum += count;
+        }
+
+        vec![json!({
+            key: accum
+        })]
+    } else {
+        objects
+    }
+}
+
 pub mod error {
     use crate::storage::ObjectStorageError;
     use datafusion::error::DataFusionError;
@@ -305,6 +350,10 @@ pub mod error {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
+    use crate::query::flatten_objects_for_count;
+
     use super::time_from_path;
     use std::path::PathBuf;
 
@@ -313,5 +362,76 @@ mod tests {
         let path = PathBuf::from("date=2022-01-01.hour=00.minute=00.hostname.data.parquet");
         let time = time_from_path(path.as_path());
         assert_eq!(time.timestamp(), 1640995200);
+    }
+
+    #[test]
+    fn test_flat() {
+        let val = vec![
+            json!({
+                "COUNT(*)": 1
+            }),
+            json!({
+                "COUNT(*)": 2
+            }),
+            json!({
+                "COUNT(*)": 3
+            }),
+        ];
+
+        let out = flatten_objects_for_count(val);
+        assert_eq!(out, vec![json!({"COUNT(*)": 6})]);
+    }
+
+    #[test]
+    fn test_flat_empty() {
+        let val = vec![];
+        let out = flatten_objects_for_count(val.clone());
+        assert_eq!(val, out);
+    }
+
+    #[test]
+    fn test_flat_single() {
+        let val = vec![json!({"COUNT(ALPHA)": 1}), json!({"COUNT(ALPHA)": 2})];
+        let out = flatten_objects_for_count(val.clone());
+        assert_eq!(vec![json!({"COUNT(ALPHA)": 3})], out);
+    }
+
+    #[test]
+    fn test_flat_fail() {
+        let val = vec![
+            json!({
+                "Num": 1
+            }),
+            json!({
+                "Num": 2
+            }),
+            json!({
+                "Num": 3
+            }),
+        ];
+
+        let out = flatten_objects_for_count(val.clone());
+        assert_eq!(val, out);
+    }
+
+    #[test]
+    fn test_flat_multi_key() {
+        let val = vec![
+            json!({
+                "Num": 1,
+                "COUNT(*)": 1
+            }),
+            json!({
+                "Num": 2,
+                "COUNT(*)": 2
+            }),
+            json!({
+                "Num": 3,
+                "COUNT(*)": 3
+            }),
+        ];
+
+        let out = flatten_objects_for_count(val.clone());
+        assert_eq!(val, out);
     }
 }

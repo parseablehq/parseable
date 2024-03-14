@@ -17,6 +17,10 @@
  */
 
 use actix_cors::Cors;
+use arrow_schema::Schema;
+use serde_json::Value;
+
+use self::{modal::query_server::QueryServer, query::Query};
 
 pub(crate) mod about;
 pub(crate) mod health_check;
@@ -33,11 +37,11 @@ pub(crate) mod rbac;
 pub(crate) mod role;
 
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
-pub const API_BASE_PATH: &str = "/api";
+pub const API_BASE_PATH: &str = "api";
 pub const API_VERSION: &str = "v1";
 
 pub(crate) fn base_path() -> String {
-    format!("{API_BASE_PATH}/{API_VERSION}")
+    format!("/{API_BASE_PATH}/{API_VERSION}")
 }
 
 pub fn metrics_path() -> String {
@@ -53,5 +57,69 @@ pub(crate) fn cross_origin_config() -> Cors {
 }
 
 pub fn base_path_without_preceding_slash() -> String {
-    base_path().trim_start_matches('/').to_string()
+    format!("/{API_BASE_PATH}/{API_VERSION}")
+}
+
+pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
+    let mut res = vec![];
+    let ima = QueryServer::get_ingester_info().await.unwrap();
+
+    for im in ima {
+        let uri = format!(
+            "{}{}/logstream/{}/schema",
+            im.domain_name,
+            base_path_without_preceding_slash(),
+            stream_name
+        );
+        let reqw = reqwest::Client::new()
+            .get(uri)
+            .header(http::header::AUTHORIZATION, im.token.clone())
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .send()
+            .await?;
+
+        if reqw.status().is_success() {
+            let v = serde_json::from_slice(&reqw.bytes().await?)?;
+            res.push(v);
+        }
+    }
+
+    let new_schema = Schema::try_merge(res)?;
+
+    Ok(new_schema)
+}
+
+pub async fn send_query_request_to_ingester(query: &Query) -> anyhow::Result<Vec<Value>> {
+    // send the query request to the ingester
+    let mut res = vec![];
+    let ima = QueryServer::get_ingester_info().await.unwrap();
+
+    for im in ima.iter() {
+        let uri = format!(
+            "{}{}/{}",
+            im.domain_name,
+            base_path_without_preceding_slash(),
+            "query"
+        );
+        let reqw = reqwest::Client::new()
+            .post(uri)
+            .json(query)
+            .header(http::header::AUTHORIZATION, im.token.clone())
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .send()
+            .await?;
+
+        if reqw.status().is_success() {
+            let v: Value = serde_json::from_slice(&reqw.bytes().await?)?;
+            // the value returned is an array of json objects
+            // so it needs to be flattened
+            if let Some(arr) = v.as_array() {
+                for val in arr {
+                    res.push(val.to_owned())
+                }
+            }
+        }
+    }
+
+    Ok(res)
 }
