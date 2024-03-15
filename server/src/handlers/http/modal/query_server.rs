@@ -309,6 +309,7 @@ impl QueryServer {
                     stream_name
                 );
 
+                // roll back the stream creation
                 Self::send_stream_rollback_request(&url, ingester.clone()).await?;
             }
 
@@ -322,6 +323,7 @@ impl QueryServer {
         Ok(())
     }
 
+    /// get the cumulative stats from all ingesters
     pub async fn fetch_stats_from_ingesters(
         stream_name: &str,
     ) -> Result<QueriedStats, StreamError> {
@@ -376,6 +378,7 @@ impl QueryServer {
         Ok(stats)
     }
 
+    /// send a request to the ingester to fetch its stats
     async fn send_stats_request(
         url: &str,
         ingester: IngesterMetadata,
@@ -473,6 +476,7 @@ impl QueryServer {
         Ok(())
     }
 
+    /// send a rollback request to all ingesters
     async fn send_stream_rollback_request(
         url: &str,
         ingester: IngesterMetadata,
@@ -489,6 +493,7 @@ impl QueryServer {
             .send()
             .await
             .map_err(|err| {
+                // log the error and return a custom error
                 log::error!(
                     "Fatal: failed to rollback stream creation: {}\n Error: {:?}",
                     ingester.domain_name,
@@ -503,6 +508,8 @@ impl QueryServer {
                 }
             })?;
 
+        // if the response is not successful, log the error and return a custom error
+        // this could be a bit too much, but we need to be sure it covers all cases
         if !resp.status().is_success() {
             log::error!(
                 "failed to rollback stream creation: {}\nResponse Returned: {:?}",

@@ -57,7 +57,7 @@ pub(crate) fn cross_origin_config() -> Cors {
 }
 
 pub fn base_path_without_preceding_slash() -> String {
-    format!("/{API_BASE_PATH}/{API_VERSION}")
+    format!("{API_BASE_PATH}/{API_VERSION}")
 }
 
 pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
