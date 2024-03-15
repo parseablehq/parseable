@@ -162,12 +162,12 @@ impl Query {
 }
 
 #[derive(Debug, Default)]
-struct TableScanVisitor {
+pub(crate) struct TableScanVisitor {
     tables: Vec<String>,
 }
 
 impl TableScanVisitor {
-    fn into_inner(self) -> Vec<String> {
+    pub fn into_inner(self) -> Vec<String> {
         self.tables
     }
 }

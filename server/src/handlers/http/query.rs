@@ -20,6 +20,7 @@ use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
 use chrono::{DateTime, Utc};
+use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use futures_util::Future;
@@ -35,7 +36,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::QUERY_SESSION;
+use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -61,19 +62,29 @@ pub struct Query {
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
     let session_state = QUERY_SESSION.state();
-    let mut query = into_query(&query_request, &session_state).await?;
+
+    // get the logical plan and extract the table name
+    let raw_logical_plan = session_state
+        .create_logical_plan(&query_request.query)
+        .await?;
+    // create a visitor to extract the table name
+    let mut visitor = TableScanVisitor::default();
+    let _ = raw_logical_plan.visit(&mut visitor);
+    let table_name = visitor.into_inner().pop().unwrap();
 
     if CONFIG.parseable.mode == Mode::Query {
-        if let Ok(new_schema) = fetch_schema(&query.table_name().unwrap()).await {
-            commit_schema_to_storage(&query.table_name().unwrap(), new_schema.clone())
+        if let Ok(new_schema) = fetch_schema(&table_name).await {
+            commit_schema_to_storage(&table_name, new_schema.clone())
                 .await
                 .map_err(|err| {
                     QueryError::Custom(format!("Error committing schema to storage\nError:{err}"))
                 })?;
-            commit_schema(&query.table_name().unwrap(), Arc::new(new_schema))
+            commit_schema(&table_name, Arc::new(new_schema))
                 .map_err(|err| QueryError::Custom(format!("Error committing schema: {}", err)))?;
         }
     }
+
+    let mut query = into_query(&query_request, &session_state).await?;
 
     // ? run this code only if the query start time and now is less than 1 minute + margin
     let mmem = if CONFIG.parseable.mode == Mode::Query {
