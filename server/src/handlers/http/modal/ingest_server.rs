@@ -122,7 +122,8 @@ impl IngestServer {
                 web::scope(&base_path())
                     .service(Server::get_query_factory())
                     .service(Server::get_ingest_factory())
-                    .service(Self::logstream_api()),
+                    .service(Self::logstream_api())
+                    .service(Server::get_about_factory()),
             )
             .service(Server::get_liveness_factory())
             .service(Server::get_readiness_factory())
