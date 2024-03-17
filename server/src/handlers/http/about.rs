@@ -20,7 +20,12 @@ use actix_web::web::Json;
 use human_size::SpecificSize;
 use serde_json::json;
 
-use crate::{about, option::CONFIG, storage::StorageMetadata, utils::update};
+use crate::{
+    about,
+    option::{Mode, CONFIG},
+    storage::StorageMetadata,
+    utils::update,
+};
 use std::path::PathBuf;
 
 pub async fn about() -> Json<serde_json::Value> {
@@ -40,11 +45,15 @@ pub async fn about() -> Json<serde_json::Value> {
     let current_version = format!("v{}", current_release.released_version);
     let commit = current_release.commit_hash;
     let deployment_id = meta.deployment_id.to_string();
-    let mode = CONFIG.get_storage_mode_string();
-    let staging = CONFIG.staging_dir();
+    let mode = CONFIG.parseable.mode.to_str();
+    let staging = if CONFIG.parseable.mode == Mode::Query {
+        "".to_string()
+    } else {
+        CONFIG.staging_dir().display().to_string()
+    };
     let grpc_port = CONFIG.parseable.grpc_port;
 
-    let store = CONFIG.storage().get_endpoint();
+    let store_endpoint = CONFIG.storage().get_endpoint();
     let is_llm_active = &CONFIG.parseable.open_ai_key.is_some();
     let llm_provider = is_llm_active.then_some("OpenAI");
     let is_oidc_active = CONFIG.parseable.openid.is_some();
@@ -80,6 +89,9 @@ pub async fn about() -> Json<serde_json::Value> {
         "staging": staging,
         "cache": cache_details,
         "grpcPort": grpc_port,
-        "store": store
+        "store": {
+            "type": CONFIG.get_storage_mode_string(),
+            "path": store_endpoint
+        }
     }))
 }
