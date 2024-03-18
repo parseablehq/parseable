@@ -22,6 +22,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 use itertools::Itertools;
 use serde_json::{json, Value};
 
+use crate::query::flatten_objects_for_count;
+
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
     pub fields: Vec<String>,
@@ -30,7 +32,7 @@ pub struct QueryResponse {
 }
 
 impl QueryResponse {
-    pub fn to_http(&self) -> impl Responder {
+    pub fn to_http(&self, imem: Option<Vec<Value>>) -> impl Responder {
         log::info!("{}", "Returning query results");
         let records: Vec<&RecordBatch> = self.records.iter().collect();
         let mut json_records = record_batches_to_json_rows(&records).unwrap();
@@ -43,7 +45,14 @@ impl QueryResponse {
                 }
             }
         }
-        let values = json_records.into_iter().map(Value::Object).collect_vec();
+        let mut values = json_records.into_iter().map(Value::Object).collect_vec();
+
+        if let Some(mut imem) = imem {
+            values.append(&mut imem);
+        }
+
+        let values = flatten_objects_for_count(values);
+
         let response = if self.with_fields {
             json!({
                 "fields": self.fields,

@@ -20,24 +20,33 @@ use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
 use chrono::{DateTime, Utc};
+use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use futures_util::Future;
 use http::StatusCode;
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Instant;
 
+use crate::handlers::http::fetch_schema;
+
+use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
+use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::QUERY_SESSION;
+use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
+use crate::storage::object_storage::commit_schema_to_storage;
 use crate::utils::actix::extract_session_key_from_req;
 
+use super::send_query_request_to_ingester;
+
 /// Query Request through http endpoint.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     query: String,
@@ -52,10 +61,48 @@ pub struct Query {
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
+    let session_state = QUERY_SESSION.state();
+
+    // get the logical plan and extract the table name
+    let raw_logical_plan = session_state
+        .create_logical_plan(&query_request.query)
+        .await?;
+    // create a visitor to extract the table name
+    let mut visitor = TableScanVisitor::default();
+    let _ = raw_logical_plan.visit(&mut visitor);
+    let table_name = visitor.into_inner().pop().unwrap();
+
+    if CONFIG.parseable.mode == Mode::Query {
+        if let Ok(new_schema) = fetch_schema(&table_name).await {
+            commit_schema_to_storage(&table_name, new_schema.clone())
+                .await
+                .map_err(|err| {
+                    QueryError::Custom(format!("Error committing schema to storage\nError:{err}"))
+                })?;
+            commit_schema(&table_name, Arc::new(new_schema))
+                .map_err(|err| QueryError::Custom(format!("Error committing schema: {}", err)))?;
+        }
+    }
+
+    let mut query = into_query(&query_request, &session_state).await?;
+
+    // ? run this code only if the query start time and now is less than 1 minute + margin
+    let mmem = if CONFIG.parseable.mode == Mode::Query {
+        // create a new query to send to the ingesters
+        if let Some(que) = transform_query_for_ingester(&query_request) {
+            let vals = send_query_request_to_ingester(&que)
+                .await
+                .map_err(|err| QueryError::Custom(err.to_string()))?;
+            Some(vals)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let creds = extract_session_key_from_req(&req).expect("expects basic auth");
     let permissions = Users.get_permissions(&creds);
-    let session_state = QUERY_SESSION.state();
-    let mut query = into_query(&query_request, &session_state).await?;
 
     // check authorization of this query if it references physical table;
     let table_name = query.table_name();
@@ -101,7 +148,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
     }
-    .to_http();
+    .to_http(mmem);
 
     if let Some(table) = table_name {
         let time = time.elapsed().as_secs_f64();
@@ -183,6 +230,41 @@ async fn into_query(
     })
 }
 
+fn transform_query_for_ingester(query: &Query) -> Option<Query> {
+    if query.query.is_empty() {
+        return None;
+    }
+
+    if query.start_time.is_empty() {
+        return None;
+    }
+
+    if query.end_time.is_empty() {
+        return None;
+    }
+
+    let end_time: DateTime<Utc> = if query.end_time == "now" {
+        Utc::now()
+    } else {
+        DateTime::parse_from_rfc3339(&query.end_time)
+            .ok()?
+            .with_timezone(&Utc)
+    };
+
+    let start_time = end_time - chrono::Duration::minutes(1);
+    // when transforming the query, the ingesters are forced to return an array of values
+    let q = Query {
+        query: query.query.clone(),
+        fields: false,
+        filter_tags: query.filter_tags.clone(),
+        send_null: query.send_null,
+        start_time: start_time.to_rfc3339(),
+        end_time: end_time.to_rfc3339(),
+    };
+
+    Some(q)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
     #[error("Query cannot be empty")]
@@ -207,6 +289,8 @@ pub enum QueryError {
     Datafusion(#[from] DataFusionError),
     #[error("Execution Error: {0}")]
     Execute(#[from] ExecuteError),
+    #[error("Error: {0}")]
+    Custom(String),
 }
 
 impl actix_web::ResponseError for QueryError {
