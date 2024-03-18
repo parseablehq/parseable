@@ -35,10 +35,7 @@ use relative_path::RelativePathBuf;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 use url::Url;
-
-use tokio::fs::File as TokioFile;
 
 use crate::option::CONFIG;
 
@@ -170,10 +167,6 @@ impl QueryServer {
 
         // TODO: add validation logic here
         // validate the ingester metadata
-
-        let mut f = Self::get_meta_file().await;
-        // writer the arr in f
-        let _ = f.write(serde_json::to_string(&arr)?.as_bytes()).await?;
         Ok(arr)
     }
 
@@ -224,8 +217,11 @@ impl QueryServer {
     /// initialize the server, run migrations as needed and start the server
     async fn initialize(&self) -> anyhow::Result<()> {
         migration::run_metadata_migration(&CONFIG).await?;
+
         let metadata = storage::resolve_parseable_metadata().await?;
+        // do not commit the below line
         tokio::fs::File::create(CONFIG.staging_dir().join(".query.json")).await?;
+
         banner::print(&CONFIG, &metadata).await;
 
         // initialize the rbac map
@@ -276,17 +272,6 @@ impl QueryServer {
         }
     }
 
-    async fn get_meta_file() -> TokioFile {
-        let meta_path = CONFIG.staging_dir().join(".query.json");
-
-        tokio::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(meta_path)
-            .await
-            .unwrap()
-    }
-
     // forward the request to all ingesters to keep them in sync
     pub async fn sync_streams_with_ingesters(stream_name: &str) -> Result<(), StreamError> {
         let ingester_infos = Self::get_ingester_info().await.map_err(|err| {
@@ -324,6 +309,7 @@ impl QueryServer {
                     stream_name
                 );
 
+                // roll back the stream creation
                 Self::send_stream_rollback_request(&url, ingester.clone()).await?;
             }
 
@@ -337,6 +323,7 @@ impl QueryServer {
         Ok(())
     }
 
+    /// get the cumulative stats from all ingesters
     pub async fn fetch_stats_from_ingesters(
         stream_name: &str,
     ) -> Result<QueriedStats, StreamError> {
@@ -391,6 +378,7 @@ impl QueryServer {
         Ok(stats)
     }
 
+    /// send a request to the ingester to fetch its stats
     async fn send_stats_request(
         url: &str,
         ingester: IngesterMetadata,
@@ -488,6 +476,7 @@ impl QueryServer {
         Ok(())
     }
 
+    /// send a rollback request to all ingesters
     async fn send_stream_rollback_request(
         url: &str,
         ingester: IngesterMetadata,
@@ -504,6 +493,7 @@ impl QueryServer {
             .send()
             .await
             .map_err(|err| {
+                // log the error and return a custom error
                 log::error!(
                     "Fatal: failed to rollback stream creation: {}\n Error: {:?}",
                     ingester.domain_name,
@@ -518,6 +508,8 @@ impl QueryServer {
                 }
             })?;
 
+        // if the response is not successful, log the error and return a custom error
+        // this could be a bit too much, but we need to be sure it covers all cases
         if !resp.status().is_success() {
             log::error!(
                 "failed to rollback stream creation: {}\nResponse Returned: {:?}",
