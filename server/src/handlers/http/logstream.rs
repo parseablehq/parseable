@@ -590,6 +590,10 @@ pub mod error {
         fn from(value: MetadataError) -> Self {
             match value {
                 MetadataError::StreamMetaNotFound(s) => StreamError::StreamNotFound(s),
+                MetadataError::StandaloneWithDistributed(s) => StreamError::Custom {
+                    msg: s,
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                },
             }
         }
     }
