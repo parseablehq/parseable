@@ -112,9 +112,8 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             } else if Mode::from_string(&remote.server_mode).unwrap() == Mode::All
                 && (CONFIG.parseable.mode == Mode::Query || CONFIG.parseable.mode == Mode::Ingest)
             {
-                // if you are switching to distributed mode from standalone mode it will create a new staging
-                // rather than a new remote
-                eprintln!("If mode check is true then it is distributed mode, so new staging");
+                // if you are switching to distributed mode from standalone mode
+                // it will create a new staging rather than a new remote
                 EnvChange::NewStaging(remote)
             } else {
                 // it is a new remote
@@ -218,7 +217,6 @@ fn standalone_when_distributed(remote_server_mode: Mode) -> Result<(), MetadataE
     // mode::all -> mode::query | mode::ingest allowed
     // but mode::query | mode::ingest -> mode::all not allowed
     if remote_server_mode == Mode::Query && CONFIG.parseable.mode == Mode::All {
-        log::error!("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.");
         return Err(MetadataError::StandaloneWithDistributed("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.".to_string()));
     }
 
