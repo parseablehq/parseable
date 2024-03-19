@@ -245,6 +245,8 @@ pub mod error {
         pub enum MetadataError {
             #[error("Metadata for stream {0} not found. Please create the stream and try again")]
             StreamMetaNotFound(String),
+            #[error("Metadata Error: {0}")]
+            StandaloneWithDistributed(String),
         }
 
         #[derive(Debug, thiserror::Error)]
