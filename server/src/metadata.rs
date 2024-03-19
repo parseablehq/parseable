@@ -168,7 +168,7 @@ impl StreamInfo {
 
         for stream in storage.list_streams().await? {
             let alerts = storage.get_alerts(&stream.name).await?;
-            let schema = storage.get_schema(&stream.name).await?;
+            let schema = storage.get_schema_for_the_first_time(&stream.name).await?;
             let meta = storage.get_stream_metadata(&stream.name).await?;
 
             let schema = update_schema_from_staging(&stream.name, schema);
