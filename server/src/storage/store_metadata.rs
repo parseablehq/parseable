@@ -104,26 +104,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
     let remote_metadata = storage.get_metadata().await?;
 
     // Env Change needs to be updated
-    let check = match (staging_metadata, remote_metadata) {
-        (Some(staging), Some(remote)) => {
-            // if both staging and remote have same deployment id
-            if staging.deployment_id == remote.deployment_id {
-                EnvChange::None(remote)
-            } else if Mode::from_string(&remote.server_mode).unwrap() == Mode::All
-                && (CONFIG.parseable.mode == Mode::Query || CONFIG.parseable.mode == Mode::Ingest)
-            {
-                // if you are switching to distributed mode from standalone mode
-                // it will create a new staging rather than a new remote
-                EnvChange::NewStaging(remote)
-            } else {
-                // it is a new remote
-                EnvChange::NewRemote
-            }
-        }
-        (None, Some(remote)) => EnvChange::NewStaging(remote),
-        (Some(_), None) => EnvChange::NewRemote,
-        (None, None) => EnvChange::CreateBoth,
-    };
+    let check = determine_environment(staging_metadata, remote_metadata);
 
     // flags for if metadata needs to be synced
     let mut overwrite_staging = false;
@@ -203,6 +184,32 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
     }
 
     Ok(metadata)
+}
+
+fn determine_environment(
+    staging_metadata: Option<StorageMetadata>,
+    remote_metadata: Option<StorageMetadata>,
+) -> EnvChange {
+    match (staging_metadata, remote_metadata) {
+        (Some(staging), Some(remote)) => {
+            // if both staging and remote have same deployment id
+            if staging.deployment_id == remote.deployment_id {
+                EnvChange::None(remote)
+            } else if Mode::from_string(&remote.server_mode).unwrap() == Mode::All
+                && (CONFIG.parseable.mode == Mode::Query || CONFIG.parseable.mode == Mode::Ingest)
+            {
+                // if you are switching to distributed mode from standalone mode
+                // it will create a new staging rather than a new remote
+                EnvChange::NewStaging(remote)
+            } else {
+                // it is a new remote
+                EnvChange::NewRemote
+            }
+        }
+        (None, Some(remote)) => EnvChange::NewStaging(remote),
+        (Some(_), None) => EnvChange::NewRemote,
+        (None, None) => EnvChange::CreateBoth,
+    }
 }
 
 // variant contain remote metadata
