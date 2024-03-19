@@ -98,6 +98,7 @@ impl ParseableServer for IngestServer {
 
     /// implement the init method will just invoke the initialize method
     async fn init(&self) -> anyhow::Result<()> {
+        self.validate()?;
         self.initialize().await
     }
 

@@ -97,6 +97,7 @@ impl ParseableServer for QueryServer {
 
     /// implementation of init should just invoke a call to initialize
     async fn init(&self) -> anyhow::Result<()> {
+        self.validate()?;
         self.initialize().await
     }
 
