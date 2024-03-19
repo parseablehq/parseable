@@ -133,6 +133,12 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
         EnvChange::None(metadata) => {
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
+            if CONFIG.parseable.mode ==  Mode::All {
+                standalone_when_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
+                    .map_err(|err| {
+                        ObjectStorageError::Custom(err.to_string())
+                    })?;
+            }
             Ok(metadata)
         },
         EnvChange::NewRemote => {
@@ -216,7 +222,7 @@ pub enum EnvChange {
 fn standalone_when_distributed(remote_server_mode: Mode) -> Result<(), MetadataError> {
     // mode::all -> mode::query | mode::ingest allowed
     // but mode::query | mode::ingest -> mode::all not allowed
-    if remote_server_mode == Mode::Query && CONFIG.parseable.mode == Mode::All {
+    if remote_server_mode == Mode::Query {
         return Err(MetadataError::StandaloneWithDistributed("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.".to_string()));
     }
 
