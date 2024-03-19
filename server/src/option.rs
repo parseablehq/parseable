@@ -201,10 +201,25 @@ pub enum Mode {
 impl Mode {
     pub fn to_str(&self) -> &str {
         match self {
-            Mode::Query => "Query Server",
-            Mode::Ingest => "Ingest Server",
+            Mode::Query => "Query",
+            Mode::Ingest => "Ingest",
             Mode::All => "All",
         }
+    }
+
+    pub fn from_string(mode: &str) -> Result<Self, String> {
+        match mode {
+            "Query" => Ok(Mode::Query),
+            "Ingest" => Ok(Mode::Ingest),
+            "All" => Ok(Mode::All),
+            x => Err(format!("Invalid mode: {}", x)),
+        }
+    }
+}
+
+impl ToString for Mode {
+    fn to_string(&self) -> String {
+        self.to_str().to_string()
     }
 }
 

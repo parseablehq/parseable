@@ -60,6 +60,10 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
                 let metadata = metadata_migration::v2_v3(storage_metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
+            Some("v3") => {
+                let mdata = metadata_migration::update_v3(storage_metadata);
+                put_remote_metadata(&*object_store, &mdata).await?;
+            }
             _ => (),
         }
     }
@@ -75,6 +79,10 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
                 let metadata = metadata_migration::v2_v3(staging_metadata);
                 put_staging_metadata(config, &metadata)?;
             }
+            Some("v3") => {
+                let mdata = metadata_migration::update_v3(staging_metadata);
+                put_staging_metadata(config, &mdata)?;
+            }
             _ => (),
         }
     }
@@ -82,6 +90,7 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// run the migration for all streams
 pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
     let storage = config.storage().get_object_store();
     let streams = storage.list_streams().await?;

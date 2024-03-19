@@ -26,6 +26,7 @@ use once_cell::sync::OnceCell;
 use std::io;
 
 use crate::{
+    metadata::error::stream_info::MetadataError,
     option::{Mode, CONFIG, JOIN_COMMUNITY},
     rbac::{role::model::DefaultPrivilege, user::User},
     storage::ObjectStorageError,
@@ -55,6 +56,7 @@ pub struct StorageMetadata {
     pub deployment_id: uid::Uid,
     pub users: Vec<User>,
     pub streams: Vec<String>,
+    pub server_mode: String,
     #[serde(default)]
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
@@ -69,6 +71,7 @@ impl StorageMetadata {
             staging: CONFIG.staging_dir().to_path_buf(),
             storage: CONFIG.storage().get_endpoint(),
             deployment_id: uid::gen(),
+            server_mode: CONFIG.parseable.mode.to_string(),
             users: Vec::new(),
             streams: Vec::new(),
             roles: HashMap::default(),
@@ -100,18 +103,8 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
     let storage = CONFIG.storage().get_object_store();
     let remote_metadata = storage.get_metadata().await?;
 
-    let check = match (staging_metadata, remote_metadata) {
-        (Some(staging), Some(remote)) => {
-            if staging.deployment_id == remote.deployment_id {
-                EnvChange::None(remote)
-            } else {
-                EnvChange::NewRemote
-            }
-        }
-        (None, Some(remote)) => EnvChange::NewStaging(remote),
-        (Some(_), None) => EnvChange::NewRemote,
-        (None, None) => EnvChange::CreateBoth,
-    };
+    // Env Change needs to be updated
+    let check = determine_environment(staging_metadata, remote_metadata);
 
     // flags for if metadata needs to be synced
     let mut overwrite_staging = false;
@@ -121,6 +114,12 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
         EnvChange::None(metadata) => {
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
+            if CONFIG.parseable.mode ==  Mode::All {
+                standalone_when_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
+                    .map_err(|err| {
+                        ObjectStorageError::Custom(err.to_string())
+                    })?;
+            }
             Ok(metadata)
         },
         EnvChange::NewRemote => {
@@ -134,8 +133,22 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             // overwrite remote in all and query mode
             // because staging dir has changed.
             match CONFIG.parseable.mode {
-                Mode::All | Mode::Query => overwrite_remote = true,
-                _ => {
+                Mode::All => {
+                    standalone_when_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
+                        .map_err(|err| {
+                            ObjectStorageError::Custom(err.to_string())
+                        })?;
+                        overwrite_remote = true;
+                },
+                Mode::Query => {
+                    overwrite_remote = true;
+                    metadata.server_mode = CONFIG.parseable.mode.to_string();
+                    metadata.staging = CONFIG.staging_dir().to_path_buf();
+                },
+                Mode::Ingest => {
+                    // if ingest server is started fetch the metadata from remote
+                    // update the server mode for local metadata
+                    metadata.server_mode = CONFIG.parseable.mode.to_string();
                     metadata.staging = CONFIG.staging_dir().to_path_buf();
                 },
             }
@@ -173,6 +186,32 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
     Ok(metadata)
 }
 
+fn determine_environment(
+    staging_metadata: Option<StorageMetadata>,
+    remote_metadata: Option<StorageMetadata>,
+) -> EnvChange {
+    match (staging_metadata, remote_metadata) {
+        (Some(staging), Some(remote)) => {
+            // if both staging and remote have same deployment id
+            if staging.deployment_id == remote.deployment_id {
+                EnvChange::None(remote)
+            } else if Mode::from_string(&remote.server_mode).unwrap() == Mode::All
+                && (CONFIG.parseable.mode == Mode::Query || CONFIG.parseable.mode == Mode::Ingest)
+            {
+                // if you are switching to distributed mode from standalone mode
+                // it will create a new staging rather than a new remote
+                EnvChange::NewStaging(remote)
+            } else {
+                // it is a new remote
+                EnvChange::NewRemote
+            }
+        }
+        (None, Some(remote)) => EnvChange::NewStaging(remote),
+        (Some(_), None) => EnvChange::NewRemote,
+        (None, None) => EnvChange::CreateBoth,
+    }
+}
+
 // variant contain remote metadata
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvChange {
@@ -185,6 +224,16 @@ pub enum EnvChange {
     NewStaging(StorageMetadata),
     /// Fresh remote and staging, hence create a new metadata file on both
     CreateBoth,
+}
+
+fn standalone_when_distributed(remote_server_mode: Mode) -> Result<(), MetadataError> {
+    // mode::all -> mode::query | mode::ingest allowed
+    // but mode::query | mode::ingest -> mode::all not allowed
+    if remote_server_mode == Mode::Query {
+        return Err(MetadataError::StandaloneWithDistributed("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.".to_string()));
+    }
+
+    Ok(())
 }
 
 pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {

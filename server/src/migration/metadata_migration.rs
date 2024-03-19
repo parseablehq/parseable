@@ -17,22 +17,54 @@
  */
 
 use rand::distributions::DistString;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value as JsonValue};
 
-pub fn v1_v3(mut storage_metadata: serde_json::Value) -> Value {
+use crate::option::CONFIG;
+
+/*
+v1
+{
+    "version": "v1",
+    "mode": "drive"
+    "user": string,
+    "staging": "string",
+    "storage": "string",
+    "deployment_id": "string"
+    "stream": string,
+    "default_role": null
+}
+*/
+pub fn v1_v3(mut storage_metadata: JsonValue) -> JsonValue {
     let metadata = storage_metadata.as_object_mut().unwrap();
-    *metadata.get_mut("version").unwrap() = Value::String("v3".to_string());
+    *metadata.get_mut("version").unwrap() = JsonValue::String("v3".to_string());
     metadata.remove("user");
     metadata.remove("stream");
-    metadata.insert("users".to_string(), Value::Array(vec![]));
-    metadata.insert("streams".to_string(), Value::Array(vec![]));
-    metadata.insert("roles".to_string(), Value::Array(vec![]));
+    metadata.insert("users".to_string(), JsonValue::Array(vec![]));
+    metadata.insert("streams".to_string(), JsonValue::Array(vec![]));
+    metadata.insert("roles".to_string(), JsonValue::Array(vec![]));
+    metadata.insert(
+        "server_mode".to_string(),
+        JsonValue::String(CONFIG.parseable.mode.to_string()),
+    );
     storage_metadata
 }
 
-pub fn v2_v3(mut storage_metadata: serde_json::Value) -> Value {
+/*
+v2
+{
+    "version": "v2",
+    "users": [
+        {
+            "role": ["privilege1", "privilege2", ...]
+        },
+    ...
+    ]
+    ...
+}
+*/
+pub fn v2_v3(mut storage_metadata: JsonValue) -> JsonValue {
     let metadata = storage_metadata.as_object_mut().unwrap();
-    *metadata.get_mut("version").unwrap() = Value::String("v3".to_string());
+    *metadata.get_mut("version").unwrap() = JsonValue::String("v3".to_string());
     let users = metadata
         .get_mut("users")
         .expect("users field is present")
@@ -46,7 +78,7 @@ pub fn v2_v3(mut storage_metadata: serde_json::Value) -> Value {
         // user is an object
         let user = user.as_object_mut().unwrap();
         // take out privileges
-        let Value::Array(privileges) = user.remove("role").expect("role exists for v2") else {
+        let JsonValue::Array(privileges) = user.remove("role").expect("role exists for v2") else {
             panic!("privileges is an arrray")
         };
 
@@ -55,15 +87,34 @@ pub fn v2_v3(mut storage_metadata: serde_json::Value) -> Value {
         if !privileges.is_empty() {
             let role_name =
                 rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
-            privileges_map.push((role_name.clone(), Value::Array(privileges)));
-            roles.push(Value::from(role_name));
+            privileges_map.push((role_name.clone(), JsonValue::Array(privileges)));
+            roles.push(JsonValue::from(role_name));
         }
         user.insert("roles".to_string(), roles.into());
     }
 
     metadata.insert(
         "roles".to_string(),
-        Value::Object(Map::from_iter(privileges_map)),
+        JsonValue::Object(Map::from_iter(privileges_map)),
     );
+    metadata.insert(
+        "server_mode".to_string(),
+        JsonValue::String(CONFIG.parseable.mode.to_string()),
+    );
+    storage_metadata
+}
+
+// maybe rename
+pub fn update_v3(mut storage_metadata: JsonValue) -> JsonValue {
+    let metadata = storage_metadata.as_object_mut().unwrap();
+    let sm = metadata.get("server_mode");
+
+    if sm.is_none() {
+        metadata.insert(
+            "server_mode".to_string(),
+            JsonValue::String(CONFIG.parseable.mode.to_string()),
+        );
+    }
+
     storage_metadata
 }
