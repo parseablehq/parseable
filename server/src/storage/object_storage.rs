@@ -187,6 +187,15 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
+    async fn get_schema_for_the_first_time(
+        &self,
+        stream_name: &str,
+    ) -> Result<Schema, ObjectStorageError> {
+        let schema_path = RelativePathBuf::from_iter([stream_name, SCHEMA_FILE_NAME]);
+        let schema_map = self.get_object(&schema_path).await?;
+        Ok(serde_json::from_slice(&schema_map)?)
+    }
+
     async fn get_schema(&self, stream_name: &str) -> Result<Schema, ObjectStorageError> {
         let schema_map = self.get_object(&schema_path(stream_name)).await?;
         Ok(serde_json::from_slice(&schema_map)?)
@@ -243,6 +252,22 @@ pub trait ObjectStorage: Sync + 'static {
     ) -> Result<(), ObjectStorageError> {
         let path = stream_json_path(stream_name);
         self.put_object(&path, to_bytes(manifest)).await
+    }
+
+    /// for future use
+    async fn get_stats_for_first_time(
+        &self,
+        stream_name: &str,
+    ) -> Result<Stats, ObjectStorageError> {
+        let path = RelativePathBuf::from_iter([stream_name, STREAM_METADATA_FILE_NAME]);
+        let stream_metadata = self.get_object(&path).await?;
+        let stream_metadata: Value =
+            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
+        let stats = &stream_metadata["stats"];
+
+        let stats = serde_json::from_value(stats.clone()).unwrap_or_default();
+
+        Ok(stats)
     }
 
     async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
