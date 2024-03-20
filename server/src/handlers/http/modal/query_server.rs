@@ -530,12 +530,17 @@ impl QueryServer {
     }
 
     pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
+        // get the actual creation time
         let min_creation_time = stats
             .iter()
             .map(|x| x.creation_time.parse::<DateTime<Utc>>().unwrap())
             .min()
             .unwrap_or_default();
+
+        // get the stream name
         let stream_name = stats[0].stream.clone();
+
+        // get the first event at
         let min_first_event_at = stats
             .iter()
             .map(|x| match x.first_event_at.as_ref() {
@@ -554,7 +559,7 @@ impl QueryServer {
                 .fold(IngestionStats::default(), |acc, x| IngestionStats {
                     count: acc.count + x.count,
                     size: format!(
-                        "{}",
+                        "{} Bytes",
                         acc.size.split(' ').collect_vec()[0]
                             .parse::<u64>()
                             .unwrap_or_default()
@@ -571,7 +576,7 @@ impl QueryServer {
                 .map(|x| &x.storage)
                 .fold(StorageStats::default(), |acc, x| StorageStats {
                     size: format!(
-                        "{}",
+                        "{} Bytes",
                         acc.size.split(' ').collect_vec()[0]
                             .parse::<u64>()
                             .unwrap_or_default()
