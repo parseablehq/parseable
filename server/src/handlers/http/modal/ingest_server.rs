@@ -205,6 +205,9 @@ impl IngestServer {
             store.get_bucket_name(),
             &CONFIG.parseable.username,
             &CONFIG.parseable.password,
+            CONFIG.staging_dir().display().to_string(),
+            CONFIG.get_storage_mode_string(),
+            CONFIG.storage().get_endpoint()
         );
 
         let resource = serde_json::to_string(&resource)

@@ -61,6 +61,9 @@ pub struct IngesterMetadata {
     pub domain_name: String,
     pub bucket_name: String,
     pub token: String,
+    pub staging_dir: String,
+    pub storage_mode: String,
+    pub storage_path: String,
 }
 
 impl IngesterMetadata {
@@ -71,6 +74,9 @@ impl IngesterMetadata {
         bucket_name: String,
         username: &str,
         password: &str,
+        staging_dir: String,
+        storage_mode: &str,
+        storage_path: String,
     ) -> Self {
         let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
 
@@ -82,6 +88,9 @@ impl IngesterMetadata {
             version,
             bucket_name,
             token,
+            staging_dir,
+            storage_mode: storage_mode.to_string(),
+            storage_path,
         }
     }
 }
@@ -102,6 +111,9 @@ mod test {
             "somebucket".to_string(),
             "admin",
             "admin",
+            "staging_dir".to_string(),
+            "storage_mode",
+            "storage_path".to_string(),
         );
 
         let rhs = serde_json::from_slice::<IngesterMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4="}"#).unwrap();
@@ -118,6 +130,9 @@ mod test {
             "somebucket".to_string(),
             "admin",
             "admin",
+            "staging_dir".to_string(),
+            "storage_mode",
+            "storage_path".to_string()
         );
 
         let lhs = serde_json::to_string(&im)

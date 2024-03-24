@@ -208,6 +208,9 @@ impl QueryServer {
                 reqw.is_ok(),
                 reqw.as_ref().err().map(|e| e.to_string()),
                 reqw.ok().map(|r| r.status().to_string()),
+                ingester.staging_dir,
+                ingester.storage_mode,
+                ingester.storage_path,
             ));
         }
 
@@ -666,6 +669,9 @@ struct ClusterInfo {
     reachable: bool,
     error: Option<String>,  // error message if the ingester is not reachable
     status: Option<String>, // status message if the ingester is reachable
+    staging_dir: String,
+    storage_mode: String,
+    storage_path: String
 }
 
 impl ClusterInfo {
@@ -674,12 +680,18 @@ impl ClusterInfo {
         reachable: bool,
         error: Option<String>,
         status: Option<String>,
+        staging_dir: String,
+        storage_mode: String,
+        storage_path: String
     ) -> Self {
         Self {
             domain_name: domain_name.to_string(),
             reachable,
             error,
             status,
+            staging_dir,
+            storage_mode,
+            storage_path
         }
     }
 }
