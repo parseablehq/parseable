@@ -34,6 +34,7 @@ use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use url::Url;
 
@@ -194,20 +195,61 @@ impl QueryServer {
         let mut infos = vec![];
 
         for ingester in ingester_infos {
-            let uri = Url::parse(&format!("{}liveness", ingester.domain_name))
-                .expect("should always be a valid url");
+            let uri = Url::parse(&format!(
+                "{}{}/about",
+                ingester.domain_name,
+                base_path_without_preceding_slash()
+            ))
+            .expect("should always be a valid url");
 
-            let reqw = reqwest::Client::new()
+            let resp = reqwest::Client::new()
                 .get(uri)
+                .header(header::AUTHORIZATION, ingester.token.clone())
                 .header(header::CONTENT_TYPE, "application/json")
                 .send()
                 .await;
 
+            let (reachable, staging_path, error, status) = if let Ok(resp) = resp {
+                let status = Some(resp.status().to_string());
+
+                let resp_data = resp.bytes().await.map_err(|err| {
+                    log::error!("Fatal: failed to parse ingester info to bytes: {:?}", err);
+                    StreamError::Custom {
+                        msg: format!("failed to parse ingester info to bytes: {:?}", err),
+                        status: StatusCode::INTERNAL_SERVER_ERROR,
+                    }
+                })?;
+
+                let sp = serde_json::from_slice::<JsonValue>(&resp_data)
+                    .map_err(|err| {
+                        log::error!("Fatal: failed to parse ingester info: {:?}", err);
+                        StreamError::Custom {
+                            msg: format!("failed to parse ingester info: {:?}", err),
+                            status: StatusCode::INTERNAL_SERVER_ERROR,
+                        }
+                    })?
+                    .get("staging")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+
+                (true, sp, None, status)
+            } else {
+                (
+                    false,
+                    "".to_owned(),
+                    resp.as_ref().err().map(|e| e.to_string()),
+                    resp.unwrap_err().status().map(|s| s.to_string()),
+                )
+            };
+
             infos.push(ClusterInfo::new(
                 &ingester.domain_name,
-                reqw.is_ok(),
-                reqw.as_ref().err().map(|e| e.to_string()),
-                reqw.ok().map(|r| r.status().to_string()),
+                reachable,
+                staging_path,
+                error,
+                status,
             ));
         }
 
@@ -375,8 +417,8 @@ impl QueryServer {
         let client = reqwest::Client::new();
         let res = client
             .get(url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", ingester.token)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, ingester.token)
             .send()
             .await
             .map_err(|err| {
@@ -424,8 +466,8 @@ impl QueryServer {
         let client = reqwest::Client::new();
         let res = client
             .put(url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", ingester.token)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, ingester.token)
             .send()
             .await
             .map_err(|err| {
@@ -473,8 +515,8 @@ impl QueryServer {
         let client = reqwest::Client::new();
         let resp = client
             .delete(url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", ingester.token)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, ingester.token)
             .send()
             .await
             .map_err(|err| {
@@ -649,6 +691,7 @@ impl StorageStats {
 struct ClusterInfo {
     domain_name: String,
     reachable: bool,
+    staging_path: String,
     error: Option<String>,  // error message if the ingester is not reachable
     status: Option<String>, // status message if the ingester is reachable
 }
@@ -657,12 +700,14 @@ impl ClusterInfo {
     fn new(
         domain_name: &str,
         reachable: bool,
+        staging_path: String,
         error: Option<String>,
         status: Option<String>,
     ) -> Self {
         Self {
             domain_name: domain_name.to_string(),
             reachable,
+            staging_path,
             error,
             status,
         }
