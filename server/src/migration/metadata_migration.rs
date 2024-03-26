@@ -109,7 +109,7 @@ pub fn update_v3(mut storage_metadata: JsonValue) -> JsonValue {
     let metadata = storage_metadata.as_object_mut().unwrap();
     let sm = metadata.get("server_mode");
 
-    if sm.is_none() {
+    if sm.is_none() || sm.unwrap().as_str().unwrap() == "All" {
         metadata.insert(
             "server_mode".to_string(),
             JsonValue::String(CONFIG.parseable.mode.to_string()),

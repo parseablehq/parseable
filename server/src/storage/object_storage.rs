@@ -173,7 +173,7 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
-    async fn get_schema_for_the_first_time(
+    async fn get_schema_on_server_start(
         &self,
         stream_name: &str,
     ) -> Result<Schema, ObjectStorageError> {
@@ -218,12 +218,16 @@ pub trait ObjectStorage: Sync + 'static {
                         STREAM_METADATA_FILE_NAME,
                     ]))
                     .await?;
-                self.put_stream_manifest(
-                    stream_name,
-                    &serde_json::from_slice::<ObjectStoreFormat>(&bytes)
-                        .expect("parseable config is valid json"),
-                )
-                .await?;
+
+                let mut config = serde_json::from_slice::<ObjectStoreFormat>(&bytes)
+                    .expect("parseable config is valid json");
+
+                if CONFIG.parseable.mode == Mode::Ingest {
+                    config.stats = Stats::default();
+                    config.snapshot.manifest_list = vec![];
+                }
+
+                self.put_stream_manifest(stream_name, &config).await?;
                 bytes
             }
         };

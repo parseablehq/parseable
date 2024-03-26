@@ -235,7 +235,6 @@ impl QueryServer {
 
         migration::run_migration(&CONFIG).await?;
 
-        // when do we do this
         let storage = CONFIG.storage().get_object_store();
         if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
             log::warn!("could not populate local metadata. {:?}", e);
@@ -253,23 +252,10 @@ impl QueryServer {
             analytics::init_analytics_scheduler();
         }
 
-        // spawn the sync thread
-        // tokio::spawn(Self::sync_ingester_metadata());
-
         self.start(prometheus, CONFIG.parseable.openid.clone())
             .await?;
 
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    async fn sync_ingester_metadata() {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60 / 10));
-        loop {
-            interval.tick().await;
-            // dbg!("Tick");
-            Self::get_ingester_info().await.unwrap();
-        }
     }
 
     // forward the request to all ingesters to keep them in sync
@@ -326,7 +312,7 @@ impl QueryServer {
     /// get the cumulative stats from all ingesters
     pub async fn fetch_stats_from_ingesters(
         stream_name: &str,
-    ) -> Result<QueriedStats, StreamError> {
+    ) -> Result<Vec<QueriedStats>, StreamError> {
         let mut stats = Vec::new();
 
         let ingester_infos = Self::get_ingester_info().await.map_err(|err| {
@@ -373,7 +359,6 @@ impl QueryServer {
                 }
             }
         }
-        let stats = Self::merge_quried_stats(stats);
 
         Ok(stats)
     }

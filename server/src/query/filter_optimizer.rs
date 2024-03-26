@@ -26,7 +26,7 @@ use datafusion::{
     scalar::ScalarValue,
 };
 
-/// Rewrites logical plan for source using projection and filter  
+/// Rewrites logical plan for source using projection and filter
 pub struct FilterOptimizerRule {
     pub column: String,
     pub literals: Vec<String>,
@@ -117,9 +117,8 @@ impl FilterOptimizerRule {
             Expr::Column(Column::from_name(&self.column)).like(lit(format!("%{}%", literal)))
         });
 
-        let Some(mut filter_expr) = patterns.next() else {
-            return None;
-        };
+        let mut filter_expr = patterns.next()?;
+
         for expr in patterns {
             filter_expr = or(filter_expr, expr)
         }

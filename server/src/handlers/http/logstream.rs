@@ -33,7 +33,7 @@ use crate::{metadata, validator};
 
 use self::error::{CreateStreamError, StreamError};
 
-use super::modal::query_server::{self, IngestionStats, QueriedStats, StorageStats};
+use super::modal::query_server::{self, IngestionStats, QueriedStats, QueryServer, StorageStats};
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -284,11 +284,11 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    if CONFIG.parseable.mode == Mode::Query {
-        let stats = query_server::QueryServer::fetch_stats_from_ingesters(&stream_name).await?;
-        let stats = serde_json::to_value(stats).unwrap();
-        return Ok((web::Json(stats), StatusCode::OK));
-    }
+    let ingestor_stats = if CONFIG.parseable.mode == Mode::Query {
+        Some(query_server::QueryServer::fetch_stats_from_ingesters(&stream_name).await?)
+    } else {
+        None
+    };
 
     let hash_map = STREAM_INFO.read().unwrap();
     let stream_meta = &hash_map
@@ -296,7 +296,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
     let time = Utc::now();
-    let qstats = match &stream_meta.first_event_at {
+    let stats = match &stream_meta.first_event_at {
         Some(first_event_at) => {
             let ingestion_stats = IngestionStats::new(
                 stats.events,
@@ -336,10 +336,16 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             )
         }
     };
+    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
+        ingestor_stats.push(stats);
+        QueryServer::merge_quried_stats(ingestor_stats)
+    } else {
+        stats
+    };
 
-    let out_stats = serde_json::to_value(qstats).unwrap();
+    let stats = serde_json::to_value(stats).unwrap();
 
-    Ok((web::Json(out_stats), StatusCode::OK))
+    Ok((web::Json(stats), StatusCode::OK))
 }
 
 // Check if the first_event_at is empty
