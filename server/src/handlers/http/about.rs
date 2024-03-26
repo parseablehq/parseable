@@ -28,6 +28,26 @@ use crate::{
 };
 use std::path::PathBuf;
 
+/// {
+///     "version": current_version,
+///     "uiVersion": ui_version,
+///     "commit": commit,
+///     "deploymentId": deployment_id,
+///     "updateAvailable": update_available,
+///     "latestVersion": latest_release,
+///     "llmActive": is_llm_active,
+///     "llmProvider": llm_provider,
+///     "oidcActive": is_oidc_active,
+///     "license": "AGPL-3.0-only",
+///     "mode": mode,
+///     "staging": staging,
+///     "cache": cache_details,
+///     "grpcPort": grpc_port,
+///     "store": {
+///         "type": CONFIG.get_storage_mode_string(),
+///         "path": store_endpoint
+///     }
+/// }
 pub async fn about() -> Json<serde_json::Value> {
     let meta = StorageMetadata::global();
 
