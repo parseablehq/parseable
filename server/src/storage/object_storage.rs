@@ -106,11 +106,20 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(())
     }
 
-    async fn create_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
+    async fn create_stream(
+        &self,
+        stream_name: &str,
+        time_partition: &str,
+    ) -> Result<(), ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
         format.set_id(CONFIG.parseable.username.clone());
         let permission = Permisssion::new(CONFIG.parseable.username.clone());
         format.permissions = vec![permission];
+        if time_partition.is_empty() {
+            format.time_partition = None;
+        } else {
+            format.time_partition = Some(time_partition.to_string());
+        }
         let format_json = to_bytes(&format);
         self.put_object(&schema_path(stream_name), to_bytes(&Schema::empty()))
             .await?;
@@ -325,8 +334,11 @@ pub trait ObjectStorage: Sync + 'static {
             let cache_enabled = STREAM_INFO
                 .cache_enabled(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+            let time_partition = STREAM_INFO
+                .get_time_partition(stream)
+                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let dir = StorageDir::new(stream);
-            let schema = convert_disk_files_to_parquet(stream, &dir)
+            let schema = convert_disk_files_to_parquet(stream, &dir, time_partition)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {

@@ -18,18 +18,18 @@
 
 use std::fs;
 
-use actix_web::http::StatusCode;
-use actix_web::{web, HttpRequest, Responder};
-use chrono::Utc;
-use serde_json::Value;
-
 use self::error::{CreateStreamError, StreamError};
 use crate::alerts::Alerts;
+use crate::handlers::TIME_PARTITION_KEY;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 use crate::storage::{retention::Retention, LogStream, StorageDir};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
+use actix_web::http::StatusCode;
+use actix_web::{web, HttpRequest, Responder};
+use chrono::Utc;
+use serde_json::Value;
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -108,6 +108,16 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 }
 
 pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    let time_partition = if let Some((_, time_partition_name)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == TIME_PARTITION_KEY)
+    {
+        time_partition_name.to_str().unwrap()
+    } else {
+        ""
+    };
+
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if metadata::STREAM_INFO.stream_exists(&stream_name) {
@@ -119,7 +129,7 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
             status: StatusCode::BAD_REQUEST,
         });
     } else {
-        create_stream(stream_name).await?;
+        create_stream(stream_name, time_partition).await?;
     }
 
     Ok(("log stream created", StatusCode::OK))
@@ -326,13 +336,16 @@ fn remove_id_from_alerts(value: &mut Value) {
     }
 }
 
-pub async fn create_stream(stream_name: String) -> Result<(), CreateStreamError> {
+pub async fn create_stream(
+    stream_name: String,
+    time_partition: &str,
+) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     validator::stream_name(&stream_name)?;
 
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage.create_stream(&stream_name).await {
+    if let Err(err) = storage.create_stream(&stream_name, time_partition).await {
         return Err(CreateStreamError::Storage { stream_name, err });
     }
 
@@ -344,7 +357,11 @@ pub async fn create_stream(stream_name: String) -> Result<(), CreateStreamError>
     let stream_meta = stream_meta.unwrap();
     let created_at = stream_meta.created_at;
 
-    metadata::STREAM_INFO.add_stream(stream_name.to_string(), created_at);
+    metadata::STREAM_INFO.add_stream(
+        stream_name.to_string(),
+        created_at,
+        time_partition.to_string(),
+    );
 
     Ok(())
 }
