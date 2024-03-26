@@ -248,6 +248,7 @@ impl QueryServer {
                 &ingester.domain_name,
                 reachable,
                 staging_path,
+                CONFIG.storage().get_endpoint(),
                 error,
                 status,
             ));
@@ -692,6 +693,7 @@ struct ClusterInfo {
     domain_name: String,
     reachable: bool,
     staging_path: String,
+    storage_path: String,
     error: Option<String>,  // error message if the ingester is not reachable
     status: Option<String>, // status message if the ingester is reachable
 }
@@ -701,6 +703,7 @@ impl ClusterInfo {
         domain_name: &str,
         reachable: bool,
         staging_path: String,
+        storage_path: String,
         error: Option<String>,
         status: Option<String>,
     ) -> Self {
@@ -708,6 +711,7 @@ impl ClusterInfo {
             domain_name: domain_name.to_string(),
             reachable,
             staging_path,
+            storage_path,
             error,
             status,
         }
