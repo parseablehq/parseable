@@ -123,7 +123,7 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
         .iter()
         .map(|x| x.creation_time.parse::<DateTime<Utc>>().unwrap())
         .min()
-        .unwrap_or_default();
+        .unwrap();  // should never be None
 
     // get the stream name
     let stream_name = stats[0].stream.clone();
@@ -132,11 +132,13 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
     let min_first_event_at = stats
         .iter()
         .map(|x| match x.first_event_at.as_ref() {
-            Some(fea) => fea.parse::<DateTime<Utc>>().unwrap_or_default(),
-            None => Utc::now(),
+            // we can directly unwrap here because
+            // we are sure that the first_event_at is a valid date
+            Some(fea) => fea.parse::<DateTime<Utc>>().unwrap(),
+            None => Utc::now(), // current time ie the max time
         })
         .min()
-        .unwrap_or_else(Utc::now);
+        .unwrap();  // should never be None
 
     let min_time = stats.iter().map(|x| x.time).min().unwrap_or_else(Utc::now);
 
