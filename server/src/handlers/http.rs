@@ -20,9 +20,10 @@ use actix_cors::Cors;
 use arrow_schema::Schema;
 use serde_json::Value;
 
-use self::{modal::query_server::QueryServer, query::Query};
+use self::{cluster::get_ingester_info, query::Query};
 
 pub(crate) mod about;
+pub mod cluster;
 pub(crate) mod health_check;
 pub(crate) mod ingest;
 mod kinesis;
@@ -62,7 +63,7 @@ pub fn base_path_without_preceding_slash() -> String {
 
 pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
     let mut res = vec![];
-    let ima = QueryServer::get_ingester_info().await.unwrap();
+    let ima = get_ingester_info().await.unwrap();
 
     for im in ima {
         let uri = format!(
@@ -92,7 +93,7 @@ pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Sch
 pub async fn send_query_request_to_ingester(query: &Query) -> anyhow::Result<Vec<Value>> {
     // send the query request to the ingester
     let mut res = vec![];
-    let ima = QueryServer::get_ingester_info().await.unwrap();
+    let ima = get_ingester_info().await.unwrap();
 
     for im in ima.iter() {
         let uri = format!(

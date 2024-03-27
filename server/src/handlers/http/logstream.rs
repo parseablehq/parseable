@@ -26,7 +26,8 @@ use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
 
-use super::modal::query_server::{self, IngestionStats, QueriedStats, QueryServer, StorageStats};
+use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
+use super::cluster::{fetch_stats_from_ingesters, sync_streams_with_ingesters};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
 use arrow_schema::{Field, Schema};
@@ -144,6 +145,8 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
             status: StatusCode::BAD_REQUEST,
         });
     }
+
+
     if !body.is_empty() {
         if static_schema_flag == "true" {
             let body_str = std::str::from_utf8(&body).unwrap();
@@ -169,6 +172,10 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
                 });
     }
 
+    // ! broken
+    if CONFIG.parseable.mode == Mode::Query {
+        sync_streams_with_ingesters(&stream_name).await?;
+    }
     create_stream(stream_name, time_partition, static_schema_flag, schema).await?;
 
     Ok(("log stream created", StatusCode::OK))
@@ -313,8 +320,8 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats = if CONFIG.parseable.mode == Mode::Query {
-        Some(query_server::QueryServer::fetch_stats_from_ingesters(&stream_name).await?)
+    let ingester_stats = if CONFIG.parseable.mode == Mode::Query {
+        Some(fetch_stats_from_ingesters(&stream_name).await?)
     } else {
         None
     };
@@ -381,9 +388,9 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             )
         }
     };
-    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
-        ingestor_stats.push(stats);
-        QueryServer::merge_quried_stats(ingestor_stats)
+    let stats = if let Some(mut ingester_stats) = ingester_stats {
+        ingester_stats.push(stats);
+        merge_quried_stats(ingester_stats)
     } else {
         stats
     };
