@@ -368,7 +368,6 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             )
         }
 
-        // ? this case should not happen
         None => {
             let ingestion_stats = IngestionStats::new(
                 stats.events,
@@ -381,7 +380,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             QueriedStats::new(
                 &stream_name,
                 &stream_meta.created_at,
-                Some('0'.to_string()),
+                None,
                 time,
                 ingestion_stats,
                 storage_stats,
