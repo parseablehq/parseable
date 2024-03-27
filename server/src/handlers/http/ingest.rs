@@ -170,6 +170,8 @@ pub enum PostError {
     Invalid(#[from] anyhow::Error),
     #[error("{0}")]
     CreateStream(#[from] CreateStreamError),
+    #[error("Error: {0}")]
+    CustomError(String),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -184,6 +186,7 @@ impl actix_web::ResponseError for PostError {
             }
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
+            PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

@@ -33,7 +33,8 @@ use crate::{metadata, validator};
 
 use self::error::{CreateStreamError, StreamError};
 
-use super::modal::query_server::{self, IngestionStats, QueriedStats, QueryServer, StorageStats};
+use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
+use super::cluster::{fetch_stats_from_ingesters, sync_streams_with_ingesters};
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -123,7 +124,7 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
         });
     }
     if CONFIG.parseable.mode == Mode::Query {
-        query_server::QueryServer::sync_streams_with_ingesters(&stream_name).await?;
+        sync_streams_with_ingesters(&stream_name).await?;
     }
 
     create_stream(stream_name.clone()).await?;
@@ -284,8 +285,8 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats = if CONFIG.parseable.mode == Mode::Query {
-        Some(query_server::QueryServer::fetch_stats_from_ingesters(&stream_name).await?)
+    let ingester_stats = if CONFIG.parseable.mode == Mode::Query {
+        Some(fetch_stats_from_ingesters(&stream_name).await?)
     } else {
         None
     };
@@ -336,9 +337,9 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             )
         }
     };
-    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
-        ingestor_stats.push(stats);
-        QueryServer::merge_quried_stats(ingestor_stats)
+    let stats = if let Some(mut ingester_stats) = ingester_stats {
+        ingester_stats.push(stats);
+        merge_quried_stats(ingester_stats)
     } else {
         stats
     };

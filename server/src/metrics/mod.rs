@@ -16,6 +16,7 @@
  *
  */
 
+pub mod prom_utils;
 pub mod storage;
 
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
