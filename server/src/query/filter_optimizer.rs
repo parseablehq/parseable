@@ -117,9 +117,7 @@ impl FilterOptimizerRule {
             Expr::Column(Column::from_name(&self.column)).like(lit(format!("%{}%", literal)))
         });
 
-        let Some(mut filter_expr) = patterns.next() else {
-            return None;
-        };
+        let mut filter_expr = patterns.next()?;
         for expr in patterns {
             filter_expr = or(filter_expr, expr)
         }

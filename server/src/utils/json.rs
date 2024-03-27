@@ -21,8 +21,11 @@ use serde_json::Value;
 
 pub mod flatten;
 
-pub fn flatten_json_body(body: serde_json::Value) -> Result<Value, anyhow::Error> {
-    flatten::flatten(body, "_")
+pub fn flatten_json_body(
+    body: serde_json::Value,
+    time_partition: Option<String>,
+) -> Result<Value, anyhow::Error> {
+    flatten::flatten(body, "_", time_partition)
 }
 
 pub fn convert_to_string(value: &Value) -> Value {
