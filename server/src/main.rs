@@ -68,8 +68,6 @@ async fn main() -> anyhow::Result<()> {
         Mode::All => Arc::new(Server),
     };
 
-    // MODE == Query / Ingest and storage = local-store
-    server.validate()?;
     server.init().await?;
 
     Ok(())
