@@ -16,35 +16,24 @@
  *
  */
 
-use crate::handlers::http::logstream::error::StreamError;
+use crate::handlers::http::cluster::utils::check_liveness;
+use crate::handlers::http::cluster::{self, get_ingester_info};
 use crate::handlers::http::middleware::RouteExt;
-use crate::handlers::http::{
-    base_path, base_path_without_preceding_slash, cross_origin_config, API_BASE_PATH, API_VERSION,
-};
+use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
+
 use crate::rbac::role::Action;
 use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
-use actix_web::http::header;
+use actix_web::web;
 use actix_web::web::ServiceConfig;
-use actix_web::{web, Responder};
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use http::StatusCode;
-use itertools::Itertools;
-use relative_path::RelativePathBuf;
-use reqwest::Response;
-use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use std::sync::Arc;
-use url::Url;
 
 use crate::option::CONFIG;
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
-use super::{IngesterMetadata, OpenIdClient, ParseableServer};
-
-type IngesterMetadataArr = Vec<IngesterMetadata>;
+use super::{OpenIdClient, ParseableServer};
 
 #[derive(Default, Debug)]
 pub struct QueryServer;
@@ -56,11 +45,11 @@ impl ParseableServer for QueryServer {
         prometheus: actix_web_prometheus::PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        let data = Self::get_ingester_info().await?;
+        let data = get_ingester_info().await?;
 
         // on subsequent runs, the qurier should check if the ingester is up and running or not
         for ingester in data.iter() {
-            if !Self::check_liveness(&ingester.domain_name).await {
+            if !check_liveness(&ingester.domain_name).await {
                 eprintln!("Ingester at {} is not reachable", &ingester.domain_name);
             } else {
                 println!("Ingester at {} is up and running", &ingester.domain_name);
@@ -144,117 +133,21 @@ impl QueryServer {
     }
 
     fn get_cluster_info_web_scope() -> actix_web::Scope {
-        web::scope("/cluster").service(
-            web::resource("/info").route(
-                web::get()
-                    .to(Self::get_cluster_info)
-                    .authorize(Action::ListCluster),
-            ),
-        )
-    }
-
-    // update the .query.json file and return the new IngesterMetadataArr
-    pub async fn get_ingester_info() -> anyhow::Result<IngesterMetadataArr> {
-        let store = CONFIG.storage().get_object_store();
-
-        let root_path = RelativePathBuf::from("");
-        let arr = store
-            .get_objects(Some(&root_path))
-            .await?
-            .iter()
-            // this unwrap will most definateley shoot me in the foot later
-            .map(|x| serde_json::from_slice::<IngesterMetadata>(x).unwrap_or_default())
-            .collect_vec();
-
-        // TODO: add validation logic here
-        // validate the ingester metadata
-        Ok(arr)
-    }
-
-    pub async fn check_liveness(domain_name: &str) -> bool {
-        let uri = Url::parse(&format!("{}liveness", domain_name)).unwrap();
-
-        let reqw = reqwest::Client::new()
-            .get(uri)
-            .header(header::CONTENT_TYPE, "application/json")
-            .send()
-            .await;
-
-        reqw.is_ok()
-    }
-
-    async fn get_cluster_info() -> Result<impl Responder, StreamError> {
-        let ingester_infos = Self::get_ingester_info().await.map_err(|err| {
-            log::error!("Fatal: failed to get ingester info: {:?}", err);
-            StreamError::Custom {
-                msg: format!("failed to get ingester info\n{:?}", err),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?;
-
-        let mut infos = vec![];
-
-        for ingester in ingester_infos {
-            let uri = Url::parse(&format!(
-                "{}{}/about",
-                ingester.domain_name,
-                base_path_without_preceding_slash()
-            ))
-            .expect("should always be a valid url");
-
-            let resp = reqwest::Client::new()
-                .get(uri)
-                .header(header::AUTHORIZATION, ingester.token.clone())
-                .header(header::CONTENT_TYPE, "application/json")
-                .send()
-                .await;
-
-            let (reachable, staging_path, error, status) = if let Ok(resp) = resp {
-                let status = Some(resp.status().to_string());
-
-                let resp_data = resp.bytes().await.map_err(|err| {
-                    log::error!("Fatal: failed to parse ingester info to bytes: {:?}", err);
-                    StreamError::Custom {
-                        msg: format!("failed to parse ingester info to bytes: {:?}", err),
-                        status: StatusCode::INTERNAL_SERVER_ERROR,
-                    }
-                })?;
-
-                let sp = serde_json::from_slice::<JsonValue>(&resp_data)
-                    .map_err(|err| {
-                        log::error!("Fatal: failed to parse ingester info: {:?}", err);
-                        StreamError::Custom {
-                            msg: format!("failed to parse ingester info: {:?}", err),
-                            status: StatusCode::INTERNAL_SERVER_ERROR,
-                        }
-                    })?
-                    .get("staging")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .to_string();
-
-                (true, sp, None, status)
-            } else {
-                (
-                    false,
-                    "".to_owned(),
-                    resp.as_ref().err().map(|e| e.to_string()),
-                    resp.unwrap_err().status().map(|s| s.to_string()),
-                )
-            };
-
-            infos.push(ClusterInfo::new(
-                &ingester.domain_name,
-                reachable,
-                staging_path,
-                CONFIG.storage().get_endpoint(),
-                error,
-                status,
-            ));
-        }
-
-        Ok(actix_web::HttpResponse::Ok().json(infos))
+        web::scope("/cluster")
+            .service(
+                web::resource("/info").route(
+                    web::get()
+                        .to(cluster::get_cluster_info)
+                        .authorize(Action::ListCluster),
+                ),
+            )
+            .service(
+                web::resource("/metrics").route(
+                    web::get()
+                        .to(cluster::get_cluster_metrics)
+                        .authorize(Action::ListClusterMetrics),
+                ),
+            )
     }
 
     /// initialize the server, run migrations as needed and start the server
@@ -262,8 +155,6 @@ impl QueryServer {
         migration::run_metadata_migration(&CONFIG).await?;
 
         let metadata = storage::resolve_parseable_metadata().await?;
-        // do not commit the below line
-        tokio::fs::File::create(CONFIG.staging_dir().join(".query.json")).await?;
 
         banner::print(&CONFIG, &metadata).await;
 
@@ -299,421 +190,5 @@ impl QueryServer {
             .await?;
 
         Ok(())
-    }
-
-    // forward the request to all ingesters to keep them in sync
-    pub async fn sync_streams_with_ingesters(stream_name: &str) -> Result<(), StreamError> {
-        let ingester_infos = Self::get_ingester_info().await.map_err(|err| {
-            log::error!("Fatal: failed to get ingester info: {:?}", err);
-            StreamError::Custom {
-                msg: format!("failed to get ingester info\n{:?}", err),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?;
-
-        let mut errored = false;
-        for ingester in ingester_infos.iter() {
-            let url = format!(
-                "{}{}/logstream/{}",
-                ingester.domain_name,
-                base_path_without_preceding_slash(),
-                stream_name
-            );
-
-            match Self::send_stream_sync_request(&url, ingester.clone()).await {
-                Ok(_) => continue,
-                Err(_) => {
-                    errored = true;
-                    break;
-                }
-            }
-        }
-
-        if errored {
-            for ingester in ingester_infos {
-                let url = format!(
-                    "{}{}/logstream/{}",
-                    ingester.domain_name,
-                    base_path_without_preceding_slash(),
-                    stream_name
-                );
-
-                // roll back the stream creation
-                Self::send_stream_rollback_request(&url, ingester.clone()).await?;
-            }
-
-            // this might be a bit too much
-            return Err(StreamError::Custom {
-                msg: "Failed to sync stream with ingesters".to_string(),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            });
-        }
-
-        Ok(())
-    }
-
-    /// get the cumulative stats from all ingesters
-    pub async fn fetch_stats_from_ingesters(
-        stream_name: &str,
-    ) -> Result<Vec<QueriedStats>, StreamError> {
-        let mut stats = Vec::new();
-
-        let ingester_infos = Self::get_ingester_info().await.map_err(|err| {
-            log::error!("Fatal: failed to get ingester info: {:?}", err);
-            StreamError::Custom {
-                msg: format!("failed to get ingester info\n{:?}", err),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?;
-
-        for ingester in ingester_infos {
-            let url = format!(
-                "{}{}/logstream/{}/stats",
-                ingester.domain_name,
-                base_path_without_preceding_slash(),
-                stream_name
-            );
-
-            match Self::send_stats_request(&url, ingester.clone()).await {
-                Ok(Some(res)) => {
-                    match serde_json::from_str::<QueriedStats>(&res.text().await.unwrap()) {
-                        Ok(stat) => stats.push(stat),
-                        Err(err) => {
-                            log::error!(
-                                "Could not parse stats from ingester: {}\n Error: {:?}",
-                                ingester.domain_name,
-                                err
-                            );
-                            continue;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    log::error!("Ingester at {} is not reachable", &ingester.domain_name);
-                    continue;
-                }
-                Err(err) => {
-                    log::error!(
-                        "Fatal: failed to fetch stats from ingester: {}\n Error: {:?}",
-                        ingester.domain_name,
-                        err
-                    );
-                    return Err(err);
-                }
-            }
-        }
-
-        Ok(stats)
-    }
-
-    /// send a request to the ingester to fetch its stats
-    async fn send_stats_request(
-        url: &str,
-        ingester: IngesterMetadata,
-    ) -> Result<Option<Response>, StreamError> {
-        if !Self::check_liveness(&ingester.domain_name).await {
-            return Ok(None);
-        }
-
-        let client = reqwest::Client::new();
-        let res = client
-            .get(url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::AUTHORIZATION, ingester.token)
-            .send()
-            .await
-            .map_err(|err| {
-                log::error!(
-                    "Fatal: failed to fetch stats from ingester: {}\n Error: {:?}",
-                    ingester.domain_name,
-                    err
-                );
-
-                StreamError::Custom {
-                    msg: format!(
-                        "failed to fetch stats from ingester: {}\n Error: {:?}",
-                        ingester.domain_name, err
-                    ),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-            })?;
-
-        if !res.status().is_success() {
-            log::error!(
-                "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
-                ingester.domain_name,
-                res
-            );
-            return Err(StreamError::Custom {
-                msg: format!(
-                    "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
-                    ingester.domain_name,res.text().await.unwrap_or_default()
-                ),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            });
-        }
-
-        Ok(Some(res))
-    }
-
-    async fn send_stream_sync_request(
-        url: &str,
-        ingester: IngesterMetadata,
-    ) -> Result<(), StreamError> {
-        if !Self::check_liveness(&ingester.domain_name).await {
-            return Ok(());
-        }
-
-        let client = reqwest::Client::new();
-        let res = client
-            .put(url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::AUTHORIZATION, ingester.token)
-            .send()
-            .await
-            .map_err(|err| {
-                log::error!(
-                    "Fatal: failed to forward create stream request to ingester: {}\n Error: {:?}",
-                    ingester.domain_name,
-                    err
-                );
-                StreamError::Custom {
-                    msg: format!(
-                        "failed to forward create stream request to ingester: {}\n Error: {:?}",
-                        ingester.domain_name, err
-                    ),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-            })?;
-
-        if !res.status().is_success() {
-            log::error!(
-                "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
-                ingester.domain_name,
-                res
-            );
-            return Err(StreamError::Custom {
-                            msg: format!(
-                                "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
-                                ingester.domain_name,res.text().await.unwrap_or_default()
-                            ),
-                            status: StatusCode::INTERNAL_SERVER_ERROR,
-                        });
-        }
-
-        Ok(())
-    }
-
-    /// send a rollback request to all ingesters
-    async fn send_stream_rollback_request(
-        url: &str,
-        ingester: IngesterMetadata,
-    ) -> Result<(), StreamError> {
-        if !Self::check_liveness(&ingester.domain_name).await {
-            return Ok(());
-        }
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .delete(url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::AUTHORIZATION, ingester.token)
-            .send()
-            .await
-            .map_err(|err| {
-                // log the error and return a custom error
-                log::error!(
-                    "Fatal: failed to rollback stream creation: {}\n Error: {:?}",
-                    ingester.domain_name,
-                    err
-                );
-                StreamError::Custom {
-                    msg: format!(
-                        "failed to rollback stream creation: {}\n Error: {:?}",
-                        ingester.domain_name, err
-                    ),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-            })?;
-
-        // if the response is not successful, log the error and return a custom error
-        // this could be a bit too much, but we need to be sure it covers all cases
-        if !resp.status().is_success() {
-            log::error!(
-                "failed to rollback stream creation: {}\nResponse Returned: {:?}",
-                ingester.domain_name,
-                resp
-            );
-            return Err(StreamError::Custom {
-                msg: format!(
-                    "failed to rollback stream creation: {}\nResponse Returned: {:?}",
-                    ingester.domain_name,
-                    resp.text().await.unwrap_or_default()
-                ),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            });
-        }
-
-        Ok(())
-    }
-
-    pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
-        // get the actual creation time
-        let min_creation_time = stats
-            .iter()
-            .map(|x| x.creation_time.parse::<DateTime<Utc>>().unwrap())
-            .min()
-            .unwrap_or_default();
-
-        // get the stream name
-        let stream_name = stats[0].stream.clone();
-
-        // get the first event at
-        let min_first_event_at = stats
-            .iter()
-            .map(|x| match x.first_event_at.as_ref() {
-                Some(fea) => fea.parse::<DateTime<Utc>>().unwrap_or_default(),
-                None => Utc::now(),
-            })
-            .min()
-            .unwrap_or_else(Utc::now);
-
-        let min_time = stats.iter().map(|x| x.time).min().unwrap_or_else(Utc::now);
-
-        let cumulative_ingestion =
-            stats
-                .iter()
-                .map(|x| &x.ingestion)
-                .fold(IngestionStats::default(), |acc, x| IngestionStats {
-                    count: acc.count + x.count,
-                    size: format!(
-                        "{} Bytes",
-                        acc.size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                            + x.size.split(' ').collect_vec()[0]
-                                .parse::<u64>()
-                                .unwrap_or_default()
-                    ),
-                    format: x.format.clone(),
-                });
-
-        let cumulative_storage =
-            stats
-                .iter()
-                .map(|x| &x.storage)
-                .fold(StorageStats::default(), |acc, x| StorageStats {
-                    size: format!(
-                        "{} Bytes",
-                        acc.size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                            + x.size.split(' ').collect_vec()[0]
-                                .parse::<u64>()
-                                .unwrap_or_default()
-                    ),
-                    format: x.format.clone(),
-                });
-
-        QueriedStats::new(
-            &stream_name,
-            &min_creation_time.to_string(),
-            Some(min_first_event_at.to_string()),
-            min_time,
-            cumulative_ingestion,
-            cumulative_storage,
-        )
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct QueriedStats {
-    pub stream: String,
-    pub creation_time: String,
-    pub first_event_at: Option<String>,
-    pub time: DateTime<Utc>,
-    pub ingestion: IngestionStats,
-    pub storage: StorageStats,
-}
-
-impl QueriedStats {
-    pub fn new(
-        stream: &str,
-        creation_time: &str,
-        first_event_at: Option<String>,
-        time: DateTime<Utc>,
-        ingestion: IngestionStats,
-        storage: StorageStats,
-    ) -> Self {
-        Self {
-            stream: stream.to_string(),
-            creation_time: creation_time.to_string(),
-            first_event_at,
-            time,
-            ingestion,
-            storage,
-        }
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct IngestionStats {
-    pub count: u64,
-    pub size: String,
-    pub format: String,
-}
-
-impl IngestionStats {
-    pub fn new(count: u64, size: String, format: &str) -> Self {
-        Self {
-            count,
-            size,
-            format: format.to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct StorageStats {
-    size: String,
-    format: String,
-}
-
-impl StorageStats {
-    pub fn new(size: String, format: &str) -> Self {
-        Self {
-            size,
-            format: format.to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct ClusterInfo {
-    domain_name: String,
-    reachable: bool,
-    staging_path: String,
-    storage_path: String,
-    error: Option<String>,  // error message if the ingester is not reachable
-    status: Option<String>, // status message if the ingester is reachable
-}
-
-impl ClusterInfo {
-    fn new(
-        domain_name: &str,
-        reachable: bool,
-        staging_path: String,
-        storage_path: String,
-        error: Option<String>,
-        status: Option<String>,
-    ) -> Self {
-        Self {
-            domain_name: domain_name.to_string(),
-            reachable,
-            staging_path,
-            storage_path,
-            error,
-            status,
-        }
     }
 }
