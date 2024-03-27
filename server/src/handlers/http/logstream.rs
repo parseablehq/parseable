@@ -271,20 +271,6 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         return Err(StreamError::StreamNotFound(stream_name));
     }
 
-    if first_event_at_empty(&stream_name) {
-        let store = CONFIG.storage().get_object_store();
-        if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name).await {
-            if let Err(err) =
-                metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
-            {
-                log::error!(
-                    "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
-                    stream_name
-                );
-            }
-        }
-    }
-
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
