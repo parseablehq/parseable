@@ -21,8 +21,8 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME,
+    ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
+    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME,
 };
 
 use crate::option::Mode;
@@ -508,9 +508,10 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
     }
 }
 
+/// path will be ".parseable/.parsable.json"
 #[inline(always)]
-fn parseable_json_path() -> RelativePathBuf {
-    RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME)
+pub fn parseable_json_path() -> RelativePathBuf {
+    RelativePathBuf::from_iter([PARSEABLE_ROOT_DIRECTORY, PARSEABLE_METADATA_FILE_NAME])
 }
 
 #[inline(always)]
@@ -523,4 +524,9 @@ fn manifest_path(prefix: &str) -> RelativePathBuf {
     let addr = get_address();
     let mainfest_file_name = format!("{}.{}.{}", addr.0, addr.1, MANIFEST_FILE);
     RelativePathBuf::from_iter([prefix, &mainfest_file_name])
+}
+
+#[inline(always)]
+pub fn ingester_metadata_path(ip: String, port: String) -> RelativePathBuf {
+    RelativePathBuf::from_iter([PARSEABLE_ROOT_DIRECTORY, &format!("ingester.{}.{}.json", ip, port)])
 }

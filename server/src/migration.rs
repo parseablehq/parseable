@@ -30,8 +30,7 @@ use serde::Serialize;
 use crate::{
     option::Config,
     storage::{
-        object_storage::stream_json_path, ObjectStorage, ObjectStorageError,
-        PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
+        object_storage::{parseable_json_path, stream_json_path}, ObjectStorage, ObjectStorageError,SCHEMA_FILE_NAME,
     },
 };
 
@@ -153,7 +152,8 @@ fn to_bytes(any: &(impl ?Sized + Serialize)) -> Bytes {
 }
 
 pub fn get_staging_metadata(config: &Config) -> anyhow::Result<Option<serde_json::Value>> {
-    let path = config.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
+    let path = parseable_json_path().to_path(config.staging_dir());
+
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {
@@ -162,13 +162,14 @@ pub fn get_staging_metadata(config: &Config) -> anyhow::Result<Option<serde_json
         },
     };
     let meta: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
     Ok(Some(meta))
 }
 
 async fn get_storage_metadata(
     storage: &dyn ObjectStorage,
 ) -> anyhow::Result<Option<serde_json::Value>> {
-    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
+    let path = parseable_json_path();
     match storage.get_object(&path).await {
         Ok(bytes) => Ok(Some(
             serde_json::from_slice(&bytes).expect("parseable config is valid json"),
@@ -187,13 +188,14 @@ pub async fn put_remote_metadata(
     storage: &dyn ObjectStorage,
     metadata: &serde_json::Value,
 ) -> anyhow::Result<()> {
-    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
+    let path = parseable_json_path();
     let metadata = serde_json::to_vec(metadata)?.into();
     Ok(storage.put_object(&path, metadata).await?)
 }
 
 pub fn put_staging_metadata(config: &Config, metadata: &serde_json::Value) -> anyhow::Result<()> {
-    let path = config.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
+    let path = parseable_json_path().to_path(config.staging_dir());
+    //config.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)

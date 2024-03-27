@@ -27,8 +27,9 @@ use crate::metrics;
 use crate::rbac;
 use crate::rbac::role::Action;
 use crate::storage;
+use crate::storage::object_storage::ingester_metadata_path;
+use crate::storage::object_storage::parseable_json_path;
 use crate::storage::ObjectStorageError;
-use crate::storage::PARSEABLE_METADATA_FILE_NAME;
 use crate::sync;
 
 use super::server::Server;
@@ -180,13 +181,8 @@ impl IngestServer {
     async fn set_ingester_metadata(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
 
-        // remove ip adn go with the domain name
         let sock = Server::get_server_address();
-        let path = RelativePathBuf::from(format!(
-            "ingester.{}.{}.json",
-            sock.ip(), // this might be wrong
-            sock.port()
-        ));
+        let path = ingester_metadata_path(sock.ip().to_string(), sock.port().to_string());
 
         if store.get_object(&path).await.is_ok() {
             println!("Ingester metadata already exists");
@@ -228,7 +224,7 @@ impl IngestServer {
         // i.e the querier will create the `.parseable.json` file
 
         let store = CONFIG.storage().get_object_store();
-        let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
+        let path = parseable_json_path();
 
         match store.get_object(&path).await {
             Ok(_) => Ok(()),

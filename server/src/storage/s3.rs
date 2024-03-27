@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
-use crate::storage::{LogStream, ObjectStorage, ObjectStorageError};
+use crate::storage::{LogStream, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
 
 use super::metrics_layer::MetricLayer;
 use super::{ObjectStorageProvider, PARSEABLE_METADATA_FILE_NAME, STREAM_METADATA_FILE_NAME};
@@ -297,11 +297,13 @@ impl S3 {
         let common_prefixes = resp.common_prefixes;
 
         // return prefixes at the root level
-        let dirs: Vec<_> = common_prefixes
+        let mut dirs: Vec<_> = common_prefixes
             .iter()
             .filter_map(|path| path.parts().next())
             .map(|name| name.as_ref().to_string())
             .collect();
+        // filter out the root directory
+        dirs.retain(|x| x != PARSEABLE_ROOT_DIRECTORY);
 
         let stream_json_check = FuturesUnordered::new();
 

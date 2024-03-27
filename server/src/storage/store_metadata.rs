@@ -33,7 +33,7 @@ use crate::{
     utils::uid,
 };
 
-use super::PARSEABLE_METADATA_FILE_NAME;
+use super::{object_storage::parseable_json_path, PARSEABLE_METADATA_FILE_NAME};
 
 // Expose some static variables for internal usage
 pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();
@@ -237,7 +237,7 @@ fn standalone_when_distributed(remote_server_mode: Mode) -> Result<(), MetadataE
 }
 
 pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
-    let path = CONFIG.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
+    let path = parseable_json_path().to_path(CONFIG.staging_dir());
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {

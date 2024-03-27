@@ -35,7 +35,8 @@ use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::option::validation;
 
 use super::{
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, STREAM_METADATA_FILE_NAME,
+    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
+    STREAM_METADATA_FILE_NAME,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -202,7 +203,7 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let ignore_dir = &["lost+found"];
+        let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
