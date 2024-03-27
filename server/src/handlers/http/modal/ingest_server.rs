@@ -43,6 +43,8 @@ use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
+use base64::Engine;
+use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use url::Url;
 
@@ -98,6 +100,7 @@ impl ParseableServer for IngestServer {
 
     /// implement the init method will just invoke the initialize method
     async fn init(&self) -> anyhow::Result<()> {
+        self.validate()?;
         self.initialize().await
     }
 
@@ -236,17 +239,50 @@ impl IngestServer {
         }
     }
 
+    async fn validate_credentials(&self) -> anyhow::Result<()> {
+        // check if your creds match with others
+        let store = CONFIG.storage().get_object_store();
+        let base_path = RelativePathBuf::from("");
+        let ingester_metadata = store
+            .get_objects(Some(&base_path))
+            .await?
+            .iter()
+            // this unwrap will most definateley shoot me in the foot later
+            .map(|x| serde_json::from_slice::<IngesterMetadata>(x).unwrap_or_default())
+            .collect_vec();
+
+        if !ingester_metadata.is_empty() {
+            let check = ingester_metadata[0].token.clone();
+
+            let token = base64::prelude::BASE64_STANDARD.encode(format!(
+                "{}:{}",
+                CONFIG.parseable.username, CONFIG.parseable.password
+            ));
+
+            let token = format!("Basic {}", token);
+
+            if check != token {
+                log::error!("Credentials do not match with other ingesters. Please check your credentials and try again.");
+                return Err(anyhow::anyhow!("Credentials do not match with other ingesters. Please check your credentials and try again."));
+            }
+        }
+
+        Ok(())
+    }
+
     async fn initialize(&self) -> anyhow::Result<()> {
         // check for querier state. Is it there, or was it there in the past
         self.check_querier_state().await?;
         // to get the .parseable.json file in staging
-        let meta = storage::resolve_parseable_metadata().await?;
-        banner::print(&CONFIG, &meta).await;
+        self.validate_credentials().await?;
 
-        rbac::map::init(&meta);
+        let metadata = storage::resolve_parseable_metadata().await?;
+        banner::print(&CONFIG, &metadata).await;
+
+        rbac::map::init(&metadata);
 
         // set the info in the global metadata
-        meta.set_global();
+        metadata.set_global();
 
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
@@ -254,8 +290,8 @@ impl IngestServer {
                 .await?;
         };
 
-        let prom = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prom);
+        let prometheus = metrics::build_metrics_handler();
+        CONFIG.storage().register_store_metrics(&prometheus);
 
         let storage = CONFIG.storage().get_object_store();
         if let Err(err) = metadata::STREAM_INFO.load(&*storage).await {
@@ -273,7 +309,7 @@ impl IngestServer {
         if CONFIG.parseable.send_analytics {
             analytics::init_analytics_scheduler();
         }
-        let app = self.start(prom, CONFIG.parseable.openid.clone());
+        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
         tokio::pin!(app);
         loop {
             tokio::select! {
