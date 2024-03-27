@@ -24,6 +24,7 @@ pub enum Action {
     Query,
     CreateStream,
     ListStream,
+    GetStream,
     GetSchema,
     GetStats,
     DeleteStream,
@@ -97,6 +98,7 @@ impl RoleBuilder {
                 | Action::ListRole
                 | Action::CreateStream
                 | Action::DeleteStream
+                | Action::GetStream
                 | Action::ListStream => Permission::Unit(action),
                 Action::Ingest
                 | Action::GetSchema
@@ -169,6 +171,7 @@ pub mod model {
                 Action::Query,
                 Action::CreateStream,
                 Action::ListStream,
+                Action::GetStream,
                 Action::GetSchema,
                 Action::GetStats,
                 Action::GetRetention,
@@ -191,6 +194,7 @@ pub mod model {
                 Action::Ingest,
                 Action::Query,
                 Action::ListStream,
+                Action::GetStream,
                 Action::GetSchema,
                 Action::GetStats,
                 Action::GetRetention,
@@ -209,6 +213,7 @@ pub mod model {
             actions: vec![
                 Action::Query,
                 Action::ListStream,
+                Action::GetStream,
                 Action::GetSchema,
                 Action::GetStats,
                 Action::GetRetention,

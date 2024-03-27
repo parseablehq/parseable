@@ -23,7 +23,7 @@ use crate::alerts::Alerts;
 use crate::handlers::TIME_PARTITION_KEY;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
-use crate::storage::{retention::Retention, LogStream, StorageDir};
+use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
 use actix_web::http::StatusCode;
@@ -288,17 +288,10 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let hash_map = STREAM_INFO.read().unwrap();
-    let stream_meta = &hash_map
-        .get(&stream_name)
-        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
-
     let time = Utc::now();
 
     let stats = serde_json::json!({
         "stream": stream_name,
-        "creation_time": &stream_meta.created_at,
-        "first_event_at": Some(&stream_meta.first_event_at),
         "time": time,
         "ingestion": {
             "count": stats.events,
@@ -364,6 +357,41 @@ pub async fn create_stream(
     );
 
     Ok(())
+}
+
+pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        return Err(StreamError::StreamNotFound(stream_name));
+    }
+
+    if first_event_at_empty(&stream_name) {
+        let store = CONFIG.storage().get_object_store();
+        if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name).await {
+            if let Err(err) =
+                metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
+            {
+                log::error!(
+                    "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
+                    stream_name
+                );
+            }
+        }
+    }
+
+    let hash_map = STREAM_INFO.read().unwrap();
+    let stream_meta = &hash_map
+        .get(&stream_name)
+        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
+
+    let stream_info: StreamInfo = StreamInfo {
+        created_at: stream_meta.created_at.clone(),
+        first_event_at: stream_meta.first_event_at.clone(),
+        time_partition: stream_meta.time_partition.clone(),
+        cache_enabled: stream_meta.cache_enabled,
+    };
+
+    Ok((web::Json(stream_info), StatusCode::OK))
 }
 
 pub mod error {
