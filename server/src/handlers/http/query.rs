@@ -30,6 +30,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
 
 use crate::event::commit_schema;
@@ -41,6 +42,7 @@ use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::object_storage::commit_schema_to_storage;
+use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 
 use super::send_query_request_to_ingester;
@@ -76,11 +78,8 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         if let Ok(new_schema) = fetch_schema(&table_name).await {
             commit_schema_to_storage(&table_name, new_schema.clone())
                 .await
-                .map_err(|err| {
-                    QueryError::Custom(format!("Error committing schema to storage\nError:{err}"))
-                })?;
-            commit_schema(&table_name, Arc::new(new_schema))
-                .map_err(|err| QueryError::Custom(format!("Error committing schema: {}", err)))?;
+                .map_err(QueryError::ObjectStorage)?;
+            commit_schema(&table_name, Arc::new(new_schema)).map_err(QueryError::EventError)?;
         }
     }
 
@@ -291,6 +290,10 @@ pub enum QueryError {
     Execute(#[from] ExecuteError),
     #[error("Error: {0}")]
     Custom(String),
+    #[error("ObjectStorage Error: {0}")]
+    ObjectStorage(#[from] ObjectStorageError),
+    #[error("Evern Error: {0}")]
+    EventError(#[from] EventError),
 }
 
 impl actix_web::ResponseError for QueryError {

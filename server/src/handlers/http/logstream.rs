@@ -391,6 +391,15 @@ pub async fn create_stream(stream_name: String) -> Result<(), CreateStreamError>
     Ok(())
 }
 
+fn classify_json_error(kind: serde_json::error::Category) -> StatusCode {
+    match kind {
+        serde_json::error::Category::Io => StatusCode::INTERNAL_SERVER_ERROR,
+        serde_json::error::Category::Syntax => StatusCode::BAD_REQUEST,
+        serde_json::error::Category::Data => StatusCode::INTERNAL_SERVER_ERROR,
+        serde_json::error::Category::Eof => StatusCode::BAD_REQUEST,
+    }
+}
+
 pub mod error {
 
     use actix_web::http::header::ContentType;
@@ -401,6 +410,8 @@ pub mod error {
         storage::ObjectStorageError,
         validator::error::{AlertValidationError, StreamNameValidationError},
     };
+
+    use super::classify_json_error;
 
     #[derive(Debug, thiserror::Error)]
     pub enum CreateStreamError {
@@ -446,6 +457,12 @@ pub mod error {
         InvalidRetentionConfig(serde_json::Error),
         #[error("{msg}")]
         Custom { msg: String, status: StatusCode },
+        #[error("Error: {0}")]
+        Anyhow(#[from] anyhow::Error),
+        #[error("Network Error: {0}")]
+        Network(#[from] reqwest::Error),
+        #[error("Error: {0}")]
+        ResponseError(#[from] serde_json::Error),
     }
 
     impl actix_web::ResponseError for StreamError {
@@ -468,6 +485,11 @@ pub mod error {
                 StreamError::InvalidAlert(_) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidAlertMessage(_, _) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidRetentionConfig(_) => StatusCode::BAD_REQUEST,
+                StreamError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                StreamError::Network(err) => {
+                    err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+                }
+                StreamError::ResponseError(err) => classify_json_error(err.classify()),
             }
         }
 

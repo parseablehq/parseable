@@ -434,9 +434,8 @@ impl ObjectStorage for S3 {
 
             let byts = self
                 .get_object(
-                    RelativePath::from_path(meta.location.as_ref()).map_err(|err| {
-                        ObjectStorageError::Custom(format!("Error while getting files: {:}", err))
-                    })?,
+                    RelativePath::from_path(meta.location.as_ref())
+                        .map_err(ObjectStorageError::PathError)?,
                 )
                 .await?;
 
