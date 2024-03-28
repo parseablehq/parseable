@@ -123,7 +123,7 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
         .iter()
         .map(|x| x.creation_time.parse::<DateTime<Utc>>().unwrap())
         .min()
-        .unwrap();  // should never be None
+        .unwrap(); // should never be None
 
     // get the stream name
     let stream_name = stats[0].stream.clone();
@@ -138,7 +138,7 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
             None => Utc::now(), // current time ie the max time
         })
         .min()
-        .unwrap();  // should never be None
+        .unwrap(); // should never be None
 
     let min_time = stats.iter().map(|x| x.time).min().unwrap_or_else(Utc::now);
 
@@ -222,13 +222,7 @@ pub async fn send_stats_request(
                 err
             );
 
-            StreamError::Custom {
-                msg: format!(
-                    "failed to fetch stats from ingester: {}\n Error: {:?}",
-                    ingester.domain_name, err
-                ),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            }
+            StreamError::Network(err)
         })?;
 
     if !res.status().is_success() {
