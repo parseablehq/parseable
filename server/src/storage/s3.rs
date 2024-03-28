@@ -29,7 +29,7 @@ use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
 use object_store::{ClientOptions, ObjectStore};
-use relative_path::RelativePath;
+use relative_path::{RelativePath, RelativePathBuf};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -478,6 +478,16 @@ impl ObjectStorage for S3 {
 
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
         self._delete_prefix(stream_name).await?;
+
+        Ok(())
+    }
+
+    async fn delete_ingester_meta(
+        &self,
+        ingester_filename: String,
+    ) -> Result<(), ObjectStorageError> {
+        let file = RelativePathBuf::from(&ingester_filename);
+        self.client.delete(&to_object_store_path(&file)).await?;
 
         Ok(())
     }
