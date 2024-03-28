@@ -243,3 +243,25 @@ pub async fn send_stats_request(
 
     Ok(Some(res))
 }
+
+/// domain_name needs to be http://ip:port
+pub fn ingester_meta_filename(domain_name: &str) -> String {
+    if domain_name.starts_with("http://") | domain_name.starts_with("https://") {
+        let url = Url::parse(domain_name).unwrap();
+        return format!(
+            "ingester.{}.{}.json",
+            url.host_str().unwrap(),
+            url.port().unwrap()
+        );
+    }
+    format!("ingester.{}.json", domain_name)
+}
+
+pub fn to_url_string(str: String) -> String {
+    // if the str is already a url i am guessing that it will end in '/'
+    if str.starts_with("http://") || str.starts_with("https://") {
+        return str;
+    }
+
+    format!("http://{}/", str)
+}

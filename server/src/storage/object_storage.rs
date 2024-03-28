@@ -82,7 +82,10 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError>;
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
-
+    async fn delete_ingester_meta(
+        &self,
+        ingester_filename: String,
+    ) -> Result<(), ObjectStorageError>;
     /// Returns the amount of time taken by the `ObjectStore` to perform a get
     /// call.
     async fn get_latency(&self) -> Duration {

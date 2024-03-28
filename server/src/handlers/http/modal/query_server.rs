@@ -17,7 +17,7 @@
  */
 
 use crate::handlers::http::cluster::utils::check_liveness;
-use crate::handlers::http::cluster::{self, get_ingester_info};
+use crate::handlers::http::cluster::{self, get_ingester_info, remove_ingester};
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
 
@@ -136,17 +136,29 @@ impl QueryServer {
     fn get_cluster_info_web_scope() -> actix_web::Scope {
         web::scope("/cluster")
             .service(
+                // GET "/cluster/info" ==> Get info of the cluster
                 web::resource("/info").route(
                     web::get()
                         .to(cluster::get_cluster_info)
                         .authorize(Action::ListCluster),
                 ),
             )
+            // GET "/cluster/metrics" ==> Get metrics of the cluster
             .service(
                 web::resource("/metrics").route(
                     web::get()
                         .to(cluster::get_cluster_metrics)
                         .authorize(Action::ListClusterMetrics),
+                ),
+            )
+            // DELETE "/cluster/{ingester_domain:port}" ==> Delete an ingester from the cluster
+            .service(
+                web::scope("/{ingester}").service(
+                    web::resource("").route(
+                        web::delete()
+                            .to(remove_ingester)
+                            .authorize(Action::DeleteIngester),
+                    ),
                 ),
             )
     }

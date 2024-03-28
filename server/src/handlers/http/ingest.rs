@@ -33,6 +33,7 @@ use crate::handlers::{
 };
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
+use crate::storage::ObjectStorageError;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 
 use super::logstream::error::CreateStreamError;
@@ -174,6 +175,8 @@ pub enum PostError {
     CustomError(String),
     #[error("Error: {0}")]
     NetworkError(#[from] reqwest::Error),
+    #[error("ObjectStorageError: {0}")]
+    ObjectStorageError(#[from] ObjectStorageError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -190,6 +193,7 @@ impl actix_web::ResponseError for PostError {
             PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
             PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

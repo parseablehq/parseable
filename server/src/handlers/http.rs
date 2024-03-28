@@ -30,7 +30,7 @@ mod kinesis;
 pub(crate) mod llm;
 pub(crate) mod logstream;
 pub(crate) mod middleware;
-pub(crate) mod modal;
+pub mod modal;
 pub(crate) mod oidc;
 mod otel;
 pub(crate) mod query;
@@ -108,9 +108,10 @@ pub async fn send_query_request_to_ingester(query: &Query) -> anyhow::Result<Vec
             .header(http::header::AUTHORIZATION, im.token.clone())
             .header(http::header::CONTENT_TYPE, "application/json")
             .send()
-            .await?;
+            .await;
 
-        if reqw.status().is_success() {
+        if let Ok(reqw) = reqw {
+            // do i need to do a success check??
             let v: Value = serde_json::from_slice(&reqw.bytes().await?)?;
             // the value returned is an array of json objects
             // so it needs to be flattened
