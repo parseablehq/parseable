@@ -41,10 +41,7 @@ use super::modal::IngesterMetadata;
 pub async fn sync_streams_with_ingesters(stream_name: &str) -> Result<(), StreamError> {
     let ingester_infos = get_ingester_info().await.map_err(|err| {
         log::error!("Fatal: failed to get ingester info: {:?}", err);
-        StreamError::Custom {
-            msg: format!("failed to get ingester info\n{:?}", err),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-        }
+        StreamError::Anyhow(err)
     })?;
 
     let mut errored = false;
@@ -96,10 +93,7 @@ pub async fn fetch_stats_from_ingesters(
 
     let ingester_infos = get_ingester_info().await.map_err(|err| {
         log::error!("Fatal: failed to get ingester info: {:?}", err);
-        StreamError::Custom {
-            msg: format!("failed to get ingester info\n{:?}", err),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-        }
+        StreamError::Anyhow(err)
     })?;
 
     for ingester in ingester_infos {
@@ -163,13 +157,7 @@ async fn send_stream_sync_request(
                 ingester.domain_name,
                 err
             );
-            StreamError::Custom {
-                msg: format!(
-                    "failed to forward create stream request to ingester: {}\n Error: {:?}",
-                    ingester.domain_name, err
-                ),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            }
+            StreamError::Network(err)
         })?;
 
     if !res.status().is_success() {
@@ -178,14 +166,7 @@ async fn send_stream_sync_request(
             ingester.domain_name,
             res
         );
-        return Err(StreamError::Custom {
-            msg: format!(
-                "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
-                ingester.domain_name,
-                res.text().await.unwrap_or_default()
-            ),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-        });
+        return Err(StreamError::Network(res.error_for_status().unwrap_err()));
     }
 
     Ok(())
@@ -214,13 +195,7 @@ async fn send_stream_rollback_request(
                 ingester.domain_name,
                 err
             );
-            StreamError::Custom {
-                msg: format!(
-                    "failed to rollback stream creation: {}\n Error: {:?}",
-                    ingester.domain_name, err
-                ),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            }
+            StreamError::Network(err)
         })?;
 
     // if the response is not successful, log the error and return a custom error
@@ -247,10 +222,7 @@ async fn send_stream_rollback_request(
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     let ingester_infos = get_ingester_info().await.map_err(|err| {
         log::error!("Fatal: failed to get ingester info: {:?}", err);
-        StreamError::Custom {
-            msg: format!("failed to get ingester info\n{:?}", err),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-        }
+        StreamError::Anyhow(err)
     })?;
 
     let mut infos = vec![];
@@ -275,19 +247,13 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
 
             let resp_data = resp.bytes().await.map_err(|err| {
                 log::error!("Fatal: failed to parse ingester info to bytes: {:?}", err);
-                StreamError::Custom {
-                    msg: format!("failed to parse ingester info to bytes: {:?}", err),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                }
+                StreamError::Network(err)
             })?;
 
             let sp = serde_json::from_slice::<JsonValue>(&resp_data)
                 .map_err(|err| {
                     log::error!("Fatal: failed to parse ingester info: {:?}", err);
-                    StreamError::Custom {
-                        msg: format!("failed to parse ingester info: {:?}", err),
-                        status: StatusCode::INTERNAL_SERVER_ERROR,
-                    }
+                    StreamError::SerdeError(err)
                 })?
                 .get("staging")
                 .unwrap()
@@ -321,7 +287,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
 pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
     let ingester_metadata = get_ingester_info().await.map_err(|err| {
         log::error!("Fatal: failed to get ingester info: {:?}", err);
-        PostError::CustomError(err.to_string())
+        PostError::Invalid(err)
     })?;
 
     let mut dresses = vec![];
@@ -341,10 +307,7 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
             .await;
 
         if let Ok(res) = res {
-            let text = res
-                .text()
-                .await
-                .map_err(|err| PostError::CustomError(err.to_string()))?;
+            let text = res.text().await.map_err(PostError::NetworkError)?;
             let lines: Vec<Result<String, std::io::Error>> =
                 text.lines().map(|line| Ok(line.to_owned())).collect_vec();
 

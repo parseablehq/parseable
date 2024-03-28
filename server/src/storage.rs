@@ -194,6 +194,8 @@ pub enum ObjectStorageError {
 
     #[error("Unhandled Error: {0}")]
     UnhandledError(Box<dyn std::error::Error + Send + Sync + 'static>),
+    #[error("Error: {0}")]
+    PathError(relative_path::FromPathError),
 
     #[allow(dead_code)]
     #[error("Authentication Error: {0}")]
