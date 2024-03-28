@@ -87,6 +87,19 @@ pub struct ObjectStoreFormat {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StreamInfo {
+    #[serde(rename = "created-at")]
+    pub created_at: String,
+    #[serde(rename = "first-event-at")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_event_at: Option<String>,
+    #[serde(default)]
+    pub cache_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_partition: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Owner {
     pub id: String,
     pub group: String,

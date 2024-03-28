@@ -159,6 +159,14 @@ pub fn configure_routes(
                 .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
         )
         .service(
+            // GET "/logstream/{logstream}/info" ==> Get info for given log stream
+            web::resource("/info").route(
+                web::get()
+                    .to(logstream::get_stream_info)
+                    .authorize_for_stream(Action::GetStream),
+            ),
+        )
+        .service(
             web::resource("/alert")
                 // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
                 .route(
