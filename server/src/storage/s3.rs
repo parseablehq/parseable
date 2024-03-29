@@ -29,7 +29,7 @@ use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
 use object_store::{ClientOptions, ObjectStore};
-use relative_path::RelativePath;
+use relative_path::{RelativePath, RelativePathBuf};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -480,6 +480,27 @@ impl ObjectStorage for S3 {
         self._delete_prefix(stream_name).await?;
 
         Ok(())
+    }
+
+    async fn try_delete_ingester_meta(
+        &self,
+        ingester_filename: String,
+    ) -> Result<(), ObjectStorageError> {
+        let file = RelativePathBuf::from(&ingester_filename);
+        match self.client.delete(&to_object_store_path(&file)).await {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                // if the object is not found, it is not an error
+                // the given url path was incorrect
+                if matches!(err, object_store::Error::NotFound { .. }) {
+                    log::error!("Node does not exist");
+                    Err(err.into())
+                } else {
+                    log::error!("Error deleting ingester meta file: {:?}", err);
+                    Err(err.into())
+                }
+            }
+        }
     }
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
