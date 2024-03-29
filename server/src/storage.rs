@@ -99,6 +99,8 @@ pub struct StreamInfo {
     pub cache_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_schema_flag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
