@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::cli::Cli;
-use crate::storage::PARSEABLE_METADATA_FILE_NAME;
+use crate::storage::object_storage::parseable_json_path;
 use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
 pub const JOIN_COMMUNITY: &str =
@@ -102,7 +102,7 @@ impl Config {
     // if the proper data directory is provided, or s3 bucket is provided etc
     pub async fn validate_storage(&self) -> Result<(), ObjectStorageError> {
         let obj_store = self.storage.get_object_store();
-        let rel_path = relative_path::RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
+        let rel_path = parseable_json_path();
 
         let has_parseable_json = obj_store.get_object(&rel_path).await.is_ok();
 

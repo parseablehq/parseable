@@ -27,6 +27,7 @@ use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
 use crate::storage::ObjectStorageError;
+use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use actix_web::http::header;
 use actix_web::{HttpRequest, Responder};
 use http::StatusCode;
@@ -338,7 +339,7 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
 pub async fn get_ingester_info() -> anyhow::Result<IngesterMetadataArr> {
     let store = CONFIG.storage().get_object_store();
 
-    let root_path = RelativePathBuf::from("");
+    let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let arr = store
         .get_objects(Some(&root_path))
         .await?

@@ -27,8 +27,9 @@ use crate::metrics;
 use crate::rbac;
 use crate::rbac::role::Action;
 use crate::storage;
+use crate::storage::object_storage::ingester_metadata_path;
+use crate::storage::object_storage::parseable_json_path;
 use crate::storage::ObjectStorageError;
-use crate::storage::PARSEABLE_METADATA_FILE_NAME;
 use crate::sync;
 
 use super::server::Server;
@@ -101,6 +102,17 @@ impl ParseableServer for IngestServer {
     /// implement the init method will just invoke the initialize method
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
+        // check for querier state. Is it there, or was it there in the past
+        self.check_querier_state().await?;
+        // to get the .parseable.json file in staging
+        self.validate_credentials().await?;
+
+        let metadata = storage::resolve_parseable_metadata().await?;
+        banner::print(&CONFIG, &metadata).await;
+        rbac::map::init(&metadata);
+        // set the info in the global metadata
+        metadata.set_global();
+
         self.initialize().await
     }
 
@@ -180,13 +192,8 @@ impl IngestServer {
     async fn set_ingester_metadata(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
 
-        // remove ip adn go with the domain name
         let sock = Server::get_server_address();
-        let path = RelativePathBuf::from(format!(
-            "ingester.{}.{}.json",
-            sock.ip(), // this might be wrong
-            sock.port()
-        ));
+        let path = ingester_metadata_path(sock.ip().to_string(), sock.port().to_string());
 
         if store.get_object(&path).await.is_ok() {
             println!("Ingester metadata already exists");
@@ -228,7 +235,7 @@ impl IngestServer {
         // i.e the querier will create the `.parseable.json` file
 
         let store = CONFIG.storage().get_object_store();
-        let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
+        let path = parseable_json_path();
 
         match store.get_object(&path).await {
             Ok(_) => Ok(()),
@@ -271,19 +278,6 @@ impl IngestServer {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        // check for querier state. Is it there, or was it there in the past
-        self.check_querier_state().await?;
-        // to get the .parseable.json file in staging
-        self.validate_credentials().await?;
-
-        let metadata = storage::resolve_parseable_metadata().await?;
-        banner::print(&CONFIG, &metadata).await;
-
-        rbac::map::init(&metadata);
-
-        // set the info in the global metadata
-        metadata.set_global();
-
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
                 .validate(CONFIG.parseable.local_cache_size)

@@ -98,6 +98,15 @@ impl ParseableServer for QueryServer {
     /// implementation of init should just invoke a call to initialize
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
+        migration::run_file_migration(&CONFIG).await?;
+        CONFIG.validate_storage().await?;
+        migration::run_metadata_migration(&CONFIG).await?;
+        let metadata = storage::resolve_parseable_metadata().await?;
+        banner::print(&CONFIG, &metadata).await;
+        // initialize the rbac map
+        rbac::map::init(&metadata);
+        // keep metadata info in mem
+        metadata.set_global();
         self.initialize().await
     }
 
@@ -165,18 +174,6 @@ impl QueryServer {
 
     /// initialize the server, run migrations as needed and start the server
     async fn initialize(&self) -> anyhow::Result<()> {
-        migration::run_metadata_migration(&CONFIG).await?;
-
-        let metadata = storage::resolve_parseable_metadata().await?;
-
-        banner::print(&CONFIG, &metadata).await;
-
-        // initialize the rbac map
-        rbac::map::init(&metadata);
-
-        // keep metadata info in mem
-        metadata.set_global();
-
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -189,7 +186,6 @@ impl QueryServer {
 
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
-
         // load data from stats back to prometheus metrics
         metrics::fetch_stats_from_storage().await;
 
