@@ -136,17 +136,29 @@ impl QueryServer {
     fn get_cluster_info_web_scope() -> actix_web::Scope {
         web::scope("/cluster")
             .service(
+                // GET "/cluster/info" ==> Get info of the cluster
                 web::resource("/info").route(
                     web::get()
                         .to(cluster::get_cluster_info)
                         .authorize(Action::ListCluster),
                 ),
             )
+            // GET "/cluster/metrics" ==> Get metrics of the cluster
             .service(
                 web::resource("/metrics").route(
                     web::get()
                         .to(cluster::get_cluster_metrics)
                         .authorize(Action::ListClusterMetrics),
+                ),
+            )
+            // DELETE "/cluster/{ingester_domain:port}" ==> Delete an ingester from the cluster
+            .service(
+                web::scope("/{ingester}").service(
+                    web::resource("").route(
+                        web::delete()
+                            .to(cluster::remove_ingester)
+                            .authorize(Action::DeleteIngester),
+                    ),
                 ),
             )
     }

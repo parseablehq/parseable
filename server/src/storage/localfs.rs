@@ -193,6 +193,14 @@ impl ObjectStorage for LocalFS {
         Ok(fs::remove_dir_all(path).await?)
     }
 
+    async fn try_delete_ingester_meta(
+        &self,
+        ingester_filename: String,
+    ) -> Result<(), ObjectStorageError> {
+        let path = self.root.join(ingester_filename);
+        Ok(fs::remove_file(path).await?)
+    }
+
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
         let ignore_dir = &["lost+found"];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
