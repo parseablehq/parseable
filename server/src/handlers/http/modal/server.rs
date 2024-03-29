@@ -141,6 +141,13 @@ impl ParseableServer for Server {
     /// implementation of init should just invoke a call to initialize
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
+        migration::run_file_migration(&CONFIG).await?;
+        CONFIG.validate_storage().await?;
+        migration::run_metadata_migration(&CONFIG).await?;
+        let metadata = storage::resolve_parseable_metadata().await?;
+        banner::print(&CONFIG, &metadata).await;
+        rbac::map::init(&metadata);
+        metadata.set_global();
         self.initialize().await
     }
 
@@ -413,12 +420,6 @@ impl Server {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        migration::run_metadata_migration(&CONFIG).await?;
-        let metadata = storage::resolve_parseable_metadata().await?;
-        banner::print(&CONFIG, &metadata).await;
-        rbac::map::init(&metadata);
-        metadata.set_global();
-
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
                 .validate(CONFIG.parseable.local_cache_size)

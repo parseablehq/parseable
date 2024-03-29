@@ -57,7 +57,6 @@ pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    CONFIG.validate_storage().await?;
 
     // these are empty ptrs so mem footprint should be minimal
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {

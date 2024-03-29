@@ -33,7 +33,7 @@ use crate::{
     utils::uid,
 };
 
-use super::PARSEABLE_METADATA_FILE_NAME;
+use super::{object_storage::parseable_json_path, PARSEABLE_METADATA_FILE_NAME};
 
 // Expose some static variables for internal usage
 pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();
@@ -126,33 +126,39 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             Err("Could not start the server because staging directory indicates stale data from previous deployment, please choose an empty staging directory and restart the server")
         }
         EnvChange::NewStaging(mut metadata) => {
-            create_dir_all(CONFIG.staging_dir())?;
-            metadata.staging = CONFIG.staging_dir().canonicalize()?;
-            // this flag is set to true so that metadata is copied to staging
-            overwrite_staging = true;
-            // overwrite remote in all and query mode
-            // because staging dir has changed.
-            match CONFIG.parseable.mode {
-                Mode::All => {
-                    standalone_when_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
-                        .map_err(|err| {
-                            ObjectStorageError::Custom(err.to_string())
-                        })?;
+            // if server is started in ingest mode,we need to make sure that query mode has been started
+            // i.e the metadata is updated to reflect the server mode = Query
+            if Mode::from_string(&metadata.server_mode).unwrap() == Mode::All && CONFIG.parseable.mode == Mode::Ingest {
+                Err("Starting Ingest Mode is not allowed, Since Query Server has not been started yet")
+            } else {
+                create_dir_all(CONFIG.staging_dir())?;
+                metadata.staging = CONFIG.staging_dir().canonicalize()?;
+                // this flag is set to true so that metadata is copied to staging
+                overwrite_staging = true;
+                // overwrite remote in all and query mode
+                // because staging dir has changed.
+                match CONFIG.parseable.mode {
+                    Mode::All => {
+                        standalone_when_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
+                            .map_err(|err| {
+                                ObjectStorageError::Custom(err.to_string())
+                            })?;
+                            overwrite_remote = true;
+                    },
+                    Mode::Query => {
                         overwrite_remote = true;
-                },
-                Mode::Query => {
-                    overwrite_remote = true;
-                    metadata.server_mode = CONFIG.parseable.mode.to_string();
-                    metadata.staging = CONFIG.staging_dir().to_path_buf();
-                },
-                Mode::Ingest => {
-                    // if ingest server is started fetch the metadata from remote
-                    // update the server mode for local metadata
-                    metadata.server_mode = CONFIG.parseable.mode.to_string();
-                    metadata.staging = CONFIG.staging_dir().to_path_buf();
-                },
+                        metadata.server_mode = CONFIG.parseable.mode.to_string();
+                        metadata.staging = CONFIG.staging_dir().to_path_buf();
+                    },
+                    Mode::Ingest => {
+                        // if ingest server is started fetch the metadata from remote
+                        // update the server mode for local metadata
+                        metadata.server_mode = CONFIG.parseable.mode.to_string();
+                        metadata.staging = CONFIG.staging_dir().to_path_buf();
+                    },
+                }
+                Ok(metadata)
             }
-            Ok(metadata)
         }
         EnvChange::CreateBoth => {
             create_dir_all(CONFIG.staging_dir())?;
@@ -237,7 +243,7 @@ fn standalone_when_distributed(remote_server_mode: Mode) -> Result<(), MetadataE
 }
 
 pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
-    let path = CONFIG.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
+    let path = parseable_json_path().to_path(CONFIG.staging_dir());
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {
