@@ -24,6 +24,7 @@ const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const LOG_SOURCE_KEY: &str = "x-p-log-source";
 const TIME_PARTITION_KEY: &str = "x-p-time-partition";
+const STATIC_SCHEMA_FLAG: &str = "x-p-static-schema-flag";
 const AUTHORIZATION_KEY: &str = "authorization";
 const SEPARATOR: char = '^';
 

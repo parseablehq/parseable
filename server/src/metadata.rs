@@ -47,6 +47,7 @@ pub struct LogStreamMetadata {
     pub created_at: String,
     pub first_event_at: Option<String>,
     pub time_partition: Option<String>,
+    pub static_schema_flag: Option<String>,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -97,6 +98,16 @@ impl StreamInfo {
         map.get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| metadata.time_partition.clone())
+    }
+
+    pub fn get_static_schema_flag(
+        &self,
+        stream_name: &str,
+    ) -> Result<Option<String>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.static_schema_flag.clone())
     }
 
     pub fn set_stream_cache(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
@@ -150,7 +161,14 @@ impl StreamInfo {
             })
     }
 
-    pub fn add_stream(&self, stream_name: String, created_at: String, time_partition: String) {
+    pub fn add_stream(
+        &self,
+        stream_name: String,
+        created_at: String,
+        time_partition: String,
+        static_schema_flag: String,
+        static_schema: HashMap<String, Arc<Field>>,
+    ) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
             created_at: if created_at.is_empty() {
@@ -162,6 +180,16 @@ impl StreamInfo {
                 None
             } else {
                 Some(time_partition)
+            },
+            static_schema_flag: if static_schema_flag != "true" {
+                None
+            } else {
+                Some(static_schema_flag)
+            },
+            schema: if static_schema.is_empty() {
+                HashMap::new()
+            } else {
+                static_schema
             },
             ..Default::default()
         };
@@ -199,6 +227,7 @@ impl StreamInfo {
                 created_at: meta.created_at,
                 first_event_at: meta.first_event_at,
                 time_partition: meta.time_partition,
+                static_schema_flag: meta.static_schema_flag,
             };
 
             let mut map = self.write().expect(LOCK_EXPECT);

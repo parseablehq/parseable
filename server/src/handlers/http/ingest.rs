@@ -16,9 +16,13 @@
  *
  */
 
-use crate::event::error::EventError;
-use crate::event::format::EventFormat;
-use crate::event::{self, format};
+use super::logstream::error::CreateStreamError;
+use super::{kinesis, otel};
+use crate::event::{
+    self,
+    error::EventError,
+    format::{self, EventFormat},
+};
 use crate::handlers::{
     LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     STREAM_NAME_HEADER_KEY,
@@ -26,15 +30,12 @@ use crate::handlers::{
 use crate::metadata::STREAM_INFO;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
-use arrow_schema::Field;
+use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use http::StatusCode;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-
-use super::logstream::error::CreateStreamError;
-use super::{kinesis, otel};
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
@@ -99,14 +100,18 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
             .ok_or(PostError::StreamNotFound(stream_name.clone()))?
             .schema
             .clone();
-
         let time_partition = hash_map
             .get(&stream_name)
             .ok_or(PostError::StreamNotFound(stream_name.clone()))?
             .time_partition
             .clone();
+        let static_schema_flag = hash_map
+            .get(&stream_name)
+            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
+            .static_schema_flag
+            .clone();
 
-        into_event_batch(req, body, schema, time_partition)?
+        into_event_batch(req, body, schema, time_partition, static_schema_flag)?
     };
 
     event::Event {
@@ -127,6 +132,7 @@ fn into_event_batch(
     body: Bytes,
     schema: HashMap<String, Arc<Field>>,
     time_partition: Option<String>,
+    static_schema_flag: Option<String>,
 ) -> Result<(usize, arrow_array::RecordBatch, bool), PostError> {
     let tags = collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?;
@@ -137,7 +143,7 @@ fn into_event_batch(
         tags,
         metadata,
     };
-    let (rb, is_first) = event.into_recordbatch(schema, time_partition)?;
+    let (rb, is_first) = event.into_recordbatch(schema, time_partition, static_schema_flag)?;
     Ok((size, rb, is_first))
 }
 
@@ -146,7 +152,8 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
     if STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
     }
-    super::logstream::create_stream(stream_name.to_string(), "").await?;
+    super::logstream::create_stream(stream_name.to_string(), "", "", Arc::new(Schema::empty()))
+        .await?;
     Ok(())
 }
 
@@ -250,6 +257,7 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
             None,
+            None,
         )
         .unwrap();
 
@@ -297,6 +305,7 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
             None,
+            None,
         )
         .unwrap();
 
@@ -335,6 +344,7 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             schema,
             None,
+            None,
         )
         .unwrap();
 
@@ -372,6 +382,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             schema,
+            None,
             None
         )
         .is_err());
@@ -397,6 +408,7 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             schema,
             None,
+            None,
         )
         .unwrap();
 
@@ -414,6 +426,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
+            None,
             None
         )
         .is_err())
@@ -443,6 +456,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
+            None,
             None,
         )
         .unwrap();
@@ -498,6 +512,7 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
             None,
+            None,
         )
         .unwrap();
 
@@ -552,6 +567,7 @@ mod tests {
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             schema,
             None,
+            None,
         )
         .unwrap();
 
@@ -597,6 +613,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
+            None,
             None,
         )
         .unwrap();
@@ -648,6 +665,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             schema,
+            None,
             None
         )
         .is_err());
@@ -682,6 +700,7 @@ mod tests {
             req,
             Bytes::from(serde_json::to_vec(&json).unwrap()),
             HashMap::default(),
+            None,
             None,
         )
         .unwrap();
