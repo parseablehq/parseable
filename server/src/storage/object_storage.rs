@@ -110,6 +110,8 @@ pub trait ObjectStorage: Sync + 'static {
         &self,
         stream_name: &str,
         time_partition: &str,
+        static_schema_flag: &str,
+        schema: Arc<Schema>,
     ) -> Result<(), ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
         format.set_id(CONFIG.parseable.username.clone());
@@ -120,8 +122,13 @@ pub trait ObjectStorage: Sync + 'static {
         } else {
             format.time_partition = Some(time_partition.to_string());
         }
+        if static_schema_flag != "true" {
+            format.static_schema_flag = None;
+        } else {
+            format.static_schema_flag = Some(static_schema_flag.to_string());
+        }
         let format_json = to_bytes(&format);
-        self.put_object(&schema_path(stream_name), to_bytes(&Schema::empty()))
+        self.put_object(&schema_path(stream_name), to_bytes(&schema))
             .await?;
 
         self.put_object(&stream_json_path(stream_name), format_json)
@@ -342,7 +349,12 @@ pub trait ObjectStorage: Sync + 'static {
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {
-                commit_schema_to_storage(stream, schema).await?;
+                let static_schema_flag = STREAM_INFO
+                    .get_static_schema_flag(stream)
+                    .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+                if static_schema_flag.is_none() {
+                    commit_schema_to_storage(stream, schema).await?;
+                }
             }
 
             let parquet_files = dir.parquet_files();

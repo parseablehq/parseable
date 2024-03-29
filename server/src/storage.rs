@@ -84,6 +84,8 @@ pub struct ObjectStoreFormat {
     pub retention: Option<Retention>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_schema_flag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -142,6 +144,7 @@ impl Default for ObjectStoreFormat {
             cache_enabled: false,
             retention: None,
             time_partition: None,
+            static_schema_flag: None,
         }
     }
 }

@@ -42,6 +42,7 @@ mod option;
 mod query;
 mod rbac;
 mod response;
+mod static_schema;
 mod stats;
 mod storage;
 mod utils;

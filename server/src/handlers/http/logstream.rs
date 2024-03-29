@@ -16,20 +16,24 @@
  *
  */
 
-use std::fs;
-
 use self::error::{CreateStreamError, StreamError};
 use crate::alerts::Alerts;
-use crate::handlers::TIME_PARTITION_KEY;
+use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
+use crate::static_schema::{StaticSchema, convert_static_schema_to_arrow_schema};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
+use arrow_schema::{Field, Schema};
+use bytes::Bytes;
 use chrono::Utc;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::fs;
+use std::sync::Arc;
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -107,7 +111,7 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
     Ok((web::Json(alerts), StatusCode::OK))
 }
 
-pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError> {
+pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let time_partition = if let Some((_, time_partition_name)) = req
         .headers()
         .iter()
@@ -117,19 +121,53 @@ pub async fn put_stream(req: HttpRequest) -> Result<impl Responder, StreamError>
     } else {
         ""
     };
+    let static_schema_flag = if let Some((_, static_schema_flag)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == STATIC_SCHEMA_FLAG)
+    {
+        static_schema_flag.to_str().unwrap()
+    } else {
+        ""
+    };
 
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
+    let mut schema = Arc::new(Schema::empty());
     if metadata::STREAM_INFO.stream_exists(&stream_name) {
         // Error if the log stream already exists
         return Err(StreamError::Custom {
             msg: format!(
-                "log stream {stream_name} already exists, please create a new log stream with unique name"
+                "logstream {stream_name} already exists, please create a new log stream with unique name"
             ),
             status: StatusCode::BAD_REQUEST,
         });
     } else {
-        create_stream(stream_name, time_partition).await?;
+        if !body.is_empty() {
+            if static_schema_flag == "true" {
+                let body_str = std::str::from_utf8(&body).unwrap();
+                let static_schema: StaticSchema = serde_json::from_str(body_str).unwrap();
+                let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
+                if let Ok(parsed_schema) = parsed_schema {
+                    schema = parsed_schema;
+                } else {
+                    return Err(StreamError::Custom {
+                        msg: format!(
+                            "unable to commit static schema, logstream {stream_name} not created"
+                        ),
+                        status: StatusCode::BAD_REQUEST,
+                    });
+                }
+            }
+        } else if static_schema_flag == "true" {
+            return Err(StreamError::Custom {
+                    msg: format!(
+                        "please provide schema in the request body for static schema logstream {stream_name}"
+                    ),
+                    status: StatusCode::BAD_REQUEST,
+                });
+        }
+
+        create_stream(stream_name, time_partition, static_schema_flag, schema).await?;
     }
 
     Ok(("log stream created", StatusCode::OK))
@@ -318,13 +356,23 @@ fn remove_id_from_alerts(value: &mut Value) {
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
+    static_schema_flag: &str,
+    schema: Arc<Schema>,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     validator::stream_name(&stream_name)?;
 
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage.create_stream(&stream_name, time_partition).await {
+    if let Err(err) = storage
+        .create_stream(
+            &stream_name,
+            time_partition,
+            static_schema_flag,
+            schema.clone(),
+        )
+        .await
+    {
         return Err(CreateStreamError::Storage { stream_name, err });
     }
 
@@ -335,11 +383,22 @@ pub async fn create_stream(
         .await;
     let stream_meta = stream_meta.unwrap();
     let created_at = stream_meta.created_at;
+    let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
+
+    for (field_name, field) in schema
+        .fields()
+        .iter()
+        .map(|field| (field.name().to_string(), field.clone()))
+    {
+        static_schema.insert(field_name, field);
+    }
 
     metadata::STREAM_INFO.add_stream(
         stream_name.to_string(),
         created_at,
         time_partition.to_string(),
+        static_schema_flag.to_string(),
+        static_schema,
     );
 
     Ok(())
@@ -435,6 +494,8 @@ pub mod error {
         InvalidRetentionConfig(serde_json::Error),
         #[error("{msg}")]
         Custom { msg: String, status: StatusCode },
+        #[error("Could not deserialize into JSON object, {0}")]
+        SerdeError(#[from] serde_json::Error),
     }
 
     impl actix_web::ResponseError for StreamError {
@@ -457,6 +518,7 @@ pub mod error {
                 StreamError::InvalidAlert(_) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidAlertMessage(_, _) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidRetentionConfig(_) => StatusCode::BAD_REQUEST,
+                StreamError::SerdeError(_) => StatusCode::BAD_REQUEST,
             }
         }
 

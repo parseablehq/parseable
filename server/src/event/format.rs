@@ -46,10 +46,12 @@ pub trait EventFormat: Sized {
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
     fn into_recordbatch(
         self,
-        schema: HashMap<String, Arc<Field>>,
+        storage_schema: HashMap<String, Arc<Field>>,
         time_partition: Option<String>,
+        static_schema_flag: Option<String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first, tags, metadata) = self.to_data(schema, time_partition)?;
+        let (data, mut schema, is_first, tags, metadata) =
+            self.to_data(storage_schema.clone(), time_partition)?;
 
         if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
             return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
@@ -90,19 +92,50 @@ pub trait EventFormat: Sized {
         )));
 
         // prepare the record batch and new fields to be added
-        let schema = Arc::new(Schema::new(schema));
-        let rb = Self::decode(data, schema.clone())?;
+        let new_schema = Arc::new(Schema::new(schema));
+        if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
+            return Err(anyhow!("Schema mismatch"));
+        }
+        let rb = Self::decode(data, new_schema.clone())?;
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
         let metadata_arr =
             StringArray::from_iter_values(std::iter::repeat(&metadata).take(rb.num_rows()));
         // modify the record batch to add fields to respective indexes
         let rb = utils::arrow::replace_columns(
-            Arc::clone(&schema),
+            Arc::clone(&new_schema),
             &rb,
             &[tags_index, metadata_index],
             &[Arc::new(tags_arr), Arc::new(metadata_arr)],
         );
 
         Ok((rb, is_first))
+    }
+
+    fn is_schema_matching(
+        new_schema: Arc<Schema>,
+        storage_schema: HashMap<String, Arc<Field>>,
+        static_schema_flag: Option<String>,
+    ) -> bool {
+        if static_schema_flag.is_none() {
+            return true;
+        }
+        for (field_name, field) in new_schema
+            .fields()
+            .iter()
+            .map(|field| (field.name().to_owned(), field.clone()))
+            .collect::<HashMap<String, Arc<Field>>>()
+        {
+            if let Some(storage_field) = storage_schema.get(&field_name) {
+                if field_name != *storage_field.name() {
+                    return false;
+                }
+                if field.data_type() != storage_field.data_type() {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
     }
 }
