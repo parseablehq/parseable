@@ -482,14 +482,25 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn delete_ingester_meta(
+    async fn try_delete_ingester_meta(
         &self,
         ingester_filename: String,
     ) -> Result<(), ObjectStorageError> {
         let file = RelativePathBuf::from(&ingester_filename);
-        self.client.delete(&to_object_store_path(&file)).await?;
-
-        Ok(())
+        match self.client.delete(&to_object_store_path(&file)).await {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                // if the object is not found, it is not an error
+                // the given url path was incorrect
+                if matches!(err, object_store::Error::NotFound { .. }) {
+                    log::error!("Node does not exist");
+                    Err(err.into())
+                } else {
+                    log::error!("Error deleting ingester meta file: {:?}", err);
+                    Err(err.into())
+                }
+            }
+        }
     }
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {

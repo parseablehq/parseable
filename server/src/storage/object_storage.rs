@@ -82,7 +82,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError>;
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
-    async fn delete_ingester_meta(
+    async fn try_delete_ingester_meta(
         &self,
         ingester_filename: String,
     ) -> Result<(), ObjectStorageError>;

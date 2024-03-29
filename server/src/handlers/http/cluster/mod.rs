@@ -26,6 +26,7 @@ use crate::handlers::http::logstream::error::StreamError;
 use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
+use crate::storage::ObjectStorageError;
 use actix_web::http::header;
 use actix_web::{HttpRequest, Responder};
 use http::StatusCode;
@@ -354,21 +355,27 @@ pub async fn remove_ingester(req: HttpRequest) -> Result<impl Responder, PostErr
     let domain_name = to_url_string(domain_name);
 
     if check_liveness(&domain_name).await {
-        return Err(PostError::Invalid(anyhow::anyhow!("Ingester is Online")));
+        return Err(PostError::Invalid(anyhow::anyhow!("Node Online")));
     }
 
     let ingester_meta_filename = ingester_meta_filename(&domain_name);
     let object_store = CONFIG.storage().get_object_store();
     let msg = match object_store
-        .delete_ingester_meta(ingester_meta_filename)
+        .try_delete_ingester_meta(ingester_meta_filename)
         .await
     {
         Ok(_) => {
-            format!("Ingester {} Removed", domain_name)
+            format!("Node {} Removed Successfully", domain_name)
         }
-        Err(err) => err.to_string(),
+        Err(err) => {
+            if matches!(err, ObjectStorageError::IoError(_)) {
+                format!("Node {} Not Found", domain_name)
+            } else {
+                format!("Error Removing Node {}\n Reason: {}", domain_name, err)
+            }
+        }
     };
 
-    log::error!("{}", &msg);
+    log::info!("{}", &msg);
     Ok((msg, StatusCode::OK))
 }

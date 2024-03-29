@@ -193,7 +193,7 @@ impl ObjectStorage for LocalFS {
         Ok(fs::remove_dir_all(path).await?)
     }
 
-    async fn delete_ingester_meta(
+    async fn try_delete_ingester_meta(
         &self,
         ingester_filename: String,
     ) -> Result<(), ObjectStorageError> {

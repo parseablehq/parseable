@@ -188,7 +188,13 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
 }
 
 pub async fn check_liveness(domain_name: &str) -> bool {
-    let uri = Url::parse(&format!("{}liveness", domain_name)).unwrap();
+    let uri = match Url::parse(&format!("{}liveness", domain_name)) {
+        Ok(uri) => uri,
+        Err(err) => {
+            log::error!("Node Indentifier Failed To Parse: {}", err);
+            return false;
+        }
+    };
 
     let reqw = reqwest::Client::new()
         .get(uri)
