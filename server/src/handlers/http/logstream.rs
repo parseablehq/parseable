@@ -21,8 +21,8 @@ use crate::alerts::Alerts;
 use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
+use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
-use crate::static_schema::{StaticSchema, convert_static_schema_to_arrow_schema};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
 use actix_web::http::StatusCode;
@@ -434,6 +434,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         first_event_at: stream_meta.first_event_at.clone(),
         time_partition: stream_meta.time_partition.clone(),
         cache_enabled: stream_meta.cache_enabled,
+        static_schema_flag: stream_meta.static_schema_flag.clone(),
     };
 
     Ok((web::Json(stream_info), StatusCode::OK))
