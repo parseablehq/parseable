@@ -102,6 +102,17 @@ impl ParseableServer for IngestServer {
     /// implement the init method will just invoke the initialize method
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
+        // check for querier state. Is it there, or was it there in the past
+        self.check_querier_state().await?;
+        // to get the .parseable.json file in staging
+        self.validate_credentials().await?;
+
+        let metadata = storage::resolve_parseable_metadata().await?;
+        banner::print(&CONFIG, &metadata).await;
+        rbac::map::init(&metadata);
+        // set the info in the global metadata
+        metadata.set_global();
+
         self.initialize().await
     }
 
@@ -267,19 +278,6 @@ impl IngestServer {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        // check for querier state. Is it there, or was it there in the past
-        self.check_querier_state().await?;
-        // to get the .parseable.json file in staging
-        self.validate_credentials().await?;
-
-        let metadata = storage::resolve_parseable_metadata().await?;
-        banner::print(&CONFIG, &metadata).await;
-
-        rbac::map::init(&metadata);
-
-        // set the info in the global metadata
-        metadata.set_global();
-
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
                 .validate(CONFIG.parseable.local_cache_size)

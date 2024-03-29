@@ -43,6 +43,7 @@ pub use self::staging::StorageDir;
 // metadata file names in a Stream prefix
 pub const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
 pub const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
+pub const STREAM_ROOT_DIRECTORY: &str = ".stream";
 pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
 pub const SCHEMA_FILE_NAME: &str = ".schema";
 pub const ALERT_FILE_NAME: &str = ".alert.json";

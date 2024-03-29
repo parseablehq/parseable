@@ -42,7 +42,10 @@ use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
 
 use super::metrics_layer::MetricLayer;
-use super::{ObjectStorageProvider, PARSEABLE_METADATA_FILE_NAME, STREAM_METADATA_FILE_NAME};
+use super::{
+    ObjectStorageProvider, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+};
 
 // in bytes
 const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
@@ -294,24 +297,23 @@ impl S3 {
     async fn _list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
         let resp = self.client.list_with_delimiter(None).await?;
 
-        let common_prefixes = resp.common_prefixes;
+        let common_prefixes = resp.common_prefixes; // get all dirs
 
         // return prefixes at the root level
-        let mut dirs: Vec<_> = common_prefixes
+        let dirs: Vec<_> = common_prefixes
             .iter()
             .filter_map(|path| path.parts().next())
             .map(|name| name.as_ref().to_string())
+            .filter(|x| x != PARSEABLE_ROOT_DIRECTORY)
             .collect();
-        // filter out the root directory
-        dirs.retain(|x| x != PARSEABLE_ROOT_DIRECTORY);
 
         let stream_json_check = FuturesUnordered::new();
 
-        // even in ingest mode, we should only look for the global stream metadata file
-        let file_name = STREAM_METADATA_FILE_NAME.to_string();
-
         for dir in &dirs {
-            let key = format!("{}/{}", dir, file_name);
+            let key = format!(
+                "{}/{}/{}",
+                dir, STREAM_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME
+            );
             let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
             stream_json_check.push(task);
         }
@@ -452,6 +454,60 @@ impl ObjectStorage for S3 {
         Ok(res)
     }
 
+    async fn get_ingester_meta_file_paths(
+        &self,
+    ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
+        let time = Instant::now();
+        let mut path_arr = vec![];
+        let mut object_stream = self.client.list(Some(&self.root)).await?;
+
+        while let Some(meta) = object_stream.next().await.transpose()? {
+            let flag = meta.location.filename().unwrap().starts_with("ingester");
+
+            if flag {
+                path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
+            }
+        }
+
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", "200"])
+            .observe(time);
+
+        Ok(path_arr)
+    }
+
+    async fn get_stream_file_paths(
+        &self,
+        stream_name: &str,
+    ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
+        let time = Instant::now();
+        let mut path_arr = vec![];
+        let path = to_object_store_path(&RelativePathBuf::from(stream_name));
+        let mut object_stream = self.client.list(Some(&path)).await?;
+
+        while let Some(meta) = object_stream.next().await.transpose()? {
+            let flag = meta.location.filename().unwrap().starts_with(".ingester");
+
+            if flag {
+                path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
+            }
+        }
+
+        path_arr.push(RelativePathBuf::from_iter([
+            stream_name,
+            STREAM_METADATA_FILE_NAME,
+        ]));
+        path_arr.push(RelativePathBuf::from_iter([stream_name, SCHEMA_FILE_NAME]));
+
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", "200"])
+            .observe(time);
+
+        Ok(path_arr)
+    }
+
     async fn put_object(
         &self,
         path: &RelativePath,
@@ -468,6 +524,10 @@ impl ObjectStorage for S3 {
         self._delete_prefix(path.as_ref()).await?;
 
         Ok(())
+    }
+
+    async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
+        Ok(self.client.delete(&to_object_store_path(path)).await?)
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
@@ -509,6 +569,32 @@ impl ObjectStorage for S3 {
         let streams = self._list_streams().await?;
 
         Ok(streams)
+    }
+
+    async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+        let resp = self.client.list_with_delimiter(None).await?;
+
+        let common_prefixes = resp.common_prefixes; // get all dirs
+
+        // return prefixes at the root level
+        let dirs: Vec<_> = common_prefixes
+            .iter()
+            .filter_map(|path| path.parts().next())
+            .map(|name| name.as_ref().to_string())
+            .filter(|x| x != PARSEABLE_ROOT_DIRECTORY)
+            .collect();
+
+        let stream_json_check = FuturesUnordered::new();
+
+        for dir in &dirs {
+            let key = format!("{}/{}", dir, STREAM_METADATA_FILE_NAME);
+            let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
+            stream_json_check.push(task);
+        }
+
+        stream_json_check.try_collect().await?;
+
+        Ok(dirs.into_iter().map(|name| LogStream { name }).collect())
     }
 
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
