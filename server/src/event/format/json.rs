@@ -46,6 +46,7 @@ impl EventFormat for Event {
         self,
         schema: HashMap<String, Arc<Field>>,
         time_partition: Option<String>,
+        static_schema_flag: Option<String>,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
         let data = flatten_json_body(self.data, time_partition)?;
         let stream_schema = schema;
@@ -91,9 +92,10 @@ impl EventFormat for Event {
             },
         };
 
-        if value_arr
-            .iter()
-            .any(|value| fields_mismatch(&schema, value))
+        if static_schema_flag.is_none()
+            && value_arr
+                .iter()
+                .any(|value| fields_mismatch(&schema, value))
         {
             return Err(anyhow!(
                 "Could not process this event due to mismatch in datatype"

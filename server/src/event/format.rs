@@ -42,6 +42,7 @@ pub trait EventFormat: Sized {
         self,
         schema: HashMap<String, Arc<Field>>,
         time_partition: Option<String>,
+        static_schema_flag: Option<String>,
     ) -> Result<(Self::Data, EventSchema, bool, Tags, Metadata), AnyError>;
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
     fn into_recordbatch(
@@ -50,8 +51,11 @@ pub trait EventFormat: Sized {
         time_partition: Option<String>,
         static_schema_flag: Option<String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first, tags, metadata) =
-            self.to_data(storage_schema.clone(), time_partition)?;
+        let (data, mut schema, is_first, tags, metadata) = self.to_data(
+            storage_schema.clone(),
+            time_partition,
+            static_schema_flag.clone(),
+        )?;
 
         if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
             return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
