@@ -23,6 +23,7 @@ use crate::handlers::http::cluster::utils::{
 };
 use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::logstream::error::StreamError;
+use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
@@ -30,6 +31,7 @@ use crate::storage::ObjectStorageError;
 use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use actix_web::http::header;
 use actix_web::{HttpRequest, Responder};
+use bytes::Bytes;
 use http::StatusCode;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
@@ -43,7 +45,12 @@ use super::base_path_without_preceding_slash;
 use super::modal::IngesterMetadata;
 
 // forward the request to all ingesters to keep them in sync
-pub async fn sync_streams_with_ingesters(stream_name: &str) -> Result<(), StreamError> {
+pub async fn sync_streams_with_ingesters(
+    stream_name: &str,
+    time_partition: &str,
+    static_schema: &str,
+    schema: Bytes,
+) -> Result<(), StreamError> {
     let ingester_infos = get_ingester_info().await.map_err(|err| {
         log::error!("Fatal: failed to get ingester info: {:?}", err);
         StreamError::Anyhow(err)
@@ -58,7 +65,15 @@ pub async fn sync_streams_with_ingesters(stream_name: &str) -> Result<(), Stream
             stream_name
         );
 
-        match send_stream_sync_request(&url, ingester.clone()).await {
+        match send_stream_sync_request(
+            &url,
+            ingester.clone(),
+            time_partition,
+            static_schema,
+            schema.clone(),
+        )
+        .await
+        {
             Ok(_) => continue,
             Err(_) => {
                 errored = true;
@@ -144,6 +159,9 @@ pub async fn fetch_stats_from_ingesters(
 async fn send_stream_sync_request(
     url: &str,
     ingester: IngesterMetadata,
+    time_partition: &str,
+    static_schema: &str,
+    schema: Bytes,
 ) -> Result<(), StreamError> {
     if !utils::check_liveness(&ingester.domain_name).await {
         return Ok(());
@@ -153,7 +171,10 @@ async fn send_stream_sync_request(
     let res = client
         .put(url)
         .header(header::CONTENT_TYPE, "application/json")
+        .header(TIME_PARTITION_KEY, time_partition)
+        .header(STATIC_SCHEMA_FLAG, static_schema)
         .header(header::AUTHORIZATION, ingester.token)
+        .body(schema)
         .send()
         .await
         .map_err(|err| {

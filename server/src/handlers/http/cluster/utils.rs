@@ -28,8 +28,6 @@ use url::Url;
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct QueriedStats {
     pub stream: String,
-    pub creation_time: String,
-    pub first_event_at: Option<String>,
     pub time: DateTime<Utc>,
     pub ingestion: IngestionStats,
     pub storage: StorageStats,
@@ -38,16 +36,12 @@ pub struct QueriedStats {
 impl QueriedStats {
     pub fn new(
         stream: &str,
-        creation_time: &str,
-        first_event_at: Option<String>,
         time: DateTime<Utc>,
         ingestion: IngestionStats,
         storage: StorageStats,
     ) -> Self {
         Self {
             stream: stream.to_string(),
-            creation_time: creation_time.to_string(),
-            first_event_at,
             time,
             ingestion,
             storage,
@@ -119,26 +113,26 @@ impl StorageStats {
 
 pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
     // get the actual creation time
-    let min_creation_time = stats
-        .iter()
-        .map(|x| x.creation_time.parse::<DateTime<Utc>>().unwrap())
-        .min()
-        .unwrap(); // should never be None
+    // let min_creation_time = stats
+    //     .iter()
+    //     .map(|x| x.creation_time.parse::<DateTime<Utc>>().unwrap())
+    //     .min()
+    //     .unwrap(); // should never be None
 
     // get the stream name
     let stream_name = stats[0].stream.clone();
 
     // get the first event at
-    let min_first_event_at = stats
-        .iter()
-        .map(|x| match x.first_event_at.as_ref() {
-            // we can directly unwrap here because
-            // we are sure that the first_event_at is a valid date
-            Some(fea) => fea.parse::<DateTime<Utc>>().unwrap(),
-            None => Utc::now(), // current time ie the max time
-        })
-        .min()
-        .unwrap(); // should never be None
+    // let min_first_event_at = stats
+    //     .iter()
+    //     .map(|x| match x.first_event_at.as_ref() {
+    // we can directly unwrap here because
+    // we are sure that the first_event_at is a valid date
+    //         Some(fea) => fea.parse::<DateTime<Utc>>().unwrap(),
+    //         None => Utc::now(), // current time ie the max time
+    //     })
+    //     .min()
+    //     .unwrap(); // should never be None
 
     let min_time = stats.iter().map(|x| x.time).min().unwrap_or_else(Utc::now);
 
@@ -179,8 +173,6 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
 
     QueriedStats::new(
         &stream_name,
-        &min_creation_time.to_string(),
-        Some(min_first_event_at.to_string()),
         min_time,
         cumulative_ingestion,
         cumulative_storage,

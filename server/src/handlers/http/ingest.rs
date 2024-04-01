@@ -156,8 +156,13 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
     }
     match &CONFIG.parseable.mode {
         Mode::All | Mode::Query => {
-            super::logstream::create_stream(stream_name.to_string(), "", "", Arc::new(Schema::empty()))
-        .await?;
+            super::logstream::create_stream(
+                stream_name.to_string(),
+                "",
+                "",
+                Arc::new(Schema::empty()),
+            )
+            .await?;
         }
         Mode::Ingest => {
             return Err(PostError::Invalid(anyhow::anyhow!(

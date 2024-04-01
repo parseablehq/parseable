@@ -170,13 +170,13 @@ impl StorageDir {
             .port();
         let filename = filename.rsplit_once('.').unwrap();
         let filename = format!("{}.{}.{}", filename.0, port, filename.1);
-/*
-        let file_stem = path.file_stem().unwrap().to_str().unwrap();
-        let random_string =
-            rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
-        let (_, filename) = file_stem.split_once('.').unwrap();
-        let filename_with_random_number = format!("{}.{}.{}", filename, random_number, "arrows");
-*/
+        /*
+                let file_stem = path.file_stem().unwrap().to_str().unwrap();
+                let random_string =
+                    rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
+                let (_, filename) = file_stem.split_once('.').unwrap();
+                let filename_with_random_number = format!("{}.{}.{}", filename, random_number, "arrows");
+        */
 
         let mut parquet_path = path.to_owned();
         parquet_path.set_file_name(filename);

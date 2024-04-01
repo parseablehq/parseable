@@ -146,24 +146,18 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
         });
     }
 
-
-    if !body.is_empty() {
-        if static_schema_flag == "true" {
-            let body_str = std::str::from_utf8(&body).unwrap();
-            let static_schema: StaticSchema = serde_json::from_str(body_str).unwrap();
-            let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
-            if let Ok(parsed_schema) = parsed_schema {
-                schema = parsed_schema;
-            } else {
-                return Err(StreamError::Custom {
-                    msg: format!(
-                        "unable to commit static schema, logstream {stream_name} not created"
-                    ),
-                    status: StatusCode::BAD_REQUEST,
-                });
-            }
+    if !body.is_empty() && static_schema_flag == "true" {
+        let static_schema: StaticSchema = serde_json::from_slice(&body).unwrap();
+        let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
+        if let Ok(parsed_schema) = parsed_schema {
+            schema = parsed_schema;
+        } else {
+            return Err(StreamError::Custom {
+                msg: format!("unable to commit static schema, logstream {stream_name} not created"),
+                status: StatusCode::BAD_REQUEST,
+            });
         }
-    } else if static_schema_flag == "true" {
+    } else if body.is_empty() && static_schema_flag == "true" {
         return Err(StreamError::Custom {
                     msg: format!(
                         "please provide schema in the request body for static schema logstream {stream_name}"
@@ -172,9 +166,8 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
                 });
     }
 
-    // ! broken
     if CONFIG.parseable.mode == Mode::Query {
-        sync_streams_with_ingesters(&stream_name).await?;
+        sync_streams_with_ingesters(&stream_name, time_partition, static_schema_flag, body).await?;
     }
     create_stream(stream_name, time_partition, static_schema_flag, schema).await?;
 
@@ -333,23 +326,8 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
 
     let time = Utc::now();
 
-    /* // ! broken / update
-    let stats = serde_json::json!({
-        "stream": stream_name,
-        "time": time,
-        "ingestion": {
-            "count": stats.events,
-            "size": format!("{} {}", stats.ingestion, "Bytes"),
-            "format": "json"
-        },
-        "storage": {
-            "size": format!("{} {}", stats.storage, "Bytes"),
-            "format": "parquet"
-        }
-    });
-    */
     let stats = match &stream_meta.first_event_at {
-        Some(first_event_at) => {
+        Some(_) => {
             let ingestion_stats = IngestionStats::new(
                 stats.events,
                 format!("{} {}", stats.ingestion, "Bytes"),
@@ -358,14 +336,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             let storage_stats =
                 StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
 
-            QueriedStats::new(
-                &stream_name,
-                &stream_meta.created_at,
-                Some(first_event_at.to_owned()),
-                time,
-                ingestion_stats,
-                storage_stats,
-            )
+            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
         }
 
         None => {
@@ -377,14 +348,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             let storage_stats =
                 StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
 
-            QueriedStats::new(
-                &stream_name,
-                &stream_meta.created_at,
-                None,
-                time,
-                ingestion_stats,
-                storage_stats,
-            )
+            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
         }
     };
     let stats = if let Some(mut ingester_stats) = ingester_stats {
@@ -504,6 +468,8 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         cache_enabled: stream_meta.cache_enabled,
         static_schema_flag: stream_meta.static_schema_flag.clone(),
     };
+
+    // get the other info from
 
     Ok((web::Json(stream_info), StatusCode::OK))
 }
