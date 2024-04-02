@@ -18,7 +18,9 @@
 
 pub mod utils;
 
-use crate::handlers::http::cluster::utils::{check_liveness, to_url_string};
+use crate::handlers::http::cluster::utils::{
+    check_liveness, to_url_string, IngestionStats, QueriedStats,
+};
 use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::logstream::error::StreamError;
 use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
@@ -26,11 +28,12 @@ use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
 use crate::storage::object_storage::ingester_metadata_path;
-use crate::storage::ObjectStorageError;
-use crate::storage::PARSEABLE_ROOT_DIRECTORY;
+use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
+use crate::storage::{ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY};
 use actix_web::http::header;
 use actix_web::{HttpRequest, Responder};
 use bytes::Bytes;
+use chrono::Utc;
 use http::StatusCode;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
@@ -38,6 +41,8 @@ use serde_json::Value as JsonValue;
 use url::Url;
 
 type IngesterMetadataArr = Vec<IngesterMetadata>;
+
+use self::utils::StorageStats;
 
 use super::base_path_without_preceding_slash;
 
@@ -108,51 +113,31 @@ pub async fn sync_streams_with_ingesters(
 pub async fn fetch_stats_from_ingesters(
     stream_name: &str,
 ) -> Result<Vec<utils::QueriedStats>, StreamError> {
-    let mut stats = Vec::new();
-
-    let ingester_infos = get_ingester_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingester info: {:?}", err);
-        StreamError::Anyhow(err)
-    })?;
-
-    for ingester in ingester_infos {
-        let url = format!(
-            "{}{}/logstream/{}/stats",
-            ingester.domain_name,
-            base_path_without_preceding_slash(),
-            stream_name
-        );
-
-        match utils::send_stats_request(&url, ingester.clone()).await {
-            Ok(Some(res)) => {
-                match serde_json::from_str::<utils::QueriedStats>(&res.text().await.unwrap()) {
-                    Ok(stat) => stats.push(stat),
-                    Err(err) => {
-                        log::error!(
-                            "Could not parse stats from ingester: {}\n Error: {:?}",
-                            ingester.domain_name,
-                            err
-                        );
-                        continue;
-                    }
-                }
-            }
-            Ok(None) => {
-                log::error!("Ingester at {} is not reachable", &ingester.domain_name);
-                continue;
-            }
-            Err(err) => {
-                log::error!(
-                    "Fatal: failed to fetch stats from ingester: {}\n Error: {:?}",
-                    ingester.domain_name,
-                    err
-                );
-                return Err(err);
-            }
+    let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
+    let obs = CONFIG
+        .storage()
+        .get_object_store()
+        .get_objects(Some(&path))
+        .await?;
+    let mut ingestion_size = 0u64;
+    let mut storage_size = 0u64;
+    let mut count = 0u64;
+    for ob in obs {
+        if let Ok(stat) = serde_json::from_slice::<ObjectStoreFormat>(&ob) {
+            count += stat.stats.events;
+            ingestion_size += stat.stats.ingestion;
+            storage_size += stat.stats.storage;
         }
     }
 
-    Ok(stats)
+    let qs = QueriedStats::new(
+        "",
+        Utc::now(),
+        IngestionStats::new(count, format!("{} Bytes", ingestion_size), "json"),
+        StorageStats::new(format!("{} Bytes", storage_size), "parquet"),
+    );
+
+    Ok(vec![qs])
 }
 
 async fn send_stream_sync_request(
