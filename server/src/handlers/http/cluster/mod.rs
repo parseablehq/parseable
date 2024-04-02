@@ -18,15 +18,14 @@
 
 pub mod utils;
 
-use crate::handlers::http::cluster::utils::{
-    check_liveness, ingester_meta_filename, to_url_string,
-};
+use crate::handlers::http::cluster::utils::{check_liveness, to_url_string};
 use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::logstream::error::StreamError;
 use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
+use crate::storage::object_storage::ingester_metadata_path;
 use crate::storage::ObjectStorageError;
 use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use actix_web::http::header;
@@ -380,7 +379,12 @@ pub async fn remove_ingester(req: HttpRequest) -> Result<impl Responder, PostErr
         return Err(PostError::Invalid(anyhow::anyhow!("Node Online")));
     }
 
-    let ingester_meta_filename = ingester_meta_filename(&domain_name);
+    let url = Url::parse(&domain_name).unwrap();
+    let ingester_meta_filename = ingester_metadata_path(
+        url.host_str().unwrap().to_owned(),
+        url.port().unwrap().to_string(),
+    )
+    .to_string();
     let object_store = CONFIG.storage().get_object_store();
     let msg = match object_store
         .try_delete_ingester_meta(ingester_meta_filename)

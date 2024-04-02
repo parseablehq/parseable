@@ -243,6 +243,8 @@ pub async fn send_stats_request(
 }
 
 /// domain_name needs to be http://ip:port
+/// dead code for now
+#[allow(dead_code)]
 pub fn ingester_meta_filename(domain_name: &str) -> String {
     if domain_name.starts_with("http://") | domain_name.starts_with("https://") {
         let url = Url::parse(domain_name).unwrap();
