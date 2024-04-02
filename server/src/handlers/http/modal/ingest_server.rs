@@ -138,10 +138,22 @@ impl IngestServer {
                     .service(Server::get_query_factory())
                     .service(Server::get_ingest_factory())
                     .service(Self::logstream_api())
-                    .service(Server::get_about_factory()),
+                    .service(Server::get_about_factory())
+                    .service(Self::analytics_factory()),
             )
             .service(Server::get_liveness_factory())
             .service(Server::get_readiness_factory());
+    }
+
+    fn analytics_factory() -> Scope {
+        web::scope("/analytics").service(
+            // GET "/analytics" ==> Get analytics data
+            web::resource("").route(
+                web::get()
+                    .to(analytics::get_analytics)
+                    .authorize(Action::GetAnalytics),
+            ),
+        )
     }
 
     fn logstream_api() -> Scope {

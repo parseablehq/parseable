@@ -18,12 +18,16 @@
  */
 
 use crate::about::{current, platform};
-use crate::option::CONFIG;
+use crate::handlers::http::cluster::utils::check_liveness;
+use crate::handlers::http::{base_path_without_preceding_slash, cluster};
+use crate::option::{Mode, CONFIG};
 use crate::storage;
 use crate::{metadata, stats};
 
+use actix_web::{web, HttpRequest, Responder};
 use chrono::{DateTime, Utc};
 use clokwerk::{AsyncScheduler, Interval};
+use http::header;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -56,14 +60,15 @@ pub struct Report {
     cpu_count: usize,
     memory_total_bytes: u64,
     platform: String,
-    mode: String,
+    storage_mode: String,
+    server_mode: String,
     version: String,
     commit_hash: String,
     metrics: HashMap<String, Value>,
 }
 
 impl Report {
-    pub fn new() -> Self {
+    pub async fn new() -> Self {
         let mut upt: f64 = 0.0;
         if let Ok(uptime) = uptime_lib::get() {
             upt = uptime.as_secs_f64();
@@ -90,10 +95,11 @@ impl Report {
             cpu_count,
             memory_total_bytes: mem_total,
             platform: platform().to_string(),
-            mode: CONFIG.get_storage_mode_string().to_string(),
+            storage_mode: CONFIG.get_storage_mode_string().to_string(),
+            server_mode: CONFIG.parseable.mode.to_string(),
             version: current().released_version.to_string(),
             commit_hash: current().commit_hash,
-            metrics: build_metrics(),
+            metrics: build_metrics().await,
         }
     }
 
@@ -101,6 +107,12 @@ impl Report {
         let client = reqwest::Client::new();
         let _ = client.post(ANALYTICS_SERVER_URL).json(&self).send().await;
     }
+}
+
+/// build the node metrics for the node ingester endpoint
+pub async fn get_analytics(_: HttpRequest) -> impl Responder {
+    let json = NodeMetrics::build();
+    web::Json(json)
 }
 
 fn total_streams() -> usize {
@@ -123,23 +135,64 @@ fn total_event_stats() -> (u64, u64, u64) {
     (total_events, total_json_bytes, total_parquet_bytes)
 }
 
-fn build_metrics() -> HashMap<String, Value> {
+async fn build_metrics() -> HashMap<String, Value> {
+    let event_stats = total_event_stats();
+    let mut node_metrics =
+        NodeMetrics::new(total_streams(), event_stats.0, event_stats.1, event_stats.2);
+
+    let mut vec = vec![];
+    if CONFIG.parseable.mode == Mode::Query {
+        // send analytics for ingest servers
+
+        // ingester infos should be valid here, if not some thing is wrong
+        let ingester_infos = cluster::get_ingester_info().await.unwrap();
+
+        for im in ingester_infos {
+            if !check_liveness(&im.domain_name).await {
+                continue;
+            }
+
+            let uri = url::Url::parse(&format!(
+                "{}{}/analytics",
+                im.domain_name,
+                base_path_without_preceding_slash()
+            ))
+            .expect("Should be a valid URL");
+
+            let resp = reqwest::Client::new()
+                .get(uri)
+                .header(header::AUTHORIZATION, im.token.clone())
+                .header(header::CONTENT_TYPE, "application/json")
+                .send()
+                .await
+                .unwrap(); // should respond
+
+            let data = serde_json::from_slice::<NodeMetrics>(&resp.bytes().await.unwrap()).unwrap();
+            vec.push(data);
+        }
+
+        node_metrics.accumulate(&mut vec);
+    }
+
     // sysinfo refreshed in previous function
     // so no need to refresh again
     let sys = SYS_INFO.lock().unwrap();
 
     let mut metrics = HashMap::new();
-    metrics.insert("stream_count".to_string(), total_streams().into());
+    metrics.insert("stream_count".to_string(), node_metrics.stream_count.into());
 
     // total_event_stats returns event count, json bytes, parquet bytes in that order
     metrics.insert(
         "total_events_count".to_string(),
-        total_event_stats().0.into(),
+        node_metrics.total_events_count.into(),
     );
-    metrics.insert("total_json_bytes".to_string(), total_event_stats().1.into());
+    metrics.insert(
+        "total_json_bytes".to_string(),
+        node_metrics.total_json_bytes.into(),
+    );
     metrics.insert(
         "total_parquet_bytes".to_string(),
-        total_event_stats().2.into(),
+        node_metrics.total_parquet_bytes.into(),
     );
 
     metrics.insert("memory_in_use_bytes".to_string(), sys.used_memory().into());
@@ -162,7 +215,7 @@ pub fn init_analytics_scheduler() {
     scheduler
         .every(ANALYTICS_SEND_INTERVAL_SECONDS)
         .run(move || async {
-            Report::new().send().await;
+            Report::new().await.send().await;
         });
 
     tokio::spawn(async move {
@@ -171,4 +224,46 @@ pub fn init_analytics_scheduler() {
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
+}
+
+#[derive(Serialize, Deserialize, Default, Debug)]
+struct NodeMetrics {
+    stream_count: usize,
+    total_events_count: u64,
+    total_json_bytes: u64,
+    total_parquet_bytes: u64,
+}
+
+impl NodeMetrics {
+    fn build() -> Self {
+        let event_stats = total_event_stats();
+        Self {
+            stream_count: total_streams(),
+            total_events_count: event_stats.0,
+            total_json_bytes: event_stats.1,
+            total_parquet_bytes: event_stats.2,
+        }
+    }
+
+    fn new(
+        stream_count: usize,
+        total_events_count: u64,
+        total_json_bytes: u64,
+        total_parquet_bytes: u64,
+    ) -> Self {
+        Self {
+            stream_count,
+            total_events_count,
+            total_json_bytes,
+            total_parquet_bytes,
+        }
+    }
+
+    fn accumulate(&mut self, other: &mut [NodeMetrics]) {
+        other.iter().for_each(|nm| {
+            self.total_events_count += nm.total_events_count;
+            self.total_json_bytes += nm.total_json_bytes;
+            self.total_parquet_bytes += nm.total_parquet_bytes;
+        });
+    }
 }
