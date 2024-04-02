@@ -117,7 +117,7 @@ pub async fn fetch_stats_from_ingesters(
     let obs = CONFIG
         .storage()
         .get_object_store()
-        .get_objects(Some(&path))
+        .get_objects(Some(&path), ".ingester")
         .await?;
     let mut ingestion_size = 0u64;
     let mut storage_size = 0u64;
@@ -346,7 +346,7 @@ pub async fn get_ingester_info() -> anyhow::Result<IngesterMetadataArr> {
 
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let arr = store
-        .get_objects(Some(&root_path))
+        .get_objects(Some(&root_path), "ingester")
         .await?
         .iter()
         // this unwrap will most definateley shoot me in the foot later

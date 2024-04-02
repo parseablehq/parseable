@@ -416,6 +416,7 @@ impl ObjectStorage for S3 {
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
+        starts_with_pattern: &str,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let instant = Instant::now();
 
@@ -430,7 +431,11 @@ impl ObjectStorage for S3 {
         let mut res = vec![];
 
         while let Some(meta) = list_stream.next().await.transpose()? {
-            let ingester_file = meta.location.filename().unwrap().starts_with("ingester");
+            let ingester_file = meta
+                .location
+                .filename()
+                .unwrap()
+                .starts_with(starts_with_pattern);
 
             if !ingester_file {
                 continue;

@@ -189,9 +189,11 @@ impl ObjectStorage for LocalFS {
         Ok(path_arr)
     }
 
+    /// currently it is not using the starts_with_pattern
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
+        _starts_with_pattern: &str,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let time = Instant::now();
 
