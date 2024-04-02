@@ -98,8 +98,8 @@ impl IngestionStats {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct StorageStats {
-    size: String,
-    format: String,
+    pub size: String,
+    pub format: String,
 }
 
 impl StorageStats {
@@ -120,7 +120,7 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
     //     .unwrap(); // should never be None
 
     // get the stream name
-    let stream_name = stats[0].stream.clone();
+    let stream_name = stats[1].stream.clone();
 
     // get the first event at
     // let min_first_event_at = stats
@@ -198,6 +198,8 @@ pub async fn check_liveness(domain_name: &str) -> bool {
 }
 
 /// send a request to the ingester to fetch its stats
+/// dead for now
+#[allow(dead_code)]
 pub async fn send_stats_request(
     url: &str,
     ingester: IngesterMetadata,
