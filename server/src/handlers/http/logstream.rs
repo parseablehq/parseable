@@ -20,11 +20,14 @@ use self::error::{CreateStreamError, StreamError};
 use crate::alerts::Alerts;
 use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::metadata::STREAM_INFO;
-use crate::option::CONFIG;
+use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
+
+use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
+use super::cluster::{fetch_stats_from_ingesters, sync_streams_with_ingesters};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
 use arrow_schema::{Field, Schema};
@@ -141,34 +144,32 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
             ),
             status: StatusCode::BAD_REQUEST,
         });
-    } else {
-        if !body.is_empty() {
-            if static_schema_flag == "true" {
-                let body_str = std::str::from_utf8(&body).unwrap();
-                let static_schema: StaticSchema = serde_json::from_str(body_str).unwrap();
-                let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
-                if let Ok(parsed_schema) = parsed_schema {
-                    schema = parsed_schema;
-                } else {
-                    return Err(StreamError::Custom {
-                        msg: format!(
-                            "unable to commit static schema, logstream {stream_name} not created"
-                        ),
-                        status: StatusCode::BAD_REQUEST,
-                    });
-                }
-            }
-        } else if static_schema_flag == "true" {
+    }
+
+    if !body.is_empty() && static_schema_flag == "true" {
+        let static_schema: StaticSchema = serde_json::from_slice(&body).unwrap();
+        let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
+        if let Ok(parsed_schema) = parsed_schema {
+            schema = parsed_schema;
+        } else {
             return Err(StreamError::Custom {
+                msg: format!("unable to commit static schema, logstream {stream_name} not created"),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
+    } else if body.is_empty() && static_schema_flag == "true" {
+        return Err(StreamError::Custom {
                     msg: format!(
                         "please provide schema in the request body for static schema logstream {stream_name}"
                     ),
                     status: StatusCode::BAD_REQUEST,
                 });
-        }
-
-        create_stream(stream_name, time_partition, static_schema_flag, schema).await?;
     }
+
+    if CONFIG.parseable.mode == Mode::Query {
+        sync_streams_with_ingesters(&stream_name, time_partition, static_schema_flag, body).await?;
+    }
+    create_stream(stream_name, time_partition, static_schema_flag, schema).await?;
 
     Ok(("log stream created", StatusCode::OK))
 }
@@ -312,21 +313,52 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
+    let ingester_stats = if CONFIG.parseable.mode == Mode::Query {
+        Some(fetch_stats_from_ingesters(&stream_name).await?)
+    } else {
+        None
+    };
+
+    let hash_map = STREAM_INFO.read().unwrap();
+    let stream_meta = &hash_map
+        .get(&stream_name)
+        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
+
     let time = Utc::now();
 
-    let stats = serde_json::json!({
-        "stream": stream_name,
-        "time": time,
-        "ingestion": {
-            "count": stats.events,
-            "size": format!("{} {}", stats.ingestion, "Bytes"),
-            "format": "json"
-        },
-        "storage": {
-            "size": format!("{} {}", stats.storage, "Bytes"),
-            "format": "parquet"
+    let stats = match &stream_meta.first_event_at {
+        Some(_) => {
+            let ingestion_stats = IngestionStats::new(
+                stats.events,
+                format!("{} {}", stats.ingestion, "Bytes"),
+                "json",
+            );
+            let storage_stats =
+                StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
+
+            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
         }
-    });
+
+        None => {
+            let ingestion_stats = IngestionStats::new(
+                stats.events,
+                format!("{} {}", stats.ingestion, "Bytes"),
+                "json",
+            );
+            let storage_stats =
+                StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
+
+            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
+        }
+    };
+    let stats = if let Some(mut ingester_stats) = ingester_stats {
+        ingester_stats.push(stats);
+        merge_quried_stats(ingester_stats)
+    } else {
+        stats
+    };
+
+    let stats = serde_json::to_value(stats).unwrap();
 
     Ok((web::Json(stats), StatusCode::OK))
 }
@@ -437,7 +469,19 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         static_schema_flag: stream_meta.static_schema_flag.clone(),
     };
 
+    // get the other info from
+
     Ok((web::Json(stream_info), StatusCode::OK))
+}
+
+#[allow(unused)]
+fn classify_json_error(kind: serde_json::error::Category) -> StatusCode {
+    match kind {
+        serde_json::error::Category::Io => StatusCode::INTERNAL_SERVER_ERROR,
+        serde_json::error::Category::Syntax => StatusCode::BAD_REQUEST,
+        serde_json::error::Category::Data => StatusCode::INTERNAL_SERVER_ERROR,
+        serde_json::error::Category::Eof => StatusCode::BAD_REQUEST,
+    }
 }
 
 pub mod error {
@@ -450,6 +494,9 @@ pub mod error {
         storage::ObjectStorageError,
         validator::error::{AlertValidationError, StreamNameValidationError},
     };
+
+    #[allow(unused)]
+    use super::classify_json_error;
 
     #[derive(Debug, thiserror::Error)]
     pub enum CreateStreamError {
@@ -495,6 +542,10 @@ pub mod error {
         InvalidRetentionConfig(serde_json::Error),
         #[error("{msg}")]
         Custom { msg: String, status: StatusCode },
+        #[error("Error: {0}")]
+        Anyhow(#[from] anyhow::Error),
+        #[error("Network Error: {0}")]
+        Network(#[from] reqwest::Error),
         #[error("Could not deserialize into JSON object, {0}")]
         SerdeError(#[from] serde_json::Error),
     }
@@ -520,6 +571,10 @@ pub mod error {
                 StreamError::InvalidAlertMessage(_, _) => StatusCode::BAD_REQUEST,
                 StreamError::InvalidRetentionConfig(_) => StatusCode::BAD_REQUEST,
                 StreamError::SerdeError(_) => StatusCode::BAD_REQUEST,
+                StreamError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                StreamError::Network(err) => {
+                    err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+                }
             }
         }
 
@@ -534,6 +589,10 @@ pub mod error {
         fn from(value: MetadataError) -> Self {
             match value {
                 MetadataError::StreamMetaNotFound(s) => StreamError::StreamNotFound(s),
+                MetadataError::StandaloneWithDistributed(s) => StreamError::Custom {
+                    msg: s,
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                },
             }
         }
     }

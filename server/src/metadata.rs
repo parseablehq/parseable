@@ -209,7 +209,7 @@ impl StreamInfo {
 
         for stream in storage.list_streams().await? {
             let alerts = storage.get_alerts(&stream.name).await?;
-            let schema = storage.get_schema(&stream.name).await?;
+            let schema = storage.get_schema_on_server_start(&stream.name).await?;
             let meta = storage.get_stream_metadata(&stream.name).await?;
 
             let schema = update_schema_from_staging(&stream.name, schema);
@@ -288,6 +288,8 @@ pub mod error {
         pub enum MetadataError {
             #[error("Metadata for stream {0} not found. Please create the stream and try again")]
             StreamMetaNotFound(String),
+            #[error("Metadata Error: {0}")]
+            StandaloneWithDistributed(String),
         }
 
         #[derive(Debug, thiserror::Error)]

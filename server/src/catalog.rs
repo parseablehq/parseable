@@ -24,7 +24,8 @@ use relative_path::RelativePathBuf;
 use crate::{
     catalog::manifest::Manifest,
     query::PartialTimeFilter,
-    storage::{ObjectStorage, ObjectStorageError},
+    storage::{ObjectStorage, ObjectStorageError, MANIFEST_FILE},
+    utils::get_address,
 };
 
 use self::{column::Column, snapshot::ManifestItem};
@@ -105,20 +106,67 @@ pub async fn update_snapshot(
         item.time_lower_bound <= lower_bound && lower_bound < item.time_upper_bound
     });
 
+    // if the mode in I.S. manifest needs to be created but it is not getting created because
+    // there is already a pos, to index into stream.json
+
     // We update the manifest referenced by this position
     // This updates an existing file so there is no need to create a snapshot entry.
     if let Some(pos) = pos {
         let info = &mut manifests[pos];
         let path = partition_path(stream_name, info.time_lower_bound, info.time_upper_bound);
-        let Some(mut manifest) = storage.get_manifest(&path).await? else {
-            return Err(ObjectStorageError::UnhandledError(
-                "Manifest found in snapshot but not in object-storage"
-                    .to_string()
-                    .into(),
-            ));
-        };
-        manifest.apply_change(change);
-        storage.put_manifest(&path, manifest).await?;
+
+        let mut ch = false;
+        for m in manifests.iter() {
+            let s = get_address();
+            let p = format!("{}.{}.{}", s.0, s.1, MANIFEST_FILE);
+            if m.manifest_path.contains(&p) {
+                ch = true;
+            }
+        }
+        if ch {
+            let Some(mut manifest) = storage.get_manifest(&path).await? else {
+                return Err(ObjectStorageError::UnhandledError(
+                    "Manifest found in snapshot but not in object-storage"
+                        .to_string()
+                        .into(),
+                ));
+            };
+            manifest.apply_change(change);
+            storage.put_manifest(&path, manifest).await?;
+        } else {
+            let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
+            let upper_bound = lower_bound
+                .date_naive()
+                .and_time(
+                    NaiveTime::from_num_seconds_from_midnight_opt(
+                        23 * 3600 + 59 * 60 + 59,
+                        999_999_999,
+                    )
+                    .unwrap(),
+                )
+                .and_utc();
+
+            let manifest = Manifest {
+                files: vec![change],
+                ..Manifest::default()
+            };
+
+            let addr = get_address();
+            let mainfest_file_name = format!("{}.{}.{}", addr.0, addr.1, MANIFEST_FILE);
+            let path =
+                partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
+            storage
+                .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())
+                .await?;
+            let path = storage.absolute_url(&path);
+            let new_snapshot_entriy = snapshot::ManifestItem {
+                manifest_path: path.to_string(),
+                time_lower_bound: lower_bound,
+                time_upper_bound: upper_bound,
+            };
+            manifests.push(new_snapshot_entriy);
+            storage.put_snapshot(stream_name, meta.snapshot).await?;
+        }
     } else {
         let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
         let upper_bound = lower_bound
@@ -137,7 +185,9 @@ pub async fn update_snapshot(
             ..Manifest::default()
         };
 
-        let path = partition_path(stream_name, lower_bound, upper_bound).join("manifest.json");
+        let addr = get_address();
+        let mainfest_file_name = format!("{}.{}.{}", addr.0, addr.1, MANIFEST_FILE);
+        let path = partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
         storage
             .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())
             .await?;

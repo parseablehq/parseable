@@ -28,6 +28,8 @@ use crate::handlers::{
     STREAM_NAME_HEADER_KEY,
 };
 use crate::metadata::STREAM_INFO;
+use crate::option::{Mode, CONFIG};
+use crate::storage::ObjectStorageError;
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_schema::{Field, Schema};
@@ -152,8 +154,23 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
     if STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
     }
-    super::logstream::create_stream(stream_name.to_string(), "", "", Arc::new(Schema::empty()))
-        .await?;
+    match &CONFIG.parseable.mode {
+        Mode::All | Mode::Query => {
+            super::logstream::create_stream(
+                stream_name.to_string(),
+                "",
+                "",
+                Arc::new(Schema::empty()),
+            )
+            .await?;
+        }
+        Mode::Ingest => {
+            return Err(PostError::Invalid(anyhow::anyhow!(
+                "Stream {} not found. Has it been created?",
+                stream_name
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -171,6 +188,12 @@ pub enum PostError {
     Invalid(#[from] anyhow::Error),
     #[error("{0}")]
     CreateStream(#[from] CreateStreamError),
+    #[error("Error: {0}")]
+    CustomError(String),
+    #[error("Error: {0}")]
+    NetworkError(#[from] reqwest::Error),
+    #[error("ObjectStorageError: {0}")]
+    ObjectStorageError(#[from] ObjectStorageError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -185,6 +208,9 @@ impl actix_web::ResponseError for PostError {
             }
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
+            PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

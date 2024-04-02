@@ -20,6 +20,7 @@
 use std::{
     collections::HashMap,
     fs,
+    net::SocketAddr,
     path::{Path, PathBuf},
     process,
     sync::Arc,
@@ -43,6 +44,7 @@ use crate::{
     storage::OBJECT_STORE_DATA_GRANULARITY,
     utils::{self, arrow::merged_reader::MergedReverseRecordReader},
 };
+
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 const PARQUET_FILE_EXTENSION: &str = "data.parquet";
 
@@ -158,6 +160,24 @@ impl StorageDir {
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
         let filename = path.file_name().unwrap().to_str().unwrap();
         let (_, filename) = filename.split_once('.').unwrap();
+
+        let port = CONFIG
+            .parseable
+            .address
+            .clone()
+            .parse::<SocketAddr>()
+            .unwrap()
+            .port();
+        let filename = filename.rsplit_once('.').unwrap();
+        let filename = format!("{}.{}.{}", filename.0, port, filename.1);
+        /*
+                let file_stem = path.file_stem().unwrap().to_str().unwrap();
+                let random_string =
+                    rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
+                let (_, filename) = file_stem.split_once('.').unwrap();
+                let filename_with_random_number = format!("{}.{}.{}", filename, random_number, "arrows");
+        */
+
         let mut parquet_path = path.to_owned();
         parquet_path.set_file_name(filename);
         parquet_path.set_extension("parquet");

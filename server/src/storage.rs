@@ -24,7 +24,7 @@ use std::fmt::Debug;
 
 mod localfs;
 mod metrics_layer;
-mod object_storage;
+pub(crate) mod object_storage;
 pub mod retention;
 mod s3;
 pub mod staging;
@@ -39,6 +39,15 @@ pub use store_metadata::{
 
 use self::retention::Retention;
 pub use self::staging::StorageDir;
+
+// metadata file names in a Stream prefix
+pub const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
+pub const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
+pub const STREAM_ROOT_DIRECTORY: &str = ".stream";
+pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
+pub const SCHEMA_FILE_NAME: &str = ".schema";
+pub const ALERT_FILE_NAME: &str = ".alert.json";
+pub const MANIFEST_FILE: &str = "manifest.json";
 
 /// local sync interval to move data.records to /tmp dir of that stream.
 /// 60 sec is a reasonable value.
@@ -187,6 +196,8 @@ pub enum ObjectStorageError {
 
     #[error("Unhandled Error: {0}")]
     UnhandledError(Box<dyn std::error::Error + Send + Sync + 'static>),
+    #[error("Error: {0}")]
+    PathError(relative_path::FromPathError),
 
     #[allow(dead_code)]
     #[error("Authentication Error: {0}")]
