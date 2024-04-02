@@ -2108,6 +2108,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2734,6 +2743,7 @@ dependencies = [
  "parquet",
  "path-clean",
  "prometheus",
+ "prometheus-parse",
  "prost",
  "prost-build",
  "rand",
@@ -2980,6 +2990,18 @@ dependencies = [
  "procfs",
  "protobuf",
  "thiserror",
+]
+
+[[package]]
+name = "prometheus-parse"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "811031bea65e5a401fb2e1f37d802cca6601e204ac463809a3189352d13b78a5"
+dependencies = [
+ "chrono",
+ "itertools 0.12.1",
+ "once_cell",
+ "regex",
 ]
 
 [[package]]

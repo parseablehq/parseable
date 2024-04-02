@@ -23,7 +23,11 @@ pub mod json;
 pub mod uid;
 pub mod update;
 
+use std::net::{IpAddr, SocketAddr};
+
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
+
+use crate::option::CONFIG;
 
 #[allow(dead_code)]
 pub fn hostname() -> Option<String> {
@@ -220,6 +224,12 @@ impl TimePeriod {
 
         prefixes
     }
+}
+
+#[inline(always)]
+pub fn get_address() -> (IpAddr, u16) {
+    let addr = CONFIG.parseable.address.parse::<SocketAddr>().unwrap();
+    (addr.ip(), addr.port())
 }
 
 #[cfg(test)]

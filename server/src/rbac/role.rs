@@ -45,6 +45,9 @@ pub enum Action {
     ListRole,
     GetAbout,
     QueryLLM,
+    ListCluster,
+    ListClusterMetrics,
+    DeleteIngester,
     All,
 }
 
@@ -110,6 +113,9 @@ impl RoleBuilder {
                 | Action::PutAlert
                 | Action::GetAlert
                 | Action::All => Permission::Stream(action, self.stream.clone().unwrap()),
+                Action::ListCluster => Permission::Unit(action),
+                Action::ListClusterMetrics => Permission::Unit(action),
+                Action::DeleteIngester => Permission::Unit(action),
             };
             perms.push(perm);
         }
@@ -220,6 +226,7 @@ pub mod model {
                 Action::GetAlert,
                 Action::GetAbout,
                 Action::QueryLLM,
+                Action::ListCluster,
             ],
             stream: None,
             tag: None,

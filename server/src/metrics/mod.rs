@@ -16,6 +16,7 @@
  *
  */
 
+pub mod prom_utils;
 pub mod storage;
 
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
@@ -133,7 +134,7 @@ fn prom_process_metrics(metrics: &PrometheusMetrics) {
 #[cfg(not(target_os = "linux"))]
 fn prom_process_metrics(_metrics: &PrometheusMetrics) {}
 
-pub async fn load_from_stats_from_storage() {
+pub async fn fetch_stats_from_storage() {
     for stream_name in STREAM_INFO.list_streams() {
         let stats = CONFIG
             .storage()

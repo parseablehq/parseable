@@ -27,14 +27,17 @@ use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
 use fs_extra::file::CopyOptions;
 use futures::{stream::FuturesUnordered, TryStreamExt};
-use relative_path::RelativePath;
+use relative_path::{RelativePath, RelativePathBuf};
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
 use crate::metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::option::validation;
 
-use super::{object_storage, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider};
+use super::{
+    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
+    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+};
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -74,6 +77,7 @@ impl ObjectStorageProvider for FSConfig {
 }
 
 pub struct LocalFS {
+    // absolute path of the data directory
     root: PathBuf,
 }
 
@@ -110,6 +114,122 @@ impl ObjectStorage for LocalFS {
         res
     }
 
+    async fn get_ingester_meta_file_paths(
+        &self,
+    ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
+        let time = Instant::now();
+
+        let mut path_arr = vec![];
+        let mut entries = fs::read_dir(&self.root).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let flag = entry
+                .path()
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+                .contains("ingester");
+
+            if flag {
+                path_arr.push(
+                    RelativePathBuf::from_path(entry.path().file_name().unwrap())
+                        .map_err(ObjectStorageError::PathError)?,
+                );
+            }
+        }
+
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", "200"]) // this might not be the right status code
+            .observe(time);
+
+        Ok(path_arr)
+    }
+
+    async fn get_stream_file_paths(
+        &self,
+        stream_name: &str,
+    ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
+        let time = Instant::now();
+        let mut path_arr = vec![];
+
+        // = data/stream_name
+        let stream_dir_path = self.path_in_root(&RelativePathBuf::from(stream_name));
+        let mut entries = fs::read_dir(&stream_dir_path).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let flag = entry
+                .path()
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+                .contains("ingester");
+
+            if flag {
+                path_arr.push(RelativePathBuf::from_iter([
+                    stream_name,
+                    entry.path().file_name().unwrap().to_str().unwrap(),
+                ]));
+            }
+        }
+
+        path_arr.push(RelativePathBuf::from_iter([
+            stream_name,
+            STREAM_METADATA_FILE_NAME,
+        ]));
+        path_arr.push(RelativePathBuf::from_iter([stream_name, SCHEMA_FILE_NAME]));
+
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", "200"]) // this might not be the right status code
+            .observe(time);
+
+        Ok(path_arr)
+    }
+
+    async fn get_objects(
+        &self,
+        base_path: Option<&RelativePath>,
+    ) -> Result<Vec<Bytes>, ObjectStorageError> {
+        let time = Instant::now();
+
+        let prefix = if let Some(path) = base_path {
+            path.to_path(&self.root)
+        } else {
+            self.root.clone()
+        };
+
+        let mut entries = fs::read_dir(&prefix).await?;
+        let mut res = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let ingester_file = entry
+                .path()
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+                .contains("ingester");
+
+            if !ingester_file {
+                continue;
+            }
+
+            let file = fs::read(entry.path()).await?;
+            res.push(file.into());
+        }
+
+        // maybe change the return code
+        let status = if res.is_empty() { "200" } else { "400" };
+        let time = time.elapsed().as_secs_f64();
+        REQUEST_RESPONSE_TIME
+            .with_label_values(&["GET", status])
+            .observe(time);
+
+        Ok(res)
+    }
+
     async fn put_object(
         &self,
         path: &RelativePath,
@@ -138,6 +258,12 @@ impl ObjectStorage for LocalFS {
         Ok(())
     }
 
+    async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
+        let path = self.path_in_root(path);
+        tokio::fs::remove_file(path).await?;
+        Ok(())
+    }
+
     async fn check(&self) -> Result<(), ObjectStorageError> {
         fs::create_dir_all(&self.root)
             .await
@@ -149,13 +275,41 @@ impl ObjectStorage for LocalFS {
         Ok(fs::remove_dir_all(path).await?)
     }
 
+    async fn try_delete_ingester_meta(
+        &self,
+        ingester_filename: String,
+    ) -> Result<(), ObjectStorageError> {
+        let path = self.root.join(ingester_filename);
+        Ok(fs::remove_file(path).await?)
+    }
+
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let ignore_dir = &["lost+found"];
+        let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
             .into_iter()
             .map(|entry| dir_with_stream(entry, ignore_dir));
+
+        let logstream_dirs: Vec<Option<String>> =
+            FuturesUnordered::from_iter(entries).try_collect().await?;
+
+        let logstreams = logstream_dirs
+            .into_iter()
+            .flatten()
+            .map(|name| LogStream { name })
+            .collect();
+
+        Ok(logstreams)
+    }
+
+    async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+        let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY];
+        let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
+        let entries: Vec<DirEntry> = directories.try_collect().await?;
+        let entries = entries
+            .into_iter()
+            .map(|entry| dir_with_old_stream(entry, ignore_dir));
 
         let logstream_dirs: Vec<Option<String>> =
             FuturesUnordered::from_iter(entries).try_collect().await?;
@@ -228,6 +382,50 @@ impl ObjectStorage for LocalFS {
     fn store_url(&self) -> url::Url {
         url::Url::parse("file:///").unwrap()
     }
+
+    fn get_bucket_name(&self) -> String {
+        self.root
+            .iter()
+            .last()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+}
+
+async fn dir_with_old_stream(
+    entry: DirEntry,
+    ignore_dirs: &[&str],
+) -> Result<Option<String>, ObjectStorageError> {
+    let dir_name = entry
+        .path()
+        .file_name()
+        .expect("valid path")
+        .to_str()
+        .expect("valid unicode")
+        .to_owned();
+
+    if ignore_dirs.contains(&dir_name.as_str()) {
+        return Ok(None);
+    }
+
+    if entry.file_type().await?.is_dir() {
+        let path = entry.path();
+
+        // even in ingest mode, we should only look for the global stream metadata file
+        let stream_json_path = path.join(STREAM_METADATA_FILE_NAME);
+
+        if stream_json_path.exists() {
+            Ok(Some(dir_name))
+        } else {
+            let err: Box<dyn std::error::Error + Send + Sync + 'static> =
+                format!("found {}", entry.path().display()).into();
+            Err(ObjectStorageError::UnhandledError(err))
+        }
+    } else {
+        Ok(None)
+    }
 }
 
 async fn dir_with_stream(
@@ -248,7 +446,12 @@ async fn dir_with_stream(
 
     if entry.file_type().await?.is_dir() {
         let path = entry.path();
-        let stream_json_path = path.join(object_storage::STREAM_METADATA_FILE_NAME);
+
+        // even in ingest mode, we should only look for the global stream metadata file
+        let stream_json_path = path
+            .join(STREAM_ROOT_DIRECTORY)
+            .join(STREAM_METADATA_FILE_NAME);
+
         if stream_json_path.exists() {
             Ok(Some(dir_name))
         } else {

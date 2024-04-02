@@ -26,7 +26,7 @@ use datafusion::{
     scalar::ScalarValue,
 };
 
-/// Rewrites logical plan for source using projection and filter  
+/// Rewrites logical plan for source using projection and filter
 pub struct FilterOptimizerRule {
     pub column: String,
     pub literals: Vec<String>,
