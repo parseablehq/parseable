@@ -86,6 +86,9 @@ pub struct Cli {
 
     /// Mode of operation
     pub mode: Mode,
+
+    /// public address for the parseable server
+    pub node_url: String,
 }
 
 impl Cli {
@@ -112,6 +115,7 @@ impl Cli {
     pub const ROW_GROUP_SIZE: &'static str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &'static str = "compression-algo";
     pub const MODE: &'static str = "mode";
+    pub const NODE_URL: &'static str = "node-url";
     pub const DEFAULT_USERNAME: &'static str = "admin";
     pub const DEFAULT_PASSWORD: &'static str = "admin";
 
@@ -247,7 +251,7 @@ impl Cli {
                 Arg::new(Self::OPENID_ISSUER)
                     .long(Self::OPENID_ISSUER)
                     .env("P_OIDC_ISSUER")
-                    .value_name("URl")
+                    .value_name("URL")
                     .required(false)
                     .value_parser(validation::url)
                     .help("OIDC provider's host address"),
@@ -313,6 +317,15 @@ impl Cli {
                     .help("Mode of operation"),
             )
             .arg(
+            	Arg::new(Self::NODE_URL)
+             		.long(Self::NODE_URL)
+               		.env("P_NODE_URL")
+                 	.value_name("URL")
+                  	.required(false)
+                    .value_parser(validation::socket_addr)
+                    .help("Node URL for Parseable server")
+            )
+            .arg(
                 Arg::new(Self::PARQUET_COMPRESSION_ALGO)
                     .long(Self::PARQUET_COMPRESSION_ALGO)
                     .env("P_PARQUET_COMPRESSION_ALGO")
@@ -354,6 +367,12 @@ impl FromArgMatches for Cli {
             .get_one::<String>(Self::ADDRESS)
             .cloned()
             .expect("default value for address");
+
+        self.node_url = m
+            .get_one::<String>(Self::NODE_URL)
+            .cloned()
+            .unwrap_or_else(|| self.address.clone());
+
         self.local_staging_path = m
             .get_one::<PathBuf>(Self::STAGING)
             .cloned()

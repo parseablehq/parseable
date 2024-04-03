@@ -35,7 +35,7 @@ pub fn hostname() -> Option<String> {
         .ok()
         .and_then(|hostname| hostname.into_string().ok())
 }
-
+#[allow(dead_code)]
 pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
 }
@@ -228,7 +228,7 @@ impl TimePeriod {
 
 #[inline(always)]
 pub fn get_address() -> (IpAddr, u16) {
-    let addr = CONFIG.parseable.address.parse::<SocketAddr>().unwrap();
+    let addr = CONFIG.parseable.node_url.parse::<SocketAddr>().unwrap();
     (addr.ip(), addr.port())
 }
 
