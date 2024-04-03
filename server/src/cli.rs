@@ -321,7 +321,7 @@ impl Cli {
              		.long(Self::NODE_URL)
                		.env("P_NODE_URL")
                  	.value_name("URL")
-                  	.required(true)
+                  	.required(false)
                     .value_parser(validation::socket_addr)
                     .help("Node URL for Parseable server")
             )
@@ -371,7 +371,7 @@ impl FromArgMatches for Cli {
         self.node_url = m
             .get_one::<String>(Self::NODE_URL)
             .cloned()
-            .expect("Node URL set");
+            .unwrap_or_else(|| self.address.clone());
 
         self.local_staging_path = m
             .get_one::<PathBuf>(Self::STAGING)
