@@ -19,21 +19,19 @@
 
 </div>
 
-Parseable is a log analytics platform, built for the modern, cloud native era. Parseable uses a index-free mechanism to organize and query data allowing low latency, and high throughput ingestion and query.
+Parseable is a **cloud native, log analytics platform, with a focus on performance & resource efficiency**. Parseable is useful for use cases where **complete data ownership, privacy, and performance are paramount**.
 
-To get started, download the Parseable binary from [releases page ↗︎](https://github.com/parseablehq/parseable/releases/latest) and run it on your machine.
+To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9). You can also view the [demo video ↗︎](https://www.parseable.com/video.mp4).
 
-For comparison, Parseable consumes up to **_~80% lower memory_** and **_~50% lower CPU_** than Elastic for similar ingestion throughput. Read more in the [benchmarks directory ↗︎](./benchmarks/).
+## :zap: QuickStart
 
-For :stethoscope: commercial support and consultation, please reach out to us at [`sales@parseable.io` ↗︎](mailto:sales@parseable.io).
+<details>
+<summary><a href="https://www.parseable.com/docs/docker-quick-start">Run Parseable in local disk mode with Docker</a></summary>
+<p>
 
-![Parseable Console](https://raw.githubusercontent.com/parseablehq/.github/main/images/console.png)
+You can <a href="https://www.parseable.com/docs/docker-quick-start">get started with Parseable Docker</a> with a simple Docker run and then send data via cURL to understand how you can ingest data to Parseable. Below is the command to run Parseable in local storage mode with Docker.
 
-## :zap: Quickstart
-
-Deploy Parseable in local storage mode with Docker.
-
-```sh
+```bash
 docker run -p 8000:8000 \
   parseable/parseable:latest \
   parseable local-store
@@ -43,7 +41,7 @@ Once this runs successfully, you'll see dashboard at [http://localhost:8000 ↗�
 
 To ingest data, run the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
 
-```sh
+```bash
 curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 --header 'X-P-Stream: demo' \
 --header 'Authorization: Basic YWRtaW46YWRtaW4=' \
@@ -57,12 +55,77 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 ]'
 ```
 
-## :rocket: Highlights
+</p>
+</details>
 
-- Choose storage backend - local drive or S3 (or compatible) object store.
-- Ingestion API compatible with HTTP + JSON output of log agents.
-- Query log data with PostgreSQL compatible SQL.
-- Single binary includes all components - ingestion, store and query. Built-in UI.
+<details>
+<summary><a href="https://www.parseable.com/docs/docker-quick-start">Run Parseable binary</a></summary>
+<p>
+
+You can also download and run the Parseable binary on your laptop. To download the binary, run the command specific to your OS.
+
+- Linux
+
+```bash
+wget https://github.com/parseablehq/parseable/releases/download/v0.9.0/Parseable_x86_64-unknown-linux-gnu -O parseable
+chmod +x parseable
+./parseable local-store
+```
+
+- MacOS (Apple Silicon)
+
+```bash
+wget https://github.com/parseablehq/parseable/releases/download/v0.9.0/Parseable_aarch64-apple-darwin -O parseable
+chmod +x parseable
+./parseable local-store
+```
+
+- MacOS (Intel)
+
+```bash
+wget https://github.com/parseablehq/parseable/releases/download/v0.9.0/Parseable_x86_64-apple-darwin -O parseable
+chmod +x parseable
+./parseable local-store
+```
+
+- Windows
+
+```bash
+Invoke-WebRequest -Uri "https://github.com/parseablehq/parseable/releases/download/v0.9.0/Parseable_x86_64-pc-windows-msvc.exe" -OutFile "C:\parseable.exe"
+C:\parseable.exe local-store
+```
+
+Once this runs successfully, you'll see dashboard at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
+
+To ingest data, run the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
+
+```bash
+curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
+--header 'X-P-Stream: demo' \
+--header 'Authorization: Basic YWRtaW46YWRtaW4=' \
+--header 'Content-Type: application/json' \
+--data-raw '[
+    {
+        "id": "434a5f5e-2f5f-11ed-a261-0242ac120002",
+        "datetime": "24/Jun/2022:14:12:15 +0000",
+        "host": "153.10.110.81"
+    }
+]'
+```
+
+</p>
+</details>
+
+## :question: Why Parseable
+
+### Take control of your data
+
+With Apache Arrow and Apache Parquet as the underlying data format, Parseable ensures that not only you have access to your data, but also that it is stored in a performant and efficient manner.
+
+### Performance & resource efficiency
+
+### Easy to use for developers and operators
+
 
 ### Enterprise ready
 
@@ -75,7 +138,7 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 
 ## :dart: Motivation
 
-Traditionally, logging has been seen as a text search problem. Log volumes were not high, and data ingestion or storage were not really issues. This led us to today, where all the logging platforms are primarily text search engines.
+
 
 But with log data growing exponentially, today's log data challenges involve whole lot more – Data ingestion, storage, and observation, all at scale. We are building Parseable to address these challenges.
 
