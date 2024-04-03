@@ -35,7 +35,7 @@ pub fn hostname() -> Option<String> {
         .ok()
         .and_then(|hostname| hostname.into_string().ok())
 }
-
+#[allow(dead_code)]
 pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
 }

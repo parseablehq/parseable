@@ -20,7 +20,6 @@
 use std::{
     collections::HashMap,
     fs,
-    net::SocketAddr,
     path::{Path, PathBuf},
     process,
     sync::Arc,
@@ -37,6 +36,7 @@ use parquet::{
     schema::types::ColumnPath,
 };
 
+use super::super::handlers::http::modal::server::Server;
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
     metrics,
@@ -65,8 +65,10 @@ impl StorageDir {
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");
-        let hostname = utils::hostname_unchecked();
-        format!("{local_uri}{hostname}.{extention}")
+        let sock = Server::get_server_address();
+        let ip = sock.ip();
+        let port = sock.port();
+        format!("{local_uri}{ip}.{port}.{extention}")
     }
 
     fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
@@ -161,15 +163,8 @@ impl StorageDir {
         let filename = path.file_name().unwrap().to_str().unwrap();
         let (_, filename) = filename.split_once('.').unwrap();
 
-        let port = CONFIG
-            .parseable
-            .address
-            .clone()
-            .parse::<SocketAddr>()
-            .unwrap()
-            .port();
         let filename = filename.rsplit_once('.').unwrap();
-        let filename = format!("{}.{}.{}", filename.0, port, filename.1);
+        let filename = format!("{}.{}", filename.0, filename.1);
         /*
                 let file_stem = path.file_stem().unwrap().to_str().unwrap();
                 let random_string =
