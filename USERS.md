@@ -2,7 +2,7 @@
 
 The following document is a list of users and adopters who use Parseable. The users themselves directly maintain the list. You can add your organization by editing this file directly.
 
-If you're using Parseable in your organization, please add your company name to this list. It really helps the project gain momentum and credibility. It's a small contribution to the project with a big impact. 
+If you're using Parseable in your organization, please add your company name to this list. It really helps the project gain momentum and credibility. It's a small contribution to the project with a big impact.
 
 ---
 

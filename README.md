@@ -5,7 +5,7 @@
       <a href="https://www.parseable.io" target="_blank"><img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg" alt="Parseable" width="600" height="150" /></a>
     </picture>
     <br>
-    Cloud native log analytics
+    **Log Lake** for the cloud-native world
 </h2>
 
 <div align="center">
@@ -19,14 +19,14 @@
 
 </div>
 
-Parseable is a **cloud native, log analytics platform, with a focus on performance & resource efficiency**. Parseable is useful for use cases where **complete data ownership, privacy, and performance are paramount**.
+Parseable is a **cloud native, log analytics platform, with a focus on performance & resource efficiency**. Parseable is useful for use cases where **complete data ownership, security and privacy are paramount**.
 
 To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9). You can also view the [demo video ↗︎](https://www.parseable.com/video.mp4).
 
-## :zap: QuickStart
+## QuickStart :zap:
 
 <details>
-<summary><a href="https://www.parseable.com/docs/docker-quick-start">Run Parseable in local disk mode with Docker</a></summary>
+<summary><a href="https://www.parseable.com/docs/docker-quick-start">Docker Image</a></summary>
 <p>
 
 You can <a href="https://www.parseable.com/docs/docker-quick-start">get started with Parseable Docker</a> with a simple Docker run and then send data via cURL to understand how you can ingest data to Parseable. Below is the command to run Parseable in local storage mode with Docker.
@@ -59,10 +59,10 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 </details>
 
 <details>
-<summary><a href="https://www.parseable.com/docs/docker-quick-start">Run Parseable binary</a></summary>
+<summary><a href="https://www.parseable.com/docs/docker-quick-start">Executable Binary</a></summary>
 <p>
 
-You can also download and run the Parseable binary on your laptop. To download the binary, run the command specific to your OS.
+You can download and run the Parseable binary on your laptop.
 
 - Linux
 
@@ -116,59 +116,51 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 </p>
 </details>
 
-## :question: Why Parseable
-
-### Take control of your data
-
-With Apache Arrow and Apache Parquet as the underlying data format, Parseable ensures that not only you have access to your data, but also that it is stored in a performant and efficient manner.
+## Why Parseable :question:
 
 ### Performance & resource efficiency
 
-### Easy to use for developers and operators
+Parseable is written in Rust, with a clear focus on performance while ensuring a much lower CPU and memory footprint (compared to Java, Go based systems). When compared with Elastic, Parseable uses ~80% lesser memory and ~50% lesser CPU, while offering a better ingestion rate. This means you can run Parseable on smaller instances, saving costs.
 
+### Easy of use
+
+One of the key challenges users said they face today is the complexity of setting a logging system like Elastic. There are so many moving parts, and it's hard to get started. Parseable is designed to be simple to use, with a single binary that can be run on almost anywhere. The Console is built in the binary itself, so you can start using it without any additional setup.
+
+### Take control of your data
+
+With Apache Arrow and Apache Parquet as the underlying data formats, Parseable stores log data in an optimized, compressed manner as Parquet files. This means you get complete control and access to your data. You can use Parseable query and analysis, but also can plugin tools from wider Parquet ecosystem for further processing, analysis, and visualization.
 
 ### Enterprise ready
 
+- High availability & Cluster mode
+- Local cache & storage
+- [OpenTelemetry support ↗︎](https://opentelemetry.io/)
 - [Alerts ↗︎](https://www.parseable.io/docs/alerts)
-- [RBAC ↗︎](https://www.parseable.io/docs/rbac)
-- [OAuth2 ↗︎](https://www.parseable.io/docs/oidc)
-- [Grafana ↗︎](https://github.com/parseablehq/parseable-datasource)
+- [Role based access control ↗︎](https://www.parseable.io/docs/rbac)
+- [OAuth2 support ↗︎](https://www.parseable.io/docs/oidc)
+- [Grafana based visualization ↗︎](https://github.com/parseablehq/parseable-datasource)
 - [LLM ↗︎](https://www.parseable.io/docs/llm)
 - [Stats ↗︎](https://www.postman.com/parseable/workspace/parseable/request/22353706-b32abe55-f0c4-4ed2-9add-110d265888c3)
 
-## :dart: Motivation
+## How do people use Parseable :bulb:
 
+- **Audit & Compliance** - Organizations that need to store logs in a secure, compliant manner. Parseable's direct to S3 bucket storage mode ensures that logs are stored in a secure, cost effective manner, and can be accessed only by authorized users, while all the data is queryable in real-time.
 
+- **Observability & Monitoring** - A very large chunk of observability data is logs. Organizations that need to monitor their systems, applications, and infrastructure in real-time use Parseable as the primary log storage system so they get timely alerts, and can analyze logs in real-time.
+
+- **Log Analytics** - Not all logs are created equal. For example application logs are seldom useful after a few days pass, but if same application also logs all the user interactions, that data is very valuable for product managers, and can be stored for a longer period. Several businesses store such high value logs and slice / dice them as needed.
+
+## Motivation :dart:
+
+Traditionally, logging has been seen as a text search problem. Log volumes were not high, and data ingestion or storage were not really issues. This led us to today, where all the logging platforms are primarily text search engines.
 
 But with log data growing exponentially, today's log data challenges involve whole lot more – Data ingestion, storage, and observation, all at scale. We are building Parseable to address these challenges.
 
-## :trophy: Contributing
+## Contributing :trophy:
 
 [Contribution guide ↗︎](https://www.parseable.io/docs/contributing).
 
-![Alt](https://repobeats.axiom.co/api/embed/7c4e0f51cd3b8f78d1da682c396a3b5bd855a6ba.svg "Repobeats analytics image")
-
-### Contributors
-
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
-
-### License report
-
-A license report lists all the licenses of all dependencies in a project. You can use [cargo-about ↗︎](https://embarkstudios.github.io/cargo-about/) to generate a license report for the Parseable.
-
-If not already installed, install `cargo-about` using the below command.
-
-```sh
-cargo install --locked cargo-about && cargo about init
-```
-
-To generate a license report, run the below command.
-
-```sh
-cargo about generate about.hbs > parseable-license.html
-```
-
-You can see the license report in the file parseable-license.html.
 
 ### Supported by
 
