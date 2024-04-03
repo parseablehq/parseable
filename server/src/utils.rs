@@ -228,7 +228,7 @@ impl TimePeriod {
 
 #[inline(always)]
 pub fn get_address() -> (IpAddr, u16) {
-    let addr = CONFIG.parseable.address.parse::<SocketAddr>().unwrap();
+    let addr = CONFIG.parseable.node_url.parse::<SocketAddr>().unwrap();
     (addr.ip(), addr.port())
 }
 
