@@ -141,6 +141,8 @@ async fn build_metrics() -> HashMap<String, Value> {
         NodeMetrics::new(total_streams(), event_stats.0, event_stats.1, event_stats.2);
 
     let mut vec = vec![];
+    let mut active_ingesters = 0u64;
+    let mut offline_ingesters = 0u64;
     if CONFIG.parseable.mode == Mode::Query {
         // send analytics for ingest servers
 
@@ -149,6 +151,7 @@ async fn build_metrics() -> HashMap<String, Value> {
 
         for im in ingester_infos {
             if !check_liveness(&im.domain_name).await {
+                offline_ingesters += 1;
                 continue;
             }
 
@@ -169,6 +172,7 @@ async fn build_metrics() -> HashMap<String, Value> {
 
             let data = serde_json::from_slice::<NodeMetrics>(&resp.bytes().await.unwrap()).unwrap();
             vec.push(data);
+            active_ingesters += 1;
         }
 
         node_metrics.accumulate(&mut vec);
@@ -179,6 +183,17 @@ async fn build_metrics() -> HashMap<String, Value> {
     let sys = SYS_INFO.lock().unwrap();
 
     let mut metrics = HashMap::new();
+
+    // this will not be populated for in standalone mode as it will be set to 0
+    if active_ingesters > 0 {
+        metrics.insert("active_ingesters".to_string(), active_ingesters.into());
+    }
+
+    // this will not be populated for in standalone mode as it will be set to 0
+    if offline_ingesters > 0 {
+        metrics.insert("offline_ingesters".to_string(), offline_ingesters.into());
+    }
+
     metrics.insert("stream_count".to_string(), node_metrics.stream_count.into());
 
     // total_event_stats returns event count, json bytes, parquet bytes in that order
