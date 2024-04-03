@@ -480,7 +480,7 @@ impl Server {
     pub fn get_server_address() -> SocketAddr {
         // this might cause an issue down the line
         // best is to make the Cli Struct better, but thats a chore
-        (CONFIG.parseable.address.clone())
+        (CONFIG.parseable.node_url.clone())
             .parse::<SocketAddr>()
             .unwrap()
     }
