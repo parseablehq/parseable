@@ -310,11 +310,6 @@ impl IngestServer {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync();
 
-        // all internal data structures populated now.
-        // start the analytics scheduler if enabled
-        if CONFIG.parseable.send_analytics {
-            analytics::init_analytics_scheduler();
-        }
         let app = self.start(prometheus, CONFIG.parseable.openid.clone());
         tokio::pin!(app);
         loop {

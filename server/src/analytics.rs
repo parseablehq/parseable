@@ -64,6 +64,12 @@ pub struct Report {
     server_mode: String,
     version: String,
     commit_hash: String,
+    active_ingesters: u64,
+    inactive_ingesters: u64,
+    stream_count: usize,
+    total_events_count: u64,
+    total_json_bytes: u64,
+    total_parquet_bytes: u64,
     metrics: HashMap<String, Value>,
 }
 
@@ -85,6 +91,7 @@ impl Report {
             cpu_count = info.cpus().len();
             mem_total = info.total_memory();
         }
+        let ingester_metrics = fetch_ingesters_metrics().await;
 
         Self {
             deployment_id: storage::StorageMetadata::global().deployment_id,
@@ -99,6 +106,12 @@ impl Report {
             server_mode: CONFIG.parseable.mode.to_string(),
             version: current().released_version.to_string(),
             commit_hash: current().commit_hash,
+            active_ingesters: ingester_metrics.0,
+            inactive_ingesters: ingester_metrics.1,
+            stream_count: ingester_metrics.2,
+            total_events_count: ingester_metrics.3,
+            total_json_bytes: ingester_metrics.4,
+            total_parquet_bytes: ingester_metrics.5,
             metrics: build_metrics().await,
         }
     }
@@ -135,7 +148,7 @@ fn total_event_stats() -> (u64, u64, u64) {
     (total_events, total_json_bytes, total_parquet_bytes)
 }
 
-async fn build_metrics() -> HashMap<String, Value> {
+async fn fetch_ingesters_metrics() -> (u64, u64, usize, u64, u64, u64) {
     let event_stats = total_event_stats();
     let mut node_metrics =
         NodeMetrics::new(total_streams(), event_stats.0, event_stats.1, event_stats.2);
@@ -178,38 +191,22 @@ async fn build_metrics() -> HashMap<String, Value> {
         node_metrics.accumulate(&mut vec);
     }
 
+    (
+        active_ingesters,
+        offline_ingesters,
+        node_metrics.stream_count,
+        node_metrics.total_events_count,
+        node_metrics.total_json_bytes,
+        node_metrics.total_parquet_bytes,
+    )
+}
+
+async fn build_metrics() -> HashMap<String, Value> {
     // sysinfo refreshed in previous function
     // so no need to refresh again
     let sys = SYS_INFO.lock().unwrap();
 
     let mut metrics = HashMap::new();
-
-    // this will not be populated for in standalone mode as it will be set to 0
-    if active_ingesters > 0 {
-        metrics.insert("active_ingesters".to_string(), active_ingesters.into());
-    }
-
-    // this will not be populated for in standalone mode as it will be set to 0
-    if offline_ingesters > 0 {
-        metrics.insert("offline_ingesters".to_string(), offline_ingesters.into());
-    }
-
-    metrics.insert("stream_count".to_string(), node_metrics.stream_count.into());
-
-    // total_event_stats returns event count, json bytes, parquet bytes in that order
-    metrics.insert(
-        "total_events_count".to_string(),
-        node_metrics.total_events_count.into(),
-    );
-    metrics.insert(
-        "total_json_bytes".to_string(),
-        node_metrics.total_json_bytes.into(),
-    );
-    metrics.insert(
-        "total_parquet_bytes".to_string(),
-        node_metrics.total_parquet_bytes.into(),
-    );
-
     metrics.insert("memory_in_use_bytes".to_string(), sys.used_memory().into());
     metrics.insert("memory_free_bytes".to_string(), sys.free_memory().into());
 
