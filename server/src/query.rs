@@ -336,6 +336,8 @@ fn time_from_path(path: &Path) -> DateTime<Utc> {
         .unwrap()
 }
 
+/// unused for now might need it later
+#[allow(unused)]
 pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
     if objects.is_empty() {
         return objects;
