@@ -90,6 +90,8 @@ pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Sch
     Ok(new_schema)
 }
 
+/// unused for now, might need it later
+#[allow(unused)]
 pub async fn send_query_request_to_ingester(query: &Query) -> anyhow::Result<Vec<Value>> {
     // send the query request to the ingester
     let mut res = vec![];

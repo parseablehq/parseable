@@ -204,10 +204,29 @@ pub trait ObjectStorage: Sync + 'static {
         &self,
         stream_name: &str,
     ) -> Result<Schema, ObjectStorageError> {
-        let schema_path =
-            RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
-        let schema_map = self.get_object(&schema_path).await?;
-        Ok(serde_json::from_slice(&schema_map)?)
+        // try get my schema
+        // if fails get the base schema
+        // put the schema to storage??
+        let schema_path = schema_path(stream_name);
+        let byte_data = match self.get_object(&schema_path).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                log::info!("{:?}", err);
+                // base schema path
+                let schema_path = RelativePathBuf::from_iter([
+                    stream_name,
+                    STREAM_ROOT_DIRECTORY,
+                    SCHEMA_FILE_NAME,
+                ]);
+                let data = self.get_object(&schema_path).await?;
+                // schema was not found in store, so it needs to be placed
+                self.put_schema(stream_name, &serde_json::from_slice(&data).unwrap())
+                    .await?;
+
+                data
+            }
+        };
+        Ok(serde_json::from_slice(&byte_data)?)
     }
 
     async fn get_schema(&self, stream_name: &str) -> Result<Schema, ObjectStorageError> {

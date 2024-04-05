@@ -45,8 +45,6 @@ use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 
-use super::send_query_request_to_ingester;
-
 /// Query Request through http endpoint.
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,21 +82,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     }
 
     let mut query = into_query(&query_request, &session_state).await?;
-
-    // ? run this code only if the query start time and now is less than 1 minute + margin
-    let mmem = if CONFIG.parseable.mode == Mode::Query {
-        // create a new query to send to the ingesters
-        if let Some(que) = transform_query_for_ingester(&query_request) {
-            let vals = send_query_request_to_ingester(&que)
-                .await
-                .map_err(|err| QueryError::Custom(err.to_string()))?;
-            Some(vals)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
 
     let creds = extract_session_key_from_req(&req).expect("expects basic auth");
     let permissions = Users.get_permissions(&creds);
@@ -147,7 +130,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
     }
-    .to_http(mmem);
+    .to_http();
 
     if let Some(table) = table_name {
         let time = time.elapsed().as_secs_f64();
@@ -229,6 +212,8 @@ async fn into_query(
     })
 }
 
+/// unused for now, might need it in the future
+#[allow(unused)]
 fn transform_query_for_ingester(query: &Query) -> Option<Query> {
     if query.query.is_empty() {
         return None;
@@ -288,8 +273,6 @@ pub enum QueryError {
     Datafusion(#[from] DataFusionError),
     #[error("Execution Error: {0}")]
     Execute(#[from] ExecuteError),
-    #[error("Error: {0}")]
-    Custom(String),
     #[error("ObjectStorage Error: {0}")]
     ObjectStorage(#[from] ObjectStorageError),
     #[error("Evern Error: {0}")]
