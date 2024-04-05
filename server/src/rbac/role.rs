@@ -49,6 +49,7 @@ pub enum Action {
     ListClusterMetrics,
     DeleteIngester,
     All,
+    GetAnalytics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -102,7 +103,11 @@ impl RoleBuilder {
                 | Action::CreateStream
                 | Action::DeleteStream
                 | Action::GetStream
-                | Action::ListStream => Permission::Unit(action),
+                | Action::ListStream
+                | Action::ListCluster
+                | Action::ListClusterMetrics
+                | Action::DeleteIngester
+                | Action::GetAnalytics => Permission::Unit(action),
                 Action::Ingest
                 | Action::GetSchema
                 | Action::GetStats
@@ -113,9 +118,6 @@ impl RoleBuilder {
                 | Action::PutAlert
                 | Action::GetAlert
                 | Action::All => Permission::Stream(action, self.stream.clone().unwrap()),
-                Action::ListCluster => Permission::Unit(action),
-                Action::ListClusterMetrics => Permission::Unit(action),
-                Action::DeleteIngester => Permission::Unit(action),
             };
             perms.push(perm);
         }
