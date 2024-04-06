@@ -5,7 +5,7 @@
       <a href="https://www.parseable.io" target="_blank"><img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg" alt="Parseable" width="600" height="150" /></a>
     </picture>
     <br>
-    **Log Lake** for the cloud-native world
+    Log Lake for the cloud-native world
 </h2>
 
 <div align="center">
