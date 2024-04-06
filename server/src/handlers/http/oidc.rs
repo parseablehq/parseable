@@ -139,24 +139,35 @@ pub async fn reply_login(
         return Ok(HttpResponse::Unauthorized().finish());
     };
     let username = user_info
-        .sub
+        .name
         .clone()
         .expect("OIDC provider did not return a sub which is currently required.");
     let user_info: user::UserInfo = user_info.into();
-
-    let group: HashSet<String> = claims
+    let mut group: HashSet<String> = claims
         .other
         .remove("groups")
         .map(serde_json::from_value)
         .transpose()?
-        .unwrap_or_else(|| {
-            DEFAULT_ROLE
-                .lock()
-                .unwrap()
-                .clone()
-                .map(|role| HashSet::from([role]))
-                .unwrap_or_default()
-        });
+        .unwrap_or_default();
+    let metadata = get_metadata().await?;
+    let mut role_exists = false;
+    for role in metadata.roles.iter() {
+        let role_name = role.0;
+        for group_name in group.iter() {
+            if group_name.eq(role_name) {
+                role_exists = true;
+                break;
+            }
+        }
+    }
+    if !role_exists || group.is_empty() {
+        group = DEFAULT_ROLE
+            .lock()
+            .unwrap()
+            .clone()
+            .map(|role| HashSet::from([role]))
+            .unwrap_or_default();
+    }
 
     // User may not exist
     // create a new one depending on state of metadata
