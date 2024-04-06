@@ -42,7 +42,15 @@ pub struct Config {
 
 impl Config {
     fn new() -> Self {
-        let cli = create_parseable_cli_command().get_matches();
+        let cli = create_parseable_cli_command()
+            .name("Parseable")
+            .about("A Cloud Native, log analytics platform")
+            .before_help("Log Lake for the cloud-native world")
+            .arg_required_else_help(true)
+            .subcommand_required(true)
+            .color(clap::ColorChoice::Always)
+            .get_matches();
+
         match cli.subcommand() {
             Some(("local-store", m)) => {
                 let cli = match Cli::from_arg_matches(m) {
@@ -181,7 +189,8 @@ fn create_parseable_cli_command() -> Command {
         .next_line_help(false)
         .help_template(
             r#"
-{about} Join the community at https://logg.ing/community.
+{about}
+Join the community at https://logg.ing/community.
 
 {all-args}
         "#,
