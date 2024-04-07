@@ -199,6 +199,12 @@ pub fn convert_disk_files_to_parquet(
     let staging_files = dir.arrow_files_grouped_exclude_time(time);
     if staging_files.is_empty() {
         metrics::STAGING_FILES.with_label_values(&[stream]).set(0);
+        metrics::STORAGE_SIZE
+            .with_label_values(&["staging", stream, "arrows"])
+            .set(0);
+        metrics::STORAGE_SIZE
+            .with_label_values(&["staging", stream, "parquet"])
+            .set(0);
     }
 
     for (parquet_path, files) in staging_files {
