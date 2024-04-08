@@ -18,7 +18,10 @@
 
 use actix_cors::Cors;
 use arrow_schema::Schema;
+use itertools::Itertools;
 use serde_json::Value;
+
+use crate::option::CONFIG;
 
 use self::{cluster::get_ingester_info, query::Query};
 
@@ -61,32 +64,31 @@ pub fn base_path_without_preceding_slash() -> String {
     format!("{API_BASE_PATH}/{API_VERSION}")
 }
 
+/// Fetches the schema for the specified stream.
+///
+/// # Arguments
+///
+/// * `stream_name` - The name of the stream to fetch the schema for.
+///
+/// # Returns
+///
+/// An `anyhow::Result` containing the `arrow_schema::Schema` for the specified stream.
 pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
-    let mut res = vec![];
-    let ima = get_ingester_info().await.unwrap();
-
-    for im in ima {
-        let uri = format!(
-            "{}{}/logstream/{}/schema",
-            im.domain_name,
-            base_path_without_preceding_slash(),
-            stream_name
-        );
-        let reqw = reqwest::Client::new()
-            .get(uri)
-            .header(http::header::AUTHORIZATION, im.token.clone())
-            .header(http::header::CONTENT_TYPE, "application/json")
-            .send()
-            .await?;
-
-        if reqw.status().is_success() {
-            let v = serde_json::from_slice(&reqw.bytes().await?)?;
-            res.push(v);
-        }
-    }
+    let path_prefix =
+        relative_path::RelativePathBuf::from(format!("{}/{}", stream_name, ".stream"));
+    let store = CONFIG.storage().get_object_store();
+    let res: Vec<Schema> = store
+        .get_objects(
+            Some(&path_prefix),
+            Box::new(|file_name: String| file_name.contains(".schema")),
+        )
+        .await?
+        .iter()
+        // we should be able to unwrap as we know the data is valid schema
+        .map(|byte_obj| serde_json::from_slice(byte_obj).unwrap())
+        .collect_vec();
 
     let new_schema = Schema::try_merge(res)?;
-
     Ok(new_schema)
 }
 
