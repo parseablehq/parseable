@@ -1,0 +1,713 @@
+NAME: myparse
+LAST DEPLOYED: Tue Apr  9 17:31:14 2024
+NAMESPACE: default
+STATUS: pending-install
+REVISION: 1
+TEST SUITE: None
+USER-SUPPLIED VALUES:
+{}
+
+COMPUTED VALUES:
+fluent-bit:
+  affinity: {}
+  annotations: {}
+  args: []
+  autoscaling:
+    behavior: {}
+    customRules: []
+    enabled: false
+    maxReplicas: 3
+    minReplicas: 1
+    targetCPUUtilizationPercentage: 75
+    vpa:
+      annotations: {}
+      controlledResources: []
+      enabled: false
+      maxAllowed: {}
+      minAllowed: {}
+      updatePolicy:
+        updateMode: Auto
+  command: []
+  config:
+    customParsers: |
+      [PARSER]
+          Name docker_no_time
+          Format json
+          Time_Keep Off
+          Time_Key time
+          Time_Format %Y-%m-%dT%H:%M:%S.%L
+    extraFiles: {}
+    filters: |
+      [FILTER]
+          Name                kubernetes
+          Match               kube.*
+          Merge_Log           On
+          Keep_Log            Off
+          K8S-Logging.Parser  On
+          K8S-Logging.Exclude On
+    inputs: |
+      [INPUT]
+          Name tail
+          Path /var/log/containers/*.log
+          multiline.parser docker, cri
+          Tag kube.*
+          Mem_Buf_Limit 5MB
+          Skip_Long_Lines On
+    outputs: |
+      [OUTPUT]
+          Name http
+          Match kube.*
+          host parseable.parseable.svc.cluster.local
+          http_User admin
+          http_Passwd admin
+          format json
+          port 80
+          header Content-Type application/json
+          header X-P-META-meta1 value1
+          header X-P-TAG-tag1 value1
+          header X-P-Stream fluentbitdemo
+          uri /api/v1/ingest
+          json_date_key timestamp
+          json_date_format iso8601
+    service: |
+      [SERVICE]
+          Daemon Off
+          Flush {{ .Values.flush }}
+          Log_Level {{ .Values.logLevel }}
+          Parsers_File parsers.conf
+          Parsers_File custom_parsers.conf
+          HTTP_Server On
+          HTTP_Listen 0.0.0.0
+          HTTP_Port {{ .Values.metricsPort }}
+          Health_Check On
+    upstream: {}
+  daemonSetVolumeMounts:
+  - mountPath: /var/log
+    name: varlog
+  - mountPath: /var/lib/docker/containers
+    name: varlibdockercontainers
+    readOnly: true
+  - mountPath: /etc/machine-id
+    name: etcmachineid
+    readOnly: true
+  daemonSetVolumes:
+  - hostPath:
+      path: /var/log
+    name: varlog
+  - hostPath:
+      path: /var/lib/docker/containers
+    name: varlibdockercontainers
+  - hostPath:
+      path: /etc/machine-id
+      type: File
+    name: etcmachineid
+  dashboards:
+    annotations: {}
+    enabled: false
+    labelKey: grafana_dashboard
+    namespace: ""
+  dnsConfig: {}
+  dnsPolicy: ClusterFirst
+  enabled: false
+  env: []
+  envFrom: []
+  envWithTpl: []
+  existingConfigMap: ""
+  extraContainers: []
+  extraPorts: []
+  extraVolumeMounts: []
+  extraVolumes: []
+  flush: 1
+  fullnameOverride: ""
+  global: {}
+  hostAliases: []
+  hostNetwork: false
+  image:
+    pullPolicy: Always
+    repository: cr.fluentbit.io/fluent/fluent-bit
+    tag: ""
+  imagePullSecrets: []
+  ingress:
+    annotations: {}
+    className: ""
+    enabled: false
+    extraHosts: []
+    hosts: []
+    tls: []
+  initContainers: []
+  kind: DaemonSet
+  labels: {}
+  lifecycle: {}
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+  logLevel: info
+  luaScripts: {}
+  metricsPort: 2020
+  minReadySeconds: null
+  nameOverride: ""
+  networkPolicy:
+    enabled: false
+  nodeSelector: {}
+  openShift:
+    enabled: false
+    securityContextConstraints:
+      annotations: {}
+      create: true
+  podAnnotations: {}
+  podDisruptionBudget:
+    annotations: {}
+    enabled: false
+    maxUnavailable: 30%
+  podLabels: {}
+  podSecurityContext: {}
+  podSecurityPolicy:
+    annotations: {}
+    create: false
+  priorityClassName: ""
+  prometheusRule:
+    enabled: false
+  rbac:
+    create: true
+    nodeAccess: false
+  readinessProbe:
+    httpGet:
+      path: /api/v1/health
+      port: http
+  replicaCount: 1
+  resources: {}
+  securityContext: {}
+  service:
+    annotations: {}
+    labels: {}
+    loadBalancerSourceRanges: []
+    port: 2020
+    type: ClusterIP
+  serviceAccount:
+    annotations: {}
+    create: true
+  serviceMonitor:
+    additionalEndpoints: []
+    enabled: false
+  terminationGracePeriodSeconds: null
+  testFramework:
+    enabled: true
+    image:
+      pullPolicy: Always
+      repository: busybox
+      tag: latest
+  tolerations: []
+  updateStrategy: {}
+  volumeMounts:
+  - mountPath: /fluent-bit/etc/fluent-bit.conf
+    name: config
+    subPath: fluent-bit.conf
+  - mountPath: /fluent-bit/etc/custom_parsers.conf
+    name: config
+    subPath: custom_parsers.conf
+parseable:
+  affinity: {}
+  env:
+    RUST_LOG: warn
+  fullnameOverride: ""
+  highAvailability:
+    enabled: true
+    ingestor:
+      count: 3
+      env:
+        RUST_LOG: warn
+      resources:
+        limits:
+          cpu: 500m
+          memory: 4Gi
+        requests:
+          cpu: 250m
+          memory: 1Gi
+      service:
+        port: 80
+        type: ClusterIP
+  image:
+    pullPolicy: Always
+    repository: parseable/parseable
+    tag: v0.9.0
+  local: false
+  localModeSecret:
+  - keys:
+    - addr
+    - username
+    - password
+    - staging.dir
+    - fs.dir
+    name: parseable-env-secret
+    prefix: P_
+    type: env
+  metrics:
+    serviceMonitor:
+      additionalLabels: {}
+      enabled: false
+      honorLabels: false
+      interval: 30s
+      metricRelabelings: []
+      namespace: ""
+      podTargetLabels: []
+      relabellings: []
+      scrapeTimeout: ""
+  nameOverride: ""
+  nodeSelector: {}
+  persistence:
+    data:
+      accessMode: ReadWriteOnce
+      enabled: false
+      size: 1Gi
+      storageClass: ""
+    staging:
+      accessMode: ReadWriteOnce
+      enabled: false
+      size: 1Gi
+      storageClass: ""
+  podAnnotations:
+    prometheus.io/path: /api/v1/metrics
+    prometheus.io/port: "80"
+    prometheus.io/scrape: "true"
+  podSecurityContext:
+    fsGroup: 1000
+    fsGroupChangePolicy: Always
+    runAsGroup: 1000
+    runAsUser: 1000
+  resources:
+    limits:
+      cpu: 500m
+      memory: 4Gi
+    requests:
+      cpu: 250m
+      memory: 1Gi
+  s3ModeSecret:
+  - keys:
+    - addr
+    - username
+    - password
+    - staging.dir
+    - fs.dir
+    - s3.url
+    - s3.access.key
+    - s3.secret.key
+    - s3.bucket
+    - s3.region
+    name: parseable-env-secret
+    prefix: P_
+    type: env
+  securityContext:
+    allowPrivilegeEscalation: false
+  service:
+    port: 80
+    type: ClusterIP
+  serviceAccount:
+    annotations: {}
+    create: true
+    name: parseable
+  tolerations: []
+vector:
+  affinity: {}
+  args:
+  - --config-dir
+  - /etc/vector/
+  autoscaling:
+    behavior: {}
+    customMetric: {}
+    enabled: false
+    maxReplicas: 10
+    minReplicas: 1
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: null
+  command: []
+  commonLabels: {}
+  containerPorts: []
+  customConfig:
+    api:
+      address: 127.0.0.1:8686
+      enabled: true
+      playground: false
+    data_dir: /vector-data-dir
+    sinks:
+      parseable:
+        auth:
+          password: admin
+          strategy: basic
+          user: admin
+        batch:
+          max_bytes: 10485760
+          max_events: 1000
+          timeout_secs: 10
+        compression: gzip
+        encoding:
+          codec: json
+        healthcheck:
+          enabled: true
+          path: http://parseable.parseable.svc.cluster.local/api/v1/liveness
+          port: 80
+        inputs:
+        - kubernetes_logs
+        method: post
+        request:
+          headers:
+            X-P-Stream: vectordemo
+        type: http
+        uri: http://parseable.parseable.svc.cluster.local/api/v1/ingest
+    sources:
+      kubernetes_logs:
+        type: kubernetes_logs
+  dataDir: ""
+  dnsConfig: {}
+  dnsPolicy: ClusterFirst
+  enabled: false
+  env: []
+  envFrom: []
+  existingConfigMaps: []
+  extraContainers: []
+  extraVolumeMounts: []
+  extraVolumes: []
+  fullnameOverride: ""
+  global: {}
+  haproxy:
+    affinity: {}
+    autoscaling:
+      customMetric: {}
+      enabled: false
+      maxReplicas: 10
+      minReplicas: 1
+      targetCPUUtilizationPercentage: 80
+      targetMemoryUtilizationPercentage: null
+    containerPorts: []
+    customConfig: ""
+    enabled: false
+    existingConfigMap: ""
+    extraContainers: []
+    extraVolumeMounts: []
+    extraVolumes: []
+    image:
+      pullPolicy: IfNotPresent
+      pullSecrets: []
+      repository: haproxytech/haproxy-alpine
+      tag: 2.4.17
+    initContainers: []
+    livenessProbe:
+      tcpSocket:
+        port: 1024
+    nodeSelector: {}
+    podAnnotations: {}
+    podLabels: {}
+    podPriorityClassName: ""
+    podSecurityContext: {}
+    readinessProbe:
+      tcpSocket:
+        port: 1024
+    replicas: 1
+    resources: {}
+    rollWorkload: true
+    securityContext: {}
+    service:
+      annotations: {}
+      externalTrafficPolicy: ""
+      ipFamilies: []
+      ipFamilyPolicy: ""
+      loadBalancerIP: ""
+      ports: []
+      topologyKeys: []
+      type: ClusterIP
+    serviceAccount:
+      annotations: {}
+      automountToken: true
+      create: true
+      name: null
+    strategy: {}
+    terminationGracePeriodSeconds: 60
+    tolerations: []
+  image:
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+    repository: timberio/vector
+    sha: ""
+    tag: ""
+  ingress:
+    annotations: {}
+    className: ""
+    enabled: false
+    hosts: []
+    tls: []
+  initContainers: []
+  lifecycle: {}
+  livenessProbe: {}
+  nameOverride: ""
+  nodeSelector: {}
+  persistence:
+    accessModes:
+    - ReadWriteOnce
+    enabled: false
+    existingClaim: ""
+    finalizers:
+    - kubernetes.io/pvc-protection
+    hostPath:
+      path: /var/lib/vector
+    selectors: {}
+    size: 10Gi
+  podAnnotations: {}
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  podHostNetwork: false
+  podLabels:
+    vector.dev/exclude: "true"
+  podManagementPolicy: OrderedReady
+  podMonitor:
+    additionalLabels: {}
+    enabled: false
+    honorLabels: false
+    honorTimestamps: true
+    jobLabel: app.kubernetes.io/name
+    metricRelabelings: []
+    path: /metrics
+    port: prom-exporter
+    relabelings: []
+  podPriorityClassName: ""
+  podSecurityContext: {}
+  psp:
+    create: false
+  rbac:
+    create: true
+  readinessProbe: {}
+  replicas: 1
+  resources: {}
+  role: Agent
+  rollWorkload: true
+  secrets:
+    generic: {}
+  securityContext: {}
+  service:
+    annotations: {}
+    enabled: true
+    externalTrafficPolicy: ""
+    ipFamilies: []
+    ipFamilyPolicy: ""
+    loadBalancerIP: ""
+    ports: []
+    topologyKeys: []
+    type: ClusterIP
+  serviceAccount:
+    annotations: {}
+    automountToken: true
+    create: true
+  serviceHeadless:
+    enabled: true
+  terminationGracePeriodSeconds: 60
+  tolerations: []
+  topologySpreadConstraints: []
+  updateStrategy: {}
+  workloadResourceAnnotations: {}
+
+HOOKS:
+MANIFEST:
+---
+# Source: parseable/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: parseable
+  labels:
+    helm.sh/chart: parseable-0.9.0
+    app.kubernetes.io/name: parseable
+    app.kubernetes.io/instance: myparse
+    app.kubernetes.io/version: "v0.9.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: parseable/templates/ingestor-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: myparse-parseable-ingestor-config
+  namespace: default
+  labels:
+    helm.sh/chart: parseable-0.9.0
+    app.kubernetes.io/name: parseable
+    app.kubernetes.io/instance: myparse
+    app.kubernetes.io/version: "v0.9.0"
+    app.kubernetes.io/managed-by: Helm
+data:
+  config-env: |-
+    #!/bin/sh
+    set -e ; # Have script exit in the event of a failed command.
+    IFS=$' \t\r\n'
+    
+    setIngestorURL() {
+      echo;
+      echo \"Reading the value $HOSTNAME\";
+    
+      if [ -z "$HOSTNAME" ]; then
+        echo "HOSTNAME is not set. Exiting...";
+        exit 1;
+      fi
+    
+      echo "Setting the ingestor URL to $HOSTNAME:8000";
+      export P_INGESTOR_URL="$HOSTNAME:8000";
+    }
+    
+    setIngestorURL
+---
+# Source: parseable/templates/ingestor-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: myparse-parseable
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8000
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: parseable
+    app.kubernetes.io/instance: myparse
+    app.parseable.com/type: ingestor
+---
+# Source: parseable/templates/ingestor-statefulset.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: myparse-parseable-headless
+  namespace: default
+spec:
+  ports:
+    - port: 8000
+      name: "parseable-port"
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: parseable
+    app.kubernetes.io/instance: myparse
+    app.parseable.com/type: ingestor
+---
+# Source: parseable/templates/ingestor-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: myparse-parseable-ingestor
+  namespace: default
+  labels:
+    helm.sh/chart: parseable-0.9.0
+    app.kubernetes.io/name: parseable
+    app.kubernetes.io/instance: myparse
+    app.parseable.com/type: ingestor
+    app.kubernetes.io/version: "v0.9.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: parseable
+      app.kubernetes.io/instance: myparse
+      app.parseable.com/type: ingestor
+  serviceName: myparse-parseable-headless
+  replicas: 3
+  minReadySeconds: 10
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: parseable
+        app.kubernetes.io/instance: myparse
+        app.parseable.com/type: ingestor
+    spec:
+      terminationGracePeriodSeconds: 10 
+      volumes:
+        - name: parseable-ingestor-config
+          projected:
+            sources:
+            - configMap:
+                name: myparse-parseable-ingestor-config
+      containers:
+      - name: parseable
+        securityContext:
+        allowPrivilegeEscalation: false
+        image: parseable/parseable:v0.9.0
+        imagePullPolicy: Always
+        ## Uncomment to debug
+        command: [ "/bin/sh", "/config/config-logstream", "/bin/sh", "-c", "sleep 1000000" ]
+        ## args: ["/bin/sh", "/config/config-logstream", "parseable", "s3-store"]
+        env:
+          - name: RUST_LOG
+            value: "warn"
+          - name: P_ADDR
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: addr
+          - name: P_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: username
+          - name: P_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: password
+          - name: P_STAGING_DIR
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: staging.dir
+          - name: P_FS_DIR
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: fs.dir
+          - name: P_S3_URL
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: s3.url
+          - name: P_S3_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: s3.access.key
+          - name: P_S3_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: s3.secret.key
+          - name: P_S3_BUCKET
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: s3.bucket
+          - name: P_S3_REGION
+            valueFrom:
+              secretKeyRef:
+                name: parseable-env-secret
+                key: s3.region
+          - name: P_MODE
+            value: "ingest"
+        ports:
+          - containerPort: 8000
+        resources:
+            limits:
+              cpu: 500m
+              memory: 4Gi
+            requests:
+              cpu: 250m
+              memory: 1Gi
+        volumeMounts:
+        ## No data volume for ingestor
+        - mountPath: "/parseable/staging"
+          name: stage-volume
+        - name: parseable-ingestor-config
+          mountPath: /config
+  volumeClaimTemplates:
+  - metadata:
+      name: stage-volume
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "my-storage-class"
+      resources:
+        requests:
+          storage: 10Gi
+

@@ -1,3 +1,4 @@
+{{- if eq .Values.parseable.highAvailability.enabled false }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -10,4 +11,5 @@ spec:
       targetPort: 8000
       protocol: TCP
   selector:
-    {{- include "parseable.selectorLabels" . | nindent 4 }}
+    {{- include "parseable.labelsSelector" . | nindent 4 }}
+{{- end }}

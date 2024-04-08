@@ -1,12 +1,29 @@
 parseable:
   image:
     repository: parseable/parseable
-    tag: v0.9.0
+    tag: edge-debug
     pullPolicy: Always
-  replicaCount: 1
   ## Set to true if you want to deploy Parseable in local mode (store logs
   ## on local mount point instead of S3 bucket)
   local: false
+  ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors)
+  ## Please note that highAvailability is not supported in local mode
+  highAvailability:
+    enabled: true
+    ingestor: 
+      count: 3
+      env: 
+        RUST_LOG: warn
+      service:
+        type: ClusterIP
+        port: 80 
+      resources:
+        limits:
+          cpu: 500m
+          memory: 4Gi
+        requests:
+          cpu: 250m
+          memory: 1Gi
   ## Add environment variables to the Parseable Deployment
   env:
     RUST_LOG: warn

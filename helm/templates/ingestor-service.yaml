@@ -1,0 +1,15 @@
+{{- if eq .Values.parseable.highAvailability.enabled true }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "parseable.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: {{ $.Values.parseable.service.type }}
+  ports:
+    - port: {{ $.Values.parseable.service.port }}
+      targetPort: 8000
+      protocol: TCP
+  selector:
+    {{- include "parseable.ingestorLabelsSelector" . | nindent 4 }}
+{{- end }}

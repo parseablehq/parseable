@@ -1,0 +1,81 @@
+{{- if eq .Values.parseable.highAvailability.enabled true }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "parseable.fullname" . }}-headless
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+    - port: 8000
+      name: "parseable-port"
+  clusterIP: None
+  selector:
+    {{- include "parseable.ingestorLabelsSelector" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "parseable.fullname" . }}-ingestor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.ingestorLabels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "parseable.ingestorLabelsSelector" . | nindent 6 }}
+  serviceName: {{ include "parseable.fullname" . }}-headless
+  replicas: {{ .Values.parseable.highAvailability.ingestor.count }}
+  minReadySeconds: 10
+  template:
+    metadata:
+      labels:
+        {{- include "parseable.ingestorLabelsSelector" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 10 
+      containers:
+      - name: {{ .Chart.Name }}
+        securityContext:
+          {{- toYaml .Values.parseable.securityContext | nindent 8 }}
+        image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
+        imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
+        # Uncomment to debug
+        # command: [ "/bin/sh", "-c", "sleep 1000000" ]
+        args: ["parseable", "s3-store"]
+        env:
+          {{- range $key, $value :=  .Values.parseable.highAvailability.ingestor.env }}
+          - name: {{ $key }}
+            value: {{ tpl $value $ | quote }}
+          {{- end }}
+          {{- range $secret := .Values.parseable.s3ModeSecret }}
+          {{- range $key := $secret.keys }}
+          {{- $envPrefix := $secret.prefix | default "" | upper }}
+          {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+          - name: {{ $envPrefix }}{{ $envKey }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $secret.name }}
+                key: {{ $key }}
+          {{- end }}
+          {{- end }}
+          - name: P_MODE
+            value: "ingest"
+          - name: P_INGESTOR_URL
+            value: "$HOSTNAME:$PORT"
+        ports:
+          - containerPort: 8000
+        resources:
+          {{- toYaml .Values.parseable.highAvailability.ingestor.resources | nindent 12 }}
+        volumeMounts:
+        ## No data volume for ingestor
+        - mountPath: "/parseable/staging"
+          name: stage-volume
+  volumeClaimTemplates:
+  - metadata:
+      name: stage-volume
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "do-block-storage"
+      resources:
+        requests:
+          storage: 10Gi
+{{- end }}
