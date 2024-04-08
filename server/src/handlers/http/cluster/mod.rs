@@ -49,6 +49,7 @@ use super::base_path_without_preceding_slash;
 use super::modal::IngesterMetadata;
 
 // forward the request to all ingesters to keep them in sync
+#[allow(dead_code)]
 pub async fn sync_streams_with_ingesters(
     stream_name: &str,
     time_partition: &str,
@@ -143,6 +144,7 @@ pub async fn fetch_stats_from_ingesters(
     Ok(vec![qs])
 }
 
+#[allow(dead_code)]
 async fn send_stream_sync_request(
     url: &str,
     ingester: IngesterMetadata,
@@ -186,6 +188,7 @@ async fn send_stream_sync_request(
 }
 
 /// send a rollback request to all ingesters
+#[allow(dead_code)]
 async fn send_stream_rollback_request(
     url: &str,
     ingester: IngesterMetadata,
