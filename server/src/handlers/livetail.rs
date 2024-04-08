@@ -264,13 +264,17 @@ fn extract_basic_auth(header: &MetadataMap) -> Option<Credentials> {
 }
 
 fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {
-    let cookies = header
-        .get("Cookie")
-        .and_then(|value| value.to_str().ok())
-        .map(Cookie::split_parse)?;
+    // extract the cookie from the request
+    let cookies = header.get_all("cookie");
+    let cookies: Vec<_> = cookies
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(Cookie::split_parse)
+        .map(|value| value.unwrap())
+        .collect();
 
     cookies
-        .flatten()
+        .into_iter()
         .find(|cookie| cookie.name() == SESSION_COOKIE_NAME)
 }
 
