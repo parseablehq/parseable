@@ -16,8 +16,7 @@
  *
  */
 
-use crate::handlers::http::cluster::utils::check_liveness;
-use crate::handlers::http::cluster::{self, get_ingester_info};
+use crate::handlers::http::cluster;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
 
@@ -45,17 +44,6 @@ impl ParseableServer for QueryServer {
         prometheus: actix_web_prometheus::PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        let data = get_ingester_info().await?;
-
-        // on subsequent runs, the qurier should check if the ingester is up and running or not
-        for ingester in data.iter() {
-            if !check_liveness(&ingester.domain_name).await {
-                eprintln!("Ingester at {} is not reachable", &ingester.domain_name);
-            } else {
-                println!("Ingester at {} is up and running", &ingester.domain_name);
-            }
-        }
-
         let oidc_client = match oidc_client {
             Some(config) => {
                 let client = config
