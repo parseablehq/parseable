@@ -26,7 +26,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::alerts::Alerts;
 use crate::metrics::{EVENTS_INGESTED, EVENTS_INGESTED_SIZE};
-use crate::storage::{ObjectStorage, StorageDir};
+use crate::storage::{LogStream, ObjectStorage, StorageDir};
 use crate::utils::arrow::MergedRecordReader;
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
@@ -208,32 +208,41 @@ impl StreamInfo {
         // return error in case of an error from object storage itself.
 
         for stream in storage.list_streams().await? {
-            let alerts = storage.get_alerts(&stream.name).await?;
-            let schema = storage.get_schema_on_server_start(&stream.name).await?;
-            let meta = storage.get_stream_metadata(&stream.name).await?;
-
-            let schema = update_schema_from_staging(&stream.name, schema);
-            let schema = HashMap::from_iter(
-                schema
-                    .fields
-                    .iter()
-                    .map(|v| (v.name().to_owned(), v.clone())),
-            );
-
-            let metadata = LogStreamMetadata {
-                schema,
-                alerts,
-                cache_enabled: meta.cache_enabled,
-                created_at: meta.created_at,
-                first_event_at: meta.first_event_at,
-                time_partition: meta.time_partition,
-                static_schema_flag: meta.static_schema_flag,
-            };
-
-            let mut map = self.write().expect(LOCK_EXPECT);
-
-            map.insert(stream.name, metadata);
+            self.upsert_stream_info(storage, stream).await?;
         }
+        Ok(())
+    }
+
+    pub async fn upsert_stream_info(
+        &self,
+        storage: &(impl ObjectStorage + ?Sized),
+        stream: LogStream,
+    ) -> Result<(), LoadError> {
+        let alerts = storage.get_alerts(&stream.name).await?;
+        let schema = storage.get_schema_on_server_start(&stream.name).await?;
+        let meta = storage.get_stream_metadata(&stream.name).await?;
+
+        let schema = update_schema_from_staging(&stream.name, schema);
+        let schema = HashMap::from_iter(
+            schema
+                .fields
+                .iter()
+                .map(|v| (v.name().to_owned(), v.clone())),
+        );
+
+        let metadata = LogStreamMetadata {
+            schema,
+            alerts,
+            cache_enabled: meta.cache_enabled,
+            created_at: meta.created_at,
+            first_event_at: meta.first_event_at,
+            time_partition: meta.time_partition,
+            static_schema_flag: meta.static_schema_flag,
+        };
+
+        let mut map = self.write().expect(LOCK_EXPECT);
+
+        map.insert(stream.name, metadata);
 
         Ok(())
     }

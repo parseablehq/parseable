@@ -74,6 +74,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 
     if CONFIG.parseable.mode == Mode::Query {
         if let Ok(new_schema) = fetch_schema(&table_name).await {
+            // commit schema merges the schema internally and updates the schema in storage.
             commit_schema_to_storage(&table_name, new_schema.clone())
                 .await
                 .map_err(QueryError::ObjectStorage)?;

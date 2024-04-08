@@ -27,9 +27,9 @@ use crate::handlers::{
     LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     STREAM_NAME_HEADER_KEY,
 };
-use crate::metadata::STREAM_INFO;
+use crate::metadata::{self, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
-use crate::storage::ObjectStorageError;
+use crate::storage::{LogStream, ObjectStorageError};
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_schema::{Field, Schema};
@@ -165,10 +165,28 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
             .await?;
         }
         Mode::Ingest => {
-            return Err(PostError::Invalid(anyhow::anyhow!(
-                "Stream {} not found. Has it been created?",
-                stream_name
-            )));
+            // here the ingest server has not found the stream
+            // so it should check if the stream exists in storage
+            let store = CONFIG.storage().get_object_store();
+            let streams = store.list_streams().await?;
+            if !streams.contains(&LogStream {
+                name: stream_name.to_owned(),
+            }) {
+                log::error!("Stream {} not found", stream_name);
+                return Err(PostError::Invalid(anyhow::anyhow!(
+                    "Stream {} not found. Has it been created?",
+                    stream_name
+                )));
+            }
+            metadata::STREAM_INFO
+                .upsert_stream_info(
+                    &*store,
+                    LogStream {
+                        name: stream_name.to_owned(),
+                    },
+                )
+                .await
+                .map_err(|_| PostError::StreamNotFound(stream_name.to_owned()))?;
         }
     }
     Ok(())

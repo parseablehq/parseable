@@ -26,8 +26,8 @@ use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
 
+use super::cluster::fetch_stats_from_ingesters;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
-use super::cluster::{fetch_stats_from_ingesters, sync_streams_with_ingesters};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
 use arrow_schema::{Field, Schema};
@@ -166,9 +166,6 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
                 });
     }
 
-    if CONFIG.parseable.mode == Mode::Query {
-        sync_streams_with_ingesters(&stream_name, time_partition, static_schema_flag, body).await?;
-    }
     create_stream(stream_name, time_partition, static_schema_flag, schema).await?;
 
     Ok(("log stream created", StatusCode::OK))

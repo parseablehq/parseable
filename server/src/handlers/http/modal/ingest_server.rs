@@ -263,7 +263,10 @@ impl IngestServer {
         let store = CONFIG.storage().get_object_store();
         let base_path = RelativePathBuf::from("");
         let ingester_metadata = store
-            .get_objects(Some(&base_path), "ingester")
+            .get_objects(
+                Some(&base_path),
+                Box::new(|file_name| file_name.starts_with("ingester")),
+            )
             .await?
             .iter()
             // this unwrap will most definateley shoot me in the foot later

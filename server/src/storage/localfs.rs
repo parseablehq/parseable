@@ -193,7 +193,7 @@ impl ObjectStorage for LocalFS {
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
-        _starts_with_pattern: &str,
+        filter_func: Box<(dyn Fn(String) -> bool + std::marker::Send + 'static)>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let time = Instant::now();
 
@@ -206,13 +206,14 @@ impl ObjectStorage for LocalFS {
         let mut entries = fs::read_dir(&prefix).await?;
         let mut res = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
-            let ingester_file = entry
+            let path = entry
                 .path()
                 .file_name()
-                .unwrap_or_default()
+                .unwrap()
                 .to_str()
-                .unwrap_or_default()
-                .contains("ingester");
+                .unwrap()
+                .to_owned();
+            let ingester_file = filter_func(path);
 
             if !ingester_file {
                 continue;

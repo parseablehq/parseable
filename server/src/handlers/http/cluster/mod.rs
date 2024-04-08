@@ -49,6 +49,7 @@ use super::base_path_without_preceding_slash;
 use super::modal::IngesterMetadata;
 
 // forward the request to all ingesters to keep them in sync
+#[allow(dead_code)]
 pub async fn sync_streams_with_ingesters(
     stream_name: &str,
     time_partition: &str,
@@ -117,7 +118,10 @@ pub async fn fetch_stats_from_ingesters(
     let obs = CONFIG
         .storage()
         .get_object_store()
-        .get_objects(Some(&path), ".ingester")
+        .get_objects(
+            Some(&path),
+            Box::new(|file_name| file_name.starts_with(".ingester")),
+        )
         .await?;
     let mut ingestion_size = 0u64;
     let mut storage_size = 0u64;
@@ -140,6 +144,7 @@ pub async fn fetch_stats_from_ingesters(
     Ok(vec![qs])
 }
 
+#[allow(dead_code)]
 async fn send_stream_sync_request(
     url: &str,
     ingester: IngesterMetadata,
@@ -183,6 +188,7 @@ async fn send_stream_sync_request(
 }
 
 /// send a rollback request to all ingesters
+#[allow(dead_code)]
 async fn send_stream_rollback_request(
     url: &str,
     ingester: IngesterMetadata,
@@ -346,7 +352,10 @@ pub async fn get_ingester_info() -> anyhow::Result<IngesterMetadataArr> {
 
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let arr = store
-        .get_objects(Some(&root_path), "ingester")
+        .get_objects(
+            Some(&root_path),
+            Box::new(|file_name| file_name.starts_with("ingester")),
+        )
         .await?
         .iter()
         // this unwrap will most definateley shoot me in the foot later

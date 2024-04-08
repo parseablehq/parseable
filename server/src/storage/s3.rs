@@ -412,11 +412,10 @@ impl ObjectStorage for S3 {
         Ok(self._get_object(path).await?)
     }
 
-    // TBD  is this the right way or the api calls are too many?
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
-        starts_with_pattern: &str,
+        filter_func: Box<dyn Fn(String) -> bool + Send>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let instant = Instant::now();
 
@@ -431,11 +430,7 @@ impl ObjectStorage for S3 {
         let mut res = vec![];
 
         while let Some(meta) = list_stream.next().await.transpose()? {
-            let ingester_file = meta
-                .location
-                .filename()
-                .unwrap()
-                .starts_with(starts_with_pattern);
+            let ingester_file = filter_func(meta.location.filename().unwrap().to_string());
 
             if !ingester_file {
                 continue;

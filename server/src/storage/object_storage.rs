@@ -69,7 +69,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
-        starts_with_pattern: &str,
+        filter_fun: Box<dyn Fn(String) -> bool + Send>,
     ) -> Result<Vec<Bytes>, ObjectStorageError>;
     async fn put_object(
         &self,
