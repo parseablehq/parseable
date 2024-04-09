@@ -87,8 +87,8 @@ pub struct Cli {
     /// Mode of operation
     pub mode: Mode,
 
-    /// public address for the parseable server
-    pub node_url: String,
+    /// public address for the parseable server ingestor
+    pub ingestor_url: String,
 }
 
 impl Cli {
@@ -115,7 +115,7 @@ impl Cli {
     pub const ROW_GROUP_SIZE: &'static str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &'static str = "compression-algo";
     pub const MODE: &'static str = "mode";
-    pub const NODE_URL: &'static str = "node-url";
+    pub const INGESTOR_URL: &'static str = "ingestor-url";
     pub const DEFAULT_USERNAME: &'static str = "admin";
     pub const DEFAULT_PASSWORD: &'static str = "admin";
 
@@ -317,13 +317,13 @@ impl Cli {
                     .help("Mode of operation"),
             )
             .arg(
-            	Arg::new(Self::NODE_URL)
-             		.long(Self::NODE_URL)
-               		.env("P_NODE_URL")
+            	Arg::new(Self::INGESTOR_URL)
+             		.long(Self::INGESTOR_URL)
+               		.env("P_INGESTOR_URL")
                  	.value_name("URL")
                   	.required(false)
                     .value_parser(validation::socket_addr)
-                    .help("Node URL for Parseable server")
+                    .help("URL to connect to this specific ingestor. Default is the address of the server.")
             )
             .arg(
                 Arg::new(Self::PARQUET_COMPRESSION_ALGO)
@@ -368,8 +368,8 @@ impl FromArgMatches for Cli {
             .cloned()
             .expect("default value for address");
 
-        self.node_url = m
-            .get_one::<String>(Self::NODE_URL)
+        self.ingestor_url = m
+            .get_one::<String>(Self::INGESTOR_URL)
             .cloned()
             .unwrap_or_else(|| self.address.clone());
 
