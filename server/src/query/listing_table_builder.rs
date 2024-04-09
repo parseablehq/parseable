@@ -112,8 +112,8 @@ impl ListingTableBuilder {
                 let hour_prefix = &prefix[0..prefix.rfind("minute").expect("minute exists")];
                 minute_resolve
                     .entry(hour_prefix.to_owned())
-                    .and_modify(|list| list.push(prefix))
-                    .or_default();
+                    .or_insert(Vec::new())
+                    .push(prefix);
             } else {
                 all_resolve.push(prefix)
             }
