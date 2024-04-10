@@ -85,16 +85,16 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
     async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError>;
-    async fn get_ingester_meta_file_paths(
+    async fn get_ingestor_meta_file_paths(
         &self,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError>;
     async fn get_stream_file_paths(
         &self,
         stream_name: &str,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError>;
-    async fn try_delete_ingester_meta(
+    async fn try_delete_ingestor_meta(
         &self,
-        ingester_filename: String,
+        ingestor_filename: String,
     ) -> Result<(), ObjectStorageError>;
     /// Returns the amount of time taken by the `ObjectStore` to perform a get
     /// call.
@@ -474,7 +474,7 @@ pub trait ObjectStorage: Sync + 'static {
                     cache_updates
                         .entry(stream)
                         .or_default()
-                        .push((absolute_path, file))
+                        .push((absolute_path, file));
                 } else {
                     let _ = fs::remove_file(file);
                 }
@@ -539,8 +539,13 @@ fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
 fn schema_path(stream_name: &str) -> RelativePathBuf {
     match CONFIG.parseable.mode {
         Mode::Ingest => {
-            let (ip, port) = get_address();
-            let file_name = format!(".ingester.{}.{}{}", ip, port, SCHEMA_FILE_NAME);
+            let addr = get_address();
+            let file_name = format!(
+                ".ingestor.{}.{}{}",
+                addr.ip(),
+                addr.port(),
+                SCHEMA_FILE_NAME
+            );
 
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
         }
@@ -554,8 +559,13 @@ fn schema_path(stream_name: &str) -> RelativePathBuf {
 pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
     match &CONFIG.parseable.mode {
         Mode::Ingest => {
-            let (ip, port) = get_address();
-            let file_name = format!(".ingester.{}.{}{}", ip, port, STREAM_METADATA_FILE_NAME);
+            let addr = get_address();
+            let file_name = format!(
+                ".ingestor.{}.{}{}",
+                addr.ip(),
+                addr.port(),
+                STREAM_METADATA_FILE_NAME
+            );
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
         }
         Mode::Query | Mode::All => RelativePathBuf::from_iter([
@@ -580,14 +590,14 @@ fn alert_json_path(stream_name: &str) -> RelativePathBuf {
 #[inline(always)]
 fn manifest_path(prefix: &str) -> RelativePathBuf {
     let addr = get_address();
-    let mainfest_file_name = format!("{}.{}.{}", addr.0, addr.1, MANIFEST_FILE);
+    let mainfest_file_name = format!("{}.{}.{}", addr.ip(), addr.port(), MANIFEST_FILE);
     RelativePathBuf::from_iter([prefix, &mainfest_file_name])
 }
 
 #[inline(always)]
-pub fn ingester_metadata_path(ip: String, port: String) -> RelativePathBuf {
+pub fn ingestor_metadata_path(ip: String, port: String) -> RelativePathBuf {
     RelativePathBuf::from_iter([
         PARSEABLE_ROOT_DIRECTORY,
-        &format!("ingester.{}.{}.json", ip, port),
+        &format!("ingestor.{}.{}.json", ip, port),
     ])
 }

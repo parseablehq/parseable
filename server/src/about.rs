@@ -90,7 +90,7 @@ pub fn print_about(
     eprint!(
         "
     {}
-        Version:\t\t\t\t\t\"v{}\"",
+        Version:            \"v{}\"",
         "About:".to_string().bold(),
         current_version,
     ); // "        " "                                        "
@@ -103,8 +103,8 @@ pub fn print_about(
 
     eprintln!(
         "
-        Commit:\t\t\t\t\t\t\"{commit_hash}\"
-        Docs:\t\t\t\t\t\t\"https://logg.ing/docs\""
+        Commit:             \"{commit_hash}\"
+        Docs:               \"https://logg.ing/docs\""
     );
 }
 

@@ -22,12 +22,10 @@ pub mod header_parsing;
 pub mod json;
 pub mod uid;
 pub mod update;
-
-use std::net::{IpAddr, SocketAddr};
-
-use chrono::{DateTime, NaiveDate, Timelike, Utc};
-
 use crate::option::CONFIG;
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
+use std::env;
+use std::net::SocketAddr;
 
 #[allow(dead_code)]
 pub fn hostname() -> Option<String> {
@@ -227,9 +225,30 @@ impl TimePeriod {
 }
 
 #[inline(always)]
-pub fn get_address() -> (IpAddr, u16) {
-    let addr = CONFIG.parseable.ingestor_url.parse::<SocketAddr>().unwrap();
-    (addr.ip(), addr.port())
+pub fn get_address() -> SocketAddr {
+    if CONFIG.parseable.ingestor_url.is_empty() {
+        CONFIG.parseable.address.parse::<SocketAddr>().unwrap()
+    } else {
+        let addr_from_env = CONFIG
+            .parseable
+            .ingestor_url
+            .split(':')
+            .collect::<Vec<&str>>();
+
+        let mut hostname = addr_from_env[0].to_string();
+        let mut port = addr_from_env[1].to_string();
+        if hostname.starts_with('$') && port.starts_with('$') {
+            hostname = get_from_env("HOSTNAME");
+            port = get_from_env("PORT");
+            let addr = format!("{}:{}", hostname, port);
+            addr.parse::<SocketAddr>().unwrap()
+        } else {
+            CONFIG.parseable.ingestor_url.parse::<SocketAddr>().unwrap()
+        }
+    }
+}
+fn get_from_env(var_to_fetch: &str) -> String {
+    env::var(var_to_fetch).unwrap_or_else(|_| "".to_string())
 }
 
 #[cfg(test)]

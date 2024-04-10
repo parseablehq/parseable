@@ -65,7 +65,7 @@ pub async fn about() -> Json<serde_json::Value> {
     let current_version = format!("v{}", current_release.released_version);
     let commit = current_release.commit_hash;
     let deployment_id = meta.deployment_id.to_string();
-    let mode = CONFIG.parseable.mode.to_str();
+    let mode = CONFIG.get_server_mode_string();
     let staging = if CONFIG.parseable.mode == Mode::Query {
         "".to_string()
     } else {

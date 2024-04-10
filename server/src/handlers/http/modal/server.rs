@@ -32,7 +32,6 @@ use crate::migration;
 use crate::rbac;
 use crate::storage;
 use crate::sync;
-use std::net::SocketAddr;
 use std::{fs::File, io::BufReader, sync::Arc};
 
 use actix_web::web::resource;
@@ -275,7 +274,10 @@ impl Server {
                                 web::put()
                                     .to(logstream::put_enable_cache)
                                     .authorize_for_stream(Action::PutCacheEnabled),
-                            )
+                            ),
+                    )
+                    .service(
+                        web::resource("/cache")
                             // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
                             .route(
                                 web::get()
@@ -474,14 +476,5 @@ impl Server {
                 }
             };
         }
-    }
-
-    #[inline(always)]
-    pub fn get_server_address() -> SocketAddr {
-        // this might cause an issue down the line
-        // best is to make the Cli Struct better, but thats a chore
-        (CONFIG.parseable.ingestor_url.clone())
-            .parse::<SocketAddr>()
-            .unwrap()
     }
 }

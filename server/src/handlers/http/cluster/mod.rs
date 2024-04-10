@@ -27,7 +27,7 @@ use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
-use crate::storage::object_storage::ingester_metadata_path;
+use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
 use crate::storage::{ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY};
 use actix_web::http::header;
@@ -40,39 +40,39 @@ use relative_path::RelativePathBuf;
 use serde_json::Value as JsonValue;
 use url::Url;
 
-type IngesterMetadataArr = Vec<IngesterMetadata>;
+type IngestorMetadataArr = Vec<IngestorMetadata>;
 
 use self::utils::StorageStats;
 
 use super::base_path_without_preceding_slash;
 
-use super::modal::IngesterMetadata;
+use super::modal::IngestorMetadata;
 
-// forward the request to all ingesters to keep them in sync
+// forward the request to all ingestors to keep them in sync
 #[allow(dead_code)]
-pub async fn sync_streams_with_ingesters(
+pub async fn sync_streams_with_ingestors(
     stream_name: &str,
     time_partition: &str,
     static_schema: &str,
     schema: Bytes,
 ) -> Result<(), StreamError> {
-    let ingester_infos = get_ingester_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingester info: {:?}", err);
+    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
 
     let mut errored = false;
-    for ingester in ingester_infos.iter() {
+    for ingestor in ingestor_infos.iter() {
         let url = format!(
             "{}{}/logstream/{}",
-            ingester.domain_name,
+            ingestor.domain_name,
             base_path_without_preceding_slash(),
             stream_name
         );
 
         match send_stream_sync_request(
             &url,
-            ingester.clone(),
+            ingestor.clone(),
             time_partition,
             static_schema,
             schema.clone(),
@@ -88,21 +88,21 @@ pub async fn sync_streams_with_ingesters(
     }
 
     if errored {
-        for ingester in ingester_infos {
+        for ingestor in ingestor_infos {
             let url = format!(
                 "{}{}/logstream/{}",
-                ingester.domain_name,
+                ingestor.domain_name,
                 base_path_without_preceding_slash(),
                 stream_name
             );
 
             // roll back the stream creation
-            send_stream_rollback_request(&url, ingester.clone()).await?;
+            send_stream_rollback_request(&url, ingestor.clone()).await?;
         }
 
         // this might be a bit too much
         return Err(StreamError::Custom {
-            msg: "Failed to sync stream with ingesters".to_string(),
+            msg: "Failed to sync stream with ingestors".to_string(),
             status: StatusCode::INTERNAL_SERVER_ERROR,
         });
     }
@@ -110,8 +110,8 @@ pub async fn sync_streams_with_ingesters(
     Ok(())
 }
 
-/// get the cumulative stats from all ingesters
-pub async fn fetch_stats_from_ingesters(
+/// get the cumulative stats from all ingestors
+pub async fn fetch_stats_from_ingestors(
     stream_name: &str,
 ) -> Result<Vec<utils::QueriedStats>, StreamError> {
     let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
@@ -120,7 +120,7 @@ pub async fn fetch_stats_from_ingesters(
         .get_object_store()
         .get_objects(
             Some(&path),
-            Box::new(|file_name| file_name.starts_with(".ingester")),
+            Box::new(|file_name| file_name.starts_with(".ingestor")),
         )
         .await?;
     let mut ingestion_size = 0u64;
@@ -147,12 +147,12 @@ pub async fn fetch_stats_from_ingesters(
 #[allow(dead_code)]
 async fn send_stream_sync_request(
     url: &str,
-    ingester: IngesterMetadata,
+    ingestor: IngestorMetadata,
     time_partition: &str,
     static_schema: &str,
     schema: Bytes,
 ) -> Result<(), StreamError> {
-    if !utils::check_liveness(&ingester.domain_name).await {
+    if !utils::check_liveness(&ingestor.domain_name).await {
         return Ok(());
     }
 
@@ -162,14 +162,14 @@ async fn send_stream_sync_request(
         .header(header::CONTENT_TYPE, "application/json")
         .header(TIME_PARTITION_KEY, time_partition)
         .header(STATIC_SCHEMA_FLAG, static_schema)
-        .header(header::AUTHORIZATION, ingester.token)
+        .header(header::AUTHORIZATION, ingestor.token)
         .body(schema)
         .send()
         .await
         .map_err(|err| {
             log::error!(
-                "Fatal: failed to forward create stream request to ingester: {}\n Error: {:?}",
-                ingester.domain_name,
+                "Fatal: failed to forward create stream request to ingestor: {}\n Error: {:?}",
+                ingestor.domain_name,
                 err
             );
             StreamError::Network(err)
@@ -177,8 +177,8 @@ async fn send_stream_sync_request(
 
     if !res.status().is_success() {
         log::error!(
-            "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
-            ingester.domain_name,
+            "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+            ingestor.domain_name,
             res
         );
         return Err(StreamError::Network(res.error_for_status().unwrap_err()));
@@ -187,13 +187,13 @@ async fn send_stream_sync_request(
     Ok(())
 }
 
-/// send a rollback request to all ingesters
+/// send a rollback request to all ingestors
 #[allow(dead_code)]
 async fn send_stream_rollback_request(
     url: &str,
-    ingester: IngesterMetadata,
+    ingestor: IngestorMetadata,
 ) -> Result<(), StreamError> {
-    if !utils::check_liveness(&ingester.domain_name).await {
+    if !utils::check_liveness(&ingestor.domain_name).await {
         return Ok(());
     }
 
@@ -201,14 +201,14 @@ async fn send_stream_rollback_request(
     let resp = client
         .delete(url)
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::AUTHORIZATION, ingester.token)
+        .header(header::AUTHORIZATION, ingestor.token)
         .send()
         .await
         .map_err(|err| {
             // log the error and return a custom error
             log::error!(
                 "Fatal: failed to rollback stream creation: {}\n Error: {:?}",
-                ingester.domain_name,
+                ingestor.domain_name,
                 err
             );
             StreamError::Network(err)
@@ -219,13 +219,13 @@ async fn send_stream_rollback_request(
     if !resp.status().is_success() {
         log::error!(
             "failed to rollback stream creation: {}\nResponse Returned: {:?}",
-            ingester.domain_name,
+            ingestor.domain_name,
             resp
         );
         return Err(StreamError::Custom {
             msg: format!(
                 "failed to rollback stream creation: {}\nResponse Returned: {:?}",
-                ingester.domain_name,
+                ingestor.domain_name,
                 resp.text().await.unwrap_or_default()
             ),
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -236,24 +236,24 @@ async fn send_stream_rollback_request(
 }
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
-    let ingester_infos = get_ingester_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingester info: {:?}", err);
+    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
 
     let mut infos = vec![];
 
-    for ingester in ingester_infos {
+    for ingestor in ingestor_infos {
         let uri = Url::parse(&format!(
             "{}{}/about",
-            ingester.domain_name,
+            ingestor.domain_name,
             base_path_without_preceding_slash()
         ))
         .expect("should always be a valid url");
 
         let resp = reqwest::Client::new()
             .get(uri)
-            .header(header::AUTHORIZATION, ingester.token.clone())
+            .header(header::AUTHORIZATION, ingestor.token.clone())
             .header(header::CONTENT_TYPE, "application/json")
             .send()
             .await;
@@ -262,13 +262,13 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
             let status = Some(resp.status().to_string());
 
             let resp_data = resp.bytes().await.map_err(|err| {
-                log::error!("Fatal: failed to parse ingester info to bytes: {:?}", err);
+                log::error!("Fatal: failed to parse ingestor info to bytes: {:?}", err);
                 StreamError::Network(err)
             })?;
 
             let sp = serde_json::from_slice::<JsonValue>(&resp_data)
                 .map_err(|err| {
-                    log::error!("Fatal: failed to parse ingester info: {:?}", err);
+                    log::error!("Fatal: failed to parse ingestor info: {:?}", err);
                     StreamError::SerdeError(err)
                 })?
                 .get("staging")
@@ -288,7 +288,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         };
 
         infos.push(utils::ClusterInfo::new(
-            &ingester.domain_name,
+            &ingestor.domain_name,
             reachable,
             staging_path,
             CONFIG.storage().get_endpoint(),
@@ -301,17 +301,17 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
 }
 
 pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
-    let ingester_metadata = get_ingester_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingester info: {:?}", err);
+    let ingestor_metadata = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
         PostError::Invalid(err)
     })?;
 
     let mut dresses = vec![];
 
-    for ingester in ingester_metadata {
+    for ingestor in ingestor_metadata {
         let uri = Url::parse(&format!(
             "{}{}/metrics",
-            &ingester.domain_name,
+            &ingestor.domain_name,
             base_path_without_preceding_slash()
         ))
         .unwrap();
@@ -333,12 +333,12 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
 
             dresses.push(Metrics::from_prometheus_samples(
                 sample,
-                ingester.domain_name,
+                ingestor.domain_name,
             ));
         } else {
             log::warn!(
-                "Failed to fetch metrics from ingester: {}\n",
-                ingester.domain_name,
+                "Failed to fetch metrics from ingestor: {}\n",
+                ingestor.domain_name,
             );
         }
     }
@@ -346,27 +346,27 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
     Ok(actix_web::HttpResponse::Ok().json(dresses))
 }
 
-// update the .query.json file and return the new IngesterMetadataArr
-pub async fn get_ingester_info() -> anyhow::Result<IngesterMetadataArr> {
+// update the .query.json file and return the new ingestorMetadataArr
+pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
     let store = CONFIG.storage().get_object_store();
 
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let arr = store
         .get_objects(
             Some(&root_path),
-            Box::new(|file_name| file_name.starts_with("ingester")),
+            Box::new(|file_name| file_name.starts_with("ingestor")),
         )
         .await?
         .iter()
         // this unwrap will most definateley shoot me in the foot later
-        .map(|x| serde_json::from_slice::<IngesterMetadata>(x).unwrap_or_default())
+        .map(|x| serde_json::from_slice::<IngestorMetadata>(x).unwrap_or_default())
         .collect_vec();
 
     Ok(arr)
 }
 
-pub async fn remove_ingester(req: HttpRequest) -> Result<impl Responder, PostError> {
-    let domain_name: String = req.match_info().get("ingester").unwrap().parse().unwrap();
+pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostError> {
+    let domain_name: String = req.match_info().get("ingestor").unwrap().parse().unwrap();
     let domain_name = to_url_string(domain_name);
 
     if check_liveness(&domain_name).await {
@@ -374,14 +374,14 @@ pub async fn remove_ingester(req: HttpRequest) -> Result<impl Responder, PostErr
     }
 
     let url = Url::parse(&domain_name).unwrap();
-    let ingester_meta_filename = ingester_metadata_path(
+    let ingestor_meta_filename = ingestor_metadata_path(
         url.host_str().unwrap().to_owned(),
         url.port().unwrap().to_string(),
     )
     .to_string();
     let object_store = CONFIG.storage().get_object_store();
     let msg = match object_store
-        .try_delete_ingester_meta(ingester_meta_filename)
+        .try_delete_ingestor_meta(ingestor_meta_filename)
         .await
     {
         Ok(_) => {

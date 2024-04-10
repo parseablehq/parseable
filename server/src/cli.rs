@@ -322,7 +322,6 @@ impl Cli {
                		.env("P_INGESTOR_URL")
                  	.value_name("URL")
                   	.required(false)
-                    .value_parser(validation::socket_addr)
                     .help("URL to connect to this specific ingestor. Default is the address of the server.")
             )
             .arg(
@@ -371,7 +370,7 @@ impl FromArgMatches for Cli {
         self.ingestor_url = m
             .get_one::<String>(Self::INGESTOR_URL)
             .cloned()
-            .unwrap_or_else(|| self.address.clone());
+            .unwrap_or_else(String::default);
 
         self.local_staging_path = m
             .get_one::<PathBuf>(Self::STAGING)

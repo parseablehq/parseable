@@ -430,9 +430,9 @@ impl ObjectStorage for S3 {
         let mut res = vec![];
 
         while let Some(meta) = list_stream.next().await.transpose()? {
-            let ingester_file = filter_func(meta.location.filename().unwrap().to_string());
+            let ingestor_file = filter_func(meta.location.filename().unwrap().to_string());
 
-            if !ingester_file {
+            if !ingestor_file {
                 continue;
             }
 
@@ -454,7 +454,7 @@ impl ObjectStorage for S3 {
         Ok(res)
     }
 
-    async fn get_ingester_meta_file_paths(
+    async fn get_ingestor_meta_file_paths(
         &self,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
         let time = Instant::now();
@@ -462,7 +462,7 @@ impl ObjectStorage for S3 {
         let mut object_stream = self.client.list(Some(&self.root)).await?;
 
         while let Some(meta) = object_stream.next().await.transpose()? {
-            let flag = meta.location.filename().unwrap().starts_with("ingester");
+            let flag = meta.location.filename().unwrap().starts_with("ingestor");
 
             if flag {
                 path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
@@ -487,7 +487,7 @@ impl ObjectStorage for S3 {
         let mut object_stream = self.client.list(Some(&path)).await?;
 
         while let Some(meta) = object_stream.next().await.transpose()? {
-            let flag = meta.location.filename().unwrap().starts_with(".ingester");
+            let flag = meta.location.filename().unwrap().starts_with(".ingestor");
 
             if flag {
                 path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
@@ -544,11 +544,11 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn try_delete_ingester_meta(
+    async fn try_delete_ingestor_meta(
         &self,
-        ingester_filename: String,
+        ingestor_filename: String,
     ) -> Result<(), ObjectStorageError> {
-        let file = RelativePathBuf::from(&ingester_filename);
+        let file = RelativePathBuf::from(&ingestor_filename);
         match self.client.delete(&to_object_store_path(&file)).await {
             Ok(_) => Ok(()),
             Err(err) => {
@@ -558,7 +558,7 @@ impl ObjectStorage for S3 {
                     log::error!("Node does not exist");
                     Err(err.into())
                 } else {
-                    log::error!("Error deleting ingester meta file: {:?}", err);
+                    log::error!("Error deleting ingestor meta file: {:?}", err);
                     Err(err.into())
                 }
             }

@@ -235,7 +235,7 @@ async fn run_meta_file_migration(
     log::info!("Migrating metadata files to new location");
 
     // get the list of all meta files
-    let mut meta_files = object_store.get_ingester_meta_file_paths().await?;
+    let mut meta_files = object_store.get_ingestor_meta_file_paths().await?;
     meta_files.push(old_meta_file_path);
 
     for file in meta_files {

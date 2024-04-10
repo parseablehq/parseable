@@ -26,7 +26,7 @@ use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
 
-use super::cluster::fetch_stats_from_ingesters;
+use super::cluster::fetch_stats_from_ingestors;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
@@ -286,7 +286,26 @@ pub async fn put_enable_cache(
     if CONFIG.parseable.local_cache_path.is_none() {
         return Err(StreamError::CacheNotEnabled(stream_name));
     }
-
+    if CONFIG.parseable.mode == Mode::Ingest {
+        // here the ingest server has not found the stream
+        // so it should check if the stream exists in storage
+        let streams = storage.list_streams().await?;
+        if !streams.contains(&LogStream {
+            name: stream_name.clone().to_owned(),
+        }) {
+            log::error!("Stream {} not found", stream_name.clone());
+            return Err(StreamError::StreamNotFound(stream_name.clone()));
+        }
+        metadata::STREAM_INFO
+            .upsert_stream_info(
+                &*storage,
+                LogStream {
+                    name: stream_name.clone().to_owned(),
+                },
+            )
+            .await
+            .map_err(|_| StreamError::StreamNotFound(stream_name.clone()))?;
+    }
     let mut stream_metadata = storage.get_stream_metadata(&stream_name).await?;
     stream_metadata.cache_enabled = enable_cache;
     storage
@@ -310,8 +329,8 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let ingester_stats = if CONFIG.parseable.mode == Mode::Query {
-        Some(fetch_stats_from_ingesters(&stream_name).await?)
+    let ingestor_stats = if CONFIG.parseable.mode == Mode::Query {
+        Some(fetch_stats_from_ingestors(&stream_name).await?)
     } else {
         None
     };
@@ -348,9 +367,9 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
         }
     };
-    let stats = if let Some(mut ingester_stats) = ingester_stats {
-        ingester_stats.push(stats);
-        merge_quried_stats(ingester_stats)
+    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
+        ingestor_stats.push(stats);
+        merge_quried_stats(ingestor_stats)
     } else {
         stats
     };

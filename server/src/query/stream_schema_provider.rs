@@ -328,7 +328,7 @@ impl TableProvider for StandardTableProvider {
             let obs = glob_storage
                 .get_objects(
                     Some(&path),
-                    Box::new(|file_name| file_name.starts_with(".ingester")),
+                    Box::new(|file_name| file_name.starts_with(".ingestor")),
                 )
                 .await;
 
