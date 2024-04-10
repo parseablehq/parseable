@@ -240,14 +240,10 @@ pub fn get_address() -> SocketAddr {
         if hostname.starts_with('$') {
             let var_hostname = hostname[1..].to_string();
             hostname = get_from_env(&var_hostname);
-        } else {
-            hostname = hostname.to_string();
         }
         if port.starts_with('$') {
             let var_port = port[1..].to_string();
             port = get_from_env(&var_port);
-        } else {
-            hostname = hostname.to_string();
         }
         format!("{}:{}", hostname, port)
             .parse::<SocketAddr>()
