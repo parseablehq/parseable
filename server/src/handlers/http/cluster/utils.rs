@@ -16,7 +16,7 @@
  *
  */
 
-use crate::handlers::http::{logstream::error::StreamError, modal::IngesterMetadata};
+use crate::handlers::http::{logstream::error::StreamError, modal::IngestorMetadata};
 use actix_web::http::header;
 use chrono::{DateTime, Utc};
 use http::StatusCode;
@@ -55,8 +55,8 @@ pub struct ClusterInfo {
     reachable: bool,
     staging_path: String,
     storage_path: String,
-    error: Option<String>,  // error message if the ingester is not reachable
-    status: Option<String>, // status message if the ingester is reachable
+    error: Option<String>,  // error message if the ingestor is not reachable
+    status: Option<String>, // status message if the ingestor is reachable
 }
 
 impl ClusterInfo {
@@ -197,14 +197,14 @@ pub async fn check_liveness(domain_name: &str) -> bool {
     reqw.is_ok()
 }
 
-/// send a request to the ingester to fetch its stats
+/// send a request to the ingestor to fetch its stats
 /// dead for now
 #[allow(dead_code)]
 pub async fn send_stats_request(
     url: &str,
-    ingester: IngesterMetadata,
+    ingestor: IngestorMetadata,
 ) -> Result<Option<Response>, StreamError> {
-    if !check_liveness(&ingester.domain_name).await {
+    if !check_liveness(&ingestor.domain_name).await {
         return Ok(None);
     }
 
@@ -212,13 +212,13 @@ pub async fn send_stats_request(
     let res = client
         .get(url)
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::AUTHORIZATION, ingester.token)
+        .header(header::AUTHORIZATION, ingestor.token)
         .send()
         .await
         .map_err(|err| {
             log::error!(
-                "Fatal: failed to fetch stats from ingester: {}\n Error: {:?}",
-                ingester.domain_name,
+                "Fatal: failed to fetch stats from ingestor: {}\n Error: {:?}",
+                ingestor.domain_name,
                 err
             );
 
@@ -227,14 +227,14 @@ pub async fn send_stats_request(
 
     if !res.status().is_success() {
         log::error!(
-            "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
-            ingester.domain_name,
+            "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+            ingestor.domain_name,
             res
         );
         return Err(StreamError::Custom {
             msg: format!(
-                "failed to forward create stream request to ingester: {}\nResponse Returned: {:?}",
-                ingester.domain_name,
+                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
+                ingestor.domain_name,
                 res.text().await.unwrap_or_default()
             ),
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -247,16 +247,16 @@ pub async fn send_stats_request(
 /// domain_name needs to be http://ip:port
 /// dead code for now
 #[allow(dead_code)]
-pub fn ingester_meta_filename(domain_name: &str) -> String {
+pub fn ingestor_meta_filename(domain_name: &str) -> String {
     if domain_name.starts_with("http://") | domain_name.starts_with("https://") {
         let url = Url::parse(domain_name).unwrap();
         return format!(
-            "ingester.{}.{}.json",
+            "ingestor.{}.{}.json",
             url.host_str().unwrap(),
             url.port().unwrap()
         );
     }
-    format!("ingester.{}.json", domain_name)
+    format!("ingestor.{}.json", domain_name)
 }
 
 pub fn to_url_string(str: String) -> String {

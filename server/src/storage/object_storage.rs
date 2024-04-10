@@ -85,16 +85,16 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
     async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError>;
-    async fn get_ingester_meta_file_paths(
+    async fn get_ingestor_meta_file_paths(
         &self,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError>;
     async fn get_stream_file_paths(
         &self,
         stream_name: &str,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError>;
-    async fn try_delete_ingester_meta(
+    async fn try_delete_ingestor_meta(
         &self,
-        ingester_filename: String,
+        ingestor_filename: String,
     ) -> Result<(), ObjectStorageError>;
     /// Returns the amount of time taken by the `ObjectStore` to perform a get
     /// call.
@@ -541,7 +541,7 @@ fn schema_path(stream_name: &str) -> RelativePathBuf {
         Mode::Ingest => {
             let addr = get_address();
             let file_name = format!(
-                ".ingester.{}.{}{}",
+                ".ingestor.{}.{}{}",
                 addr.ip(),
                 addr.port(),
                 SCHEMA_FILE_NAME
@@ -561,7 +561,7 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
         Mode::Ingest => {
             let addr = get_address();
             let file_name = format!(
-                ".ingester.{}.{}{}",
+                ".ingestor.{}.{}{}",
                 addr.ip(),
                 addr.port(),
                 STREAM_METADATA_FILE_NAME
@@ -595,9 +595,9 @@ fn manifest_path(prefix: &str) -> RelativePathBuf {
 }
 
 #[inline(always)]
-pub fn ingester_metadata_path(ip: String, port: String) -> RelativePathBuf {
+pub fn ingestor_metadata_path(ip: String, port: String) -> RelativePathBuf {
     RelativePathBuf::from_iter([
         PARSEABLE_ROOT_DIRECTORY,
-        &format!("ingester.{}.{}.json", ip, port),
+        &format!("ingestor.{}.{}.json", ip, port),
     ])
 }
