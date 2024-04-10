@@ -39,6 +39,7 @@ use super::OpenIdClient;
 use super::ParseableServer;
 use super::DEFAULT_VERSION;
 
+use crate::utils::get_address;
 use actix_web::body::MessageBody;
 use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
@@ -196,6 +197,15 @@ impl IngestServer {
                                 .to(logstream::get_stats)
                                 .authorize_for_stream(Action::GetStats),
                         ),
+                    )
+                    .service(
+                        web::resource("/cache")
+                            // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_enable_cache)
+                                    .authorize_for_stream(Action::PutCacheEnabled),
+                            ),
                     ),
             )
     }
@@ -204,7 +214,7 @@ impl IngestServer {
     async fn set_ingester_metadata(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
 
-        let sock = Server::get_server_address();
+        let sock = get_address();
         let path = ingester_metadata_path(sock.ip().to_string(), sock.port().to_string());
 
         if store.get_object(&path).await.is_ok() {

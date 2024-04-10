@@ -118,7 +118,7 @@ pub async fn update_snapshot(
         let mut ch = false;
         for m in manifests.iter() {
             let s = get_address();
-            let p = format!("{}.{}.{}", s.0, s.1, MANIFEST_FILE);
+            let p = format!("{}.{}.{}", s.ip(), s.port(), MANIFEST_FILE);
             if m.manifest_path.contains(&p) {
                 ch = true;
             }
@@ -152,7 +152,7 @@ pub async fn update_snapshot(
             };
 
             let addr = get_address();
-            let mainfest_file_name = format!("{}.{}.{}", addr.0, addr.1, MANIFEST_FILE);
+            let mainfest_file_name = format!("{}.{}.{}", addr.ip(), addr.port(), MANIFEST_FILE);
             let path =
                 partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
             storage
@@ -186,7 +186,7 @@ pub async fn update_snapshot(
         };
 
         let addr = get_address();
-        let mainfest_file_name = format!("{}.{}.{}", addr.0, addr.1, MANIFEST_FILE);
+        let mainfest_file_name = format!("{}.{}.{}", addr.ip(), addr.port(), MANIFEST_FILE);
         let path = partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
         storage
             .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())

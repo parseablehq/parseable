@@ -25,6 +25,13 @@ use std::{
     sync::Arc,
 };
 
+use crate::{
+    event::DEFAULT_TIMESTAMP_KEY,
+    metrics,
+    option::CONFIG,
+    storage::OBJECT_STORE_DATA_GRANULARITY,
+    utils::{self, arrow::merged_reader::MergedReverseRecordReader, get_address},
+};
 use arrow_schema::{ArrowError, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use parquet::{
@@ -34,15 +41,6 @@ use parquet::{
     file::properties::{WriterProperties, WriterPropertiesBuilder},
     format::SortingColumn,
     schema::types::ColumnPath,
-};
-
-use super::super::handlers::http::modal::server::Server;
-use crate::{
-    event::DEFAULT_TIMESTAMP_KEY,
-    metrics,
-    option::CONFIG,
-    storage::OBJECT_STORE_DATA_GRANULARITY,
-    utils::{self, arrow::merged_reader::MergedReverseRecordReader},
 };
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
@@ -65,7 +63,7 @@ impl StorageDir {
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");
-        let sock = Server::get_server_address();
+        let sock = get_address();
         let ip = sock.ip();
         let port = sock.port();
         format!("{local_uri}{ip}.{port}.{extention}")

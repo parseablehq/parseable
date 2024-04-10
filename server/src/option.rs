@@ -165,6 +165,14 @@ impl Config {
         }
         "S3 bucket"
     }
+
+    pub fn get_server_mode_string(&self) -> &str {
+        match self.parseable.mode {
+            Mode::Query => "Distributed (Query)",
+            Mode::Ingest => "Distributed (Ingest)",
+            Mode::All => "Standalone",
+        }
+    }
 }
 
 fn create_parseable_cli_command() -> Command {
