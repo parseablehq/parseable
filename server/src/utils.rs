@@ -237,14 +237,21 @@ pub fn get_address() -> SocketAddr {
 
         let mut hostname = addr_from_env[0].to_string();
         let mut port = addr_from_env[1].to_string();
-        if hostname.starts_with('$') && port.starts_with('$') {
-            hostname = get_from_env("HOSTNAME");
-            port = get_from_env("PORT");
-            let addr = format!("{}:{}", hostname, port);
-            addr.parse::<SocketAddr>().unwrap()
+        if hostname.starts_with('$') {
+            let var_hostname = hostname[1..].to_string();
+            hostname = get_from_env(&var_hostname);
         } else {
-            CONFIG.parseable.ingestor_url.parse::<SocketAddr>().unwrap()
+            hostname = hostname.to_string();
         }
+        if port.starts_with('$') {
+            let var_port = port[1..].to_string();
+            port = get_from_env(&var_port);
+        } else {
+            hostname = hostname.to_string();
+        }
+        format!("{}:{}", hostname, port)
+            .parse::<SocketAddr>()
+            .unwrap()
     }
 }
 fn get_from_env(var_to_fetch: &str) -> String {
