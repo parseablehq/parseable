@@ -77,14 +77,14 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     eprintln!(
         "
     {}
-        Address:\t\t\t\t\t{}
-        Credentials:\t\t\t\t\t{}
-        Server Mode:\t\t\t\t\t\"{}\"
-        LLM Status:\t\t\t\t\t\"{}\"",
+        Address:            {}
+        Credentials:        {}
+        Server Mode:        \"{}\"
+        LLM Status:         \"{}\"",
         "Server:".to_string().bold(),
         address,
         credentials,
-        config.parseable.mode.to_str(),
+        config.get_server_mode_string(),
         llm_status
     );
 }
@@ -101,8 +101,8 @@ async fn storage_info(config: &Config) {
     eprintln!(
         "
     {}
-        Storage Mode:\t\t\t\t\t\"{}\"
-        Staging Path:\t\t\t\t\t\"{}\"",
+        Storage Mode:       \"{}\"
+        Staging Path:       \"{}\"",
         "Storage:".to_string().bold(),
         config.get_storage_mode_string(),
         config.staging_dir().to_string_lossy(),
@@ -116,7 +116,7 @@ async fn storage_info(config: &Config) {
 
         eprintln!(
             "\
-    {:8}Cache:\t\t\t\t\t\"{}\", (size: {})",
+        {:8}Cache:              \"{}\", (size: {})",
             "",
             path.display(),
             size
@@ -125,7 +125,7 @@ async fn storage_info(config: &Config) {
 
     eprintln!(
         "\
-    {:8}Store:\t\t\t\t\t\t\"{}\", (latency: {:?})",
+    {:8}Store:              \"{}\", (latency: {:?})",
         "",
         storage.get_endpoint(),
         latency

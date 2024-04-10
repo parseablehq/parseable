@@ -64,8 +64,8 @@ pub struct Report {
     server_mode: String,
     version: String,
     commit_hash: String,
-    active_ingesters: u64,
-    inactive_ingesters: u64,
+    active_ingestors: u64,
+    inactive_ingestors: u64,
     stream_count: usize,
     total_events_count: u64,
     total_json_bytes: u64,
@@ -91,7 +91,7 @@ impl Report {
             cpu_count = info.cpus().len();
             mem_total = info.total_memory();
         }
-        let ingester_metrics = fetch_ingesters_metrics().await;
+        let ingestor_metrics = fetch_ingestors_metrics().await;
 
         Self {
             deployment_id: storage::StorageMetadata::global().deployment_id,
@@ -106,12 +106,12 @@ impl Report {
             server_mode: CONFIG.parseable.mode.to_string(),
             version: current().released_version.to_string(),
             commit_hash: current().commit_hash,
-            active_ingesters: ingester_metrics.0,
-            inactive_ingesters: ingester_metrics.1,
-            stream_count: ingester_metrics.2,
-            total_events_count: ingester_metrics.3,
-            total_json_bytes: ingester_metrics.4,
-            total_parquet_bytes: ingester_metrics.5,
+            active_ingestors: ingestor_metrics.0,
+            inactive_ingestors: ingestor_metrics.1,
+            stream_count: ingestor_metrics.2,
+            total_events_count: ingestor_metrics.3,
+            total_json_bytes: ingestor_metrics.4,
+            total_parquet_bytes: ingestor_metrics.5,
             metrics: build_metrics().await,
         }
     }
@@ -122,7 +122,7 @@ impl Report {
     }
 }
 
-/// build the node metrics for the node ingester endpoint
+/// build the node metrics for the node ingestor endpoint
 pub async fn get_analytics(_: HttpRequest) -> impl Responder {
     let json = NodeMetrics::build();
     web::Json(json)
@@ -148,23 +148,23 @@ fn total_event_stats() -> (u64, u64, u64) {
     (total_events, total_json_bytes, total_parquet_bytes)
 }
 
-async fn fetch_ingesters_metrics() -> (u64, u64, usize, u64, u64, u64) {
+async fn fetch_ingestors_metrics() -> (u64, u64, usize, u64, u64, u64) {
     let event_stats = total_event_stats();
     let mut node_metrics =
         NodeMetrics::new(total_streams(), event_stats.0, event_stats.1, event_stats.2);
 
     let mut vec = vec![];
-    let mut active_ingesters = 0u64;
-    let mut offline_ingesters = 0u64;
+    let mut active_ingestors = 0u64;
+    let mut offline_ingestors = 0u64;
     if CONFIG.parseable.mode == Mode::Query {
         // send analytics for ingest servers
 
-        // ingester infos should be valid here, if not some thing is wrong
-        let ingester_infos = cluster::get_ingester_info().await.unwrap();
+        // ingestor infos should be valid here, if not some thing is wrong
+        let ingestor_infos = cluster::get_ingestor_info().await.unwrap();
 
-        for im in ingester_infos {
+        for im in ingestor_infos {
             if !check_liveness(&im.domain_name).await {
-                offline_ingesters += 1;
+                offline_ingestors += 1;
                 continue;
             }
 
@@ -185,15 +185,15 @@ async fn fetch_ingesters_metrics() -> (u64, u64, usize, u64, u64, u64) {
 
             let data = serde_json::from_slice::<NodeMetrics>(&resp.bytes().await.unwrap()).unwrap();
             vec.push(data);
-            active_ingesters += 1;
+            active_ingestors += 1;
         }
 
         node_metrics.accumulate(&mut vec);
     }
 
     (
-        active_ingesters,
-        offline_ingesters,
+        active_ingestors,
+        offline_ingestors,
         node_metrics.stream_count,
         node_metrics.total_events_count,
         node_metrics.total_json_bytes,

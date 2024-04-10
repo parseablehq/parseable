@@ -47,7 +47,7 @@ pub enum Action {
     QueryLLM,
     ListCluster,
     ListClusterMetrics,
-    DeleteIngester,
+    Deleteingestor,
     All,
     GetAnalytics,
 }
@@ -106,7 +106,7 @@ impl RoleBuilder {
                 | Action::ListStream
                 | Action::ListCluster
                 | Action::ListClusterMetrics
-                | Action::DeleteIngester
+                | Action::Deleteingestor
                 | Action::GetAnalytics => Permission::Unit(action),
                 Action::Ingest
                 | Action::GetSchema
@@ -138,7 +138,7 @@ pub mod model {
         Admin,
         Editor,
         Writer { stream: String },
-        Ingester { stream: String },
+        Ingestor { stream: String },
         Reader { stream: String, tag: Option<String> },
     }
 
@@ -157,7 +157,7 @@ pub mod model {
                     }
                     reader
                 }
-                DefaultPrivilege::Ingester { stream } => {
+                DefaultPrivilege::Ingestor { stream } => {
                     ingest_perm_builder().with_stream(stream.to_owned())
                 }
             }

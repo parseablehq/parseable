@@ -20,25 +20,25 @@ use crate::analytics;
 use crate::banner;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::RouteExt;
-use crate::handlers::http::MAX_EVENT_PAYLOAD_SIZE;
 use crate::localcache::LocalCacheManager;
 use crate::metadata;
 use crate::metrics;
 use crate::rbac;
 use crate::rbac::role::Action;
 use crate::storage;
-use crate::storage::object_storage::ingester_metadata_path;
+use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::ObjectStorageError;
 use crate::sync;
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
-use super::IngesterMetadata;
+use super::IngestorMetadata;
 use super::OpenIdClient;
 use super::ParseableServer;
 use super::DEFAULT_VERSION;
 
+use crate::utils::get_address;
 use actix_web::body::MessageBody;
 use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
@@ -65,8 +65,8 @@ impl ParseableServer for IngestServer {
         prometheus: PrometheusMetrics,
         _oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()> {
-        // set the ingester metadata
-        self.set_ingester_metadata().await?;
+        // set the ingestor metadata
+        self.set_ingestor_metadata().await?;
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
@@ -135,7 +135,6 @@ impl IngestServer {
             .service(
                 // Base path "{url}/api/v1"
                 web::scope(&base_path())
-                    .service(Server::get_query_factory())
                     .service(Server::get_ingest_factory())
                     .service(Self::logstream_api())
                     .service(Server::get_about_factory())
@@ -157,63 +156,42 @@ impl IngestServer {
     }
 
     fn logstream_api() -> Scope {
-        web::scope("/logstream")
-            .service(
-                // GET "/logstream" ==> Get list of all Log Streams on the server
-                web::resource("")
-                    .route(web::get().to(logstream::list).authorize(Action::ListStream)),
-            )
-            .service(
-                web::scope("/{logstream}")
-                    .service(
-                        web::resource("")
-                            // PUT "/logstream/{logstream}" ==> Create log stream
-                            .route(
-                                web::put()
-                                    .to(logstream::put_stream)
-                                    .authorize_for_stream(Action::CreateStream),
-                            )
-                            // DELETE "/logstream/{logstream}" ==> Delete log stream
-                            .route(
-                                web::delete()
-                                    .to(logstream::delete)
-                                    .authorize_for_stream(Action::DeleteStream),
-                            )
-                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
-                    )
-                    .service(
-                        // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
-                        web::resource("/schema").route(
-                            web::get()
-                                .to(logstream::schema)
-                                .authorize_for_stream(Action::GetSchema),
-                        ),
-                    )
-                    .service(
-                        // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
-                        web::resource("/stats").route(
-                            web::get()
-                                .to(logstream::get_stats)
-                                .authorize_for_stream(Action::GetStats),
-                        ),
+        web::scope("/logstream").service(
+            web::scope("/{logstream}")
+                .service(
+                    // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
+                    web::resource("/stats").route(
+                        web::get()
+                            .to(logstream::get_stats)
+                            .authorize_for_stream(Action::GetStats),
                     ),
-            )
+                )
+                .service(
+                    web::resource("/cache")
+                        // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
+                        .route(
+                            web::put()
+                                .to(logstream::put_enable_cache)
+                                .authorize_for_stream(Action::PutCacheEnabled),
+                        ),
+                ),
+        )
     }
 
-    // create the ingester metadata and put the .ingester.json file in the object store
-    async fn set_ingester_metadata(&self) -> anyhow::Result<()> {
+    // create the ingestor metadata and put the .ingestor.json file in the object store
+    async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
 
-        let sock = Server::get_server_address();
-        let path = ingester_metadata_path(sock.ip().to_string(), sock.port().to_string());
+        let sock = get_address();
+        let path = ingestor_metadata_path(sock.ip().to_string(), sock.port().to_string());
 
         if store.get_object(&path).await.is_ok() {
-            println!("Ingester metadata already exists");
+            println!("ingestor metadata already exists");
             return Ok(());
         };
 
         let scheme = CONFIG.parseable.get_scheme();
-        let resource = IngesterMetadata::new(
+        let resource = IngestorMetadata::new(
             sock.port().to_string(),
             CONFIG
                 .parseable
@@ -240,7 +218,7 @@ impl IngestServer {
     }
 
     // check for querier state. Is it there, or was it there in the past
-    // this should happen before the set the ingester metadata
+    // this should happen before the set the ingestor metadata
     async fn check_querier_state(&self) -> anyhow::Result<(), ObjectStorageError> {
         // how do we check for querier state?
         // based on the work flow of the system, the querier will always need to start first
@@ -262,19 +240,19 @@ impl IngestServer {
         // check if your creds match with others
         let store = CONFIG.storage().get_object_store();
         let base_path = RelativePathBuf::from("");
-        let ingester_metadata = store
+        let ingestor_metadata = store
             .get_objects(
                 Some(&base_path),
-                Box::new(|file_name| file_name.starts_with("ingester")),
+                Box::new(|file_name| file_name.starts_with("ingestor")),
             )
             .await?
             .iter()
             // this unwrap will most definateley shoot me in the foot later
-            .map(|x| serde_json::from_slice::<IngesterMetadata>(x).unwrap_or_default())
+            .map(|x| serde_json::from_slice::<IngestorMetadata>(x).unwrap_or_default())
             .collect_vec();
 
-        if !ingester_metadata.is_empty() {
-            let check = ingester_metadata[0].token.clone();
+        if !ingestor_metadata.is_empty() {
+            let check = ingestor_metadata[0].token.clone();
 
             let token = base64::prelude::BASE64_STANDARD.encode(format!(
                 "{}:{}",
@@ -284,8 +262,8 @@ impl IngestServer {
             let token = format!("Basic {}", token);
 
             if check != token {
-                log::error!("Credentials do not match with other ingesters. Please check your credentials and try again.");
-                return Err(anyhow::anyhow!("Credentials do not match with other ingesters. Please check your credentials and try again."));
+                log::error!("Credentials do not match with other ingestors. Please check your credentials and try again.");
+                return Err(anyhow::anyhow!("Credentials do not match with other ingestors. Please check your credentials and try again."));
             }
         }
 

@@ -1,10 +1,9 @@
+use crate::utils::get_address;
 use prometheus_parse::Sample as PromSample;
 use prometheus_parse::Value as PromValue;
 use serde::Serialize;
 use serde_json::Error as JsonError;
 use serde_json::Value as JsonValue;
-
-use crate::handlers::http::modal::server::Server;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Metrics {
@@ -23,7 +22,7 @@ struct StorageMetrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        let socket = Server::get_server_address();
+        let socket = get_address();
         let address = format!("http://{}:{}", socket.ip(), socket.port());
         Metrics {
             address,

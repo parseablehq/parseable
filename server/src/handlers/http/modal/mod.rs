@@ -55,7 +55,7 @@ pub trait ParseableServer {
 }
 
 #[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq)]
-pub struct IngesterMetadata {
+pub struct IngestorMetadata {
     pub version: String,
     pub port: String,
     pub domain_name: String,
@@ -63,7 +63,7 @@ pub struct IngesterMetadata {
     pub token: String,
 }
 
-impl IngesterMetadata {
+impl IngestorMetadata {
     pub fn new(
         port: String,
         domain_name: String,
@@ -91,11 +91,11 @@ mod test {
     use actix_web::body::MessageBody;
     use rstest::rstest;
 
-    use super::{IngesterMetadata, DEFAULT_VERSION};
+    use super::{IngestorMetadata, DEFAULT_VERSION};
 
     #[rstest]
     fn test_deserialize_resource() {
-        let lhs: IngesterMetadata = IngesterMetadata::new(
+        let lhs: IngestorMetadata = IngestorMetadata::new(
             "8000".to_string(),
             "https://localhost:8000".to_string(),
             DEFAULT_VERSION.to_string(),
@@ -104,14 +104,14 @@ mod test {
             "admin",
         );
 
-        let rhs = serde_json::from_slice::<IngesterMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4="}"#).unwrap();
+        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4="}"#).unwrap();
 
         assert_eq!(rhs, lhs);
     }
 
     #[rstest]
     fn test_serialize_resource() {
-        let im = IngesterMetadata::new(
+        let im = IngestorMetadata::new(
             "8000".to_string(),
             "https://localhost:8000".to_string(),
             DEFAULT_VERSION.to_string(),

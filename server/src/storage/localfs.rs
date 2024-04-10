@@ -114,7 +114,7 @@ impl ObjectStorage for LocalFS {
         res
     }
 
-    async fn get_ingester_meta_file_paths(
+    async fn get_ingestor_meta_file_paths(
         &self,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
         let time = Instant::now();
@@ -129,7 +129,7 @@ impl ObjectStorage for LocalFS {
                 .unwrap_or_default()
                 .to_str()
                 .unwrap_or_default()
-                .contains("ingester");
+                .contains("ingestor");
 
             if flag {
                 path_arr.push(
@@ -165,7 +165,7 @@ impl ObjectStorage for LocalFS {
                 .unwrap_or_default()
                 .to_str()
                 .unwrap_or_default()
-                .contains("ingester");
+                .contains("ingestor");
 
             if flag {
                 path_arr.push(RelativePathBuf::from_iter([
@@ -213,9 +213,9 @@ impl ObjectStorage for LocalFS {
                 .to_str()
                 .unwrap()
                 .to_owned();
-            let ingester_file = filter_func(path);
+            let ingestor_file = filter_func(path);
 
-            if !ingester_file {
+            if !ingestor_file {
                 continue;
             }
 
@@ -278,11 +278,11 @@ impl ObjectStorage for LocalFS {
         Ok(fs::remove_dir_all(path).await?)
     }
 
-    async fn try_delete_ingester_meta(
+    async fn try_delete_ingestor_meta(
         &self,
-        ingester_filename: String,
+        ingestor_filename: String,
     ) -> Result<(), ObjectStorageError> {
-        let path = self.root.join(ingester_filename);
+        let path = self.root.join(ingestor_filename);
         Ok(fs::remove_file(path).await?)
     }
 

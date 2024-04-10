@@ -215,7 +215,7 @@ async fn into_query(
 
 /// unused for now, might need it in the future
 #[allow(unused)]
-fn transform_query_for_ingester(query: &Query) -> Option<Query> {
+fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
     if query.query.is_empty() {
         return None;
     }
@@ -237,7 +237,7 @@ fn transform_query_for_ingester(query: &Query) -> Option<Query> {
     };
 
     let start_time = end_time - chrono::Duration::minutes(1);
-    // when transforming the query, the ingesters are forced to return an array of values
+    // when transforming the query, the ingestors are forced to return an array of values
     let q = Query {
         query: query.query.clone(),
         fields: false,
