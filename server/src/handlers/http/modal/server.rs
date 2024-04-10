@@ -274,10 +274,7 @@ impl Server {
                                 web::put()
                                     .to(logstream::put_enable_cache)
                                     .authorize_for_stream(Action::PutCacheEnabled),
-                            ),
-                    )
-                    .service(
-                        web::resource("/cache")
+                            )
                             // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
                             .route(
                                 web::get()
