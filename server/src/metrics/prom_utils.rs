@@ -23,7 +23,11 @@ struct StorageMetrics {
 impl Default for Metrics {
     fn default() -> Self {
         let socket = get_address();
-        let address = format!("http://{}:{}", socket.ip(), socket.port());
+        let address = format!(
+            "http://{}:{}",
+            socket.domain().unwrap(),
+            socket.port().unwrap_or_default()
+        );
         Metrics {
             address,
             parseable_events_ingested: 0.0,

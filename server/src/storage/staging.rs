@@ -64,8 +64,8 @@ impl StorageDir {
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");
         let sock = get_address();
-        let ip = sock.ip();
-        let port = sock.port();
+        let ip = sock.domain().unwrap();
+        let port = sock.port().unwrap_or_default();
         format!("{local_uri}{ip}.{port}.{extention}")
     }
 

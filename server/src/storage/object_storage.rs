@@ -541,8 +541,8 @@ fn schema_path(stream_name: &str) -> RelativePathBuf {
             let addr = get_address();
             let file_name = format!(
                 ".ingestor.{}.{}{}",
-                addr.ip(),
-                addr.port(),
+                addr.domain().unwrap(),
+                addr.port().unwrap_or_default(),
                 SCHEMA_FILE_NAME
             );
 
@@ -561,8 +561,8 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
             let addr = get_address();
             let file_name = format!(
                 ".ingestor.{}.{}{}",
-                addr.ip(),
-                addr.port(),
+                addr.domain().unwrap(),
+                addr.port().unwrap_or_default(),
                 STREAM_METADATA_FILE_NAME
             );
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
@@ -589,7 +589,12 @@ fn alert_json_path(stream_name: &str) -> RelativePathBuf {
 #[inline(always)]
 fn manifest_path(prefix: &str) -> RelativePathBuf {
     let addr = get_address();
-    let mainfest_file_name = format!("{}.{}.{}", addr.ip(), addr.port(), MANIFEST_FILE);
+    let mainfest_file_name = format!(
+        "{}.{}.{}",
+        addr.domain().unwrap(),
+        addr.port().unwrap_or_default(),
+        MANIFEST_FILE
+    );
     RelativePathBuf::from_iter([prefix, &mainfest_file_name])
 }
 
