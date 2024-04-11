@@ -226,29 +226,38 @@ impl TimePeriod {
     }
 }
 
+// TODO: CLEAN UP
 pub fn get_address() -> Url {
     if CONFIG.parseable.ingestor_url.is_empty() {
-        CONFIG.parseable.address.parse::<Url>().unwrap()
-    } else {
-        let addr_from_env = CONFIG
-            .parseable
-            .ingestor_url
-            .split(':')
-            .collect::<Vec<&str>>();
-
-        let mut hostname = addr_from_env[0].to_string();
-        let mut port = addr_from_env[1].to_string();
-        if hostname.starts_with('$') {
-            let var_hostname = hostname[1..].to_string();
-            hostname = get_from_env(&var_hostname);
-        }
-        if port.starts_with('$') {
-            let var_port = port[1..].to_string();
-            port = get_from_env(&var_port);
-        }
-        format!("{}:{}", hostname, port).parse::<Url>().unwrap()
+        let url = format!(
+            "{}://{}",
+            CONFIG.parseable.get_scheme(),
+            CONFIG.parseable.address
+        );
+        return url.parse::<Url>().unwrap();
     }
+    let addr_from_env = CONFIG
+        .parseable
+        .ingestor_url
+        .split(':')
+        .collect::<Vec<&str>>();
+
+    let mut hostname = addr_from_env[0].to_string();
+    let mut port = addr_from_env[1].to_string();
+    if hostname.starts_with('$') {
+        let var_hostname = hostname[1..].to_string();
+        hostname = get_from_env(&var_hostname);
+        if !hostname.starts_with("http") {
+            hostname = format!("{}://{}", CONFIG.parseable.get_scheme(), hostname);
+        }
+    }
+    if port.starts_with('$') {
+        let var_port = port[1..].to_string();
+        port = get_from_env(&var_port);
+    }
+    format!("{}:{}", hostname, port).parse::<Url>().unwrap()
 }
+
 fn get_from_env(var_to_fetch: &str) -> String {
     env::var(var_to_fetch).unwrap_or_else(|_| "".to_string())
 }
