@@ -25,7 +25,9 @@ pub mod update;
 use crate::option::CONFIG;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use std::env;
+#[allow(unused_imports)]
 use std::net::SocketAddr;
+use url::Url;
 
 #[allow(dead_code)]
 pub fn hostname() -> Option<String> {
@@ -224,10 +226,9 @@ impl TimePeriod {
     }
 }
 
-#[inline(always)]
-pub fn get_address() -> SocketAddr {
+pub fn get_address() -> Url {
     if CONFIG.parseable.ingestor_url.is_empty() {
-        CONFIG.parseable.address.parse::<SocketAddr>().unwrap()
+        CONFIG.parseable.address.parse::<Url>().unwrap()
     } else {
         let addr_from_env = CONFIG
             .parseable
@@ -245,9 +246,7 @@ pub fn get_address() -> SocketAddr {
             let var_port = port[1..].to_string();
             port = get_from_env(&var_port);
         }
-        format!("{}:{}", hostname, port)
-            .parse::<SocketAddr>()
-            .unwrap()
+        format!("{}:{}", hostname, port).parse::<Url>().unwrap()
     }
 }
 fn get_from_env(var_to_fetch: &str) -> String {

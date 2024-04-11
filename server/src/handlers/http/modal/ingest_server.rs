@@ -189,7 +189,10 @@ impl IngestServer {
         let store = CONFIG.storage().get_object_store();
 
         let sock = get_address();
-        let path = ingestor_metadata_path(sock.ip().to_string(), sock.port().to_string());
+        let path = ingestor_metadata_path(
+            sock.domain().unwrap().to_string(),
+            sock.port().unwrap_or_default().to_string(),
+        );
 
         if store.get_object(&path).await.is_ok() {
             println!("ingestor metadata already exists");
@@ -198,13 +201,19 @@ impl IngestServer {
 
         let scheme = CONFIG.parseable.get_scheme();
         let resource = IngestorMetadata::new(
-            sock.port().to_string(),
+            sock.port().unwrap_or_default().to_string(),
             CONFIG
                 .parseable
                 .domain_address
                 .clone()
                 .unwrap_or_else(|| {
-                    Url::parse(&format!("{}://{}:{}", scheme, sock.ip(), sock.port())).unwrap()
+                    Url::parse(&format!(
+                        "{}://{}:{}",
+                        scheme,
+                        sock.domain().unwrap(),
+                        sock.port().unwrap_or_default()
+                    ))
+                    .unwrap()
                 })
                 .to_string(),
             DEFAULT_VERSION.to_string(),
