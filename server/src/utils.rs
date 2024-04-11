@@ -247,10 +247,11 @@ pub fn get_address() -> Url {
     if hostname.starts_with('$') {
         let var_hostname = hostname[1..].to_string();
         hostname = get_from_env(&var_hostname);
-        if !hostname.starts_with("http") {
-            hostname = format!("{}://{}", CONFIG.parseable.get_scheme(), hostname);
-        }
     }
+    if !hostname.starts_with("http") {
+        hostname = format!("{}://{}", CONFIG.parseable.get_scheme(), hostname);
+    }
+
     if port.starts_with('$') {
         let var_port = port[1..].to_string();
         port = get_from_env(&var_port);
