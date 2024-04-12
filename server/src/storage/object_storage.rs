@@ -101,8 +101,7 @@ pub trait ObjectStorage: Sync + 'static {
     async fn get_latency(&self) -> Duration {
         // It's Ok to `unwrap` here. The hardcoded value will always Result in
         // an `Ok`.
-        let path = RelativePathBuf::from_path(PARSEABLE_METADATA_FILE_NAME).unwrap();
-
+        let path = parseable_json_path();
         let start = Instant::now();
         let _ = self.get_object(&path).await;
         start.elapsed()
