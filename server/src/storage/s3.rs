@@ -42,9 +42,9 @@ use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
 
 use super::metrics_layer::MetricLayer;
+use super::object_storage::parseable_json_path;
 use super::{
-    ObjectStorageProvider, PARSEABLE_METADATA_FILE_NAME, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    ObjectStorageProvider, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 // in bytes
@@ -533,7 +533,7 @@ impl ObjectStorage for S3 {
     async fn check(&self) -> Result<(), ObjectStorageError> {
         Ok(self
             .client
-            .head(&PARSEABLE_METADATA_FILE_NAME.into())
+            .head(&to_object_store_path(&parseable_json_path()))
             .await
             .map(|_| ())?)
     }
