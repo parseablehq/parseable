@@ -88,7 +88,7 @@ pub struct Cli {
     pub mode: Mode,
 
     /// public address for the parseable server ingestor
-    pub ingestor_url: String,
+    pub ingestor_endpoint: String,
 }
 
 impl Cli {
@@ -115,7 +115,7 @@ impl Cli {
     pub const ROW_GROUP_SIZE: &'static str = "row-group-size";
     pub const PARQUET_COMPRESSION_ALGO: &'static str = "compression-algo";
     pub const MODE: &'static str = "mode";
-    pub const INGESTOR_URL: &'static str = "ingestor-url";
+    pub const INGESTOR_ENDPOINT: &'static str = "ingestor-endpoint";
     pub const DEFAULT_USERNAME: &'static str = "admin";
     pub const DEFAULT_PASSWORD: &'static str = "admin";
 
@@ -317,9 +317,9 @@ impl Cli {
                     .help("Mode of operation"),
             )
             .arg(
-            	Arg::new(Self::INGESTOR_URL)
-             		.long(Self::INGESTOR_URL)
-               		.env("P_INGESTOR_URL")
+            	Arg::new(Self::INGESTOR_ENDPOINT)
+             		.long(Self::INGESTOR_ENDPOINT)
+               		.env("P_INGESTOR_ENDPOINT")
                  	.value_name("URL")
                   	.required(false)
                     .help("URL to connect to this specific ingestor. Default is the address of the server.")
@@ -367,8 +367,8 @@ impl FromArgMatches for Cli {
             .cloned()
             .expect("default value for address");
 
-        self.ingestor_url = m
-            .get_one::<String>(Self::INGESTOR_URL)
+        self.ingestor_endpoint = m
+            .get_one::<String>(Self::INGESTOR_ENDPOINT)
             .cloned()
             .unwrap_or_else(String::default);
 

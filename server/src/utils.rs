@@ -226,24 +226,27 @@ impl TimePeriod {
     }
 }
 
-// TODO: CLEAN UP
 pub fn get_address() -> Url {
-    if CONFIG.parseable.ingestor_url.is_empty() {
-        let url = format!(
+    if CONFIG.parseable.ingestor_endpoint.is_empty() {
+        return format!(
             "{}://{}",
             CONFIG.parseable.get_scheme(),
             CONFIG.parseable.address
-        );
-        return url.parse::<Url>().unwrap();
+        )
+        .parse::<Url>() // if the value was improperly set, this will panic before hand
+        .unwrap();
     }
     let addr_from_env = CONFIG
         .parseable
-        .ingestor_url
+        .ingestor_endpoint
         .split(':')
         .collect::<Vec<&str>>();
 
     let mut hostname = addr_from_env[0].to_string();
     let mut port = addr_from_env[1].to_string();
+
+    // if the env var value fits the pattern $VAR_NAME:$VAR_NAME
+    // fetch the value from the specified env vars
     if hostname.starts_with('$') {
         let var_hostname = hostname[1..].to_string();
         hostname = get_from_env(&var_hostname);
@@ -259,6 +262,7 @@ pub fn get_address() -> Url {
     format!("{}:{}", hostname, port).parse::<Url>().unwrap()
 }
 
+/// util fuction to fetch value from an env var
 fn get_from_env(var_to_fetch: &str) -> String {
     env::var(var_to_fetch).unwrap_or_else(|_| "".to_string())
 }
