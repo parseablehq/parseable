@@ -64,35 +64,16 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 
 You can download and run the Parseable binary on your laptop.
 
-- Linux
+- Linux or MacOS
 
 ```bash
-wget https://github.com/parseablehq/parseable/releases/download/v0.9.0/Parseable_x86_64-unknown-linux-gnu -O parseable
-chmod +x parseable
-./parseable local-store
-```
-
-- MacOS (Apple Silicon)
-
-```bash
-wget https://github.com/parseablehq/parseable/releases/download/v0.9.0/Parseable_aarch64-apple-darwin -O parseable
-chmod +x parseable
-./parseable local-store
-```
-
-- MacOS (Intel)
-
-```bash
-wget https://github.com/parseablehq/parseable/releases/download/v0.9.0/Parseable_x86_64-apple-darwin -O parseable
-chmod +x parseable
-./parseable local-store
+curl https://raw.githubusercontent.com/parseablehq/parseable/main/scripts/download.sh | bash
 ```
 
 - Windows
 
-```bash
-Invoke-WebRequest -Uri "https://github.com/parseablehq/parseable/releases/download/v0.9.0/Parseable_x86_64-pc-windows-msvc.exe" -OutFile "C:\parseable.exe"
-C:\parseable.exe local-store
+```pwsh
+powershell -c "irm https://raw.githubusercontent.com/parseablehq/parseable/main/scripts/download.ps1 | iex"
 ```
 
 Once this runs successfully, you'll see dashboard at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
