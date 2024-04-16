@@ -24,6 +24,7 @@ pub mod uid;
 pub mod update;
 use crate::option::CONFIG;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
+use sha2::{Digest, Sha256};
 use std::env;
 #[allow(unused_imports)]
 use std::net::SocketAddr;
@@ -226,7 +227,7 @@ impl TimePeriod {
     }
 }
 
-pub fn get_address() -> Url {
+pub fn get_url() -> Url {
     if CONFIG.parseable.ingestor_endpoint.is_empty() {
         return format!(
             "{}://{}",
@@ -265,6 +266,15 @@ pub fn get_address() -> Url {
 /// util fuction to fetch value from an env var
 fn get_from_env(var_to_fetch: &str) -> String {
     env::var(var_to_fetch).unwrap_or_else(|_| "".to_string())
+}
+
+pub fn get_ingestor_id() -> String {
+    let now = Utc::now().to_rfc3339().to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(now);
+    let result = format!("{:x}", hasher.finalize());
+    log::debug!("Ingestor ID: {}", &result);
+    result
 }
 
 #[cfg(test)]

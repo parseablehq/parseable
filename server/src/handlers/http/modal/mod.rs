@@ -61,6 +61,7 @@ pub struct IngestorMetadata {
     pub domain_name: String,
     pub bucket_name: String,
     pub token: String,
+    pub ingestor_id: String,
 }
 
 impl IngestorMetadata {
@@ -71,6 +72,7 @@ impl IngestorMetadata {
         bucket_name: String,
         username: &str,
         password: &str,
+        ingestor_id: String,
     ) -> Self {
         let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
 
@@ -82,7 +84,12 @@ impl IngestorMetadata {
             version,
             bucket_name,
             token,
+            ingestor_id,
         }
+    }
+
+    pub fn get_ingestor_id(&self) -> String {
+        self.ingestor_id.clone()
     }
 }
 
@@ -102,9 +109,10 @@ mod test {
             "somebucket".to_string(),
             "admin",
             "admin",
+            "ingestor_id".to_string(),
         );
 
-        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4="}"#).unwrap();
+        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=", "ingestor_id": "ingestor_id"}"#).unwrap();
 
         assert_eq!(rhs, lhs);
     }
@@ -118,13 +126,14 @@ mod test {
             "somebucket".to_string(),
             "admin",
             "admin",
+            "ingestor_id".to_string(),
         );
 
         let lhs = serde_json::to_string(&im)
             .unwrap()
             .try_into_bytes()
             .unwrap();
-        let rhs = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4="}"#
+        let rhs = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id"}"#
                 .try_into_bytes()
                 .unwrap();
 

@@ -125,12 +125,12 @@ impl QueryServer {
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Server::get_user_role_webscope())
-                    .service(Self::get_cluster_info_web_scope()),
+                    .service(Self::get_cluster_web_scope()),
             )
             .service(Server::get_generated());
     }
 
-    fn get_cluster_info_web_scope() -> actix_web::Scope {
+    fn get_cluster_web_scope() -> actix_web::Scope {
         web::scope("/cluster")
             .service(
                 // GET "/cluster/info" ==> Get info of the cluster

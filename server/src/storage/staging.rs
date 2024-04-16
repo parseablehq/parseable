@@ -27,10 +27,11 @@ use std::{
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
+    handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, DEFAULT_VERSION},
     metrics,
-    option::CONFIG,
+    option::{Mode, CONFIG},
     storage::OBJECT_STORE_DATA_GRANULARITY,
-    utils::{self, arrow::merged_reader::MergedReverseRecordReader, get_address},
+    utils::{self, arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url},
 };
 use arrow_schema::{ArrowError, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
@@ -63,10 +64,12 @@ impl StorageDir {
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");
-        let sock = get_address();
-        let ip = sock.domain().unwrap();
-        let port = sock.port().unwrap_or_default();
-        format!("{local_uri}{ip}.{port}.{extention}")
+        if CONFIG.parseable.mode == Mode::Ingest {
+            let id = INGESTOR_META.get_ingestor_id();
+            format!("{local_uri}{id}.{extention}")
+        } else {
+            format!("{local_uri}.{extention}")
+        }
     }
 
     fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
@@ -160,9 +163,9 @@ impl StorageDir {
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
         let filename = path.file_name().unwrap().to_str().unwrap();
         let (_, filename) = filename.split_once('.').unwrap();
-
         let filename = filename.rsplit_once('.').unwrap();
         let filename = format!("{}.{}", filename.0, filename.1);
+
         /*
                 let file_stem = path.file_stem().unwrap().to_str().unwrap();
                 let random_string =
@@ -286,6 +289,55 @@ fn parquet_writer_props(
                 nulls_first: true,
             }]))
     }
+}
+
+pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
+    let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
+
+    // all the files should be in the staging directory root
+    let entries = std::fs::read_dir(path)?;
+
+    for entry in entries {
+        // cause the staging directory will have only one file with ingestor in the name
+        // so the JSON Parse should not error unless the file is corrupted
+        let path = entry?.path();
+        let flag = path
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or_default()
+            .contains("ingestor");
+
+        if flag {
+            return Ok(serde_json::from_slice(&std::fs::read(path)?)?);
+        }
+    }
+
+    let store = CONFIG.storage().get_object_store();
+    let url = get_url();
+    let out = IngestorMetadata::new(
+        url.port().unwrap().to_string(), // here port should be defined
+        url.to_string(),
+        DEFAULT_VERSION.to_string(),
+        store.get_bucket_name(),
+        &CONFIG.parseable.username,
+        &CONFIG.parseable.password,
+        get_ingestor_id(),
+    );
+
+    put_ingestor_info(out.clone())?;
+
+    Ok(out)
+}
+
+fn put_ingestor_info(info: IngestorMetadata) -> anyhow::Result<()> {
+    let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
+    let file_name = format!("ingestor.{}.json", info.ingestor_id);
+    let file_path = path.join(file_name);
+
+    std::fs::write(file_path, serde_json::to_string(&info)?)?;
+
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]

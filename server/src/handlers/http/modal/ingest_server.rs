@@ -28,6 +28,7 @@ use crate::rbac::role::Action;
 use crate::storage;
 use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::object_storage::parseable_json_path;
+use crate::storage::staging;
 use crate::storage::ObjectStorageError;
 use crate::sync;
 
@@ -36,9 +37,7 @@ use super::ssl_acceptor::get_ssl_acceptor;
 use super::IngestorMetadata;
 use super::OpenIdClient;
 use super::ParseableServer;
-use super::DEFAULT_VERSION;
 
-use crate::utils::get_address;
 use actix_web::body::MessageBody;
 use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
@@ -46,13 +45,16 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
 use itertools::Itertools;
+use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
-use url::Url;
 
 use crate::{
     handlers::http::{base_path, cross_origin_config},
     option::CONFIG,
 };
+
+pub static INGESTOR_META: Lazy<IngestorMetadata> =
+    Lazy::new(|| staging::get_ingestor_info().expect("dir is readable and writeable"));
 
 #[derive(Default)]
 pub struct IngestServer;
@@ -102,6 +104,7 @@ impl ParseableServer for IngestServer {
     /// implement the init method will just invoke the initialize method
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
+
         // check for querier state. Is it there, or was it there in the past
         self.check_querier_state().await?;
         // to get the .parseable.json file in staging
@@ -188,46 +191,23 @@ impl IngestServer {
     async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
 
-        let sock = get_address();
-        let path = ingestor_metadata_path(
-            sock.domain().unwrap().to_string(),
-            sock.port().unwrap_or_default().to_string(),
-        );
+        // find the meta file in staging if not generate new metadata
+        let resource = INGESTOR_META.clone();
+        // use the id that was generated/found in the staging and
+        // generate the path for the object store
+        let path = ingestor_metadata_path(None);
 
         if store.get_object(&path).await.is_ok() {
-            println!("ingestor metadata already exists");
+            log::info!("ingestor metadata already exists");
             return Ok(());
         };
-
-        let scheme = CONFIG.parseable.get_scheme();
-        let resource = IngestorMetadata::new(
-            sock.port().unwrap_or_default().to_string(),
-            CONFIG
-                .parseable
-                .domain_address
-                .clone()
-                .unwrap_or_else(|| {
-                    Url::parse(&format!(
-                        "{}://{}:{}",
-                        scheme,
-                        sock.domain().unwrap(),
-                        sock.port().unwrap_or_default()
-                    ))
-                    .unwrap()
-                })
-                .to_string(),
-            DEFAULT_VERSION.to_string(),
-            store.get_bucket_name(),
-            &CONFIG.parseable.username,
-            &CONFIG.parseable.password,
-        );
 
         let resource = serde_json::to_string(&resource)
             .unwrap()
             .try_into_bytes()
             .unwrap();
 
-        store.put_object(&path, resource).await?;
+        store.put_object(&path, resource.clone()).await?;
 
         Ok(())
     }
@@ -286,6 +266,7 @@ impl IngestServer {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
+        // ! Undefined and Untested behaviour
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
                 .validate(CONFIG.parseable.local_cache_size)

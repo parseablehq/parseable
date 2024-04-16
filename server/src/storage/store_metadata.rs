@@ -115,7 +115,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
             if CONFIG.parseable.mode ==  Mode::All {
-                standalone_when_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
+                standalone_after_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
                     .map_err(|err| {
                         ObjectStorageError::Custom(err.to_string())
                     })?;
@@ -139,7 +139,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
                 // because staging dir has changed.
                 match CONFIG.parseable.mode {
                     Mode::All => {
-                        standalone_when_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
+                        standalone_after_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
                             .map_err(|err| {
                                 ObjectStorageError::Custom(err.to_string())
                             })?;
@@ -232,9 +232,9 @@ pub enum EnvChange {
     CreateBoth,
 }
 
-fn standalone_when_distributed(remote_server_mode: Mode) -> Result<(), MetadataError> {
-    // mode::all -> mode::query | mode::ingest allowed
-    // but mode::query | mode::ingest -> mode::all not allowed
+fn standalone_after_distributed(remote_server_mode: Mode) -> Result<(), MetadataError> {
+    // standalone -> query | ingest allowed
+    // but query | ingest -> standalone not allowed
     if remote_server_mode == Mode::Query {
         return Err(MetadataError::StandaloneWithDistributed("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.".to_string()));
     }

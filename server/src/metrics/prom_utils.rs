@@ -1,4 +1,4 @@
-use crate::utils::get_address;
+use crate::utils::get_url;
 use prometheus_parse::Sample as PromSample;
 use prometheus_parse::Value as PromValue;
 use serde::Serialize;
@@ -22,7 +22,7 @@ struct StorageMetrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        let socket = get_address();
+        let socket = get_url();
         let address = format!(
             "http://{}:{}",
             socket.domain().unwrap(),

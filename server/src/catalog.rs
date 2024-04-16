@@ -25,7 +25,7 @@ use crate::{
     catalog::manifest::Manifest,
     query::PartialTimeFilter,
     storage::{ObjectStorage, ObjectStorageError, MANIFEST_FILE},
-    utils::get_address,
+    utils::get_url,
 };
 
 use self::{column::Column, snapshot::ManifestItem};
@@ -117,7 +117,7 @@ pub async fn update_snapshot(
 
         let mut ch = false;
         for m in manifests.iter() {
-            let s = get_address();
+            let s = get_url();
             let p = format!(
                 "{}.{}.{}",
                 s.domain().unwrap(),
@@ -156,7 +156,7 @@ pub async fn update_snapshot(
                 ..Manifest::default()
             };
 
-            let addr = get_address();
+            let addr = get_url();
             let mainfest_file_name = format!(
                 "{}.{}.{}",
                 addr.domain().unwrap(),
@@ -195,7 +195,7 @@ pub async fn update_snapshot(
             ..Manifest::default()
         };
 
-        let addr = get_address();
+        let addr = get_url();
         let mainfest_file_name = format!(
             "{}.{}.{}",
             addr.domain().unwrap(),

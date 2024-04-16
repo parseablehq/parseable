@@ -25,8 +25,9 @@ use super::{
     SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
+use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::option::Mode;
-use crate::utils::get_address;
+use crate::utils::get_url;
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
@@ -257,7 +258,7 @@ pub trait ObjectStorage: Sync + 'static {
         let stream_metadata = match self.get_object(&stream_json_path(stream_name)).await {
             Ok(data) => data,
             Err(_) => {
-                // ! this is hard coded for now
+                // get the base stream metadata
                 let bytes = self
                     .get_object(&RelativePathBuf::from_iter([
                         stream_name,
@@ -538,11 +539,9 @@ fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
 fn schema_path(stream_name: &str) -> RelativePathBuf {
     match CONFIG.parseable.mode {
         Mode::Ingest => {
-            let addr = get_address();
             let file_name = format!(
-                ".ingestor.{}.{}{}",
-                addr.domain().unwrap(),
-                addr.port().unwrap_or_default(),
+                ".ingestor.{}{}",
+                INGESTOR_META.ingestor_id.clone(),
                 SCHEMA_FILE_NAME
             );
 
@@ -558,11 +557,9 @@ fn schema_path(stream_name: &str) -> RelativePathBuf {
 pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
     match &CONFIG.parseable.mode {
         Mode::Ingest => {
-            let addr = get_address();
             let file_name = format!(
-                ".ingestor.{}.{}{}",
-                addr.domain().unwrap(),
-                addr.port().unwrap_or_default(),
+                ".ingestor.{}{}",
+                INGESTOR_META.get_ingestor_id(),
                 STREAM_METADATA_FILE_NAME
             );
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
@@ -581,6 +578,7 @@ pub fn parseable_json_path() -> RelativePathBuf {
     RelativePathBuf::from_iter([PARSEABLE_ROOT_DIRECTORY, PARSEABLE_METADATA_FILE_NAME])
 }
 
+/// TODO: Needs to be updated for distributed mode
 #[inline(always)]
 fn alert_json_path(stream_name: &str) -> RelativePathBuf {
     RelativePathBuf::from_iter([stream_name, ALERT_FILE_NAME])
@@ -588,7 +586,7 @@ fn alert_json_path(stream_name: &str) -> RelativePathBuf {
 
 #[inline(always)]
 fn manifest_path(prefix: &str) -> RelativePathBuf {
-    let addr = get_address();
+    let addr = get_url();
     let mainfest_file_name = format!(
         "{}.{}.{}",
         addr.domain().unwrap(),
@@ -599,9 +597,16 @@ fn manifest_path(prefix: &str) -> RelativePathBuf {
 }
 
 #[inline(always)]
-pub fn ingestor_metadata_path(ip: String, port: String) -> RelativePathBuf {
+pub fn ingestor_metadata_path(id: Option<&str>) -> RelativePathBuf {
+    if let Some(id) = id {
+        return RelativePathBuf::from_iter([
+            PARSEABLE_ROOT_DIRECTORY,
+            &format!("ingestor.{}.json", id),
+        ]);
+    }
+
     RelativePathBuf::from_iter([
         PARSEABLE_ROOT_DIRECTORY,
-        &format!("ingestor.{}.{}.json", ip, port),
+        &format!("ingestor.{}.json", INGESTOR_META.get_ingestor_id()),
     ])
 }
