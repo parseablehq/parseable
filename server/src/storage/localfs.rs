@@ -162,15 +162,17 @@ impl ObjectStorage for LocalFS {
             let flag = entry
                 .path()
                 .file_name()
-                .unwrap_or_default()
+                .ok_or(ObjectStorageError::NoSuchKey(
+                    "Dir Entry Suggests no file present".to_string(),
+                ))?
                 .to_str()
-                .unwrap_or_default()
+                .expect("file name is parseable to str")
                 .contains("ingestor");
 
             if flag {
                 path_arr.push(RelativePathBuf::from_iter([
                     stream_name,
-                    entry.path().file_name().unwrap().to_str().unwrap(),
+                    entry.path().file_name().unwrap().to_str().unwrap(), // checking the error before hand
                 ]));
             }
         }
@@ -209,9 +211,11 @@ impl ObjectStorage for LocalFS {
             let path = entry
                 .path()
                 .file_name()
-                .unwrap()
+                .ok_or(ObjectStorageError::NoSuchKey(
+                    "Dir Entry suggests no file present".to_string(),
+                ))?
                 .to_str()
-                .unwrap()
+                .expect("file name is parseable to str")
                 .to_owned();
             let ingestor_file = filter_func(path);
 
@@ -390,9 +394,9 @@ impl ObjectStorage for LocalFS {
         self.root
             .iter()
             .last()
-            .unwrap()
+            .expect("can be unwrapped without checking as the path is absolute")
             .to_str()
-            .unwrap()
+            .expect("valid unicode")
             .to_string()
     }
 }

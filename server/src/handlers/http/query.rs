@@ -70,7 +70,12 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     // create a visitor to extract the table name
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
-    let table_name = visitor.into_inner().pop().unwrap();
+    let table_name = visitor
+        .into_inner()
+        .pop()
+        .ok_or(QueryError::MalformedQuery(
+            "No table found from sql".to_string(),
+        ))?;
 
     if CONFIG.parseable.mode == Mode::Query {
         if let Ok(new_schema) = fetch_schema(&table_name).await {
@@ -278,6 +283,8 @@ pub enum QueryError {
     ObjectStorage(#[from] ObjectStorageError),
     #[error("Evern Error: {0}")]
     EventError(#[from] EventError),
+    #[error("Error: {0}")]
+    MalformedQuery(String),
 }
 
 impl actix_web::ResponseError for QueryError {

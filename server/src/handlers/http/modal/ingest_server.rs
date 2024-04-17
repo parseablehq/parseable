@@ -42,6 +42,7 @@ use actix_web::body::MessageBody;
 use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use base64::Engine;
 use itertools::Itertools;
@@ -202,12 +203,11 @@ impl IngestServer {
             return Ok(());
         };
 
-        let resource = serde_json::to_string(&resource)
-            .unwrap()
+        let resource = serde_json::to_string(&resource)?
             .try_into_bytes()
-            .unwrap();
+            .map_err(|err| anyhow!(err))?;
 
-        store.put_object(&path, resource.clone()).await?;
+        store.put_object(&path, resource).await?;
 
         Ok(())
     }

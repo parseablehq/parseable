@@ -37,6 +37,8 @@ use chrono::Utc;
 use http::StatusCode;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
+use serde::de::Error;
+use serde_json::error::Error as SerdeError;
 use serde_json::Value as JsonValue;
 use url::Url;
 
@@ -262,9 +264,13 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
                     StreamError::SerdeError(err)
                 })?
                 .get("staging")
-                .unwrap()
+                .ok_or(StreamError::SerdeError(SerdeError::missing_field(
+                    "staging",
+                )))?
                 .as_str()
-                .unwrap()
+                .ok_or(StreamError::SerdeError(SerdeError::custom(
+                    "staging path not a string/ not provided",
+                )))?
                 .to_string();
 
             (true, sp, None, status)
@@ -304,7 +310,9 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
             &ingestor.domain_name,
             base_path_without_preceding_slash()
         ))
-        .unwrap();
+        .map_err(|err| {
+            PostError::Invalid(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
+        })?;
 
         let res = reqwest::Client::new()
             .get(uri)

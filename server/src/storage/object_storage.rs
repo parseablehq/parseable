@@ -220,7 +220,7 @@ pub trait ObjectStorage: Sync + 'static {
                 ]);
                 let data = self.get_object(&schema_path).await?;
                 // schema was not found in store, so it needs to be placed
-                self.put_schema(stream_name, &serde_json::from_slice(&data).unwrap())
+                self.put_schema(stream_name, &serde_json::from_slice(&data)?)
                     .await?;
 
                 data
@@ -331,7 +331,7 @@ pub trait ObjectStorage: Sync + 'static {
             .get("retention")
             .cloned();
         if let Some(retention) = retention {
-            Ok(serde_json::from_value(retention).unwrap())
+            Ok(serde_json::from_value(retention)?)
         } else {
             Ok(Retention::default())
         }

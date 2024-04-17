@@ -128,7 +128,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
         EnvChange::NewStaging(mut metadata) => {
             // if server is started in ingest mode,we need to make sure that query mode has been started
             // i.e the metadata is updated to reflect the server mode = Query
-            if Mode::from_string(&metadata.server_mode).unwrap() == Mode::All && CONFIG.parseable.mode == Mode::Ingest {
+            if Mode::from_string(&metadata.server_mode).map_err(ObjectStorageError::Custom)? == Mode::All && CONFIG.parseable.mode == Mode::Ingest {
                 Err("Starting Ingest Mode is not allowed, Since Query Server has not been started yet")
             } else {
                 create_dir_all(CONFIG.staging_dir())?;
@@ -201,7 +201,8 @@ fn determine_environment(
             // if both staging and remote have same deployment id
             if staging.deployment_id == remote.deployment_id {
                 EnvChange::None(remote)
-            } else if Mode::from_string(&remote.server_mode).unwrap() == Mode::All
+            } else if Mode::from_string(&remote.server_mode).expect("server mode is valid here")
+                == Mode::All
                 && (CONFIG.parseable.mode == Mode::Query || CONFIG.parseable.mode == Mode::Ingest)
             {
                 // if you are switching to distributed mode from standalone mode

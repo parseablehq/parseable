@@ -180,7 +180,7 @@ impl QueryServer {
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
         if CONFIG.parseable.send_analytics {
-            analytics::init_analytics_scheduler();
+            analytics::init_analytics_scheduler()?;
         }
 
         self.start(prometheus, CONFIG.parseable.openid.clone())

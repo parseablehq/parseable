@@ -270,7 +270,7 @@ fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(Cookie::split_parse)
-        .map(|value| value.unwrap())
+        .map(|value| value.expect("cookie is parseable"))
         .collect();
 
     cookies

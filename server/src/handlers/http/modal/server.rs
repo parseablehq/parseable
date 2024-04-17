@@ -443,7 +443,7 @@ impl Server {
             sync::object_store_sync();
 
         if CONFIG.parseable.send_analytics {
-            analytics::init_analytics_scheduler();
+            analytics::init_analytics_scheduler()?;
         }
 
         tokio::spawn(handlers::livetail::server());

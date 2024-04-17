@@ -22,11 +22,12 @@ struct StorageMetrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        let socket = get_url();
+        let url = get_url();
         let address = format!(
             "http://{}:{}",
-            socket.domain().unwrap(),
-            socket.port().unwrap_or_default()
+            url.domain()
+                .unwrap_or(url.host_str().expect("should have a host")),
+            url.port().unwrap_or_default()
         );
         Metrics {
             address,
@@ -68,11 +69,11 @@ impl Metrics {
                     prom_dress.process_resident_memory_bytes += val;
                 }
             } else if sample.metric == "parseable_storage_size" {
-                if sample.labels.get("type").unwrap() == "data" {
+                if sample.labels.get("type").expect("type is present") == "data" {
                     if let PromValue::Gauge(val) = sample.value {
                         prom_dress.parseable_storage_size.data += val;
                     }
-                } else if sample.labels.get("type").unwrap() == "staging" {
+                } else if sample.labels.get("type").expect("type is present") == "staging" {
                     if let PromValue::Gauge(val) = sample.value {
                         prom_dress.parseable_storage_size.staging += val;
                     }
