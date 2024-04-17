@@ -96,8 +96,8 @@ pub async fn sync_streams_with_ingestors(
                 stream_name
             );
 
-            // roll back the stream creation
-            send_stream_rollback_request(&url, ingestor.clone()).await?;
+            // delete the stream
+            send_stream_delete_request(&url, ingestor.clone()).await?;
         }
 
         // this might be a bit too much
@@ -188,15 +188,13 @@ async fn send_stream_sync_request(
 }
 
 /// send a rollback request to all ingestors
-#[allow(dead_code)]
-async fn send_stream_rollback_request(
+pub async fn send_stream_delete_request(
     url: &str,
     ingestor: IngestorMetadata,
 ) -> Result<(), StreamError> {
     if !utils::check_liveness(&ingestor.domain_name).await {
         return Ok(());
     }
-
     let client = reqwest::Client::new();
     let resp = client
         .delete(url)
@@ -207,7 +205,7 @@ async fn send_stream_rollback_request(
         .map_err(|err| {
             // log the error and return a custom error
             log::error!(
-                "Fatal: failed to rollback stream creation: {}\n Error: {:?}",
+                "Fatal: failed to delete stream: {}\n Error: {:?}",
                 ingestor.domain_name,
                 err
             );
@@ -218,18 +216,10 @@ async fn send_stream_rollback_request(
     // this could be a bit too much, but we need to be sure it covers all cases
     if !resp.status().is_success() {
         log::error!(
-            "failed to rollback stream creation: {}\nResponse Returned: {:?}",
+            "failed to delete stream: {}\nResponse Returned: {:?}",
             ingestor.domain_name,
             resp
         );
-        return Err(StreamError::Custom {
-            msg: format!(
-                "failed to rollback stream creation: {}\nResponse Returned: {:?}",
-                ingestor.domain_name,
-                resp.text().await.unwrap_or_default()
-            ),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-        });
     }
 
     Ok(())
