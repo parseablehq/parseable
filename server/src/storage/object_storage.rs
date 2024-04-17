@@ -27,7 +27,7 @@ use super::{
 
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::option::Mode;
-use crate::utils::get_url;
+
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
@@ -585,15 +585,17 @@ fn alert_json_path(stream_name: &str) -> RelativePathBuf {
 }
 
 #[inline(always)]
-fn manifest_path(prefix: &str) -> RelativePathBuf {
-    let addr = get_url();
-    let mainfest_file_name = format!(
-        "{}.{}.{}",
-        addr.domain().unwrap(),
-        addr.port().unwrap_or_default(),
-        MANIFEST_FILE
-    );
-    RelativePathBuf::from_iter([prefix, &mainfest_file_name])
+pub fn manifest_path(prefix: &str) -> RelativePathBuf {
+    if CONFIG.parseable.mode == Mode::Ingest {
+        let manifest_file_name = format!(
+            "ingestor.{}.{}",
+            INGESTOR_META.get_ingestor_id(),
+            MANIFEST_FILE
+        );
+        RelativePathBuf::from_iter([prefix, &manifest_file_name])
+    } else {
+        RelativePathBuf::from_iter([MANIFEST_FILE])
+    }
 }
 
 #[inline(always)]

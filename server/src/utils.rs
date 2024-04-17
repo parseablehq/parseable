@@ -36,14 +36,9 @@ pub fn hostname() -> Option<String> {
         .ok()
         .and_then(|hostname| hostname.into_string().ok())
 }
-#[allow(dead_code)]
+
 pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
-}
-
-#[allow(dead_code)]
-pub fn capitalize_ascii(s: &str) -> String {
-    s[0..1].to_uppercase() + &s[1..]
 }
 
 /// Convert minutes to a slot range
@@ -235,7 +230,7 @@ pub fn get_url() -> Url {
             CONFIG.parseable.address
         )
         .parse::<Url>() // if the value was improperly set, this will panic before hand
-        .unwrap();
+        .expect("Valid URL");
     }
     let addr_from_env = CONFIG
         .parseable
@@ -260,7 +255,9 @@ pub fn get_url() -> Url {
         let var_port = port[1..].to_string();
         port = get_from_env(&var_port);
     }
-    format!("{}:{}", hostname, port).parse::<Url>().unwrap()
+    format!("{}:{}", hostname, port)
+        .parse::<Url>()
+        .expect("Valid URL")
 }
 
 /// util fuction to fetch value from an env var

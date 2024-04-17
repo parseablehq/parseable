@@ -31,7 +31,10 @@ use crate::{
     metrics,
     option::{Mode, CONFIG},
     storage::OBJECT_STORE_DATA_GRANULARITY,
-    utils::{self, arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url},
+    utils::{
+        self, arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url,
+        hostname_unchecked,
+    },
 };
 use arrow_schema::{ArrowError, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
@@ -64,11 +67,12 @@ impl StorageDir {
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
         let local_uri = str::replace(&uri, "/", ".");
+        let hostname = hostname_unchecked();
         if CONFIG.parseable.mode == Mode::Ingest {
             let id = INGESTOR_META.get_ingestor_id();
-            format!("{local_uri}{id}.{extention}")
+            format!("{local_uri}{hostname}{id}.{extention}")
         } else {
-            format!("{local_uri}.{extention}")
+            format!("{local_uri}{hostname}.{extention}")
         }
     }
 
@@ -163,7 +167,7 @@ impl StorageDir {
     fn arrow_path_to_parquet(path: &Path) -> PathBuf {
         let filename = path.file_name().unwrap().to_str().unwrap();
         let (_, filename) = filename.split_once('.').unwrap();
-        let filename = filename.rsplit_once('.').unwrap();
+        let filename = filename.rsplit_once('.').expect("contains the delim `.`");
         let filename = format!("{}.{}", filename.0, filename.1);
 
         /*
@@ -316,7 +320,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
     let store = CONFIG.storage().get_object_store();
     let url = get_url();
     let out = IngestorMetadata::new(
-        url.port().unwrap().to_string(), // here port should be defined
+        url.port().expect("here port should be defined").to_string(),
         url.to_string(),
         DEFAULT_VERSION.to_string(),
         store.get_bucket_name(),

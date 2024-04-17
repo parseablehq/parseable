@@ -229,7 +229,7 @@ impl Mode {
             "Query" => Ok(Mode::Query),
             "Ingest" => Ok(Mode::Ingest),
             "All" => Ok(Mode::All),
-            x => Err(format!("Invalid mode: {}", x)),
+            x => Err(format!("Trying to Parse Invalid mode: {}", x)),
         }
     }
 }

@@ -16,17 +16,16 @@
  *
  */
 
-use std::sync::Arc;
-
-use chrono::{DateTime, Local, NaiveDateTime, NaiveTime, Utc};
-use relative_path::RelativePathBuf;
+use std::{io::ErrorKind, sync::Arc};
 
 use crate::{
     catalog::manifest::Manifest,
     query::PartialTimeFilter,
-    storage::{ObjectStorage, ObjectStorageError, MANIFEST_FILE},
-    utils::get_url,
+    storage::{object_storage::manifest_path, ObjectStorage, ObjectStorageError},
 };
+use chrono::{DateTime, Local, NaiveDateTime, NaiveTime, Utc};
+use relative_path::RelativePathBuf;
+use std::io::Error as IOError;
 
 use self::{column::Column, snapshot::ManifestItem};
 
@@ -117,13 +116,7 @@ pub async fn update_snapshot(
 
         let mut ch = false;
         for m in manifests.iter() {
-            let s = get_url();
-            let p = format!(
-                "{}.{}.{}",
-                s.domain().unwrap(),
-                s.port().unwrap_or_default(),
-                MANIFEST_FILE
-            );
+            let p = manifest_path("").to_string();
             if m.manifest_path.contains(&p) {
                 ch = true;
             }
@@ -147,7 +140,11 @@ pub async fn update_snapshot(
                         23 * 3600 + 59 * 60 + 59,
                         999_999_999,
                     )
-                    .unwrap(),
+                    .ok_or(IOError::new(
+                        ErrorKind::Other,
+                        "Failed to create upper bound for manifest",
+                    ))
+                    .map_err(ObjectStorageError::IoError)?,
                 )
                 .and_utc();
 
@@ -156,17 +153,11 @@ pub async fn update_snapshot(
                 ..Manifest::default()
             };
 
-            let addr = get_url();
-            let mainfest_file_name = format!(
-                "{}.{}.{}",
-                addr.domain().unwrap(),
-                addr.port().unwrap_or_default(),
-                MANIFEST_FILE
-            );
+            let mainfest_file_name = manifest_path("").to_string();
             let path =
                 partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
             storage
-                .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())
+                .put_object(&path, serde_json::to_vec(&manifest)?.into())
                 .await?;
             let path = storage.absolute_url(&path);
             let new_snapshot_entriy = snapshot::ManifestItem {
@@ -195,13 +186,7 @@ pub async fn update_snapshot(
             ..Manifest::default()
         };
 
-        let addr = get_url();
-        let mainfest_file_name = format!(
-            "{}.{}.{}",
-            addr.domain().unwrap(),
-            addr.port().unwrap(),
-            MANIFEST_FILE
-        );
+        let mainfest_file_name = manifest_path("").to_string();
         let path = partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
         storage
             .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())
