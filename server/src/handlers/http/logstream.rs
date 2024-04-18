@@ -26,6 +26,7 @@ use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
 
+use super::base_path_without_preceding_slash;
 use super::cluster::fetch_stats_from_ingestors;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use actix_web::http::StatusCode;
@@ -40,27 +41,48 @@ use std::sync::Arc;
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         return Err(StreamError::StreamNotFound(stream_name));
     }
+    match CONFIG.parseable.mode {
+        Mode::Query | Mode::All => {
+            let objectstore = CONFIG.storage().get_object_store();
 
-    let objectstore = CONFIG.storage().get_object_store();
-    objectstore.delete_stream(&stream_name).await?;
+            objectstore.delete_stream(&stream_name).await?;
+            let stream_dir = StorageDir::new(&stream_name);
+            if fs::remove_dir_all(&stream_dir.data_path).is_err() {
+                log::warn!(
+                    "failed to delete local data for stream {}. Clean {} manually",
+                    stream_name,
+                    stream_dir.data_path.to_string_lossy()
+                )
+            }
+
+            let ingestor_metadata = super::cluster::get_ingestor_info().await.map_err(|err| {
+                log::error!("Fatal: failed to get ingestor info: {:?}", err);
+                StreamError::from(err)
+            })?;
+
+            for ingestor in ingestor_metadata {
+                let url = format!(
+                    "{}{}/logstream/{}",
+                    ingestor.domain_name,
+                    base_path_without_preceding_slash(),
+                    stream_name
+                );
+
+                // delete the stream
+                super::cluster::send_stream_delete_request(&url, ingestor.clone()).await?;
+            }
+        }
+        _ => {}
+    }
+
     metadata::STREAM_INFO.delete_stream(&stream_name);
     event::STREAM_WRITERS.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json").unwrap_or_else(|e| {
         log::warn!("failed to delete stats for stream {}: {:?}", stream_name, e)
     });
-
-    let stream_dir = StorageDir::new(&stream_name);
-    if fs::remove_dir_all(&stream_dir.data_path).is_err() {
-        log::warn!(
-            "failed to delete local data for stream {}. Clean {} manually",
-            stream_name,
-            stream_dir.data_path.to_string_lossy()
-        )
-    }
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
