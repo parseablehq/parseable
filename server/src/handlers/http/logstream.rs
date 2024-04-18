@@ -33,6 +33,7 @@ use actix_web::{web, HttpRequest, Responder};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
+use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -320,7 +321,6 @@ pub async fn put_enable_cache(
                     stream_name
                 );
 
-                // delete the stream
                 super::cluster::sync_cache_with_ingestors(&url, ingestor.clone(), *body).await?;
             }
         }
@@ -330,10 +330,14 @@ pub async fn put_enable_cache(
             }
             // here the ingest server has not found the stream
             // so it should check if the stream exists in storage
-            let streams = storage.list_streams().await?;
-            if !streams.contains(&LogStream {
-                name: stream_name.clone().to_owned(),
-            }) {
+            let check = storage
+                .list_streams()
+                .await?
+                .iter()
+                .map(|stream| stream.name.clone())
+                .contains(&stream_name);
+
+            if !check {
                 log::error!("Stream {} not found", stream_name.clone());
                 return Err(StreamError::StreamNotFound(stream_name.clone()));
             }
