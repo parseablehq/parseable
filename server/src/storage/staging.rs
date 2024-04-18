@@ -330,7 +330,6 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
     );
 
     put_ingestor_info(out.clone())?;
-
     Ok(out)
 }
 

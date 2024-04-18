@@ -198,10 +198,28 @@ impl IngestServer {
         // generate the path for the object store
         let path = ingestor_metadata_path(None);
 
-        if store.get_object(&path).await.is_ok() {
-            log::info!("ingestor metadata already exists");
-            return Ok(());
-        };
+        // we are considering that we can always get from object store
+        if let Ok(store_meta) = store.get_object(&path).await {
+            log::info!("Ingestor Metadata is present. Checking for updates");
+            let mut store_data = serde_json::from_slice::<IngestorMetadata>(&store_meta)
+                .map_err(|_| anyhow!("IngestorMetadata was not parseable as valid json"))?;
+
+            if store_data.domain_name != INGESTOR_META.domain_name {
+                log::info!("Ingestor Metadata update needed.");
+                store_data.domain_name = INGESTOR_META.domain_name.clone();
+                store_data.port = INGESTOR_META.port.clone();
+
+                let resource = serde_json::to_string(&store_data)?
+                    .try_into_bytes()
+                    .map_err(|err| anyhow!(err))?;
+
+                // if pushing to object store fails propagate the error
+                return store
+                    .put_object(&path, resource)
+                    .await
+                    .map_err(|err| anyhow!(err));
+            }
+        }
 
         let resource = serde_json::to_string(&resource)?
             .try_into_bytes()

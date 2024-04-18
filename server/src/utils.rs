@@ -25,9 +25,8 @@ pub mod update;
 use crate::option::CONFIG;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use sha2::{Digest, Sha256};
+
 use std::env;
-#[allow(unused_imports)]
-use std::net::SocketAddr;
 use url::Url;
 
 #[allow(dead_code)]
@@ -270,8 +269,9 @@ pub fn get_ingestor_id() -> String {
     let mut hasher = Sha256::new();
     hasher.update(now);
     let result = format!("{:x}", hasher.finalize());
+    let result = result.split_at(15).0.to_string();
     log::debug!("Ingestor ID: {}", &result);
-    result
+    result.to_string()
 }
 
 #[cfg(test)]
