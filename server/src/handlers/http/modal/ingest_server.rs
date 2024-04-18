@@ -54,6 +54,7 @@ use crate::{
     option::CONFIG,
 };
 
+/// ! have to use a guard before using it
 pub static INGESTOR_META: Lazy<IngestorMetadata> =
     Lazy::new(|| staging::get_ingestor_info().expect("dir is readable and writeable"));
 
@@ -206,8 +207,15 @@ impl IngestServer {
 
             if store_data.domain_name != INGESTOR_META.domain_name {
                 log::info!("Ingestor Metadata update needed.");
-                store_data.domain_name = INGESTOR_META.domain_name.clone();
-                store_data.port = INGESTOR_META.port.clone();
+                log::info!(
+                    "Old Domain Name: {}, New Domain Name: {}",
+                    store_data.domain_name,
+                    INGESTOR_META.domain_name
+                );
+                store_data
+                    .domain_name
+                    .clone_from(&INGESTOR_META.domain_name);
+                store_data.port.clone_from(&INGESTOR_META.port);
 
                 let resource = serde_json::to_string(&store_data)?
                     .try_into_bytes()

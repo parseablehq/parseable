@@ -37,6 +37,7 @@ use crate::{
     },
 };
 use arrow_schema::{ArrowError, Schema};
+use base64::Engine;
 use chrono::{NaiveDateTime, Timelike, Utc};
 use parquet::{
     arrow::ArrowWriter,
@@ -300,6 +301,9 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 
     // all the files should be in the staging directory root
     let entries = std::fs::read_dir(path)?;
+    let url = get_url();
+    let port = url.port().expect("here port should be defined").to_string();
+    let url = url.to_string();
 
     for entry in entries {
         // cause the staging directory will have only one file with ingestor in the name
@@ -313,15 +317,50 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
             .contains("ingestor");
 
         if flag {
-            return Ok(serde_json::from_slice(&std::fs::read(path)?)?);
+            // get the ingestor metadata from staging
+            let mut meta: IngestorMetadata = serde_json::from_slice(&std::fs::read(path)?)?;
+
+            // compare url endpoint and port
+            if meta.domain_name != url {
+                log::info!(
+                    "Domain Name was Updated. Old: {} New: {}",
+                    meta.domain_name,
+                    url
+                );
+                meta.domain_name = url;
+            }
+
+            if meta.port != port {
+                log::info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                meta.port = port;
+            }
+
+            let token = base64::prelude::BASE64_STANDARD.encode(format!(
+                "{}:{}",
+                CONFIG.parseable.username, CONFIG.parseable.password
+            ));
+
+            let token = format!("Basic {}", token);
+
+            if meta.token != token {
+                // TODO: Update the message to be more informative with username and password
+                log::info!(
+                    "Credentials were Updated. Old: {} New: {}",
+                    meta.token,
+                    token
+                );
+                meta.token = token;
+            }
+
+            put_ingestor_info(meta.clone())?;
+            return Ok(meta);
         }
     }
 
     let store = CONFIG.storage().get_object_store();
-    let url = get_url();
     let out = IngestorMetadata::new(
-        url.port().expect("here port should be defined").to_string(),
-        url.to_string(),
+        port,
+        url,
         DEFAULT_VERSION.to_string(),
         store.get_bucket_name(),
         &CONFIG.parseable.username,
@@ -333,6 +372,12 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
     Ok(out)
 }
 
+/// Puts the ingestor info into the staging.
+///
+/// This function takes the ingestor info as a parameter and stores it in staging.
+/// # Parameters
+///
+/// * `ingestor_info`: The ingestor info to be stored.
 fn put_ingestor_info(info: IngestorMetadata) -> anyhow::Result<()> {
     let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
     let file_name = format!("ingestor.{}.json", info.ingestor_id);
