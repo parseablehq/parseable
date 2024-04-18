@@ -202,8 +202,7 @@ mod action {
     pub(super) async fn delete(stream_name: String, days: u32) {
         log::info!("running retention task - delete for stream={stream_name}");
         let retain_until = get_retain_until(Utc::now().date_naive(), days as u64);
-
-        let Ok(dates) = CONFIG
+        let Ok(mut dates) = CONFIG
             .storage()
             .get_object_store()
             .list_dates(&stream_name)
@@ -211,13 +210,12 @@ mod action {
         else {
             return;
         };
-
+        dates.retain(|date| date.starts_with("date"));
         let dates_to_delete = dates
             .into_iter()
             .filter(|date| string_to_date(date) < retain_until)
             .collect_vec();
         let dates = dates_to_delete.clone();
-
         let delete_tasks = FuturesUnordered::new();
         for date in dates_to_delete {
             let path = RelativePathBuf::from_iter([&stream_name, &date]);
