@@ -50,6 +50,46 @@ use super::base_path_without_preceding_slash;
 
 use super::modal::IngestorMetadata;
 
+pub async fn sync_cache_with_ingestors(
+    url: &str,
+    ingestor: IngestorMetadata,
+    body: bool,
+) -> Result<(), StreamError> {
+    if !utils::check_liveness(&ingestor.domain_name).await {
+        return Ok(());
+    }
+    let request_body: Bytes = Bytes::from(body.to_string());
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(url)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, ingestor.token)
+        .body(request_body)
+        .send()
+        .await
+        .map_err(|err| {
+            // log the error and return a custom error
+            log::error!(
+                "Fatal: failed to set cache: {}\n Error: {:?}",
+                ingestor.domain_name,
+                err
+            );
+            StreamError::Network(err)
+        })?;
+
+    // if the response is not successful, log the error and return a custom error
+    // this could be a bit too much, but we need to be sure it covers all cases
+    if !resp.status().is_success() {
+        log::error!(
+            "failed to set cache: {}\nResponse Returned: {:?}",
+            ingestor.domain_name,
+            resp.text().await
+        );
+    }
+
+    Ok(())
+}
+
 // forward the request to all ingestors to keep them in sync
 #[allow(dead_code)]
 pub async fn sync_streams_with_ingestors(
@@ -220,7 +260,7 @@ pub async fn send_stream_delete_request(
         log::error!(
             "failed to delete stream: {}\nResponse Returned: {:?}",
             ingestor.domain_name,
-            resp
+            resp.text().await
         );
     }
 
