@@ -17,6 +17,9 @@
  */
 
 use self::error::{CreateStreamError, StreamError};
+use super::base_path_without_preceding_slash;
+use super::cluster::fetch_stats_from_ingestors;
+use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use crate::alerts::Alerts;
 use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::metadata::STREAM_INFO;
@@ -25,15 +28,12 @@ use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{catalog, event, stats};
 use crate::{metadata, validator};
-
-use super::base_path_without_preceding_slash;
-use super::cluster::fetch_stats_from_ingestors;
-use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
+use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -301,33 +301,66 @@ pub async fn put_enable_cache(
     req: HttpRequest,
     body: web::Json<bool>,
 ) -> Result<impl Responder, StreamError> {
-    let enable_cache = body.into_inner();
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let storage = CONFIG.storage().get_object_store();
 
-    if CONFIG.parseable.local_cache_path.is_none() {
-        return Err(StreamError::CacheNotEnabled(stream_name));
-    }
-    if CONFIG.parseable.mode == Mode::Ingest {
-        // here the ingest server has not found the stream
-        // so it should check if the stream exists in storage
-        let streams = storage.list_streams().await?;
-        if !streams.contains(&LogStream {
-            name: stream_name.clone().to_owned(),
-        }) {
-            log::error!("Stream {} not found", stream_name.clone());
-            return Err(StreamError::StreamNotFound(stream_name.clone()));
+    match CONFIG.parseable.mode {
+        Mode::Query => {
+            if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+                return Err(StreamError::StreamNotFound(stream_name));
+            }
+            let ingestor_metadata = super::cluster::get_ingestor_info().await.map_err(|err| {
+                log::error!("Fatal: failed to get ingestor info: {:?}", err);
+                StreamError::from(err)
+            })?;
+            for ingestor in ingestor_metadata {
+                let url = format!(
+                    "{}{}/logstream/{}/cache",
+                    ingestor.domain_name,
+                    base_path_without_preceding_slash(),
+                    stream_name
+                );
+
+                super::cluster::sync_cache_with_ingestors(&url, ingestor.clone(), *body).await?;
+            }
         }
-        metadata::STREAM_INFO
-            .upsert_stream_info(
-                &*storage,
-                LogStream {
-                    name: stream_name.clone().to_owned(),
-                },
-            )
-            .await
-            .map_err(|_| StreamError::StreamNotFound(stream_name.clone()))?;
+        Mode::Ingest => {
+            if CONFIG.parseable.local_cache_path.is_none() {
+                return Err(StreamError::CacheNotEnabled(stream_name));
+            }
+            // here the ingest server has not found the stream
+            // so it should check if the stream exists in storage
+            let check = storage
+                .list_streams()
+                .await?
+                .iter()
+                .map(|stream| stream.name.clone())
+                .contains(&stream_name);
+
+            if !check {
+                log::error!("Stream {} not found", stream_name.clone());
+                return Err(StreamError::StreamNotFound(stream_name.clone()));
+            }
+            metadata::STREAM_INFO
+                .upsert_stream_info(
+                    &*storage,
+                    LogStream {
+                        name: stream_name.clone().to_owned(),
+                    },
+                )
+                .await
+                .map_err(|_| StreamError::StreamNotFound(stream_name.clone()))?;
+        }
+        Mode::All => {
+            if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+                return Err(StreamError::StreamNotFound(stream_name));
+            }
+            if CONFIG.parseable.local_cache_path.is_none() {
+                return Err(StreamError::CacheNotEnabled(stream_name));
+            }
+        }
     }
+    let enable_cache = body.into_inner();
     let mut stream_metadata = storage.get_stream_metadata(&stream_name).await?;
     stream_metadata.cache_enabled = enable_cache;
     storage
