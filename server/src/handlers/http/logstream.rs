@@ -26,7 +26,10 @@ use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
-use crate::{catalog, event, stats};
+use crate::{
+    catalog::{self, remove_manifest_from_snapshot},
+    event, stats,
+};
 use crate::{metadata, validator};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
@@ -85,6 +88,48 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     });
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
+}
+
+pub async fn retention_cleanup(
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<impl Responder, StreamError> {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let storage = CONFIG.storage().get_object_store();
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        // here the ingest server has not found the stream
+        // so it should check if the stream exists in storage
+        let check = storage
+            .list_streams()
+            .await?
+            .iter()
+            .map(|stream| stream.name.clone())
+            .contains(&stream_name);
+
+        if !check {
+            log::error!("Stream {} not found", stream_name.clone());
+            return Err(StreamError::StreamNotFound(stream_name.clone()));
+        }
+        metadata::STREAM_INFO
+            .upsert_stream_info(
+                &*storage,
+                LogStream {
+                    name: stream_name.clone().to_owned(),
+                },
+            )
+            .await
+            .map_err(|_| StreamError::StreamNotFound(stream_name.clone()))?;
+    }
+    let date_list: Vec<String> = serde_json::from_slice(&body).unwrap();
+    let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
+    let mut first_event_at: Option<String> = None;
+    if let Err(err) = res {
+        log::error!("Failed to update manifest list in the snapshot {err:?}")
+    } else {
+        first_event_at = res.unwrap();
+    }
+
+    Ok((first_event_at, StatusCode::OK))
 }
 
 pub async fn list(_: HttpRequest) -> impl Responder {
@@ -515,7 +560,9 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
 
     if first_event_at_empty(&stream_name) {
         let store = CONFIG.storage().get_object_store();
-        if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name).await {
+        let dates: Vec<String> = vec!["1970-01-01".to_string()];
+        if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name, dates).await
+        {
             if let Err(err) =
                 metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
             {

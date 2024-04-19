@@ -18,17 +18,19 @@
 
 use std::{io::ErrorKind, sync::Arc};
 
+use self::{column::Column, snapshot::ManifestItem};
+use crate::handlers::http::base_path_without_preceding_slash;
+use crate::option::CONFIG;
 use crate::{
     catalog::manifest::Manifest,
     query::PartialTimeFilter,
     storage::{object_storage::manifest_path, ObjectStorage, ObjectStorageError},
 };
+use crate::{handlers, Mode};
+use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveDateTime, NaiveTime, Utc};
 use relative_path::RelativePathBuf;
 use std::io::Error as IOError;
-
-use self::{column::Column, snapshot::ManifestItem};
-
 pub mod column;
 pub mod manifest;
 pub mod snapshot;
@@ -208,51 +210,99 @@ pub async fn remove_manifest_from_snapshot(
     storage: Arc<dyn ObjectStorage + Send>,
     stream_name: &str,
     dates: Vec<String>,
-) -> Result<(), ObjectStorageError> {
-    // get current snapshot
-    let mut meta = storage.get_object_store_format(stream_name).await?;
-    let manifests = &mut meta.snapshot.manifest_list;
+) -> Result<Option<String>, ObjectStorageError> {
+    match CONFIG.parseable.mode {
+        Mode::All | Mode::Ingest => {
+            if !dates[0].starts_with("1970") {
+                // get current snapshot
+                let mut meta = storage.get_object_store_format(stream_name).await?;
+                let manifests = &mut meta.snapshot.manifest_list;
+                // Filter out items whose manifest_path contains any of the dates_to_delete
+                manifests
+                    .retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
+                storage.put_snapshot(stream_name, meta.snapshot).await?;
+            }
 
-    // Filter out items whose manifest_path contains any of the dates_to_delete
-    manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
+            let first_event_at = get_first_event(storage.clone(), stream_name, Vec::new()).await?;
 
-    storage.put_snapshot(stream_name, meta.snapshot).await?;
-    Ok(())
+            Ok(first_event_at)
+        }
+        Mode::Query => Ok(get_first_event(storage, stream_name, dates).await?),
+    }
 }
 
 pub async fn get_first_event(
     storage: Arc<dyn ObjectStorage + Send>,
     stream_name: &str,
+    dates: Vec<String>,
 ) -> Result<Option<String>, ObjectStorageError> {
-    // get current snapshot
-    let mut meta = storage.get_object_store_format(stream_name).await?;
-    let manifests = &mut meta.snapshot.manifest_list;
-    if manifests.is_empty() {
-        log::info!("No manifest found for stream {stream_name}");
-        return Err(ObjectStorageError::Custom("No manifest found".to_string()));
+    let mut first_event_at: String = String::default();
+    match CONFIG.parseable.mode {
+        Mode::All | Mode::Ingest => {
+            // get current snapshot
+            let mut meta = storage.get_object_store_format(stream_name).await?;
+            let manifests = &mut meta.snapshot.manifest_list;
+            if manifests.is_empty() {
+                log::info!("No manifest found for stream {stream_name}");
+                return Err(ObjectStorageError::Custom("No manifest found".to_string()));
+            }
+            let manifest = &manifests[0];
+            let path = partition_path(
+                stream_name,
+                manifest.time_lower_bound,
+                manifest.time_upper_bound,
+            );
+            let Some(manifest) = storage.get_manifest(&path).await? else {
+                return Err(ObjectStorageError::UnhandledError(
+                    "Manifest found in snapshot but not in object-storage"
+                        .to_string()
+                        .into(),
+                ));
+            };
+            if let Some(first_event) = manifest.files.first() {
+                let (lower_bound, _) = get_file_bounds(first_event);
+                first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
+            }
+        }
+        Mode::Query => {
+            let ingestor_metadata =
+                handlers::http::cluster::get_ingestor_info()
+                    .await
+                    .map_err(|err| {
+                        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+                        ObjectStorageError::from(err)
+                    })?;
+            let mut ingestors_first_event_at: Vec<String> = Vec::new();
+            for ingestor in ingestor_metadata {
+                let url = format!(
+                    "{}{}/logstream/{}/retention/cleanup",
+                    ingestor.domain_name,
+                    base_path_without_preceding_slash(),
+                    stream_name
+                );
+                // Convert dates vector to Bytes object
+                let dates_bytes = Bytes::from(serde_json::to_vec(&dates).unwrap());
+                // delete the stream
+
+                let inegstor_first_event_at =
+                    handlers::http::cluster::send_retention_cleanup_request(
+                        &url,
+                        ingestor.clone(),
+                        dates_bytes,
+                    )
+                    .await?;
+                if !inegstor_first_event_at.is_empty() {
+                    ingestors_first_event_at.push(inegstor_first_event_at);
+                }
+            }
+            if ingestors_first_event_at.is_empty() {
+                return Ok(None);
+            }
+            first_event_at = ingestors_first_event_at.iter().min().unwrap().to_string();
+        }
     }
 
-    let manifest = &manifests[0];
-
-    let path = partition_path(
-        stream_name,
-        manifest.time_lower_bound,
-        manifest.time_upper_bound,
-    );
-    let Some(manifest) = storage.get_manifest(&path).await? else {
-        return Err(ObjectStorageError::UnhandledError(
-            "Manifest found in snapshot but not in object-storage"
-                .to_string()
-                .into(),
-        ));
-    };
-
-    if let Some(first_event) = manifest.files.first() {
-        let (lower_bound, _) = get_file_bounds(first_event);
-        let first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
-        return Ok(Some(first_event_at));
-    }
-    Ok(None)
+    Ok(Some(first_event_at))
 }
 
 /// Partition the path to which this manifest belongs.
