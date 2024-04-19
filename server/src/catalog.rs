@@ -284,15 +284,15 @@ pub async fn get_first_event(
                 let dates_bytes = Bytes::from(serde_json::to_vec(&dates).unwrap());
                 // delete the stream
 
-                let inegstor_first_event_at =
+                let ingestor_first_event_at =
                     handlers::http::cluster::send_retention_cleanup_request(
                         &url,
                         ingestor.clone(),
                         dates_bytes,
                     )
                     .await?;
-                if !inegstor_first_event_at.is_empty() {
-                    ingestors_first_event_at.push(inegstor_first_event_at);
+                if !ingestor_first_event_at.is_empty() {
+                    ingestors_first_event_at.push(ingestor_first_event_at);
                 }
             }
             if ingestors_first_event_at.is_empty() {
