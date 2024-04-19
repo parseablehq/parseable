@@ -244,7 +244,7 @@ async fn run_meta_file_migration(
                 // we can unwrap here because we know the file exists
                 let new_path = RelativePathBuf::from_iter([
                     PARSEABLE_ROOT_DIRECTORY,
-                    file.file_name().unwrap(),
+                    file.file_name().expect("should have a file name"),
                 ]);
                 object_store.put_object(&new_path, bytes).await?;
                 object_store.delete_object(&file).await?;
@@ -281,7 +281,7 @@ async fn run_stream_files_migration(
                     let new_path = RelativePathBuf::from_iter([
                         stream.as_str(),
                         STREAM_ROOT_DIRECTORY,
-                        path.file_name().unwrap(),
+                        path.file_name().expect("should have a file name"),
                     ]);
                     object_store.put_object(&new_path, bytes).await?;
                     object_store.delete_object(&path).await?;

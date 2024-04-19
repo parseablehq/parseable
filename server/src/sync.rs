@@ -28,7 +28,7 @@ use std::time::Duration;
 use crate::option::CONFIG;
 use crate::{storage, STORAGE_UPLOAD_INTERVAL};
 
-pub(crate) fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+pub fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
     let mut inbox_rx = AssertUnwindSafe(inbox_rx);
@@ -70,7 +70,7 @@ pub(crate) fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, one
     (handle, outbox_rx, inbox_tx)
 }
 
-pub(crate) fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+pub fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
     let mut inbox_rx = AssertUnwindSafe(inbox_rx);

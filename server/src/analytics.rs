@@ -74,7 +74,7 @@ pub struct Report {
 }
 
 impl Report {
-    pub async fn new() -> Self {
+    pub async fn new() -> anyhow::Result<Self> {
         let mut upt: f64 = 0.0;
         if let Ok(uptime) = uptime_lib::get() {
             upt = uptime.as_secs_f64();
@@ -91,9 +91,9 @@ impl Report {
             cpu_count = info.cpus().len();
             mem_total = info.total_memory();
         }
-        let ingestor_metrics = fetch_ingestors_metrics().await;
+        let ingestor_metrics = fetch_ingestors_metrics().await?;
 
-        Self {
+        Ok(Self {
             deployment_id: storage::StorageMetadata::global().deployment_id,
             uptime: upt,
             report_created_at: Utc::now(),
@@ -113,7 +113,7 @@ impl Report {
             total_json_bytes: ingestor_metrics.4,
             total_parquet_bytes: ingestor_metrics.5,
             metrics: build_metrics().await,
-        }
+        })
     }
 
     pub async fn send(&self) {
@@ -148,7 +148,7 @@ fn total_event_stats() -> (u64, u64, u64) {
     (total_events, total_json_bytes, total_parquet_bytes)
 }
 
-async fn fetch_ingestors_metrics() -> (u64, u64, usize, u64, u64, u64) {
+async fn fetch_ingestors_metrics() -> anyhow::Result<(u64, u64, usize, u64, u64, u64)> {
     let event_stats = total_event_stats();
     let mut node_metrics =
         NodeMetrics::new(total_streams(), event_stats.0, event_stats.1, event_stats.2);
@@ -181,9 +181,9 @@ async fn fetch_ingestors_metrics() -> (u64, u64, usize, u64, u64, u64) {
                 .header(header::CONTENT_TYPE, "application/json")
                 .send()
                 .await
-                .unwrap(); // should respond
+                .expect("should respond");
 
-            let data = serde_json::from_slice::<NodeMetrics>(&resp.bytes().await.unwrap()).unwrap();
+            let data = serde_json::from_slice::<NodeMetrics>(&resp.bytes().await?)?;
             vec.push(data);
             active_ingestors += 1;
         }
@@ -191,14 +191,14 @@ async fn fetch_ingestors_metrics() -> (u64, u64, usize, u64, u64, u64) {
         node_metrics.accumulate(&mut vec);
     }
 
-    (
+    Ok((
         active_ingestors,
         offline_ingestors,
         node_metrics.stream_count,
         node_metrics.total_events_count,
         node_metrics.total_json_bytes,
         node_metrics.total_parquet_bytes,
-    )
+    ))
 }
 
 async fn build_metrics() -> HashMap<String, Value> {
@@ -220,14 +220,23 @@ async fn build_metrics() -> HashMap<String, Value> {
     metrics
 }
 
-pub fn init_analytics_scheduler() {
+pub fn init_analytics_scheduler() -> anyhow::Result<()> {
     log::info!("Setting up schedular for anonymous user analytics");
 
     let mut scheduler = AsyncScheduler::new();
     scheduler
         .every(ANALYTICS_SEND_INTERVAL_SECONDS)
         .run(move || async {
-            Report::new().await.send().await;
+            Report::new()
+                .await
+                .unwrap_or_else(|err| {
+                    // panicing because seperate thread
+                    // TODO: a better way to handle this
+                    log::error!("Error while sending analytics: {}", err.to_string());
+                    panic!("{}", err.to_string());
+                })
+                .send()
+                .await;
         });
 
     tokio::spawn(async move {
@@ -236,6 +245,8 @@ pub fn init_analytics_scheduler() {
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
+
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]
