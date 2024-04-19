@@ -50,7 +50,6 @@ use crate::{
     handlers::http::modal::{
         ingest_server::IngestServer, query_server::QueryServer, server::Server,
     },
-    // localcache::LocalCacheManager,
 };
 pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 
