@@ -115,7 +115,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
             if CONFIG.parseable.mode ==  Mode::All {
-                standalone_when_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
+                standalone_after_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
                     .map_err(|err| {
                         ObjectStorageError::Custom(err.to_string())
                     })?;
@@ -128,7 +128,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
         EnvChange::NewStaging(mut metadata) => {
             // if server is started in ingest mode,we need to make sure that query mode has been started
             // i.e the metadata is updated to reflect the server mode = Query
-            if Mode::from_string(&metadata.server_mode).unwrap() == Mode::All && CONFIG.parseable.mode == Mode::Ingest {
+            if Mode::from_string(&metadata.server_mode).map_err(ObjectStorageError::Custom)? == Mode::All && CONFIG.parseable.mode == Mode::Ingest {
                 Err("Starting Ingest Mode is not allowed, Since Query Server has not been started yet")
             } else {
                 create_dir_all(CONFIG.staging_dir())?;
@@ -139,7 +139,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
                 // because staging dir has changed.
                 match CONFIG.parseable.mode {
                     Mode::All => {
-                        standalone_when_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
+                        standalone_after_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
                             .map_err(|err| {
                                 ObjectStorageError::Custom(err.to_string())
                             })?;
@@ -201,7 +201,8 @@ fn determine_environment(
             // if both staging and remote have same deployment id
             if staging.deployment_id == remote.deployment_id {
                 EnvChange::None(remote)
-            } else if Mode::from_string(&remote.server_mode).unwrap() == Mode::All
+            } else if Mode::from_string(&remote.server_mode).expect("server mode is valid here")
+                == Mode::All
                 && (CONFIG.parseable.mode == Mode::Query || CONFIG.parseable.mode == Mode::Ingest)
             {
                 // if you are switching to distributed mode from standalone mode
@@ -232,9 +233,9 @@ pub enum EnvChange {
     CreateBoth,
 }
 
-fn standalone_when_distributed(remote_server_mode: Mode) -> Result<(), MetadataError> {
-    // mode::all -> mode::query | mode::ingest allowed
-    // but mode::query | mode::ingest -> mode::all not allowed
+fn standalone_after_distributed(remote_server_mode: Mode) -> Result<(), MetadataError> {
+    // standalone -> query | ingest allowed
+    // but query | ingest -> standalone not allowed
     if remote_server_mode == Mode::Query {
         return Err(MetadataError::StandaloneWithDistributed("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.".to_string()));
     }

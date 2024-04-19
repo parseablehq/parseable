@@ -12,7 +12,6 @@ pub struct StaticSchema {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-
 pub struct SchemaFields {
     name: String,
     data_type: String,

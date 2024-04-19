@@ -1,4 +1,4 @@
-use crate::utils::get_address;
+use crate::utils::get_url;
 use prometheus_parse::Sample as PromSample;
 use prometheus_parse::Value as PromValue;
 use serde::Serialize;
@@ -22,8 +22,13 @@ struct StorageMetrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        let socket = get_address();
-        let address = format!("http://{}:{}", socket.ip(), socket.port());
+        let url = get_url();
+        let address = format!(
+            "http://{}:{}",
+            url.domain()
+                .unwrap_or(url.host_str().expect("should have a host")),
+            url.port().unwrap_or_default()
+        );
         Metrics {
             address,
             parseable_events_ingested: 0.0,
@@ -64,11 +69,11 @@ impl Metrics {
                     prom_dress.process_resident_memory_bytes += val;
                 }
             } else if sample.metric == "parseable_storage_size" {
-                if sample.labels.get("type").unwrap() == "data" {
+                if sample.labels.get("type").expect("type is present") == "data" {
                     if let PromValue::Gauge(val) = sample.value {
                         prom_dress.parseable_storage_size.data += val;
                     }
-                } else if sample.labels.get("type").unwrap() == "staging" {
+                } else if sample.labels.get("type").expect("type is present") == "staging" {
                     if let PromValue::Gauge(val) = sample.value {
                         prom_dress.parseable_storage_size.staging += val;
                     }

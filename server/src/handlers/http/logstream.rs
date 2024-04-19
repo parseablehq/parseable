@@ -169,7 +169,7 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     }
 
     if !body.is_empty() && static_schema_flag == "true" {
-        let static_schema: StaticSchema = serde_json::from_slice(&body).unwrap();
+        let static_schema: StaticSchema = serde_json::from_slice(&body)?;
         let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
         if let Ok(parsed_schema) = parsed_schema {
             schema = parsed_schema;
@@ -357,7 +357,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         None
     };
 
-    let hash_map = STREAM_INFO.read().unwrap();
+    let hash_map = STREAM_INFO.read().expect("Readable");
     let stream_meta = &hash_map
         .get(&stream_name)
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
@@ -396,7 +396,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         stats
     };
 
-    let stats = serde_json::to_value(stats).unwrap();
+    let stats = serde_json::to_value(stats)?;
 
     Ok((web::Json(stats), StatusCode::OK))
 }

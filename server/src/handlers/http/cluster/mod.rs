@@ -37,6 +37,8 @@ use chrono::Utc;
 use http::StatusCode;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
+use serde::de::Error;
+use serde_json::error::Error as SerdeError;
 use serde_json::Value as JsonValue;
 use url::Url;
 
@@ -262,9 +264,13 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
                     StreamError::SerdeError(err)
                 })?
                 .get("staging")
-                .unwrap()
+                .ok_or(StreamError::SerdeError(SerdeError::missing_field(
+                    "staging",
+                )))?
                 .as_str()
-                .unwrap()
+                .ok_or(StreamError::SerdeError(SerdeError::custom(
+                    "staging path not a string/ not provided",
+                )))?
                 .to_string();
 
             (true, sp, None, status)
@@ -304,7 +310,9 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
             &ingestor.domain_name,
             base_path_without_preceding_slash()
         ))
-        .unwrap();
+        .map_err(|err| {
+            PostError::Invalid(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
+        })?;
 
         let res = reqwest::Client::new()
             .get(uri)
@@ -362,14 +370,27 @@ pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostErr
     if check_liveness(&domain_name).await {
         return Err(PostError::Invalid(anyhow::anyhow!("Node Online")));
     }
-
-    let url = Url::parse(&domain_name).unwrap();
-    let ingestor_meta_filename = ingestor_metadata_path(
-        url.host_str().unwrap().to_owned(),
-        url.port().unwrap().to_string(),
-    )
-    .to_string();
     let object_store = CONFIG.storage().get_object_store();
+
+    let ingestor_metadatas = object_store
+        .get_objects(
+            Some(&RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY)),
+            Box::new(|file_name| file_name.starts_with("ingestor")),
+        )
+        .await?;
+
+    let ingestor_metadata = ingestor_metadatas
+        .iter()
+        .map(|elem| serde_json::from_slice::<IngestorMetadata>(elem).unwrap_or_default())
+        .collect_vec();
+
+    let ingestor_metadata = ingestor_metadata
+        .iter()
+        .filter(|elem| elem.domain_name == domain_name)
+        .collect_vec();
+
+    let ingestor_meta_filename =
+        ingestor_metadata_path(Some(&ingestor_metadata[0].ingestor_id)).to_string();
     let msg = match object_store
         .try_delete_ingestor_meta(ingestor_meta_filename)
         .await

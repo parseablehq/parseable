@@ -85,7 +85,7 @@ pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Sch
         .await?
         .iter()
         // we should be able to unwrap as we know the data is valid schema
-        .map(|byte_obj| serde_json::from_slice(byte_obj).unwrap())
+        .map(|byte_obj| serde_json::from_slice(byte_obj).expect("data is valid json"))
         .collect_vec();
 
     let new_schema = Schema::try_merge(res)?;
@@ -97,7 +97,7 @@ pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Sch
 pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec<Value>> {
     // send the query request to the ingestor
     let mut res = vec![];
-    let ima = get_ingestor_info().await.unwrap();
+    let ima = get_ingestor_info().await?;
 
     for im in ima.iter() {
         let uri = format!(
