@@ -594,7 +594,7 @@ pub fn manifest_path(prefix: &str) -> RelativePathBuf {
         );
         RelativePathBuf::from_iter([prefix, &manifest_file_name])
     } else {
-        RelativePathBuf::from_iter([MANIFEST_FILE])
+        RelativePathBuf::from_iter([prefix, MANIFEST_FILE])
     }
 }
 
