@@ -46,10 +46,8 @@ use std::sync::Arc;
 use handlers::http::modal::ParseableServer;
 use option::{Mode, CONFIG};
 
-use crate::{
-    handlers::http::modal::{
-        ingest_server::IngestServer, query_server::QueryServer, server::Server,
-    },
+use crate::handlers::http::modal::{
+    ingest_server::IngestServer, query_server::QueryServer, server::Server,
 };
 pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 

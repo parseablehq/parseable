@@ -50,7 +50,7 @@ use crate::utils::actix::extract_session_key_from_req;
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
-    query: String,
+    pub query: String,
     start_time: String,
     end_time: String,
     #[serde(default)]

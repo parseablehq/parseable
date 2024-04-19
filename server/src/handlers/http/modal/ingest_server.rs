@@ -18,6 +18,7 @@
 
 use crate::analytics;
 use crate::banner;
+use crate::handlers::airplane;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::RouteExt;
 use crate::localcache::LocalCacheManager;
@@ -336,7 +337,10 @@ impl IngestServer {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync();
 
+        tokio::spawn(airplane::server());
+
         let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+
         tokio::pin!(app);
         loop {
             tokio::select! {

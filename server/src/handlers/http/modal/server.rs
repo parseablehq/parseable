@@ -416,6 +416,7 @@ impl Server {
         }
 
         tokio::spawn(handlers::livetail::server());
+        tokio::spawn(handlers::airplane::server());
 
         let app = self.start(prometheus, CONFIG.parseable.openid.clone());
 

@@ -89,6 +89,9 @@ pub struct Cli {
 
     /// public address for the parseable server ingestor
     pub ingestor_endpoint: String,
+
+    /// port use by airplane(flight query service)
+    pub flight_port: u16,
 }
 
 impl Cli {
@@ -118,6 +121,7 @@ impl Cli {
     pub const INGESTOR_ENDPOINT: &'static str = "ingestor-endpoint";
     pub const DEFAULT_USERNAME: &'static str = "admin";
     pub const DEFAULT_PASSWORD: &'static str = "admin";
+    pub const FLIGHT_PORT: &'static str = "flight-port";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -276,6 +280,16 @@ impl Cli {
                     .help("Port for gRPC server"),
             )
             .arg(
+                Arg::new(Self::FLIGHT_PORT)
+                    .long(Self::FLIGHT_PORT)
+                    .env("P_FLIGHT_PORT")
+                    .value_name("PORT")
+                    .default_value("8002")
+                    .required(false)
+                    .value_parser(value_parser!(u16))
+                    .help("Port for Arrow Flight Querying Engine"),
+            )
+            .arg(
                 Arg::new(Self::LIVETAIL_CAPACITY)
                     .long(Self::LIVETAIL_CAPACITY)
                     .env("P_LIVETAIL_CAPACITY")
@@ -317,11 +331,11 @@ impl Cli {
                     .help("Mode of operation"),
             )
             .arg(
-            	Arg::new(Self::INGESTOR_ENDPOINT)
-             		.long(Self::INGESTOR_ENDPOINT)
-               		.env("P_INGESTOR_ENDPOINT")
-                 	.value_name("URL")
-                  	.required(false)
+                Arg::new(Self::INGESTOR_ENDPOINT)
+                    .long(Self::INGESTOR_ENDPOINT)
+                    .env("P_INGESTOR_ENDPOINT")
+                    .value_name("URL")
+                    .required(false)
                     .help("URL to connect to this specific ingestor. Default is the address of the server.")
             )
             .arg(
@@ -401,6 +415,10 @@ impl FromArgMatches for Cli {
             .get_one::<u16>(Self::GRPC_PORT)
             .cloned()
             .expect("default for livetail port");
+        self.flight_port = m
+            .get_one::<u16>(Self::FLIGHT_PORT)
+            .cloned()
+            .expect("default for flight port");
         self.livetail_channel_capacity = m
             .get_one::<usize>(Self::LIVETAIL_CAPACITY)
             .cloned()
