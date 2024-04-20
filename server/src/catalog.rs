@@ -213,7 +213,7 @@ pub async fn remove_manifest_from_snapshot(
 ) -> Result<Option<String>, ObjectStorageError> {
     match CONFIG.parseable.mode {
         Mode::All | Mode::Ingest => {
-            if !dates[0].starts_with("1970") {
+            if !dates.is_empty() {
                 // get current snapshot
                 let mut meta = storage.get_object_store_format(stream_name).await?;
                 let manifests = &mut meta.snapshot.manifest_list;

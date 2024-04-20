@@ -560,7 +560,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
 
     if first_event_at_empty(&stream_name) {
         let store = CONFIG.storage().get_object_store();
-        let dates: Vec<String> = vec!["1970-01-01".to_string()];
+        let dates: Vec<String> = Vec::new();
         if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name, dates).await
         {
             if let Err(err) =
