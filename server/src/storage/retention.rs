@@ -193,17 +193,12 @@ mod action {
     use itertools::Itertools;
     use relative_path::RelativePathBuf;
 
-    use crate::{
-        catalog::{self, remove_manifest_from_snapshot},
-        metadata,
-        option::CONFIG,
-    };
+    use crate::{catalog::remove_manifest_from_snapshot, metadata, option::CONFIG};
 
     pub(super) async fn delete(stream_name: String, days: u32) {
         log::info!("running retention task - delete for stream={stream_name}");
         let retain_until = get_retain_until(Utc::now().date_naive(), days as u64);
-
-        let Ok(dates) = CONFIG
+        let Ok(mut dates) = CONFIG
             .storage()
             .get_object_store()
             .list_dates(&stream_name)
@@ -211,13 +206,12 @@ mod action {
         else {
             return;
         };
-
+        dates.retain(|date| date.starts_with("date"));
         let dates_to_delete = dates
             .into_iter()
             .filter(|date| string_to_date(date) < retain_until)
             .collect_vec();
         let dates = dates_to_delete.clone();
-
         let delete_tasks = FuturesUnordered::new();
         for date in dates_to_delete {
             let path = RelativePathBuf::from_iter([&stream_name, &date]);
@@ -240,13 +234,8 @@ mod action {
 
         let store = CONFIG.storage().get_object_store();
         let res = remove_manifest_from_snapshot(store.clone(), &stream_name, dates).await;
-        if let Err(err) = res {
-            log::error!("Failed to update manifest list in the snapshot {err:?}")
-        }
-
-        if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name).await {
-            if let Err(err) =
-                metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
+        if let Ok(first_event_at) = res {
+            if let Err(err) = metadata::STREAM_INFO.set_first_event_at(&stream_name, first_event_at)
             {
                 log::error!(
                     "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",

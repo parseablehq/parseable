@@ -177,6 +177,8 @@ pub enum ObjectStorageError {
     // no such key inside the object storage
     #[error("{0} not found")]
     NoSuchKey(String),
+    #[error("Invalid Request: {0}")]
+    Invalid(#[from] anyhow::Error),
 
     // custom
     #[error("{0}")]
