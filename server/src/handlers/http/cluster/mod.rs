@@ -41,7 +41,6 @@ use serde::de::Error;
 use serde_json::error::Error as SerdeError;
 use serde_json::Value as JsonValue;
 use url::Url;
-
 type IngestorMetadataArr = Vec<IngestorMetadata>;
 
 use self::utils::StorageStats;
@@ -229,7 +228,7 @@ async fn send_stream_sync_request(
     Ok(())
 }
 
-/// send a rollback request to all ingestors
+/// send a delete stream request to all ingestors
 pub async fn send_stream_delete_request(
     url: &str,
     ingestor: IngestorMetadata,
@@ -265,6 +264,53 @@ pub async fn send_stream_delete_request(
     }
 
     Ok(())
+}
+
+/// send a retention cleanup request to all ingestors
+pub async fn send_retention_cleanup_request(
+    url: &str,
+    ingestor: IngestorMetadata,
+    body: Bytes,
+) -> Result<String, ObjectStorageError> {
+    let mut first_event_at: String = String::default();
+    if !utils::check_liveness(&ingestor.domain_name).await {
+        return Ok(first_event_at);
+    }
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(url)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, ingestor.token)
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| {
+            // log the error and return a custom error
+            log::error!(
+                "Fatal: failed to perform cleanup on retention: {}\n Error: {:?}",
+                ingestor.domain_name,
+                err
+            );
+            ObjectStorageError::Custom(err.to_string())
+        })?;
+
+    // if the response is not successful, log the error and return a custom error
+    // this could be a bit too much, but we need to be sure it covers all cases
+    if !resp.status().is_success() {
+        log::error!(
+            "failed to perform cleanup on retention: {}\nResponse Returned: {:?}",
+            ingestor.domain_name,
+            resp.status()
+        );
+    }
+
+    let resp_data = resp.bytes().await.map_err(|err| {
+        log::error!("Fatal: failed to parse response to bytes: {:?}", err);
+        ObjectStorageError::Custom(err.to_string())
+    })?;
+
+    first_event_at = String::from_utf8_lossy(&resp_data).to_string();
+    Ok(first_event_at)
 }
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {

@@ -170,6 +170,14 @@ impl IngestServer {
                     ),
                 )
                 .service(
+                    // GET "/logstream/{logstream}/info" ==> Get info for given log stream
+                    web::resource("/info").route(
+                        web::get()
+                            .to(logstream::get_stream_info)
+                            .authorize_for_stream(Action::GetStream),
+                    ),
+                )
+                .service(
                     // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
                     web::resource("/stats").route(
                         web::get()
@@ -191,6 +199,15 @@ impl IngestServer {
                                 .to(logstream::get_cache_enabled)
                                 .authorize_for_stream(Action::GetCacheEnabled),
                         ),
+                )
+                .service(
+                    web::scope("/retention").service(
+                        web::resource("/cleanup").route(
+                            web::post()
+                                .to(logstream::retention_cleanup)
+                                .authorize_for_stream(Action::PutRetention),
+                        ),
+                    ),
                 ),
         )
     }
