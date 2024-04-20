@@ -35,7 +35,19 @@ Common labels
 */}}
 {{- define "parseable.labels" -}}
 helm.sh/chart: {{ include "parseable.chart" . }}
-{{ include "parseable.selectorLabels" . }}
+{{ include "parseable.labelsSelector" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Ingestor Labels
+*/}}
+{{- define "parseable.ingestorLabels" -}}
+helm.sh/chart: {{ include "parseable.chart" . }}
+{{ include "parseable.ingestorLabelsSelector" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -45,9 +57,18 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels
 */}}
-{{- define "parseable.selectorLabels" -}}
+{{- define "parseable.labelsSelector" -}}
 app.kubernetes.io/name: {{ include "parseable.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Ingestor Labels Selector for ingestor statefulset
+*/}}
+{{- define "parseable.ingestorLabelsSelector" -}}
+app.kubernetes.io/name: {{ include "parseable.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.parseable.com/type: ingestor
 {{- end }}
 
 {{/*

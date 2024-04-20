@@ -1,0 +1,85 @@
+{{- if eq .Values.parseable.highAvailability.enabled true }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "parseable.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "parseable.labelsSelector" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.parseable.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "parseable.labelsSelector" . | nindent 8 }}
+    spec:
+      {{- with .Values.parseable.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "parseable.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.parseable.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.parseable.securityContext | nindent 12 }}
+          image: "{{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
+          # Uncomment to debug
+          # command: [ "/bin/sh", "-c", "sleep 1000000" ]
+          args: ["parseable", "s3-store"]
+          env:
+            - name: P_MODE
+              value: "query"
+            {{- range $key, $value :=  .Values.parseable.env }}
+            - name: {{ $key }}
+              value: {{ tpl $value $ | quote }}
+            {{- end }}
+            {{- range $secret := .Values.parseable.s3ModeSecret }}
+            {{- range $key := $secret.keys }}
+            {{- $envPrefix := $secret.prefix | default "" | upper }}
+            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+            - name: {{ $envPrefix }}{{ $envKey }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret.name }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - containerPort: 8000
+          resources:
+            {{- toYaml .Values.parseable.resources | nindent 12 }}
+          volumeMounts:
+          - mountPath: "/parseable/staging"
+            name: stage-volume
+      volumes:
+      {{- if .Values.parseable.persistence.staging.enabled }}
+      - name: stage-volume
+        persistentVolumeClaim:
+          claimName: {{ include "parseable.fullname" . }}-staging-pvc
+      {{- else }}
+      - name: stage-volume
+        emptyDir: {}
+      {{- end }}
+      {{- with .Values.parseable.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.parseable.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.parseable.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

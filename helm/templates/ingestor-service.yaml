@@ -1,0 +1,15 @@
+{{- if eq .Values.parseable.highAvailability.enabled true }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "parseable.fullname" . }}-ingestor-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: {{ $.Values.parseable.highAvailability.ingestor.service.type }}
+  ports:
+    - port: {{ $.Values.parseable.highAvailability.ingestor.service.port }}
+      targetPort: {{ .Values.parseable.highAvailability.ingestor.port }}
+      protocol: TCP
+  selector:
+    {{- include "parseable.ingestorLabelsSelector" . | nindent 4 }}
+{{- end }}

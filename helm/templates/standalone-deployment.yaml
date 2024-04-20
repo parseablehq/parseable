@@ -1,3 +1,4 @@
+{{- if eq .Values.parseable.highAvailability.enabled false }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,10 +7,10 @@ metadata:
   labels:
     {{- include "parseable.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.parseable.replicaCount }}
+  replicas: 1
   selector:
     matchLabels:
-      {{- include "parseable.selectorLabels" . | nindent 6 }}
+      {{- include "parseable.labelsSelector" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.parseable.podAnnotations }}
@@ -17,7 +18,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "parseable.selectorLabels" . | nindent 8 }}
+        {{- include "parseable.labelsSelector" . | nindent 8 }}
     spec:
       {{- with .Values.parseable.imagePullSecrets }}
       imagePullSecrets:
@@ -107,3 +108,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

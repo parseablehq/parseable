@@ -1,7 +1,8 @@
+{{- if eq .Values.parseable.highAvailability.enabled true }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "parseable.fullname" . }}
+  name: {{ include "parseable.fullname" . }}-ingestor-service
   namespace: {{ .Release.Namespace }}
 spec:
   type: {{ $.Values.parseable.service.type }}
@@ -10,4 +11,5 @@ spec:
       targetPort: 8000
       protocol: TCP
   selector:
-    {{- include "parseable.selectorLabels" . | nindent 4 }}
+    {{- include "parseable.labelsSelector" . | nindent 4 }}
+{{- end }}
