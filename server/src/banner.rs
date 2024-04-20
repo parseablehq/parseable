@@ -49,11 +49,12 @@ fn print_ascii_art() {
 
 fn status_info(config: &Config, scheme: &str, id: Uid) {
     let address = format!(
-        "\"{}://{}\" ({}), \":{}\" (gRPC)",
+        "\"{}://{}\" ({}), \":{}\" (livetail), \":{}\" (flight protocol)",
         scheme,
         config.parseable.address,
         scheme.to_ascii_uppercase(),
-        config.parseable.grpc_port
+        config.parseable.grpc_port,
+        config.parseable.flight_port
     );
 
     let mut credentials =
