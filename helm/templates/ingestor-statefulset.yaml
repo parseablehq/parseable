@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "parseable.fullname" . }}-headless
+  name: {{ include "parseable.fullname" . }}-ingestor-headless
   namespace: {{ .Release.Namespace }}
 spec:
   ports:
@@ -25,7 +25,7 @@ spec:
       {{- include "parseable.ingestorLabelsSelector" . | nindent 6 }}
   serviceName: {{ include "parseable.fullname" . }}-headless
   replicas: {{ .Values.parseable.highAvailability.ingestor.count }}
-  minReadySeconds: 10
+  minReadySeconds: 2
   template:
     metadata:
       labels:
@@ -38,9 +38,8 @@ spec:
           {{- toYaml .Values.parseable.securityContext | nindent 8 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
-        # Uncomment to debug
-        # command: [ "/bin/sh", "-c", "sleep 1000000" ]
-        args: ["parseable", "s3-store"]
+        command: ["/bin/bash", "-c"]
+        args: ["parseable s3-store --ingestor-endpoint=${HOSTNAME}.{{ include "parseable.fullname" . }}-ingestor-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.parseable.highAvailability.ingestor.port }}"]
         env:
           {{- range $key, $value :=  .Values.parseable.highAvailability.ingestor.env }}
           - name: {{ $key }}
@@ -59,14 +58,12 @@ spec:
           {{- end }}
           - name: P_MODE
             value: "ingest"
-          - name: P_INGESTOR_URL
-            value: "$HOSTNAME:$PORT"
         ports:
-          - containerPort: 8000
+          - containerPort: {{ .Values.parseable.highAvailability.ingestor.port }}
         resources:
           {{- toYaml .Values.parseable.highAvailability.ingestor.resources | nindent 12 }}
         volumeMounts:
-        ## No data volume for ingestor
+          ## No data volume for ingestor
         - mountPath: "/parseable/staging"
           name: stage-volume
   volumeClaimTemplates:
