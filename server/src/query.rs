@@ -167,7 +167,7 @@ impl Query {
         }
     }
 
-    pub fn table_name(&self) -> Option<String> {
+    pub fn first_table_name(&self) -> Option<String> {
         let mut visitor = TableScanVisitor::default();
         let _ = self.raw_logical_plan.visit(&mut visitor);
         visitor.into_inner().pop()
@@ -192,7 +192,7 @@ impl TreeNodeVisitor for TableScanVisitor {
         match node {
             LogicalPlan::TableScan(table) => {
                 self.tables.push(table.table_name.table().to_string());
-                Ok(VisitRecursion::Stop)
+                Ok(VisitRecursion::Skip)
             }
             _ => Ok(VisitRecursion::Continue),
         }
@@ -290,7 +290,7 @@ fn table_contains_any_time_filters(
         })
         .any(|expr| {
             matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if ((time_partition.is_some() && name == time_partition.as_ref().unwrap()) || 
+            if ((time_partition.is_some() && name == time_partition.as_ref().unwrap()) ||
             (!time_partition.is_some() && name == event::DEFAULT_TIMESTAMP_KEY)))
         })
 }
