@@ -44,7 +44,6 @@ services:
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=query
-      - RUST_LOG=DEBUG
     networks:
       - parseable-internal
     healthcheck:
@@ -80,7 +79,6 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
-      - RUST_LOG=DEBUG
     networks:
       - parseable-internal
     healthcheck:
@@ -116,7 +114,6 @@ services:
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
-      - RUST_LOG=DEBUG
       - P_INGESTOR_ENDPOINT=parseable-ingest-two:8000
     networks:
       - parseable-internal
@@ -153,7 +150,6 @@ services:
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
-      - RUST_LOG=DEBUG
       - P_INGESTOR_ENDPOINT=parseable-ingest-three:8000
     networks:
       - parseable-internal
@@ -190,7 +186,6 @@ services:
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
-      - RUST_LOG=DEBUG
       - P_INGESTOR_ENDPOINT=parseable-ingest-four:8000
     networks:
       - parseable-internal
@@ -217,7 +212,6 @@ services:
       - P_ADDR_TWO=parseable-ingest-two:8000
       - P_ADDR_THREE=parseable-ingest-three:8000
       - P_ADDR_FOUR=parseable-ingest-four:8000
-      - RUST_LOG=DEBUG
     ports:
       - 6188:6188
     depends_on:
