@@ -67,7 +67,7 @@ You can download and run the Parseable binary on your laptop.
 - Linux or MacOS
 
 ```bash
-curl -fsSL https://logg.ing/install | sh
+curl -fsSL https://logg.ing/install | bash
 ```
 
 - Windows
