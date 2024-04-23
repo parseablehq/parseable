@@ -16,7 +16,7 @@ services:
       - MINIO_ROOT_PASSWORD=supersecret
       - MINIO_UPDATE=off
     ports:
-      - 9000
+      - 9000:9000
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 15s
@@ -31,7 +31,7 @@ services:
       dockerfile: Dockerfile
     command: ["parseable", "s3-store"]
     ports:
-      - 8000
+      - 8000:8000
     environment:
       - P_S3_URL=http://minio:9000
       - P_S3_ACCESS_KEY=parseable
@@ -218,7 +218,7 @@ services:
       - P_ADDR_FOUR=parseable-ingest-four:8000
       - RUST_LOG=DEBUG
     ports:
-      - 6188
+      - 6188:6188
     depends_on:
       - parseable-query
       - minio
@@ -236,7 +236,7 @@ services:
       - parseable-internal
   quest:
     platform: linux/amd64
-    image: ghcr.io/eshanatnight/quest:main
+    image: ghcr.io/parseablehq/quest:main
     command:
       [
         "load",
