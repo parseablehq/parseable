@@ -209,7 +209,8 @@ services:
         max_attempts: 3
   # penguin lb
   penguin:
-    image: ghcr.io/eshanatnight/penguin:multi
+    platform: linux/amd64
+    image: parseable/parseable:edge
     command: ["penguin"]
     environment:
       - P_ADDR_ONE=parseable-ingest-one:8000
@@ -226,12 +227,6 @@ services:
       - parseable-ingest-two
       - parseable-ingest-three
       - parseable-ingest-four
-    # ignore this for now
-    # healthcheck:
-    #   test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
-    #   interval: 15s
-    #   timeout: 20s
-    #   retries: 5
     networks:
       - parseable-internal
   quest:
