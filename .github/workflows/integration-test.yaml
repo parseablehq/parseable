@@ -11,7 +11,7 @@ on:
 jobs:
 
   docker-compose-test:
-    name: Quest Smoke and Load Tests
+    name: Quest Smoke and Load Tests for Standalone deployments
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -21,3 +21,15 @@ jobs:
       - name: Stop compose
         if: always()
         run: docker-compose -f docker-compose-test.yaml down
+
+  docker-compose-distributed-test:
+    name: Quest Smoke and Load Tests for Distributed deployments
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Start compose
+        run: docker-compose -f docker-compose-distributed-test.yaml up --build --exit-code-from quest
+      - name: Stop compose
+        if: always()
+        run: docker-compose -f docker-compose-distributed-test.yaml down
