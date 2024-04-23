@@ -67,13 +67,13 @@ You can download and run the Parseable binary on your laptop.
 - Linux or MacOS
 
 ```bash
-curl https://raw.githubusercontent.com/parseablehq/parseable/main/scripts/download.sh | bash
+curl https://logg.ing/install | bash
 ```
 
 - Windows
 
 ```pwsh
-powershell -c "irm https://raw.githubusercontent.com/parseablehq/parseable/main/scripts/download.ps1 | iex"
+powershell -c "irm https://logg.ing/install-windows | iex"
 ```
 
 Once this runs successfully, you'll see dashboard at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
