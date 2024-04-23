@@ -7,16 +7,7 @@
 #  of them when querying for the architecture.
 #>
 [System.String[]]$SUPPORTED_ARCH = @("x86_64", "arm64", "amd64")
-[System.String[]]$SUPPORTED_OS = @("linux", "darwin", "win32nt")
-
-# Associate binaries with CPU architectures and operating systems
-[System.Collections.Hashtable]$BINARIES = @{
-    "x86_64-linux"  = "Parseable_x86_64-unknown-linux-gnu"
-    "arm64-linux"   = "Parseable_aarch64-unknown-linux-gnu"
-    "x86_64-darwin" = "Parseable_x86_64-apple-darwin"
-    "arm64-darwin"  = "Parseable_aarch64-apple-darwin"
-    "amd64-win32nt" = "Parseable_x86_64-pc-windows-msvc.exe"
-}
+[System.String]$DOWNLOAD_BASE_URL="cdn.parseable.com/"
 
 #  util functions
 function Get-Env {
@@ -86,23 +77,19 @@ function Get-Env {
 }
 
 # Get the system's CPU architecture and operating system
-[String]$CPU_ARCH = [System.Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE").ToLower()
-[String]$OS = [System.Environment]::OSVersion.Platform.ToString().ToLower()
+[String]$CPU_ARCH = "x86_64"
+[String]$OS = "windows"
 [String]$INSTALLDIR = "${HOME}\.parseable\bin"
 [String]$BIN = "${INSTALLDIR}\parseable.exe"
 
 function Install-Parseable {
+    Write-Output "`n=========================`n"
     Write-Output "OS: $OS"
     Write-Output "CPU arch: $CPU_ARCH"
 
     # Check if the CPU architecture is supported
     if ($SUPPORTED_ARCH -notcontains $CPU_ARCH) {
         Write-Error "Unsupported CPU architecture ($CPU_ARCH)."
-        exit 1
-    }
-    # Check if the OS is supported
-    if ($SUPPORTED_OS -notcontains $OS) {
-        Write-Error "Unsupported operating system ($OS)."
         exit 1
     }
 
@@ -119,25 +106,13 @@ function Install-Parseable {
     # Get the latest release information using GitHub API
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/parseablehq/parseable/releases/latest"
     # Loop through binaries in the release and find the appropriate one
-    foreach ($arch_os in "$CPU_ARCH-$OS") {
-        $binary_name = $BINARIES[$arch_os]
-        $download_url = ($release.assets | Where-Object { $_.name -like "*$binary_name*" }).browser_download_url
-        if ($download_url) {
-            break
-        }
-    }
+    $download_url = $DOWNLOAD_BASE_URL + $CPU_ARCH + "-" + $OS + "." + $release.tag_name
 
     mkdir -Force $INSTALLDIR
 
-    Write-Output "Downloading Parseable Server..."
+    Write-Output "Downloading Parseable version $release_tag, for OS: $OS, CPU architecture: $CPU_ARCH`n`n"
     # Download the binary using Invoke-WebRequest
     Invoke-WebRequest -Uri $download_url -OutFile $BIN
-
-    # Make the binary executable (for Unix-like systems)
-    if ($OS -eq "linux" -or $OS -eq "darwin") {
-        Set-ItemProperty -Path $BIN -Name IsReadOnly -Value $false
-        Set-ItemProperty -Path $BIN -Name IsExecutable -Value $true
-    }
 
     Write-Output "Adding Parseable to PATH..."
     # Only try adding to path if there isn't already a bun.exe in the path
