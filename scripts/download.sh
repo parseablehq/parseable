@@ -3,7 +3,7 @@
 # supported CPU architectures and operating systems
 SUPPORTED_ARCH=("x86_64" "arm64")
 SUPPORTED_OS=("linux" "darwin")
-DOWNLOAD_BASE_URL="parseable.gateway.scarf.sh/"
+DOWNLOAD_BASE_URL="cdn.parseable.com/"
 
 # Get the system's CPU architecture and operating system
 CPU_ARCH=$(uname -m)
