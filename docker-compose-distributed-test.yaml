@@ -210,8 +210,8 @@ services:
   # penguin lb
   penguin:
     platform: linux/amd64
-    image: parseable/parseable:edge
-    command: ["penguin"]
+    image: parseable/penguin:edge
+    command: ["./target/release/penguin"]
     environment:
       - P_ADDR_ONE=parseable-ingest-one:8000
       - P_ADDR_TWO=parseable-ingest-two:8000
