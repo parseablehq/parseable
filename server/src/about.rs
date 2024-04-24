@@ -22,7 +22,7 @@ use chrono_humanize::{Accuracy, Tense};
 use crossterm::style::Stylize;
 use std::env;
 use std::path::Path;
-use sysinfo::SystemExt;
+use sysinfo::System;
 use ulid::Ulid;
 
 use crate::analytics;
@@ -59,11 +59,7 @@ pub fn user_agent(uid: &Ulid) -> String {
         uid,
         current().released_version,
         current().commit_hash,
-        analytics::SYS_INFO
-            .lock()
-            .unwrap()
-            .name()
-            .unwrap_or_default(),
+        System::name().unwrap_or_default(),
         platform()
     )
 }

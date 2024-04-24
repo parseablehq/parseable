@@ -34,7 +34,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
-use sysinfo::{CpuExt, System, SystemExt};
+use sysinfo::System;
 use ulid::Ulid;
 
 const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io:80";
@@ -86,8 +86,8 @@ impl Report {
         let mut cpu_count = 0;
         let mut mem_total = 0;
         if let Ok(info) = SYS_INFO.lock() {
-            os_version = info.os_version().unwrap_or_default();
-            os_name = info.name().unwrap_or_default();
+            os_version = System::os_version().unwrap_or_default();
+            os_name = System::name().unwrap_or_default();
             cpu_count = info.cpus().len();
             mem_total = info.total_memory();
         }

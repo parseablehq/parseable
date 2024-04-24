@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use sysinfo::{System, SystemExt};
+use sysinfo::System;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
