@@ -82,11 +82,8 @@ fn get_file_bounds(file: &manifest::File) -> (DateTime<Utc>, DateTime<Utc>) {
         .unwrap()
     {
         column::TypedStatistics::Int(stats) => (
-            DateTime::from_timestamp_millis(stats.min)
-                .unwrap(),
-            DateTime::from_timestamp_millis(stats.max)
-                .unwrap()
-
+            DateTime::from_timestamp_millis(stats.min).unwrap(),
+            DateTime::from_timestamp_millis(stats.max).unwrap(),
         ),
         _ => unreachable!(),
     }

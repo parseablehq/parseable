@@ -56,7 +56,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     async fn put_opts(
         &self,
         location: &Path,
-        payload: Bytes/* PutPayload */,
+        payload: Bytes, /* PutPayload */
         opts: PutOptions,
     ) -> ObjectStoreResult<PutResult> {
         let time = time::Instant::now();

@@ -157,7 +157,7 @@ impl ListingTableBuilder {
             }));
         }
 
-        let res: Vec<Vec<String>>  = tasks
+        let res: Vec<Vec<String>> = tasks
             .and_then(|res| {
                 future::ok(
                     res.into_iter()
