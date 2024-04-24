@@ -93,7 +93,7 @@ impl ParseableServer for IngestServer {
 
         if let Some(config) = ssl {
             http_server
-                .bind_rustls(&CONFIG.parseable.address, config)?
+                .bind_rustls_0_22(&CONFIG.parseable.address, config)?
                 .run()
                 .await?;
         } else {
