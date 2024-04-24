@@ -1,6 +1,6 @@
 parseable:
   image:
-    repository: parseable/parseable
+    repository: containers.parseable.com/parseable/parseable
     tag: v1.0.0
     pullPolicy: Always
   ## Set to true if you want to deploy Parseable in local mode (store logs
