@@ -5,12 +5,12 @@ metadata:
   name: {{ include "parseable.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "parseable.labels" . | nindent 4 }}
+    {{- include "parseable.querierLabels" . | nindent 4 }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      {{- include "parseable.labelsSelector" . | nindent 6 }}
+      {{- include "parseable.querierLabelsSelector" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.parseable.podAnnotations }}
@@ -18,7 +18,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "parseable.labelsSelector" . | nindent 8 }}
+        {{- include "parseable.querierLabelsSelector" . | nindent 8 }}
     spec:
       {{- with .Values.parseable.imagePullSecrets }}
       imagePullSecrets:

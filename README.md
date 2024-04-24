@@ -33,7 +33,7 @@ You can <a href="https://www.parseable.com/docs/docker-quick-start">get started 
 
 ```bash
 docker run -p 8000:8000 \
-  parseable/parseable:latest \
+  containers.parseable.com/parseable/parseable:latest \
   parseable local-store
 ```
 

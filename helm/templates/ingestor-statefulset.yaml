@@ -23,7 +23,7 @@ spec:
   selector:
     matchLabels:
       {{- include "parseable.ingestorLabelsSelector" . | nindent 6 }}
-  serviceName: {{ include "parseable.fullname" . }}-headless
+  serviceName: {{ include "parseable.fullname" . }}-ingestor-headless
   replicas: {{ .Values.parseable.highAvailability.ingestor.count }}
   minReadySeconds: 2
   template:
@@ -38,7 +38,7 @@ spec:
           {{- toYaml .Values.parseable.securityContext | nindent 8 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
-        command: ["/bin/bash", "-c"]
+        command: ["/bin/sh", "-c"]
         args: ["parseable s3-store --ingestor-endpoint=${HOSTNAME}.{{ include "parseable.fullname" . }}-ingestor-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.parseable.highAvailability.ingestor.port }}"]
         env:
           {{- range $key, $value :=  .Values.parseable.highAvailability.ingestor.env }}

@@ -55,6 +55,18 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
+Querier Labels
+*/}}
+{{- define "parseable.querierLabels" -}}
+helm.sh/chart: {{ include "parseable.chart" . }}
+{{ include "parseable.querierLabelsSelector" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
 Selector labels
 */}}
 {{- define "parseable.labelsSelector" -}}
@@ -69,6 +81,15 @@ Ingestor Labels Selector for ingestor statefulset
 app.kubernetes.io/name: {{ include "parseable.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.parseable.com/type: ingestor
+{{- end }}
+
+{{/*
+Querier Labels Selector for querier deployment
+*/}}
+{{- define "parseable.querierLabelsSelector" -}}
+app.kubernetes.io/name: {{ include "parseable.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.parseable.com/type: querier
 {{- end }}
 
 {{/*
