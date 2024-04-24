@@ -17,10 +17,11 @@
  */
 
 use actix_web::{web, Responder};
-use datafusion::arrow::json::writer::record_batches_to_json_rows;
 use datafusion::arrow::record_batch::RecordBatch;
 use itertools::Itertools;
 use serde_json::{json, Value};
+
+use crate::utils::arrow::record_batches_to_json;
 
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
@@ -33,7 +34,7 @@ impl QueryResponse {
     pub fn to_http(&self) -> impl Responder {
         log::info!("{}", "Returning query results");
         let records: Vec<&RecordBatch> = self.records.iter().collect();
-        let mut json_records = record_batches_to_json_rows(&records).unwrap();
+        let mut json_records = record_batches_to_json(&records);
         if self.fill_null {
             for map in &mut json_records {
                 for field in &self.fields {

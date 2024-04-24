@@ -20,6 +20,7 @@ use std::net::SocketAddr;
 
 use arrow_array::RecordBatch;
 use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::PollInfo;
 use cookie::Cookie;
 use futures::stream::BoxStream;
 use futures_util::{Future, StreamExt, TryFutureExt, TryStreamExt};
@@ -66,6 +67,13 @@ impl FlightService for FlightServiceImpl {
         Err(Status::unimplemented(
             "handshake is disabled in favour of direct authentication and authorization",
         ))
+    }
+
+    async fn poll_flight_info(
+        &self,
+        _request: Request<FlightDescriptor>,
+    ) -> Result<Response<PollInfo>, Status> {
+        Err(Status::unimplemented("Implement poll_flight_info"))
     }
 
     async fn list_flights(

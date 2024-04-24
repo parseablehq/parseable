@@ -140,9 +140,11 @@ impl LocalCacheManager {
         };
 
         if let Some(updated_cache) = updated_cache {
-            self.filesystem
+            let result = self
+                .filesystem
                 .put(&path, serde_json::to_vec(&updated_cache)?.into())
-                .await?
+                .await?;
+            log::info!("Cache meta file updated: {:?}", result);
         }
 
         Ok(())
@@ -166,7 +168,9 @@ impl LocalCacheManager {
     pub async fn put_cache(&self, stream: &str, cache: &LocalCache) -> Result<(), CacheError> {
         let path = cache_file_path(&self.cache_path, stream).unwrap();
         let bytes = serde_json::to_vec(cache)?.into();
-        Ok(self.filesystem.put(&path, bytes).await?)
+        let result = self.filesystem.put(&path, bytes).await?;
+        log::info!("Cache file updated: {:?}", result);
+        Ok(())
     }
 
     pub async fn move_to_cache(

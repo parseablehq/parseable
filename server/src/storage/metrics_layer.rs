@@ -9,8 +9,13 @@ use bytes::Bytes;
 use futures_util::{stream::BoxStream, Stream, StreamExt};
 use object_store::{
     path::Path, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
+    PutOptions,PutResult, Result as ObjectStoreResult,
 };
 use tokio::io::AsyncWrite;
+
+/* NOTE: Keeping these imports as they would make migration to object_store 0.10.0 easier
+use object_store::{MultipartUpload, PutMultipartOpts, PutPayload}
+*/
 
 use crate::metrics::storage::s3::QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME;
 
@@ -33,31 +38,33 @@ impl<T: ObjectStore> std::fmt::Display for MetricLayer<T> {
 
 #[async_trait]
 impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
-    async fn put(&self, location: &Path, bytes: Bytes) -> object_store::Result<()> {
+    /// PutPayload.from_bytes(bytes)
+    async fn put(&self, location: &Path, bytes: Bytes/* PutPayload */) -> ObjectStoreResult<PutResult> {
         let time = time::Instant::now();
-        self.inner.put(location, bytes).await?;
+        let put_result = self.inner.put(location, bytes).await?;
         let elapsed = time.elapsed().as_secs_f64();
         QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["PUT", "200"])
             .observe(elapsed);
-        return Ok(());
+        return Ok(put_result);
     }
 
-    // todo completly tracking multipart upload
-    async fn put_multipart(
+    async fn put_opts(
         &self,
         location: &Path,
-    ) -> object_store::Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> {
+        payload: Bytes/* PutPayload */,
+        opts: PutOptions,
+    ) -> ObjectStoreResult<PutResult> {
         let time = time::Instant::now();
-        let (id, write) = self.inner.put_multipart(location).await?;
+        let put_result = self.inner.put_opts(location, payload, opts).await?;
         let elapsed = time.elapsed().as_secs_f64();
         QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&["PUT_MULTIPART", "200"])
+            .with_label_values(&["PUT_OPTS", "200"])
             .observe(elapsed);
-
-        Ok((id, write))
+        return Ok(put_result);
     }
 
+    // ! removed in object_store 0.10.0
     async fn abort_multipart(
         &self,
         location: &Path,
@@ -72,21 +79,35 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         Ok(())
     }
 
-    async fn append(
+/* Keep for easier migration to object_store 0.10.0
+    async fn put_multipart_opts(
         &self,
         location: &Path,
-    ) -> object_store::Result<Box<dyn AsyncWrite + Unpin + Send>> {
+        opts: PutMultipartOpts,
+    ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
         let time = time::Instant::now();
-        let write = self.inner.append(location).await?;
+        let multipart_upload = self.inner.put_multipart_opts(location, opts).await?;
         let elapsed = time.elapsed().as_secs_f64();
         QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&["APPEND", "200"])
+            .with_label_values(&["PUT_MULTIPART_OPTS", "200"])
             .observe(elapsed);
 
-        Ok(write)
+        Ok(multipart_upload)
+    } */
+
+    // todo completly tracking multipart upload
+    async fn put_multipart(&self, location: &Path) -> ObjectStoreResult<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)>/* ObjectStoreResult<Box<dyn MultipartUpload>> */ {
+        let time = time::Instant::now();
+        let multipart_upload = self.inner.put_multipart(location).await?;
+        let elapsed = time.elapsed().as_secs_f64();
+        QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["PUT_MULTIPART", "200"])
+            .observe(elapsed);
+
+        Ok(multipart_upload)
     }
 
-    async fn get(&self, location: &Path) -> object_store::Result<GetResult> {
+    async fn get(&self, location: &Path) -> ObjectStoreResult<GetResult> {
         let time = time::Instant::now();
         let res = self.inner.get(location).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -96,11 +117,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         Ok(res)
     }
 
-    async fn get_opts(
-        &self,
-        location: &Path,
-        options: GetOptions,
-    ) -> object_store::Result<GetResult> {
+    async fn get_opts(&self, location: &Path, options: GetOptions) -> ObjectStoreResult<GetResult> {
         let time = time::Instant::now();
         let res = self.inner.get_opts(location, options).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -110,7 +127,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         Ok(res)
     }
 
-    async fn get_range(&self, location: &Path, range: Range<usize>) -> object_store::Result<Bytes> {
+    async fn get_range(&self, location: &Path, range: Range<usize>) -> ObjectStoreResult<Bytes> {
         let time = time::Instant::now();
         let res = self.inner.get_range(location, range).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -124,7 +141,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         &self,
         location: &Path,
         ranges: &[Range<usize>],
-    ) -> object_store::Result<Vec<Bytes>> {
+    ) -> ObjectStoreResult<Vec<Bytes>> {
         let time = time::Instant::now();
         let res = self.inner.get_ranges(location, ranges).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -134,7 +151,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         Ok(res)
     }
 
-    async fn head(&self, location: &Path) -> object_store::Result<ObjectMeta> {
+    async fn head(&self, location: &Path) -> ObjectStoreResult<ObjectMeta> {
         let time = time::Instant::now();
         let res = self.inner.head(location).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -144,7 +161,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         Ok(res)
     }
 
-    async fn delete(&self, location: &Path) -> object_store::Result<()> {
+    async fn delete(&self, location: &Path) -> ObjectStoreResult<()> {
         let time = time::Instant::now();
         let res = self.inner.delete(location).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -156,41 +173,39 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
 
     fn delete_stream<'a>(
         &'a self,
-        locations: BoxStream<'a, object_store::Result<Path>>,
-    ) -> BoxStream<'a, object_store::Result<Path>> {
+        locations: BoxStream<'a, ObjectStoreResult<Path>>,
+    ) -> BoxStream<'a, ObjectStoreResult<Path>> {
         self.inner.delete_stream(locations)
     }
 
-    async fn list(
-        &self,
-        prefix: Option<&Path>,
-    ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, ObjectStoreResult<ObjectMeta>> {
         let time = time::Instant::now();
-        let inner = self.inner.list(prefix).await?;
+        let inner = self.inner.list(prefix);
         let res = StreamMetricWrapper {
             time,
             labels: ["LIST", "200"],
             inner,
         };
-        Ok(Box::pin(res))
+        Box::pin(res)
     }
 
-    async fn list_with_offset(
+    fn list_with_offset(
         &self,
         prefix: Option<&Path>,
         offset: &Path,
-    ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
+    ) -> BoxStream<'_, ObjectStoreResult<ObjectMeta>> {
         let time = time::Instant::now();
-        let inner = self.inner.list_with_offset(prefix, offset).await?;
+        let inner = self.inner.list_with_offset(prefix, offset);
         let res = StreamMetricWrapper {
             time,
             labels: ["LIST_OFFSET", "200"],
             inner,
         };
-        Ok(Box::pin(res))
+
+        Box::pin(res)
     }
 
-    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> ObjectStoreResult<ListResult> {
         let time = time::Instant::now();
         let res = self.inner.list_with_delimiter(prefix).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -200,7 +215,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         Ok(res)
     }
 
-    async fn copy(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+    async fn copy(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
         let time = time::Instant::now();
         let res = self.inner.copy(from, to).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -210,7 +225,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         Ok(res)
     }
 
-    async fn rename(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+    async fn rename(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
         let time = time::Instant::now();
         let res = self.inner.rename(from, to).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -220,7 +235,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         Ok(res)
     }
 
-    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
         let time = time::Instant::now();
         let res = self.inner.copy_if_not_exists(from, to).await?;
         let elapsed = time.elapsed().as_secs_f64();
@@ -230,7 +245,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         Ok(res)
     }
 
-    async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+    async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
         let time = time::Instant::now();
         let res = self.inner.rename_if_not_exists(from, to).await?;
         let elapsed = time.elapsed().as_secs_f64();

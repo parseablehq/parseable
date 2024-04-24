@@ -28,7 +28,7 @@ use crate::{
 };
 use crate::{handlers, Mode};
 use bytes::Bytes;
-use chrono::{DateTime, Local, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, Local, NaiveTime, Utc};
 use relative_path::RelativePathBuf;
 use std::io::Error as IOError;
 pub mod column;
@@ -82,12 +82,11 @@ fn get_file_bounds(file: &manifest::File) -> (DateTime<Utc>, DateTime<Utc>) {
         .unwrap()
     {
         column::TypedStatistics::Int(stats) => (
-            NaiveDateTime::from_timestamp_millis(stats.min)
+            DateTime::from_timestamp_millis(stats.min)
+                .unwrap(),
+            DateTime::from_timestamp_millis(stats.max)
                 .unwrap()
-                .and_utc(),
-            NaiveDateTime::from_timestamp_millis(stats.max)
-                .unwrap()
-                .and_utc(),
+
         ),
         _ => unreachable!(),
     }

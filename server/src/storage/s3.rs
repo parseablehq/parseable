@@ -274,7 +274,7 @@ impl S3 {
     }
 
     async fn _delete_prefix(&self, key: &str) -> Result<(), ObjectStorageError> {
-        let object_stream = self.client.list(Some(&(key.into()))).await?;
+        let object_stream = self.client.list(Some(&(key.into())));
 
         object_stream
             .for_each_concurrent(None, |x| async {
@@ -350,10 +350,9 @@ impl S3 {
             self._upload_multipart(key, path).await
         } else {
             let bytes = tokio::fs::read(path).await?;
-            self.client
-                .put(&key.into(), bytes.into())
-                .await
-                .map_err(|err| err.into())
+            let result = self.client.put(&key.into(), bytes.into()).await?;
+            log::info!("Uploaded file to S3: {:?}", result);
+            Ok(())
         };
 
         let status = if res.is_ok() { "200" } else { "400" };
@@ -425,7 +424,7 @@ impl ObjectStorage for S3 {
             self.root.clone()
         };
 
-        let mut list_stream = self.client.list(Some(&prefix)).await?;
+        let mut list_stream = self.client.list(Some(&prefix));
 
         let mut res = vec![];
 
@@ -459,7 +458,7 @@ impl ObjectStorage for S3 {
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
         let time = Instant::now();
         let mut path_arr = vec![];
-        let mut object_stream = self.client.list(Some(&self.root)).await?;
+        let mut object_stream = self.client.list(Some(&self.root));
 
         while let Some(meta) = object_stream.next().await.transpose()? {
             let flag = meta.location.filename().unwrap().starts_with("ingestor");
@@ -484,7 +483,7 @@ impl ObjectStorage for S3 {
         let time = Instant::now();
         let mut path_arr = vec![];
         let path = to_object_store_path(&RelativePathBuf::from(stream_name));
-        let mut object_stream = self.client.list(Some(&path)).await?;
+        let mut object_stream = self.client.list(Some(&path));
 
         while let Some(meta) = object_stream.next().await.transpose()? {
             let flag = meta.location.filename().unwrap().starts_with(".ingestor");
