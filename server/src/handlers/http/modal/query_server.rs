@@ -73,7 +73,7 @@ impl ParseableServer for QueryServer {
         let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
         if let Some(config) = ssl {
             http_server
-                .bind_rustls(&CONFIG.parseable.address, config)?
+                .bind_rustls_0_22(&CONFIG.parseable.address, config)?
                 .run()
                 .await?;
         } else {

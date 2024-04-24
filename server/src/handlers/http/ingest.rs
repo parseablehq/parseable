@@ -354,7 +354,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
-        assert_eq!(rb.num_columns(), 5);
+        assert_eq!(rb.num_columns(), 6);
         assert_eq!(
             rb.column_by_name("a").unwrap().as_int64_arr(),
             &Int64Array::from_iter([1])
@@ -663,7 +663,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
-        assert_eq!(rb.num_columns(), 5);
+        assert_eq!(rb.num_columns(), 6);
         assert_eq!(
             rb.column_by_name("a").unwrap().as_int64_arr(),
             &Int64Array::from(vec![Some(1), Some(1), Some(1)])

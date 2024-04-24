@@ -122,7 +122,8 @@ impl ListingTableBuilder {
         type ResolveFuture = Pin<
             Box<dyn Future<Output = Result<Vec<ObjectMeta>, object_store::Error>> + Send + 'static>,
         >;
-
+        // Pin<Box<dyn Future<Output = Result<BoxStream<'_, Result<ObjectMeta>>>> + Send + 'async_trait>>
+        // BoxStream<'_, Result<ObjectMeta>>
         let tasks: FuturesUnordered<ResolveFuture> = FuturesUnordered::new();
 
         for (listing_prefix, prefix) in minute_resolve {
@@ -130,7 +131,6 @@ impl ListingTableBuilder {
             tasks.push(Box::pin(async move {
                 let mut list = client
                     .list(Some(&object_store::path::Path::from(listing_prefix)))
-                    .await?
                     .try_collect::<Vec<_>>()
                     .await?;
 
@@ -151,7 +151,6 @@ impl ListingTableBuilder {
             tasks.push(Box::pin(async move {
                 client
                     .list(Some(&object_store::path::Path::from(prefix)))
-                    .await?
                     .try_collect::<Vec<_>>()
                     .await
                     .map_err(Into::into)
@@ -167,7 +166,9 @@ impl ListingTableBuilder {
                 )
             })
             .try_collect()
-            .await?;
+            .await
+            // TODO: make the err map better
+            .map_err(|err| DataFusionError::External(Box::new(err)))?;
 
         let mut res = res.into_iter().flatten().collect_vec();
         res.sort();
@@ -189,7 +190,7 @@ impl ListingTableBuilder {
             return Ok(None);
         }
         let file_sort_order: Vec<Vec<Expr>>;
-        let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
+        let file_format = ParquetFormat::default().with_enable_pruning(true);
         if let Some(time_partition) = time_partition {
             file_sort_order = vec![vec![col(time_partition).sort(true, false)]];
         } else {

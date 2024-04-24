@@ -24,11 +24,13 @@ use crate::{
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
 use bytes::Bytes;
-use chrono::{NaiveDateTime, Timelike, Utc};
+use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
+use datafusion::common::stats::Precision;
+use datafusion::logical_expr::utils::conjunction;
 use datafusion::{
     catalog::schema::SchemaProvider,
     common::{
-        tree_node::{TreeNode, VisitRecursion},
+        tree_node::{TreeNode, TreeNodeRecursion},
         ToDFSchema,
     },
     datasource::{
@@ -37,15 +39,15 @@ use datafusion::{
         physical_plan::FileScanConfig,
         MemTable, TableProvider,
     },
-    error::DataFusionError,
+    error::{DataFusionError, Result as DataFusionResult},
     execution::{context::SessionState, object_store::ObjectStoreUrl},
     logical_expr::{BinaryExpr, Operator, TableProviderFilterPushDown, TableType},
-    optimizer::utils::conjunction,
     physical_expr::{create_physical_expr, PhysicalSortExpr},
     physical_plan::{self, empty::EmptyExec, union::UnionExec, ExecutionPlan, Statistics},
     prelude::Expr,
     scalar::ScalarValue,
 };
+
 use futures_util::{stream::FuturesOrdered, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use object_store::{path::Path, ObjectStore};
@@ -83,15 +85,15 @@ impl SchemaProvider for GlobalSchemaProvider {
         STREAM_INFO.list_streams()
     }
 
-    async fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
+    async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         if self.table_exist(name) {
-            Some(Arc::new(StandardTableProvider {
+            Ok(Some(Arc::new(StandardTableProvider {
                 schema: STREAM_INFO.schema(name).unwrap(),
                 stream: name.to_owned(),
                 url: self.storage.store_url(),
-            }))
+            })))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -123,8 +125,7 @@ async fn create_parquet_physical_plan(
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let filters = if let Some(expr) = conjunction(filters.to_vec()) {
         let table_df_schema = schema.as_ref().clone().to_dfschema()?;
-        let filters =
-            create_physical_expr(&expr, &table_df_schema, &schema, state.execution_props())?;
+        let filters = create_physical_expr(&expr, &table_df_schema, state.execution_props())?;
         Some(filters)
     } else {
         None
@@ -141,7 +142,7 @@ async fn create_parquet_physical_plan(
             nulls_first: true,
         },
     };
-    let file_format = ParquetFormat::default().with_enable_pruning(Some(true));
+    let file_format = ParquetFormat::default().with_enable_pruning(true);
 
     // create the execution plan
     let plan = file_format
@@ -156,7 +157,6 @@ async fn create_parquet_physical_plan(
                 limit,
                 output_ordering: vec![vec![sort_expr]],
                 table_partition_cols: Vec::new(),
-                infinite_source: false,
             },
             filters.as_ref(),
         )
@@ -180,7 +180,8 @@ async fn collect_from_snapshot(
             .map(|item| item.manifest_path)
             .collect(),
     )
-    .await?;
+    .await
+    .map_err(DataFusionError::ObjectStore)?;
     let mut manifest_files: Vec<_> = manifest_files
         .into_iter()
         .flat_map(|file| file.files)
@@ -251,20 +252,19 @@ fn partitioned_files(
                 .and_then(|stats| stats.as_ref())
                 .and_then(|stats| stats.clone().min_max_as_scalar(field.data_type()))
                 .map(|(min, max)| datafusion::common::ColumnStatistics {
-                    null_count: None,
-                    max_value: Some(max),
-                    min_value: Some(min),
-                    distinct_count: None,
+                    null_count: Precision::Absent,
+                    max_value: Precision::Exact(max),
+                    min_value: Precision::Exact(min),
+                    distinct_count: Precision::Absent,
                 })
                 .unwrap_or_default()
         })
         .collect();
 
     let statistics = datafusion::common::Statistics {
-        num_rows: Some(count as usize),
-        total_byte_size: None,
-        column_statistics: Some(statistics),
-        is_exact: true,
+        num_rows: Precision::Exact(count as usize),
+        total_byte_size: Precision::Absent,
+        column_statistics: statistics,
     };
 
     (partitioned_files, statistics)
@@ -507,7 +507,7 @@ fn final_plan(
             Some(projection) => Arc::new(schema.project(projection)?),
             None => schema,
         };
-        Arc::new(EmptyExec::new(false, schema))
+        Arc::new(EmptyExec::new(schema))
     } else if execution_plans.len() == 1 {
         execution_plans.pop().unwrap()
     } else {
@@ -555,18 +555,18 @@ impl PartialTimeFilter {
     pub fn binary_expr_default_timestamp_key(&self, left: Expr) -> Expr {
         let (op, right) = match self {
             PartialTimeFilter::Low(Bound::Excluded(time)) => {
-                (Operator::Gt, time.timestamp_millis())
+                (Operator::Gt, time.and_utc().timestamp_millis())
             }
             PartialTimeFilter::Low(Bound::Included(time)) => {
-                (Operator::GtEq, time.timestamp_millis())
+                (Operator::GtEq, time.and_utc().timestamp_millis())
             }
             PartialTimeFilter::High(Bound::Excluded(time)) => {
-                (Operator::Lt, time.timestamp_millis())
+                (Operator::Lt, time.and_utc().timestamp_millis())
             }
             PartialTimeFilter::High(Bound::Included(time)) => {
-                (Operator::LtEq, time.timestamp_millis())
+                (Operator::LtEq, time.and_utc().timestamp_millis())
             }
-            PartialTimeFilter::Eq(time) => (Operator::Eq, time.timestamp_millis()),
+            PartialTimeFilter::Eq(time) => (Operator::Eq, time.and_utc().timestamp_millis()),
             _ => unimplemented!(),
         };
 
@@ -682,7 +682,7 @@ fn extract_from_lit(expr: BinaryExpr, time_partition: Option<String>) -> Option<
     if let Expr::Literal(value) = *expr.right {
         match value {
             ScalarValue::TimestampMillisecond(Some(value), _) => {
-                Some(NaiveDateTime::from_timestamp_millis(value).unwrap())
+                Some(DateTime::from_timestamp_millis(value).unwrap().naive_utc())
             }
             ScalarValue::Utf8(Some(str_value)) => {
                 if time_partition.is_some() && column_name == time_partition.unwrap() {
@@ -738,9 +738,9 @@ fn extract_primary_filter(
             let time = PartialTimeFilter::try_from_expr(expr, time_partition.clone());
             if let Some(time) = time {
                 time_filters.push(time);
-                Ok(VisitRecursion::Stop)
+                Ok(TreeNodeRecursion::Stop)
             } else {
-                Ok(VisitRecursion::Skip)
+                Ok(TreeNodeRecursion::Jump)
             }
         });
     });

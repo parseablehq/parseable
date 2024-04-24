@@ -29,7 +29,20 @@ pub mod reverse_reader;
 
 pub use batch_adapter::adapt_batch;
 pub use merged_reader::MergedRecordReader;
+use serde_json::{Map, Value};
 
+/// Replaces columns in a record batch with new arrays.
+///
+/// # Arguments
+///
+/// * `schema` - The schema of the record batch.
+/// * `batch` - The record batch to modify.
+/// * `indexes` - The indexes of the columns to replace.
+/// * `arrays` - The new arrays to replace the columns with.
+///
+/// # Returns
+///
+/// The modified record batch with the columns replaced.
 pub fn replace_columns(
     schema: Arc<Schema>,
     batch: &RecordBatch,
@@ -41,6 +54,48 @@ pub fn replace_columns(
         batch_arrays[index] = Arc::clone(arr);
     }
     RecordBatch::try_new(schema, batch_arrays).unwrap()
+}
+
+/// Converts a slice of record batches to JSON.
+///
+/// # Arguments
+///
+/// * `records` - The record batches to convert.
+///
+/// # Returns
+///
+/// A vector of JSON objects representing the record batches.
+pub fn record_batches_to_json(records: &[&RecordBatch]) -> Vec<Map<String, Value>> {
+    let buf = vec![];
+    let mut writer = arrow_json::ArrayWriter::new(buf);
+    writer.write_batches(records).unwrap();
+    writer.finish().unwrap();
+
+    let buf = writer.into_inner();
+
+    let json_rows: Vec<Map<String, Value>> = serde_json::from_reader(buf.as_slice()).unwrap();
+
+    json_rows
+}
+
+/// Retrieves a field from a slice of fields by name.
+///
+/// # Arguments
+///
+/// * `fields` - The slice of fields to search.
+/// * `name` - The name of the field to retrieve.
+///
+/// # Returns
+///
+/// An optional reference to the field if found, or `None` if not found.
+pub fn get_field<'a>(
+    fields: &'a [impl AsRef<arrow_schema::Field>],
+    name: &str,
+) -> Option<&'a arrow_schema::Field> {
+    fields
+        .iter()
+        .map(|x| x.as_ref())
+        .find(|field| field.name() == name)
 }
 
 #[cfg(test)]
@@ -80,14 +135,4 @@ mod tests {
         assert_eq!(new_rb.num_columns(), 3);
         assert_eq!(new_rb.num_rows(), 3)
     }
-}
-
-pub fn get_field<'a>(
-    fields: &'a [impl AsRef<arrow_schema::Field>],
-    name: &str,
-) -> Option<&'a arrow_schema::Field> {
-    fields
-        .iter()
-        .map(|x| x.as_ref())
-        .find(|field| field.name() == name)
 }

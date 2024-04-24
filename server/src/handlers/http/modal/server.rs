@@ -32,7 +32,7 @@ use crate::migration;
 use crate::rbac;
 use crate::storage;
 use crate::sync;
-use std::{fs::File, io::BufReader, sync::Arc};
+use std::sync::Arc;
 
 use actix_web::web::resource;
 use actix_web::Resource;
@@ -41,9 +41,6 @@ use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
-
-use rustls::{Certificate, PrivateKey, ServerConfig};
-use rustls_pemfile::{certs, pkcs8_private_keys};
 
 use crate::{
     handlers::http::{
@@ -57,6 +54,7 @@ use crate::{
 
 // use super::generate;
 use super::generate;
+use super::ssl_acceptor::get_ssl_acceptor;
 use super::OpenIdClient;
 use super::ParseableServer;
 
@@ -89,45 +87,16 @@ impl ParseableServer for Server {
                 .wrap(cross_origin_config())
         };
 
-        let ssl_acceptor = match (
+        let ssl = get_ssl_acceptor(
             &CONFIG.parseable.tls_cert_path,
             &CONFIG.parseable.tls_key_path,
-        ) {
-            (Some(cert), Some(key)) => {
-                // init server config builder with safe defaults
-                let config = ServerConfig::builder()
-                    .with_safe_defaults()
-                    .with_no_client_auth();
-
-                // load TLS key/cert files
-                let cert_file = &mut BufReader::new(File::open(cert)?);
-                let key_file = &mut BufReader::new(File::open(key)?);
-
-                // convert files to key/cert objects
-                let cert_chain = certs(cert_file)?.into_iter().map(Certificate).collect();
-
-                let mut keys: Vec<PrivateKey> = pkcs8_private_keys(key_file)?
-                    .into_iter()
-                    .map(PrivateKey)
-                    .collect();
-
-                // exit if no keys could be parsed
-                if keys.is_empty() {
-                    anyhow::bail!("Could not locate PKCS 8 private keys.");
-                }
-
-                let server_config = config.with_single_cert(cert_chain, keys.remove(0))?;
-
-                Some(server_config)
-            }
-            (_, _) => None,
-        };
+        )?;
 
         // concurrent workers equal to number of cores on the cpu
         let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
-        if let Some(config) = ssl_acceptor {
+        if let Some(config) = ssl {
             http_server
-                .bind_rustls(&CONFIG.parseable.address, config)?
+                .bind_rustls_0_22(&CONFIG.parseable.address, config)?
                 .run()
                 .await?;
         } else {

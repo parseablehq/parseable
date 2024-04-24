@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 use chrono::{NaiveDateTime, TimeZone};
 use datafusion::arrow::record_batch::RecordBatch;
 
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeVisitor, VisitRecursion};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use datafusion::execution::disk_manager::DiskManagerConfig;
@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use sysinfo::{System, SystemExt};
+use sysinfo::System;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -149,21 +149,24 @@ impl Query {
                 );
                 LogicalPlan::Explain(Explain {
                     verbose: plan.verbose,
-                    stringified_plans: vec![
-                        transformed.to_stringified(PlanType::InitialLogicalPlan)
-                    ],
-                    plan: Arc::new(transformed),
+                    stringified_plans: vec![transformed
+                        .data
+                        .to_stringified(PlanType::InitialLogicalPlan)],
+                    plan: Arc::new(transformed.data),
                     schema: plan.schema,
                     logical_optimization_succeeded: plan.logical_optimization_succeeded,
                 })
             }
-            x => transform(
-                x,
-                self.start.naive_utc(),
-                self.end.naive_utc(),
-                filters,
-                time_partition,
-            ),
+            x => {
+                transform(
+                    x,
+                    self.start.naive_utc(),
+                    self.end.naive_utc(),
+                    filters,
+                    time_partition,
+                )
+                .data
+            }
         }
     }
 
@@ -186,15 +189,15 @@ impl TableScanVisitor {
 }
 
 impl TreeNodeVisitor for TableScanVisitor {
-    type N = LogicalPlan;
+    type Node = LogicalPlan;
 
-    fn pre_visit(&mut self, node: &Self::N) -> Result<VisitRecursion, DataFusionError> {
+    fn f_down(&mut self, node: &Self::Node) -> Result<TreeNodeRecursion, DataFusionError> {
         match node {
             LogicalPlan::TableScan(table) => {
                 self.tables.push(table.table_name.table().to_string());
-                Ok(VisitRecursion::Skip)
+                Ok(TreeNodeRecursion::Jump)
             }
-            _ => Ok(VisitRecursion::Continue),
+            _ => Ok(TreeNodeRecursion::Continue),
         }
     }
 }
@@ -215,7 +218,7 @@ fn transform(
     end_time: NaiveDateTime,
     filters: Option<Expr>,
     time_partition: &Option<String>,
-) -> LogicalPlan {
+) -> Transformed<LogicalPlan> {
     plan.transform(&|plan| match plan {
         LogicalPlan::TableScan(table) => {
             let mut new_filters = vec![];
@@ -264,12 +267,12 @@ fn transform(
             if let Some(new_filter) = new_filter {
                 let filter =
                     Filter::try_new(new_filter, Arc::new(LogicalPlan::TableScan(table))).unwrap();
-                Ok(Transformed::Yes(LogicalPlan::Filter(filter)))
+                Ok(Transformed::yes(LogicalPlan::Filter(filter)))
             } else {
-                Ok(Transformed::No(LogicalPlan::TableScan(table)))
+                Ok(Transformed::no(LogicalPlan::TableScan(table)))
             }
         }
-        x => Ok(Transformed::No(x)),
+        x => Ok(Transformed::no(x)),
     })
     .expect("transform only transforms the tablescan")
 }
