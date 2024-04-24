@@ -116,7 +116,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     Ok(response)
 }
 
-fn authorize_and_set_filter_tags(
+pub fn authorize_and_set_filter_tags(
     query: &mut LogicalQuery,
     permissions: Vec<Permission>,
     table_name: &str,

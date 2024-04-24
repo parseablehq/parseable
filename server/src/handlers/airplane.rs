@@ -1,4 +1,5 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
+use arrow_flight::PollInfo;
 use arrow_schema::ArrowError;
 use datafusion::common::tree_node::TreeNode;
 use std::net::SocketAddr;
@@ -15,9 +16,8 @@ use crate::option::{Mode, CONFIG};
 
 use crate::handlers::livetail::cross_origin_config;
 
-use crate::handlers::http::query::{into_query, Query as QueryJson};
+use crate::handlers::http::query::{authorize_and_set_filter_tags, into_query, Query as QueryJson};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::rbac::role::Permission;
 use crate::storage::object_storage::commit_schema_to_storage;
 use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
 use futures::stream::BoxStream;
@@ -34,7 +34,6 @@ use crate::handlers::livetail::extract_session_key;
 
 use crate::metadata::STREAM_INFO;
 
-use crate::rbac::role::Action as RoleAction;
 use crate::rbac::Users;
 
 #[derive(Clone)]
@@ -67,6 +66,13 @@ impl FlightService for AirServiceImpl {
         _request: Request<Criteria>,
     ) -> Result<Response<Self::ListFlightsStream>, Status> {
         Err(Status::unimplemented("Implement list_flights"))
+    }
+
+    async fn poll_flight_info(
+        &self,
+        _request: Request<FlightDescriptor>,
+    ) -> Result<Response<PollInfo>, Status> {
+        Err(Status::unimplemented("Implement poll_flight_info"))
     }
 
     async fn get_flight_info(
@@ -117,20 +123,20 @@ impl FlightService for AirServiceImpl {
         let mut visitor = TableScanVisitor::default();
         let _ = raw_logical_plan.visit(&mut visitor);
 
-        let table_name = visitor
-            .into_inner()
-            .pop()
-            .ok_or(Status::invalid_argument("No table found from sql"))?;
+        let tables = visitor.into_inner();
 
         if CONFIG.parseable.mode == Mode::Query {
             // using http to get the schema. may update to use flight later
-            if let Ok(new_schema) = fetch_schema(&table_name).await {
-                // commit schema merges the schema internally and updates the schema in storage.
-                commit_schema_to_storage(&table_name, new_schema.clone())
-                    .await
-                    .map_err(|err| Status::internal(err.to_string()))?;
-                commit_schema(&table_name, Arc::new(new_schema))
-                    .map_err(|err| Status::internal(err.to_string()))?;
+
+            for table in tables {
+                if let Ok(new_schema) = fetch_schema(&table).await {
+                    // commit schema merges the schema internally and updates the schema in storage.
+                    commit_schema_to_storage(&table, new_schema.clone())
+                        .await
+                        .map_err(|err| Status::internal(err.to_string()))?;
+                    commit_schema(&table, Arc::new(new_schema))
+                        .map_err(|err| Status::internal(err.to_string()))?;
+                }
             }
         }
 
@@ -141,47 +147,20 @@ impl FlightService for AirServiceImpl {
 
         // if table name is not present it is a Malformed Query
         let stream_name = query
-            .table_name()
-            .ok_or(Status::invalid_argument("Malformed Query"))?;
+            .first_table_name()
+            .ok_or_else(|| Status::invalid_argument("Malformed Query"))?;
 
         let permissions = Users.get_permissions(&key);
 
-        let table_name = query.table_name();
-        if let Some(ref table) = table_name {
-            let mut authorized = false;
-            let mut tags = Vec::new();
-
-            // in permission check if user can run query on the stream.
-            // also while iterating add any filter tags for this stream
-            for permission in permissions {
-                match permission {
-                    Permission::Stream(RoleAction::All, _) => {
-                        authorized = true;
-                        break;
-                    }
-                    Permission::StreamWithTag(RoleAction::Query, ref stream, tag)
-                        if stream == table || stream == "*" =>
-                    {
-                        authorized = true;
-                        if let Some(tag) = tag {
-                            tags.push(tag)
-                        }
-                    }
-                    _ => (),
-                }
-            }
-
-            if !authorized {
-                return Err(Status::permission_denied("User Not Authorized"));
-            }
-
-            if !tags.is_empty() {
-                query.filter_tag = Some(tags)
-            }
-        }
+        let table_name = query
+            .first_table_name()
+            .ok_or_else(|| Status::invalid_argument("Malformed Query"))?;
+        authorize_and_set_filter_tags(&mut query, permissions, &table_name).map_err(|_| {
+            Status::permission_denied("User Does not have permission to access this")
+        })?;
 
         let (results, _) = query
-            .execute(table_name.clone().unwrap())
+            .execute(table_name.clone())
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
         let schema = STREAM_INFO
