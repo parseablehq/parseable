@@ -1,16 +1,23 @@
+use arrow_array::RecordBatch;
 use arrow_flight::flight_service_server::FlightServiceServer;
-use arrow_flight::PollInfo;
+use arrow_flight::{FlightClient, PollInfo};
 use arrow_schema::ArrowError;
+use chrono::Utc;
 use datafusion::common::tree_node::TreeNode;
+use futures::TryStreamExt;
+use http::Uri;
+use itertools::Itertools;
+use serde_json::Value as JsonValue;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use futures_util::{Future, TryFutureExt};
 
-use tonic::transport::{Identity, Server, ServerTlsConfig};
+use tonic::transport::{Channel, Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
 use crate::event::commit_schema;
+use crate::handlers::http::cluster::get_ingestor_info;
 use crate::handlers::http::fetch_schema;
 use crate::option::{Mode, CONFIG};
 
@@ -103,8 +110,27 @@ impl FlightService for AirServiceImpl {
 
     async fn do_get(&self, req: Request<Ticket>) -> Result<Response<Self::DoGetStream>, Status> {
         let key = extract_session_key(req.metadata())?;
-        let ticket = serde_json::from_slice::<QueryJson>(&req.into_inner().ticket)
-            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let ticket = if CONFIG.parseable.mode == Mode::Ingest {
+            let query = serde_json::from_slice::<JsonValue>(&req.into_inner().ticket)
+                .map_err(|_| Status::failed_precondition("Ticket is not valid json"))?["query"]
+                .as_str()
+                .ok_or_else(|| Status::failed_precondition("query is not valid string"))?
+                .to_owned();
+            QueryJson {
+                query,
+                send_null: false,
+                fields: false,
+                filter_tags: None,
+                // we can use humantime because into_query handle parseing
+                end_time: String::from("now"),
+                start_time: String::from("1min"),
+            }
+        } else {
+            serde_json::from_slice::<QueryJson>(&req.into_inner().ticket)
+                .map_err(|err| Status::internal(err.to_string()))?
+        };
+
         log::info!("airplane requested for query {:?}", ticket);
 
         // get the query session_state
@@ -144,6 +170,49 @@ impl FlightService for AirServiceImpl {
         let mut query = into_query(&ticket, &session_state)
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
+        let time_delta = query.end - Utc::now();
+
+        let minute_result = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 2
+        {
+            let sql = ticket.query.clone();
+            let ingester_metadatas = get_ingestor_info()
+                .await
+                .map_err(|err| Status::failed_precondition(err.to_string()))?;
+            let mut minute_result: Vec<RecordBatch> = vec![];
+
+            for im in ingester_metadatas.iter() {
+                let mut url = im.domain_name.rsplit(":").collect_vec();
+                let _ = url.pop();
+                url.reverse();
+                url.push(&im.flight_port);
+                let url = url.join("");
+                let url = url
+                    .parse::<Uri>()
+                    .map_err(|_| Status::failed_precondition("Ingester metadata is courupted"))?;
+
+                let channel = Channel::builder(url)
+                    .connect()
+                    .await
+                    .map_err(|err| Status::failed_precondition(err.to_string()))?;
+
+                let mut client = FlightClient::new(channel);
+                client.add_header("authorization", &im.token)?;
+
+                let response = client
+                    .do_get(Ticket {
+                        ticket: sql.clone().into(),
+                    })
+                    .await?;
+
+                let mut batches: Vec<RecordBatch> = response.try_collect().await?;
+
+                minute_result.append(&mut batches);
+            }
+
+            Some(minute_result)
+        } else {
+            None
+        };
 
         // if table name is not present it is a Malformed Query
         let stream_name = query
@@ -152,20 +221,23 @@ impl FlightService for AirServiceImpl {
 
         let permissions = Users.get_permissions(&key);
 
-        let table_name = query
-            .first_table_name()
-            .ok_or_else(|| Status::invalid_argument("Malformed Query"))?;
-        authorize_and_set_filter_tags(&mut query, permissions, &table_name).map_err(|_| {
+        authorize_and_set_filter_tags(&mut query, permissions, &stream_name).map_err(|_| {
             Status::permission_denied("User Does not have permission to access this")
         })?;
 
-        let (results, _) = query
-            .execute(table_name.clone())
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
         let schema = STREAM_INFO
             .schema(&stream_name)
             .map_err(|err| Status::failed_precondition(err.to_string()))?;
+
+        let (mut results, _) = query
+            .execute(stream_name)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        if let Some(mut minute_result) = minute_result {
+            results.append(&mut minute_result);
+        }
+
         let options = datafusion::arrow::ipc::writer::IpcWriteOptions::default();
         let schema_flight_data = SchemaAsIpc::new(&schema, &options);
 

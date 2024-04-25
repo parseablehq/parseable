@@ -380,6 +380,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
         &CONFIG.parseable.username,
         &CONFIG.parseable.password,
         get_ingestor_id(),
+        CONFIG.parseable.flight_port.to_string(),
     );
 
     put_ingestor_info(out.clone())?;

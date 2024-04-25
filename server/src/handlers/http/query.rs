@@ -19,7 +19,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
@@ -51,14 +51,14 @@ use crate::utils::actix::extract_session_key_from_req;
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     pub query: String,
-    start_time: String,
-    end_time: String,
+    pub start_time: String,
+    pub end_time: String,
     #[serde(default)]
     pub send_null: bool,
     #[serde(skip)]
     pub fields: bool,
     #[serde(skip)]
-    filter_tags: Option<Vec<String>>,
+    pub filter_tags: Option<Vec<String>>,
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
