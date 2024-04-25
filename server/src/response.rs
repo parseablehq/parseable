@@ -33,8 +33,8 @@ impl QueryResponse {
     pub fn to_http(&self) -> Result<impl Responder, QueryError> {
         log::info!("{}", "Returning query results");
         let records: Vec<&RecordBatch> = self.records.iter().collect();
-        let mut json_records =
-            record_batches_to_json(&records).map_err(|_| QueryError::JsonParse)?;
+        let mut json_records = record_batches_to_json(&records)
+            .map_err(|err| QueryError::JsonParse(err.to_string()))?;
         if self.fill_null {
             for map in &mut json_records {
                 for field in &self.fields {

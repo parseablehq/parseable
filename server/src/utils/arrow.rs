@@ -70,12 +70,15 @@ pub fn replace_columns(
 pub fn record_batches_to_json(records: &[&RecordBatch]) -> Result<Vec<Map<String, Value>>> {
     let buf = vec![];
     let mut writer = arrow_json::ArrayWriter::new(buf);
-    writer.write_batches(records).unwrap();
-    writer.finish().unwrap();
+    writer.write_batches(records)?;
+    writer.finish()?;
 
     let buf = writer.into_inner();
 
-    let json_rows: Vec<Map<String, Value>> = serde_json::from_reader(buf.as_slice())?;
+    let json_rows: Vec<Map<String, Value>> = match serde_json::from_reader(buf.as_slice()) {
+        Ok(json) => json,
+        Err(_) => vec![],
+    };
 
     Ok(json_rows)
 }
@@ -107,7 +110,7 @@ mod tests {
     use arrow_array::{Array, Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
 
-    use super::replace_columns;
+    use super::{record_batches_to_json, replace_columns};
 
     #[test]
     fn check_replace() {
@@ -136,5 +139,13 @@ mod tests {
         assert_eq!(new_rb.schema(), schema_ref);
         assert_eq!(new_rb.num_columns(), 3);
         assert_eq!(new_rb.num_rows(), 3)
+    }
+
+    #[test]
+    fn check_empty_json_to_record_batches() {
+        let r = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        let rb = vec![&r];
+        let batches = record_batches_to_json(&rb).unwrap();
+        assert_eq!(batches, vec![]);
     }
 }

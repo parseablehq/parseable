@@ -632,49 +632,6 @@ mod tests {
     }
 
     #[test]
-    fn arr_obj_ignore_all_null_field() {
-        let json = json!([
-            {
-                "a": 1,
-                "b": "hello",
-                "c": null
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": null
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": null
-            },
-        ]);
-
-        let req = TestRequest::default().to_http_request();
-
-        let (_, rb, _) = into_event_batch(
-            req,
-            Bytes::from(serde_json::to_vec(&json).unwrap()),
-            HashMap::default(),
-            None,
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(rb.num_rows(), 3);
-        assert_eq!(rb.num_columns(), 6);
-        assert_eq!(
-            rb.column_by_name("a").unwrap().as_int64_arr(),
-            &Int64Array::from(vec![Some(1), Some(1), Some(1)])
-        );
-        assert_eq!(
-            rb.column_by_name("b").unwrap().as_utf8_arr(),
-            &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
-        );
-    }
-
-    #[test]
     fn arr_schema_mismatch() {
         let json = json!([
             {

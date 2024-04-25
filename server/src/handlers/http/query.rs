@@ -293,14 +293,17 @@ pub enum QueryError {
     EventError(#[from] EventError),
     #[error("Error: {0}")]
     MalformedQuery(String),
-    #[error("Error: Failed to Parse Record Batch in to Json")]
-    JsonParse,
+    #[error(
+        r#"Error: Failed to Parse Record Batch into Json
+Description: {0}"#
+    )]
+    JsonParse(String),
 }
 
 impl actix_web::ResponseError for QueryError {
     fn status_code(&self) -> http::StatusCode {
         match self {
-            QueryError::Execute(_) | QueryError::JsonParse => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::Execute(_) | QueryError::JsonParse(_) => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::BAD_REQUEST,
         }
     }
