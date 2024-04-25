@@ -105,7 +105,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
     }
-    .to_http();
+    .to_http()?;
 
     let time = time.elapsed().as_secs_f64();
 
@@ -293,12 +293,17 @@ pub enum QueryError {
     EventError(#[from] EventError),
     #[error("Error: {0}")]
     MalformedQuery(String),
+    #[error(
+        r#"Error: Failed to Parse Record Batch into Json
+Description: {0}"#
+    )]
+    JsonParse(String),
 }
 
 impl actix_web::ResponseError for QueryError {
     fn status_code(&self) -> http::StatusCode {
         match self {
-            QueryError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::Execute(_) | QueryError::JsonParse(_) => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::BAD_REQUEST,
         }
     }
