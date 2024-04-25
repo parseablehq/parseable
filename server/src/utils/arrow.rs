@@ -27,6 +27,7 @@ pub mod batch_adapter;
 pub mod merged_reader;
 pub mod reverse_reader;
 
+use anyhow::Result;
 pub use batch_adapter::adapt_batch;
 pub use merged_reader::MergedRecordReader;
 use serde_json::{Map, Value};
@@ -63,9 +64,10 @@ pub fn replace_columns(
 /// * `records` - The record batches to convert.
 ///
 /// # Returns
+/// * Result<Vec<Map<String, Value>>>
 ///
 /// A vector of JSON objects representing the record batches.
-pub fn record_batches_to_json(records: &[&RecordBatch]) -> Vec<Map<String, Value>> {
+pub fn record_batches_to_json(records: &[&RecordBatch]) -> Result<Vec<Map<String, Value>>> {
     let buf = vec![];
     let mut writer = arrow_json::ArrayWriter::new(buf);
     writer.write_batches(records).unwrap();
@@ -73,9 +75,9 @@ pub fn record_batches_to_json(records: &[&RecordBatch]) -> Vec<Map<String, Value
 
     let buf = writer.into_inner();
 
-    let json_rows: Vec<Map<String, Value>> = serde_json::from_reader(buf.as_slice()).unwrap();
+    let json_rows: Vec<Map<String, Value>> = serde_json::from_reader(buf.as_slice())?;
 
-    json_rows
+    Ok(json_rows)
 }
 
 /// Retrieves a field from a slice of fields by name.
