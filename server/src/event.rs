@@ -48,7 +48,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub async fn process(self) -> Result<(), EventError> {
+    pub async fn process(&self) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
@@ -77,13 +77,25 @@ impl Event {
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
 
         if let Err(e) = metadata::STREAM_INFO
-            .check_alerts(&self.stream_name, self.rb)
+            .check_alerts(&self.stream_name, &self.rb)
             .await
         {
             log::error!("Error checking for alerts. {:?}", e);
         }
 
         Ok(())
+    }
+
+    pub fn process_unchecked(&self) -> Result<(), EventError> {
+        let key = get_schema_key(&self.rb.schema().fields);
+
+        Self::process_event(&self.stream_name, &key, self.rb.clone(), self.parsed_timestamp)?;
+
+        Ok(())
+    }
+
+    pub fn clear(&self, stream_name: &str) {
+        STREAM_WRITERS.clear(stream_name);
     }
 
     // event process all events after the 1st event. Concatenates record batches

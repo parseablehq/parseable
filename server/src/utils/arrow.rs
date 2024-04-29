@@ -55,8 +55,6 @@ use serde_json::{Map, Value};
 /// }
 ///
 
-
-
 /// Replaces columns in a record batch with new arrays.
 ///
 /// # Arguments

@@ -15,6 +15,7 @@ use tonic_web::GrpcWebLayer;
 use crate::event::commit_schema;
 use crate::handlers::http::cluster::get_ingestor_info;
 use crate::handlers::http::fetch_schema;
+use crate::handlers::http::ingest::push_logs_unchecked;
 use crate::option::{Mode, CONFIG};
 
 use crate::handlers::livetail::cross_origin_config;
@@ -148,11 +149,18 @@ impl FlightService for AirServiceImpl {
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
+        // if table name is not present it is a Malformed Query
+        let stream_name = query
+            .first_table_name()
+            .ok_or_else(|| Status::invalid_argument("Malformed Query"))?;
+
         let time_delta = query.end - Utc::now();
 
-        let minute_result = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 2
-        {
-            let sql = format!("{}\"query\": \"{}\"{}", L_CURLY, &ticket.query, R_CURLY);
+        let events = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 2 {
+            let sql = format!(
+                "{}\"query\": \"select * from {}\"{}",
+                L_CURLY, &stream_name, R_CURLY
+            );
             let ingester_metadatas = get_ingestor_info()
                 .await
                 .map_err(|err| Status::failed_precondition(err.to_string()))?;
@@ -162,16 +170,18 @@ impl FlightService for AirServiceImpl {
                 let mut batches = run_do_get_rpc(im, sql.clone()).await?;
                 minute_result.append(&mut batches);
             }
-
-            Some(minute_result)
+            let mut events = vec![];
+            for batch in minute_result {
+                events.push(
+                    push_logs_unchecked(batch, &stream_name)
+                        .await
+                        .map_err(|err| Status::internal(err.to_string()))?,
+                );
+            }
+            Some(events)
         } else {
             None
         };
-
-        // if table name is not present it is a Malformed Query
-        let stream_name = query
-            .first_table_name()
-            .ok_or_else(|| Status::invalid_argument("Malformed Query"))?;
 
         let permissions = Users.get_permissions(&key);
 
@@ -179,15 +189,11 @@ impl FlightService for AirServiceImpl {
             Status::permission_denied("User Does not have permission to access this")
         })?;
 
-        let (mut results, _) = query
-            .execute(stream_name)
+        let (results, _) = query
+            .execute(stream_name.clone())
             .await
             .map_err(|err| Status::internal(err.to_string()))
             .unwrap();
-
-        if let Some(mut minute_result) = minute_result {
-            results.append(&mut minute_result);
-        };
 
         let schemas = results
             .iter()
@@ -210,6 +216,11 @@ impl FlightService for AirServiceImpl {
             flights.push(flight_batch.into());
         }
         let output = futures::stream::iter(flights.into_iter().map(Ok));
+        if let Some(events) = events {
+            for event in events {
+                event.clear(&stream_name);
+            }
+        }
         Ok(Response::new(Box::pin(output) as Self::DoGetStream))
     }
 

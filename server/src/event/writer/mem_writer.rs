@@ -62,6 +62,14 @@ impl<const N: usize> MemWriter<N> {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.schema = Schema::empty();
+        self.schema_map.clear();
+        self.read_buffer.clear();
+        self.mutable_buffer.inner.clear();
+        self.mutable_buffer.rows = 0;
+    }
+
     pub fn recordbatch_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
         let mut read_buffer = self.read_buffer.clone();
         if self.mutable_buffer.rows > 0 {
