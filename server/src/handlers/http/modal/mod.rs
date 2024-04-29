@@ -66,6 +66,7 @@ pub struct IngestorMetadata {
 }
 
 impl IngestorMetadata {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         port: String,
         domain_name: String,

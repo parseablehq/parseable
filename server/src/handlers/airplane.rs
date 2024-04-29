@@ -1,19 +1,15 @@
 use arrow_array::RecordBatch;
 use arrow_flight::flight_service_server::FlightServiceServer;
-use arrow_flight::{FlightClient, PollInfo};
-use arrow_schema::ArrowError;
+use arrow_flight::PollInfo;
+use arrow_schema::{ArrowError, Schema};
 use chrono::Utc;
 use datafusion::common::tree_node::TreeNode;
-use futures::TryStreamExt;
-use http::Uri;
-use itertools::Itertools;
-use serde_json::Value as JsonValue;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use futures_util::{Future, TryFutureExt};
 
-use tonic::transport::{Channel, Identity, Server, ServerTlsConfig};
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
 use crate::event::commit_schema;
@@ -23,25 +19,25 @@ use crate::option::{Mode, CONFIG};
 
 use crate::handlers::livetail::cross_origin_config;
 
-use crate::handlers::http::query::{authorize_and_set_filter_tags, into_query, Query as QueryJson};
+use crate::handlers::http::query::{authorize_and_set_filter_tags, into_query};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::storage::object_storage::commit_schema_to_storage;
-use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
-use futures::stream::BoxStream;
-
-use tonic::{Request, Response, Status, Streaming};
-
+use crate::utils::arrow::flight::{get_query_from_ticket, run_do_get_rpc};
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
     FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc,
     SchemaResult, Ticket,
 };
+use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
+use futures::stream::BoxStream;
+use tonic::{Request, Response, Status, Streaming};
 
 use crate::handlers::livetail::extract_session_key;
-
 use crate::metadata::STREAM_INFO;
-
 use crate::rbac::Users;
+
+const L_CURLY: char = '{';
+const R_CURLY: char = '}';
 
 #[derive(Clone)]
 pub struct AirServiceImpl {}
@@ -111,27 +107,9 @@ impl FlightService for AirServiceImpl {
     async fn do_get(&self, req: Request<Ticket>) -> Result<Response<Self::DoGetStream>, Status> {
         let key = extract_session_key(req.metadata())?;
 
-        let ticket = if CONFIG.parseable.mode == Mode::Ingest {
-            let query = serde_json::from_slice::<JsonValue>(&req.into_inner().ticket)
-                .map_err(|_| Status::failed_precondition("Ticket is not valid json"))?["query"]
-                .as_str()
-                .ok_or_else(|| Status::failed_precondition("query is not valid string"))?
-                .to_owned();
-            QueryJson {
-                query,
-                send_null: false,
-                fields: false,
-                filter_tags: None,
-                // we can use humantime because into_query handle parseing
-                end_time: String::from("now"),
-                start_time: String::from("1min"),
-            }
-        } else {
-            serde_json::from_slice::<QueryJson>(&req.into_inner().ticket)
-                .map_err(|err| Status::internal(err.to_string()))?
-        };
+        let ticket = get_query_from_ticket(req)?;
 
-        log::info!("airplane requested for query {:?}", ticket);
+        log::info!("query requested to airplane: {:?}", ticket);
 
         // get the query session_state
         let session_state = QUERY_SESSION.state();
@@ -141,7 +119,7 @@ impl FlightService for AirServiceImpl {
             .create_logical_plan(&ticket.query)
             .await
             .map_err(|err| {
-                log::error!("Failed to create logical plan: {}", err);
+                log::error!("Datafusion Error: Failed to create logical plan: {}", err);
                 Status::internal("Failed to create logical plan")
             })?;
 
@@ -153,7 +131,6 @@ impl FlightService for AirServiceImpl {
 
         if CONFIG.parseable.mode == Mode::Query {
             // using http to get the schema. may update to use flight later
-
             for table in tables {
                 if let Ok(new_schema) = fetch_schema(&table).await {
                     // commit schema merges the schema internally and updates the schema in storage.
@@ -170,42 +147,19 @@ impl FlightService for AirServiceImpl {
         let mut query = into_query(&ticket, &session_state)
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
+
         let time_delta = query.end - Utc::now();
 
         let minute_result = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 2
         {
-            let sql = ticket.query.clone();
+            let sql = format!("{}\"query\": \"{}\"{}", L_CURLY, &ticket.query, R_CURLY);
             let ingester_metadatas = get_ingestor_info()
                 .await
                 .map_err(|err| Status::failed_precondition(err.to_string()))?;
             let mut minute_result: Vec<RecordBatch> = vec![];
 
-            for im in ingester_metadatas.iter() {
-                let mut url = im.domain_name.rsplit(":").collect_vec();
-                let _ = url.pop();
-                url.reverse();
-                url.push(&im.flight_port);
-                let url = url.join("");
-                let url = url
-                    .parse::<Uri>()
-                    .map_err(|_| Status::failed_precondition("Ingester metadata is courupted"))?;
-
-                let channel = Channel::builder(url)
-                    .connect()
-                    .await
-                    .map_err(|err| Status::failed_precondition(err.to_string()))?;
-
-                let mut client = FlightClient::new(channel);
-                client.add_header("authorization", &im.token)?;
-
-                let response = client
-                    .do_get(Ticket {
-                        ticket: sql.clone().into(),
-                    })
-                    .await?;
-
-                let mut batches: Vec<RecordBatch> = response.try_collect().await?;
-
+            for im in ingester_metadatas {
+                let mut batches = run_do_get_rpc(im, sql.clone()).await?;
                 minute_result.append(&mut batches);
             }
 
@@ -225,19 +179,23 @@ impl FlightService for AirServiceImpl {
             Status::permission_denied("User Does not have permission to access this")
         })?;
 
-        let schema = STREAM_INFO
-            .schema(&stream_name)
-            .map_err(|err| Status::failed_precondition(err.to_string()))?;
-
         let (mut results, _) = query
             .execute(stream_name)
             .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+            .map_err(|err| Status::internal(err.to_string()))
+            .unwrap();
 
         if let Some(mut minute_result) = minute_result {
             results.append(&mut minute_result);
-        }
+        };
 
+        let schemas = results
+            .iter()
+            .map(|batch| batch.schema())
+            .map(|s| s.as_ref().clone())
+            .collect::<Vec<_>>();
+
+        let schema = Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
         let options = datafusion::arrow::ipc::writer::IpcWriteOptions::default();
         let schema_flight_data = SchemaAsIpc::new(&schema, &options);
 

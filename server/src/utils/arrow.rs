@@ -24,6 +24,7 @@ use arrow_schema::Schema;
 use itertools::Itertools;
 
 pub mod batch_adapter;
+pub mod flight;
 pub mod merged_reader;
 pub mod reverse_reader;
 
@@ -31,6 +32,30 @@ use anyhow::Result;
 pub use batch_adapter::adapt_batch;
 pub use merged_reader::MergedRecordReader;
 use serde_json::{Map, Value};
+
+/// example function for concat recordbatch(may not work)
+/// use arrow::record_batch::RecordBatch;
+/// use arrow::error::Result;
+///
+/// fn concat_batches(batch1: RecordBatch, batch2: RecordBatch) -> Result<RecordBatch> {
+///     let schema = batch1.schema();
+///     let columns = schema
+///         .fields()
+///         .iter()
+///         .enumerate()
+///         .map(|(i, _)| -> Result<_> {
+///             let array1 = batch1.column(i);
+///             let array2 = batch2.column(i);
+///             let array = arrow::compute::concat(&[array1.as_ref(), array2.as_ref()])?;
+///             Ok(array)
+///         })
+///         .collect::<Result<Vec<_>>>()?;
+///
+///     RecordBatch::try_new(schema.clone(), columns)
+/// }
+///
+
+
 
 /// Replaces columns in a record batch with new arrays.
 ///
