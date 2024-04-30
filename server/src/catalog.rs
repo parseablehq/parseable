@@ -34,9 +34,8 @@ use std::io::Error as IOError;
 pub mod column;
 pub mod manifest;
 pub mod snapshot;
-
+use crate::storage::ObjectStoreFormat;
 pub use manifest::create_from_parquet_file;
-
 pub trait Snapshot {
     fn manifests(&self, time_predicates: &[PartialTimeFilter]) -> Vec<ManifestItem>;
 }
@@ -97,7 +96,6 @@ pub async fn update_snapshot(
     // get current snapshot
     let mut meta = storage.get_object_store_format(stream_name).await?;
     let manifests = &mut meta.snapshot.manifest_list;
-
     let (lower_bound, _) = get_file_bounds(&change);
     let pos = manifests.iter().position(|item| {
         item.time_lower_bound <= lower_bound && lower_bound < item.time_upper_bound
@@ -120,82 +118,89 @@ pub async fn update_snapshot(
             }
         }
         if ch {
-            let Some(mut manifest) = storage.get_manifest(&path).await? else {
-                return Err(ObjectStorageError::UnhandledError(
-                    "Manifest found in snapshot but not in object-storage"
-                        .to_string()
-                        .into(),
-                ));
-            };
-            manifest.apply_change(change);
-            storage.put_manifest(&path, manifest).await?;
-        } else {
-            let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
-            let upper_bound = lower_bound
-                .date_naive()
-                .and_time(
-                    NaiveTime::from_num_seconds_from_midnight_opt(
-                        23 * 3600 + 59 * 60 + 59,
-                        999_999_999,
-                    )
-                    .ok_or(IOError::new(
-                        ErrorKind::Other,
-                        "Failed to create upper bound for manifest",
-                    ))
-                    .map_err(ObjectStorageError::IoError)?,
+            if let Some(mut manifest) = storage.get_manifest(&path).await? {
+                manifest.apply_change(change);
+                storage.put_manifest(&path, manifest).await?;
+            } else {
+                //instead of returning an error, create a new manifest (otherwise local to storage sync fails)
+                //but don't update the snapshot
+                create_manifest(
+                    lower_bound,
+                    change,
+                    storage.clone(),
+                    stream_name,
+                    false,
+                    meta,
                 )
-                .and_utc();
-
-            let manifest = Manifest {
-                files: vec![change],
-                ..Manifest::default()
-            };
-
-            let mainfest_file_name = manifest_path("").to_string();
-            let path =
-                partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
-            storage
-                .put_object(&path, serde_json::to_vec(&manifest)?.into())
                 .await?;
-            let path = storage.absolute_url(&path);
-            let new_snapshot_entriy = snapshot::ManifestItem {
-                manifest_path: path.to_string(),
-                time_lower_bound: lower_bound,
-                time_upper_bound: upper_bound,
-            };
-            manifests.push(new_snapshot_entriy);
-            storage.put_snapshot(stream_name, meta.snapshot).await?;
+            }
+        } else {
+            create_manifest(
+                lower_bound,
+                change,
+                storage.clone(),
+                stream_name,
+                true,
+                meta,
+            )
+            .await?;
         }
     } else {
-        let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
-        let upper_bound = lower_bound
-            .date_naive()
-            .and_time(
-                NaiveTime::from_num_seconds_from_midnight_opt(
-                    23 * 3600 + 59 * 60 + 59,
-                    999_999_999,
-                )
-                .unwrap(),
-            )
-            .and_utc();
+        create_manifest(
+            lower_bound,
+            change,
+            storage.clone(),
+            stream_name,
+            true,
+            meta,
+        )
+        .await?;
+    }
 
-        let manifest = Manifest {
-            files: vec![change],
-            ..Manifest::default()
-        };
+    Ok(())
+}
 
-        let mainfest_file_name = manifest_path("").to_string();
-        let path = partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
-        storage
-            .put_object(&path, serde_json::to_vec(&manifest).unwrap().into())
-            .await?;
+async fn create_manifest(
+    lower_bound: DateTime<Utc>,
+    change: manifest::File,
+    storage: Arc<dyn ObjectStorage + Send>,
+    stream_name: &str,
+    update_snapshot: bool,
+    mut meta: ObjectStoreFormat,
+) -> Result<(), ObjectStorageError> {
+    let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
+    let upper_bound = lower_bound
+        .date_naive()
+        .and_time(
+            NaiveTime::from_num_seconds_from_midnight_opt(23 * 3600 + 59 * 60 + 59, 999_999_999)
+                .ok_or(IOError::new(
+                    ErrorKind::Other,
+                    "Failed to create upper bound for manifest",
+                ))
+                .map_err(ObjectStorageError::IoError)?,
+        )
+        .and_utc();
+
+    let manifest = Manifest {
+        files: vec![change],
+        ..Manifest::default()
+    };
+
+    let mainfest_file_name = manifest_path("").to_string();
+    let path = partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
+    storage
+        .put_object(&path, serde_json::to_vec(&manifest)?.into())
+        .await?;
+    if update_snapshot {
+        let mut manifests = meta.snapshot.manifest_list;
         let path = storage.absolute_url(&path);
-        let new_snapshot_entriy = snapshot::ManifestItem {
+        let new_snapshot_entry = snapshot::ManifestItem {
             manifest_path: path.to_string(),
             time_lower_bound: lower_bound,
             time_upper_bound: upper_bound,
         };
-        manifests.push(new_snapshot_entriy);
+        manifests.push(new_snapshot_entry);
+        meta.snapshot.manifest_list = manifests;
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
 
