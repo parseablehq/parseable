@@ -207,21 +207,17 @@ pub async fn remove_manifest_from_snapshot(
     stream_name: &str,
     dates: Vec<String>,
 ) -> Result<Option<String>, ObjectStorageError> {
+    if !dates.is_empty() {
+        // get current snapshot
+        let mut meta = storage.get_object_store_format(stream_name).await?;
+        let manifests = &mut meta.snapshot.manifest_list;
+        // Filter out items whose manifest_path contains any of the dates_to_delete
+        manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
+        storage.put_snapshot(stream_name, meta.snapshot).await?;
+    }
     match CONFIG.parseable.mode {
         Mode::All | Mode::Ingest => {
-            if !dates.is_empty() {
-                // get current snapshot
-                let mut meta = storage.get_object_store_format(stream_name).await?;
-                let manifests = &mut meta.snapshot.manifest_list;
-                // Filter out items whose manifest_path contains any of the dates_to_delete
-                manifests
-                    .retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
-                storage.put_snapshot(stream_name, meta.snapshot).await?;
-            }
-
-            let first_event_at = get_first_event(storage.clone(), stream_name, Vec::new()).await?;
-
-            Ok(first_event_at)
+            Ok(get_first_event(storage.clone(), stream_name, Vec::new()).await?)
         }
         Mode::Query => Ok(get_first_event(storage, stream_name, dates).await?),
     }
