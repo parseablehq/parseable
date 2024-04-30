@@ -6,6 +6,7 @@ use chrono::Utc;
 use datafusion::common::tree_node::TreeNode;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures_util::{Future, TryFutureExt};
 
@@ -16,6 +17,7 @@ use crate::event::commit_schema;
 use crate::handlers::http::cluster::get_ingestor_info;
 use crate::handlers::http::fetch_schema;
 use crate::handlers::http::ingest::push_logs_unchecked;
+use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 
 use crate::handlers::livetail::cross_origin_config;
@@ -189,6 +191,7 @@ impl FlightService for AirServiceImpl {
             Status::permission_denied("User Does not have permission to access this")
         })?;
 
+        let time = Instant::now();
         let (results, _) = query
             .execute(stream_name.clone())
             .await
@@ -221,6 +224,12 @@ impl FlightService for AirServiceImpl {
                 event.clear(&stream_name);
             }
         }
+
+        let time = time.elapsed().as_secs_f64();
+        QUERY_EXECUTE_TIME
+            .with_label_values(&["flight-query", &stream_name])
+            .observe(time);
+
         Ok(Response::new(Box::pin(output) as Self::DoGetStream))
     }
 
