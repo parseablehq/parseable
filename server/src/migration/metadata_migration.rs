@@ -19,7 +19,12 @@
 use rand::distributions::DistString;
 use serde_json::{Map, Value as JsonValue};
 
-use crate::option::CONFIG;
+use crate::{
+    handlers::http::modal::IngestorMetadata,
+    option::CONFIG,
+    storage::{object_storage::ingestor_metadata_path, staging},
+};
+use actix_web::body::MessageBody;
 
 /*
 v1
@@ -117,4 +122,35 @@ pub fn update_v3(mut storage_metadata: JsonValue) -> JsonValue {
     }
 
     storage_metadata
+}
+
+pub async fn migrate_ingester_metadata() -> anyhow::Result<()> {
+    let imp = ingestor_metadata_path(None);
+    let bytes = CONFIG.storage().get_object_store().get_object(&imp).await?;
+    let mut json = serde_json::from_slice::<JsonValue>(&bytes)?;
+    let meta = json
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingester Metadata"))?;
+    let fp = meta.get("flight_port");
+
+    if fp.is_none() {
+        meta.insert(
+            "flight_port".to_owned(),
+            JsonValue::String(CONFIG.parseable.flight_port.to_string()),
+        );
+    }
+    let bytes = serde_json::to_string(&json)?
+        .try_into_bytes()
+        .map_err(|err| anyhow::anyhow!(err))?;
+
+    let resource: IngestorMetadata = serde_json::from_value(json)?;
+    staging::put_ingestor_info(resource.clone())?;
+
+    CONFIG
+        .storage()
+        .get_object_store()
+        .put_object(&imp, bytes)
+        .await?;
+
+    Ok(())
 }

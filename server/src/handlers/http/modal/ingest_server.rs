@@ -24,6 +24,7 @@ use crate::handlers::http::middleware::RouteExt;
 use crate::localcache::LocalCacheManager;
 use crate::metadata;
 use crate::metrics;
+use crate::migration::metadata_migration::migrate_ingester_metadata;
 use crate::rbac;
 use crate::rbac::role::Action;
 use crate::storage;
@@ -39,6 +40,10 @@ use super::IngestorMetadata;
 use super::OpenIdClient;
 use super::ParseableServer;
 
+use crate::{
+    handlers::http::{base_path, cross_origin_config},
+    option::CONFIG,
+};
 use actix_web::body::MessageBody;
 use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
@@ -50,14 +55,9 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 
-use crate::{
-    handlers::http::{base_path, cross_origin_config},
-    option::CONFIG,
-};
-
 /// ! have to use a guard before using it
 pub static INGESTOR_META: Lazy<IngestorMetadata> =
-    Lazy::new(|| staging::get_ingestor_info().expect("dir is readable and writeable"));
+    Lazy::new(|| staging::get_ingestor_info().expect("Should Be valid Json"));
 
 #[derive(Default)]
 pub struct IngestServer;
@@ -106,6 +106,8 @@ impl ParseableServer for IngestServer {
 
     /// implement the init method will just invoke the initialize method
     async fn init(&self) -> anyhow::Result<()> {
+        migrate_ingester_metadata().await?;
+
         self.validate()?;
 
         // check for querier state. Is it there, or was it there in the past
