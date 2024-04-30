@@ -106,8 +106,6 @@ impl ParseableServer for IngestServer {
 
     /// implement the init method will just invoke the initialize method
     async fn init(&self) -> anyhow::Result<()> {
-        migrate_ingester_metadata().await?;
-
         self.validate()?;
 
         // check for querier state. Is it there, or was it there in the past
@@ -116,6 +114,7 @@ impl ParseableServer for IngestServer {
         self.validate_credentials().await?;
 
         let metadata = storage::resolve_parseable_metadata().await?;
+
         banner::print(&CONFIG, &metadata).await;
         rbac::map::init(&metadata);
         // set the info in the global metadata
@@ -217,6 +216,7 @@ impl IngestServer {
 
     // create the ingestor metadata and put the .ingestor.json file in the object store
     async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
+        migrate_ingester_metadata().await?;
         let store = CONFIG.storage().get_object_store();
 
         // find the meta file in staging if not generate new metadata

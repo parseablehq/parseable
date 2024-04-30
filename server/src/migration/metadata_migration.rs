@@ -126,7 +126,13 @@ pub fn update_v3(mut storage_metadata: JsonValue) -> JsonValue {
 
 pub async fn migrate_ingester_metadata() -> anyhow::Result<()> {
     let imp = ingestor_metadata_path(None);
-    let bytes = CONFIG.storage().get_object_store().get_object(&imp).await?;
+    let bytes = match CONFIG.storage().get_object_store().get_object(&imp).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            log::debug!("No metadata found for ingester. So migration is not required");
+            return Ok(());
+        }
+    };
     let mut json = serde_json::from_slice::<JsonValue>(&bytes)?;
     let meta = json
         .as_object_mut()

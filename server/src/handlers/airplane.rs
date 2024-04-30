@@ -156,7 +156,7 @@ impl FlightService for AirServiceImpl {
 
         let time_delta = query.end - Utc::now();
 
-        let events = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 2 {
+        let events = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 1 {
             let sql = format!(
                 "{}\"query\": \"select * from {}\"{}",
                 L_CURLY, &stream_name, R_CURLY

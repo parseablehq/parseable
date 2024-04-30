@@ -15,7 +15,8 @@ use tonic::transport::Channel;
 
 pub fn get_query_from_ticket(req: Request<Ticket>) -> Result<QueryJson, Status> {
     if CONFIG.parseable.mode == Mode::Ingest {
-        let query = serde_json::from_slice::<JsonValue>(&req.into_inner().ticket)
+        let inner = req.into_inner().ticket;
+        let query = serde_json::from_slice::<JsonValue>(&inner)
             .map_err(|_| Status::failed_precondition("Ticket is not valid json"))?["query"]
             .as_str()
             .ok_or_else(|| Status::failed_precondition("query is not valid string"))?
