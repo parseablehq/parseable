@@ -328,10 +328,9 @@ impl TableProvider for StandardTableProvider {
             let obs = glob_storage
                 .get_objects(
                     Some(&path),
-                    Box::new(|file_name| file_name.starts_with(".ingestor")),
+                    Box::new(|file_name| file_name.ends_with("manifest.json")),
                 )
                 .await;
-
             if let Ok(obs) = obs {
                 for ob in obs {
                     if let Ok(object_store_format) =
