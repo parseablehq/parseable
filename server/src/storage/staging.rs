@@ -247,10 +247,16 @@ pub fn convert_disk_files_to_parquet(
         writer.close()?;
 
         for file in files {
-            if fs::remove_file(file).is_err() {
+            let file_size = file.metadata().unwrap().len();
+            let file_type = file.extension().unwrap().to_str().unwrap();
+
+            if fs::remove_file(file.clone()).is_err() {
                 log::error!("Failed to delete file. Unstable state");
                 process::abort()
             }
+            metrics::STORAGE_SIZE
+                .with_label_values(&["staging", stream, file_type])
+                .sub(file_size as i64);
         }
     }
 

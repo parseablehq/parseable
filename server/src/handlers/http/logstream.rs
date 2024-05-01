@@ -338,6 +338,16 @@ pub async fn put_retention(
 
 pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    match CONFIG.parseable.mode {
+        Mode::Ingest | Mode::All => {
+            if CONFIG.parseable.local_cache_path.is_none() {
+                return Err(StreamError::CacheNotEnabled(stream_name));
+            }
+        }
+        _ => {}
+    }
+
     let cache_enabled = STREAM_INFO.cache_enabled(&stream_name)?;
     Ok((web::Json(cache_enabled), StatusCode::OK))
 }
