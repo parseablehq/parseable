@@ -45,10 +45,9 @@ impl EventFormat for Event {
     fn to_data(
         self,
         schema: HashMap<String, Arc<Field>>,
-        time_partition: Option<String>,
         static_schema_flag: Option<String>,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
-        let data = flatten_json_body(self.data, time_partition)?;
+        let data = flatten_json_body(self.data, None, false)?;
         let stream_schema = schema;
 
         // incoming event may be a single json or a json array

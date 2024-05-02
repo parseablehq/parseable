@@ -215,7 +215,8 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
 
     if !body.is_empty() && static_schema_flag == "true" {
         let static_schema: StaticSchema = serde_json::from_slice(&body)?;
-        let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
+
+        let parsed_schema = convert_static_schema_to_arrow_schema(static_schema.clone());
         if let Ok(parsed_schema) = parsed_schema {
             schema = parsed_schema;
         } else {
@@ -223,6 +224,23 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
                 msg: format!("unable to commit static schema, logstream {stream_name} not created"),
                 status: StatusCode::BAD_REQUEST,
             });
+        }
+        if !time_partition.is_empty() {
+            let mut time_partition_exists: bool = false;
+            for field_name in &static_schema.get_fields() {
+                if field_name == time_partition {
+                    time_partition_exists = true;
+                    break;
+                }
+            }
+            if !time_partition_exists {
+                return Err(StreamError::Custom {
+                    msg: format!(
+                        "time partition field {time_partition} does not exist in the schema for static schema logstream {stream_name}"
+                    ),
+                    status: StatusCode::BAD_REQUEST,
+                });
+            }
         }
     } else if body.is_empty() && static_schema_flag == "true" {
         return Err(StreamError::Custom {

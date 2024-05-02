@@ -6,15 +6,32 @@ use std::str;
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use std::{collections::HashMap, sync::Arc};
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StaticSchema {
     fields: Vec<SchemaFields>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+impl StaticSchema {
+    pub fn get_fields(&self) -> Vec<String> {
+        let fields = self
+            .fields
+            .iter()
+            .map(|field| field.clone().get_field_name())
+            .collect();
+        fields
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SchemaFields {
     name: String,
     data_type: String,
+}
+
+impl SchemaFields {
+    pub fn get_field_name(self) -> String {
+        self.name
+    }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

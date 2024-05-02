@@ -24,8 +24,22 @@ pub mod flatten;
 pub fn flatten_json_body(
     body: serde_json::Value,
     time_partition: Option<String>,
+    validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
-    flatten::flatten(body, "_", time_partition)
+    flatten::flatten(body, "_", time_partition, validation_required)
+}
+
+pub fn convert_array_to_object(
+    body: Value,
+    time_partition: Option<String>,
+) -> Result<Vec<Value>, anyhow::Error> {
+    let data = flatten_json_body(body, time_partition, true)?;
+    let value_arr = match data {
+        Value::Array(arr) => arr,
+        value @ Value::Object(_) => vec![value],
+        _ => unreachable!("flatten would have failed beforehand"),
+    };
+    Ok(value_arr)
 }
 
 pub fn convert_to_string(value: &Value) -> Value {

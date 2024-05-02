@@ -29,6 +29,7 @@ use std::sync::Arc;
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
 use crate::metadata;
+use chrono::NaiveDateTime;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 pub const DEFAULT_TAGS_KEY: &str = "p_tags";
@@ -41,19 +42,25 @@ pub struct Event {
     pub origin_format: &'static str,
     pub origin_size: u64,
     pub is_first_event: bool,
+    pub parsed_timestamp: NaiveDateTime,
 }
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
     pub async fn process(self) -> Result<(), EventError> {
-        let key = get_schema_key(&self.rb.schema().fields);
+        let key = get_schema_key(&self.rb.schema().fields, self.parsed_timestamp);
         let num_rows = self.rb.num_rows() as u64;
 
         if self.is_first_event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        Self::process_event(&self.stream_name, &key, self.rb.clone())?;
+        Self::process_event(
+            &self.stream_name,
+            &key,
+            self.rb.clone(),
+            self.parsed_timestamp,
+        )?;
 
         metadata::STREAM_INFO.update_stats(
             &self.stream_name,
@@ -80,20 +87,27 @@ impl Event {
         stream_name: &str,
         schema_key: &str,
         rb: RecordBatch,
+        parsed_timestamp: NaiveDateTime,
     ) -> Result<(), EventError> {
-        STREAM_WRITERS.append_to_local(stream_name, schema_key, rb)?;
+        STREAM_WRITERS.append_to_local(stream_name, schema_key, rb, parsed_timestamp)?;
         Ok(())
     }
 }
 
-pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
+pub fn get_schema_key(fields: &[Arc<Field>], parsed_timestamp: NaiveDateTime) -> String {
     // Fields must be sorted
+    let parsed_timestamp = parsed_timestamp
+        .and_utc()
+        .format("%Y-%m-%d %H:%M")
+        .to_string();
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     for field in fields.iter().sorted_by_key(|v| v.name()) {
+        // let field_name = field.name();
+        // hasher.update(format!("{field_name}.{parsed_timestamp}").as_bytes());
         hasher.update(field.name().as_bytes())
     }
     let hash = hasher.digest();
-    format!("{hash:x}")
+    format!("{hash:x}{parsed_timestamp}")
 }
 
 pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), EventError> {
