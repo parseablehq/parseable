@@ -227,7 +227,7 @@ impl FlightService for AirServiceImpl {
 
         let time = time.elapsed().as_secs_f64();
         QUERY_EXECUTE_TIME
-            .with_label_values(&["flight-query", &stream_name])
+            .with_label_values(&[&format!("flight-query-{}", stream_name)])
             .observe(time);
 
         Ok(Response::new(Box::pin(output) as Self::DoGetStream))
