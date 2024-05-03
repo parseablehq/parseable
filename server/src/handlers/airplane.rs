@@ -2,11 +2,14 @@ use arrow_array::RecordBatch;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::PollInfo;
 use arrow_schema::{ArrowError, Schema};
+use arrow_select::concat::concat_batches;
 use chrono::Utc;
+use crossterm::event;
 use datafusion::common::tree_node::TreeNode;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
+use tonic::codec::CompressionEncoding;
 
 use futures_util::{Future, TryFutureExt};
 
@@ -42,7 +45,7 @@ use crate::rbac::Users;
 const L_CURLY: char = '{';
 const R_CURLY: char = '}';
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AirServiceImpl {}
 
 #[tonic::async_trait]
@@ -158,7 +161,7 @@ impl FlightService for AirServiceImpl {
 
         let time_delta = query.end - Utc::now();
 
-        let events = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 1 {
+        let events = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 2 {
             let sql = format!(
                 "{}\"query\": \"select * from {}\"{}",
                 L_CURLY, &stream_name, R_CURLY
@@ -172,6 +175,16 @@ impl FlightService for AirServiceImpl {
                 let mut batches = run_do_get_rpc(im, sql.clone()).await?;
                 minute_result.append(&mut batches);
             }
+            let mr = minute_result.iter().map(|rb| rb).collect::<Vec<_>>();
+            let schema = STREAM_INFO
+                .schema(&stream_name)
+                .map_err(|err| Status::failed_precondition(format!("Metadata Error: {}", err)))?;
+            let rb = concat_batches(&schema, mr)
+                .map_err(|err| Status::failed_precondition(format!("ArrowError: {}", err)))?;
+
+            let event = push_logs_unchecked(rb, &stream_name)
+                .await
+                .map_err(|err| Status::internal(err.to_string()))?;
             let mut events = vec![];
             for batch in minute_result {
                 events.push(
@@ -180,7 +193,7 @@ impl FlightService for AirServiceImpl {
                         .map_err(|err| Status::internal(err.to_string()))?,
                 );
             }
-            Some(events)
+            Some(event)
         } else {
             None
         };
@@ -220,9 +233,10 @@ impl FlightService for AirServiceImpl {
         }
         let output = futures::stream::iter(flights.into_iter().map(Ok));
         if let Some(events) = events {
-            for event in events {
-                event.clear(&stream_name);
-            }
+            events.clear(&stream_name);
+            // for event in events {
+            //     event.clear(&stream_name);
+            // }
         }
 
         let time = time.elapsed().as_secs_f64();
@@ -280,7 +294,12 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let service = AirServiceImpl {};
 
-    let svc = FlightServiceServer::new(service);
+    let svc = FlightServiceServer::new(service)
+        .max_encoding_message_size(usize::MAX)
+        .max_decoding_message_size(usize::MAX)
+        .send_compressed(CompressionEncoding::Gzip);
+
+    dbg!(&svc);
 
     let cors = cross_origin_config();
 
@@ -314,6 +333,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
             };
 
             server
+                .max_frame_size(16 * 1024 * 1024 - 2)
                 .accept_http1(true)
                 .layer(cors)
                 .layer(GrpcWebLayer::new())
@@ -322,6 +342,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
                 .map_err(err_map_fn)
         }
         None => Server::builder()
+            .max_frame_size(16 * 1024 * 1024 - 2)
             .accept_http1(true)
             .layer(cors)
             .layer(GrpcWebLayer::new())

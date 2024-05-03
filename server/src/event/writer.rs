@@ -137,7 +137,14 @@ impl WriterTable {
     pub fn clear(&self, stream_name: &str) {
         let map = self.write().unwrap();
         if let Some(writer) = map.get(stream_name) {
-            writer.lock().unwrap().mem.clear();
+            let w = &mut writer.lock().unwrap().mem;
+            dbg!(&w.read_buffer.len());
+            dbg!(&w.mutable_buffer.inner.len());
+
+            dbg!(&w.mutable_buffer.inner);
+            w.clear();
+            dbg!(&w.read_buffer.len());
+            dbg!(&w.mutable_buffer.inner.len());
         }
     }
 

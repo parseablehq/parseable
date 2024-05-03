@@ -34,8 +34,8 @@ pub struct MemWriter<const N: usize> {
     schema: Schema,
     // for checking uniqueness of schema
     schema_map: HashSet<String>,
-    read_buffer: Vec<RecordBatch>,
-    mutable_buffer: MutableBuffer<N>,
+    pub read_buffer: Vec<RecordBatch>,
+    pub mutable_buffer: MutableBuffer<N>,
 }
 
 impl<const N: usize> Default for MemWriter<N> {
@@ -91,7 +91,7 @@ fn concat_records(schema: &Arc<Schema>, record: &[RecordBatch]) -> RecordBatch {
 }
 
 #[derive(Debug, Default)]
-struct MutableBuffer<const N: usize> {
+pub struct MutableBuffer<const N: usize> {
     pub inner: Vec<RecordBatch>,
     pub rows: usize,
 }

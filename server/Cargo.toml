@@ -20,7 +20,7 @@ parquet = "51.0.0"
 
 ### LiveTail server deps
 arrow-flight = "51.0.0"
-tonic = {version = "0.11.0", features = ["tls"] }
+tonic = {version = "0.11.0", features = ["tls", "transport", "gzip", "zstd"] }
 tonic-web = "0.11.0"
 tower-http = { version = "0.4.4", features = ["cors"] }
 
