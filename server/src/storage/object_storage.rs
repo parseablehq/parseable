@@ -293,6 +293,7 @@ pub trait ObjectStorage: Sync + 'static {
     }
 
     /// for future use
+    #[allow(dead_code)]
     async fn get_stats_for_first_time(
         &self,
         stream_name: &str,

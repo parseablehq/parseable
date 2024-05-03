@@ -18,7 +18,7 @@
 
 use clap::error::ErrorKind;
 use clap::{command, Args, Command, FromArgMatches};
-
+use core::fmt;
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use std::env;
@@ -234,9 +234,9 @@ impl Mode {
     }
 }
 
-impl ToString for Mode {
-    fn to_string(&self) -> String {
-        self.to_str().to_string()
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_str())
     }
 }
 
