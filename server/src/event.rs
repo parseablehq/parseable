@@ -96,10 +96,7 @@ impl Event {
 
 pub fn get_schema_key(fields: &[Arc<Field>], parsed_timestamp: NaiveDateTime) -> String {
     // Fields must be sorted
-    let parsed_timestamp = parsed_timestamp
-        .and_utc()
-        .format("%Y-%m-%d %H:%M")
-        .to_string();
+    let parsed_timestamp = parsed_timestamp.and_utc().format("%Y%m%d%H%M").to_string();
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     for field in fields.iter().sorted_by_key(|v| v.name()) {
         // let field_name = field.name();

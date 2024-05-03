@@ -75,38 +75,20 @@ fn get_file_bounds(
     file: &manifest::File,
     partition_column: String,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
-    if partition_column == DEFAULT_TIMESTAMP_KEY {
-        match file
-            .columns()
-            .iter()
-            .find(|col| col.name == partition_column)
-            .unwrap()
-            .stats
-            .as_ref()
-            .unwrap()
-        {
-            column::TypedStatistics::Int(stats) => (
-                DateTime::from_timestamp_millis(stats.min).unwrap(),
-                DateTime::from_timestamp_millis(stats.max).unwrap(),
-            ),
-            _ => unreachable!(),
-        }
-    } else {
-        match file
-            .columns()
-            .iter()
-            .find(|col| col.name == partition_column)
-            .unwrap()
-            .stats
-            .as_ref()
-            .unwrap()
-        {
-            column::TypedStatistics::String(stats) => (
-                stats.min.parse::<DateTime<Utc>>().unwrap(),
-                stats.max.parse::<DateTime<Utc>>().unwrap(),
-            ),
-            _ => unreachable!(),
-        }
+    match file
+        .columns()
+        .iter()
+        .find(|col| col.name == partition_column)
+        .unwrap()
+        .stats
+        .as_ref()
+        .unwrap()
+    {
+        column::TypedStatistics::Int(stats) => (
+            DateTime::from_timestamp_millis(stats.min).unwrap(),
+            DateTime::from_timestamp_millis(stats.max).unwrap(),
+        ),
+        _ => unreachable!(),
     }
 }
 

@@ -46,6 +46,7 @@ impl EventFormat for Event {
         self,
         schema: HashMap<String, Arc<Field>>,
         static_schema_flag: Option<String>,
+        time_partition: Option<String>,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
         let data = flatten_json_body(self.data, None, false)?;
         let stream_schema = schema;
@@ -67,7 +68,12 @@ impl EventFormat for Event {
         let schema = match derive_arrow_schema(&stream_schema, fields) {
             Ok(schema) => schema,
             Err(_) => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
-                Ok(infer_schema) => {
+                Ok(mut infer_schema) => {
+                    let new_infer_schema = super::super::format::update_field_type_in_schema(
+                        Arc::new(infer_schema),
+                        time_partition,
+                    );
+                    infer_schema = Schema::new(new_infer_schema.fields().clone());
                     if let Err(err) = Schema::try_merge(vec![
                         Schema::new(stream_schema.values().cloned().collect::<Fields>()),
                         infer_schema.clone(),

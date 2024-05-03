@@ -42,15 +42,20 @@ pub trait EventFormat: Sized {
         self,
         schema: HashMap<String, Arc<Field>>,
         static_schema_flag: Option<String>,
+        time_partition: Option<String>,
     ) -> Result<(Self::Data, EventSchema, bool, Tags, Metadata), AnyError>;
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
     fn into_recordbatch(
         self,
         storage_schema: HashMap<String, Arc<Field>>,
         static_schema_flag: Option<String>,
+        time_partition: Option<String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first, tags, metadata) =
-            self.to_data(storage_schema.clone(), static_schema_flag.clone())?;
+        let (data, mut schema, is_first, tags, metadata) = self.to_data(
+            storage_schema.clone(),
+            static_schema_flag.clone(),
+            time_partition.clone(),
+        )?;
 
         if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
             return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
@@ -91,10 +96,11 @@ pub trait EventFormat: Sized {
         )));
 
         // prepare the record batch and new fields to be added
-        let new_schema = Arc::new(Schema::new(schema));
+        let mut new_schema = Arc::new(Schema::new(schema));
         if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
         }
+        new_schema = update_field_type_in_schema(new_schema, time_partition);
         let rb = Self::decode(data, new_schema.clone())?;
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
         let metadata_arr =
@@ -137,4 +143,31 @@ pub trait EventFormat: Sized {
         }
         true
     }
+}
+
+pub fn update_field_type_in_schema(
+    schema: Arc<Schema>,
+    time_partition: Option<String>,
+) -> Arc<Schema> {
+    if time_partition.is_none() {
+        return schema;
+    }
+    let field_name = time_partition.unwrap();
+    let new_schema: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if *field.name() == field_name {
+                if field.data_type() == &DataType::Utf8 {
+                    let new_data_type = DataType::Timestamp(TimeUnit::Millisecond, None);
+                    Field::new(field.name().clone(), new_data_type, true)
+                } else {
+                    Field::new(field.name(), field.data_type().clone(), true)
+                }
+            } else {
+                Field::new(field.name(), field.data_type().clone(), true)
+            }
+        })
+        .collect();
+    Arc::new(Schema::new(new_schema))
 }
