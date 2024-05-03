@@ -99,12 +99,11 @@ pub fn get_schema_key(fields: &[Arc<Field>], parsed_timestamp: NaiveDateTime) ->
     let parsed_timestamp = parsed_timestamp.and_utc().format("%Y%m%d%H%M").to_string();
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     for field in fields.iter().sorted_by_key(|v| v.name()) {
-        // let field_name = field.name();
-        // hasher.update(format!("{field_name}.{parsed_timestamp}").as_bytes());
-        hasher.update(field.name().as_bytes())
+        let field_name = field.name();
+        hasher.update(format!("{field_name}.{parsed_timestamp}").as_bytes());
     }
     let hash = hasher.digest();
-    format!("{hash:x}{parsed_timestamp}")
+    format!("{hash:x}")
 }
 
 pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), EventError> {
