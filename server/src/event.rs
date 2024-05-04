@@ -43,14 +43,19 @@ pub struct Event {
     pub origin_size: u64,
     pub is_first_event: bool,
     pub parsed_timestamp: NaiveDateTime,
+    pub time_partition: Option<String>,
 }
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
     pub async fn process(self) -> Result<(), EventError> {
-        let key = get_schema_key(&self.rb.schema().fields, self.parsed_timestamp);
-        let num_rows = self.rb.num_rows() as u64;
+        let mut key = get_schema_key(&self.rb.schema().fields);
+        if self.time_partition.is_some() {
+            let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
+            key = format!("{key}{parsed_timestamp_to_min}");
+        }
 
+        let num_rows = self.rb.num_rows() as u64;
         if self.is_first_event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
@@ -94,13 +99,11 @@ impl Event {
     }
 }
 
-pub fn get_schema_key(fields: &[Arc<Field>], parsed_timestamp: NaiveDateTime) -> String {
+pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     // Fields must be sorted
-    let parsed_timestamp = parsed_timestamp.and_utc().format("%Y%m%d%H%M").to_string();
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     for field in fields.iter().sorted_by_key(|v| v.name()) {
-        let field_name = field.name();
-        hasher.update(format!("{field_name}.{parsed_timestamp}").as_bytes());
+        hasher.update(field.name().as_bytes());
     }
     let hash = hasher.digest();
     format!("{hash:x}")

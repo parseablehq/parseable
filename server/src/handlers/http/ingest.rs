@@ -115,7 +115,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
             req,
             body_val,
             static_schema_flag,
-            time_partition,
+            time_partition.clone(),
         )?;
         event::Event {
             rb,
@@ -124,6 +124,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
             origin_size: size as u64,
             is_first_event,
             parsed_timestamp,
+            time_partition,
         }
         .process()
         .await?;
@@ -154,6 +155,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
                 origin_size: value.to_string().into_bytes().len() as u64,
                 is_first_event,
                 parsed_timestamp,
+                time_partition: time_partition.clone(),
             }
             .process()
             .await?;
