@@ -293,6 +293,7 @@ pub trait ObjectStorage: Sync + 'static {
     }
 
     /// for future use
+    #[allow(dead_code)]
     async fn get_stats_for_first_time(
         &self,
         stream_name: &str,
@@ -581,7 +582,7 @@ pub fn parseable_json_path() -> RelativePathBuf {
 /// TODO: Needs to be updated for distributed mode
 #[inline(always)]
 fn alert_json_path(stream_name: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([stream_name, ALERT_FILE_NAME])
+    RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, ALERT_FILE_NAME])
 }
 
 #[inline(always)]
