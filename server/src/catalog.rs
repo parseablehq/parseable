@@ -41,8 +41,11 @@ pub trait Snapshot {
 }
 
 pub trait ManifestFile {
+    #[allow(unused)]
     fn file_name(&self) -> &str;
+    #[allow(unused)]
     fn ingestion_size(&self) -> u64;
+    #[allow(unused)]
     fn file_size(&self) -> u64;
     fn num_rows(&self) -> u64;
     fn columns(&self) -> &[Column];
