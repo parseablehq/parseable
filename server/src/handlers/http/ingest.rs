@@ -104,6 +104,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
         .map_err(|_err| PostError::StreamNotFound(stream_name.clone()))?;
 
     let time_partition = object_store_format.time_partition;
+    let time_partition_limit = object_store_format.time_partition_limit;
     let static_schema_flag = object_store_format.static_schema_flag;
     let body_val: Value = serde_json::from_slice(&body)?;
     let size: usize = body.len();
@@ -129,7 +130,11 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
         .process()
         .await?;
     } else {
-        let data = convert_array_to_object(body_val.clone(), time_partition.clone())?;
+        let data = convert_array_to_object(
+            body_val.clone(),
+            time_partition.clone(),
+            time_partition_limit,
+        )?;
         for value in data {
             let body_timestamp = value.get(&time_partition.clone().unwrap().to_string());
             parsed_timestamp = body_timestamp
@@ -208,6 +213,7 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
         Mode::All | Mode::Query => {
             super::logstream::create_stream(
                 stream_name.to_string(),
+                "",
                 "",
                 "",
                 Arc::new(Schema::empty()),

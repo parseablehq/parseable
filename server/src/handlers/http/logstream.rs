@@ -21,7 +21,7 @@ use super::base_path_without_preceding_slash;
 use super::cluster::fetch_stats_from_ingestors;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use crate::alerts::Alerts;
-use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
+use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY};
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
@@ -40,6 +40,7 @@ use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
@@ -191,6 +192,29 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     } else {
         ""
     };
+    let mut time_partition_in_days: &str = "";
+    if let Some((_, time_partition_limit_name)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == TIME_PARTITION_LIMIT_KEY)
+    {
+        let time_partition_limit = time_partition_limit_name.to_str().unwrap();
+        if !time_partition_limit.ends_with('d') {
+            return Err(StreamError::Custom {
+                msg: "missing 'd' suffix for duration value".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
+        let days = &time_partition_limit[0..time_partition_limit.len() - 1];
+        if days.parse::<NonZeroU32>().is_err() {
+            return Err(StreamError::Custom {
+                msg: "could not convert duration to an unsigned number".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
+        } else {
+            time_partition_in_days = days;
+        }
+    }
     let static_schema_flag = if let Some((_, static_schema_flag)) = req
         .headers()
         .iter()
@@ -235,7 +259,14 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
                 });
     }
 
-    create_stream(stream_name, time_partition, static_schema_flag, schema).await?;
+    create_stream(
+        stream_name,
+        time_partition,
+        time_partition_in_days,
+        static_schema_flag,
+        schema,
+    )
+    .await?;
 
     Ok(("log stream created", StatusCode::OK))
 }
@@ -516,6 +547,7 @@ fn remove_id_from_alerts(value: &mut Value) {
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
+    time_partition_limit: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
 ) -> Result<(), CreateStreamError> {
@@ -528,6 +560,7 @@ pub async fn create_stream(
         .create_stream(
             &stream_name,
             time_partition,
+            time_partition_limit,
             static_schema_flag,
             schema.clone(),
         )
@@ -557,6 +590,7 @@ pub async fn create_stream(
         stream_name.to_string(),
         created_at,
         time_partition.to_string(),
+        time_partition_limit.to_string(),
         static_schema_flag.to_string(),
         static_schema,
     );
@@ -595,6 +629,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         created_at: stream_meta.created_at.clone(),
         first_event_at: stream_meta.first_event_at.clone(),
         time_partition: stream_meta.time_partition.clone(),
+        time_partition_limit: stream_meta.time_partition_limit.clone(),
         cache_enabled: stream_meta.cache_enabled,
         static_schema_flag: stream_meta.static_schema_flag.clone(),
     };

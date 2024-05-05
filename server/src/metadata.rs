@@ -24,12 +24,11 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 use crate::alerts::Alerts;
 use crate::metrics::{EVENTS_INGESTED, EVENTS_INGESTED_SIZE};
 use crate::storage::{LogStream, ObjectStorage, StorageDir};
 use crate::utils::arrow::MergedRecordReader;
-
-use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 use derive_more::{Deref, DerefMut};
 
 // TODO: make return type be of 'static lifetime instead of cloning
@@ -47,6 +46,7 @@ pub struct LogStreamMetadata {
     pub created_at: String,
     pub first_event_at: Option<String>,
     pub time_partition: Option<String>,
+    pub time_partition_limit: Option<String>,
     pub static_schema_flag: Option<String>,
 }
 
@@ -166,6 +166,7 @@ impl StreamInfo {
         stream_name: String,
         created_at: String,
         time_partition: String,
+        time_partition_limit: String,
         static_schema_flag: String,
         static_schema: HashMap<String, Arc<Field>>,
     ) {
@@ -180,6 +181,11 @@ impl StreamInfo {
                 None
             } else {
                 Some(time_partition)
+            },
+            time_partition_limit: if time_partition_limit.is_empty() {
+                None
+            } else {
+                Some(time_partition_limit)
             },
             static_schema_flag: if static_schema_flag != "true" {
                 None
@@ -237,6 +243,7 @@ impl StreamInfo {
             created_at: meta.created_at,
             first_event_at: meta.first_event_at,
             time_partition: meta.time_partition,
+            time_partition_limit: meta.time_partition_limit,
             static_schema_flag: meta.static_schema_flag,
         };
 
