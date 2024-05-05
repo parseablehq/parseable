@@ -6,16 +6,17 @@ use std::str;
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use std::{collections::HashMap, sync::Arc};
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StaticSchema {
     fields: Vec<SchemaFields>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SchemaFields {
     name: String,
     data_type: String,
 }
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParsedSchema {
@@ -39,14 +40,21 @@ pub struct Fields {
 pub struct Metadata {}
 pub fn convert_static_schema_to_arrow_schema(
     static_schema: StaticSchema,
+    time_partition: &str,
 ) -> Result<Arc<Schema>, AnyError> {
     let mut parsed_schema = ParsedSchema {
         fields: Vec::new(),
         metadata: HashMap::new(),
     };
-    for field in static_schema.fields.iter() {
+    let mut time_partition_exists: bool = false;
+    for mut field in static_schema.fields {
+        if !time_partition.is_empty() && field.name == time_partition {
+            time_partition_exists = true;
+            field.data_type = "datetime".to_string();
+        }
         let parsed_field = Fields {
             name: field.name.clone(),
+
             data_type: {
                 match field.data_type.as_str() {
                     "int" => DataType::Int64,
@@ -74,7 +82,15 @@ pub fn convert_static_schema_to_arrow_schema(
             dict_is_ordered: default_dict_is_ordered(),
             metadata: HashMap::new(),
         };
+
         parsed_schema.fields.push(parsed_field);
+    }
+    if !time_partition.is_empty() && !time_partition_exists {
+        return Err(anyhow! {
+            format!(
+                "time partition field {time_partition} does not exist in the schema for the static schema logstream"
+            ),
+        });
     }
     let schema = add_parseable_fields_to_static_schema(parsed_schema);
     if schema.is_err() {

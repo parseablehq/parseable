@@ -229,13 +229,13 @@ fn transform(
                     Some(time_partition) => {
                         _start_time_filter =
                             PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
-                                .binary_expr_timestamp_partition_key(Expr::Column(Column::new(
+                                .binary_expr(Expr::Column(Column::new(
                                     Some(table.table_name.to_owned_reference()),
                                     time_partition.clone(),
                                 )));
                         _end_time_filter =
                             PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
-                                .binary_expr_timestamp_partition_key(Expr::Column(Column::new(
+                                .binary_expr(Expr::Column(Column::new(
                                     Some(table.table_name.to_owned_reference()),
                                     time_partition,
                                 )));
@@ -243,13 +243,13 @@ fn transform(
                     None => {
                         _start_time_filter =
                             PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
-                                .binary_expr_default_timestamp_key(Expr::Column(Column::new(
+                                .binary_expr(Expr::Column(Column::new(
                                     Some(table.table_name.to_owned_reference()),
                                     event::DEFAULT_TIMESTAMP_KEY,
                                 )));
                         _end_time_filter =
                             PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
-                                .binary_expr_default_timestamp_key(Expr::Column(Column::new(
+                                .binary_expr(Expr::Column(Column::new(
                                     Some(table.table_name.to_owned_reference()),
                                     event::DEFAULT_TIMESTAMP_KEY,
                                 )));

@@ -215,7 +215,9 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
 
     if !body.is_empty() && static_schema_flag == "true" {
         let static_schema: StaticSchema = serde_json::from_slice(&body)?;
-        let parsed_schema = convert_static_schema_to_arrow_schema(static_schema);
+
+        let parsed_schema =
+            convert_static_schema_to_arrow_schema(static_schema.clone(), time_partition);
         if let Ok(parsed_schema) = parsed_schema {
             schema = parsed_schema;
         } else {

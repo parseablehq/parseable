@@ -29,6 +29,7 @@ use std::sync::Arc;
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
 use crate::metadata;
+use chrono::NaiveDateTime;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 pub const DEFAULT_TAGS_KEY: &str = "p_tags";
@@ -41,19 +42,30 @@ pub struct Event {
     pub origin_format: &'static str,
     pub origin_size: u64,
     pub is_first_event: bool,
+    pub parsed_timestamp: NaiveDateTime,
+    pub time_partition: Option<String>,
 }
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
     pub async fn process(self) -> Result<(), EventError> {
-        let key = get_schema_key(&self.rb.schema().fields);
-        let num_rows = self.rb.num_rows() as u64;
+        let mut key = get_schema_key(&self.rb.schema().fields);
+        if self.time_partition.is_some() {
+            let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
+            key = format!("{key}{parsed_timestamp_to_min}");
+        }
 
+        let num_rows = self.rb.num_rows() as u64;
         if self.is_first_event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        Self::process_event(&self.stream_name, &key, self.rb.clone())?;
+        Self::process_event(
+            &self.stream_name,
+            &key,
+            self.rb.clone(),
+            self.parsed_timestamp,
+        )?;
 
         metadata::STREAM_INFO.update_stats(
             &self.stream_name,
@@ -80,8 +92,9 @@ impl Event {
         stream_name: &str,
         schema_key: &str,
         rb: RecordBatch,
+        parsed_timestamp: NaiveDateTime,
     ) -> Result<(), EventError> {
-        STREAM_WRITERS.append_to_local(stream_name, schema_key, rb)?;
+        STREAM_WRITERS.append_to_local(stream_name, schema_key, rb, parsed_timestamp)?;
         Ok(())
     }
 }
@@ -90,7 +103,7 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     // Fields must be sorted
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     for field in fields.iter().sorted_by_key(|v| v.name()) {
-        hasher.update(field.name().as_bytes())
+        hasher.update(field.name().as_bytes());
     }
     let hash = hasher.digest();
     format!("{hash:x}")
