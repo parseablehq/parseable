@@ -30,15 +30,14 @@ mod s3;
 pub mod staging;
 mod store_metadata;
 
+use self::retention::Retention;
+pub use self::staging::StorageDir;
 pub use localfs::FSConfig;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::S3Config;
 pub use store_metadata::{
     put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
 };
-
-use self::retention::Retention;
-pub use self::staging::StorageDir;
 
 // metadata file names in a Stream prefix
 pub const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
@@ -94,6 +93,8 @@ pub struct ObjectStoreFormat {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_partition_limit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub static_schema_flag: Option<String>,
 }
 
@@ -108,6 +109,8 @@ pub struct StreamInfo {
     pub cache_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_partition_limit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_schema_flag: Option<String>,
 }
@@ -155,6 +158,7 @@ impl Default for ObjectStoreFormat {
             cache_enabled: false,
             retention: None,
             time_partition: None,
+            time_partition_limit: None,
             static_schema_flag: None,
         }
     }

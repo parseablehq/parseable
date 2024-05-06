@@ -26,6 +26,7 @@ pub fn flatten(
     nested_value: Value,
     separator: &str,
     time_partition: Option<String>,
+    time_partition_limit: Option<String>,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
     match nested_value {
@@ -34,6 +35,7 @@ pub fn flatten(
                 let validate_time_partition_result = validate_time_partition(
                     Value::Object(nested_dict.clone()),
                     time_partition.clone(),
+                    time_partition_limit.clone(),
                 );
                 if validate_time_partition_result.is_ok() {
                     let mut map = Map::new();
@@ -52,8 +54,11 @@ pub fn flatten(
             for _value in &mut arr {
                 let value: Value = _value.clone();
                 if validation_required {
-                    let validate_time_partition_result =
-                        validate_time_partition(value, time_partition.clone());
+                    let validate_time_partition_result = validate_time_partition(
+                        value,
+                        time_partition.clone(),
+                        time_partition_limit.clone(),
+                    );
 
                     if validate_time_partition_result.is_ok() {
                         let value = std::mem::replace(_value, Value::Null);
@@ -85,10 +90,16 @@ pub fn flatten(
 pub fn validate_time_partition(
     value: Value,
     time_partition: Option<String>,
+    time_partition_limit: Option<String>,
 ) -> Result<bool, anyhow::Error> {
     if time_partition.is_none() {
         Ok(true)
     } else {
+        let time_partition_limit: i64 = if let Some(time_partition_limit) = time_partition_limit {
+            time_partition_limit.parse().unwrap_or(30)
+        } else {
+            30
+        };
         let body_timestamp = value.get(&time_partition.clone().unwrap().to_string());
         if body_timestamp.is_some() {
             if body_timestamp
@@ -108,12 +119,14 @@ pub fn validate_time_partition(
                     .unwrap()
                     .naive_utc();
 
-                if parsed_timestamp >= Utc::now().naive_utc() - Duration::days(30) {
+                if parsed_timestamp >= Utc::now().naive_utc() - Duration::days(time_partition_limit)
+                {
                     Ok(true)
                 } else {
                     Err(anyhow!(format!(
-                        "field {} value is more than a month old",
-                        time_partition.unwrap()
+                        "field {} value is more than {} days old",
+                        time_partition.unwrap(),
+                        time_partition_limit
                     )))
                 }
             } else {
@@ -245,19 +258,19 @@ mod tests {
     #[test]
     fn flatten_single_key_string() {
         let obj = json!({"key": "value"});
-        assert_eq!(obj.clone(), flatten(obj, "_", None, false).unwrap());
+        assert_eq!(obj.clone(), flatten(obj, "_", None, None, false).unwrap());
     }
 
     #[test]
     fn flatten_single_key_int() {
         let obj = json!({"key": 1});
-        assert_eq!(obj.clone(), flatten(obj, "_", None, false).unwrap());
+        assert_eq!(obj.clone(), flatten(obj, "_", None, None, false).unwrap());
     }
 
     #[test]
     fn flatten_multiple_key_value() {
         let obj = json!({"key1": 1, "key2": "value2"});
-        assert_eq!(obj.clone(), flatten(obj, "_", None, false).unwrap());
+        assert_eq!(obj.clone(), flatten(obj, "_", None, None, false).unwrap());
     }
 
     #[test]
@@ -265,7 +278,7 @@ mod tests {
         let obj = json!({"key": "value", "nested_key": {"key":"value"}});
         assert_eq!(
             json!({"key": "value", "nested_key.key": "value"}),
-            flatten(obj, ".", None, false).unwrap()
+            flatten(obj, ".", None, None, false).unwrap()
         );
     }
 
@@ -274,7 +287,7 @@ mod tests {
         let obj = json!({"key": "value", "nested_key": {"key1":"value1", "key2": "value2"}});
         assert_eq!(
             json!({"key": "value", "nested_key.key1": "value1", "nested_key.key2": "value2"}),
-            flatten(obj, ".", None, false).unwrap()
+            flatten(obj, ".", None, None, false).unwrap()
         );
     }
 
@@ -283,7 +296,7 @@ mod tests {
         let obj = json!({"key": "value", "nested_key": {"key1":[1,2,3]}});
         assert_eq!(
             json!({"key": "value", "nested_key.key1": [1,2,3]}),
-            flatten(obj, ".", None, false).unwrap()
+            flatten(obj, ".", None, None, false).unwrap()
         );
     }
 
@@ -292,7 +305,7 @@ mod tests {
         let obj = json!({"key": [{"a": "value0"}, {"a": "value1"}]});
         assert_eq!(
             json!({"key.a": ["value0", "value1"]}),
-            flatten(obj, ".", None, false).unwrap()
+            flatten(obj, ".", None, None, false).unwrap()
         );
     }
 
@@ -301,7 +314,7 @@ mod tests {
         let obj = json!({"key": [{"a": "value0"}, {"a": "value1", "b": "value1"}]});
         assert_eq!(
             json!({"key.a": ["value0", "value1"], "key.b": [null, "value1"]}),
-            flatten(obj, ".", None, false).unwrap()
+            flatten(obj, ".", None, None, false).unwrap()
         );
     }
 
@@ -310,7 +323,7 @@ mod tests {
         let obj = json!({"key": [{"a": "value0", "b": "value0"}, {"a": "value1"}]});
         assert_eq!(
             json!({"key.a": ["value0", "value1"], "key.b": ["value0", null]}),
-            flatten(obj, ".", None, false).unwrap()
+            flatten(obj, ".", None, None, false).unwrap()
         );
     }
 
@@ -319,7 +332,7 @@ mod tests {
         let obj = json!({"key": [{"a": {"p": 0}, "b": "value0"}, {"b": "value1"}]});
         assert_eq!(
             json!({"key.a.p": [0, null], "key.b": ["value0", "value1"]}),
-            flatten(obj, ".", None, false).unwrap()
+            flatten(obj, ".", None, None, false).unwrap()
         );
     }
 
@@ -328,14 +341,14 @@ mod tests {
         let obj = json!({"key": [{"a": [{"p": "value0", "q": "value0"}, {"p": "value1", "q": null}], "b": "value0"}, {"b": "value1"}]});
         assert_eq!(
             json!({"key.a.p": [["value0", "value1"], null], "key.a.q": [["value0", null], null], "key.b": ["value0", "value1"]}),
-            flatten(obj, ".", None, false).unwrap()
+            flatten(obj, ".", None, None, false).unwrap()
         );
     }
 
     #[test]
     fn flatten_mixed_object() {
         let obj = json!({"a": 42, "arr": ["1", {"key": "2"}, {"key": {"nested": "3"}}]});
-        assert!(flatten(obj, ".", None, false).is_err());
+        assert!(flatten(obj, ".", None, None, false).is_err());
     }
 
     #[test]

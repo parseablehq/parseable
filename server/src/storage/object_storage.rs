@@ -127,6 +127,7 @@ pub trait ObjectStorage: Sync + 'static {
         &self,
         stream_name: &str,
         time_partition: &str,
+        time_partition_limit: &str,
         static_schema_flag: &str,
         schema: Arc<Schema>,
     ) -> Result<(), ObjectStorageError> {
@@ -138,6 +139,11 @@ pub trait ObjectStorage: Sync + 'static {
             format.time_partition = None;
         } else {
             format.time_partition = Some(time_partition.to_string());
+        }
+        if time_partition_limit.is_empty() {
+            format.time_partition_limit = None;
+        } else {
+            format.time_partition_limit = Some(time_partition_limit.to_string());
         }
         if static_schema_flag != "true" {
             format.static_schema_flag = None;
