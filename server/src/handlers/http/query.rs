@@ -200,20 +200,7 @@ pub async fn into_query(
         return Err(QueryError::EmptyEndTime);
     }
 
-    let start: DateTime<Utc>;
-    let end: DateTime<Utc>;
-
-    if query.end_time == "now" {
-        end = Utc::now();
-        start = end - chrono::Duration::from_std(humantime::parse_duration(&query.start_time)?)?;
-    } else {
-        start = DateTime::parse_from_rfc3339(&query.start_time)
-            .map_err(|_| QueryError::StartTimeParse)?
-            .into();
-        end = DateTime::parse_from_rfc3339(&query.end_time)
-            .map_err(|_| QueryError::EndTimeParse)?
-            .into();
-    };
+    let (start, end) = parse_human_time(&query.start_time, &query.end_time)?;
 
     if start.timestamp() > end.timestamp() {
         return Err(QueryError::StartTimeAfterEndTime);
@@ -225,6 +212,28 @@ pub async fn into_query(
         end,
         filter_tag: query.filter_tags.clone(),
     })
+}
+
+fn parse_human_time(
+    start_time: &str,
+    end_time: &str,
+) -> Result<(DateTime<Utc>, DateTime<Utc>), QueryError> {
+    let start: DateTime<Utc>;
+    let end: DateTime<Utc>;
+
+    if end_time == "now" {
+        end = Utc::now();
+        start = end - chrono::Duration::from_std(humantime::parse_duration(start_time)?)?;
+    } else {
+        start = DateTime::parse_from_rfc3339(start_time)
+            .map_err(|_| QueryError::StartTimeParse)?
+            .into();
+        end = DateTime::parse_from_rfc3339(end_time)
+            .map_err(|_| QueryError::EndTimeParse)?
+            .into();
+    };
+
+    Ok((start, end))
 }
 
 /// unused for now, might need it in the future
