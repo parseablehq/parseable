@@ -32,6 +32,7 @@ mod migration;
 mod oidc;
 mod option;
 mod query;
+mod querycache;
 mod rbac;
 mod response;
 mod static_schema;
