@@ -290,6 +290,8 @@ pub enum QueryError {
     Execute(#[from] ExecuteError),
     #[error("ObjectStorage Error: {0}")]
     ObjectStorage(#[from] ObjectStorageError),
+    #[error("Cache Error: {0}")]
+    CacheError(#[from] CacheError),
     #[error("Evern Error: {0}")]
     EventError(#[from] EventError),
     #[error("Error: {0}")]
