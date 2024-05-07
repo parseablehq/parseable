@@ -1,10 +1,9 @@
 use arrow_array::RecordBatch;
+use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::PollInfo;
 use arrow_schema::{ArrowError, Schema};
-use arrow_select::concat::concat_batches;
 use chrono::Utc;
-use crossterm::event;
 use datafusion::common::tree_node::TreeNode;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,7 +18,6 @@ use tonic_web::GrpcWebLayer;
 use crate::event::commit_schema;
 use crate::handlers::http::cluster::get_ingestor_info;
 use crate::handlers::http::fetch_schema;
-use crate::handlers::http::ingest::push_logs_unchecked;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 
@@ -28,14 +26,14 @@ use crate::handlers::livetail::cross_origin_config;
 use crate::handlers::http::query::{authorize_and_set_filter_tags, into_query};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::storage::object_storage::commit_schema_to_storage;
-use crate::utils::arrow::flight::{get_query_from_ticket, run_do_get_rpc};
+use crate::utils::arrow::flight::{append_temporary_events, get_query_from_ticket, run_do_get_rpc};
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
     FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc,
     SchemaResult, Ticket,
 };
-use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
-use futures::stream::BoxStream;
+use arrow_ipc::writer::IpcWriteOptions;
+use futures::{stream, TryStreamExt};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::handlers::livetail::extract_session_key;
@@ -50,13 +48,13 @@ pub struct AirServiceImpl {}
 
 #[tonic::async_trait]
 impl FlightService for AirServiceImpl {
-    type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
-    type ListFlightsStream = BoxStream<'static, Result<FlightInfo, Status>>;
-    type DoGetStream = BoxStream<'static, Result<FlightData, Status>>;
-    type DoPutStream = BoxStream<'static, Result<PutResult, Status>>;
-    type DoActionStream = BoxStream<'static, Result<arrow_flight::Result, Status>>;
-    type ListActionsStream = BoxStream<'static, Result<ActionType, Status>>;
-    type DoExchangeStream = BoxStream<'static, Result<FlightData, Status>>;
+    type HandshakeStream = stream::BoxStream<'static, Result<HandshakeResponse, Status>>;
+    type ListFlightsStream = stream::BoxStream<'static, Result<FlightInfo, Status>>;
+    type DoGetStream = stream::BoxStream<'static, Result<FlightData, Status>>;
+    type DoPutStream = stream::BoxStream<'static, Result<PutResult, Status>>;
+    type DoActionStream = stream::BoxStream<'static, Result<arrow_flight::Result, Status>>;
+    type ListActionsStream = stream::BoxStream<'static, Result<ActionType, Status>>;
+    type DoExchangeStream = stream::BoxStream<'static, Result<FlightData, Status>>;
 
     async fn handshake(
         &self,
@@ -175,24 +173,27 @@ impl FlightService for AirServiceImpl {
                 let mut batches = run_do_get_rpc(im, sql.clone()).await?;
                 minute_result.append(&mut batches);
             }
-            let mr = minute_result.iter().map(|rb| rb).collect::<Vec<_>>();
-            let schema = STREAM_INFO
-                .schema(&stream_name)
-                .map_err(|err| Status::failed_precondition(format!("Metadata Error: {}", err)))?;
-            let rb = concat_batches(&schema, mr)
-                .map_err(|err| Status::failed_precondition(format!("ArrowError: {}", err)))?;
+            let mr = minute_result.iter().collect::<Vec<_>>();
+            dbg!(&mr.len());
+            let event = append_temporary_events(&stream_name, mr).await?;
 
-            let event = push_logs_unchecked(rb, &stream_name)
-                .await
-                .map_err(|err| Status::internal(err.to_string()))?;
-            let mut events = vec![];
-            for batch in minute_result {
-                events.push(
-                    push_logs_unchecked(batch, &stream_name)
-                        .await
-                        .map_err(|err| Status::internal(err.to_string()))?,
-                );
-            }
+            // let schema = STREAM_INFO
+            //     .schema(&stream_name)
+            //     .map_err(|err| Status::failed_precondition(format!("Metadata Error: {}", err)))?;
+            // let rb = concat_batches(&schema, mr)
+            //     .map_err(|err| Status::failed_precondition(format!("ArrowError: {}", err)))?;
+            //
+            // let event = push_logs_unchecked(rb, &stream_name)
+            //     .await
+            //     .map_err(|err| Status::internal(err.to_string()))?;
+            // let mut events = vec![];
+            // for batch in minute_result {
+            //     events.push(
+            //         push_logs_unchecked(batch, &stream_name)
+            //             .await
+            //             .map_err(|err| Status::internal(err.to_string()))?,
+            //     );
+            // }
             Some(event)
         } else {
             None
@@ -210,28 +211,39 @@ impl FlightService for AirServiceImpl {
             .await
             .map_err(|err| Status::internal(err.to_string()))
             .unwrap();
+        if results.len() > 1 {
+            dbg!(&results.len());
+        }
 
         let schemas = results
             .iter()
             .map(|batch| batch.schema())
             .map(|s| s.as_ref().clone())
             .collect::<Vec<_>>();
-
         let schema = Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
-        let options = datafusion::arrow::ipc::writer::IpcWriteOptions::default();
-        let schema_flight_data = SchemaAsIpc::new(&schema, &options);
+        let input_stream = futures::stream::iter(results.into_iter().map(Ok));
 
-        let mut flights = vec![FlightData::from(schema_flight_data)];
-        let encoder = IpcDataGenerator::default();
-        let mut tracker = DictionaryTracker::new(false);
-        for batch in &results {
-            let (flight_dictionaries, flight_batch) = encoder
-                .encoded_batch(batch, &mut tracker, &options)
-                .map_err(|e| Status::internal(e.to_string()))?;
-            flights.extend(flight_dictionaries.into_iter().map(Into::into));
-            flights.push(flight_batch.into());
-        }
-        let output = futures::stream::iter(flights.into_iter().map(Ok));
+        let flight_data_stream = FlightDataEncoderBuilder::new()
+            .with_max_flight_data_size(usize::MAX)
+            .with_schema(schema.into())
+            .build(input_stream);
+
+        let flight_data_stream = flight_data_stream.map_err(|err| Status::unknown(err.to_string()));
+
+        // let options = datafusion::arrow::ipc::writer::IpcWriteOptions::default();
+        // let schema_flight_data = SchemaAsIpc::new(&schema, &options);
+        //
+        // let mut flights = vec![FlightData::from(schema_flight_data)];
+        // let encoder = IpcDataGenerator::default();
+        // let mut tracker = DictionaryTracker::new(false);
+        // for batch in &results {
+        //     let (flight_dictionaries, flight_batch) = encoder
+        //         .encoded_batch(batch, &mut tracker, &options)
+        //         .map_err(|e| Status::internal(e.to_string()))?;
+        //     flights.extend(flight_dictionaries.into_iter().map(Into::into));
+        //     flights.push(flight_batch.into());
+        // }
+        // let output = futures::stream::iter(flights.into_iter().map(Ok));
         if let Some(events) = events {
             events.clear(&stream_name);
             // for event in events {
@@ -244,7 +256,9 @@ impl FlightService for AirServiceImpl {
             .with_label_values(&[&format!("flight-query-{}", stream_name)])
             .observe(time);
 
-        Ok(Response::new(Box::pin(output) as Self::DoGetStream))
+        Ok(Response::new(
+            Box::pin(flight_data_stream) as Self::DoGetStream
+        ))
     }
 
     async fn do_put(
@@ -297,9 +311,8 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
     let svc = FlightServiceServer::new(service)
         .max_encoding_message_size(usize::MAX)
         .max_decoding_message_size(usize::MAX)
-        .send_compressed(CompressionEncoding::Gzip);
-
-    dbg!(&svc);
+        .send_compressed(CompressionEncoding::Zstd)
+        .accept_compressed(CompressionEncoding::Zstd);
 
     let cors = cross_origin_config();
 

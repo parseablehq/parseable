@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
-use crate::metadata;
+use crate::{handlers::http::ingest::PostError, metadata};
 use chrono::NaiveDateTime;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
@@ -86,12 +86,18 @@ impl Event {
         Ok(())
     }
 
-    pub fn process_unchecked(&self) -> Result<(), EventError> {
+    pub fn process_unchecked(self) -> Result<Self, PostError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        Self::process_event(&self.stream_name, &key, self.rb.clone(), self.parsed_timestamp)?;
+        Self::process_event(
+            &self.stream_name,
+            &key,
+            self.rb.clone(),
+            self.parsed_timestamp,
+        )
+        .map_err(PostError::Event)?;
 
-        Ok(())
+        Ok(self)
     }
 
     pub fn clear(&self, stream_name: &str) {

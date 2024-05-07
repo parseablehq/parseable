@@ -102,17 +102,16 @@ pub async fn push_logs_unchecked(
     batches: RecordBatch,
     stream_name: &str,
 ) -> Result<event::Event, PostError> {
-    todo!("timepartition fix");
-
-    // let event = event::Event {
-    //     rb: batches,
-    //     stream_name: stream_name.to_string(),
-    //     origin_format: "json",
-    //     origin_size: 0,
-    //     is_first_event: true,
-    // };
-    // event.process_unchecked()?;
-    // Ok(event)
+    event::Event {
+        rb: batches,
+        stream_name: stream_name.to_string(),
+        origin_format: "json",
+        origin_size: 0,
+        parsed_timestamp: Utc::now().naive_utc(),
+        time_partition: None,
+        is_first_event: true, // NOTE: Maybe should be false
+    }
+    .process_unchecked()
 }
 
 async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
