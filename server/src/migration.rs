@@ -158,7 +158,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
 }
 
 #[inline(always)]
-fn to_bytes(any: &(impl ?Sized + Serialize)) -> Bytes {
+pub fn to_bytes(any: &(impl ?Sized + Serialize)) -> Bytes {
     serde_json::to_vec(any)
         .map(|any| any.into())
         .expect("serialize cannot fail")

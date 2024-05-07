@@ -186,6 +186,9 @@ impl TableScanVisitor {
     pub fn into_inner(self) -> Vec<String> {
         self.tables
     }
+    pub fn top(&self) -> &str {
+        self.tables[0].as_ref()
+    }
 }
 
 impl TreeNodeVisitor for TableScanVisitor {
