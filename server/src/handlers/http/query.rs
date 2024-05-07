@@ -34,11 +34,13 @@ use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
 
 use crate::event::commit_schema;
+use crate::localcache::CacheError;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
 use crate::query::Query as LogicalQuery;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
+use crate::querycache::QueryCacheManager;
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -50,7 +52,7 @@ use crate::utils::actix::extract_session_key_from_req;
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
-    pub query: String,
+    pub pub query: String,
     pub start_time: String,
     pub end_time: String,
     #[serde(default)]
@@ -72,6 +74,36 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     // create a visitor to extract the table name
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
+    let stream = visitor.top();
+    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
+        .await
+        .unwrap_or(None);
+
+    if let Some(query_cache_manager) = query_cache_manager {
+        let mut query_cache = query_cache_manager.get_cache(stream).await?;
+
+        let (start, end) = parse_human_time(&query_request.start_time, &query_request.end_time)?;
+        let key = format!(
+            "{}-{}-{}",
+            start.to_rfc3339(),
+            end.to_rfc3339(),
+            query_request.query.clone()
+        );
+
+        let file_path = query_cache.get_file(key);
+        if let Some(file_path) = file_path {
+            let (records, fields) = query_cache.get_cached_records(&file_path).await?;
+            let response = QueryResponse {
+                records,
+                fields,
+                fill_null: query_request.send_null,
+                with_fields: query_request.fields,
+            }
+            .to_http()?;
+
+            return Ok(response);
+        }
+    };
 
     let tables = visitor.into_inner();
 
@@ -99,6 +131,18 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let time = Instant::now();
 
     let (records, fields) = query.execute(table_name.clone()).await?;
+    // put the rbs to parquet
+    if let Some(query_cache_manager) = query_cache_manager {
+        query_cache_manager
+            .create_parquet_cache(
+                &table_name,
+                &records,
+                query.start.to_rfc3339(),
+                query.end.to_rfc3339(),
+                query_request.query,
+            )
+            .await?;
+    }
 
     let response = QueryResponse {
         records,
