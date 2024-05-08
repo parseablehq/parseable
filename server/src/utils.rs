@@ -64,7 +64,7 @@ pub fn date_to_prefix(date: NaiveDate) -> String {
 }
 
 pub fn custom_partition_to_prefix(custom_partition: HashMap<String, String>) -> String {
-    let mut prefix = String::new();
+    let mut prefix = String::default();
     for (key, value) in custom_partition.iter().sorted_by_key(|v| v.0) {
         prefix.push_str(&format!("{key}={value}/", key = key, value = value));
     }

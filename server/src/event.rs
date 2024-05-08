@@ -57,7 +57,7 @@ impl Event {
         }
 
         if !self.custom_partition_values.is_empty() {
-            let mut custom_partition_key = String::new();
+            let mut custom_partition_key = String::default();
             for (k, v) in self.custom_partition_values.iter().sorted_by_key(|v| v.0) {
                 custom_partition_key = format!("{custom_partition_key}&{k}={v}");
             }
