@@ -27,20 +27,30 @@ pub fn flatten(
     separator: &str,
     time_partition: Option<String>,
     time_partition_limit: Option<String>,
+    custom_partition: Option<String>,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
     match nested_value {
         Value::Object(nested_dict) => {
             if validation_required {
                 let validate_time_partition_result = validate_time_partition(
-                    Value::Object(nested_dict.clone()),
+                    &Value::Object(nested_dict.clone()),
                     time_partition.clone(),
                     time_partition_limit.clone(),
                 );
+
+                let validate_custom_partition_result = validate_custom_partition(
+                    &Value::Object(nested_dict.clone()),
+                    custom_partition.clone(),
+                );
                 if validate_time_partition_result.is_ok() {
-                    let mut map = Map::new();
-                    flatten_object(&mut map, None, nested_dict, separator)?;
-                    Ok(Value::Object(map))
+                    if validate_custom_partition_result.is_ok() {
+                        let mut map = Map::new();
+                        flatten_object(&mut map, None, nested_dict, separator)?;
+                        Ok(Value::Object(map))
+                    } else {
+                        Err(anyhow!(validate_custom_partition_result.unwrap_err()))
+                    }
                 } else {
                     Err(anyhow!(validate_time_partition_result.unwrap_err()))
                 }
@@ -55,19 +65,24 @@ pub fn flatten(
                 let value: Value = _value.clone();
                 if validation_required {
                     let validate_time_partition_result = validate_time_partition(
-                        value,
+                        &value,
                         time_partition.clone(),
                         time_partition_limit.clone(),
                     );
-
+                    let validate_custom_partition_result =
+                        validate_custom_partition(&value, custom_partition.clone());
                     if validate_time_partition_result.is_ok() {
-                        let value = std::mem::replace(_value, Value::Null);
-                        let mut map = Map::new();
-                        let Value::Object(obj) = value else {
-                            return Err(anyhow!("Expected object in array of objects"));
-                        };
-                        flatten_object(&mut map, None, obj, separator)?;
-                        *_value = Value::Object(map);
+                        if validate_custom_partition_result.is_ok() {
+                            let value = std::mem::replace(_value, Value::Null);
+                            let mut map = Map::new();
+                            let Value::Object(obj) = value else {
+                                return Err(anyhow!("Expected object in array of objects"));
+                            };
+                            flatten_object(&mut map, None, obj, separator)?;
+                            *_value = Value::Object(map);
+                        } else {
+                            return Err(anyhow!(validate_custom_partition_result.unwrap_err()));
+                        }
                     } else {
                         return Err(anyhow!(validate_time_partition_result.unwrap_err()));
                     }
@@ -87,8 +102,47 @@ pub fn flatten(
     }
 }
 
+pub fn validate_custom_partition(
+    value: &Value,
+    custom_partition: Option<String>,
+) -> Result<bool, anyhow::Error> {
+    if custom_partition.is_none() {
+        return Ok(true);
+    } else {
+        let custom_partition = custom_partition.unwrap();
+        let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
+        for custom_partition_field in &custom_partition_list {
+            if value.get(custom_partition_field.trim()).is_none() {
+                return Err(anyhow!(format!(
+                    "ingestion failed as field {} is not part of the log",
+                    custom_partition_field
+                )));
+            } else {
+                let custom_partition_value = value
+                    .get(custom_partition_field.trim())
+                    .unwrap()
+                    .to_string();
+                if custom_partition_value.is_empty() {
+                    return Err(anyhow!(format!(
+                        "ingestion failed as field {} is empty",
+                        custom_partition_field
+                    )));
+                }
+                if custom_partition_value.contains('.') {
+                    return Err(anyhow!(format!(
+                        "ingestion failed as field {} contains a period",
+                        custom_partition_field
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(true)
+}
+
 pub fn validate_time_partition(
-    value: Value,
+    value: &Value,
     time_partition: Option<String>,
     time_partition_limit: Option<String>,
 ) -> Result<bool, anyhow::Error> {
@@ -258,19 +312,28 @@ mod tests {
     #[test]
     fn flatten_single_key_string() {
         let obj = json!({"key": "value"});
-        assert_eq!(obj.clone(), flatten(obj, "_", None, None, false).unwrap());
+        assert_eq!(
+            obj.clone(),
+            flatten(obj, "_", None, None, None, false).unwrap()
+        );
     }
 
     #[test]
     fn flatten_single_key_int() {
         let obj = json!({"key": 1});
-        assert_eq!(obj.clone(), flatten(obj, "_", None, None, false).unwrap());
+        assert_eq!(
+            obj.clone(),
+            flatten(obj, "_", None, None, None, false).unwrap()
+        );
     }
 
     #[test]
     fn flatten_multiple_key_value() {
         let obj = json!({"key1": 1, "key2": "value2"});
-        assert_eq!(obj.clone(), flatten(obj, "_", None, None, false).unwrap());
+        assert_eq!(
+            obj.clone(),
+            flatten(obj, "_", None, None, None, false).unwrap()
+        );
     }
 
     #[test]
@@ -278,7 +341,7 @@ mod tests {
         let obj = json!({"key": "value", "nested_key": {"key":"value"}});
         assert_eq!(
             json!({"key": "value", "nested_key.key": "value"}),
-            flatten(obj, ".", None, None, false).unwrap()
+            flatten(obj, ".", None, None, None, false).unwrap()
         );
     }
 
@@ -287,7 +350,7 @@ mod tests {
         let obj = json!({"key": "value", "nested_key": {"key1":"value1", "key2": "value2"}});
         assert_eq!(
             json!({"key": "value", "nested_key.key1": "value1", "nested_key.key2": "value2"}),
-            flatten(obj, ".", None, None, false).unwrap()
+            flatten(obj, ".", None, None, None, false).unwrap()
         );
     }
 
@@ -296,7 +359,7 @@ mod tests {
         let obj = json!({"key": "value", "nested_key": {"key1":[1,2,3]}});
         assert_eq!(
             json!({"key": "value", "nested_key.key1": [1,2,3]}),
-            flatten(obj, ".", None, None, false).unwrap()
+            flatten(obj, ".", None, None, None, false).unwrap()
         );
     }
 
@@ -305,7 +368,7 @@ mod tests {
         let obj = json!({"key": [{"a": "value0"}, {"a": "value1"}]});
         assert_eq!(
             json!({"key.a": ["value0", "value1"]}),
-            flatten(obj, ".", None, None, false).unwrap()
+            flatten(obj, ".", None, None, None, false).unwrap()
         );
     }
 
@@ -314,7 +377,7 @@ mod tests {
         let obj = json!({"key": [{"a": "value0"}, {"a": "value1", "b": "value1"}]});
         assert_eq!(
             json!({"key.a": ["value0", "value1"], "key.b": [null, "value1"]}),
-            flatten(obj, ".", None, None, false).unwrap()
+            flatten(obj, ".", None, None, None, false).unwrap()
         );
     }
 
@@ -323,7 +386,7 @@ mod tests {
         let obj = json!({"key": [{"a": "value0", "b": "value0"}, {"a": "value1"}]});
         assert_eq!(
             json!({"key.a": ["value0", "value1"], "key.b": ["value0", null]}),
-            flatten(obj, ".", None, None, false).unwrap()
+            flatten(obj, ".", None, None, None, false).unwrap()
         );
     }
 
@@ -332,7 +395,7 @@ mod tests {
         let obj = json!({"key": [{"a": {"p": 0}, "b": "value0"}, {"b": "value1"}]});
         assert_eq!(
             json!({"key.a.p": [0, null], "key.b": ["value0", "value1"]}),
-            flatten(obj, ".", None, None, false).unwrap()
+            flatten(obj, ".", None, None, None, false).unwrap()
         );
     }
 
@@ -341,14 +404,14 @@ mod tests {
         let obj = json!({"key": [{"a": [{"p": "value0", "q": "value0"}, {"p": "value1", "q": null}], "b": "value0"}, {"b": "value1"}]});
         assert_eq!(
             json!({"key.a.p": [["value0", "value1"], null], "key.a.q": [["value0", null], null], "key.b": ["value0", "value1"]}),
-            flatten(obj, ".", None, None, false).unwrap()
+            flatten(obj, ".", None, None, None, false).unwrap()
         );
     }
 
     #[test]
     fn flatten_mixed_object() {
         let obj = json!({"a": 42, "arr": ["1", {"key": "2"}, {"key": {"nested": "3"}}]});
-        assert!(flatten(obj, ".", None, None, false).is_err());
+        assert!(flatten(obj, ".", None, None, None, false).is_err());
     }
 
     #[test]

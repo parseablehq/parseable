@@ -47,6 +47,7 @@ pub struct LogStreamMetadata {
     pub first_event_at: Option<String>,
     pub time_partition: Option<String>,
     pub time_partition_limit: Option<String>,
+    pub custom_partition: Option<String>,
     pub static_schema_flag: Option<String>,
 }
 
@@ -98,6 +99,13 @@ impl StreamInfo {
         map.get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| metadata.time_partition.clone())
+    }
+
+    pub fn get_custom_partition(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.custom_partition.clone())
     }
 
     pub fn get_static_schema_flag(
@@ -160,13 +168,14 @@ impl StreamInfo {
                 metadata.first_event_at = first_event_at;
             })
     }
-
+    #[allow(clippy::too_many_arguments)]
     pub fn add_stream(
         &self,
         stream_name: String,
         created_at: String,
         time_partition: String,
         time_partition_limit: String,
+        custom_partition: String,
         static_schema_flag: String,
         static_schema: HashMap<String, Arc<Field>>,
     ) {
@@ -186,6 +195,11 @@ impl StreamInfo {
                 None
             } else {
                 Some(time_partition_limit)
+            },
+            custom_partition: if custom_partition.is_empty() {
+                None
+            } else {
+                Some(custom_partition)
             },
             static_schema_flag: if static_schema_flag != "true" {
                 None
@@ -244,6 +258,7 @@ impl StreamInfo {
             first_event_at: meta.first_event_at,
             time_partition: meta.time_partition,
             time_partition_limit: meta.time_partition_limit,
+            custom_partition: meta.custom_partition,
             static_schema_flag: meta.static_schema_flag,
         };
 

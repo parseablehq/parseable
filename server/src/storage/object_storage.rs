@@ -27,7 +27,6 @@ use super::{
 
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::option::Mode;
-
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
@@ -128,6 +127,7 @@ pub trait ObjectStorage: Sync + 'static {
         stream_name: &str,
         time_partition: &str,
         time_partition_limit: &str,
+        custom_partition: &str,
         static_schema_flag: &str,
         schema: Arc<Schema>,
     ) -> Result<(), ObjectStorageError> {
@@ -144,6 +144,11 @@ pub trait ObjectStorage: Sync + 'static {
             format.time_partition_limit = None;
         } else {
             format.time_partition_limit = Some(time_partition_limit.to_string());
+        }
+        if custom_partition.is_empty() {
+            format.custom_partition = None;
+        } else {
+            format.custom_partition = Some(custom_partition.to_string());
         }
         if static_schema_flag != "true" {
             format.static_schema_flag = None;
@@ -439,9 +444,17 @@ pub trait ObjectStorage: Sync + 'static {
             let time_partition = STREAM_INFO
                 .get_time_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let dir = StorageDir::new(stream);
-            let schema = convert_disk_files_to_parquet(stream, &dir, time_partition)
+            let custom_partition = STREAM_INFO
+                .get_custom_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+            let dir = StorageDir::new(stream);
+            let schema = convert_disk_files_to_parquet(
+                stream,
+                &dir,
+                time_partition,
+                custom_partition.clone(),
+            )
+            .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {
                 let static_schema_flag = STREAM_INFO
@@ -467,7 +480,16 @@ pub trait ObjectStorage: Sync + 'static {
                     .expect("only parquet files are returned by iterator")
                     .to_str()
                     .expect("filename is valid string");
-                let file_suffix = str::replacen(filename, ".", "/", 3);
+                let mut file_suffix = str::replacen(filename, ".", "/", 3);
+
+                let custom_partition_clone = custom_partition.clone();
+                if custom_partition_clone.is_some() {
+                    let custom_partition_fields = custom_partition_clone.unwrap();
+                    let custom_partition_list =
+                        custom_partition_fields.split(',').collect::<Vec<&str>>();
+                    file_suffix =
+                        str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
+                }
                 let stream_relative_path = format!("{stream}/{file_suffix}");
                 self.upload_file(&stream_relative_path, &file).await?;
                 let absolute_path = self

@@ -41,17 +41,42 @@ pub struct Metadata {}
 pub fn convert_static_schema_to_arrow_schema(
     static_schema: StaticSchema,
     time_partition: &str,
+    custom_partition: &str,
 ) -> Result<Arc<Schema>, AnyError> {
     let mut parsed_schema = ParsedSchema {
         fields: Vec::new(),
         metadata: HashMap::new(),
     };
     let mut time_partition_exists: bool = false;
+
+    if !custom_partition.is_empty() {
+        let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
+        let mut custom_partition_exists: HashMap<String, bool> =
+            HashMap::with_capacity(custom_partition_list.len());
+
+        for partition in &custom_partition_list {
+            for field in &static_schema.fields {
+                if &field.name == partition {
+                    custom_partition_exists.insert(partition.to_string(), true);
+                }
+            }
+        }
+        for partition in custom_partition_list {
+            if !custom_partition_exists.contains_key(partition) {
+                return Err(anyhow! {
+                    format!(
+                        "custom partition field {partition} does not exist in the schema for the static schema logstream"
+                    ),
+                });
+            }
+        }
+    }
     for mut field in static_schema.fields {
         if !time_partition.is_empty() && field.name == time_partition {
             time_partition_exists = true;
             field.data_type = "datetime".to_string();
         }
+
         let parsed_field = Fields {
             name: field.name.clone(),
 

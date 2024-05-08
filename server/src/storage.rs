@@ -95,6 +95,8 @@ pub struct ObjectStoreFormat {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition_limit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_partition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub static_schema_flag: Option<String>,
 }
 
@@ -111,6 +113,8 @@ pub struct StreamInfo {
     pub time_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition_limit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_schema_flag: Option<String>,
 }
@@ -159,6 +163,7 @@ impl Default for ObjectStoreFormat {
             retention: None,
             time_partition: None,
             time_partition_limit: None,
+            custom_partition: None,
             static_schema_flag: None,
         }
     }

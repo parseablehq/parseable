@@ -21,7 +21,9 @@ use super::base_path_without_preceding_slash;
 use super::cluster::fetch_stats_from_ingestors;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use crate::alerts::Alerts;
-use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY};
+use crate::handlers::{
+    CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
+};
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
@@ -224,6 +226,21 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     } else {
         ""
     };
+    let mut custom_partition: &str = "";
+    if let Some((_, custom_partition_key)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == CUSTOM_PARTITION_KEY)
+    {
+        custom_partition = custom_partition_key.to_str().unwrap();
+        let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
+        if custom_partition_list.len() > 3 {
+            return Err(StreamError::Custom {
+                msg: "maximum 3 custom partition keys are supported".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
+    }
 
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let mut schema = Arc::new(Schema::empty());
@@ -240,8 +257,11 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     if !body.is_empty() && static_schema_flag == "true" {
         let static_schema: StaticSchema = serde_json::from_slice(&body)?;
 
-        let parsed_schema =
-            convert_static_schema_to_arrow_schema(static_schema.clone(), time_partition);
+        let parsed_schema = convert_static_schema_to_arrow_schema(
+            static_schema.clone(),
+            time_partition,
+            custom_partition,
+        );
         if let Ok(parsed_schema) = parsed_schema {
             schema = parsed_schema;
         } else {
@@ -263,6 +283,7 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
         stream_name,
         time_partition,
         time_partition_in_days,
+        custom_partition,
         static_schema_flag,
         schema,
     )
@@ -548,6 +569,7 @@ pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
     time_partition_limit: &str,
+    custom_partition: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
 ) -> Result<(), CreateStreamError> {
@@ -561,6 +583,7 @@ pub async fn create_stream(
             &stream_name,
             time_partition,
             time_partition_limit,
+            custom_partition,
             static_schema_flag,
             schema.clone(),
         )
@@ -591,6 +614,7 @@ pub async fn create_stream(
         created_at,
         time_partition.to_string(),
         time_partition_limit.to_string(),
+        custom_partition.to_string(),
         static_schema_flag.to_string(),
         static_schema,
     );
@@ -630,6 +654,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         first_event_at: stream_meta.first_event_at.clone(),
         time_partition: stream_meta.time_partition.clone(),
         time_partition_limit: stream_meta.time_partition_limit.clone(),
+        custom_partition: stream_meta.custom_partition.clone(),
         cache_enabled: stream_meta.cache_enabled,
         static_schema_flag: stream_meta.static_schema_flag.clone(),
     };

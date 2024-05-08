@@ -38,7 +38,8 @@ use crate::{
 };
 use arrow_schema::{ArrowError, Schema};
 use base64::Engine;
-use chrono::{NaiveDateTime, Timelike};
+use chrono::{NaiveDateTime, Timelike, Utc};
+use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -64,10 +65,17 @@ impl StorageDir {
         Self { data_path }
     }
 
-    pub fn file_time_suffix(time: NaiveDateTime, extention: &str) -> String {
-        let uri = utils::date_to_prefix(time.date())
+    pub fn file_time_suffix(
+        time: NaiveDateTime,
+        custom_partition_values: HashMap<String, String>,
+        extention: &str,
+    ) -> String {
+        let mut uri = utils::date_to_prefix(time.date())
             + &utils::hour_to_prefix(time.hour())
             + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
+        if !custom_partition_values.is_empty() {
+            uri = uri + &utils::custom_partition_to_prefix(custom_partition_values);
+        }
         let local_uri = str::replace(&uri, "/", ".");
         let hostname = hostname_unchecked();
         if CONFIG.parseable.mode == Mode::Ingest {
@@ -78,27 +86,37 @@ impl StorageDir {
         }
     }
 
-    fn filename_by_time(stream_hash: &str, time: NaiveDateTime) -> String {
+    fn filename_by_time(
+        stream_hash: &str,
+        time: NaiveDateTime,
+        custom_partition_values: HashMap<String, String>,
+    ) -> String {
         format!(
             "{}.{}",
             stream_hash,
-            Self::file_time_suffix(time, ARROW_FILE_EXTENSION)
+            Self::file_time_suffix(time, custom_partition_values, ARROW_FILE_EXTENSION)
         )
     }
 
-    fn filename_by_current_time(stream_hash: &str, parsed_timestamp: NaiveDateTime) -> String {
-        Self::filename_by_time(stream_hash, parsed_timestamp)
+    fn filename_by_current_time(
+        stream_hash: &str,
+        parsed_timestamp: NaiveDateTime,
+        custom_partition_values: HashMap<String, String>,
+    ) -> String {
+        Self::filename_by_time(stream_hash, parsed_timestamp, custom_partition_values)
     }
 
     pub fn path_by_current_time(
         &self,
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
+        custom_partition_values: HashMap<String, String>,
     ) -> PathBuf {
-        self.data_path.join(Self::filename_by_current_time(
-            stream_hash,
-            parsed_timestamp,
-        ))
+        let server_time_in_min = Utc::now().format("%Y%m%dT%H%M").to_string();
+        let mut filename =
+            Self::filename_by_current_time(stream_hash, parsed_timestamp, custom_partition_values);
+        filename = format!("{}{}", server_time_in_min, filename);
+        self.data_path.join(filename)
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
@@ -106,10 +124,11 @@ impl StorageDir {
             return vec![];
         };
 
-        let paths: Vec<PathBuf> = dir
+        let paths = dir
             .flatten()
             .map(|file| file.path())
             .filter(|file| file.extension().map_or(false, |ext| ext.eq("arrows")))
+            .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
             .collect();
 
         paths
@@ -135,20 +154,16 @@ impl StorageDir {
         &self,
         exclude: NaiveDateTime,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let hot_filename = StorageDir::file_time_suffix(exclude, ARROW_FILE_EXTENSION);
-        // hashmap <time, vec[paths]> but exclude where hot filename matches
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let mut arrow_files = self.arrow_files();
-
         arrow_files.retain(|path| {
             !path
                 .file_name()
                 .unwrap()
                 .to_str()
                 .unwrap()
-                .ends_with(&hot_filename)
+                .starts_with(&exclude.format("%Y%m%dT%H%M").to_string())
         });
-
         for arrow_file_path in arrow_files {
             let key = Self::arrow_path_to_parquet(&arrow_file_path);
             grouped_arrow_file
@@ -156,7 +171,6 @@ impl StorageDir {
                 .or_default()
                 .push(arrow_file_path);
         }
-
         grouped_arrow_file
     }
 
@@ -176,6 +190,7 @@ impl StorageDir {
         let (_, filename) = filename.split_once('.').unwrap();
         let filename = filename.rsplit_once('.').expect("contains the delim `.`");
         let filename = format!("{}.{}", filename.0, filename.1);
+
         let random_string =
             rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
         let filename_with_random_number = format!("{}.{}.{}", filename, random_string, "arrows");
@@ -186,7 +201,6 @@ impl StorageDir {
                 let (_, filename) = file_stem.split_once('.').unwrap();
                 let filename_with_random_number = format!("{}.{}.{}", filename, random_number, "arrows");
         */
-
         let mut parquet_path = path.to_owned();
         parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
@@ -197,7 +211,7 @@ impl StorageDir {
 #[allow(unused)]
 pub fn to_parquet_path(stream_name: &str, time: NaiveDateTime) -> PathBuf {
     let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
-    let dir = StorageDir::file_time_suffix(time, PARQUET_FILE_EXTENSION);
+    let dir = StorageDir::file_time_suffix(time, HashMap::new(), PARQUET_FILE_EXTENSION);
 
     data_path.join(dir)
 }
@@ -206,6 +220,7 @@ pub fn convert_disk_files_to_parquet(
     stream: &str,
     dir: &StorageDir,
     time_partition: Option<String>,
+    custom_partition: Option<String>,
 ) -> Result<Option<Schema>, MoveDataError> {
     let mut schemas = Vec::new();
 
@@ -241,8 +256,20 @@ pub fn convert_disk_files_to_parquet(
         if let Some(time_partition) = time_partition.as_ref() {
             index_time_partition = merged_schema.index_of(time_partition).unwrap();
         }
+        let mut custom_partition_fields: HashMap<String, usize> = HashMap::new();
+        if let Some(custom_partition) = custom_partition.as_ref() {
+            for custom_partition_field in custom_partition.split(',') {
+                let index = merged_schema.index_of(custom_partition_field).unwrap();
+                custom_partition_fields.insert(custom_partition_field.to_string(), index);
+            }
+        }
         let parquet_file = fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
-        let props = parquet_writer_props(time_partition.clone(), index_time_partition).build();
+        let props = parquet_writer_props(
+            time_partition.clone(),
+            index_time_partition,
+            custom_partition_fields,
+        )
+        .build();
 
         schemas.push(merged_schema.clone());
         let schema = Arc::new(merged_schema);
@@ -278,36 +305,41 @@ pub fn convert_disk_files_to_parquet(
 fn parquet_writer_props(
     time_partition: Option<String>,
     index_time_partition: usize,
+    custom_partition_fields: HashMap<String, usize>,
 ) -> WriterPropertiesBuilder {
     let index_time_partition: i32 = index_time_partition as i32;
-
+    let mut time_partition_field = DEFAULT_TIMESTAMP_KEY.to_string();
     if let Some(time_partition) = time_partition {
-        WriterProperties::builder()
-            .set_max_row_group_size(CONFIG.parseable.row_group_size)
-            .set_compression(CONFIG.parseable.parquet_compression.into())
-            .set_column_encoding(
-                ColumnPath::new(vec![time_partition]),
-                Encoding::DELTA_BYTE_ARRAY,
-            )
-            .set_sorting_columns(Some(vec![SortingColumn {
-                column_idx: index_time_partition,
-                descending: true,
-                nulls_first: true,
-            }]))
-    } else {
-        WriterProperties::builder()
-            .set_max_row_group_size(CONFIG.parseable.row_group_size)
-            .set_compression(CONFIG.parseable.parquet_compression.into())
-            .set_column_encoding(
-                ColumnPath::new(vec![DEFAULT_TIMESTAMP_KEY.to_string()]),
-                Encoding::DELTA_BINARY_PACKED,
-            )
-            .set_sorting_columns(Some(vec![SortingColumn {
-                column_idx: index_time_partition,
-                descending: true,
-                nulls_first: true,
-            }]))
+        time_partition_field = time_partition;
     }
+    let mut sorting_column_vec: Vec<SortingColumn> = Vec::new();
+    sorting_column_vec.push(SortingColumn {
+        column_idx: index_time_partition,
+        descending: true,
+        nulls_first: true,
+    });
+    let mut props = WriterProperties::builder()
+        .set_max_row_group_size(CONFIG.parseable.row_group_size)
+        .set_compression(CONFIG.parseable.parquet_compression.into())
+        .set_column_encoding(
+            ColumnPath::new(vec![time_partition_field]),
+            Encoding::DELTA_BINARY_PACKED,
+        );
+
+    for (field, index) in custom_partition_fields {
+        let field = ColumnPath::new(vec![field]);
+        let encoding = Encoding::DELTA_BYTE_ARRAY;
+        props = props.set_column_encoding(field, encoding);
+        let sorting_column = SortingColumn {
+            column_idx: index as i32,
+            descending: true,
+            nulls_first: true,
+        };
+        sorting_column_vec.push(sorting_column);
+    }
+    props = props.set_sorting_columns(Some(sorting_column_vec));
+
+    props
 }
 
 pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
