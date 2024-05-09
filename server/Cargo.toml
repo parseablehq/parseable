@@ -12,14 +12,12 @@ build = "build.rs"
 arrow-schema = { version = "51.0.0", features = ["serde"] }
 arrow-array = { version = "51.0.0" }
 arrow-json = "51.0.0"
-arrow-ipc = "51.0.0"
+arrow-ipc = { version = "51.0.0", features = ["zstd"] }
 arrow-select = "51.0.0"
 datafusion = "37.1.0"
 object_store = { version = "0.9.1", features = ["cloud", "aws"] }
 parquet = "51.0.0"
-
-### LiveTail server deps
-arrow-flight = "51.0.0"
+arrow-flight = { version = "51.0.0", features = ["anyhow", "tls", "arrow-arith", "arrow-data", "arrow-ord", "arrow-row", "arrow-select", "arrow-string"] }
 tonic = {version = "0.11.0", features = ["tls", "transport", "gzip", "zstd"] }
 tonic-web = "0.11.0"
 tower-http = { version = "0.4.4", features = ["cors"] }
