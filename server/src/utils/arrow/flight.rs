@@ -59,7 +59,15 @@ pub async fn run_do_get_rpc(im: IngestorMetadata, sql: String) -> Result<Vec<Rec
         .await
         .map_err(|err| Status::failed_precondition(err.to_string()))?;
 
-    let mut client = FlightClient::new(channel);
+    let client = FlightClient::new(channel);
+    let inn = client
+        .into_inner()
+        .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+        .max_decoding_message_size(usize::MAX)
+        .max_encoding_message_size(usize::MAX);
+
+    let mut client = FlightClient::new_from_inner(inn);
+
     client.add_header("authorization", &im.token)?;
 
     let response = client

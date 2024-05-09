@@ -102,13 +102,7 @@ impl WriterTable {
                 let map = self.write().unwrap();
                 // check for race condition
                 // if map contains entry then just
-                self.handle_missing_writer(
-                    map,
-                    stream_name,
-                    schema_key,
-                    record,
-                    parsed_timestamp,
-                )?;
+                self.handle_missing_writer(map, stream_name, schema_key, record, parsed_timestamp)?;
             }
         };
         Ok(())

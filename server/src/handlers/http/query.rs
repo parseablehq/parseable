@@ -99,9 +99,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let time = Instant::now();
 
     let (records, fields) = query.execute(table_name.clone()).await?;
-    if records.len() > 1 {
-        dbg!(&records.len());
-    }
+
     let response = QueryResponse {
         records,
         fields,

@@ -3,6 +3,7 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::PollInfo;
 use arrow_schema::{ArrowError, Schema};
+
 use chrono::Utc;
 use datafusion::common::tree_node::TreeNode;
 use std::net::SocketAddr;
@@ -18,6 +19,7 @@ use tonic_web::GrpcWebLayer;
 use crate::event::commit_schema;
 use crate::handlers::http::cluster::get_ingestor_info;
 use crate::handlers::http::fetch_schema;
+
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 
@@ -159,7 +161,7 @@ impl FlightService for AirServiceImpl {
 
         let time_delta = query.end - Utc::now();
 
-        let events = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 2 {
+        let event = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 2 {
             let sql = format!(
                 "{}\"query\": \"select * from {}\"{}",
                 L_CURLY, &stream_name, R_CURLY
@@ -174,31 +176,12 @@ impl FlightService for AirServiceImpl {
                 minute_result.append(&mut batches);
             }
             let mr = minute_result.iter().collect::<Vec<_>>();
-            dbg!(&mr.len());
             let event = append_temporary_events(&stream_name, mr).await?;
 
-            // let schema = STREAM_INFO
-            //     .schema(&stream_name)
-            //     .map_err(|err| Status::failed_precondition(format!("Metadata Error: {}", err)))?;
-            // let rb = concat_batches(&schema, mr)
-            //     .map_err(|err| Status::failed_precondition(format!("ArrowError: {}", err)))?;
-            //
-            // let event = push_logs_unchecked(rb, &stream_name)
-            //     .await
-            //     .map_err(|err| Status::internal(err.to_string()))?;
-            // let mut events = vec![];
-            // for batch in minute_result {
-            //     events.push(
-            //         push_logs_unchecked(batch, &stream_name)
-            //             .await
-            //             .map_err(|err| Status::internal(err.to_string()))?,
-            //     );
-            // }
             Some(event)
         } else {
             None
         };
-
         let permissions = Users.get_permissions(&key);
 
         authorize_and_set_filter_tags(&mut query, permissions, &stream_name).map_err(|_| {
@@ -211,44 +194,29 @@ impl FlightService for AirServiceImpl {
             .await
             .map_err(|err| Status::internal(err.to_string()))
             .unwrap();
-        if results.len() > 1 {
-            dbg!(&results.len());
-        }
 
         let schemas = results
             .iter()
             .map(|batch| batch.schema())
             .map(|s| s.as_ref().clone())
             .collect::<Vec<_>>();
-        let schema = Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
+        let _schema =
+            Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
         let input_stream = futures::stream::iter(results.into_iter().map(Ok));
+        let write_options = IpcWriteOptions::default()
+            .try_with_compression(Some(arrow_ipc::CompressionType(1)))
+            .map_err(|err| Status::failed_precondition(err.to_string()))?;
 
         let flight_data_stream = FlightDataEncoderBuilder::new()
             .with_max_flight_data_size(usize::MAX)
-            .with_schema(schema.into())
+            .with_options(write_options)
+            // .with_schema(schema.into())
             .build(input_stream);
 
         let flight_data_stream = flight_data_stream.map_err(|err| Status::unknown(err.to_string()));
 
-        // let options = datafusion::arrow::ipc::writer::IpcWriteOptions::default();
-        // let schema_flight_data = SchemaAsIpc::new(&schema, &options);
-        //
-        // let mut flights = vec![FlightData::from(schema_flight_data)];
-        // let encoder = IpcDataGenerator::default();
-        // let mut tracker = DictionaryTracker::new(false);
-        // for batch in &results {
-        //     let (flight_dictionaries, flight_batch) = encoder
-        //         .encoded_batch(batch, &mut tracker, &options)
-        //         .map_err(|e| Status::internal(e.to_string()))?;
-        //     flights.extend(flight_dictionaries.into_iter().map(Into::into));
-        //     flights.push(flight_batch.into());
-        // }
-        // let output = futures::stream::iter(flights.into_iter().map(Ok));
-        if let Some(events) = events {
-            events.clear(&stream_name);
-            // for event in events {
-            //     event.clear(&stream_name);
-            // }
+        if let Some(event) = event {
+            event.clear(&stream_name);
         }
 
         let time = time.elapsed().as_secs_f64();
