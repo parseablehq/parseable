@@ -172,8 +172,9 @@ impl FlightService for AirServiceImpl {
             let mut minute_result: Vec<RecordBatch> = vec![];
 
             for im in ingester_metadatas {
-                let mut batches = run_do_get_rpc(im, sql.clone()).await?;
-                minute_result.append(&mut batches);
+                if let Ok(mut batches) = run_do_get_rpc(im, sql.clone()).await {
+                    minute_result.append(&mut batches);
+                }
             }
             let mr = minute_result.iter().collect::<Vec<_>>();
             let event = append_temporary_events(&stream_name, mr).await?;

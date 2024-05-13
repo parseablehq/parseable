@@ -17,7 +17,7 @@ arrow-select = "51.0.0"
 datafusion = "37.1.0"
 object_store = { version = "0.9.1", features = ["cloud", "aws"] }
 parquet = "51.0.0"
-arrow-flight = { version = "51.0.0", features = ["anyhow", "tls", "arrow-arith", "arrow-data", "arrow-ord", "arrow-row", "arrow-select", "arrow-string"] }
+arrow-flight = { version = "51.0.0", features = [ "tls" ] }
 tonic = {version = "0.11.0", features = ["tls", "transport", "gzip", "zstd"] }
 tonic-web = "0.11.0"
 tower-http = { version = "0.4.4", features = ["cors"] }

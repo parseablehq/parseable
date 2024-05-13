@@ -545,18 +545,11 @@ version = "51.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3241ce691192d789b7b94f56a10e166ee608bdc3932c759eb0b85f09235352bb"
 dependencies = [
- "anyhow",
- "arrow-arith",
  "arrow-array",
  "arrow-buffer",
  "arrow-cast",
- "arrow-data",
  "arrow-ipc",
- "arrow-ord",
- "arrow-row",
  "arrow-schema",
- "arrow-select",
- "arrow-string",
  "base64 0.22.0",
  "bytes",
  "futures",
