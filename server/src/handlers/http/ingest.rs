@@ -18,6 +18,7 @@
 
 use super::cluster::INTERNAL_STREAM_NAME;
 use super::logstream::error::CreateStreamError;
+use super::users::dashboards::DashboardError;
 use super::{kinesis, otel};
 use crate::event::{
     self,
@@ -436,6 +437,9 @@ pub enum PostError {
     NetworkError(#[from] reqwest::Error),
     #[error("ObjectStorageError: {0}")]
     ObjectStorageError(#[from] ObjectStorageError),
+
+    #[error("Error: {0}")]
+    DashboardError(#[from] DashboardError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -453,6 +457,7 @@ impl actix_web::ResponseError for PostError {
             PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
