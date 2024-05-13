@@ -24,6 +24,7 @@ use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
 use crate::handlers::http::users::dashboards;
+use crate::handlers::http::users::filters;
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
 use crate::localcache::LocalCacheManager;
@@ -141,6 +142,7 @@ impl Server {
                     .service(Self::get_logstream_webscope())
                     .service(Self::get_user_webscope())
                     .service(Self::get_dashboards_webscope())
+                    .service(Self::get_filters_webscope())
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope()),
@@ -176,6 +178,33 @@ impl Server {
                                 web::delete()
                                     .to(dashboards::delete)
                                     .authorize(Action::DeleteDashboard),
+                            ),
+                    ),
+                ),
+        )
+    }
+
+    // get the filters web scope
+    pub fn get_filters_webscope() -> Scope {
+        web::scope("/filters").service(
+            web::scope("/{user_id}")
+                .service(
+                    web::resource("")
+                        .route(web::get().to(filters::list).authorize(Action::ListFilter)),
+                )
+                .service(
+                    web::scope("/{filter_id}").service(
+                        web::resource("")
+                            .route(web::get().to(filters::get).authorize(Action::GetFilter))
+                            .route(
+                                web::post()
+                                    .to(filters::post)
+                                    .authorize(Action::CreateFilter),
+                            )
+                            .route(
+                                web::delete()
+                                    .to(filters::delete)
+                                    .authorize(Action::DeleteFilter),
                             ),
                     ),
                 ),

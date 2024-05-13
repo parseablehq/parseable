@@ -125,6 +125,7 @@ impl QueryServer {
                     .service(Server::get_logstream_webscope())
                     .service(Server::get_user_webscope())
                     .service(Server::get_dashboards_webscope())
+                    .service(Server::get_filters_webscope())
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Server::get_user_role_webscope())

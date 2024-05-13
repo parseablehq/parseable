@@ -54,6 +54,10 @@ pub enum Action {
     GetDashboard,
     CreateDashboard,
     DeleteDashboard,
+    ListFilter,
+    GetFilter,
+    CreateFilter,
+    DeleteFilter,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -115,6 +119,10 @@ impl RoleBuilder {
                 | Action::GetDashboard
                 | Action::CreateDashboard
                 | Action::DeleteDashboard
+                | Action::GetFilter
+                | Action::ListFilter
+                | Action::CreateFilter
+                | Action::DeleteFilter
                 | Action::GetAnalytics => Permission::Unit(action),
                 Action::Ingest
                 | Action::GetSchema

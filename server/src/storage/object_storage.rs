@@ -27,7 +27,7 @@ use super::{
 
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::metrics::{LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE_TODAY};
-use crate::handlers::http::users::{DASHBOARDS_DIR, USERS_ROOT_DIR};
+use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::option::Mode;
 use crate::{
     alerts::Alerts,
@@ -606,8 +606,20 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
 
 /// if dashboard_id is an empty str it should not append it to the rel path
 #[inline(always)]
-pub fn dashboard_path(user_id: &str, dashboard_id: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([USERS_ROOT_DIR, user_id, DASHBOARDS_DIR, dashboard_id])
+pub fn dashboard_path(user_id: &str, dashboard_file_name: &str) -> RelativePathBuf {
+    RelativePathBuf::from_iter([USERS_ROOT_DIR, user_id, DASHBOARDS_DIR, dashboard_file_name])
+}
+
+/// if filter_id is an empty str it should not append it to the rel path
+#[inline(always)]
+pub fn filter_path(user_id: &str, stream_name: &str, filter_file_name: &str) -> RelativePathBuf {
+    RelativePathBuf::from_iter([
+        USERS_ROOT_DIR,
+        user_id,
+        FILTER_DIR,
+        stream_name,
+        filter_file_name,
+    ])
 }
 
 /// path will be ".parseable/.parsable.json"
