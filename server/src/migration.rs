@@ -24,10 +24,11 @@ mod stream_metadata_migration;
 use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{
+    catalog::{manifest::Manifest, partition_path},
     option::Config,
     stats::{FullStats, Stats},
     storage::{
-        object_storage::{parseable_json_path, stream_json_path},
+        object_storage::{manifest_path, parseable_json_path, stream_json_path},
         ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
         SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
     },
@@ -213,31 +214,18 @@ pub async fn run_file_migration(config: &Config) -> anyhow::Result<()> {
     let object_store = config.storage().get_object_store();
 
     let old_meta_file_path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
-
     // if this errors that means migrations is already done
     if let Err(err) = object_store.get_object(&old_meta_file_path).await {
         if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-            return Ok(());
+            log::info!("Migration already done");
+        } else {
+            run_meta_file_migration(&object_store, old_meta_file_path).await?;
+            run_stream_files_migration(&object_store).await?;
         }
-        return Err(err.into());
     }
 
-    run_meta_file_migration(&object_store, old_meta_file_path).await?;
-    run_stream_files_migration(&object_store).await?;
     run_stream_stats_migration(&object_store).await?;
     Ok(())
-
-    // let object_store = config.storage().get_object_store();
-
-    // let old_meta_file_path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
-    // println!(" old meta file path {:?}", old_meta_file_path);
-    // // if this errors that means migrations is already done
-    // if (object_store.get_object(&old_meta_file_path).await).is_ok() {
-    //     run_meta_file_migration(&object_store, old_meta_file_path).await?;
-    //     run_stream_files_migration(&object_store).await?;
-    // }
-    // run_stream_stats_migration(&object_store).await?;
-    // Ok(())
 }
 
 async fn run_meta_file_migration(
@@ -322,7 +310,7 @@ async fn run_stream_stats_migration(
     for stream in streams {
         let stream_metadata = object_store.get_object(&stream_json_path(&stream)).await?;
         let mut stream_metadata: serde_json::Value =
-            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
+            serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
         let stats = &stream_metadata["stats"];
         if serde_json::from_value::<FullStats>(stats.clone()).is_err() {
             let stats: Stats = serde_json::from_value(stats.clone()).unwrap();
@@ -338,6 +326,23 @@ async fn run_stream_stats_migration(
             object_store
                 .put_object(&stream_json_path(&stream), to_bytes(&stream_metadata))
                 .await?;
+        }
+        let mut meta = object_store.get_object_store_format(&stream).await?;
+        let manifests = &mut meta.snapshot.manifest_list;
+        for manifest in manifests {
+            let path = partition_path(
+                &stream,
+                manifest.time_lower_bound,
+                manifest.time_upper_bound,
+            );
+            let path = manifest_path(path.as_str());
+            let manifest_bytes = object_store.get_object(&path).await?;
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&manifest_bytes).expect("manifest.json is valid json");
+            if serde_json::from_value::<Manifest>(manifest.clone()).is_err() {
+                manifest["ingestion_size"] = 0.into();
+            }
+            object_store.put_object(&path, to_bytes(&manifest)).await?;
         }
     }
 

@@ -208,7 +208,7 @@ mod action {
         dates.retain(|date| date.starts_with("date"));
         let dates_to_delete = dates
             .into_iter()
-            .filter(|date| string_to_date(date) >= retain_until)
+            .filter(|date| string_to_date(date) < retain_until)
             .collect_vec();
         let dates = dates_to_delete.clone();
         if !dates.is_empty() {
