@@ -98,7 +98,7 @@ pub async fn delete(req: HttpRequest) -> Result<HttpResponse, PostError> {
 //     version: String,
 //     name: String,
 //     id: String,
-//     time-filter: `type_not_defined`
+//     time_filter: TimeFilter
 //     refresh_interval: u64,
 //     pannels: Vec<Pannel>,
 // }
@@ -111,6 +111,12 @@ pub async fn delete(req: HttpRequest) -> Result<HttpResponse, PostError> {
 //     columns: Vec<String>,
 //     headers: Vec<String>,
 //     dimensions: (u64, u64),
+// }
+//
+// #[derive(Debug, Serialize, Deserialize)]
+// pub struct TimeFilter {
+//      to: String,
+//      from: String
 // }
 
 #[derive(Debug, thiserror::Error)]

@@ -161,5 +161,5 @@ impl actix_web::ResponseError for FiltersError {
 //     stream_name: String,
 //     filter_name: String,
 //     query: String,
-//     time-filter: `type_not_defined`
+//     time-filter: TimeFilter
 // }

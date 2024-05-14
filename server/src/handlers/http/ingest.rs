@@ -170,7 +170,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
     let object_store_format = glob_storage
         .get_object_store_format(&stream_name)
         .await
-        .map_err(|_err| PostError::StreamNotFound(stream_name.clone()))?;
+        .map_err(|_| PostError::StreamNotFound(stream_name.clone()))?;
 
     let time_partition = object_store_format.time_partition;
     let time_partition_limit = object_store_format.time_partition_limit;
@@ -433,6 +433,9 @@ pub enum PostError {
     #[error("{0}")]
     CreateStream(#[from] CreateStreamError),
     #[error("Error: {0}")]
+    Error(std::io::Error),
+    #[allow(unused)]
+    #[error("Error: {0}")]
     CustomError(String),
     #[error("Error: {0}")]
     NetworkError(#[from] reqwest::Error),
@@ -461,6 +464,7 @@ impl actix_web::ResponseError for PostError {
             PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::Error(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
