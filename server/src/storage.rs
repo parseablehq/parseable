@@ -16,7 +16,7 @@
  *
  */
 
-use crate::{catalog::snapshot::Snapshot, stats::Stats};
+use crate::{catalog::snapshot::Snapshot, stats::FullStats};
 
 use chrono::Local;
 
@@ -83,7 +83,7 @@ pub struct ObjectStoreFormat {
     pub first_event_at: Option<String>,
     pub owner: Owner,
     pub permissions: Vec<Permisssion>,
-    pub stats: Stats,
+    pub stats: FullStats,
     #[serde(default)]
     pub snapshot: Snapshot,
     #[serde(default)]
@@ -157,7 +157,7 @@ impl Default for ObjectStoreFormat {
             first_event_at: None,
             owner: Owner::new("".to_string(), "".to_string()),
             permissions: vec![Permisssion::new("parseable".to_string())],
-            stats: Stats::default(),
+            stats: FullStats::default(),
             snapshot: Snapshot::default(),
             cache_enabled: false,
             retention: None,

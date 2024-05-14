@@ -26,6 +26,7 @@ use super::{
 };
 
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
+use crate::metrics::LIFETIME_EVENTS_STORAGE_SIZE;
 use crate::option::Mode;
 use crate::{
     alerts::Alerts,
@@ -34,7 +35,7 @@ use crate::{
     metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
     option::CONFIG,
-    stats::{self, Stats},
+    stats::{self, FullStats, Stats},
 };
 
 use actix_web_prometheus::PrometheusMetrics;
@@ -174,7 +175,11 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
-    async fn put_stats(&self, stream_name: &str, stats: &Stats) -> Result<(), ObjectStorageError> {
+    async fn put_stats(
+        &self,
+        stream_name: &str,
+        stats: &FullStats,
+    ) -> Result<(), ObjectStorageError> {
         let path = stream_json_path(stream_name);
         let stream_metadata = self.get_object(&path).await?;
         let stats = serde_json::to_value(stats).expect("stats are perfectly serializable");
@@ -282,7 +287,7 @@ pub trait ObjectStorage: Sync + 'static {
                     .expect("parseable config is valid json");
 
                 if CONFIG.parseable.mode == Mode::Ingest {
-                    config.stats = Stats::default();
+                    config.stats = FullStats::default();
                     config.snapshot.manifest_list = vec![];
                 }
 
@@ -320,7 +325,7 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(stats)
     }
 
-    async fn get_stats(&self, stream_name: &str) -> Result<Stats, ObjectStorageError> {
+    async fn get_stats(&self, stream_name: &str) -> Result<FullStats, ObjectStorageError> {
         let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
         let stream_metadata: Value =
             serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
@@ -512,6 +517,9 @@ pub trait ObjectStorage: Sync + 'static {
 
         for (stream, compressed_size) in stream_stats {
             STORAGE_SIZE
+                .with_label_values(&["data", stream, "parquet"])
+                .add(compressed_size as i64);
+            LIFETIME_EVENTS_STORAGE_SIZE
                 .with_label_values(&["data", stream, "parquet"])
                 .add(compressed_size as i64);
             let stats = stats::get_current_stats(stream, "json");

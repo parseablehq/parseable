@@ -20,7 +20,9 @@ use std::{io::ErrorKind, sync::Arc};
 
 use self::{column::Column, snapshot::ManifestItem};
 use crate::handlers::http::base_path_without_preceding_slash;
+use crate::metrics::EVENTS_INGESTED_SIZE;
 use crate::option::CONFIG;
+use crate::stats::{event_labels, update_deleted_stats};
 use crate::{
     catalog::manifest::Manifest,
     event::DEFAULT_TIMESTAMP_KEY,
@@ -137,7 +139,7 @@ pub async fn update_snapshot(
         }
         if ch {
             if let Some(mut manifest) = storage.get_manifest(&path).await? {
-                manifest.apply_change(change);
+                manifest.apply_change(change, stream_name);
                 storage.put_manifest(&path, manifest).await?;
             } else {
                 //instead of returning an error, create a new manifest (otherwise local to storage sync fails)
@@ -198,9 +200,15 @@ async fn create_manifest(
                 .map_err(ObjectStorageError::IoError)?,
         )
         .and_utc();
+    let event_labels = event_labels(stream_name, "json");
+    let ingestion_size = EVENTS_INGESTED_SIZE
+        .get_metric_with_label_values(&event_labels)
+        .unwrap()
+        .get() as i64;
 
     let manifest = Manifest {
         files: vec![change],
+        ingestion_size,
         ..Manifest::default()
     };
 
@@ -233,6 +241,8 @@ pub async fn remove_manifest_from_snapshot(
     if !dates.is_empty() {
         // get current snapshot
         let mut meta = storage.get_object_store_format(stream_name).await?;
+        let meta_for_stats = meta.clone();
+        update_deleted_stats(storage.clone(), stream_name, meta_for_stats, dates.clone()).await?;
         let manifests = &mut meta.snapshot.manifest_list;
         // Filter out items whose manifest_path contains any of the dates_to_delete
         manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
@@ -308,8 +318,6 @@ pub async fn get_first_event(
                 );
                 // Convert dates vector to Bytes object
                 let dates_bytes = Bytes::from(serde_json::to_vec(&dates).unwrap());
-                // delete the stream
-
                 let ingestor_first_event_at =
                     handlers::http::cluster::send_retention_cleanup_request(
                         &url,
@@ -333,7 +341,7 @@ pub async fn get_first_event(
 
 /// Partition the path to which this manifest belongs.
 /// Useful when uploading the manifest file.
-fn partition_path(
+pub fn partition_path(
     stream: &str,
     lower_bound: DateTime<Utc>,
     upper_bound: DateTime<Utc>,

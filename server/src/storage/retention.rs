@@ -52,6 +52,7 @@ pub fn init_scheduler() {
     log::info!("Setting up schedular");
     let mut scheduler = AsyncScheduler::new();
     let func = move || async {
+        //get retention every day at 12 am
         for stream in STREAM_INFO.list_streams() {
             let res = CONFIG
                 .storage()
@@ -188,59 +189,61 @@ impl From<Retention> for Vec<TaskView> {
 }
 
 mod action {
+    use crate::catalog::remove_manifest_from_snapshot;
+    use crate::{metadata, option::CONFIG};
     use chrono::{Days, NaiveDate, Utc};
     use futures::{stream::FuturesUnordered, StreamExt};
     use itertools::Itertools;
     use relative_path::RelativePathBuf;
 
-    use crate::{catalog::remove_manifest_from_snapshot, metadata, option::CONFIG};
-
     pub(super) async fn delete(stream_name: String, days: u32) {
         log::info!("running retention task - delete for stream={stream_name}");
+        let store = CONFIG.storage().get_object_store();
+
         let retain_until = get_retain_until(Utc::now().date_naive(), days as u64);
-        let Ok(mut dates) = CONFIG
-            .storage()
-            .get_object_store()
-            .list_dates(&stream_name)
-            .await
-        else {
+
+        let Ok(mut dates) = store.list_dates(&stream_name).await else {
             return;
         };
         dates.retain(|date| date.starts_with("date"));
         let dates_to_delete = dates
             .into_iter()
-            .filter(|date| string_to_date(date) < retain_until)
+            .filter(|date| string_to_date(date) >= retain_until)
             .collect_vec();
         let dates = dates_to_delete.clone();
-        let delete_tasks = FuturesUnordered::new();
-        for date in dates_to_delete {
-            let path = RelativePathBuf::from_iter([&stream_name, &date]);
-            delete_tasks.push(async move {
-                CONFIG
-                    .storage()
-                    .get_object_store()
-                    .delete_prefix(&path)
-                    .await
-            });
-        }
+        if !dates.is_empty() {
+            let delete_tasks = FuturesUnordered::new();
+            let res_remove_manifest =
+                remove_manifest_from_snapshot(store.clone(), &stream_name, dates.clone()).await;
 
-        let res: Vec<_> = delete_tasks.collect().await;
-
-        for res in res {
-            if let Err(err) = res {
-                log::error!("Failed to run delete task {err:?}")
+            for date in dates_to_delete {
+                let path = RelativePathBuf::from_iter([&stream_name, &date]);
+                delete_tasks.push(async move {
+                    CONFIG
+                        .storage()
+                        .get_object_store()
+                        .delete_prefix(&path)
+                        .await
+                });
             }
-        }
 
-        let store = CONFIG.storage().get_object_store();
-        let res = remove_manifest_from_snapshot(store.clone(), &stream_name, dates).await;
-        if let Ok(first_event_at) = res {
-            if let Err(err) = metadata::STREAM_INFO.set_first_event_at(&stream_name, first_event_at)
-            {
-                log::error!(
-                    "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
-                    stream_name
-                );
+            let res: Vec<_> = delete_tasks.collect().await;
+
+            for res in res {
+                if let Err(err) = res {
+                    log::error!("Failed to run delete task {err:?}");
+                    return;
+                }
+            }
+            if let Ok(first_event_at) = res_remove_manifest {
+                if let Err(err) =
+                    metadata::STREAM_INFO.set_first_event_at(&stream_name, first_event_at)
+                {
+                    log::error!(
+                        "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
+                        stream_name
+                    );
+                }
             }
         }
     }

@@ -167,19 +167,44 @@ pub async fn fetch_stats_from_ingestors(
     let mut ingestion_size = 0u64;
     let mut storage_size = 0u64;
     let mut count = 0u64;
+    let mut lifetime_ingestion_size = 0u64;
+    let mut lifetime_storage_size = 0u64;
+    let mut lifetime_count = 0u64;
+    let mut deleted_ingestion_size = 0u64;
+    let mut deleted_storage_size = 0u64;
+    let mut deleted_count = 0u64;
     for ob in obs {
         if let Ok(stat) = serde_json::from_slice::<ObjectStoreFormat>(&ob) {
-            count += stat.stats.events;
-            ingestion_size += stat.stats.ingestion;
-            storage_size += stat.stats.storage;
+            count += stat.stats.current_stats.events;
+            ingestion_size += stat.stats.current_stats.ingestion;
+            storage_size += stat.stats.current_stats.storage;
+            lifetime_count += stat.stats.lifetime_stats.events;
+            lifetime_ingestion_size += stat.stats.lifetime_stats.ingestion;
+            lifetime_storage_size += stat.stats.lifetime_stats.storage;
+            deleted_count += stat.stats.deleted_stats.events;
+            deleted_ingestion_size += stat.stats.deleted_stats.ingestion;
+            deleted_storage_size += stat.stats.deleted_stats.storage;
         }
     }
 
     let qs = QueriedStats::new(
         "",
         Utc::now(),
-        IngestionStats::new(count, format!("{} Bytes", ingestion_size), "json"),
-        StorageStats::new(format!("{} Bytes", storage_size), "parquet"),
+        IngestionStats::new(
+            count,
+            format!("{} Bytes", ingestion_size),
+            lifetime_count,
+            format!("{} Bytes", lifetime_ingestion_size),
+            deleted_count,
+            format!("{} Bytes", deleted_ingestion_size),
+            "json",
+        ),
+        StorageStats::new(
+            format!("{} Bytes", storage_size),
+            format!("{} Bytes", lifetime_storage_size),
+            format!("{} Bytes", deleted_storage_size),
+            "parquet",
+        ),
     );
 
     Ok(vec![qs])

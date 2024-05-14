@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use itertools::Itertools;
 use parquet::{file::reader::FileReader, format::SortingColumn};
 
+use crate::{metrics::EVENTS_INGESTED_SIZE_TODAY, stats::event_labels};
+
 use super::column::Column;
 
 #[derive(
@@ -62,6 +64,7 @@ pub struct File {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Manifest {
     pub version: String,
+    pub ingestion_size: i64,
     pub files: Vec<File>,
 }
 
@@ -69,13 +72,14 @@ impl Default for Manifest {
     fn default() -> Self {
         Self {
             version: CURRENT_MANIFEST_VERSION.to_string(),
+            ingestion_size: 0,
             files: Vec::default(),
         }
     }
 }
 
 impl Manifest {
-    pub fn apply_change(&mut self, change: File) {
+    pub fn apply_change(&mut self, change: File, stream_name: &str) {
         if let Some(pos) = self
             .files
             .iter()
@@ -85,6 +89,12 @@ impl Manifest {
         } else {
             self.files.push(change)
         }
+        let event_labels = event_labels(stream_name, "json");
+        let ingestion_size = EVENTS_INGESTED_SIZE_TODAY
+            .get_metric_with_label_values(&event_labels)
+            .unwrap()
+            .get() as i64;
+        self.ingestion_size = ingestion_size;
     }
 }
 

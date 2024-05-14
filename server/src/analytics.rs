@@ -24,6 +24,7 @@ use crate::option::{Mode, CONFIG};
 use crate::storage;
 use crate::{metadata, stats};
 
+use crate::stats::Stats;
 use actix_web::{web, HttpRequest, Responder};
 use chrono::{DateTime, Utc};
 use clokwerk::{AsyncScheduler, Interval};
@@ -70,6 +71,12 @@ pub struct Report {
     total_events_count: u64,
     total_json_bytes: u64,
     total_parquet_bytes: u64,
+    current_events_count: u64,
+    current_json_bytes: u64,
+    current_parquet_bytes: u64,
+    deleted_events_count: u64,
+    deleted_json_bytes: u64,
+    deleted_parquet_bytes: u64,
     metrics: HashMap<String, Value>,
 }
 
@@ -112,6 +119,12 @@ impl Report {
             total_events_count: ingestor_metrics.3,
             total_json_bytes: ingestor_metrics.4,
             total_parquet_bytes: ingestor_metrics.5,
+            current_events_count: ingestor_metrics.6,
+            current_json_bytes: ingestor_metrics.7,
+            current_parquet_bytes: ingestor_metrics.8,
+            deleted_events_count: ingestor_metrics.9,
+            deleted_json_bytes: ingestor_metrics.10,
+            deleted_parquet_bytes: ingestor_metrics.11,
             metrics: build_metrics().await,
         })
     }
@@ -132,26 +145,70 @@ fn total_streams() -> usize {
     metadata::STREAM_INFO.list_streams().len()
 }
 
-fn total_event_stats() -> (u64, u64, u64) {
+fn total_event_stats() -> (Stats, Stats, Stats) {
     let mut total_events: u64 = 0;
     let mut total_parquet_bytes: u64 = 0;
     let mut total_json_bytes: u64 = 0;
+
+    let mut current_events: u64 = 0;
+    let mut current_parquet_bytes: u64 = 0;
+    let mut current_json_bytes: u64 = 0;
+
+    let mut deleted_events: u64 = 0;
+    let mut deleted_parquet_bytes: u64 = 0;
+    let mut deleted_json_bytes: u64 = 0;
 
     for stream in metadata::STREAM_INFO.list_streams() {
         let Some(stats) = stats::get_current_stats(&stream, "json") else {
             continue;
         };
-        total_events += stats.events;
-        total_parquet_bytes += stats.storage;
-        total_json_bytes += stats.ingestion;
+        total_events += stats.lifetime_stats.events;
+        total_parquet_bytes += stats.lifetime_stats.storage;
+        total_json_bytes += stats.lifetime_stats.ingestion;
+
+        current_events += stats.current_stats.events;
+        current_parquet_bytes += stats.current_stats.storage;
+        current_json_bytes += stats.current_stats.ingestion;
+
+        deleted_events += stats.deleted_stats.events;
+        deleted_parquet_bytes += stats.deleted_stats.storage;
+        deleted_json_bytes += stats.deleted_stats.ingestion;
     }
-    (total_events, total_json_bytes, total_parquet_bytes)
+
+    (
+        Stats {
+            events: total_events,
+            ingestion: total_json_bytes,
+            storage: total_parquet_bytes,
+        },
+        Stats {
+            events: current_events,
+            ingestion: current_json_bytes,
+            storage: current_parquet_bytes,
+        },
+        Stats {
+            events: deleted_events,
+            ingestion: deleted_json_bytes,
+            storage: deleted_parquet_bytes,
+        },
+    )
 }
 
-async fn fetch_ingestors_metrics() -> anyhow::Result<(u64, u64, usize, u64, u64, u64)> {
+async fn fetch_ingestors_metrics(
+) -> anyhow::Result<(u64, u64, usize, u64, u64, u64, u64, u64, u64, u64, u64, u64)> {
     let event_stats = total_event_stats();
-    let mut node_metrics =
-        NodeMetrics::new(total_streams(), event_stats.0, event_stats.1, event_stats.2);
+    let mut node_metrics = NodeMetrics::new(
+        total_streams(),
+        event_stats.0.events,
+        event_stats.0.ingestion,
+        event_stats.0.storage,
+        event_stats.1.events,
+        event_stats.1.ingestion,
+        event_stats.1.storage,
+        event_stats.2.events,
+        event_stats.2.ingestion,
+        event_stats.2.storage,
+    );
 
     let mut vec = vec![];
     let mut active_ingestors = 0u64;
@@ -198,6 +255,12 @@ async fn fetch_ingestors_metrics() -> anyhow::Result<(u64, u64, usize, u64, u64,
         node_metrics.total_events_count,
         node_metrics.total_json_bytes,
         node_metrics.total_parquet_bytes,
+        node_metrics.current_events_count,
+        node_metrics.current_json_bytes,
+        node_metrics.current_parquet_bytes,
+        node_metrics.deleted_events_count,
+        node_metrics.deleted_json_bytes,
+        node_metrics.deleted_parquet_bytes,
     ))
 }
 
@@ -255,6 +318,12 @@ struct NodeMetrics {
     total_events_count: u64,
     total_json_bytes: u64,
     total_parquet_bytes: u64,
+    current_events_count: u64,
+    current_json_bytes: u64,
+    current_parquet_bytes: u64,
+    deleted_events_count: u64,
+    deleted_json_bytes: u64,
+    deleted_parquet_bytes: u64,
 }
 
 impl NodeMetrics {
@@ -262,23 +331,43 @@ impl NodeMetrics {
         let event_stats = total_event_stats();
         Self {
             stream_count: total_streams(),
-            total_events_count: event_stats.0,
-            total_json_bytes: event_stats.1,
-            total_parquet_bytes: event_stats.2,
+            total_events_count: event_stats.0.events,
+            total_json_bytes: event_stats.0.ingestion,
+            total_parquet_bytes: event_stats.0.storage,
+
+            current_events_count: event_stats.1.events,
+            current_json_bytes: event_stats.1.ingestion,
+            current_parquet_bytes: event_stats.1.storage,
+
+            deleted_events_count: event_stats.2.events,
+            deleted_json_bytes: event_stats.2.ingestion,
+            deleted_parquet_bytes: event_stats.2.storage,
         }
     }
-
+    #[allow(clippy::too_many_arguments)]
     fn new(
         stream_count: usize,
         total_events_count: u64,
         total_json_bytes: u64,
         total_parquet_bytes: u64,
+        current_events_count: u64,
+        current_json_bytes: u64,
+        current_parquet_bytes: u64,
+        deleted_events_count: u64,
+        deleted_json_bytes: u64,
+        deleted_parquet_bytes: u64,
     ) -> Self {
         Self {
             stream_count,
             total_events_count,
             total_json_bytes,
             total_parquet_bytes,
+            current_events_count,
+            current_json_bytes,
+            current_parquet_bytes,
+            deleted_events_count,
+            deleted_json_bytes,
+            deleted_parquet_bytes,
         }
     }
 

@@ -18,17 +18,26 @@
 
 pub mod prom_utils;
 pub mod storage;
+use std::sync::Mutex;
 
+use crate::{handlers::http::metrics_path, metadata::STREAM_INFO, metrics, option::CONFIG};
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
+use clokwerk::AsyncScheduler;
+use clokwerk::Job;
+use clokwerk::TimeUnits;
 use once_cell::sync::Lazy;
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
-
-use crate::{handlers::http::metrics_path, metadata::STREAM_INFO, option::CONFIG};
+use std::thread;
+use std::time::Duration;
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
+type SchedulerHandle = thread::JoinHandle<()>;
 
-pub static EVENTS_INGESTED: Lazy<IntCounterVec> = Lazy::new(|| {
-    IntCounterVec::new(
+static METRIC_SCHEDULER_HANDLER: Lazy<Mutex<Option<SchedulerHandle>>> =
+    Lazy::new(|| Mutex::new(None));
+
+pub static EVENTS_INGESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
         Opts::new("events_ingested", "Events ingested").namespace(METRICS_NAMESPACE),
         &["stream", "format"],
     )
@@ -44,9 +53,82 @@ pub static EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static EVENTS_INGESTED_SIZE_TODAY: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "events_ingested_size_today",
+            "Events ingested size today in bytes",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "format"],
+    )
+    .expect("metric can be created")
+});
+
 pub static STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new("storage_size", "Storage size bytes").namespace(METRICS_NAMESPACE),
+        &["type", "stream", "format"],
+    )
+    .expect("metric can be created")
+});
+
+pub static EVENTS_DELETED: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("events_deleted", "Events deleted").namespace(METRICS_NAMESPACE),
+        &["stream", "format"],
+    )
+    .expect("metric can be created")
+});
+
+pub static EVENTS_DELETED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("events_deleted_size", "Events deleted size bytes").namespace(METRICS_NAMESPACE),
+        &["stream", "format"],
+    )
+    .expect("metric can be created")
+});
+
+pub static DELETED_EVENTS_STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "deleted_events_storage_size",
+            "Deleted events storage size bytes",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["type", "stream", "format"],
+    )
+    .expect("metric can be created")
+});
+
+pub static LIFETIME_EVENTS_INGESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("lifetime_events_ingested", "Lifetime events ingested")
+            .namespace(METRICS_NAMESPACE),
+        &["stream", "format"],
+    )
+    .expect("metric can be created")
+});
+
+pub static LIFETIME_EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "lifetime_events_ingested_size",
+            "Lifetime events ingested size bytes",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "format"],
+    )
+    .expect("metric can be created")
+});
+
+pub static LIFETIME_EVENTS_STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "lifetime_events_storage_size",
+            "Lifetime events storage size bytes",
+        )
+        .namespace(METRICS_NAMESPACE),
         &["type", "stream", "format"],
     )
     .expect("metric can be created")
@@ -92,7 +174,28 @@ fn custom_metrics(registry: &Registry) {
         .register(Box::new(EVENTS_INGESTED_SIZE.clone()))
         .expect("metric can be registered");
     registry
+        .register(Box::new(EVENTS_INGESTED_SIZE_TODAY.clone()))
+        .expect("metric can be registered");
+    registry
         .register(Box::new(STORAGE_SIZE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(EVENTS_DELETED.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(EVENTS_DELETED_SIZE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(DELETED_EVENTS_STORAGE_SIZE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(LIFETIME_EVENTS_INGESTED.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(LIFETIME_EVENTS_INGESTED_SIZE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(LIFETIME_EVENTS_STORAGE_SIZE.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(STAGING_FILES.clone()))
@@ -145,12 +248,75 @@ pub async fn fetch_stats_from_storage() {
 
         EVENTS_INGESTED
             .with_label_values(&[&stream_name, "json"])
-            .inc_by(stats.events);
+            .set(stats.current_stats.events as i64);
         EVENTS_INGESTED_SIZE
             .with_label_values(&[&stream_name, "json"])
-            .set(stats.ingestion as i64);
+            .set(stats.current_stats.ingestion as i64);
+        EVENTS_INGESTED_SIZE_TODAY
+            .with_label_values(&[&stream_name, "json"])
+            .set(stats.current_stats.ingestion as i64);
         STORAGE_SIZE
             .with_label_values(&["data", &stream_name, "parquet"])
-            .set(stats.storage as i64)
+            .set(stats.current_stats.storage as i64);
+
+        EVENTS_DELETED
+            .with_label_values(&[&stream_name, "json"])
+            .set(stats.deleted_stats.events as i64);
+        EVENTS_DELETED_SIZE
+            .with_label_values(&[&stream_name, "json"])
+            .set(stats.deleted_stats.ingestion as i64);
+        DELETED_EVENTS_STORAGE_SIZE
+            .with_label_values(&["data", &stream_name, "parquet"])
+            .set(stats.deleted_stats.storage as i64);
+
+        LIFETIME_EVENTS_INGESTED
+            .with_label_values(&[&stream_name, "json"])
+            .set(stats.lifetime_stats.events as i64);
+        LIFETIME_EVENTS_INGESTED_SIZE
+            .with_label_values(&[&stream_name, "json"])
+            .set(stats.lifetime_stats.ingestion as i64);
+        LIFETIME_EVENTS_STORAGE_SIZE
+            .with_label_values(&["data", &stream_name, "parquet"])
+            .set(stats.lifetime_stats.storage as i64);
     }
+}
+
+fn async_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .thread_name("reset-metrics-task-thread")
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+pub fn reset_daily_metric_from_global() {
+    init_reset_daily_metric_scheduler();
+}
+
+pub fn init_reset_daily_metric_scheduler() {
+    log::info!("Setting up schedular");
+    let mut scheduler = AsyncScheduler::new();
+    let func = move || async {
+        //get retention every day at 12 am
+        for stream in STREAM_INFO.list_streams() {
+            metrics::EVENTS_INGESTED_SIZE_TODAY
+                .with_label_values(&[&stream, "json"])
+                .set(0);
+        }
+    };
+
+    scheduler.every(1.day()).at("00:00").run(func);
+
+    let scheduler_handler = thread::spawn(|| {
+        let rt = async_runtime();
+        rt.block_on(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                scheduler.run_pending().await;
+            }
+        });
+    });
+
+    *METRIC_SCHEDULER_HANDLER.lock().unwrap() = Some(scheduler_handler);
+    log::info!("Scheduler is initialized")
 }
