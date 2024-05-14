@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs as AsyncFs;
 use tokio::{fs, sync::Mutex};
 
+use crate::handlers::http::users::USERS_ROOT_DIR;
 use crate::metadata::STREAM_INFO;
 use crate::storage::staging::parquet_writer_props;
 use crate::{localcache::CacheError, option::CONFIG, utils::hostname_unchecked};
@@ -20,6 +21,7 @@ pub const QUERY_CACHE_FILENAME: &str = ".cache.json";
 pub const QUERY_CACHE_META_FILENAME: &str = ".cache_meta.json";
 pub const CURRENT_QUERY_CACHE_VERSION: &str = "v1";
 
+// .cache.json
 #[derive(Default, Clone, serde::Deserialize, serde::Serialize, Debug, Hash, Eq, PartialEq)]
 pub struct CacheMetadata {
     query: String,
@@ -75,6 +77,7 @@ impl QueryCache {
     }
 }
 
+// .cache_meta.json
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct QueryCacheMeta {
     version: String,
@@ -92,15 +95,17 @@ impl QueryCacheMeta {
 
 pub struct QueryCacheManager {
     filesystem: LocalFileSystem,
-    cache_path: PathBuf,
+    cache_path: PathBuf, // refers to the path passed in the env var
     cache_capacity: u64,
     semaphore: Mutex<()>,
 }
 
 impl QueryCacheManager {
-    pub fn gen_file_path(query_staging_path: &str, stream: &str) -> PathBuf {
+    pub fn gen_file_path(query_staging_path: &str, stream: &str, user_id: &str) -> PathBuf {
         PathBuf::from_iter([
             query_staging_path,
+            USERS_ROOT_DIR,
+            user_id,
             stream,
             &format!(
                 "{}.{}.parquet",
@@ -189,8 +194,8 @@ impl QueryCacheManager {
         Ok(())
     }
 
-    pub async fn get_cache(&self, stream: &str) -> Result<QueryCache, CacheError> {
-        let path = query_cache_file_path(&self.cache_path, stream).unwrap();
+    pub async fn get_cache(&self, stream: &str, user_id: &str) -> Result<QueryCache, CacheError> {
+        let path = query_cache_file_path(&self.cache_path, stream, user_id).unwrap();
         let res = self
             .filesystem
             .get(&path)
@@ -204,8 +209,14 @@ impl QueryCacheManager {
         Ok(cache)
     }
 
-    pub async fn put_cache(&self, stream: &str, cache: &QueryCache) -> Result<(), CacheError> {
-        let path = query_cache_file_path(&self.cache_path, stream).unwrap();
+    pub async fn put_cache(
+        &self,
+        stream: &str,
+        cache: &QueryCache,
+        user_id: &str,
+    ) -> Result<(), CacheError> {
+        let path = query_cache_file_path(&self.cache_path, stream, user_id).unwrap();
+
         let bytes = serde_json::to_vec(cache)?.into();
         let result = self.filesystem.put(&path, bytes).await?;
         log::info!("Cache file updated: {:?}", result);
@@ -216,20 +227,16 @@ impl QueryCacheManager {
         &self,
         stream: &str,
         key: String,
-        staging_path: &Path,
+        file_path: &Path,
+        user_id: &str,
     ) -> Result<(), CacheError> {
         let lock = self.semaphore.lock().await;
-        let mut cache_path = self.cache_path.join(stream);
-        fs::create_dir_all(&cache_path).await?;
-        cache_path.push(staging_path.file_name().unwrap());
-        // this needs to be the record batches parquet
-        // fs_extra::file::move_file(staging_path, &cache_path, &self.copy_options)?;
-        let file_size = std::fs::metadata(&cache_path)?.len();
-        let mut cache = self.get_cache(stream).await?;
+        let file_size = std::fs::metadata(file_path)?.len();
+        let mut cache = self.get_cache(stream, user_id).await?;
 
         while cache.current_size + file_size > self.cache_capacity {
             if let Some((_, file_for_removal)) = cache.files.pop_lru() {
-                let lru_file_size = std::fs::metadata(&file_for_removal)?.len();
+                let lru_file_size = fs::metadata(&file_for_removal).await?.len();
                 cache.current_size = cache.current_size.saturating_sub(lru_file_size);
                 log::info!("removing cache entry");
                 tokio::spawn(fs::remove_file(file_for_removal));
@@ -242,9 +249,9 @@ impl QueryCacheManager {
         if cache.files.is_full() {
             cache.files.resize(cache.files.capacity() * 2);
         }
-        cache.files.push(key, cache_path);
+        cache.files.push(key, file_path.to_path_buf());
         cache.current_size += file_size;
-        self.put_cache(stream, &cache).await?;
+        self.put_cache(stream, &cache, user_id).await?;
         drop(lock);
         Ok(())
     }
@@ -253,12 +260,14 @@ impl QueryCacheManager {
         &self,
         table_name: &str,
         records: &[RecordBatch],
+        user_id: &str,
         start: String,
         end: String,
         query: String,
     ) -> Result<(), CacheError> {
         let parquet_path = Self::gen_file_path(
             self.cache_path.to_str().expect("utf-8 compat path"),
+            user_id,
             table_name,
         );
         AsyncFs::create_dir_all(parquet_path.parent().expect("parent path exists")).await?;
@@ -283,49 +292,44 @@ impl QueryCacheManager {
             table_name,
             format!("{}-{}-{}", start, end, query),
             &parquet_path,
+            user_id,
         )
         .await
-        // match AsyncArrowWriter::try_new(
-        //     parquet_file,
-        //     STREAM_INFO.schema(&table_name).expect("schema present"),
-        //     Some(props),
-        // ) {
-        //     Ok(mut writer) => {
-        //         for record in records {
-        //             if let Err(e) = writer.write(record).await {
-        //                 log::error!("Error While Writing to Query Cache: {}", e);
-        //                 err_flag = true;
-        //             }
-        //         }
-        //
-        //         if let Err(e) = writer.close().await {
-        //             log::error!(
-        //                 "Unstable State: Async ArrowWriter Faild to close. Error: {}",
-        //                 e
-        //             );
-        //
-        //             err_flag = true;
-        //         }
-        //     }
-        //     Err(err) => {
-        //         log::error!("Failed to create an Async ArrowWriter. Reason: {}", err);
-        //         err_flag = true;
-        //     }
-        // }
-        //
-        // if err_flag {
-        //     log::error!("Failed to cache query result");
-        // } else {
-        //
-        // }
+    }
+
+    pub async fn clear_cache(&self, stream: &str, user_id: &str) -> Result<(), CacheError> {
+        let cache = self.get_cache(stream, user_id).await?;
+        let map = cache.files.values().collect_vec();
+        let p_path = PathBuf::from_iter([USERS_ROOT_DIR, stream, user_id]);
+        let path = self.cache_path.join(p_path);
+        let mut paths = fs::read_dir(path).await?;
+        while let Some(path) = paths.next_entry().await? {
+            let check = path.path().is_file()
+                && map.contains(&&path.path())
+                && !path
+                    .path()
+                    .file_name()
+                    .expect("File Name is Proper")
+                    .to_str()
+                    .expect("Path is Proper utf-8 ")
+                    .ends_with(".json");
+            if check {
+                fs::remove_file(path.path()).await?;
+            }
+        }
+
+        Ok(())
     }
 }
 
 fn query_cache_file_path(
     root: impl AsRef<std::path::Path>,
     stream: &str,
+    user_id: &str,
 ) -> Result<object_store::path::Path, object_store::path::Error> {
-    let mut path = root.as_ref().join(stream);
+    let local_meta_path = PathBuf::from_iter([USERS_ROOT_DIR, stream, user_id]);
+    let mut path = root.as_ref().join(local_meta_path);
+
     path.push(QUERY_CACHE_FILENAME);
     object_store::path::Path::from_absolute_path(path)
 }

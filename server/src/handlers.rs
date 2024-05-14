@@ -25,6 +25,7 @@ const PREFIX_META: &str = "x-p-meta-";
 const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const CACHE_RESULTS_HEADER_KEY: &str = "x-p-cache-results";
 const CACHE_VIEW_HEADER_KEY: &str = "x-p-show-cached";
+const USER_ID_HEADER_KEY: &str = "x-p-user-id";
 const LOG_SOURCE_KEY: &str = "x-p-log-source";
 const TIME_PARTITION_KEY: &str = "x-p-time-partition";
 const TIME_PARTITION_LIMIT_KEY: &str = "x-p-time-partition-limit";
