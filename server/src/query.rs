@@ -18,7 +18,7 @@
 
 mod filter_optimizer;
 mod listing_table_builder;
-mod stream_schema_provider;
+pub mod stream_schema_provider;
 
 use chrono::{DateTime, Utc};
 use chrono::{NaiveDateTime, TimeZone};

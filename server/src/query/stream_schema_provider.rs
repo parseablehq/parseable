@@ -607,7 +607,7 @@ fn is_overlapping_query(
     false
 }
 
-fn include_now(filters: &[Expr], time_partition: Option<String>) -> bool {
+pub fn include_now(filters: &[Expr], time_partition: Option<String>) -> bool {
     let current_minute = Utc::now()
         .with_second(0)
         .and_then(|x| x.with_nanosecond(0))

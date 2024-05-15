@@ -2,10 +2,10 @@ use arrow_array::RecordBatch;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::PollInfo;
-use arrow_schema::{ArrowError, Schema};
+use arrow_schema::ArrowError;
 
-use chrono::Utc;
 use datafusion::common::tree_node::TreeNode;
+use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,7 +28,9 @@ use crate::handlers::livetail::cross_origin_config;
 use crate::handlers::http::query::{authorize_and_set_filter_tags, into_query};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::storage::object_storage::commit_schema_to_storage;
-use crate::utils::arrow::flight::{append_temporary_events, get_query_from_ticket, run_do_get_rpc};
+use crate::utils::arrow::flight::{
+    append_temporary_events, get_query_from_ticket, run_do_get_rpc, send_to_ingester,
+};
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
     FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc,
@@ -41,9 +43,6 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::handlers::livetail::extract_session_key;
 use crate::metadata::STREAM_INFO;
 use crate::rbac::Users;
-
-const L_CURLY: char = '{';
-const R_CURLY: char = '}';
 
 #[derive(Clone, Debug)]
 pub struct AirServiceImpl {}
@@ -159,50 +158,56 @@ impl FlightService for AirServiceImpl {
             .first_table_name()
             .ok_or_else(|| Status::invalid_argument("Malformed Query"))?;
 
-        let time_delta = query.end - Utc::now();
+        let event =
+            if send_to_ingester(query.start.timestamp_millis(), query.end.timestamp_millis()) {
+                let sql = format!("select * from {}", &stream_name);
+                let start_time = ticket.start_time.clone();
+                let end_time = ticket.end_time.clone();
+                let out_ticket = json!({
+                    "query": sql,
+                    "startTime": start_time,
+                    "endTime": end_time
+                })
+                .to_string();
 
-        let event = if CONFIG.parseable.mode == Mode::Query && time_delta.num_seconds() < 2 {
-            let sql = format!(
-                "{}\"query\": \"select * from {}\"{}",
-                L_CURLY, &stream_name, R_CURLY
-            );
-            let ingester_metadatas = get_ingestor_info()
-                .await
-                .map_err(|err| Status::failed_precondition(err.to_string()))?;
-            let mut minute_result: Vec<RecordBatch> = vec![];
+                let ingester_metadatas = get_ingestor_info()
+                    .await
+                    .map_err(|err| Status::failed_precondition(err.to_string()))?;
+                let mut minute_result: Vec<RecordBatch> = vec![];
 
-            for im in ingester_metadatas {
-                if let Ok(mut batches) = run_do_get_rpc(im, sql.clone()).await {
-                    minute_result.append(&mut batches);
+                for im in ingester_metadatas {
+                    if let Ok(mut batches) = run_do_get_rpc(im, out_ticket.clone()).await {
+                        minute_result.append(&mut batches);
+                    }
                 }
-            }
-            let mr = minute_result.iter().collect::<Vec<_>>();
-            let event = append_temporary_events(&stream_name, mr).await?;
-
-            Some(event)
-        } else {
-            None
-        };
+                let mr = minute_result.iter().collect::<Vec<_>>();
+                let event = append_temporary_events(&stream_name, mr).await?;
+                Some(event)
+            } else {
+                None
+            };
         let permissions = Users.get_permissions(&key);
 
         authorize_and_set_filter_tags(&mut query, permissions, &stream_name).map_err(|_| {
             Status::permission_denied("User Does not have permission to access this")
         })?;
-
         let time = Instant::now();
         let (results, _) = query
             .execute(stream_name.clone())
             .await
-            .map_err(|err| Status::internal(err.to_string()))
-            .unwrap();
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        /*
+        * INFO: No returning the schema with the data.
+        * kept it in case it needs to be sent in the future.
 
         let schemas = results
             .iter()
             .map(|batch| batch.schema())
             .map(|s| s.as_ref().clone())
             .collect::<Vec<_>>();
-        let _schema =
-            Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
+        let schema = Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
+         */
         let input_stream = futures::stream::iter(results.into_iter().map(Ok));
         let write_options = IpcWriteOptions::default()
             .try_with_compression(Some(arrow_ipc::CompressionType(1)))

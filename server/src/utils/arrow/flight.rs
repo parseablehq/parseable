@@ -2,15 +2,20 @@ use crate::event::Event;
 use crate::handlers::http::ingest::push_logs_unchecked;
 use crate::handlers::http::query::Query as QueryJson;
 use crate::metadata::STREAM_INFO;
+use crate::query::stream_schema_provider::include_now;
 use crate::{
     handlers::http::modal::IngestorMetadata,
     option::{Mode, CONFIG},
 };
+
 use arrow_array::RecordBatch;
 use arrow_flight::Ticket;
 use arrow_select::concat::concat_batches;
+use datafusion::logical_expr::BinaryExpr;
+use datafusion::prelude::Expr;
+use datafusion::scalar::ScalarValue;
 use futures::TryStreamExt;
-use serde_json::Value as JsonValue;
+
 use tonic::{Request, Status};
 
 use arrow_flight::FlightClient;
@@ -18,31 +23,14 @@ use http::Uri;
 use tonic::transport::Channel;
 
 pub fn get_query_from_ticket(req: Request<Ticket>) -> Result<QueryJson, Status> {
-    if CONFIG.parseable.mode == Mode::Ingest {
-        let inner = req.into_inner().ticket;
-        let query = serde_json::from_slice::<JsonValue>(&inner)
-            .map_err(|_| Status::failed_precondition("Ticket is not valid json"))?["query"]
-            .as_str()
-            .ok_or_else(|| Status::failed_precondition("query is not valid string"))?
-            .to_owned();
-        Ok(QueryJson {
-            query,
-            send_null: false,
-            fields: false,
-            filter_tags: None,
-            // we can use humantime because into_query handle parseing
-            end_time: String::from("now"),
-            start_time: String::from("1min"),
-        })
-    } else {
-        Ok(
-            serde_json::from_slice::<QueryJson>(&req.into_inner().ticket)
-                .map_err(|err| Status::internal(err.to_string()))?,
-        )
-    }
+    serde_json::from_slice::<QueryJson>(&req.into_inner().ticket)
+        .map_err(|err| Status::internal(err.to_string()))
 }
 
-pub async fn run_do_get_rpc(im: IngestorMetadata, sql: String) -> Result<Vec<RecordBatch>, Status> {
+pub async fn run_do_get_rpc(
+    im: IngestorMetadata,
+    ticket: String,
+) -> Result<Vec<RecordBatch>, Status> {
     let url = im
         .domain_name
         .rsplit_once(':')
@@ -72,7 +60,7 @@ pub async fn run_do_get_rpc(im: IngestorMetadata, sql: String) -> Result<Vec<Rec
 
     let response = client
         .do_get(Ticket {
-            ticket: sql.clone().into(),
+            ticket: ticket.into(),
         })
         .await?;
 
@@ -98,4 +86,36 @@ pub async fn append_temporary_events(
         .await
         .map_err(|err| Status::internal(err.to_string()))?;
     Ok(event)
+}
+
+pub fn send_to_ingester(start: i64, end: i64) -> bool {
+    let filter_start = lit_timestamp_milli(
+        start, //query.start.timestamp_millis()
+    );
+    let filter_end = lit_timestamp_milli(
+        end, //query.end.timestamp_millis()
+    );
+
+    let expr_left = Expr::Column(datafusion::common::Column {
+        relation: None,
+        name: "p_timestamp".to_owned(),
+    });
+
+    let ex1 = BinaryExpr::new(
+        Box::new(expr_left.clone()),
+        datafusion::logical_expr::Operator::Gt,
+        Box::new(filter_start),
+    );
+    let ex2 = BinaryExpr::new(
+        Box::new(expr_left),
+        datafusion::logical_expr::Operator::Lt,
+        Box::new(filter_end),
+    );
+    let ex = [Expr::BinaryExpr(ex1), Expr::BinaryExpr(ex2)];
+
+    CONFIG.parseable.mode == Mode::Query && include_now(&ex, None)
+}
+
+fn lit_timestamp_milli(time: i64) -> Expr {
+    Expr::Literal(ScalarValue::TimestampMillisecond(Some(time), None))
 }
