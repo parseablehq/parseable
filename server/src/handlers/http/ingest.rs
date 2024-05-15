@@ -179,6 +179,44 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
                 .await?;
             }
         }
+    } else if custom_partition.is_none() {
+        let data = convert_array_to_object(
+            body_val.clone(),
+            time_partition.clone(),
+            time_partition_limit,
+            custom_partition.clone(),
+        )?;
+        for value in data {
+            let body_timestamp = value.get(&time_partition.clone().unwrap().to_string());
+            parsed_timestamp = body_timestamp
+                .unwrap()
+                .to_owned()
+                .as_str()
+                .unwrap()
+                .parse::<DateTime<Utc>>()
+                .unwrap()
+                .naive_utc();
+
+            let (rb, is_first_event) = get_stream_schema(
+                stream_name.clone(),
+                req.clone(),
+                value.clone(),
+                static_schema_flag.clone(),
+                time_partition.clone(),
+            )?;
+            event::Event {
+                rb,
+                stream_name: stream_name.clone(),
+                origin_format: "json",
+                origin_size: value.to_string().into_bytes().len() as u64,
+                is_first_event,
+                parsed_timestamp,
+                time_partition: time_partition.clone(),
+                custom_partition_values: HashMap::new(),
+            }
+            .process()
+            .await?;
+        }
     } else {
         let data = convert_array_to_object(
             body_val.clone(),

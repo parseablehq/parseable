@@ -140,7 +140,7 @@ impl StorageDir {
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let arrow_files = self.arrow_files();
         for arrow_file_path in arrow_files {
-            let key = Self::arrow_path_to_parquet(&arrow_file_path);
+            let key = Self::arrow_path_to_parquet(&arrow_file_path, String::default());
             grouped_arrow_file
                 .entry(key)
                 .or_default()
@@ -164,8 +164,10 @@ impl StorageDir {
                 .unwrap()
                 .starts_with(&exclude.format("%Y%m%dT%H%M").to_string())
         });
+        let random_string =
+            rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
         for arrow_file_path in arrow_files {
-            let key = Self::arrow_path_to_parquet(&arrow_file_path);
+            let key = Self::arrow_path_to_parquet(&arrow_file_path, random_string.clone());
             grouped_arrow_file
                 .entry(key)
                 .or_default()
@@ -185,22 +187,12 @@ impl StorageDir {
             .collect()
     }
 
-    fn arrow_path_to_parquet(path: &Path) -> PathBuf {
+    fn arrow_path_to_parquet(path: &Path, random_string: String) -> PathBuf {
         let filename = path.file_stem().unwrap().to_str().unwrap();
         let (_, filename) = filename.split_once('.').unwrap();
         let filename = filename.rsplit_once('.').expect("contains the delim `.`");
         let filename = format!("{}.{}", filename.0, filename.1);
-
-        let random_string =
-            rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
         let filename_with_random_number = format!("{}.{}.{}", filename, random_string, "arrows");
-        /*
-                let file_stem = path.file_stem().unwrap().to_str().unwrap();
-                let random_string =
-                    rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 20);
-                let (_, filename) = file_stem.split_once('.').unwrap();
-                let filename_with_random_number = format!("{}.{}.{}", filename, random_number, "arrows");
-        */
         let mut parquet_path = path.to_owned();
         parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
@@ -274,8 +266,7 @@ pub fn convert_disk_files_to_parquet(
         schemas.push(merged_schema.clone());
         let schema = Arc::new(merged_schema);
         let mut writer = ArrowWriter::try_new(parquet_file, schema.clone(), Some(props))?;
-
-        for ref record in record_reader.merged_iter(schema) {
+        for ref record in record_reader.merged_iter(schema, time_partition.clone()) {
             writer.write(record)?;
         }
 
