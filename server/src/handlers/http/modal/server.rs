@@ -34,6 +34,8 @@ use crate::migration;
 use crate::rbac;
 use crate::storage;
 use crate::sync;
+use crate::users::dashboards::DASHBOARDS;
+use crate::users::filters::FILTERS;
 use std::sync::Arc;
 
 use actix_web::web::resource;
@@ -475,6 +477,10 @@ impl Server {
         if let Err(err) = metadata::STREAM_INFO.load(&*storage).await {
             log::warn!("could not populate local metadata. {:?}", err);
         }
+
+        FILTERS.load().await?;
+        DASHBOARDS.load().await?;
+
 
         metrics::fetch_stats_from_storage().await;
         metrics::reset_daily_metric_from_global();

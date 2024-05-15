@@ -2,6 +2,7 @@ use crate::{
     handlers::{http::ingest::PostError, STREAM_NAME_HEADER_KEY},
     option::CONFIG,
     storage::{object_storage::filter_path, ObjectStorageError},
+    users::filters::{Filter, FILTERS},
 };
 use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
@@ -62,6 +63,11 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, FiltersError> {
         .to_str()
         .map_err(|_| FiltersError::Metadata("Non ASCII Stream Name Provided"))?;
 
+    if let Some(filter) = FILTERS.find(filt_id) {
+        return Ok((web::Json(filter), StatusCode::OK));
+    }
+
+    // if it is not in memory go to s3
     let path = filter_path(user_id, stream_name, &format!("{}.json", filt_id));
     let resource = CONFIG
         .storage()
@@ -69,7 +75,7 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, FiltersError> {
         .get_object(&path)
         .await?;
 
-    let resource = serde_json::from_slice::<JsonValue>(&resource)?;
+    let resource = serde_json::from_slice::<Filter>(&resource)?;
 
     Ok((web::Json(resource), StatusCode::OK))
 }
@@ -95,6 +101,8 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostErr
         .map_err(|_| FiltersError::Metadata("Non ASCII Stream Name Provided"))?;
 
     let path = filter_path(user_id, stream_name, &format!("{}.json", filt_id));
+    let filter: Filter = serde_json::from_slice(&body)?;
+    FILTERS.update(filter);
 
     let store = CONFIG.storage().get_object_store();
     store.put_object(&path, body).await?;
@@ -154,12 +162,3 @@ impl actix_web::ResponseError for FiltersError {
             .body(self.to_string())
     }
 }
-
-// #[derive(Debug, Serialize, Deserialize)]
-// pub struct Filters {
-//     version: String,
-//     stream_name: String,
-//     filter_name: String,
-//     query: String,
-//     time-filter: TimeFilter
-// }

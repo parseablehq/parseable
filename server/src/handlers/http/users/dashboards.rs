@@ -2,6 +2,7 @@ use crate::{
     handlers::http::ingest::PostError,
     option::CONFIG,
     storage::{object_storage::dashboard_path, ObjectStorageError},
+    users::dashboards::{Dashboard, DASHBOARDS},
 };
 use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
@@ -44,13 +45,18 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, DashboardError> {
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
 
+    if let Some(dashboard) = DASHBOARDS.find(dash_id) {
+        return Ok((web::Json(dashboard), StatusCode::OK));
+    }
+
+    //if dashboard is not in memory fetch from s3
     let dash_file_path = dashboard_path(user_id, &format!("{}.json", dash_id));
     let resource = CONFIG
         .storage()
         .get_object_store()
         .get_object(&dash_file_path)
         .await?;
-    let resource = serde_json::from_slice::<JsonValue>(&resource)?;
+    let resource = serde_json::from_slice::<Dashboard>(&resource)?;
 
     Ok((web::Json(resource), StatusCode::OK))
 }
@@ -67,6 +73,9 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostErr
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
 
     let dash_file_path = dashboard_path(user_id, &format!("{}.json", dash_id));
+
+    let dashboard = serde_json::from_slice::<Dashboard>(&body)?;
+    DASHBOARDS.update(dashboard);
 
     let store = CONFIG.storage().get_object_store();
     store.put_object(&dash_file_path, body).await?;
@@ -92,32 +101,6 @@ pub async fn delete(req: HttpRequest) -> Result<HttpResponse, PostError> {
 
     Ok(HttpResponse::Ok().finish())
 }
-
-// #[derive(Debug, Serialize, Deserialize)]
-// pub struct Dashboard {
-//     version: String,
-//     name: String,
-//     id: String,
-//     time_filter: TimeFilter
-//     refresh_interval: u64,
-//     pannels: Vec<Pannel>,
-// }
-//
-// #[derive(Debug, Serialize, Deserialize)]
-// pub struct Pannel {
-//     stream_name: String,
-//     query: String,
-//     chart_type: String,
-//     columns: Vec<String>,
-//     headers: Vec<String>,
-//     dimensions: (u64, u64),
-// }
-//
-// #[derive(Debug, Serialize, Deserialize)]
-// pub struct TimeFilter {
-//      to: String,
-//      from: String
-// }
 
 #[derive(Debug, thiserror::Error)]
 pub enum DashboardError {

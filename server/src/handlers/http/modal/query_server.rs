@@ -22,6 +22,8 @@ use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
 
 use crate::rbac::role::Action;
+use crate::users::dashboards::DASHBOARDS;
+use crate::users::filters::FILTERS;
 use crate::sync;
 use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
 use actix_web::web;
@@ -175,6 +177,10 @@ impl QueryServer {
         if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
             log::warn!("could not populate local metadata. {:?}", e);
         }
+
+        FILTERS.load().await?;
+        DASHBOARDS.load().await?;
+
 
         // load data from stats back to prometheus metrics
         metrics::fetch_stats_from_storage().await;
