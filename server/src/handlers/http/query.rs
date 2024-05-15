@@ -87,12 +87,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 
     let cache_results = req.headers().get(CACHE_RESULTS_HEADER_KEY);
     let show_cached = req.headers().get(CACHE_VIEW_HEADER_KEY);
-    let user_id = req
-        .headers()
-        .get(USER_ID_HEADER_KEY)
-        .ok_or_else(|| QueryError::Anyhow(anyhow!("User Id not provided")))?
-        .to_str()
-        .map_err(|err| anyhow!(err))?;
+    let user_id = req.headers().get(USER_ID_HEADER_KEY);
 
     // deal with cached data
     if let Ok(results) = get_results_from_cache(
@@ -156,7 +151,114 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     Ok(response)
 }
 
-fn authorize_and_set_filter_tags(
+async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), QueryError> {
+    if CONFIG.parseable.mode == Mode::Query {
+        for table in tables {
+            if let Ok(new_schema) = fetch_schema(&table).await {
+                // commit schema merges the schema internally and updates the schema in storage.
+                commit_schema_to_storage(&table, new_schema.clone()).await?;
+
+                commit_schema(&table, Arc::new(new_schema))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn put_results_in_cache(
+    cache_results: Option<&HeaderValue>,
+    user_id: Option<&HeaderValue>,
+    query_cache_manager: Option<&QueryCacheManager>,
+    stream: &str,
+    records: &[RecordBatch],
+    start: String,
+    end: String,
+    query: String,
+) {
+    match (cache_results, query_cache_manager) {
+        (Some(_), None) => {
+            log::warn!(
+                "Instructed to cache query results but Query Caching is not Enabled in Server"
+            );
+        }
+        // do cache
+        (Some(_), Some(query_cache_manager)) => {
+            let user_id = user_id
+                .expect("User Id was provided")
+                .to_str()
+                .expect("is proper ASCII");
+
+            if let Err(err) = query_cache_manager
+                .create_parquet_cache(stream, records, user_id, start, end, query)
+                .await
+            {
+                log::error!("Error occured while caching query results: {:?}", err);
+                if query_cache_manager
+                    .clear_cache(stream, user_id)
+                    .await
+                    .is_err()
+                {
+                    log::error!("Error Clearing Unwanted files from cache dir");
+                }
+            }
+        }
+        (None, _) => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn get_results_from_cache(
+    show_cached: Option<&HeaderValue>,
+    query_cache_manager: Option<&QueryCacheManager>,
+    stream: &str,
+    user_id: Option<&HeaderValue>,
+    start_time: &str,
+    end_time: &str,
+    query: &str,
+    send_null: bool,
+    send_fields: bool,
+) -> Result<QueryResponse, QueryError> {
+    match (show_cached, query_cache_manager) {
+        (Some(_), None) => {
+            log::warn!(
+                "Instructed to show cached results but Query Caching is not Enabled on Server"
+            );
+            None
+        }
+        (Some(_), Some(query_cache_manager)) => {
+            let user_id = user_id
+                .ok_or_else(|| QueryError::Anyhow(anyhow!("User Id not provided")))?
+                .to_str()
+                .map_err(|err| anyhow!(err))?;
+
+            let mut query_cache = query_cache_manager.get_cache(stream, user_id).await?;
+
+            let (start, end) = parse_human_time(start_time, end_time)?;
+            let key = format!("{}-{}-{}", start.to_rfc3339(), end.to_rfc3339(), query);
+
+            let file_path = query_cache.get_file(key);
+            if let Some(file_path) = file_path {
+                let (records, fields) = query_cache.get_cached_records(&file_path).await?;
+                let response = QueryResponse {
+                    records,
+                    fields,
+                    fill_null: send_null,
+                    with_fields: send_fields,
+                };
+
+                Some(Ok(response))
+            } else {
+                None
+            }
+        }
+        (_, _) => None,
+    }
+    .map_or_else(|| Err(QueryError::CacheMiss), |ret_val| ret_val)
+}
+
+pub fn authorize_and_set_filter_tags(
     query: &mut LogicalQuery,
     permissions: Vec<Permission>,
     table_name: &str,

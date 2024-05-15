@@ -1,3 +1,21 @@
+/*
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use arrow_array::RecordBatch;
 use chrono::Utc;
 use futures::TryStreamExt;
@@ -8,6 +26,7 @@ use itertools::Itertools;
 use object_store::{local::LocalFileSystem, ObjectStore};
 use once_cell::sync::OnceCell;
 use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs as AsyncFs;
 use tokio::{fs, sync::Mutex};
@@ -273,7 +292,7 @@ impl QueryCacheManager {
         AsyncFs::create_dir_all(parquet_path.parent().expect("parent path exists")).await?;
         let parquet_file = AsyncFs::File::create(&parquet_path).await?;
         let time_partition = STREAM_INFO.get_time_partition(table_name)?;
-        let props = parquet_writer_props(time_partition.clone(), 0).build();
+        let props = parquet_writer_props(time_partition.clone(), 0, HashMap::new()).build();
 
         let mut arrow_writer = AsyncArrowWriter::try_new(
             parquet_file,
