@@ -74,7 +74,7 @@ impl Event {
             &key,
             self.rb.clone(),
             self.parsed_timestamp,
-            self.custom_partition_values,
+            &self.custom_partition_values,
         )?;
 
         metadata::STREAM_INFO.update_stats(
@@ -96,7 +96,7 @@ impl Event {
         Ok(())
     }
 
-    pub fn process_unchecked(self) -> Result<Self, PostError> {
+    pub fn process_unchecked(&self) -> Result<(), PostError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
         Self::process_event(
@@ -104,10 +104,9 @@ impl Event {
             &key,
             self.rb.clone(),
             self.parsed_timestamp,
+            &self.custom_partition_values,
         )
-        .map_err(PostError::Event)?;
-
-        Ok(self)
+        .map_err(PostError::Event)
     }
 
     pub fn clear(&self, stream_name: &str) {
@@ -121,14 +120,14 @@ impl Event {
         schema_key: &str,
         rb: RecordBatch,
         parsed_timestamp: NaiveDateTime,
-        custom_partition_values: HashMap<String, String>,
+        custom_partition_values: &HashMap<String, String>,
     ) -> Result<(), EventError> {
         STREAM_WRITERS.append_to_local(
             stream_name,
             schema_key,
             rb,
             parsed_timestamp,
-            custom_partition_values,
+            custom_partition_values.clone(),
         )?;
         Ok(())
     }

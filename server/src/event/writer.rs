@@ -53,7 +53,7 @@ impl Writer {
         schema_key: &str,
         rb: RecordBatch,
         parsed_timestamp: NaiveDateTime,
-        custom_partition_values: HashMap<String, String>,
+        custom_partition_values: &HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
         let rb = utils::arrow::replace_columns(
             rb.schema(),
@@ -102,7 +102,7 @@ impl WriterTable {
                     schema_key,
                     record,
                     parsed_timestamp,
-                    custom_partition_values,
+                    &custom_partition_values,
                 )?;
             }
             None => {
@@ -110,7 +110,14 @@ impl WriterTable {
                 let map = self.write().unwrap();
                 // check for race condition
                 // if map contains entry then just
-                self.handle_missing_writer(map, stream_name, schema_key, record, parsed_timestamp)?;
+                self.handle_missing_writer(
+                    map,
+                    stream_name,
+                    schema_key,
+                    record,
+                    parsed_timestamp,
+                    &custom_partition_values,
+                )?;
             }
         };
         Ok(())
@@ -123,6 +130,7 @@ impl WriterTable {
         schema_key: &str,
         record: RecordBatch,
         parsed_timestamp: NaiveDateTime,
+        custom_partition_values: &HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
         if CONFIG.parseable.mode != Mode::Query {
             stream_writer.lock().unwrap().push(
@@ -130,6 +138,7 @@ impl WriterTable {
                 schema_key,
                 record,
                 parsed_timestamp,
+                custom_partition_values,
             )?;
         } else {
             stream_writer
@@ -148,6 +157,7 @@ impl WriterTable {
         schema_key: &str,
         record: RecordBatch,
         parsed_timestamp: NaiveDateTime,
+        custom_partition_values: &HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
         match map.get(stream_name) {
             Some(writer) => {

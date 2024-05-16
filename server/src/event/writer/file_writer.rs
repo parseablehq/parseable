@@ -45,7 +45,7 @@ impl FileWriter {
         schema_key: &str,
         record: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
-        custom_partition_values: HashMap<String, String>,
+        custom_partition_values: &HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
         match self.get_mut(schema_key) {
             Some(writer) => {
@@ -89,7 +89,7 @@ fn init_new_stream_writer_file(
     schema_key: &str,
     record: &RecordBatch,
     parsed_timestamp: NaiveDateTime,
-    custom_partition_values: HashMap<String, String>,
+    custom_partition_values: &HashMap<String, String>,
 ) -> Result<(PathBuf, StreamWriter<std::fs::File>), StreamWriterError> {
     let dir = StorageDir::new(stream_name);
     let path = dir.path_by_current_time(schema_key, parsed_timestamp, custom_partition_values);
