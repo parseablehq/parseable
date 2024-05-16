@@ -536,7 +536,7 @@ pub async fn commit_schema_to_storage(
 }
 
 #[inline(always)]
-fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
+pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
     serde_json::to_vec(any)
         .map(|any| any.into())
         .expect("serialize cannot fail")

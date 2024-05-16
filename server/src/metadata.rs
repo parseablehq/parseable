@@ -63,7 +63,7 @@ impl StreamInfo {
     pub async fn check_alerts(
         &self,
         stream_name: &str,
-        rb: RecordBatch,
+        rb: &RecordBatch,
     ) -> Result<(), CheckAlertError> {
         let map = self.read().expect(LOCK_EXPECT);
         let meta = map

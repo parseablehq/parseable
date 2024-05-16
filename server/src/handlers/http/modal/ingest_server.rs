@@ -18,11 +18,13 @@
 
 use crate::analytics;
 use crate::banner;
+use crate::handlers::airplane;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::RouteExt;
 use crate::localcache::LocalCacheManager;
 use crate::metadata;
 use crate::metrics;
+use crate::migration::metadata_migration::migrate_ingester_metadata;
 use crate::rbac;
 use crate::rbac::role::Action;
 use crate::storage;
@@ -38,6 +40,10 @@ use super::IngestorMetadata;
 use super::OpenIdClient;
 use super::ParseableServer;
 
+use crate::{
+    handlers::http::{base_path, cross_origin_config},
+    option::CONFIG,
+};
 use actix_web::body::MessageBody;
 use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
@@ -49,14 +55,9 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 
-use crate::{
-    handlers::http::{base_path, cross_origin_config},
-    option::CONFIG,
-};
-
 /// ! have to use a guard before using it
 pub static INGESTOR_META: Lazy<IngestorMetadata> =
-    Lazy::new(|| staging::get_ingestor_info().expect("dir is readable and writeable"));
+    Lazy::new(|| staging::get_ingestor_info().expect("Should Be valid Json"));
 
 #[derive(Default)]
 pub struct IngestServer;
@@ -113,6 +114,7 @@ impl ParseableServer for IngestServer {
         self.validate_credentials().await?;
 
         let metadata = storage::resolve_parseable_metadata().await?;
+
         banner::print(&CONFIG, &metadata).await;
         rbac::map::init(&metadata);
         // set the info in the global metadata
@@ -214,6 +216,7 @@ impl IngestServer {
 
     // create the ingestor metadata and put the .ingestor.json file in the object store
     async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
+        migrate_ingester_metadata().await?;
         let store = CONFIG.storage().get_object_store();
 
         // find the meta file in staging if not generate new metadata
@@ -336,7 +339,10 @@ impl IngestServer {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync();
 
+        tokio::spawn(airplane::server());
+
         let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+
         tokio::pin!(app);
         loop {
             tokio::select! {

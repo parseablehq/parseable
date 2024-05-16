@@ -17,14 +17,6 @@
  *
  */
 
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    process,
-    sync::Arc,
-};
-
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
     handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, DEFAULT_VERSION},
@@ -36,6 +28,7 @@ use crate::{
         hostname_unchecked,
     },
 };
+use anyhow::anyhow;
 use arrow_schema::{ArrowError, Schema};
 use base64::Engine;
 use chrono::{NaiveDateTime, Timelike};
@@ -48,6 +41,14 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use rand::distributions::DistString;
+use serde_json::Value as JsonValue;
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    process,
+    sync::Arc,
+};
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 const PARQUET_FILE_EXTENSION: &str = "data.parquet";
@@ -332,7 +333,21 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 
         if flag {
             // get the ingestor metadata from staging
-            let mut meta: IngestorMetadata = serde_json::from_slice(&std::fs::read(path)?)?;
+            let mut meta: JsonValue = serde_json::from_slice(&std::fs::read(path)?)?;
+
+            // migrate the staging meta
+            let obj = meta
+                .as_object_mut()
+                .ok_or_else(|| anyhow!("Could Not parse Ingestor Metadata Json"))?;
+
+            if obj.get("flight_port").is_none() {
+                obj.insert(
+                    "flight_port".to_owned(),
+                    JsonValue::String(CONFIG.parseable.flight_port.to_string()),
+                );
+            }
+
+            let mut meta: IngestorMetadata = serde_json::from_value(meta)?;
 
             // compare url endpoint and port
             if meta.domain_name != url {
@@ -380,6 +395,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
         &CONFIG.parseable.username,
         &CONFIG.parseable.password,
         get_ingestor_id(),
+        CONFIG.parseable.flight_port.to_string(),
     );
 
     put_ingestor_info(out.clone())?;
@@ -392,7 +408,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 /// # Parameters
 ///
 /// * `ingestor_info`: The ingestor info to be stored.
-fn put_ingestor_info(info: IngestorMetadata) -> anyhow::Result<()> {
+pub fn put_ingestor_info(info: IngestorMetadata) -> anyhow::Result<()> {
     let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
     let file_name = format!("ingestor.{}.json", info.ingestor_id);
     let file_path = path.join(file_name);

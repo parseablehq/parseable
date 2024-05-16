@@ -29,6 +29,7 @@ use crate::storage::staging::StorageDir;
 use chrono::NaiveDateTime;
 
 pub struct ArrowWriter {
+    #[allow(dead_code)]
     pub file_path: PathBuf,
     pub writer: StreamWriter<File>,
 }

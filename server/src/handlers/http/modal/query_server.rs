@@ -16,6 +16,7 @@
  *
  */
 
+use crate::handlers::airplane;
 use crate::handlers::http::cluster;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
@@ -182,6 +183,8 @@ impl QueryServer {
         if CONFIG.parseable.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
+
+        tokio::spawn(airplane::server());
 
         self.start(prometheus, CONFIG.parseable.openid.clone())
             .await?;

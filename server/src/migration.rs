@@ -17,7 +17,7 @@
 *
 */
 
-mod metadata_migration;
+pub mod metadata_migration;
 mod schema_migration;
 mod stream_metadata_migration;
 

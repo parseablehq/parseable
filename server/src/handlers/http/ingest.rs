@@ -33,6 +33,7 @@ use crate::storage::{LogStream, ObjectStorageError};
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use crate::utils::json::convert_array_to_object;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
+use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -40,6 +41,7 @@ use http::StatusCode;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
@@ -94,6 +96,22 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
 
     flatten_and_push_logs(req, body, stream_name).await?;
     Ok(HttpResponse::Ok().finish())
+}
+
+pub async fn push_logs_unchecked(
+    batches: RecordBatch,
+    stream_name: &str,
+) -> Result<event::Event, PostError> {
+    event::Event {
+        rb: batches,
+        stream_name: stream_name.to_string(),
+        origin_format: "json",
+        origin_size: 0,
+        parsed_timestamp: Utc::now().naive_utc(),
+        time_partition: None,
+        is_first_event: true, // NOTE: Maybe should be false
+    }
+    .process_unchecked()
 }
 
 async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {

@@ -231,7 +231,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
     }
 }
 
-fn extract_stream(body: &serde_json::Value) -> Result<&str, Status> {
+pub fn extract_stream(body: &serde_json::Value) -> Result<&str, Status> {
     body.as_object()
         .ok_or(Status::invalid_argument("expected object in request body"))?
         .get("stream")
@@ -240,7 +240,7 @@ fn extract_stream(body: &serde_json::Value) -> Result<&str, Status> {
         .ok_or(Status::invalid_argument("stream key value is invalid"))
 }
 
-fn extract_session_key(headers: &MetadataMap) -> Result<SessionKey, Status> {
+pub fn extract_session_key(headers: &MetadataMap) -> Result<SessionKey, Status> {
     // Extract username and password from the request using basic auth extractor.
     let basic = extract_basic_auth(headers).map(|creds| SessionKey::BasicAuth {
         username: creds.user_id,
@@ -286,6 +286,7 @@ fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {
         .find(|cookie| cookie.name() == SESSION_COOKIE_NAME)
 }
 
-fn cross_origin_config() -> CorsLayer {
+#[inline(always)]
+pub fn cross_origin_config() -> CorsLayer {
     CorsLayer::very_permissive().allow_credentials(true)
 }

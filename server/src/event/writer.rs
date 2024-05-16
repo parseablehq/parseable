@@ -22,11 +22,15 @@ mod mem_writer;
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, RwLockWriteGuard},
+};
+
+use crate::{
+    option::{Mode, CONFIG},
+    utils,
 };
 
 use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
-use crate::utils;
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_schema::Schema;
 use chrono::NaiveDateTime;
@@ -62,6 +66,11 @@ impl Writer {
         self.mem.push(schema_key, rb);
         Ok(())
     }
+
+    fn push_mem(&mut self, schema_key: &str, rb: RecordBatch) -> Result<(), StreamWriterError> {
+        self.mem.push(schema_key, rb);
+        Ok(())
+    }
 }
 
 #[derive(Deref, DerefMut, Default)]
@@ -80,7 +89,8 @@ impl WriterTable {
 
         match hashmap_guard.get(stream_name) {
             Some(stream_writer) => {
-                stream_writer.lock().unwrap().push(
+                self.handle_existing_writer(
+                    stream_writer,
                     stream_name,
                     schema_key,
                     record,
@@ -89,10 +99,51 @@ impl WriterTable {
             }
             None => {
                 drop(hashmap_guard);
-                let mut map = self.write().unwrap();
+                let map = self.write().unwrap();
                 // check for race condition
                 // if map contains entry then just
-                if let Some(writer) = map.get(stream_name) {
+                self.handle_missing_writer(map, stream_name, schema_key, record, parsed_timestamp)?;
+            }
+        };
+        Ok(())
+    }
+
+    fn handle_existing_writer(
+        &self,
+        stream_writer: &Mutex<Writer>,
+        stream_name: &str,
+        schema_key: &str,
+        record: RecordBatch,
+        parsed_timestamp: NaiveDateTime,
+    ) -> Result<(), StreamWriterError> {
+        if CONFIG.parseable.mode != Mode::Query {
+            stream_writer.lock().unwrap().push(
+                stream_name,
+                schema_key,
+                record,
+                parsed_timestamp,
+            )?;
+        } else {
+            stream_writer
+                .lock()
+                .unwrap()
+                .push_mem(stream_name, record)?;
+        }
+
+        Ok(())
+    }
+
+    fn handle_missing_writer(
+        &self,
+        mut map: RwLockWriteGuard<HashMap<String, Mutex<Writer>>>,
+        stream_name: &str,
+        schema_key: &str,
+        record: RecordBatch,
+        parsed_timestamp: NaiveDateTime,
+    ) -> Result<(), StreamWriterError> {
+        match map.get(stream_name) {
+            Some(writer) => {
+                if CONFIG.parseable.mode != Mode::Query {
                     writer.lock().unwrap().push(
                         stream_name,
                         schema_key,
@@ -100,13 +151,30 @@ impl WriterTable {
                         parsed_timestamp,
                     )?;
                 } else {
+                    writer.lock().unwrap().push_mem(stream_name, record)?;
+                }
+            }
+            None => {
+                if CONFIG.parseable.mode != Mode::Query {
                     let mut writer = Writer::default();
                     writer.push(stream_name, schema_key, record, parsed_timestamp)?;
                     map.insert(stream_name.to_owned(), Mutex::new(writer));
+                } else {
+                    let mut writer = Writer::default();
+                    writer.push_mem(schema_key, record)?;
+                    map.insert(stream_name.to_owned(), Mutex::new(writer));
                 }
             }
-        };
+        }
         Ok(())
+    }
+
+    pub fn clear(&self, stream_name: &str) {
+        let map = self.write().unwrap();
+        if let Some(writer) = map.get(stream_name) {
+            let w = &mut writer.lock().unwrap().mem;
+            w.clear();
+        }
     }
 
     pub fn delete_stream(&self, stream_name: &str) {

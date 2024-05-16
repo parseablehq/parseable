@@ -34,8 +34,8 @@ pub struct MemWriter<const N: usize> {
     schema: Schema,
     // for checking uniqueness of schema
     schema_map: HashSet<String>,
-    read_buffer: Vec<RecordBatch>,
-    mutable_buffer: MutableBuffer<N>,
+    pub read_buffer: Vec<RecordBatch>,
+    pub mutable_buffer: MutableBuffer<N>,
 }
 
 impl<const N: usize> Default for MemWriter<N> {
@@ -62,6 +62,14 @@ impl<const N: usize> MemWriter<N> {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.schema = Schema::empty();
+        self.schema_map.clear();
+        self.read_buffer.clear();
+        self.mutable_buffer.inner.clear();
+        self.mutable_buffer.rows = 0;
+    }
+
     pub fn recordbatch_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
         let mut read_buffer = self.read_buffer.clone();
         if self.mutable_buffer.rows > 0 {
@@ -83,7 +91,7 @@ fn concat_records(schema: &Arc<Schema>, record: &[RecordBatch]) -> RecordBatch {
 }
 
 #[derive(Debug, Default)]
-struct MutableBuffer<const N: usize> {
+pub struct MutableBuffer<const N: usize> {
     pub inner: Vec<RecordBatch>,
     pub rows: usize,
 }

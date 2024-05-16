@@ -50,15 +50,15 @@ use crate::utils::actix::extract_session_key_from_req;
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
-    query: String,
-    start_time: String,
-    end_time: String,
+    pub query: String,
+    pub start_time: String,
+    pub end_time: String,
     #[serde(default)]
-    send_null: bool,
+    pub send_null: bool,
     #[serde(skip)]
-    fields: bool,
+    pub fields: bool,
     #[serde(skip)]
-    filter_tags: Option<Vec<String>>,
+    pub filter_tags: Option<Vec<String>>,
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
@@ -99,6 +99,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let time = Instant::now();
 
     let (records, fields) = query.execute(table_name.clone()).await?;
+
     let response = QueryResponse {
         records,
         fields,
@@ -116,7 +117,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     Ok(response)
 }
 
-fn authorize_and_set_filter_tags(
+pub fn authorize_and_set_filter_tags(
     query: &mut LogicalQuery,
     permissions: Vec<Permission>,
     table_name: &str,
@@ -183,7 +184,7 @@ impl FromRequest for Query {
     }
 }
 
-async fn into_query(
+pub async fn into_query(
     query: &Query,
     session_state: &SessionState,
 ) -> Result<LogicalQuery, QueryError> {

@@ -44,8 +44,11 @@ impl Config {
     fn new() -> Self {
         let cli = create_parseable_cli_command()
             .name("Parseable")
-            .about("A Cloud Native, log analytics platform")
-            .before_help("Log Lake for the cloud-native world")
+            .about(
+                r#"A Cloud Native, log analytics platform
+Log Lake for the cloud-native world
+"#,
+            )
             .arg_required_else_help(true)
             .subcommand_required(true)
             .color(clap::ColorChoice::Always)
@@ -192,11 +195,10 @@ fn create_parseable_cli_command() -> Command {
     command!()
         .name("Parseable")
         .bin_name("parseable")
-        .about("Parseable is a log storage and observability platform.")
         .propagate_version(true)
         .next_line_help(false)
         .help_template(
-            r#"
+            r#"{name} v{version}
 {about}
 Join the community at https://logg.ing/community.
 
