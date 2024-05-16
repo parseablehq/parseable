@@ -52,7 +52,7 @@ use std::{
 };
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
-const PARQUET_FILE_EXTENSION: &str = "data.parquet";
+// const PARQUET_FILE_EXTENSION: &str = "data.parquet";
 
 #[derive(Debug)]
 pub struct StorageDir {
@@ -68,7 +68,7 @@ impl StorageDir {
 
     pub fn file_time_suffix(
         time: NaiveDateTime,
-        custom_partition_values: HashMap<String, String>,
+        custom_partition_values: &HashMap<String, String>,
         extention: &str,
     ) -> String {
         let mut uri = utils::date_to_prefix(time.date())
@@ -90,7 +90,7 @@ impl StorageDir {
     fn filename_by_time(
         stream_hash: &str,
         time: NaiveDateTime,
-        custom_partition_values: HashMap<String, String>,
+        custom_partition_values: &HashMap<String, String>,
     ) -> String {
         format!(
             "{}.{}",
@@ -102,7 +102,7 @@ impl StorageDir {
     fn filename_by_current_time(
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
-        custom_partition_values: HashMap<String, String>,
+        custom_partition_values: &HashMap<String, String>,
     ) -> String {
         Self::filename_by_time(stream_hash, parsed_timestamp, custom_partition_values)
     }
@@ -111,7 +111,7 @@ impl StorageDir {
         &self,
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
-        custom_partition_values: HashMap<String, String>,
+        custom_partition_values: &HashMap<String, String>,
     ) -> PathBuf {
         let server_time_in_min = Utc::now().format("%Y%m%dT%H%M").to_string();
         let mut filename =
@@ -201,13 +201,12 @@ impl StorageDir {
     }
 }
 
-#[allow(unused)]
-pub fn to_parquet_path(stream_name: &str, time: NaiveDateTime) -> PathBuf {
-    let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
-    let dir = StorageDir::file_time_suffix(time, HashMap::new(), PARQUET_FILE_EXTENSION);
-
-    data_path.join(dir)
-}
+// pub fn to_parquet_path(stream_name: &str, time: NaiveDateTime) -> PathBuf {
+//     let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
+//     let dir = StorageDir::file_time_suffix(time, &HashMap::new(), PARQUET_FILE_EXTENSION);
+//
+//     data_path.join(dir)
+// }
 
 pub fn convert_disk_files_to_parquet(
     stream: &str,
