@@ -53,6 +53,7 @@ impl Writer {
         schema_key: &str,
         rb: RecordBatch,
         parsed_timestamp: NaiveDateTime,
+        custom_partition_values: HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
         let rb = utils::arrow::replace_columns(
             rb.schema(),
@@ -61,8 +62,13 @@ impl Writer {
             &[Arc::new(get_timestamp_array(rb.num_rows()))],
         );
 
-        self.disk
-            .push(stream_name, schema_key, &rb, parsed_timestamp)?;
+        self.disk.push(
+            stream_name,
+            schema_key,
+            &rb,
+            parsed_timestamp,
+            custom_partition_values,
+        )?;
         self.mem.push(schema_key, rb);
         Ok(())
     }
@@ -84,6 +90,7 @@ impl WriterTable {
         schema_key: &str,
         record: RecordBatch,
         parsed_timestamp: NaiveDateTime,
+        custom_partition_values: HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
         let hashmap_guard = self.read().unwrap();
 
@@ -95,6 +102,7 @@ impl WriterTable {
                     schema_key,
                     record,
                     parsed_timestamp,
+                    custom_partition_values,
                 )?;
             }
             None => {
@@ -149,6 +157,7 @@ impl WriterTable {
                         schema_key,
                         record,
                         parsed_timestamp,
+                        custom_partition_values,
                     )?;
                 } else {
                     writer.lock().unwrap().push_mem(stream_name, record)?;
@@ -157,7 +166,13 @@ impl WriterTable {
             None => {
                 if CONFIG.parseable.mode != Mode::Query {
                     let mut writer = Writer::default();
-                    writer.push(stream_name, schema_key, record, parsed_timestamp)?;
+                    writer.push(
+                        stream_name,
+                        schema_key,
+                        record,
+                        parsed_timestamp,
+                        custom_partition_values,
+                    )?;
                     map.insert(stream_name.to_owned(), Mutex::new(writer));
                 } else {
                     let mut writer = Writer::default();

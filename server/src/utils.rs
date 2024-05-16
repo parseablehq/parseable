@@ -24,8 +24,9 @@ pub mod uid;
 pub mod update;
 use crate::option::CONFIG;
 use chrono::{DateTime, NaiveDate, Timelike, Utc};
+use itertools::Itertools;
 use sha2::{Digest, Sha256};
-
+use std::collections::HashMap;
 use std::env;
 use url::Url;
 
@@ -60,6 +61,14 @@ pub fn minute_to_slot(minute: u32, data_granularity: u32) -> Option<String> {
 pub fn date_to_prefix(date: NaiveDate) -> String {
     let date = format!("date={date}/");
     date.replace("UTC", "")
+}
+
+pub fn custom_partition_to_prefix(custom_partition: HashMap<String, String>) -> String {
+    let mut prefix = String::default();
+    for (key, value) in custom_partition.iter().sorted_by_key(|v| v.0) {
+        prefix.push_str(&format!("{key}={value}/", key = key, value = value));
+    }
+    prefix
 }
 
 pub fn hour_to_prefix(hour: u32) -> String {

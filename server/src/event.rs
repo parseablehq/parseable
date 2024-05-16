@@ -23,13 +23,13 @@ mod writer;
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
 use itertools::Itertools;
-
 use std::sync::Arc;
 
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
 use crate::{handlers::http::ingest::PostError, metadata};
 use chrono::NaiveDateTime;
+use std::collections::HashMap;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 pub const DEFAULT_TAGS_KEY: &str = "p_tags";
@@ -44,6 +44,7 @@ pub struct Event {
     pub is_first_event: bool,
     pub parsed_timestamp: NaiveDateTime,
     pub time_partition: Option<String>,
+    pub custom_partition_values: HashMap<String, String>,
 }
 
 // Events holds the schema related to a each event for a single log stream
@@ -53,6 +54,14 @@ impl Event {
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
             key = format!("{key}{parsed_timestamp_to_min}");
+        }
+
+        if !self.custom_partition_values.is_empty() {
+            let mut custom_partition_key = String::default();
+            for (k, v) in self.custom_partition_values.iter().sorted_by_key(|v| v.0) {
+                custom_partition_key = format!("{custom_partition_key}&{k}={v}");
+            }
+            key = format!("{key}{custom_partition_key}");
         }
 
         let num_rows = self.rb.num_rows() as u64;
@@ -65,6 +74,7 @@ impl Event {
             &key,
             self.rb.clone(),
             self.parsed_timestamp,
+            self.custom_partition_values,
         )?;
 
         metadata::STREAM_INFO.update_stats(
@@ -111,8 +121,15 @@ impl Event {
         schema_key: &str,
         rb: RecordBatch,
         parsed_timestamp: NaiveDateTime,
+        custom_partition_values: HashMap<String, String>,
     ) -> Result<(), EventError> {
-        STREAM_WRITERS.append_to_local(stream_name, schema_key, rb, parsed_timestamp)?;
+        STREAM_WRITERS.append_to_local(
+            stream_name,
+            schema_key,
+            rb,
+            parsed_timestamp,
+            custom_partition_values,
+        )?;
         Ok(())
     }
 }

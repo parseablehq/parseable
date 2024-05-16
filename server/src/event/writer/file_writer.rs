@@ -45,6 +45,7 @@ impl FileWriter {
         schema_key: &str,
         record: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
+        custom_partition_values: HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
         match self.get_mut(schema_key) {
             Some(writer) => {
@@ -56,8 +57,13 @@ impl FileWriter {
             // entry is not present thus we create it
             None => {
                 // this requires mutable borrow of the map so we drop this read lock and wait for write lock
-                let (path, writer) =
-                    init_new_stream_writer_file(stream_name, schema_key, record, parsed_timestamp)?;
+                let (path, writer) = init_new_stream_writer_file(
+                    stream_name,
+                    schema_key,
+                    record,
+                    parsed_timestamp,
+                    custom_partition_values,
+                )?;
                 self.insert(
                     schema_key.to_owned(),
                     ArrowWriter {
@@ -83,9 +89,10 @@ fn init_new_stream_writer_file(
     schema_key: &str,
     record: &RecordBatch,
     parsed_timestamp: NaiveDateTime,
+    custom_partition_values: HashMap<String, String>,
 ) -> Result<(PathBuf, StreamWriter<std::fs::File>), StreamWriterError> {
     let dir = StorageDir::new(stream_name);
-    let path = dir.path_by_current_time(schema_key, parsed_timestamp);
+    let path = dir.path_by_current_time(schema_key, parsed_timestamp, custom_partition_values);
     std::fs::create_dir_all(dir.data_path)?;
 
     let file = OpenOptions::new().create(true).append(true).open(&path)?;

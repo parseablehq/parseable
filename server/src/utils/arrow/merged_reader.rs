@@ -74,11 +74,16 @@ impl MergedReverseRecordReader {
         Ok(Self { readers })
     }
 
-    pub fn merged_iter(self, schema: Arc<Schema>) -> impl Iterator<Item = RecordBatch> {
+    pub fn merged_iter(
+        self,
+        schema: Arc<Schema>,
+        time_partition: Option<String>,
+    ) -> impl Iterator<Item = RecordBatch> {
         let adapted_readers = self.readers.into_iter().map(|reader| reader.flatten());
-        kmerge_by(adapted_readers, |a: &RecordBatch, b: &RecordBatch| {
-            let a_time = get_timestamp_millis(a);
-            let b_time = get_timestamp_millis(b);
+        kmerge_by(adapted_readers, move |a: &RecordBatch, b: &RecordBatch| {
+            // Capture time_partition by value
+            let a_time = get_timestamp_millis(a, time_partition.clone());
+            let b_time = get_timestamp_millis(b, time_partition.clone());
             a_time > b_time
         })
         .map(|batch| reverse(&batch))
@@ -95,7 +100,23 @@ impl MergedReverseRecordReader {
     }
 }
 
-fn get_timestamp_millis(batch: &RecordBatch) -> i64 {
+fn get_timestamp_millis(batch: &RecordBatch, time_partition: Option<String>) -> i64 {
+    match time_partition {
+        Some(time_partition) => {
+            let time_partition = time_partition.as_str();
+            match batch.column_by_name(time_partition) {
+                Some(column) => column
+                    .as_any()
+                    .downcast_ref::<TimestampMillisecondArray>()
+                    .unwrap()
+                    .value(0),
+                None => get_default_timestamp_millis(batch),
+            }
+        }
+        None => get_default_timestamp_millis(batch),
+    }
+}
+fn get_default_timestamp_millis(batch: &RecordBatch) -> i64 {
     match batch
         .column(0)
         .as_any()
