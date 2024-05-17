@@ -184,34 +184,30 @@ pub async fn fetch_stats_from_ingestors(
             .and_then(|meta| meta.get("version"))
             .and_then(|version| version.as_str());
         let stats = stream_metadata.get("stats").unwrap();
-        match version {
-            Some("v4") => {
-                let current_stats = stats.get("current_stats").unwrap().clone();
-                let lifetime_stats = stats.get("lifetime_stats").unwrap().clone();
-                let deleted_stats = stats.get("deleted_stats").unwrap().clone();
+        if let Some("v4") = version {
+            let current_stats = stats.get("current_stats").unwrap().clone();
+            let lifetime_stats = stats.get("lifetime_stats").unwrap().clone();
+            let deleted_stats = stats.get("deleted_stats").unwrap().clone();
 
-                count += current_stats.get("events").unwrap().as_u64().unwrap();
-                ingestion_size += current_stats.get("ingestion").unwrap().as_u64().unwrap();
-                storage_size += current_stats.get("storage").unwrap().as_u64().unwrap();
-                lifetime_count += lifetime_stats.get("events").unwrap().as_u64().unwrap();
-                lifetime_ingestion_size +=
-                    lifetime_stats.get("ingestion").unwrap().as_u64().unwrap();
-                lifetime_storage_size += lifetime_stats.get("storage").unwrap().as_u64().unwrap();
-                deleted_count += deleted_stats.get("events").unwrap().as_u64().unwrap();
-                deleted_ingestion_size += deleted_stats.get("ingestion").unwrap().as_u64().unwrap();
-                deleted_storage_size += deleted_stats.get("storage").unwrap().as_u64().unwrap();
-            }
-            _ => {
-                count += stats.get("events").unwrap().as_u64().unwrap();
-                ingestion_size += stats.get("ingestion").unwrap().as_u64().unwrap();
-                storage_size += stats.get("storage").unwrap().as_u64().unwrap();
-                lifetime_count += stats.get("events").unwrap().as_u64().unwrap();
-                lifetime_ingestion_size += stats.get("ingestion").unwrap().as_u64().unwrap();
-                lifetime_storage_size += stats.get("storage").unwrap().as_u64().unwrap();
-                deleted_count += 0;
-                deleted_ingestion_size += 0;
-                deleted_storage_size += 0;
-            }
+            count += current_stats.get("events").unwrap().as_u64().unwrap();
+            ingestion_size += current_stats.get("ingestion").unwrap().as_u64().unwrap();
+            storage_size += current_stats.get("storage").unwrap().as_u64().unwrap();
+            lifetime_count += lifetime_stats.get("events").unwrap().as_u64().unwrap();
+            lifetime_ingestion_size += lifetime_stats.get("ingestion").unwrap().as_u64().unwrap();
+            lifetime_storage_size += lifetime_stats.get("storage").unwrap().as_u64().unwrap();
+            deleted_count += deleted_stats.get("events").unwrap().as_u64().unwrap();
+            deleted_ingestion_size += deleted_stats.get("ingestion").unwrap().as_u64().unwrap();
+            deleted_storage_size += deleted_stats.get("storage").unwrap().as_u64().unwrap();
+        } else {
+            count += stats.get("events").unwrap().as_u64().unwrap();
+            ingestion_size += stats.get("ingestion").unwrap().as_u64().unwrap();
+            storage_size += stats.get("storage").unwrap().as_u64().unwrap();
+            lifetime_count += stats.get("events").unwrap().as_u64().unwrap();
+            lifetime_ingestion_size += stats.get("ingestion").unwrap().as_u64().unwrap();
+            lifetime_storage_size += stats.get("storage").unwrap().as_u64().unwrap();
+            deleted_count += 0;
+            deleted_ingestion_size += 0;
+            deleted_storage_size += 0;
         }
     }
 

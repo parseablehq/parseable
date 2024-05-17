@@ -61,7 +61,7 @@ pub fn v1_v4(mut stream_metadata: Value) -> Value {
         .as_object()
         .and_then(|meta| meta.get("version"))
         .and_then(|version| version.as_str());
-    if let Some("v1") = version {
+    if matches!(version, Some("v1")) {
         let updated_snapshot = v1_v2_snapshot_migration(snapshot);
         stream_metadata_map.insert("snapshot".to_owned(), updated_snapshot);
     }
@@ -108,7 +108,7 @@ pub fn v2_v4(mut stream_metadata: Value) -> Value {
         .as_object()
         .and_then(|meta| meta.get("version"))
         .and_then(|version| version.as_str());
-    if let Some("v1") = version {
+    if matches!(version, Some("v1")) {
         let updated_snapshot = v1_v2_snapshot_migration(snapshot);
         stream_metadata_map.insert("snapshot".to_owned(), updated_snapshot);
     }
@@ -156,7 +156,7 @@ pub fn v3_v4(mut stream_metadata: Value) -> Value {
         .as_object()
         .and_then(|meta| meta.get("version"))
         .and_then(|version| version.as_str());
-    if let Some("v1") = version {
+    if matches!(version, Some("v1")) {
         let updated_snapshot = v1_v2_snapshot_migration(snapshot);
         stream_metadata_map.insert("snapshot".to_owned(), updated_snapshot);
     }
