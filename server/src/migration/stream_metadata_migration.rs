@@ -175,7 +175,7 @@ fn v1_v2_snapshot_migration(mut snapshot: Value) -> Value {
             "manifest_path": manifest_map.get("manifest_path").unwrap(),
             "time_lower_bound": time_lower_bound,
             "time_upper_bound": time_upper_bound,
-            "events_count": 0,
+            "events_ingested": 0,
             "ingestion_size": 0,
             "storage_size": 0
         });
