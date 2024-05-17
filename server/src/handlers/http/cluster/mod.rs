@@ -184,7 +184,7 @@ pub async fn fetch_stats_from_ingestors(
             .and_then(|meta| meta.get("version"))
             .and_then(|version| version.as_str());
         let stats = stream_metadata.get("stats").unwrap();
-        if let Some("v4") = version {
+        if matches!(version, Some("v4")) {
             let current_stats = stats.get("current_stats").unwrap().clone();
             let lifetime_stats = stats.get("lifetime_stats").unwrap().clone();
             let deleted_stats = stats.get("deleted_stats").unwrap().clone();
