@@ -35,14 +35,14 @@ pub struct Pannel {
     chart_type: String,
     columns: Vec<String>,
     headers: Vec<String>,
-    dimensions: (u64, u64),
+    dimensions: Vec<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Dashboard {
     version: String,
-    name: String,
-    id: String,
+    dashboard_name: String,
+    dashboard_id: String,
     time_filter: TimeFilter,
     refresh_interval: u64,
     pannels: Vec<Pannel>,
@@ -50,11 +50,11 @@ pub struct Dashboard {
 
 impl Dashboard {
     pub fn dashboard_id(&self) -> &str {
-        &self.id
+        &self.dashboard_id
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Dashboards(RwLock<Vec<Dashboard>>);
 
 impl Dashboards {
@@ -64,7 +64,8 @@ impl Dashboards {
         let store = CONFIG.storage().get_object_store();
         let objs = store
             .get_objects(Some(&path), Box::new(|path| path.ends_with(".json")))
-            .await?;
+            .await
+            .unwrap_or_default();
 
         for obj in objs {
             if let Ok(filter) = serde_json::from_slice::<Dashboard>(&obj) {
