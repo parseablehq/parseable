@@ -863,16 +863,25 @@ mod tests {
                 manifest_path: "1".to_string(),
                 time_lower_bound: datetime_min(2023, 12, 15),
                 time_upper_bound: datetime_max(2023, 12, 15),
+                events_ingested: 0,
+                ingestion_size: 0,
+                storage_size: 0,
             },
             ManifestItem {
                 manifest_path: "2".to_string(),
                 time_lower_bound: datetime_min(2023, 12, 16),
                 time_upper_bound: datetime_max(2023, 12, 16),
+                events_ingested: 0,
+                ingestion_size: 0,
+                storage_size: 0,
             },
             ManifestItem {
                 manifest_path: "3".to_string(),
                 time_lower_bound: datetime_min(2023, 12, 17),
                 time_upper_bound: datetime_max(2023, 12, 17),
+                events_ingested: 0,
+                ingestion_size: 0,
+                storage_size: 0,
             },
         ]
     }

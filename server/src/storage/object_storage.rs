@@ -26,7 +26,7 @@ use super::{
 };
 
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
-use crate::metrics::LIFETIME_EVENTS_STORAGE_SIZE;
+use crate::metrics::{LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE_TODAY};
 use crate::option::Mode;
 use crate::{
     alerts::Alerts,
@@ -187,7 +187,6 @@ pub trait ObjectStorage: Sync + 'static {
             serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
 
         stream_metadata["stats"] = stats;
-
         self.put_object(&path, to_bytes(&stream_metadata)).await
     }
 
@@ -437,7 +436,6 @@ pub trait ObjectStorage: Sync + 'static {
         }
 
         let streams = STREAM_INFO.list_streams();
-        let mut stream_stats = HashMap::new();
 
         let cache_manager = LocalCacheManager::global();
         let mut cache_updates: HashMap<&String, Vec<_>> = HashMap::new();
@@ -469,15 +467,20 @@ pub trait ObjectStorage: Sync + 'static {
                     commit_schema_to_storage(stream, schema).await?;
                 }
             }
-
+            let mut compressed_size: u64 = 0;
             let parquet_files = dir.parquet_files();
             parquet_files.iter().for_each(|file| {
-                let compressed_size = file.metadata().map_or(0, |meta| meta.len());
-                stream_stats
-                    .entry(stream)
-                    .and_modify(|size| *size += compressed_size)
-                    .or_insert_with(|| compressed_size);
+                compressed_size += file.metadata().map_or(0, |meta| meta.len());
             });
+            STORAGE_SIZE
+                .with_label_values(&["data", stream, "parquet"])
+                .add(compressed_size as i64);
+            STORAGE_SIZE_TODAY
+                .with_label_values(&["data", stream, "parquet"])
+                .add(compressed_size as i64);
+            LIFETIME_EVENTS_STORAGE_SIZE
+                .with_label_values(&["data", stream, "parquet"])
+                .add(compressed_size as i64);
 
             for file in parquet_files {
                 let filename = file
@@ -504,6 +507,12 @@ pub trait ObjectStorage: Sync + 'static {
                 let manifest =
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
+                let stats = stats::get_current_stats(stream, "json");
+                if let Some(stats) = stats {
+                    if let Err(e) = self.put_stats(stream, &stats).await {
+                        log::warn!("Error updating stats to objectstore due to error [{}]", e);
+                    }
+                }
                 if cache_enabled && cache_manager.is_some() {
                     cache_updates
                         .entry(stream)
@@ -511,21 +520,6 @@ pub trait ObjectStorage: Sync + 'static {
                         .push((absolute_path, file));
                 } else {
                     let _ = fs::remove_file(file);
-                }
-            }
-        }
-
-        for (stream, compressed_size) in stream_stats {
-            STORAGE_SIZE
-                .with_label_values(&["data", stream, "parquet"])
-                .add(compressed_size as i64);
-            LIFETIME_EVENTS_STORAGE_SIZE
-                .with_label_values(&["data", stream, "parquet"])
-                .add(compressed_size as i64);
-            let stats = stats::get_current_stats(stream, "json");
-            if let Some(stats) = stats {
-                if let Err(e) = self.put_stats(stream, &stats).await {
-                    log::warn!("Error updating stats to objectstore due to error [{}]", e);
                 }
             }
         }

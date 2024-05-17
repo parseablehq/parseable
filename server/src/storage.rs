@@ -66,8 +66,8 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 // const PERMISSIONS_READ_WRITE: &str = "readwrite";
 const ACCESS_ALL: &str = "all";
 
-pub const CURRENT_OBJECT_STORE_VERSION: &str = "v3";
-pub const CURRENT_SCHEMA_VERSION: &str = "v3";
+pub const CURRENT_OBJECT_STORE_VERSION: &str = "v4";
+pub const CURRENT_SCHEMA_VERSION: &str = "v4";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ObjectStoreFormat {

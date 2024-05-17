@@ -27,8 +27,8 @@ use std::sync::{Arc, RwLock};
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 use crate::alerts::Alerts;
 use crate::metrics::{
-    EVENTS_INGESTED, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_TODAY, LIFETIME_EVENTS_INGESTED,
-    LIFETIME_EVENTS_INGESTED_SIZE,
+    EVENTS_INGESTED, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_TODAY, EVENTS_INGESTED_TODAY,
+    LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
 use crate::storage::{LogStream, ObjectStorage, StorageDir};
 use crate::utils::arrow::MergedRecordReader;
@@ -288,6 +288,9 @@ impl StreamInfo {
         num_rows: u64,
     ) -> Result<(), MetadataError> {
         EVENTS_INGESTED
+            .with_label_values(&[stream_name, origin])
+            .add(num_rows as i64);
+        EVENTS_INGESTED_TODAY
             .with_label_values(&[stream_name, origin])
             .add(num_rows as i64);
         EVENTS_INGESTED_SIZE

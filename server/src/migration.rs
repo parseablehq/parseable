@@ -24,11 +24,9 @@ mod stream_metadata_migration;
 use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{
-    catalog::{manifest::Manifest, partition_path},
     option::Config,
-    stats::{FullStats, Stats},
     storage::{
-        object_storage::{manifest_path, parseable_json_path, stream_json_path},
+        object_storage::{parseable_json_path, stream_json_path},
         ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
         SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
     },
@@ -119,7 +117,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
 
     match version {
         Some("v1") => {
-            let new_stream_metadata = stream_metadata_migration::v1_v3(stream_metadata);
+            let new_stream_metadata = stream_metadata_migration::v1_v4(stream_metadata);
             storage
                 .put_object(&path, to_bytes(&new_stream_metadata))
                 .await?;
@@ -128,11 +126,11 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
             let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema).ok();
-            let map = schema_migration::v1_v3(schema)?;
+            let map = schema_migration::v1_v4(schema)?;
             storage.put_object(&schema_path, to_bytes(&map)).await?;
         }
         Some("v2") => {
-            let new_stream_metadata = stream_metadata_migration::v2_v3(stream_metadata);
+            let new_stream_metadata = stream_metadata_migration::v2_v4(stream_metadata);
             storage
                 .put_object(&path, to_bytes(&new_stream_metadata))
                 .await?;
@@ -141,8 +139,14 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
             let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema)?;
-            let map = schema_migration::v2_v3(schema)?;
+            let map = schema_migration::v2_v4(schema)?;
             storage.put_object(&schema_path, to_bytes(&map)).await?;
+        }
+        Some("v3") => {
+            let new_stream_metadata = stream_metadata_migration::v3_v4(stream_metadata);
+            storage
+                .put_object(&path, to_bytes(&new_stream_metadata))
+                .await?;
         }
         _ => (),
     }
@@ -214,17 +218,18 @@ pub async fn run_file_migration(config: &Config) -> anyhow::Result<()> {
     let object_store = config.storage().get_object_store();
 
     let old_meta_file_path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
+
     // if this errors that means migrations is already done
     if let Err(err) = object_store.get_object(&old_meta_file_path).await {
         if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-            log::info!("Migration already done");
-        } else {
-            run_meta_file_migration(&object_store, old_meta_file_path).await?;
-            run_stream_files_migration(&object_store).await?;
+            return Ok(());
         }
+        return Err(err.into());
     }
 
-    run_stream_stats_migration(&object_store).await?;
+    run_meta_file_migration(&object_store, old_meta_file_path).await?;
+    run_stream_files_migration(&object_store).await?;
+
     Ok(())
 }
 
@@ -292,57 +297,6 @@ async fn run_stream_files_migration(
                     }
                 }
             }
-        }
-    }
-
-    Ok(())
-}
-
-async fn run_stream_stats_migration(
-    object_store: &Arc<dyn ObjectStorage + Send>,
-) -> anyhow::Result<()> {
-    let streams = object_store
-        .list_streams()
-        .await?
-        .into_iter()
-        .map(|stream| stream.name)
-        .collect_vec();
-    for stream in streams {
-        let stream_metadata = object_store.get_object(&stream_json_path(&stream)).await?;
-        let mut stream_metadata: serde_json::Value =
-            serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
-        let stats = &stream_metadata["stats"];
-        if serde_json::from_value::<FullStats>(stats.clone()).is_err() {
-            let stats: Stats = serde_json::from_value(stats.clone()).unwrap();
-            let full_stats = FullStats {
-                lifetime_stats: stats,
-                current_stats: stats,
-                deleted_stats: Stats::default(),
-            };
-            let full_stats_bytes = to_bytes(&full_stats);
-            let full_stats_slice: &[u8] = &full_stats_bytes;
-            stream_metadata["stats"] =
-                serde_json::from_slice(full_stats_slice).expect("parseable config is valid json");
-            object_store
-                .put_object(&stream_json_path(&stream), to_bytes(&stream_metadata))
-                .await?;
-        }
-        let mut meta = object_store.get_object_store_format(&stream).await?;
-        let manifests = &mut meta.snapshot.manifest_list;
-        for manifest in manifests {
-            let path = partition_path(
-                &stream,
-                manifest.time_lower_bound,
-                manifest.time_upper_bound,
-            );
-            let path = manifest_path(path.as_str());
-            let manifest_bytes = object_store.get_object(&path).await?;
-            let mut manifest: serde_json::Value =
-                serde_json::from_slice(&manifest_bytes).expect("manifest.json is valid json");
-            if serde_json::from_value::<Manifest>(manifest.clone()).is_err() {
-                manifest["ingestion_size"] = 0.into();
-            }
-            object_store.put_object(&path, to_bytes(&manifest)).await?;
         }
     }
 

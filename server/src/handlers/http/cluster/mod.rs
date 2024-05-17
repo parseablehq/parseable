@@ -28,8 +28,8 @@ use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
 use crate::storage::object_storage::ingestor_metadata_path;
+use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
-use crate::storage::{ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY};
 use actix_web::http::header;
 use actix_web::{HttpRequest, Responder};
 use bytes::Bytes;
@@ -161,9 +161,12 @@ pub async fn fetch_stats_from_ingestors(
         .get_object_store()
         .get_objects(
             Some(&path),
-            Box::new(|file_name| file_name.starts_with(".ingestor")),
+            Box::new(|file_name| {
+                file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
+            }),
         )
         .await?;
+
     let mut ingestion_size = 0u64;
     let mut storage_size = 0u64;
     let mut count = 0u64;
@@ -174,16 +177,41 @@ pub async fn fetch_stats_from_ingestors(
     let mut deleted_storage_size = 0u64;
     let mut deleted_count = 0u64;
     for ob in obs {
-        if let Ok(stat) = serde_json::from_slice::<ObjectStoreFormat>(&ob) {
-            count += stat.stats.current_stats.events;
-            ingestion_size += stat.stats.current_stats.ingestion;
-            storage_size += stat.stats.current_stats.storage;
-            lifetime_count += stat.stats.lifetime_stats.events;
-            lifetime_ingestion_size += stat.stats.lifetime_stats.ingestion;
-            lifetime_storage_size += stat.stats.lifetime_stats.storage;
-            deleted_count += stat.stats.deleted_stats.events;
-            deleted_ingestion_size += stat.stats.deleted_stats.ingestion;
-            deleted_storage_size += stat.stats.deleted_stats.storage;
+        let stream_metadata: serde_json::Value =
+            serde_json::from_slice(&ob).expect("stream.json is valid json");
+        let version = stream_metadata
+            .as_object()
+            .and_then(|meta| meta.get("version"))
+            .and_then(|version| version.as_str());
+        let stats = stream_metadata.get("stats").unwrap();
+        match version {
+            Some("v4") => {
+                let current_stats = stats.get("current_stats").unwrap().clone();
+                let lifetime_stats = stats.get("lifetime_stats").unwrap().clone();
+                let deleted_stats = stats.get("deleted_stats").unwrap().clone();
+
+                count += current_stats.get("events").unwrap().as_u64().unwrap();
+                ingestion_size += current_stats.get("ingestion").unwrap().as_u64().unwrap();
+                storage_size += current_stats.get("storage").unwrap().as_u64().unwrap();
+                lifetime_count += lifetime_stats.get("events").unwrap().as_u64().unwrap();
+                lifetime_ingestion_size +=
+                    lifetime_stats.get("ingestion").unwrap().as_u64().unwrap();
+                lifetime_storage_size += lifetime_stats.get("storage").unwrap().as_u64().unwrap();
+                deleted_count += deleted_stats.get("events").unwrap().as_u64().unwrap();
+                deleted_ingestion_size += deleted_stats.get("ingestion").unwrap().as_u64().unwrap();
+                deleted_storage_size += deleted_stats.get("storage").unwrap().as_u64().unwrap();
+            }
+            _ => {
+                count += stats.get("events").unwrap().as_u64().unwrap();
+                ingestion_size += stats.get("ingestion").unwrap().as_u64().unwrap();
+                storage_size += stats.get("storage").unwrap().as_u64().unwrap();
+                lifetime_count += stats.get("events").unwrap().as_u64().unwrap();
+                lifetime_ingestion_size += stats.get("ingestion").unwrap().as_u64().unwrap();
+                lifetime_storage_size += stats.get("storage").unwrap().as_u64().unwrap();
+                deleted_count += 0;
+                deleted_ingestion_size += 0;
+                deleted_storage_size += 0;
+            }
         }
     }
 

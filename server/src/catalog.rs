@@ -20,9 +20,9 @@ use std::{io::ErrorKind, sync::Arc};
 
 use self::{column::Column, snapshot::ManifestItem};
 use crate::handlers::http::base_path_without_preceding_slash;
-use crate::metrics::EVENTS_INGESTED_SIZE;
+use crate::metrics::{EVENTS_INGESTED_SIZE_TODAY, EVENTS_INGESTED_TODAY, STORAGE_SIZE_TODAY};
 use crate::option::CONFIG;
-use crate::stats::{event_labels, update_deleted_stats};
+use crate::stats::{event_labels, storage_size_labels, update_deleted_stats};
 use crate::{
     catalog::manifest::Manifest,
     event::DEFAULT_TIMESTAMP_KEY,
@@ -103,13 +103,28 @@ pub async fn update_snapshot(
     change: manifest::File,
 ) -> Result<(), ObjectStorageError> {
     // get current snapshot
+    let event_labels = event_labels(stream_name, "json");
+    let storage_size_labels = storage_size_labels(stream_name);
+    let events_ingested = EVENTS_INGESTED_TODAY
+        .get_metric_with_label_values(&event_labels)
+        .unwrap()
+        .get() as u64;
+    let ingestion_size = EVENTS_INGESTED_SIZE_TODAY
+        .get_metric_with_label_values(&event_labels)
+        .unwrap()
+        .get() as u64;
+    let storage_size = STORAGE_SIZE_TODAY
+        .get_metric_with_label_values(&storage_size_labels)
+        .unwrap()
+        .get() as u64;
+
     let mut meta = storage.get_object_store_format(stream_name).await?;
     let meta_clone = meta.clone();
     let manifests = &mut meta.snapshot.manifest_list;
-    let time_partition: Option<String> = meta_clone.time_partition;
+    let time_partition = &meta_clone.time_partition;
     let lower_bound = match time_partition {
         Some(time_partition) => {
-            let (lower_bound, _) = get_file_bounds(&change, time_partition);
+            let (lower_bound, _) = get_file_bounds(&change, time_partition.to_string());
             lower_bound
         }
         None => {
@@ -131,15 +146,21 @@ pub async fn update_snapshot(
         let path = partition_path(stream_name, info.time_lower_bound, info.time_upper_bound);
 
         let mut ch = false;
-        for m in manifests.iter() {
+        for m in manifests.iter_mut() {
             let p = manifest_path("").to_string();
             if m.manifest_path.contains(&p) {
                 ch = true;
+                m.events_ingested = events_ingested;
+                m.ingestion_size = ingestion_size;
+                m.storage_size = storage_size;
             }
         }
+
+        meta.snapshot.manifest_list = manifests.to_vec();
+        storage.put_snapshot(stream_name, meta.snapshot).await?;
         if ch {
             if let Some(mut manifest) = storage.get_manifest(&path).await? {
-                manifest.apply_change(change, stream_name);
+                manifest.apply_change(change);
                 storage.put_manifest(&path, manifest).await?;
             } else {
                 //instead of returning an error, create a new manifest (otherwise local to storage sync fails)
@@ -150,7 +171,10 @@ pub async fn update_snapshot(
                     storage.clone(),
                     stream_name,
                     false,
-                    meta,
+                    meta_clone,
+                    events_ingested,
+                    ingestion_size,
+                    storage_size,
                 )
                 .await?;
             }
@@ -161,7 +185,10 @@ pub async fn update_snapshot(
                 storage.clone(),
                 stream_name,
                 true,
-                meta,
+                meta_clone,
+                events_ingested,
+                ingestion_size,
+                storage_size,
             )
             .await?;
         }
@@ -172,7 +199,10 @@ pub async fn update_snapshot(
             storage.clone(),
             stream_name,
             true,
-            meta,
+            meta_clone,
+            events_ingested,
+            ingestion_size,
+            storage_size,
         )
         .await?;
     }
@@ -180,6 +210,7 @@ pub async fn update_snapshot(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_manifest(
     lower_bound: DateTime<Utc>,
     change: manifest::File,
@@ -187,6 +218,9 @@ async fn create_manifest(
     stream_name: &str,
     update_snapshot: bool,
     mut meta: ObjectStoreFormat,
+    events_ingested: u64,
+    ingestion_size: u64,
+    storage_size: u64,
 ) -> Result<(), ObjectStorageError> {
     let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
     let upper_bound = lower_bound
@@ -200,15 +234,9 @@ async fn create_manifest(
                 .map_err(ObjectStorageError::IoError)?,
         )
         .and_utc();
-    let event_labels = event_labels(stream_name, "json");
-    let ingestion_size = EVENTS_INGESTED_SIZE
-        .get_metric_with_label_values(&event_labels)
-        .unwrap()
-        .get() as i64;
 
     let manifest = Manifest {
         files: vec![change],
-        ingestion_size,
         ..Manifest::default()
     };
 
@@ -224,6 +252,9 @@ async fn create_manifest(
             manifest_path: path.to_string(),
             time_lower_bound: lower_bound,
             time_upper_bound: upper_bound,
+            events_ingested,
+            ingestion_size,
+            storage_size,
         };
         manifests.push(new_snapshot_entry);
         meta.snapshot.manifest_list = manifests;

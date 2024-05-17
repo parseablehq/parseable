@@ -44,6 +44,14 @@ pub static EVENTS_INGESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static EVENTS_INGESTED_TODAY: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("events_ingested_today", "Events ingested today").namespace(METRICS_NAMESPACE),
+        &["stream", "format"],
+    )
+    .expect("metric can be created")
+});
+
 pub static EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new("events_ingested_size", "Events ingested size bytes")
@@ -68,6 +76,14 @@ pub static EVENTS_INGESTED_SIZE_TODAY: Lazy<IntGaugeVec> = Lazy::new(|| {
 pub static STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new("storage_size", "Storage size bytes").namespace(METRICS_NAMESPACE),
+        &["type", "stream", "format"],
+    )
+    .expect("metric can be created")
+});
+
+pub static STORAGE_SIZE_TODAY: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new("storage_size_today", "Storage size today in bytes").namespace(METRICS_NAMESPACE),
         &["type", "stream", "format"],
     )
     .expect("metric can be created")
@@ -171,6 +187,9 @@ fn custom_metrics(registry: &Registry) {
         .register(Box::new(EVENTS_INGESTED.clone()))
         .expect("metric can be registered");
     registry
+        .register(Box::new(EVENTS_INGESTED_TODAY.clone()))
+        .expect("metric can be registered");
+    registry
         .register(Box::new(EVENTS_INGESTED_SIZE.clone()))
         .expect("metric can be registered");
     registry
@@ -178,6 +197,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(STORAGE_SIZE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(STORAGE_SIZE_TODAY.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(EVENTS_DELETED.clone()))
@@ -249,16 +271,21 @@ pub async fn fetch_stats_from_storage() {
         EVENTS_INGESTED
             .with_label_values(&[&stream_name, "json"])
             .set(stats.current_stats.events as i64);
+        EVENTS_INGESTED_TODAY
+            .with_label_values(&[&stream_name, "json"])
+            .set(stats.current_date_stats.events as i64);
         EVENTS_INGESTED_SIZE
             .with_label_values(&[&stream_name, "json"])
             .set(stats.current_stats.ingestion as i64);
         EVENTS_INGESTED_SIZE_TODAY
             .with_label_values(&[&stream_name, "json"])
-            .set(stats.current_stats.ingestion as i64);
+            .set(stats.current_date_stats.ingestion as i64);
         STORAGE_SIZE
             .with_label_values(&["data", &stream_name, "parquet"])
             .set(stats.current_stats.storage as i64);
-
+        STORAGE_SIZE_TODAY
+            .with_label_values(&["data", &stream_name, "parquet"])
+            .set(stats.current_date_stats.storage as i64);
         EVENTS_DELETED
             .with_label_values(&[&stream_name, "json"])
             .set(stats.deleted_stats.events as i64);
@@ -299,8 +326,14 @@ pub fn init_reset_daily_metric_scheduler() {
     let func = move || async {
         //get retention every day at 12 am
         for stream in STREAM_INFO.list_streams() {
+            metrics::EVENTS_INGESTED_TODAY
+                .with_label_values(&[&stream, "json"])
+                .set(0);
             metrics::EVENTS_INGESTED_SIZE_TODAY
                 .with_label_values(&[&stream, "json"])
+                .set(0);
+            metrics::STORAGE_SIZE_TODAY
+                .with_label_values(&["data", &stream, "parquet"])
                 .set(0);
         }
     };
