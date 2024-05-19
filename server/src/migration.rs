@@ -147,6 +147,12 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
             storage
                 .put_object(&path, to_bytes(&new_stream_metadata))
                 .await?;
+            let schema_path =
+                RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
+            let schema = storage.get_object(&schema_path).await?;
+            let schema = serde_json::from_slice(&schema)?;
+            let map = schema_migration::v2_v4(schema)?;
+            storage.put_object(&schema_path, to_bytes(&map)).await?;
         }
         _ => (),
     }
