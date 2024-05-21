@@ -43,9 +43,19 @@ pub const CURRENT_QUERY_CACHE_VERSION: &str = "v1";
 // .cache.json
 #[derive(Default, Clone, serde::Deserialize, serde::Serialize, Debug, Hash, Eq, PartialEq)]
 pub struct CacheMetadata {
-    query: String,
+    pub query: String,
     pub start_time: String,
     pub end_time: String,
+}
+
+impl CacheMetadata {
+    pub const fn new(query: String, start_time: String, end_time: String) -> Self {
+        Self {
+            query,
+            start_time,
+            end_time,
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -54,7 +64,7 @@ pub struct QueryCache {
     current_size: u64,
 
     /// Mapping between storage path and cache path.
-    files: Cache<String, PathBuf>,
+    files: Cache<CacheMetadata, PathBuf>,
 }
 
 impl QueryCache {
@@ -66,7 +76,7 @@ impl QueryCache {
         }
     }
 
-    pub fn get_file(&mut self, key: String) -> Option<PathBuf> {
+    pub fn get_file(&mut self, key: CacheMetadata) -> Option<PathBuf> {
         self.files.get(&key).cloned()
     }
 
@@ -245,7 +255,7 @@ impl QueryCacheManager {
     pub async fn move_to_cache(
         &self,
         stream: &str,
-        key: String,
+        key: CacheMetadata,
         file_path: &Path,
         user_id: &str,
     ) -> Result<(), CacheError> {
@@ -309,7 +319,7 @@ impl QueryCacheManager {
         arrow_writer.close().await?;
         self.move_to_cache(
             table_name,
-            format!("{}-{}-{}", start, end, query),
+            CacheMetadata::new(query, start, end),
             &parquet_path,
             user_id,
         )

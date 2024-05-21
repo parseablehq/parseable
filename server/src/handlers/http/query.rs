@@ -43,7 +43,7 @@ use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
 use crate::query::Query as LogicalQuery;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::querycache::QueryCacheManager;
+use crate::querycache::{CacheMetadata, QueryCacheManager};
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -240,9 +240,12 @@ pub async fn get_results_from_cache(
             let mut query_cache = query_cache_manager.get_cache(stream, user_id).await?;
 
             let (start, end) = parse_human_time(start_time, end_time)?;
-            let key = format!("{}-{}-{}", start.to_rfc3339(), end.to_rfc3339(), query);
 
-            let file_path = query_cache.get_file(key);
+            let file_path = query_cache.get_file(CacheMetadata::new(
+                query.to_string(),
+                start.to_rfc3339(),
+                end.to_rfc3339(),
+            ));
             if let Some(file_path) = file_path {
                 let (records, fields) = query_cache.get_cached_records(&file_path).await?;
                 let response = QueryResponse {
