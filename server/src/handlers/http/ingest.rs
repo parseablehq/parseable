@@ -30,6 +30,7 @@ use crate::handlers::{
     LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     STREAM_NAME_HEADER_KEY,
 };
+use crate::localcache::CacheError;
 use crate::metadata::{self, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
 use crate::storage::{LogStream, ObjectStorageError};
@@ -445,6 +446,8 @@ pub enum PostError {
     FiltersError(#[from] FiltersError),
     #[error("Error: {0}")]
     DashboardError(#[from] DashboardError),
+    #[error("Error: {0}")]
+    CacheError(#[from] CacheError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -465,6 +468,7 @@ impl actix_web::ResponseError for PostError {
             PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::Error(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::CacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

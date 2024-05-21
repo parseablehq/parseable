@@ -58,6 +58,8 @@ pub enum Action {
     GetFilter,
     CreateFilter,
     DeleteFilter,
+    ListCache,
+    RemoveCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -123,6 +125,8 @@ impl RoleBuilder {
                 | Action::ListFilter
                 | Action::CreateFilter
                 | Action::DeleteFilter
+                | Action::ListCache
+                | Action::RemoveCache
                 | Action::GetAnalytics => Permission::Unit(action),
                 Action::Ingest
                 | Action::GetSchema

@@ -21,6 +21,7 @@ use crate::banner;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
+use crate::handlers::http::cache;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
 use crate::handlers::http::users::dashboards;
@@ -137,6 +138,7 @@ impl Server {
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body
                     .service(Self::get_query_factory())
+                    .service(Self::get_cache_webscope())
                     .service(Self::get_ingest_factory())
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
@@ -216,6 +218,18 @@ impl Server {
     // get the query factory
     pub fn get_query_factory() -> Resource {
         web::resource("/query").route(web::post().to(query::query).authorize(Action::Query))
+    }
+
+    pub fn get_cache_webscope() -> Scope {
+        web::scope("/cache").service(
+            web::scope("/{user_id}").service(
+                web::scope("/{stream}").service(
+                    web::resource("")
+                        .route(web::get().to(cache::list).authorize(Action::ListCache))
+                        .route(web::post().to(cache::remove).authorize(Action::RemoveCache)),
+                ),
+            ),
+        )
     }
 
     // get the logstream web scope

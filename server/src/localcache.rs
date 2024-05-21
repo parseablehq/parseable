@@ -261,4 +261,6 @@ pub enum CacheError {
     ParquetError(#[from] ParquetError),
     #[error("{0}")]
     MetadataError(#[from] MetadataError),
+    #[error("Error: Cache File Does Not Exist")]
+    DoesNotExist,
 }

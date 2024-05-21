@@ -80,6 +80,18 @@ impl QueryCache {
         self.files.get(&key).cloned()
     }
 
+    pub fn current_size(&self) -> u64 {
+        self.current_size
+    }
+
+    pub fn remove(&mut self, key: CacheMetadata) -> Option<PathBuf> {
+        self.files.remove(&key)
+    }
+
+    pub fn queries(&self) -> Vec<&CacheMetadata> {
+        self.files.keys().collect_vec()
+    }
+
     // read the parquet
     // return the recordbatches
     pub async fn get_cached_records(
@@ -236,6 +248,23 @@ impl QueryCacheManager {
             Err(err) => return Err(err.into()),
         };
         Ok(cache)
+    }
+
+    pub async fn remove_from_cache(
+        &self,
+        key: CacheMetadata,
+        stream: &str,
+        user_id: &str,
+    ) -> Result<(), CacheError> {
+        let mut cache = self.get_cache(stream, user_id).await?;
+
+        if let Some(remove_result) = cache.remove(key) {
+            self.put_cache(stream, &cache, user_id).await?;
+            tokio::spawn(fs::remove_file(remove_result));
+            Ok(())
+        } else {
+            Err(CacheError::DoesNotExist)
+        }
     }
 
     pub async fn put_cache(
