@@ -21,7 +21,7 @@ pub mod utils;
 use crate::handlers::http::cluster::utils::{
     check_liveness, to_url_string, IngestionStats, QueriedStats,
 };
-use crate::handlers::http::ingest::PostError;
+use crate::handlers::http::ingest::{ingest_internal_stream, PostError};
 use crate::handlers::http::logstream::error::StreamError;
 use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::option::CONFIG;
@@ -46,8 +46,13 @@ type IngestorMetadataArr = Vec<IngestorMetadata>;
 use self::utils::StorageStats;
 
 use super::base_path_without_preceding_slash;
+use std::time::Duration;
 
 use super::modal::IngestorMetadata;
+use clokwerk::{AsyncScheduler, Interval};
+pub const INTERNAL_STREAM_NAME: &str = "meta";
+
+const CLUSTER_METRICS_INTERVAL_SECONDS: Interval = clokwerk::Interval::Minutes(1);
 
 pub async fn sync_cache_with_ingestors(
     url: &str,
@@ -432,49 +437,10 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
 }
 
 pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
-    let ingestor_metadata = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
-        PostError::Invalid(err)
+    let dresses = fetch_cluster_metrics().await.map_err(|err| {
+        log::error!("Fatal: failed to fetch cluster metrics: {:?}", err);
+        PostError::Invalid(err.into())
     })?;
-
-    let mut dresses = vec![];
-
-    for ingestor in ingestor_metadata {
-        let uri = Url::parse(&format!(
-            "{}{}/metrics",
-            &ingestor.domain_name,
-            base_path_without_preceding_slash()
-        ))
-        .map_err(|err| {
-            PostError::Invalid(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
-        })?;
-
-        let res = reqwest::Client::new()
-            .get(uri)
-            .header(header::CONTENT_TYPE, "application/json")
-            .send()
-            .await;
-
-        if let Ok(res) = res {
-            let text = res.text().await.map_err(PostError::NetworkError)?;
-            let lines: Vec<Result<String, std::io::Error>> =
-                text.lines().map(|line| Ok(line.to_owned())).collect_vec();
-
-            let sample = prometheus_parse::Scrape::parse(lines.into_iter())
-                .map_err(|err| PostError::CustomError(err.to_string()))?
-                .samples;
-
-            dresses.push(Metrics::from_prometheus_samples(
-                sample,
-                ingestor.domain_name,
-            ));
-        } else {
-            log::warn!(
-                "Failed to fetch metrics from ingestor: {}\n",
-                ingestor.domain_name,
-            );
-        }
-    }
 
     Ok(actix_web::HttpResponse::Ok().json(dresses))
 }
@@ -544,4 +510,105 @@ pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostErr
 
     log::info!("{}", &msg);
     Ok((msg, StatusCode::OK))
+}
+
+async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
+    let ingestor_metadata = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        PostError::Invalid(err)
+    })?;
+
+    let mut dresses = vec![];
+
+    for ingestor in ingestor_metadata {
+        let uri = Url::parse(&format!(
+            "{}{}/metrics",
+            &ingestor.domain_name,
+            base_path_without_preceding_slash()
+        ))
+        .map_err(|err| {
+            PostError::Invalid(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
+        })?;
+
+        let res = reqwest::Client::new()
+            .get(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .send()
+            .await;
+
+        if let Ok(res) = res {
+            let text = res.text().await.map_err(PostError::NetworkError)?;
+            let lines: Vec<Result<String, std::io::Error>> =
+                text.lines().map(|line| Ok(line.to_owned())).collect_vec();
+
+            let sample = prometheus_parse::Scrape::parse(lines.into_iter())
+                .map_err(|err| PostError::CustomError(err.to_string()))?
+                .samples;
+            let ingestor_metrics = Metrics::from_prometheus_samples(sample, &ingestor)
+                .await
+                .map_err(|err| {
+                    log::error!("Fatal: failed to get ingestor metrics: {:?}", err);
+                    PostError::Invalid(err.into())
+                })?;
+            dresses.push(ingestor_metrics);
+        } else {
+            log::warn!(
+                "Failed to fetch metrics from ingestor: {}\n",
+                &ingestor.domain_name,
+            );
+        }
+    }
+    Ok(dresses)
+}
+
+pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
+    log::info!("Setting up schedular for cluster metrics ingestion");
+
+    let mut scheduler = AsyncScheduler::new();
+    scheduler
+        .every(CLUSTER_METRICS_INTERVAL_SECONDS)
+        .run(move || async {
+            let result: Result<(), PostError> = async {
+                let cluster_metrics = fetch_cluster_metrics().await;
+                if let Ok(metrics) = cluster_metrics {
+                    if !metrics.is_empty() {
+                        log::info!("Cluster metrics fetched successfully from all ingestors");
+                        if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
+                            let stream_name = INTERNAL_STREAM_NAME;
+                            if let Ok(()) = ingest_internal_stream(
+                                stream_name.to_string(),
+                                bytes::Bytes::from(metrics_bytes),
+                            )
+                            .await
+                            {
+                                log::info!(
+                                    "Cluster metrics successfully ingested into internal stream"
+                                );
+                            } else {
+                                log::error!(
+                                    "Failed to ingest cluster metrics into internal stream"
+                                );
+                            }
+                        } else {
+                            log::error!("Failed to serialize cluster metrics");
+                        }
+                    }
+                }
+                Ok(())
+            }
+            .await;
+
+            if let Err(err) = result {
+                log::error!("Error in cluster metrics scheduler: {:?}", err);
+            }
+        });
+
+    tokio::spawn(async move {
+        loop {
+            scheduler.run_pending().await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    });
+
+    Ok(())
 }

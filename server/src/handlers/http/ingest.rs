@@ -16,6 +16,7 @@
  *
  */
 
+use super::cluster::INTERNAL_STREAM_NAME;
 use super::logstream::error::CreateStreamError;
 use super::{kinesis, otel};
 use crate::event::{
@@ -52,6 +53,12 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
+        if stream_name.eq(INTERNAL_STREAM_NAME) {
+            return Err(PostError::Invalid(anyhow::anyhow!(
+                "Stream {} is an internal stream and cannot be ingested into",
+                stream_name
+            )));
+        }
         create_stream_if_not_exists(&stream_name).await?;
 
         flatten_and_push_logs(req, body, stream_name).await?;
@@ -59,6 +66,40 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
     } else {
         Err(PostError::Header(ParseHeaderError::MissingStreamName))
     }
+}
+
+pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
+    create_stream_if_not_exists(&stream_name).await?;
+    let size: usize = body.len();
+    let parsed_timestamp = Utc::now().naive_utc();
+    let (rb, is_first) = {
+        let body_val: Value = serde_json::from_slice(&body)?;
+        let hash_map = STREAM_INFO.read().unwrap();
+        let schema = hash_map
+            .get(&stream_name)
+            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
+            .schema
+            .clone();
+        let event = format::json::Event {
+            data: body_val,
+            tags: String::default(),
+            metadata: String::default(),
+        };
+        event.into_recordbatch(schema, None, None)?
+    };
+    event::Event {
+        rb,
+        stream_name,
+        origin_format: "json",
+        origin_size: size as u64,
+        is_first_event: is_first,
+        parsed_timestamp,
+        time_partition: None,
+        custom_partition_values: HashMap::new(),
+    }
+    .process()
+    .await?;
+    Ok(())
 }
 
 async fn flatten_and_push_logs(
@@ -93,7 +134,12 @@ async fn flatten_and_push_logs(
 // fails if the logstream does not exist
 pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
+    if stream_name.eq(INTERNAL_STREAM_NAME) {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Stream {} is an internal stream and cannot be ingested into",
+            stream_name
+        )));
+    }
     flatten_and_push_logs(req, body, stream_name).await?;
     Ok(HttpResponse::Ok().finish())
 }

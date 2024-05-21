@@ -106,7 +106,10 @@ pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
     let path = stream_json_path(stream);
 
-    let stream_metadata = storage.get_object(&path).await?;
+    let stream_metadata = storage.get_object(&path).await.unwrap_or_default();
+    if stream_metadata.is_empty() {
+        return Ok(());
+    }
     let stream_metadata: serde_json::Value =
         serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
 
