@@ -575,12 +575,15 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
                         log::info!("Cluster metrics fetched successfully from all ingestors");
                         if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
                             let stream_name = INTERNAL_STREAM_NAME;
-                            if let Ok(()) = ingest_internal_stream(
-                                stream_name.to_string(),
-                                bytes::Bytes::from(metrics_bytes),
-                            )
-                            .await
-                            {
+
+                            if matches!(
+                                ingest_internal_stream(
+                                    stream_name.to_string(),
+                                    bytes::Bytes::from(metrics_bytes),
+                                )
+                                .await,
+                                Ok(())
+                            ) {
                                 log::info!(
                                     "Cluster metrics successfully ingested into internal stream"
                                 );

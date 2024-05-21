@@ -186,7 +186,7 @@ impl QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
-        if let Ok(()) = init_cluster_metrics_schedular() {
+        if matches!(init_cluster_metrics_schedular(), Ok(())) {
             log::info!("Cluster metrics scheduler started successfully");
         }
         let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();
