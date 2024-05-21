@@ -101,73 +101,47 @@ impl Metrics {
     ) -> Result<Self, PostError> {
         let mut prom_dress = Metrics::new(ingestor_metadata.domain_name.to_string());
         for sample in samples {
-            if &sample.metric == "parseable_events_ingested" {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_events_ingested += val;
-                }
-            }
-            if &sample.metric == "parseable_events_ingested_size" {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_events_ingested_size += val;
-                }
-            }
-            if &sample.metric == "parseable_lifetime_events_ingested" {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_lifetime_events_ingested += val;
-                }
-            }
-            if &sample.metric == "parseable_lifetime_events_ingested_size" {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_lifetime_events_ingested_size += val;
-                }
-            }
-            if &sample.metric == "parseable_deleted_events_ingested" {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_deleted_events_ingested += val;
-                }
-            }
-            if &sample.metric == "parseable_deleted_events_ingested_size" {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_deleted_events_ingested_size += val;
-                }
-            }
-            if sample.metric == "parseable_staging_files" {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_staging_files += val;
-                }
-            }
-            if sample.metric == "process_resident_memory_bytes" {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.process_resident_memory_bytes += val;
-                }
-            }
-            if sample.metric == "parseable_storage_size"
-                && sample.labels.get("type").expect("type is present") == "data"
-            {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_storage_size.data += val;
-                }
-            }
-            if sample.metric == "parseable_storage_size"
-                && sample.labels.get("type").expect("type is present") == "staging"
-            {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_storage_size.staging += val;
-                }
-            }
-
-            if sample.metric == "parseable_lifetime_events_storage_size"
-                && sample.labels.get("type").expect("type is present") == "data"
-            {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_lifetime_storage_size.data += val;
-                }
-            }
-            if sample.metric == "parseable_deleted_events_storage_size"
-                && sample.labels.get("type").expect("type is present") == "data"
-            {
-                if let PromValue::Gauge(val) = sample.value {
-                    prom_dress.parseable_deleted_storage_size.data += val;
+            if let PromValue::Gauge(val) = sample.value {
+                match sample.metric.as_str() {
+                    "parseable_events_ingested" => prom_dress.parseable_events_ingested += val,
+                    "parseable_events_ingested_size" => {
+                        prom_dress.parseable_events_ingested_size += val
+                    }
+                    "parseable_lifetime_events_ingested" => {
+                        prom_dress.parseable_lifetime_events_ingested += val
+                    }
+                    "parseable_lifetime_events_ingested_size" => {
+                        prom_dress.parseable_lifetime_events_ingested_size += val
+                    }
+                    "parseable_deleted_events_ingested" => {
+                        prom_dress.parseable_deleted_events_ingested += val
+                    }
+                    "parseable_deleted_events_ingested_size" => {
+                        prom_dress.parseable_deleted_events_ingested_size += val
+                    }
+                    "parseable_staging_files" => prom_dress.parseable_staging_files += val,
+                    "process_resident_memory_bytes" => {
+                        prom_dress.process_resident_memory_bytes += val
+                    }
+                    "parseable_storage_size" => {
+                        if sample.labels.get("type").expect("type is present") == "staging" {
+                            prom_dress.parseable_storage_size.staging += val;
+                        }
+                        if sample.labels.get("type").expect("type is present") == "data" {
+                            prom_dress.parseable_storage_size.data += val;
+                        }
+                    }
+                    "parseable_lifetime_events_storage_size" => {
+                        if sample.labels.get("type").expect("type is present") == "data" {
+                            prom_dress.parseable_lifetime_storage_size.data += val;
+                        }
+                    }
+                    "parseable_deleted_events_storage_size" => {
+                        if sample.labels.get("type").expect("type is present") == "data" {
+                            prom_dress.parseable_deleted_storage_size.data += val;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
