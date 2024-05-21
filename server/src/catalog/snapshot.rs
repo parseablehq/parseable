@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 
 use crate::query::PartialTimeFilter;
 
-pub const CURRENT_SNAPSHOT_VERSION: &str = "v1";
+pub const CURRENT_SNAPSHOT_VERSION: &str = "v2";
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     pub version: String,
@@ -76,4 +76,7 @@ pub struct ManifestItem {
     pub manifest_path: String,
     pub time_lower_bound: DateTime<Utc>,
     pub time_upper_bound: DateTime<Utc>,
+    pub events_ingested: u64,
+    pub ingestion_size: u64,
+    pub storage_size: u64,
 }

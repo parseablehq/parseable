@@ -20,7 +20,9 @@ use std::{io::ErrorKind, sync::Arc};
 
 use self::{column::Column, snapshot::ManifestItem};
 use crate::handlers::http::base_path_without_preceding_slash;
+use crate::metrics::{EVENTS_INGESTED_SIZE_TODAY, EVENTS_INGESTED_TODAY, STORAGE_SIZE_TODAY};
 use crate::option::CONFIG;
+use crate::stats::{event_labels, storage_size_labels, update_deleted_stats};
 use crate::{
     catalog::manifest::Manifest,
     event::DEFAULT_TIMESTAMP_KEY,
@@ -101,13 +103,28 @@ pub async fn update_snapshot(
     change: manifest::File,
 ) -> Result<(), ObjectStorageError> {
     // get current snapshot
+    let event_labels = event_labels(stream_name, "json");
+    let storage_size_labels = storage_size_labels(stream_name);
+    let events_ingested = EVENTS_INGESTED_TODAY
+        .get_metric_with_label_values(&event_labels)
+        .unwrap()
+        .get() as u64;
+    let ingestion_size = EVENTS_INGESTED_SIZE_TODAY
+        .get_metric_with_label_values(&event_labels)
+        .unwrap()
+        .get() as u64;
+    let storage_size = STORAGE_SIZE_TODAY
+        .get_metric_with_label_values(&storage_size_labels)
+        .unwrap()
+        .get() as u64;
+
     let mut meta = storage.get_object_store_format(stream_name).await?;
     let meta_clone = meta.clone();
     let manifests = &mut meta.snapshot.manifest_list;
-    let time_partition: Option<String> = meta_clone.time_partition;
+    let time_partition = &meta_clone.time_partition;
     let lower_bound = match time_partition {
         Some(time_partition) => {
-            let (lower_bound, _) = get_file_bounds(&change, time_partition);
+            let (lower_bound, _) = get_file_bounds(&change, time_partition.to_string());
             lower_bound
         }
         None => {
@@ -129,12 +146,18 @@ pub async fn update_snapshot(
         let path = partition_path(stream_name, info.time_lower_bound, info.time_upper_bound);
 
         let mut ch = false;
-        for m in manifests.iter() {
+        for m in manifests.iter_mut() {
             let p = manifest_path("").to_string();
             if m.manifest_path.contains(&p) {
                 ch = true;
+                m.events_ingested = events_ingested;
+                m.ingestion_size = ingestion_size;
+                m.storage_size = storage_size;
             }
         }
+
+        meta.snapshot.manifest_list = manifests.to_vec();
+        storage.put_snapshot(stream_name, meta.snapshot).await?;
         if ch {
             if let Some(mut manifest) = storage.get_manifest(&path).await? {
                 manifest.apply_change(change);
@@ -148,7 +171,10 @@ pub async fn update_snapshot(
                     storage.clone(),
                     stream_name,
                     false,
-                    meta,
+                    meta_clone,
+                    events_ingested,
+                    ingestion_size,
+                    storage_size,
                 )
                 .await?;
             }
@@ -159,7 +185,10 @@ pub async fn update_snapshot(
                 storage.clone(),
                 stream_name,
                 true,
-                meta,
+                meta_clone,
+                events_ingested,
+                ingestion_size,
+                storage_size,
             )
             .await?;
         }
@@ -170,7 +199,10 @@ pub async fn update_snapshot(
             storage.clone(),
             stream_name,
             true,
-            meta,
+            meta_clone,
+            events_ingested,
+            ingestion_size,
+            storage_size,
         )
         .await?;
     }
@@ -178,6 +210,7 @@ pub async fn update_snapshot(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_manifest(
     lower_bound: DateTime<Utc>,
     change: manifest::File,
@@ -185,6 +218,9 @@ async fn create_manifest(
     stream_name: &str,
     update_snapshot: bool,
     mut meta: ObjectStoreFormat,
+    events_ingested: u64,
+    ingestion_size: u64,
+    storage_size: u64,
 ) -> Result<(), ObjectStorageError> {
     let lower_bound = lower_bound.date_naive().and_time(NaiveTime::MIN).and_utc();
     let upper_bound = lower_bound
@@ -216,6 +252,9 @@ async fn create_manifest(
             manifest_path: path.to_string(),
             time_lower_bound: lower_bound,
             time_upper_bound: upper_bound,
+            events_ingested,
+            ingestion_size,
+            storage_size,
         };
         manifests.push(new_snapshot_entry);
         meta.snapshot.manifest_list = manifests;
@@ -233,6 +272,8 @@ pub async fn remove_manifest_from_snapshot(
     if !dates.is_empty() {
         // get current snapshot
         let mut meta = storage.get_object_store_format(stream_name).await?;
+        let meta_for_stats = meta.clone();
+        update_deleted_stats(storage.clone(), stream_name, meta_for_stats, dates.clone()).await?;
         let manifests = &mut meta.snapshot.manifest_list;
         // Filter out items whose manifest_path contains any of the dates_to_delete
         manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
@@ -308,8 +349,6 @@ pub async fn get_first_event(
                 );
                 // Convert dates vector to Bytes object
                 let dates_bytes = Bytes::from(serde_json::to_vec(&dates).unwrap());
-                // delete the stream
-
                 let ingestor_first_event_at =
                     handlers::http::cluster::send_retention_cleanup_request(
                         &url,
@@ -333,7 +372,7 @@ pub async fn get_first_event(
 
 /// Partition the path to which this manifest belongs.
 /// Useful when uploading the manifest file.
-fn partition_path(
+pub fn partition_path(
     stream: &str,
     lower_bound: DateTime<Utc>,
     upper_bound: DateTime<Utc>,

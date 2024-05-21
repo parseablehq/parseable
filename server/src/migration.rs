@@ -23,11 +23,6 @@ mod stream_metadata_migration;
 
 use std::{fs::OpenOptions, sync::Arc};
 
-use bytes::Bytes;
-use itertools::Itertools;
-use relative_path::RelativePathBuf;
-use serde::Serialize;
-
 use crate::{
     option::Config,
     storage::{
@@ -36,6 +31,10 @@ use crate::{
         SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
     },
 };
+use bytes::Bytes;
+use itertools::Itertools;
+use relative_path::RelativePathBuf;
+use serde::Serialize;
 
 /// Migrate the metdata from v1 or v2 to v3
 /// This is a one time migration
@@ -118,7 +117,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
 
     match version {
         Some("v1") => {
-            let new_stream_metadata = stream_metadata_migration::v1_v3(stream_metadata);
+            let new_stream_metadata = stream_metadata_migration::v1_v4(stream_metadata);
             storage
                 .put_object(&path, to_bytes(&new_stream_metadata))
                 .await?;
@@ -127,11 +126,11 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
             let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema).ok();
-            let map = schema_migration::v1_v3(schema)?;
+            let map = schema_migration::v1_v4(schema)?;
             storage.put_object(&schema_path, to_bytes(&map)).await?;
         }
         Some("v2") => {
-            let new_stream_metadata = stream_metadata_migration::v2_v3(stream_metadata);
+            let new_stream_metadata = stream_metadata_migration::v2_v4(stream_metadata);
             storage
                 .put_object(&path, to_bytes(&new_stream_metadata))
                 .await?;
@@ -140,8 +139,14 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
             let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema)?;
-            let map = schema_migration::v2_v3(schema)?;
+            let map = schema_migration::v2_v4(schema)?;
             storage.put_object(&schema_path, to_bytes(&map)).await?;
+        }
+        Some("v3") => {
+            let new_stream_metadata = stream_metadata_migration::v3_v4(stream_metadata);
+            storage
+                .put_object(&path, to_bytes(&new_stream_metadata))
+                .await?;
         }
         _ => (),
     }
@@ -223,7 +228,7 @@ pub async fn run_file_migration(config: &Config) -> anyhow::Result<()> {
     }
 
     run_meta_file_migration(&object_store, old_meta_file_path).await?;
-    run_stream_files_migration(object_store).await?;
+    run_stream_files_migration(&object_store).await?;
 
     Ok(())
 }
@@ -263,7 +268,7 @@ async fn run_meta_file_migration(
 }
 
 async fn run_stream_files_migration(
-    object_store: Arc<dyn ObjectStorage + Send>,
+    object_store: &Arc<dyn ObjectStorage + Send>,
 ) -> anyhow::Result<()> {
     let streams = object_store
         .list_old_streams()

@@ -16,7 +16,7 @@
  *
  */
 
-use crate::{catalog::snapshot::Snapshot, stats::Stats};
+use crate::{catalog::snapshot::Snapshot, stats::FullStats};
 
 use chrono::Local;
 
@@ -66,8 +66,8 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 // const PERMISSIONS_READ_WRITE: &str = "readwrite";
 const ACCESS_ALL: &str = "all";
 
-pub const CURRENT_OBJECT_STORE_VERSION: &str = "v3";
-pub const CURRENT_SCHEMA_VERSION: &str = "v3";
+pub const CURRENT_OBJECT_STORE_VERSION: &str = "v4";
+pub const CURRENT_SCHEMA_VERSION: &str = "v4";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ObjectStoreFormat {
@@ -83,7 +83,7 @@ pub struct ObjectStoreFormat {
     pub first_event_at: Option<String>,
     pub owner: Owner,
     pub permissions: Vec<Permisssion>,
-    pub stats: Stats,
+    pub stats: FullStats,
     #[serde(default)]
     pub snapshot: Snapshot,
     #[serde(default)]
@@ -157,7 +157,7 @@ impl Default for ObjectStoreFormat {
             first_event_at: None,
             owner: Owner::new("".to_string(), "".to_string()),
             permissions: vec![Permisssion::new("parseable".to_string())],
-            stats: Stats::default(),
+            stats: FullStats::default(),
             snapshot: Snapshot::default(),
             cache_enabled: false,
             retention: None,

@@ -509,24 +509,40 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = match &stream_meta.first_event_at {
         Some(_) => {
             let ingestion_stats = IngestionStats::new(
-                stats.events,
-                format!("{} {}", stats.ingestion, "Bytes"),
+                stats.current_stats.events,
+                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
+                stats.lifetime_stats.events,
+                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
+                stats.deleted_stats.events,
+                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
                 "json",
             );
-            let storage_stats =
-                StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
+            let storage_stats = StorageStats::new(
+                format!("{} {}", stats.current_stats.storage, "Bytes"),
+                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
+                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
+                "parquet",
+            );
 
             QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
         }
 
         None => {
             let ingestion_stats = IngestionStats::new(
-                stats.events,
-                format!("{} {}", stats.ingestion, "Bytes"),
+                stats.current_stats.events,
+                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
+                stats.lifetime_stats.events,
+                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
+                stats.deleted_stats.events,
+                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
                 "json",
             );
-            let storage_stats =
-                StorageStats::new(format!("{} {}", stats.storage, "Bytes"), "parquet");
+            let storage_stats = StorageStats::new(
+                format!("{} {}", stats.current_stats.storage, "Bytes"),
+                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
+                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
+                "parquet",
+            );
 
             QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
         }
@@ -544,6 +560,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
 }
 
 // Check if the first_event_at is empty
+#[allow(dead_code)]
 pub fn first_event_at_empty(stream_name: &str) -> bool {
     let hash_map = STREAM_INFO.read().unwrap();
     if let Some(stream_info) = hash_map.get(stream_name) {
@@ -628,19 +645,16 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         return Err(StreamError::StreamNotFound(stream_name));
     }
 
-    if first_event_at_empty(&stream_name) {
-        let store = CONFIG.storage().get_object_store();
-        let dates: Vec<String> = Vec::new();
-        if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name, dates).await
+    let store = CONFIG.storage().get_object_store();
+    let dates: Vec<String> = Vec::new();
+    if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name, dates).await {
+        if let Err(err) =
+            metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
         {
-            if let Err(err) =
-                metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
-            {
-                log::error!(
-                    "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
-                    stream_name
-                );
-            }
+            log::error!(
+                "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
+                stream_name
+            );
         }
     }
 
