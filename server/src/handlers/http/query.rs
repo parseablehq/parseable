@@ -25,7 +25,7 @@ use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use futures_util::Future;
-use http::{HeaderValue, StatusCode};
+use http::StatusCode;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -85,9 +85,18 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         .await
         .unwrap_or(None);
 
-    let cache_results = req.headers().get(CACHE_RESULTS_HEADER_KEY);
-    let show_cached = req.headers().get(CACHE_VIEW_HEADER_KEY);
-    let user_id = req.headers().get(USER_ID_HEADER_KEY);
+    let cache_results = req
+        .headers()
+        .get(CACHE_RESULTS_HEADER_KEY)
+        .and_then(|value| value.to_str().ok());
+    let show_cached = req
+        .headers()
+        .get(CACHE_VIEW_HEADER_KEY)
+        .and_then(|value| value.to_str().ok());
+    let user_id = req
+        .headers()
+        .get(USER_ID_HEADER_KEY)
+        .and_then(|value| value.to_str().ok());
 
     // deal with cached data
     if let Ok(results) = get_results_from_cache(
@@ -151,7 +160,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     Ok(response)
 }
 
-async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), QueryError> {
+pub async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), QueryError> {
     if CONFIG.parseable.mode == Mode::Query {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(&table).await {
@@ -167,9 +176,9 @@ async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), Query
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn put_results_in_cache(
-    cache_results: Option<&HeaderValue>,
-    user_id: Option<&HeaderValue>,
+pub async fn put_results_in_cache(
+    cache_results: Option<&str>,
+    user_id: Option<&str>,
     query_cache_manager: Option<&QueryCacheManager>,
     stream: &str,
     records: &[RecordBatch],
@@ -185,10 +194,7 @@ async fn put_results_in_cache(
         }
         // do cache
         (Some(_), Some(query_cache_manager)) => {
-            let user_id = user_id
-                .expect("User Id was provided")
-                .to_str()
-                .expect("is proper ASCII");
+            let user_id = user_id.expect("User Id was provided");
 
             if let Err(err) = query_cache_manager
                 .create_parquet_cache(stream, records, user_id, start, end, query)
@@ -209,11 +215,11 @@ async fn put_results_in_cache(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn get_results_from_cache(
-    show_cached: Option<&HeaderValue>,
+pub async fn get_results_from_cache(
+    show_cached: Option<&str>,
     query_cache_manager: Option<&QueryCacheManager>,
     stream: &str,
-    user_id: Option<&HeaderValue>,
+    user_id: Option<&str>,
     start_time: &str,
     end_time: &str,
     query: &str,
@@ -228,10 +234,8 @@ async fn get_results_from_cache(
             None
         }
         (Some(_), Some(query_cache_manager)) => {
-            let user_id = user_id
-                .ok_or_else(|| QueryError::Anyhow(anyhow!("User Id not provided")))?
-                .to_str()
-                .map_err(|err| anyhow!(err))?;
+            let user_id =
+                user_id.ok_or_else(|| QueryError::Anyhow(anyhow!("User Id not provided")))?;
 
             let mut query_cache = query_cache_manager.get_cache(stream, user_id).await?;
 

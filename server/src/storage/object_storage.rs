@@ -26,8 +26,8 @@ use super::{
 };
 
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
-use crate::metrics::{LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE_TODAY};
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
+use crate::metrics::{LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE_TODAY};
 use crate::option::Mode;
 use crate::{
     alerts::Alerts,

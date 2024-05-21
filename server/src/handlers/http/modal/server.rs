@@ -481,7 +481,6 @@ impl Server {
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
 
-
         metrics::fetch_stats_from_storage().await;
         metrics::reset_daily_metric_from_global();
         storage::retention::load_retention_from_global();

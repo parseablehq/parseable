@@ -181,7 +181,6 @@ impl QueryServer {
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
 
-
         // load data from stats back to prometheus metrics
         metrics::fetch_stats_from_storage().await;
         metrics::reset_daily_metric_from_global();

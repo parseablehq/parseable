@@ -27,21 +27,25 @@ use crate::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_flight::Ticket;
+use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::{FlightData, Ticket};
+use arrow_ipc::writer::IpcWriteOptions;
 use arrow_select::concat::concat_batches;
 use datafusion::logical_expr::BinaryExpr;
 use datafusion::prelude::Expr;
 use datafusion::scalar::ScalarValue;
-use futures::TryStreamExt;
+use futures::{stream, TryStreamExt};
 
-use tonic::{Request, Status};
+use tonic::{Request, Response, Status};
 
 use arrow_flight::FlightClient;
 use http::Uri;
 use tonic::transport::Channel;
 
-pub fn get_query_from_ticket(req: Request<Ticket>) -> Result<QueryJson, Status> {
-    serde_json::from_slice::<QueryJson>(&req.into_inner().ticket)
+pub type DoGetStream = stream::BoxStream<'static, Result<FlightData, Status>>;
+
+pub fn get_query_from_ticket(req: &Request<Ticket>) -> Result<QueryJson, Status> {
+    serde_json::from_slice::<QueryJson>(&req.get_ref().ticket)
         .map_err(|err| Status::internal(err.to_string()))
 }
 
@@ -136,4 +140,21 @@ pub fn send_to_ingester(start: i64, end: i64) -> bool {
 
 fn lit_timestamp_milli(time: i64) -> Expr {
     Expr::Literal(ScalarValue::TimestampMillisecond(Some(time), None))
+}
+
+pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStream>, Status> {
+    let input_stream = futures::stream::iter(records.into_iter().map(Ok));
+    let write_options = IpcWriteOptions::default()
+        .try_with_compression(Some(arrow_ipc::CompressionType(1)))
+        .map_err(|err| Status::failed_precondition(err.to_string()))?;
+
+    let flight_data_stream = FlightDataEncoderBuilder::new()
+        .with_max_flight_data_size(usize::MAX)
+        .with_options(write_options)
+        // .with_schema(schema.into())
+        .build(input_stream);
+
+    let flight_data_stream = flight_data_stream.map_err(|err| Status::unknown(err.to_string()));
+
+    Ok(Response::new(Box::pin(flight_data_stream) as DoGetStream))
 }
