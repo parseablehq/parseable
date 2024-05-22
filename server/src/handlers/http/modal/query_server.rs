@@ -17,11 +17,12 @@
  */
 
 use crate::handlers::airplane;
-use crate::handlers::http::cluster;
+use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
 
 use crate::rbac::role::Action;
+use crate::sync;
 use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
 use actix_web::web;
 use actix_web::web::ServiceConfig;
@@ -185,11 +186,39 @@ impl QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
+        if matches!(init_cluster_metrics_schedular(), Ok(())) {
+            log::info!("Cluster metrics scheduler started successfully");
+        }
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();
+        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
+            sync::object_store_sync();
+
         tokio::spawn(airplane::server());
+        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
 
-        self.start(prometheus, CONFIG.parseable.openid.clone())
-            .await?;
+        tokio::pin!(app);
+        loop {
+            tokio::select! {
+                e = &mut app => {
+                    // actix server finished .. stop other threads and stop the server
+                    remote_sync_inbox.send(()).unwrap_or(());
+                    localsync_inbox.send(()).unwrap_or(());
+                    localsync_handler.join().unwrap_or(());
+                    remote_sync_handler.join().unwrap_or(());
+                    return e
+                },
+                _ = &mut localsync_outbox => {
+                    // crash the server if localsync fails for any reason
+                    // panic!("Local Sync thread died. Server will fail now!")
+                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
+                },
+                _ = &mut remote_sync_outbox => {
+                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
+                    remote_sync_handler.join().unwrap_or(());
+                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync();
+                }
 
-        Ok(())
+            };
+        }
     }
 }

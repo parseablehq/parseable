@@ -24,6 +24,7 @@ use crate::handlers::http::middleware::RouteExt;
 use crate::localcache::LocalCacheManager;
 use crate::metadata;
 use crate::metrics;
+use crate::migration;
 use crate::migration::metadata_migration::migrate_ingester_metadata;
 use crate::rbac;
 use crate::rbac::role::Action;
@@ -327,6 +328,8 @@ impl IngestServer {
 
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
+
+        migration::run_migration(&CONFIG).await?;
 
         let storage = CONFIG.storage().get_object_store();
         if let Err(err) = metadata::STREAM_INFO.load(&*storage).await {

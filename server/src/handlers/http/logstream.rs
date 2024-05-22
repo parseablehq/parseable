@@ -18,8 +18,8 @@
 
 use self::error::{CreateStreamError, StreamError};
 use super::base_path_without_preceding_slash;
-use super::cluster::fetch_stats_from_ingestors;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
+use super::cluster::{fetch_stats_from_ingestors, INTERNAL_STREAM_NAME};
 use crate::alerts::Alerts;
 use crate::handlers::{
     CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
@@ -591,7 +591,9 @@ pub async fn create_stream(
     schema: Arc<Schema>,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
-    validator::stream_name(&stream_name)?;
+    if stream_name.ne(INTERNAL_STREAM_NAME) {
+        validator::stream_name(&stream_name)?;
+    }
 
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();

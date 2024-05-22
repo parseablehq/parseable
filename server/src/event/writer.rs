@@ -26,6 +26,7 @@ use std::{
 };
 
 use crate::{
+    handlers::http::cluster::INTERNAL_STREAM_NAME,
     option::{Mode, CONFIG},
     utils,
 };
@@ -132,7 +133,7 @@ impl WriterTable {
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
-        if CONFIG.parseable.mode != Mode::Query {
+        if CONFIG.parseable.mode != Mode::Query || stream_name == INTERNAL_STREAM_NAME {
             stream_writer.lock().unwrap().push(
                 stream_name,
                 schema_key,
@@ -161,7 +162,7 @@ impl WriterTable {
     ) -> Result<(), StreamWriterError> {
         match map.get(stream_name) {
             Some(writer) => {
-                if CONFIG.parseable.mode != Mode::Query {
+                if CONFIG.parseable.mode != Mode::Query || stream_name == INTERNAL_STREAM_NAME {
                     writer.lock().unwrap().push(
                         stream_name,
                         schema_key,
@@ -174,7 +175,7 @@ impl WriterTable {
                 }
             }
             None => {
-                if CONFIG.parseable.mode != Mode::Query {
+                if CONFIG.parseable.mode != Mode::Query || stream_name == INTERNAL_STREAM_NAME {
                     let mut writer = Writer::default();
                     writer.push(
                         stream_name,
