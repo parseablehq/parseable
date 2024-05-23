@@ -121,6 +121,14 @@ pub fn update_v3(mut storage_metadata: JsonValue) -> JsonValue {
         );
     }
 
+    let hot_tier_capacity = metadata.get("hot_tier_capacity");
+    if hot_tier_capacity.is_none() {
+        metadata.insert(
+            "hot_tier_capacity".to_string(),
+            JsonValue::Bool(CONFIG.is_hot_tier_active()),
+        );
+    }
+
     storage_metadata
 }
 
