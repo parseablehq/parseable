@@ -71,16 +71,16 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
     }
 }
 
-pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    create_stream_if_not_exists(&stream_name).await?;
+pub async fn ingest_internal_stream(stream_name: &str, body: Vec<u8>) -> Result<(), PostError> {
+    create_stream_if_not_exists(stream_name).await?;
     let size: usize = body.len();
     let parsed_timestamp = Utc::now().naive_utc();
     let (rb, is_first) = {
         let body_val: Value = serde_json::from_slice(&body)?;
         let hash_map = STREAM_INFO.read().unwrap();
         let schema = hash_map
-            .get(&stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
+            .get(stream_name)
+            .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
             .schema
             .clone();
         let event = format::json::Event {
@@ -92,7 +92,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
     };
     event::Event {
         rb,
-        stream_name,
+        stream_name: stream_name.to_string(),
         origin_format: "json",
         origin_size: size as u64,
         is_first_event: is_first,

@@ -430,7 +430,7 @@ pub async fn put_enable_cache(
                     stream_name
                 );
 
-                super::cluster::sync_cache_with_ingestors(&url, ingestor.clone(), *body).await?;
+                super::cluster::sync_cache_with_ingestors(&url, ingestor, *body).await?;
             }
         }
         Mode::Ingest => {
@@ -439,22 +439,22 @@ pub async fn put_enable_cache(
             }
             // here the ingest server has not found the stream
             // so it should check if the stream exists in storage
-            let check = storage
+            let check_if_stream_exists = storage
                 .list_streams()
                 .await?
                 .iter()
-                .map(|stream| stream.name.clone())
+                .map(|stream| &stream.name)
                 .contains(&stream_name);
 
-            if !check {
-                log::error!("Stream {} not found", stream_name.clone());
+            if !check_if_stream_exists {
+                log::error!("Stream {} not found", &stream_name);
                 return Err(StreamError::StreamNotFound(stream_name.clone()));
             }
             metadata::STREAM_INFO
                 .upsert_stream_info(
                     &*storage,
                     LogStream {
-                        name: stream_name.clone().to_owned(),
+                        name: stream_name.clone(),
                     },
                 )
                 .await

@@ -190,6 +190,29 @@ impl IngestServer {
                     ),
                 )
                 .service(
+                    web::scope("/retention")
+                        // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
+                        .route(
+                            "",
+                            web::put()
+                                .to(logstream::put_retention)
+                                .authorize_for_stream(Action::PutRetention),
+                        )
+                        // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
+                        .route(
+                            "",
+                            web::get()
+                                .to(logstream::get_retention)
+                                .authorize_for_stream(Action::GetRetention),
+                        )
+                        .route(
+                            "/cleanup",
+                            web::post()
+                                .to(logstream::retention_cleanup)
+                                .authorize_for_stream(Action::PutRetention),
+                        ),
+                )
+                .service(
                     web::resource("/cache")
                         // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
                         .route(
@@ -203,15 +226,6 @@ impl IngestServer {
                                 .to(logstream::get_cache_enabled)
                                 .authorize_for_stream(Action::GetCacheEnabled),
                         ),
-                )
-                .service(
-                    web::scope("/retention").service(
-                        web::resource("/cleanup").route(
-                            web::post()
-                                .to(logstream::retention_cleanup)
-                                .authorize_for_stream(Action::PutRetention),
-                        ),
-                    ),
                 ),
         )
     }
