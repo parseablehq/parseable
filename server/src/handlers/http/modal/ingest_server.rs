@@ -31,6 +31,7 @@ use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::staging;
 use crate::storage::ObjectStorageError;
+use crate::storage::StorageMetadata;
 use crate::sync;
 
 use super::server::Server;
@@ -268,7 +269,23 @@ impl IngestServer {
 
         let parseable_json = store.get_object(&path).await;
         match parseable_json {
-            Ok(_) => Ok(Some(parseable_json.unwrap())),
+            Ok(bytes) => {
+                let size = serde_json::from_slice::<StorageMetadata>(&bytes)?.hot_tier_capacity;
+                let hot_tier_enabled = CONFIG.is_hot_tier_active();
+                match size {
+                    Some(size) => {
+                        if hot_tier_enabled && CONFIG.parseable.local_cache_size != size {
+                            return Err(ObjectStorageError::Custom("Hot Tier Capacity does not match with Other Nodes. Please check the hot tier capacity and try again."));
+                        }
+                    }
+                    None => {
+                        if hot_tier_enabled {
+                            return Err(ObjectStorageError::Custom("Hot Tier is active on Current Node but disabled on Other Nodes. Please set hot tier and try again."));
+                        }
+                    }
+                }
+                Ok(Some(bytes))
+            }
             Err(_) => Err(ObjectStorageError::Custom(
                 "Query Server has not been started yet. Please start the querier server first."
                     ,

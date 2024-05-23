@@ -131,6 +131,14 @@ pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
         );
     }
 
+    let hot_tier_capacity = metadata.get("hot_tier_capacity");
+    if hot_tier_capacity.is_none() {
+        metadata.insert(
+            "hot_tier_capacity".to_string(),
+            JsonValue::Bool(CONFIG.is_hot_tier_active()),
+        );
+    }
+
     let roles = metadata.get_mut("roles").unwrap().as_object_mut().unwrap();
     for (_, privileges) in roles.iter_mut() {
         let JsonValue::Array(privileges) = privileges else {

@@ -63,10 +63,17 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
+    pub hot_tier_capacity: Option<u64>,
 }
 
 impl StorageMetadata {
     pub fn new() -> Self {
+        let hot_tier_capacity = if CONFIG.is_hot_tier_active() {
+            Some(CONFIG.parseable.local_cache_size)
+        } else {
+            None
+        };
+
         Self {
             version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
             mode: CONFIG.storage_name.to_owned(),
@@ -78,6 +85,7 @@ impl StorageMetadata {
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
+            hot_tier_capacity,
         }
     }
 
