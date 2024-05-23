@@ -197,7 +197,13 @@ pub async fn put_results_in_cache(
             Ok(())
         }
         // do cache
-        (Some(_), Some(query_cache_manager)) => {
+        (Some(should_cache), Some(query_cache_manager)) => {
+
+            if should_cache != "true" {
+                log::error!("value of cache results header is false");
+                return Err(QueryError::CacheError(CacheError::Other("should not cache results")));
+            }
+
             let user_id = user_id.ok_or(CacheError::Other("User Id not provided"))?;
 
             if let Err(err) = query_cache_manager
@@ -241,7 +247,12 @@ pub async fn get_results_from_cache(
             );
             None
         }
-        (Some(_), Some(query_cache_manager)) => {
+        (Some(should_show), Some(query_cache_manager)) => {
+            if should_show != "true" {
+                log::error!("value of show cached header is false");
+                return Err(QueryError::CacheError(CacheError::Other("should not return cached results")));
+            }
+
             let user_id =
                 user_id.ok_or_else(|| QueryError::Anyhow(anyhow!("User Id not provided")))?;
 
