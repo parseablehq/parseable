@@ -118,18 +118,15 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
         if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
         {
             let log_source: String = log_source.to_str().unwrap().to_owned();
-            match log_source.as_str() {
-                LOG_SOURCE_OTEL => {
-                    let mut json = otel::flatten_otel_logs(&body);
-                    for record in json.iter_mut() {
-                        let body: Bytes = serde_json::to_vec(record).unwrap().into();
-                        push_logs(stream_name.to_string(), req.clone(), body).await?;
-                    }
+            if log_source == LOG_SOURCE_OTEL {
+                let mut json = otel::flatten_otel_logs(&body);
+                for record in json.iter_mut() {
+                    let body: Bytes = serde_json::to_vec(record).unwrap().into();
+                    push_logs(stream_name.to_string(), req.clone(), body).await?;
                 }
-                _ => {
-                    log::warn!("Unknown log source: {}", log_source);
-                    return Err(PostError::CustomError("Unknown log source".to_string()));
-                }
+            } else {
+                log::warn!("Unknown log source: {}", log_source);
+                return Err(PostError::CustomError("Unknown log source".to_string()));
             }
         } else {
             return Err(PostError::CustomError(
