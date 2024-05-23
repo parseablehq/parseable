@@ -263,4 +263,6 @@ pub enum CacheError {
     MetadataError(#[from] MetadataError),
     #[error("Error: Cache File Does Not Exist")]
     DoesNotExist,
+    #[error("Error: {0}")]
+    Other(&'static str),
 }

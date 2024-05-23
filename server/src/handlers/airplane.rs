@@ -242,7 +242,7 @@ impl FlightService for AirServiceImpl {
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
-        put_results_in_cache(
+        if let Err(err) = put_results_in_cache(
             cache_results,
             user_id,
             query_cache_manager,
@@ -252,7 +252,9 @@ impl FlightService for AirServiceImpl {
             query.end.to_rfc3339(),
             ticket.query,
         )
-        .await;
+        .await {
+            log::error!("{}", err);
+        };
 
         /*
         * INFO: No returning the schema with the data.

@@ -131,7 +131,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let time = Instant::now();
     let (records, fields) = query.execute(table_name.clone()).await?;
     // deal with cache saving
-    put_results_in_cache(
+    if let Err(err) = put_results_in_cache(
         cache_results,
         user_id,
         query_cache_manager,
@@ -141,7 +141,9 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         query.end.to_rfc3339(),
         query_request.query,
     )
-    .await;
+    .await {
+        log::error!("{}", err);
+    };
 
     let response = QueryResponse {
         records,
@@ -185,16 +187,18 @@ pub async fn put_results_in_cache(
     start: String,
     end: String,
     query: String,
-) {
+) -> Result<(), QueryError> {
     match (cache_results, query_cache_manager) {
         (Some(_), None) => {
             log::warn!(
                 "Instructed to cache query results but Query Caching is not Enabled in Server"
             );
+
+            Ok(())
         }
         // do cache
         (Some(_), Some(query_cache_manager)) => {
-            let user_id = user_id.expect("User Id was provided");
+            let user_id = user_id.ok_or(CacheError::Other("User Id not provided"))?;
 
             if let Err(err) = query_cache_manager
                 .create_parquet_cache(stream, records, user_id, start, end, query)
@@ -209,8 +213,12 @@ pub async fn put_results_in_cache(
                     log::error!("Error Clearing Unwanted files from cache dir");
                 }
             }
+            // fallthrough
+            Ok(())
         }
-        (None, _) => {}
+        (None, _) => {
+            Ok(())
+        }
     }
 }
 

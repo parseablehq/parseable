@@ -151,7 +151,7 @@ impl QueryCacheManager {
             &format!(
                 "{}.{}.parquet",
                 hostname_unchecked(),
-                Utc::now().to_rfc3339()
+                Utc::now().timestamp().to_string()
             ),
         ])
     }
