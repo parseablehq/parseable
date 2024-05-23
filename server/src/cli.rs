@@ -51,6 +51,9 @@ pub struct Cli {
     /// Size for local cache
     pub local_cache_size: u64,
 
+    /// Size for local cache
+    pub local_cache_time_range: i64,
+
     /// Username for the basic authentication on the server
     pub username: String,
 
@@ -108,6 +111,7 @@ impl Cli {
     pub const DOMAIN_URI: &'static str = "origin";
     pub const STAGING: &'static str = "local-staging-path";
     pub const CACHE: &'static str = "cache-path";
+    pub const CACHE_TIME_RANGE: &'static str = "cache-time-range";
     pub const QUERY_CACHE: &'static str = "query-cache-path";
     pub const QUERY_CACHE_SIZE: &'static str = "query-cache-size";
     pub const CACHE_SIZE: &'static str = "cache-size";
@@ -198,7 +202,16 @@ impl Cli {
                     .help("Maximum allowed cache size for all streams combined (In human readable format, e.g 1GiB, 2GiB)")
                     .next_line_help(true),
             )
-
+            .arg(
+                Arg::new(Self::CACHE_TIME_RANGE)
+                    .long(Self::CACHE_TIME_RANGE)
+                    .env("P_CACHE_TIME_RANGE")
+                    .value_name("days")
+                    .default_value("10")
+                    .value_parser(value_parser!(i64))
+                    .help("Maximum allowed time in days for all streams combined (In human readable format, e.g 1, 2)")
+                    .next_line_help(true),
+            )
              .arg(
                 Arg::new(Self::QUERY_CACHE)
                     .long(Self::QUERY_CACHE)
@@ -403,6 +416,11 @@ impl FromArgMatches for Cli {
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
+
+        self.local_cache_time_range = m
+            .get_one::<i64>(Self::CACHE_TIME_RANGE)
+            .cloned()
+            .expect("default value for cache time range");
 
         self.address = m
             .get_one::<String>(Self::ADDRESS)
