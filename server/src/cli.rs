@@ -195,7 +195,7 @@ impl Cli {
                     .value_name("size")
                     .default_value("1GiB")
                     .value_parser(validation::cache_size)
-                    .help("Maximum allowed cache size for all streams combined (In human readable format, e.g 1GiB, 2GiB, 100MB)")
+                    .help("Maximum allowed cache size for all streams combined (In human readable format, e.g 1GiB, 2GiB)")
                     .next_line_help(true),
             )
 

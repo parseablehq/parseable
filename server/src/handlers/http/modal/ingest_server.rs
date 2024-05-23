@@ -279,7 +279,7 @@ impl IngestServer {
             Ok(_) => Ok(()),
             Err(_) => Err(ObjectStorageError::Custom(
                 "Query Server has not been started yet. Please start the querier server first."
-                    .to_string(),
+                    ,
             )),
         }
     }
@@ -319,7 +319,6 @@ impl IngestServer {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        // ! Undefined and Untested behaviour
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
                 .validate(CONFIG.parseable.local_cache_size)

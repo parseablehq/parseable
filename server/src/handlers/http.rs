@@ -95,7 +95,7 @@ pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Sch
 
 /// unused for now, might need it later
 #[allow(unused)]
-pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec<Value>> {
+pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Value> {
     // send the query request to the ingestor
     let mut res = vec![];
     let ima = get_ingestor_info().await?;
@@ -128,5 +128,5 @@ pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec
         }
     }
 
-    Ok(res)
+    Ok(Value::Array(res))
 }
