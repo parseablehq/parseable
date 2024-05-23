@@ -19,6 +19,7 @@
 use crate::event::Event;
 use crate::handlers::http::ingest::push_logs_unchecked;
 use crate::handlers::http::query::Query as QueryJson;
+use crate::localcache::LocalCacheManager;
 use crate::metadata::STREAM_INFO;
 use crate::query::stream_schema_provider::include_now;
 use crate::{
@@ -31,10 +32,12 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::{FlightData, Ticket};
 use arrow_ipc::writer::IpcWriteOptions;
 use arrow_select::concat::concat_batches;
+use chrono::{DateTime, Utc};
 use datafusion::logical_expr::BinaryExpr;
 use datafusion::prelude::Expr;
 use datafusion::scalar::ScalarValue;
 use futures::{stream, TryStreamExt};
+use serde_json::json;
 
 use tonic::{Request, Response, Status};
 
@@ -157,4 +160,59 @@ pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStrea
     let flight_data_stream = flight_data_stream.map_err(|err| Status::unknown(err.to_string()));
 
     Ok(Response::new(Box::pin(flight_data_stream) as DoGetStream))
+}
+
+pub async fn get_from_ingester_cache(
+    start: &DateTime<Utc>,
+    end: &DateTime<Utc>,
+    stream_name: &str,
+    ticket: QueryJson,
+) -> Option<Vec<RecordBatch>> {
+    LocalCacheManager::global()?;
+
+    let time_delta = *end - *start;
+    let goto_ingester = time_delta.num_days() < CONFIG.parseable.local_cache_time_range;
+    let goto_ingester = goto_ingester
+        && STREAM_INFO
+            .read()
+            .expect("lock should not be poisoned")
+            .get(stream_name)?
+            .cache_enabled;
+
+    if CONFIG.parseable.mode == Mode::Query && goto_ingester {
+        // send the grpc call to then ingesters, if fails continue with normal flow
+        let start_time = ticket.start_time;
+        let end_time = ticket.end_time;
+        let sql = ticket.query;
+        let out_ticket = json!({
+            "query": sql,
+            "startTime": start_time,
+            "endTime": end_time
+        })
+        .to_string();
+
+        // todo: cleanup the namespace
+        let ingester_metadatas = crate::handlers::http::cluster::get_ingestor_info()
+            .await
+            .ok()?;
+        let mut result_from_ingester: Vec<RecordBatch> = vec![];
+
+        let mut error = false;
+        for im in ingester_metadatas {
+            if let Ok(mut batches) = run_do_get_rpc(im, out_ticket.clone()).await {
+                result_from_ingester.append(&mut batches);
+            } else {
+                error = true;
+                break;
+            }
+        }
+
+        if error {
+            None
+        } else {
+            Some(result_from_ingester)
+        }
+    } else {
+        None
+    }
 }

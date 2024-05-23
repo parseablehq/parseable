@@ -46,7 +46,8 @@ use crate::handlers::http::query::{
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::querycache::QueryCacheManager;
 use crate::utils::arrow::flight::{
-    append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
+    append_temporary_events, get_from_ingester_cache, get_query_from_ticket, into_flight_data, run_do_get_rpc,
+
     send_to_ingester,
 };
 use arrow_flight::{
@@ -203,6 +204,13 @@ impl FlightService for AirServiceImpl {
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
+
+        // deal with ingester local cache
+        if let Some(early) =
+            get_from_ingester_cache(&query.start, &query.end, &stream_name, ticket.clone()).await
+        {
+            return into_flight_data(early);
+        }
 
         let event =
             if send_to_ingester(query.start.timestamp_millis(), query.end.timestamp_millis()) {
