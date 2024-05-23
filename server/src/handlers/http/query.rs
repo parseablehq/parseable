@@ -52,7 +52,7 @@ use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 
 /// Query Request through http endpoint.
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     pub query: String,
