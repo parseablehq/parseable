@@ -60,16 +60,11 @@ pub async fn sync_cache_with_ingestors(
     ingestor: IngestorMetadata,
     body: bool,
 ) -> Result<(), StreamError> {
-    if !utils::check_liveness(&ingestor.domain_name).await {
-        return Ok(());
-    }
-    let request_body: Bytes = Bytes::from(body.to_string());
-    let client = reqwest::Client::new();
-    let resp = client
+    reqwest::Client::new()
         .put(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, ingestor.token)
-        .body(request_body)
+        .body(Bytes::from(body.to_string()))
         .send()
         .await
         .map_err(|err| {
@@ -84,6 +79,7 @@ pub async fn sync_cache_with_ingestors(
 
     // if the response is not successful, log the error and return a custom error
     // this could be a bit too much, but we need to be sure it covers all cases
+    /*
     if !resp.status().is_success() {
         log::error!(
             "failed to set cache: {}\nResponse Returned: {:?}",
@@ -91,6 +87,7 @@ pub async fn sync_cache_with_ingestors(
             resp.text().await
         );
     }
+    */
 
     Ok(())
 }
@@ -632,20 +629,17 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
         .run(move || async {
             let result: Result<(), PostError> = async {
                 let cluster_metrics = fetch_cluster_metrics().await;
-                if let Ok(metrics) = cluster_metrics {
+                if let Ok(metrics) = cluster_metrics{
                     if !metrics.is_empty() {
                         log::info!("Cluster metrics fetched successfully from all ingestors");
                         if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
                             let stream_name = INTERNAL_STREAM_NAME;
 
-                            if matches!(
-                                ingest_internal_stream(
-                                    stream_name.to_string(),
-                                    bytes::Bytes::from(metrics_bytes),
-                                )
-                                .await,
-                                Ok(())
-                            ) {
+                            if ingest_internal_stream(
+                                stream_name,
+                                metrics_bytes,
+                            )
+                            .await.is_ok() {
                                 log::info!(
                                     "Cluster metrics successfully ingested into internal stream"
                                 );
