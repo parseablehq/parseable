@@ -361,7 +361,7 @@ pub async fn get_first_event(
                 let time_partition = meta_clone.time_partition;
                 if manifests.is_empty() {
                     log::info!("No manifest found for stream {stream_name}");
-                    return Err(ObjectStorageError::Custom("No manifest found".to_string()));
+                    return Err(ObjectStorageError::Custom("No manifest found"));
                 }
                 let manifest = &manifests[0];
                 let path = partition_path(
@@ -372,7 +372,6 @@ pub async fn get_first_event(
                 let Some(manifest) = storage.get_manifest(&path).await? else {
                     return Err(ObjectStorageError::UnhandledError(
                         "Manifest found in snapshot but not in object-storage"
-                            .to_string()
                             .into(),
                     ));
                 };

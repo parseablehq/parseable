@@ -203,6 +203,7 @@ impl FlightService for AirServiceImpl {
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
+
         let event =
             if send_to_ingester(query.start.timestamp_millis(), query.end.timestamp_millis()) {
                 let sql = format!("select * from {}", &stream_name);

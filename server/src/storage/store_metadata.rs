@@ -134,7 +134,7 @@ pub async fn resolve_parseable_metadata(
             // if server is started in ingest mode,we need to make sure that query mode has been started
             // i.e the metadata is updated to reflect the server mode = Query
             if Mode::from_string(&metadata.server_mode)
-            .map_err(ObjectStorageError::Custom)
+            .map_err(|err| ObjectStorageError::Invalid(anyhow::anyhow!(err)))
             ?
              == Mode::All && CONFIG.parseable.mode == Mode::Ingest {
                 Err("Starting Ingest Mode is not allowed, Since Query Server has not been started yet")
@@ -147,10 +147,7 @@ pub async fn resolve_parseable_metadata(
                 // because staging dir has changed.
                 match CONFIG.parseable.mode {
                     Mode::All => {
-                        standalone_after_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
-                            .map_err(|err| {
-                                ObjectStorageError::Custom(err.to_string())
-                            })?;
+                        standalone_after_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))?;
                             overwrite_remote = true;
                     },
                     Mode::Query => {

@@ -246,6 +246,8 @@ pub async fn run_file_migration(config: &Config) -> anyhow::Result<()> {
         return Err(err.into());
     }
 
+    // run metafile migration causes another read from object_store
+    // this can be removed by switching around the previous if let statement
     run_meta_file_migration(&object_store, old_meta_file_path).await?;
     run_stream_files_migration(&object_store).await?;
 

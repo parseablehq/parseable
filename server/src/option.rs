@@ -136,11 +136,11 @@ Log Lake for the cloud-native world
         }
 
         if self.get_storage_mode_string() == "Local drive" {
-            return Err(ObjectStorageError::Custom(format!("Could not start the server because directory '{}' contains stale data, please use an empty directory, and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)));
+            return Err(ObjectStorageError::Invalid(anyhow::anyhow!("Could not start the server because directory '{}' contains stale data, please use an empty directory, and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)));
         }
 
         // S3 bucket mode
-        Err(ObjectStorageError::Custom(format!("Could not start the server because bucket '{}' contains stale data, please use an empty bucket and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)))
+        Err(ObjectStorageError::Invalid(anyhow::anyhow!("Could not start the server because bucket '{}' contains stale data, please use an empty bucket and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)))
     }
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
@@ -180,6 +180,10 @@ Log Lake for the cloud-native world
             Mode::Ingest => "Distributed (Ingest)",
             Mode::All => "Standalone",
         }
+    }
+
+    pub fn is_hot_tier_active(&self) -> bool {
+        self.parseable.local_cache_path.is_some()
     }
 }
 
@@ -287,15 +291,15 @@ pub mod validation {
     use crate::option::MIN_CACHE_SIZE_BYTES;
     use human_size::{multiples, SpecificSize};
 
-    pub fn file_path(s: &str) -> Result<PathBuf, String> {
+    pub fn file_path(s: &str) -> Result<PathBuf, &'static str> {
         if s.is_empty() {
-            return Err("empty path".to_owned());
+            return Err("empty path");
         }
 
         let path = PathBuf::from(s);
 
         if !path.is_file() {
-            return Err("path specified does not point to an accessible file".to_string());
+            return Err("path specified does not point to an accessible file");
         }
 
         Ok(path)
@@ -313,23 +317,23 @@ pub mod validation {
         Ok(absolute_path)
     }
 
-    pub fn canonicalize_path(s: &str) -> Result<PathBuf, String> {
+    pub fn canonicalize_path(s: &str) -> Result<PathBuf, io::Error> {
         let path = PathBuf::from(s);
-        Ok(absolute_path(path).unwrap())
+        absolute_path(path)
     }
 
-    pub fn socket_addr(s: &str) -> Result<String, String> {
+    pub fn socket_addr(s: &str) -> Result<String, &'static str> {
         s.to_socket_addrs()
             .is_ok()
             .then_some(s.to_string())
-            .ok_or_else(|| "Socket Address for server is invalid".to_string())
+            .ok_or("Socket Address for server is invalid")
     }
 
-    pub fn url(s: &str) -> Result<url::Url, String> {
-        url::Url::parse(s).map_err(|_| "Invalid URL provided".to_string())
+    pub fn url(s: &str) -> Result<url::Url, &'static str> {
+        url::Url::parse(s).map_err(|_| "Invalid URL provided")
     }
 
-    fn human_size_to_bytes(s: &str) -> Result<u64, String> {
+    pub fn human_size_to_bytes(s: &str) -> Result<u64, &'static str> {
         fn parse_and_map<T: human_size::Multiple>(
             s: &str,
         ) -> Result<u64, human_size::ParsingError> {
@@ -342,23 +346,19 @@ pub mod validation {
             .or(parse_and_map::<multiples::Gigabyte>(s))
             .or(parse_and_map::<multiples::Tebibyte>(s))
             .or(parse_and_map::<multiples::Terabyte>(s))
-            .map_err(|_| "Could not parse given size".to_string())?;
+            .map_err(|_| "Could not parse given size")?;
 
         if size < MIN_CACHE_SIZE_BYTES {
-            return Err(
-                "Specified value of cache size is smaller than current minimum of 1GiB".to_string(),
-            );
+            return Err("Specified value of cache size is smaller than current minimum of 1GiB");
         }
 
         Ok(size)
     }
 
-    pub fn cache_size(s: &str) -> Result<u64, String> {
+    pub fn cache_size(s: &str) -> Result<u64, &'static str> {
         let size = human_size_to_bytes(s)?;
         if size < MIN_CACHE_SIZE_BYTES {
-            return Err(
-                "Specified value of cache size is smaller than current minimum of 1GiB".to_string(),
-            );
+            return Err("Specified value of cache size is smaller than current minimum of 1GiB");
         }
         Ok(size)
     }

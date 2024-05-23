@@ -407,7 +407,7 @@ pub async fn send_retention_cleanup_request(
                 ingestor.domain_name,
                 err
             );
-            ObjectStorageError::Custom(err.to_string())
+            ObjectStorageError::ReqwestError(err)
         })?;
 
     // if the response is not successful, log the error and return a custom error
@@ -422,7 +422,7 @@ pub async fn send_retention_cleanup_request(
 
     let resp_data = resp.bytes().await.map_err(|err| {
         log::error!("Fatal: failed to parse response to bytes: {:?}", err);
-        ObjectStorageError::Custom(err.to_string())
+        err
     })?;
 
     first_event_at = String::from_utf8_lossy(&resp_data).to_string();
