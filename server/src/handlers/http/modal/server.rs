@@ -143,6 +143,7 @@ impl Server {
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope()),
             )
+            .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
     }
 
@@ -261,6 +262,17 @@ impl Server {
             .route(
                 web::post()
                     .to(ingest::ingest)
+                    .authorize_for_stream(Action::Ingest),
+            )
+            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
+    }
+
+    // /v1/logs endpoint to be used for OTEL log ingestion only
+    pub fn get_ingest_otel_factory() -> Resource {
+        web::resource("/v1/logs")
+            .route(
+                web::post()
+                    .to(ingest::ingest_otel_logs)
                     .authorize_for_stream(Action::Ingest),
             )
             .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))

@@ -58,7 +58,7 @@
      /// This schema_url applies to the data in the "resource" field. It does not apply
      /// to the data in the "scope_logs" field which have their own schema_url field.
      #[serde(rename = "schemaUrl")]
-     pub schema_url: String,
+     pub schema_url: Option<String>,
  }
  
  #[derive(Serialize, Deserialize, Debug)]
@@ -73,7 +73,7 @@
      pub log_records: Vec<LogRecord>,
      /// This schema_url applies to all logs in the "logs" field.
      #[serde(rename = "schemaUrl")]
-     pub schema_url: String,
+     pub schema_url: Option<String>,
  }
  
  #[derive(Serialize, Deserialize, Debug)]
@@ -84,7 +84,7 @@
      /// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
      /// Value of 0 indicates unknown or missing timestamp.
      #[serde(rename = "timeUnixNano")]
-     pub time_unix_nano: u64,
+     pub time_unix_nano: Option<String>,
      /// Time when the event was observed by the collection system.
      /// For events that originate in OpenTelemetry (e.g. using OpenTelemetry Logging SDK)
      /// this timestamp is typically set at the generation time and is equal to Timestamp.
@@ -101,15 +101,15 @@
      /// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
      /// Value of 0 indicates unknown or missing timestamp.
      #[serde(rename = "observedTimeUnixNano")]
-     pub observed_time_unix_nano: u64,
+     pub observed_time_unix_nano: Option<String>,
      /// Numerical value of the severity, normalized to values described in Log Data Model.
      /// \[Optional\].
      #[serde(rename = "severityNumber")]
-     pub severity_number: i32,
+     pub severity_number: Option<i32>,
      /// The severity text (also known as log level). The original string representation as
      /// it is known at the source. \[Optional\].
      #[serde(rename = "severityText")]
-     pub severity_text: String,
+     pub severity_text: Option<String>,
      /// A value containing the body of the log record. Can be for example a human-readable
      /// string message (including multi-line) describing the event in a free form or it can
      /// be a structured data composed of arrays and maps of other values. \[Optional\].
@@ -119,13 +119,13 @@
      /// attribute with the same key).
      pub attributes: Option<Vec<KeyValue>>,
      #[serde(rename = "droppedAttributesCount")]
-     pub dropped_attributes_count: u32,
+     pub dropped_attributes_count: Option<u32>,
      /// Flags, a bit field. 8 least significant bits are the trace flags as
      /// defined in W3C Trace Context specification. 24 most significant bits are reserved
      /// and must be set to 0. Readers must not assume that 24 most significant bits
      /// will be zero and must correctly mask the bits when reading 8-bit trace flag (use
      /// flags & LOG_RECORD_FLAGS_TRACE_FLAGS_MASK). \[Optional\].
-     pub flags: u32,
+     pub flags: Option<u32>,
      /// A unique identifier for a trace. All logs from the same trace share
      /// the same `trace_id`. The ID is a 16-byte array. An ID with all zeroes OR
      /// of length other than 16 bytes is considered invalid (empty string in OTLP/JSON
@@ -138,7 +138,7 @@
      ///    - the field is not present,
      ///    - the field contains an invalid value.
      #[serde(rename = "traceId")]
-     pub trace_id: String,
+     pub trace_id: Option<String>,
      /// A unique identifier for a span within a trace, assigned when the span
      /// is created. The ID is an 8-byte array. An ID with all zeroes OR of length
      /// other than 8 bytes is considered invalid (empty string in OTLP/JSON
@@ -152,7 +152,7 @@
      ///    - the field is not present,
      ///    - the field contains an invalid value.
      #[serde(rename = "spanId")]
-     pub span_id: String,
+     pub span_id: Option<String>,
  }
  /// Possible values for LogRecord.SeverityNumber.
  #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

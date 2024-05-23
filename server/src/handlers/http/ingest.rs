@@ -102,6 +102,46 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
     Ok(())
 }
 
+// Handler for POST /v1/logs to ingest OTEL logs
+// ingests events by extracting stream name from header
+// creates if stream does not exist
+pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+    if let Some((_, stream_name)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
+    {
+        let stream_name = stream_name.to_str().unwrap().to_owned();
+        create_stream_if_not_exists(&stream_name).await?;
+
+        //flatten logs
+        if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
+        {
+            let log_source: String = log_source.to_str().unwrap().to_owned();
+            match log_source.as_str() {
+                LOG_SOURCE_OTEL => {
+                    let mut json = otel::flatten_otel_logs(&body);
+                    for record in json.iter_mut() {
+                        let body: Bytes = serde_json::to_vec(record).unwrap().into();
+                        push_logs(stream_name.to_string(), req.clone(), body).await?;
+                    }
+                }
+                _ => {
+                    log::warn!("Unknown log source: {}", log_source);
+                    return Err(PostError::CustomError("Unknown log source".to_string()));
+                }
+            }
+        } else {
+            return Err(PostError::CustomError(
+                "log source key header is missing".to_string(),
+            ));
+        }
+    } else {
+        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    }
+    Ok(HttpResponse::Ok().finish())
+}
+
 async fn flatten_and_push_logs(
     req: HttpRequest,
     body: Bytes,
@@ -113,7 +153,9 @@ async fn flatten_and_push_logs(
         let log_source: String = log_source.to_str().unwrap().to_owned();
         match log_source.as_str() {
             LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
-            LOG_SOURCE_OTEL => json = otel::flatten_otel_logs(&body),
+            LOG_SOURCE_OTEL => {
+                json = otel::flatten_otel_logs(&body);
+            }
             _ => {
                 log::warn!("Unknown log source: {}", log_source);
                 push_logs(stream_name.to_string(), req.clone(), body).await?;
