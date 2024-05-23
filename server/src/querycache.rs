@@ -40,7 +40,6 @@ pub const QUERY_CACHE_FILENAME: &str = ".cache.json";
 pub const QUERY_CACHE_META_FILENAME: &str = ".cache_meta.json";
 pub const CURRENT_QUERY_CACHE_VERSION: &str = "v1";
 
-// .cache.json
 #[derive(Default, Clone, serde::Deserialize, serde::Serialize, Debug, Hash, Eq, PartialEq)]
 pub struct CacheMetadata {
     pub query: String,
@@ -80,7 +79,7 @@ impl QueryCache {
         self.files.get(&key).cloned()
     }
 
-    pub fn current_size(&self) -> u64 {
+    pub fn used_cache_size(&self) -> u64 {
         self.current_size
     }
 
@@ -137,7 +136,7 @@ impl QueryCacheMeta {
 pub struct QueryCacheManager {
     filesystem: LocalFileSystem,
     cache_path: PathBuf, // refers to the path passed in the env var
-    cache_capacity: u64,
+    total_cache_capacity: u64,
     semaphore: Mutex<()>,
 }
 
@@ -151,7 +150,7 @@ impl QueryCacheManager {
             &format!(
                 "{}.{}.parquet",
                 hostname_unchecked(),
-                Utc::now().timestamp().to_string()
+                Utc::now().timestamp()
             ),
         ])
     }
@@ -172,7 +171,7 @@ impl QueryCacheManager {
             Self {
                 filesystem: LocalFileSystem::new(),
                 cache_path,
-                cache_capacity: CONFIG.parseable.query_cache_size,
+                total_cache_capacity: CONFIG.parseable.query_cache_size,
                 semaphore: Mutex::new(()),
             }
         });
@@ -292,7 +291,7 @@ impl QueryCacheManager {
         let file_size = std::fs::metadata(file_path)?.len();
         let mut cache = self.get_cache(stream, user_id).await?;
 
-        while cache.current_size + file_size > self.cache_capacity {
+        while cache.current_size + file_size > self.total_cache_capacity {
             if let Some((_, file_for_removal)) = cache.files.pop_lru() {
                 let lru_file_size = fs::metadata(&file_for_removal).await?.len();
                 cache.current_size = cache.current_size.saturating_sub(lru_file_size);

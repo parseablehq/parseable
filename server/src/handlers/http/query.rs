@@ -141,7 +141,8 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         query.end.to_rfc3339(),
         query_request.query,
     )
-    .await {
+    .await
+    {
         log::error!("{}", err);
     };
 
@@ -198,10 +199,11 @@ pub async fn put_results_in_cache(
         }
         // do cache
         (Some(should_cache), Some(query_cache_manager)) => {
-
             if should_cache != "true" {
                 log::error!("value of cache results header is false");
-                return Err(QueryError::CacheError(CacheError::Other("should not cache results")));
+                return Err(QueryError::CacheError(CacheError::Other(
+                    "should not cache results",
+                )));
             }
 
             let user_id = user_id.ok_or(CacheError::Other("User Id not provided"))?;
@@ -222,9 +224,7 @@ pub async fn put_results_in_cache(
             // fallthrough
             Ok(())
         }
-        (None, _) => {
-            Ok(())
-        }
+        (None, _) => Ok(()),
     }
 }
 
@@ -250,7 +250,9 @@ pub async fn get_results_from_cache(
         (Some(should_show), Some(query_cache_manager)) => {
             if should_show != "true" {
                 log::error!("value of show cached header is false");
-                return Err(QueryError::CacheError(CacheError::Other("should not return cached results")));
+                return Err(QueryError::CacheError(CacheError::Other(
+                    "should not return cached results",
+                )));
             }
 
             let user_id =

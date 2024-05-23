@@ -433,8 +433,6 @@ pub enum PostError {
     Invalid(#[from] anyhow::Error),
     #[error("{0}")]
     CreateStream(#[from] CreateStreamError),
-    #[error("Error: {0}")]
-    Error(std::io::Error),
     #[allow(unused)]
     #[error("Error: {0}")]
     CustomError(String),
@@ -467,7 +465,6 @@ impl actix_web::ResponseError for PostError {
             PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::Error(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::CacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

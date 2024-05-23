@@ -252,7 +252,8 @@ impl FlightService for AirServiceImpl {
             query.end.to_rfc3339(),
             ticket.query,
         )
-        .await {
+        .await
+        {
             log::error!("{}", err);
         };
 

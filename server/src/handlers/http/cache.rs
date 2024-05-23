@@ -50,11 +50,11 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, PostError> {
             .await
             .map_err(PostError::CacheError)?;
 
-        let size = cache.current_size();
+        let size = cache.used_cache_size();
         let queries = cache.queries();
 
         let out = json!({
-            "current_cache_size": size,
+            "used_capacity": size,
             "cache": queries
         });
 
