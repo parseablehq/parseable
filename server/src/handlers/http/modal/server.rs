@@ -21,8 +21,11 @@ use crate::banner;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
+use crate::handlers::http::cache;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
+use crate::handlers::http::users::dashboards;
+use crate::handlers::http::users::filters;
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
 use crate::localcache::LocalCacheManager;
@@ -32,6 +35,8 @@ use crate::migration;
 use crate::rbac;
 use crate::storage;
 use crate::sync;
+use crate::users::dashboards::DASHBOARDS;
+use crate::users::filters::FILTERS;
 use std::sync::Arc;
 
 use actix_web::web::resource;
@@ -133,12 +138,15 @@ impl Server {
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body
                     .service(Self::get_query_factory())
+                    .service(Self::get_cache_webscope())
                     .service(Self::get_ingest_factory())
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
                     .service(Self::get_about_factory())
                     .service(Self::get_logstream_webscope())
                     .service(Self::get_user_webscope())
+                    .service(Self::get_dashboards_webscope())
+                    .service(Self::get_filters_webscope())
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope()),
@@ -146,9 +154,82 @@ impl Server {
             .service(Self::get_generated());
     }
 
+    // get the dashboards web scope
+    pub fn get_dashboards_webscope() -> Scope {
+        web::scope("/dashboards").service(
+            web::scope("/{user_id}")
+                .service(
+                    web::resource("").route(
+                        web::get()
+                            .to(dashboards::list)
+                            .authorize(Action::ListDashboard),
+                    ),
+                )
+                .service(
+                    web::scope("/{dashboard_id}").service(
+                        web::resource("")
+                            .route(
+                                web::get()
+                                    .to(dashboards::get)
+                                    .authorize(Action::GetDashboard),
+                            )
+                            .route(
+                                web::post()
+                                    .to(dashboards::post)
+                                    .authorize(Action::CreateDashboard),
+                            )
+                            .route(
+                                web::delete()
+                                    .to(dashboards::delete)
+                                    .authorize(Action::DeleteDashboard),
+                            ),
+                    ),
+                ),
+        )
+    }
+
+    // get the filters web scope
+    pub fn get_filters_webscope() -> Scope {
+        web::scope("/filters").service(
+            web::scope("/{user_id}")
+                .service(
+                    web::resource("")
+                        .route(web::get().to(filters::list).authorize(Action::ListFilter)),
+                )
+                .service(
+                    web::scope("/{filter_id}").service(
+                        web::resource("")
+                            .route(web::get().to(filters::get).authorize(Action::GetFilter))
+                            .route(
+                                web::post()
+                                    .to(filters::post)
+                                    .authorize(Action::CreateFilter),
+                            )
+                            .route(
+                                web::delete()
+                                    .to(filters::delete)
+                                    .authorize(Action::DeleteFilter),
+                            ),
+                    ),
+                ),
+        )
+    }
+
     // get the query factory
     pub fn get_query_factory() -> Resource {
         web::resource("/query").route(web::post().to(query::query).authorize(Action::Query))
+    }
+
+    pub fn get_cache_webscope() -> Scope {
+        web::scope("/cache").service(
+            web::scope("/{user_id}").service(
+                web::scope("/{stream}").service(
+                    web::resource("")
+                        .route(web::get().to(cache::list).authorize(Action::ListCache))
+                        .route(web::post().to(cache::remove).authorize(Action::RemoveCache)),
+                ),
+            ),
+        )
     }
 
     // get the logstream web scope
@@ -410,6 +491,9 @@ impl Server {
         if let Err(err) = metadata::STREAM_INFO.load(&*storage).await {
             log::warn!("could not populate local metadata. {:?}", err);
         }
+
+        FILTERS.load().await?;
+        DASHBOARDS.load().await?;
 
         metrics::fetch_stats_from_storage().await;
         metrics::reset_daily_metric_from_global();

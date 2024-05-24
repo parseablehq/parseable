@@ -18,6 +18,8 @@
 
 use super::cluster::INTERNAL_STREAM_NAME;
 use super::logstream::error::CreateStreamError;
+use super::users::dashboards::DashboardError;
+use super::users::filters::FiltersError;
 use super::{kinesis, otel};
 use crate::event::{
     self,
@@ -28,6 +30,7 @@ use crate::handlers::{
     LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     STREAM_NAME_HEADER_KEY,
 };
+use crate::localcache::CacheError;
 use crate::metadata::{self, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
 use crate::storage::{LogStream, ObjectStorageError};
@@ -168,7 +171,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
     let object_store_format = glob_storage
         .get_object_store_format(&stream_name)
         .await
-        .map_err(|_err| PostError::StreamNotFound(stream_name.clone()))?;
+        .map_err(|_| PostError::StreamNotFound(stream_name.clone()))?;
 
     let time_partition = object_store_format.time_partition;
     let time_partition_limit = object_store_format.time_partition_limit;
@@ -430,12 +433,19 @@ pub enum PostError {
     Invalid(#[from] anyhow::Error),
     #[error("{0}")]
     CreateStream(#[from] CreateStreamError),
+    #[allow(unused)]
     #[error("Error: {0}")]
     CustomError(String),
     #[error("Error: {0}")]
     NetworkError(#[from] reqwest::Error),
     #[error("ObjectStorageError: {0}")]
     ObjectStorageError(#[from] ObjectStorageError),
+    #[error("Error: {0}")]
+    FiltersError(#[from] FiltersError),
+    #[error("Error: {0}")]
+    DashboardError(#[from] DashboardError),
+    #[error("Error: {0}")]
+    CacheError(#[from] CacheError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -453,6 +463,9 @@ impl actix_web::ResponseError for PostError {
             PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::CacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

@@ -26,6 +26,7 @@ use super::{
 };
 
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
+use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::{LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE_TODAY};
 use crate::option::Mode;
 use crate::{
@@ -66,7 +67,7 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
 #[async_trait]
 pub trait ObjectStorage: Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
-    // want to make it more generic with a filter function
+    // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
@@ -601,6 +602,24 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
             STREAM_METADATA_FILE_NAME,
         ]),
     }
+}
+
+/// if dashboard_id is an empty str it should not append it to the rel path
+#[inline(always)]
+pub fn dashboard_path(user_id: &str, dashboard_file_name: &str) -> RelativePathBuf {
+    RelativePathBuf::from_iter([USERS_ROOT_DIR, user_id, DASHBOARDS_DIR, dashboard_file_name])
+}
+
+/// if filter_id is an empty str it should not append it to the rel path
+#[inline(always)]
+pub fn filter_path(user_id: &str, stream_name: &str, filter_file_name: &str) -> RelativePathBuf {
+    RelativePathBuf::from_iter([
+        USERS_ROOT_DIR,
+        user_id,
+        FILTER_DIR,
+        stream_name,
+        filter_file_name,
+    ])
 }
 
 /// path will be ".parseable/.parsable.json"

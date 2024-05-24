@@ -92,6 +92,12 @@ pub struct Cli {
 
     /// port use by airplane(flight query service)
     pub flight_port: u16,
+
+    /// to query cached data
+    pub query_cache_path: Option<PathBuf>,
+
+    /// Size for local cache
+    pub query_cache_size: u64,
 }
 
 impl Cli {
@@ -102,6 +108,8 @@ impl Cli {
     pub const DOMAIN_URI: &'static str = "origin";
     pub const STAGING: &'static str = "local-staging-path";
     pub const CACHE: &'static str = "cache-path";
+    pub const QUERY_CACHE: &'static str = "query-cache-path";
+    pub const QUERY_CACHE_SIZE: &'static str = "query-cache-size";
     pub const CACHE_SIZE: &'static str = "cache-size";
     pub const USERNAME: &'static str = "username";
     pub const PASSWORD: &'static str = "password";
@@ -191,6 +199,25 @@ impl Cli {
                     .next_line_help(true),
             )
 
+             .arg(
+                Arg::new(Self::QUERY_CACHE)
+                    .long(Self::QUERY_CACHE)
+                    .env("P_QUERY_CACHE_DIR")
+                    .value_name("DIR")
+                    .value_parser(validation::canonicalize_path)
+                    .help("Local path on this device to be used for caching data")
+                    .next_line_help(true),
+            )
+             .arg(
+                Arg::new(Self::QUERY_CACHE_SIZE)
+                    .long(Self::QUERY_CACHE_SIZE)
+                    .env("P_QUERY_CACHE_SIZE")
+                    .value_name("size")
+                    .default_value("1GiB")
+                    .value_parser(validation::cache_size)
+                    .help("Maximum allowed cache size for all streams combined (In human readable format, e.g 1GiB, 2GiB, 100MB)")
+                    .next_line_help(true),
+            )
             .arg(
                 Arg::new(Self::USERNAME)
                     .long(Self::USERNAME)
@@ -372,6 +399,7 @@ impl FromArgMatches for Cli {
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
         self.local_cache_path = m.get_one::<PathBuf>(Self::CACHE).cloned();
+        self.query_cache_path = m.get_one::<PathBuf>(Self::QUERY_CACHE).cloned();
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
@@ -394,6 +422,10 @@ impl FromArgMatches for Cli {
             .get_one::<u64>(Self::CACHE_SIZE)
             .cloned()
             .expect("default value for cache size");
+        self.query_cache_size = m
+            .get_one(Self::QUERY_CACHE_SIZE)
+            .cloned()
+            .expect("default value for query cache size");
         self.username = m
             .get_one::<String>(Self::USERNAME)
             .cloned()

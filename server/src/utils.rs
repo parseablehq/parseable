@@ -280,7 +280,7 @@ pub fn get_ingestor_id() -> String {
     let result = format!("{:x}", hasher.finalize());
     let result = result.split_at(15).0.to_string();
     log::debug!("Ingestor ID: {}", &result);
-    result.to_string()
+    result
 }
 
 #[cfg(test)]

@@ -32,12 +32,14 @@ mod migration;
 mod oidc;
 mod option;
 mod query;
+mod querycache;
 mod rbac;
 mod response;
 mod static_schema;
 mod stats;
 mod storage;
 mod sync;
+mod users;
 mod utils;
 mod validator;
 

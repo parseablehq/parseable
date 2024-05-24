@@ -167,7 +167,6 @@ impl ListingTableBuilder {
             })
             .try_collect()
             .await
-            // TODO: make the err map better
             .map_err(|err| DataFusionError::External(Box::new(err)))?;
 
         let mut res = res.into_iter().flatten().collect_vec();

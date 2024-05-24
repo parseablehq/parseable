@@ -23,6 +23,8 @@ use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_V
 
 use crate::rbac::role::Action;
 use crate::sync;
+use crate::users::dashboards::DASHBOARDS;
+use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
 use actix_web::web;
 use actix_web::web::ServiceConfig;
@@ -119,11 +121,14 @@ impl QueryServer {
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body
                     .service(Server::get_query_factory())
+                    .service(Server::get_cache_webscope())
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
                     .service(Server::get_about_factory())
                     .service(Server::get_logstream_webscope())
                     .service(Server::get_user_webscope())
+                    .service(Server::get_dashboards_webscope())
+                    .service(Server::get_filters_webscope())
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Server::get_user_role_webscope())
@@ -173,6 +178,9 @@ impl QueryServer {
         if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
             log::warn!("could not populate local metadata. {:?}", e);
         }
+
+        FILTERS.load().await?;
+        DASHBOARDS.load().await?;
 
         // load data from stats back to prometheus metrics
         metrics::fetch_stats_from_storage().await;

@@ -230,8 +230,7 @@ async fn create_manifest(
                 .ok_or(IOError::new(
                     ErrorKind::Other,
                     "Failed to create upper bound for manifest",
-                ))
-                .map_err(ObjectStorageError::IoError)?,
+                ))?,
         )
         .and_utc();
 

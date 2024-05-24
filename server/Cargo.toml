@@ -9,13 +9,14 @@ build = "build.rs"
 
 [dependencies]
 ### apache arrow/datafusion dependencies
+# arrow = "51.0.0"
 arrow-schema = { version = "51.0.0", features = ["serde"] }
 arrow-array = { version = "51.0.0" }
 arrow-json = "51.0.0"
 arrow-ipc = { version = "51.0.0", features = ["zstd"] }
 arrow-select = "51.0.0"
 datafusion = "37.1.0"
-object_store = { version = "0.9.1", features = ["cloud", "aws"] }
+object_store = { version = "0.9.1", features = ["cloud", "aws"] }  # cannot update object_store as datafusion has not caught up
 parquet = "51.0.0"
 arrow-flight = { version = "51.0.0", features = [ "tls" ] }
 tonic = {version = "0.11.0", features = ["tls", "transport", "gzip", "zstd"] }
@@ -72,11 +73,11 @@ relative-path = { version = "1.7", features = ["serde"] }
 reqwest = { version = "0.11.27", default_features = false, features = [
   "rustls-tls",
   "json",
-] }
-rustls = "0.22.4"
+] }         # cannot update cause rustls is not latest `see rustls`
+rustls = "0.22.4"       # cannot update to 0.23 actix has not caught up yet
 rustls-pemfile = "2.1.2"
 semver = "1.0"
-serde = { version = "1.0", features = ["rc"] }
+serde = { version = "1.0", features = ["rc", "derive"] }
 serde_json = "1.0"
 static-files = "0.2"
 sysinfo = "0.30.11"

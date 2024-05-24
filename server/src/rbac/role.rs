@@ -50,6 +50,16 @@ pub enum Action {
     Deleteingestor,
     All,
     GetAnalytics,
+    ListDashboard,
+    GetDashboard,
+    CreateDashboard,
+    DeleteDashboard,
+    ListFilter,
+    GetFilter,
+    CreateFilter,
+    DeleteFilter,
+    ListCache,
+    RemoveCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -107,6 +117,16 @@ impl RoleBuilder {
                 | Action::ListCluster
                 | Action::ListClusterMetrics
                 | Action::Deleteingestor
+                | Action::ListDashboard
+                | Action::GetDashboard
+                | Action::CreateDashboard
+                | Action::DeleteDashboard
+                | Action::GetFilter
+                | Action::ListFilter
+                | Action::CreateFilter
+                | Action::DeleteFilter
+                | Action::ListCache
+                | Action::RemoveCache
                 | Action::GetAnalytics => Permission::Unit(action),
                 Action::Ingest
                 | Action::GetSchema
