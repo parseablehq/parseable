@@ -629,17 +629,16 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
         .run(move || async {
             let result: Result<(), PostError> = async {
                 let cluster_metrics = fetch_cluster_metrics().await;
-                if let Ok(metrics) = cluster_metrics{
+                if let Ok(metrics) = cluster_metrics {
                     if !metrics.is_empty() {
                         log::info!("Cluster metrics fetched successfully from all ingestors");
                         if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
                             let stream_name = INTERNAL_STREAM_NAME;
 
-                            if ingest_internal_stream(
-                                stream_name,
-                                metrics_bytes,
-                            )
-                            .await.is_ok() {
+                            if ingest_internal_stream(stream_name, metrics_bytes)
+                                .await
+                                .is_ok()
+                            {
                                 log::info!(
                                     "Cluster metrics successfully ingested into internal stream"
                                 );

@@ -22,6 +22,7 @@ use chrono::Local;
 
 use std::fmt::Debug;
 
+pub mod hot_tier;
 mod localfs;
 mod metrics_layer;
 pub(crate) mod object_storage;

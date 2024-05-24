@@ -74,7 +74,7 @@ Log Lake for the cloud-native world
                         .exit()
                 }
 
-                if cli.local_cache_path.is_some() {
+                if cli.hot_tier_storage_path.is_some() {
                     create_parseable_cli_command()
                         .error(
                             ErrorKind::ValueValidation,
@@ -152,11 +152,11 @@ Log Lake for the cloud-native world
     }
 
     pub fn cache_size(&self) -> u64 {
-        self.parseable.local_cache_size
+        self.parseable.hot_tier_size
     }
 
     pub fn cache_dir(&self) -> &Option<PathBuf> {
-        &self.parseable.local_cache_path
+        &self.parseable.hot_tier_storage_path
     }
 
     pub fn is_default_creds(&self) -> bool {
@@ -182,8 +182,9 @@ Log Lake for the cloud-native world
         }
     }
 
-    pub fn is_hot_tier_active(&self) -> bool {
-        self.parseable.local_cache_path.is_some()
+    pub fn is_hot_tier_enabled(&self) -> bool {
+        self.parseable.hot_tier_storage_path.is_some()
+            && self.parseable.hot_tier_time_range.is_some()
     }
 }
 

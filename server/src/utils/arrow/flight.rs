@@ -171,7 +171,11 @@ pub async fn get_from_ingester_cache(
     LocalCacheManager::global()?;
 
     let time_delta = *end - *start;
-    let goto_ingester = time_delta.num_days() < CONFIG.parseable.local_cache_time_range;
+    let goto_ingester = time_delta.num_days()
+        < CONFIG
+            .parseable
+            .hot_tier_time_range
+            .expect("alredy checked for none");
     let goto_ingester = goto_ingester
         && STREAM_INFO
             .read()
