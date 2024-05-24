@@ -66,8 +66,8 @@ pub struct StorageMetadata {
 
 impl StorageMetadata {
     pub fn new() -> Self {
-        let hot_tier_capacity = if CONFIG.is_hot_tier_active() {
-            Some(CONFIG.parseable.local_cache_size)
+        let hot_tier_capacity = if CONFIG.is_hot_tier_enabled() {
+            Some(CONFIG.parseable.hot_tier_size)
         } else {
             None
         };

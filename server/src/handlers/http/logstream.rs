@@ -395,7 +395,7 @@ pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, Strea
 
     match CONFIG.parseable.mode {
         Mode::Ingest | Mode::All => {
-            if CONFIG.parseable.local_cache_path.is_none() {
+            if CONFIG.parseable.hot_tier_storage_path.is_none() {
                 return Err(StreamError::CacheNotEnabled(stream_name));
             }
         }
@@ -434,7 +434,7 @@ pub async fn put_enable_cache(
             }
         }
         Mode::Ingest => {
-            if CONFIG.parseable.local_cache_path.is_none() {
+            if CONFIG.parseable.hot_tier_storage_path.is_none() {
                 return Err(StreamError::CacheNotEnabled(stream_name));
             }
             // here the ingest server has not found the stream
@@ -464,7 +464,7 @@ pub async fn put_enable_cache(
             if !metadata::STREAM_INFO.stream_exists(&stream_name) {
                 return Err(StreamError::StreamNotFound(stream_name));
             }
-            if CONFIG.parseable.local_cache_path.is_none() {
+            if CONFIG.parseable.hot_tier_storage_path.is_none() {
                 return Err(StreamError::CacheNotEnabled(stream_name));
             }
         }

@@ -34,6 +34,7 @@ use crate::metrics;
 use crate::migration;
 use crate::rbac;
 use crate::storage;
+use crate::storage::hot_tier;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
@@ -486,7 +487,7 @@ impl Server {
     async fn initialize(&self) -> anyhow::Result<()> {
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
-                .validate(CONFIG.parseable.local_cache_size)
+                .validate(CONFIG.parseable.hot_tier_size)
                 .await?;
         };
 
@@ -514,6 +515,8 @@ impl Server {
         if CONFIG.parseable.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
+
+        hot_tier::setup_hot_tier_scheduler().await?;
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());

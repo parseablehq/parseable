@@ -45,14 +45,14 @@ pub struct Cli {
     /// for incoming events and local cache
     pub local_staging_path: PathBuf,
 
-    /// The local cache path is used for speeding up query on latest data
-    pub local_cache_path: Option<PathBuf>,
+    /// The local hot_tier path is used for speeding up query on latest data
+    pub hot_tier_storage_path: Option<PathBuf>,
 
-    /// Size for local cache
-    pub local_cache_size: u64,
+    /// Size for local hot_tier
+    pub hot_tier_size: u64,
 
-    /// Size for local cache
-    pub local_cache_time_range: i64,
+    /// Size for local hot_tier
+    pub hot_tier_time_range: Option<i64>,
 
     /// Username for the basic authentication on the server
     pub username: String,
@@ -110,11 +110,11 @@ impl Cli {
     pub const ADDRESS: &'static str = "address";
     pub const DOMAIN_URI: &'static str = "origin";
     pub const STAGING: &'static str = "local-staging-path";
-    pub const CACHE: &'static str = "cache-path";
-    pub const CACHE_TIME_RANGE: &'static str = "cache-time-range";
     pub const QUERY_CACHE: &'static str = "query-cache-path";
     pub const QUERY_CACHE_SIZE: &'static str = "query-cache-size";
-    pub const CACHE_SIZE: &'static str = "cache-size";
+    pub const HOT_TIER: &'static str = "hot-tier-path";
+    pub const HOT_TIER_TIME_RANGE: &'static str = "hot-tier-time-range";
+    pub const HOT_TIER_SIZE: &'static str = "hot-tier-size";
     pub const USERNAME: &'static str = "username";
     pub const PASSWORD: &'static str = "password";
     pub const CHECK_UPDATE: &'static str = "check-update";
@@ -184,18 +184,18 @@ impl Cli {
                     .next_line_help(true),
             )
              .arg(
-                Arg::new(Self::CACHE)
-                    .long(Self::CACHE)
-                    .env("P_CACHE_DIR")
+                Arg::new(Self::HOT_TIER)
+                    .long(Self::HOT_TIER)
+                    .env("P_HOT_TIER_DIR")
                     .value_name("DIR")
                     .value_parser(validation::canonicalize_path)
                     .help("Local path on this device to be used for caching data")
                     .next_line_help(true),
             )
              .arg(
-                Arg::new(Self::CACHE_SIZE)
-                    .long(Self::CACHE_SIZE)
-                    .env("P_CACHE_SIZE")
+                Arg::new(Self::HOT_TIER_SIZE)
+                    .long(Self::HOT_TIER_SIZE)
+                    .env("P_HOT_TIER_SIZE")
                     .value_name("size")
                     .default_value("1GiB")
                     .value_parser(validation::cache_size)
@@ -203,11 +203,10 @@ impl Cli {
                     .next_line_help(true),
             )
             .arg(
-                Arg::new(Self::CACHE_TIME_RANGE)
-                    .long(Self::CACHE_TIME_RANGE)
-                    .env("P_CACHE_TIME_RANGE")
+                Arg::new(Self::HOT_TIER_TIME_RANGE)
+                    .long(Self::HOT_TIER_TIME_RANGE)
+                    .env("P_HOT_TIER_TIME_RANGE")
                     .value_name("days")
-                    .default_value("10")
                     .value_parser(value_parser!(i64))
                     .help("Maximum allowed time in days for all streams combined (In human readable format, e.g 1, 2)")
                     .next_line_help(true),
@@ -411,16 +410,13 @@ impl FromArgMatches for Cli {
     }
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
-        self.local_cache_path = m.get_one::<PathBuf>(Self::CACHE).cloned();
+        self.hot_tier_storage_path = m.get_one::<PathBuf>(Self::HOT_TIER).cloned();
         self.query_cache_path = m.get_one::<PathBuf>(Self::QUERY_CACHE).cloned();
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
 
-        self.local_cache_time_range = m
-            .get_one::<i64>(Self::CACHE_TIME_RANGE)
-            .cloned()
-            .expect("default value for cache time range");
+        self.hot_tier_time_range = m.get_one::<i64>(Self::HOT_TIER_TIME_RANGE).cloned();
 
         self.address = m
             .get_one::<String>(Self::ADDRESS)
@@ -436,8 +432,8 @@ impl FromArgMatches for Cli {
             .get_one::<PathBuf>(Self::STAGING)
             .cloned()
             .expect("default value for staging");
-        self.local_cache_size = m
-            .get_one::<u64>(Self::CACHE_SIZE)
+        self.hot_tier_size = m
+            .get_one::<u64>(Self::HOT_TIER_SIZE)
             .cloned()
             .expect("default value for cache size");
         self.query_cache_size = m
