@@ -332,9 +332,17 @@ impl QueryCacheManager {
         let time_partition = STREAM_INFO.get_time_partition(table_name)?;
         let props = parquet_writer_props(time_partition.clone(), 0, HashMap::new()).build();
 
+        let sch = if let Some(record) = records.first() {
+            record.schema()
+        } else {
+            // the record batch is empty, do not cache and return early
+            return Ok(());
+        };
+
+
         let mut arrow_writer = AsyncArrowWriter::try_new(
             parquet_file,
-            STREAM_INFO.schema(table_name).expect("schema present"),
+            sch,
             Some(props),
         )?;
 
