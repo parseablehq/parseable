@@ -75,16 +75,23 @@ impl QueryCache {
         }
     }
 
-    pub fn get_file(&mut self, key: CacheMetadata) -> Option<PathBuf> {
-        self.files.get(&key).cloned()
+    pub fn get_file(&mut self, key: &CacheMetadata) -> Option<PathBuf> {
+        self.files.get(key).cloned()
     }
 
     pub fn used_cache_size(&self) -> u64 {
         self.current_size
     }
 
-    pub fn remove(&mut self, key: CacheMetadata) -> Option<PathBuf> {
-        self.files.remove(&key)
+    pub fn remove(&mut self, key: &CacheMetadata) -> Option<PathBuf> {
+        self.files.remove(key)
+    }
+
+    pub async fn delete(&mut self, key: &CacheMetadata, path: PathBuf) -> Result<(), CacheError> {
+        self.files.delete(key);
+        AsyncFs::remove_file(path).await?;
+
+        Ok(())
     }
 
     pub fn queries(&self) -> Vec<&CacheMetadata> {
@@ -257,7 +264,7 @@ impl QueryCacheManager {
     ) -> Result<(), CacheError> {
         let mut cache = self.get_cache(stream, user_id).await?;
 
-        if let Some(remove_result) = cache.remove(key) {
+        if let Some(remove_result) = cache.remove(&key) {
             self.put_cache(stream, &cache, user_id).await?;
             tokio::spawn(fs::remove_file(remove_result));
             Ok(())
@@ -339,12 +346,7 @@ impl QueryCacheManager {
             return Ok(());
         };
 
-
-        let mut arrow_writer = AsyncArrowWriter::try_new(
-            parquet_file,
-            sch,
-            Some(props),
-        )?;
+        let mut arrow_writer = AsyncArrowWriter::try_new(parquet_file, sch, Some(props))?;
 
         for record in records {
             if let Err(e) = arrow_writer.write(record).await {

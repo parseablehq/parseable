@@ -207,6 +207,15 @@ pub async fn put_results_in_cache(
             }
 
             let user_id = user_id.ok_or(CacheError::Other("User Id not provided"))?;
+            let mut cache = query_cache_manager.get_cache(stream, user_id).await?;
+
+            let cache_key = CacheMetadata::new(query.clone(), start.clone(), end.clone());
+
+            // guard to stop multiple caching of the same content
+            if let Some(path) = cache.get_file(&cache_key) {
+                log::info!("File already exists in cache, Removing old file");
+                cache.delete(&cache_key, path).await?;
+            }
 
             if let Err(err) = query_cache_manager
                 .create_parquet_cache(stream, records, user_id, start, end, query)
@@ -262,7 +271,7 @@ pub async fn get_results_from_cache(
 
             let (start, end) = parse_human_time(start_time, end_time)?;
 
-            let file_path = query_cache.get_file(CacheMetadata::new(
+            let file_path = query_cache.get_file(&CacheMetadata::new(
                 query.to_string(),
                 start.to_rfc3339(),
                 end.to_rfc3339(),
