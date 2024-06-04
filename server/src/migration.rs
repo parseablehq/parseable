@@ -54,16 +54,18 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
     if let Some(storage_metadata) = storage_metadata {
         match get_version(&storage_metadata) {
             Some("v1") => {
-                let metadata = metadata_migration::v1_v3(storage_metadata);
+                let mut metadata = metadata_migration::v1_v3(storage_metadata);
+                metadata = metadata_migration::v3_v4(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v2") => {
-                let metadata = metadata_migration::v2_v3(storage_metadata);
+                let mut metadata = metadata_migration::v2_v3(storage_metadata);
+                metadata = metadata_migration::v3_v4(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v3") => {
-                let mdata = metadata_migration::update_v3(storage_metadata);
-                put_remote_metadata(&*object_store, &mdata).await?;
+                let metadata = metadata_migration::v3_v4(storage_metadata);
+                put_remote_metadata(&*object_store, &metadata).await?;
             }
             _ => (),
         }
@@ -73,16 +75,18 @@ pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
     if let Some(staging_metadata) = staging_metadata {
         match get_version(&staging_metadata) {
             Some("v1") => {
-                let metadata = metadata_migration::v1_v3(staging_metadata);
+                let mut metadata = metadata_migration::v1_v3(staging_metadata);
+                metadata = metadata_migration::v3_v4(metadata);
                 put_staging_metadata(config, &metadata)?;
             }
             Some("v2") => {
-                let metadata = metadata_migration::v2_v3(staging_metadata);
+                let mut metadata = metadata_migration::v2_v3(staging_metadata);
+                metadata = metadata_migration::v3_v4(metadata);
                 put_staging_metadata(config, &metadata)?;
             }
             Some("v3") => {
-                let mdata = metadata_migration::update_v3(staging_metadata);
-                put_staging_metadata(config, &mdata)?;
+                let metadata = metadata_migration::v3_v4(staging_metadata);
+                put_staging_metadata(config, &metadata)?;
             }
             _ => (),
         }

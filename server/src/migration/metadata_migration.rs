@@ -119,8 +119,9 @@ pub fn v2_v3(mut storage_metadata: JsonValue) -> JsonValue {
 }
 
 // maybe rename
-pub fn update_v3(mut storage_metadata: JsonValue) -> JsonValue {
+pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
     let metadata = storage_metadata.as_object_mut().unwrap();
+    *metadata.get_mut("version").unwrap() = JsonValue::String("v4".to_string());
     let sm = metadata.get("server_mode");
 
     if sm.is_none() || sm.unwrap().as_str().unwrap() == "All" {
