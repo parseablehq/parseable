@@ -17,9 +17,9 @@
  */
 use crate::metrics::{
     DELETED_EVENTS_STORAGE_SIZE, EVENTS_DELETED, EVENTS_DELETED_SIZE, EVENTS_INGESTED,
-    EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_TODAY, EVENTS_INGESTED_TODAY,
-    LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE, LIFETIME_EVENTS_STORAGE_SIZE,
-    STORAGE_SIZE, STORAGE_SIZE_TODAY,
+    EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
+    EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
+    LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
 };
 use crate::storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat};
 use std::sync::Arc;
@@ -37,7 +37,6 @@ pub struct FullStats {
     pub lifetime_stats: Stats,
     pub current_stats: Stats,
     pub deleted_stats: Stats,
-    pub current_date_stats: Stats,
 }
 
 pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<FullStats> {
@@ -80,18 +79,6 @@ pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<Full
         .get_metric_with_label_values(&storage_size_labels)
         .ok()?
         .get() as u64;
-    let events_ingested_today = EVENTS_INGESTED_TODAY
-        .get_metric_with_label_values(&event_labels)
-        .ok()?
-        .get() as u64;
-    let ingestion_size_today = EVENTS_INGESTED_SIZE_TODAY
-        .get_metric_with_label_values(&event_labels)
-        .ok()?
-        .get() as u64;
-    let storage_size_today = STORAGE_SIZE_TODAY
-        .get_metric_with_label_values(&storage_size_labels)
-        .ok()?
-        .get() as u64;
 
     Some(FullStats {
         lifetime_stats: Stats {
@@ -108,11 +95,6 @@ pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<Full
             events: events_deleted,
             ingestion: events_deleted_size,
             storage: deleted_events_storage_size,
-        },
-        current_date_stats: Stats {
-            events: events_ingested_today,
-            ingestion: ingestion_size_today,
-            storage: storage_size_today,
         },
     })
 }
@@ -131,6 +113,20 @@ pub async fn update_deleted_stats(
     manifests.retain(|item| dates.iter().any(|date| item.manifest_path.contains(date)));
     if !manifests.is_empty() {
         for manifest in manifests {
+            let manifest_date = manifest.time_lower_bound.date_naive().to_string();
+            let _ =
+                EVENTS_INGESTED_DATE.remove_label_values(&[stream_name, "json", &manifest_date]);
+            let _ = EVENTS_INGESTED_SIZE_DATE.remove_label_values(&[
+                stream_name,
+                "json",
+                &manifest_date,
+            ]);
+            let _ = EVENTS_STORAGE_SIZE_DATE.remove_label_values(&[
+                "data",
+                stream_name,
+                "parquet",
+                &manifest_date,
+            ]);
             num_row += manifest.events_ingested as i64;
             ingestion_size += manifest.ingestion_size as i64;
             storage_size += manifest.storage_size as i64;
@@ -169,17 +165,18 @@ pub fn delete_stats(stream_name: &str, format: &'static str) -> prometheus::Resu
     let storage_size_labels = storage_size_labels(stream_name);
 
     EVENTS_INGESTED.remove_label_values(&event_labels)?;
-    EVENTS_INGESTED_TODAY.remove_label_values(&event_labels)?;
     EVENTS_INGESTED_SIZE.remove_label_values(&event_labels)?;
-    EVENTS_INGESTED_SIZE_TODAY.remove_label_values(&event_labels)?;
     STORAGE_SIZE.remove_label_values(&storage_size_labels)?;
-    STORAGE_SIZE_TODAY.remove_label_values(&storage_size_labels)?;
     EVENTS_DELETED.remove_label_values(&event_labels)?;
     EVENTS_DELETED_SIZE.remove_label_values(&event_labels)?;
     DELETED_EVENTS_STORAGE_SIZE.remove_label_values(&storage_size_labels)?;
     LIFETIME_EVENTS_INGESTED.remove_label_values(&event_labels)?;
     LIFETIME_EVENTS_INGESTED_SIZE.remove_label_values(&event_labels)?;
     LIFETIME_EVENTS_STORAGE_SIZE.remove_label_values(&storage_size_labels)?;
+
+    EVENTS_INGESTED_DATE.remove_label_values(&event_labels)?;
+    EVENTS_INGESTED_SIZE_DATE.remove_label_values(&event_labels)?;
+    EVENTS_STORAGE_SIZE_DATE.remove_label_values(&storage_size_labels)?;
 
     Ok(())
 }
@@ -190,4 +187,16 @@ pub fn event_labels<'a>(stream_name: &'a str, format: &'static str) -> [&'a str;
 
 pub fn storage_size_labels(stream_name: &str) -> [&str; 3] {
     ["data", stream_name, "parquet"]
+}
+
+pub fn event_labels_date<'a>(
+    stream_name: &'a str,
+    format: &'static str,
+    date: &'a str,
+) -> [&'a str; 3] {
+    [stream_name, format, date]
+}
+
+pub fn storage_size_labels_date<'a>(stream_name: &'a str, date: &'a str) -> [&'a str; 4] {
+    ["data", stream_name, "parquet", date]
 }

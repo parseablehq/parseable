@@ -184,7 +184,6 @@ impl QueryServer {
 
         // load data from stats back to prometheus metrics
         metrics::fetch_stats_from_storage().await;
-        metrics::reset_daily_metric_from_global();
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
 

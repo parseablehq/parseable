@@ -39,11 +39,6 @@ pub fn v1_v4(mut stream_metadata: Value) -> Value {
             "events": 0,
             "ingestion": 0,
             "storage": 0
-        },
-        "current_date_stats": {
-            "events": 0,
-            "ingestion": 0,
-            "storage": 0
         }
     });
     stream_metadata_map.insert("stats".to_owned(), default_stats);
@@ -80,11 +75,6 @@ pub fn v2_v4(mut stream_metadata: Value) -> Value {
             "storage": stats.get("storage").unwrap()
         },
         "deleted_stats": {
-            "events": 0,
-            "ingestion": 0,
-            "storage": 0
-        },
-        "current_date_stats": {
             "events": 0,
             "ingestion": 0,
             "storage": 0
@@ -126,11 +116,6 @@ pub fn v3_v4(mut stream_metadata: Value) -> Value {
             "storage": stats.get("storage").unwrap()
         },
         "deleted_stats": {
-            "events": 0,
-            "ingestion": 0,
-            "storage": 0
-        },
-        "current_date_stats": {
             "events": 0,
             "ingestion": 0,
             "storage": 0

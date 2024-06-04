@@ -496,7 +496,6 @@ impl Server {
         DASHBOARDS.load().await?;
 
         metrics::fetch_stats_from_storage().await;
-        metrics::reset_daily_metric_from_global();
         storage::retention::load_retention_from_global();
 
         let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();
