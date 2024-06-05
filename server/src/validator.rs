@@ -16,15 +16,25 @@
  *
  */
 
+use self::error::{AlertValidationError, StreamNameValidationError, UsernameValidationError};
 use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
-
-use self::error::{AlertValidationError, StreamNameValidationError, UsernameValidationError};
+use crate::handlers::http::cluster::INTERNAL_STREAM_NAME;
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
-    "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and", "meta",
+    "select",
+    "from",
+    "where",
+    "group",
+    "by",
+    "order",
+    "limit",
+    "offset",
+    "join",
+    "and",
+    INTERNAL_STREAM_NAME,
 ];
 
 pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
