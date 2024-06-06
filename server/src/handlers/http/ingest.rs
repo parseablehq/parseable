@@ -388,6 +388,7 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
                 "",
                 "",
                 Arc::new(Schema::empty()),
+                false
             )
             .await?;
         }

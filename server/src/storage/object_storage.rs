@@ -167,6 +167,42 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(())
     }
 
+    async fn update_time_partition_limit_in_stream(
+        &self,
+        stream_name: &str,
+        time_partition_limit: &str,
+    ) -> Result<(), ObjectStorageError> {
+        let mut format = self.get_object_store_format(stream_name).await?;
+        if time_partition_limit.is_empty() {
+            format.time_partition_limit = None;
+        } else {
+            format.time_partition_limit = Some(time_partition_limit.to_string());
+        }
+        let format_json = to_bytes(&format);
+        self.put_object(&stream_json_path(stream_name), format_json)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn update_custom_partition_in_stream(
+        &self,
+        stream_name: &str,
+        custom_partition: &str,
+    ) -> Result<(), ObjectStorageError> {
+        let mut format = self.get_object_store_format(stream_name).await?;
+        if custom_partition.is_empty() {
+            format.custom_partition = None;
+        } else {
+            format.custom_partition = Some(custom_partition.to_string());
+        }
+        let format_json = to_bytes(&format);
+        self.put_object(&stream_json_path(stream_name), format_json)
+            .await?;
+
+        Ok(())
+    }
+
     async fn put_alerts(
         &self,
         stream_name: &str,

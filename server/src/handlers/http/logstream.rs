@@ -185,6 +185,13 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 }
 
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
+
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let mut update_stream = false;
+    if metadata::STREAM_INFO.stream_exists(&stream_name) {
+        update_stream = true;
+    }
+
     let time_partition = if let Some((_, time_partition_name)) = req
         .headers()
         .iter()
@@ -194,6 +201,15 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     } else {
         ""
     };
+
+    if !time_partition.is_empty() && update_stream == true {
+        return Err(StreamError::Custom {
+            msg: format!(
+                "Altering the time partition of an existing stream is restricted."
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
     let mut time_partition_in_days: &str = "";
     if let Some((_, time_partition_limit_name)) = req
         .headers()
@@ -226,6 +242,16 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     } else {
         ""
     };
+
+    if !static_schema_flag.is_empty() && update_stream == true {
+        return Err(StreamError::Custom {
+            msg: format!(
+                "Altering the schema of an existing stream is restricted."
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+
     let mut custom_partition: &str = "";
     if let Some((_, custom_partition_key)) = req
         .headers()
@@ -241,18 +267,9 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
             });
         }
     }
-
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    
     let mut schema = Arc::new(Schema::empty());
-    if metadata::STREAM_INFO.stream_exists(&stream_name) {
-        // Error if the log stream already exists
-        return Err(StreamError::Custom {
-            msg: format!(
-                "logstream {stream_name} already exists, please create a new log stream with unique name"
-            ),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
+    
 
     if !body.is_empty() && static_schema_flag == "true" {
         let static_schema: StaticSchema = serde_json::from_slice(&body)?;
@@ -286,6 +303,7 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
         custom_partition,
         static_schema_flag,
         schema,
+        update_stream
     )
     .await?;
 
@@ -582,6 +600,20 @@ fn remove_id_from_alerts(value: &mut Value) {
     }
 }
 
+pub async fn update_time_partition_limit_in_stream(
+    stream_name: String,time_partition_limit: &str,)-> Result<(), CreateStreamError>{
+        if let Err(err) = storage
+            .update_stream(
+                &stream_name,
+                time_partition_limit,
+                custom_partition,
+            )
+            .await
+        {
+            return Err(CreateStreamError::Storage { stream_name, err });
+        }
+}
+
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
@@ -589,6 +621,7 @@ pub async fn create_stream(
     custom_partition: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
+    update_stream: bool
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     if stream_name.ne(INTERNAL_STREAM_NAME) {
@@ -597,7 +630,20 @@ pub async fn create_stream(
 
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage
+
+    if update_stream {
+        if let Err(err) = storage
+            .update_stream(
+                &stream_name,
+                time_partition_limit,
+                custom_partition,
+            )
+            .await
+        {
+            return Err(CreateStreamError::Storage { stream_name, err });
+        }
+    }else{
+        if let Err(err) = storage
         .create_stream(
             &stream_name,
             time_partition,
@@ -607,9 +653,10 @@ pub async fn create_stream(
             schema.clone(),
         )
         .await
-    {
-        return Err(CreateStreamError::Storage { stream_name, err });
-    }
+        {
+            return Err(CreateStreamError::Storage { stream_name, err });
+        }
+    } 
 
     let stream_meta = CONFIG
         .storage()
