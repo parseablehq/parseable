@@ -29,10 +29,12 @@ use crate::migration::metadata_migration::migrate_ingester_metadata;
 use crate::rbac;
 use crate::rbac::role::Action;
 use crate::storage;
+use crate::storage::hot_tier;
 use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::staging;
 use crate::storage::ObjectStorageError;
+use crate::storage::StorageMetadata;
 use crate::sync;
 
 use super::server::Server;
@@ -189,6 +191,29 @@ impl IngestServer {
                     ),
                 )
                 .service(
+                    web::scope("/retention")
+                        // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
+                        .route(
+                            "",
+                            web::put()
+                                .to(logstream::put_retention)
+                                .authorize_for_stream(Action::PutRetention),
+                        )
+                        // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
+                        .route(
+                            "",
+                            web::get()
+                                .to(logstream::get_retention)
+                                .authorize_for_stream(Action::GetRetention),
+                        )
+                        .route(
+                            "/cleanup",
+                            web::post()
+                                .to(logstream::retention_cleanup)
+                                .authorize_for_stream(Action::PutRetention),
+                        ),
+                )
+                .service(
                     web::resource("/cache")
                         // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
                         .route(
@@ -202,15 +227,6 @@ impl IngestServer {
                                 .to(logstream::get_cache_enabled)
                                 .authorize_for_stream(Action::GetCacheEnabled),
                         ),
-                )
-                .service(
-                    web::scope("/retention").service(
-                        web::resource("/cleanup").route(
-                            web::post()
-                                .to(logstream::retention_cleanup)
-                                .authorize_for_stream(Action::PutRetention),
-                        ),
-                    ),
                 ),
         )
     }
@@ -276,10 +292,26 @@ impl IngestServer {
         let path = parseable_json_path();
 
         match store.get_object(&path).await {
-            Ok(_) => Ok(()),
+            Ok(bytes) => {
+                let size = serde_json::from_slice::<StorageMetadata>(&bytes)?.hot_tier_capacity;
+                let hot_tier_enabled = CONFIG.is_hot_tier_enabled();
+                match size {
+                    Some(size) => {
+                        if hot_tier_enabled && CONFIG.parseable.hot_tier_size != size {
+                            return Err(ObjectStorageError::Custom("Hot Tier Capacity does not match with Other Nodes. Please check the hot tier capacity and try again."));
+                        }
+                    }
+                    None => {
+                        if hot_tier_enabled {
+                            return Err(ObjectStorageError::Custom("Hot Tier is active on Current Node but disabled on Other Nodes. Please set hot tier and try again."));
+                        }
+                    }
+                }
+                // fall through
+                Ok(())
+            }
             Err(_) => Err(ObjectStorageError::Custom(
-                "Query Server has not been started yet. Please start the querier server first."
-                    .to_string(),
+                "Query Server has not been started yet. Please start the querier server first.",
             )),
         }
     }
@@ -319,10 +351,9 @@ impl IngestServer {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        // ! Undefined and Untested behaviour
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
-                .validate(CONFIG.parseable.local_cache_size)
+                .validate(CONFIG.parseable.hot_tier_size)
                 .await?;
         };
 
@@ -342,6 +373,8 @@ impl IngestServer {
         let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync();
+
+        hot_tier::setup_hot_tier_scheduler().await?;
 
         tokio::spawn(airplane::server());
 

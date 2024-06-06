@@ -16,6 +16,7 @@
  *
  */
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::datasource::listing::ListingTableUrl;
@@ -265,9 +266,10 @@ impl S3 {
         if let Err(object_store::Error::NotFound { source, .. }) = &resp {
             let source_str = source.to_string();
             if source_str.contains("<Code>NoSuchBucket</Code>") {
-                return Err(ObjectStorageError::Custom(
-                    format!("Bucket '{}' does not exist in S3.", self.bucket).to_string(),
-                ));
+                return Err(ObjectStorageError::Invalid(anyhow!(
+                    "Bucket '{}' does not exist in S3.",
+                    self.bucket
+                )));
             }
         }
 

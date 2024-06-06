@@ -109,9 +109,9 @@ async fn storage_info(config: &Config) {
         config.staging_dir().to_string_lossy(),
     );
 
-    if let Some(path) = &config.parseable.local_cache_path {
+    if let Some(path) = &config.parseable.hot_tier_storage_path {
         let size: SpecificSize<human_size::Gigibyte> =
-            SpecificSize::new(config.parseable.local_cache_size as f64, human_size::Byte)
+            SpecificSize::new(config.parseable.hot_tier_size as f64, human_size::Byte)
                 .unwrap()
                 .into();
 

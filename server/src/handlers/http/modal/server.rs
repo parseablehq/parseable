@@ -34,6 +34,7 @@ use crate::metrics;
 use crate::migration;
 use crate::rbac;
 use crate::storage;
+use crate::storage::hot_tier;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
@@ -304,29 +305,37 @@ impl Server {
                         ),
                     )
                     .service(
-                        web::resource("/retention")
+                        web::scope("/retention")
                             // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
                             .route(
+                                "",
                                 web::put()
                                     .to(logstream::put_retention)
                                     .authorize_for_stream(Action::PutRetention),
                             )
                             // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
                             .route(
+                                "",
                                 web::get()
                                     .to(logstream::get_retention)
                                     .authorize_for_stream(Action::GetRetention),
+                            )
+                            .route(
+                                "/cleanup",
+                                web::post()
+                                    .to(logstream::retention_cleanup)
+                                    .authorize_for_stream(Action::PutRetention),
                             ),
                     )
                     .service(
                         web::resource("/cache")
-                            // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
+                            // PUT "/logstream/{logstream}/cache" ==> Set cache for given logstream
                             .route(
                                 web::put()
                                     .to(logstream::put_enable_cache)
                                     .authorize_for_stream(Action::PutCacheEnabled),
                             )
-                            // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
+                            // GET "/logstream/{logstream}/cache" ==> Get cache for given logstream
                             .route(
                                 web::get()
                                     .to(logstream::get_cache_enabled)
@@ -478,7 +487,7 @@ impl Server {
     async fn initialize(&self) -> anyhow::Result<()> {
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
-                .validate(CONFIG.parseable.local_cache_size)
+                .validate(CONFIG.parseable.hot_tier_size)
                 .await?;
         };
 
@@ -506,6 +515,8 @@ impl Server {
         if CONFIG.parseable.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
+
+        hot_tier::setup_hot_tier_scheduler().await?;
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());

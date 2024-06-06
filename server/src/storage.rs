@@ -16,14 +16,13 @@
  *
  */
 
-use crate::{
-    catalog::snapshot::Snapshot, metadata::error::stream_info::MetadataError, stats::FullStats,
-};
-
+use crate::metadata::error::stream_info::MetadataError;
+use crate::{catalog::snapshot::Snapshot, stats::FullStats};
 use chrono::Local;
 
 use std::fmt::Debug;
 
+pub mod hot_tier;
 mod localfs;
 mod metrics_layer;
 pub(crate) mod object_storage;
@@ -190,10 +189,11 @@ pub enum ObjectStorageError {
     NoSuchKey(String),
     #[error("Invalid Request: {0}")]
     Invalid(#[from] anyhow::Error),
-
+    #[error("Error: {0}")]
+    ReqwestError(#[from] reqwest::Error),
     // custom
     #[error("{0}")]
-    Custom(String),
+    Custom(&'static str),
 
     // Could not connect to object storage
     #[error("Connection Error: {0}")]

@@ -79,7 +79,7 @@ impl LocalCacheManager {
     pub fn global() -> Option<&'static LocalCacheManager> {
         static INSTANCE: OnceCell<LocalCacheManager> = OnceCell::new();
 
-        let cache_path = CONFIG.parseable.local_cache_path.as_ref()?;
+        let cache_path = CONFIG.parseable.hot_tier_storage_path.as_ref()?;
 
         Some(INSTANCE.get_or_init(|| {
             let cache_path = cache_path.clone();
@@ -87,7 +87,7 @@ impl LocalCacheManager {
             LocalCacheManager {
                 filesystem: LocalFileSystem::new(),
                 cache_path,
-                cache_capacity: CONFIG.parseable.local_cache_size,
+                cache_capacity: CONFIG.parseable.hot_tier_size,
                 copy_options: CopyOptions {
                     overwrite: true,
                     skip_exist: false,
