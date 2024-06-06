@@ -1,5 +1,22 @@
+/*
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use arrow_array::RecordBatch;
-use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::PollInfo;
 use arrow_schema::ArrowError;
@@ -7,7 +24,6 @@ use arrow_schema::ArrowError;
 use datafusion::common::tree_node::TreeNode;
 use serde_json::json;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Instant;
 use tonic::codec::CompressionEncoding;
 
@@ -16,20 +32,22 @@ use futures_util::{Future, TryFutureExt};
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
-use crate::event::commit_schema;
 use crate::handlers::http::cluster::get_ingestor_info;
-use crate::handlers::http::fetch_schema;
 
+use crate::handlers::{CACHE_RESULTS_HEADER_KEY, CACHE_VIEW_HEADER_KEY, USER_ID_HEADER_KEY};
 use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::option::{Mode, CONFIG};
+use crate::option::CONFIG;
 
 use crate::handlers::livetail::cross_origin_config;
 
-use crate::handlers::http::query::{authorize_and_set_filter_tags, into_query};
+use crate::handlers::http::query::{
+    authorize_and_set_filter_tags, into_query, put_results_in_cache, update_schema_when_distributed,
+};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::storage::object_storage::commit_schema_to_storage;
+use crate::querycache::QueryCacheManager;
 use crate::utils::arrow::flight::{
-    append_temporary_events, get_query_from_ticket, run_do_get_rpc, send_to_ingester,
+    append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
+    send_to_ingester,
 };
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
@@ -37,12 +55,14 @@ use arrow_flight::{
     SchemaResult, Ticket,
 };
 use arrow_ipc::writer::IpcWriteOptions;
-use futures::{stream, TryStreamExt};
+use futures::stream;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::handlers::livetail::extract_session_key;
 use crate::metadata::STREAM_INFO;
 use crate::rbac::Users;
+
+use super::http::query::get_results_from_cache;
 
 #[derive(Clone, Debug)]
 pub struct AirServiceImpl {}
@@ -112,7 +132,7 @@ impl FlightService for AirServiceImpl {
     async fn do_get(&self, req: Request<Ticket>) -> Result<Response<Self::DoGetStream>, Status> {
         let key = extract_session_key(req.metadata())?;
 
-        let ticket = get_query_from_ticket(req)?;
+        let ticket = get_query_from_ticket(&req)?;
 
         log::info!("query requested to airplane: {:?}", ticket);
 
@@ -132,31 +152,56 @@ impl FlightService for AirServiceImpl {
         let mut visitor = TableScanVisitor::default();
         let _ = raw_logical_plan.visit(&mut visitor);
 
-        let tables = visitor.into_inner();
+        let streams = visitor.into_inner();
 
-        if CONFIG.parseable.mode == Mode::Query {
-            // using http to get the schema. may update to use flight later
-            for table in tables {
-                if let Ok(new_schema) = fetch_schema(&table).await {
-                    // commit schema merges the schema internally and updates the schema in storage.
-                    commit_schema_to_storage(&table, new_schema.clone())
-                        .await
-                        .map_err(|err| Status::internal(err.to_string()))?;
-                    commit_schema(&table, Arc::new(new_schema))
-                        .map_err(|err| Status::internal(err.to_string()))?;
-                }
-            }
+        let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
+            .await
+            .unwrap_or(None);
+
+        let cache_results = req
+            .metadata()
+            .get(CACHE_RESULTS_HEADER_KEY)
+            .and_then(|value| value.to_str().ok()); // I dont think we need to own this.
+
+        let show_cached = req
+            .metadata()
+            .get(CACHE_VIEW_HEADER_KEY)
+            .and_then(|value| value.to_str().ok());
+
+        let user_id = req
+            .metadata()
+            .get(USER_ID_HEADER_KEY)
+            .and_then(|value| value.to_str().ok());
+        let stream_name = streams
+            .first()
+            .ok_or_else(|| Status::aborted("Malformed SQL Provided, Table Name Not Found"))?
+            .to_owned();
+
+        // send the cached results
+        if let Ok(cache_results) = get_results_from_cache(
+            show_cached,
+            query_cache_manager,
+            &stream_name,
+            user_id,
+            &ticket.start_time,
+            &ticket.end_time,
+            &ticket.query,
+            ticket.send_null,
+            ticket.fields,
+        )
+        .await
+        {
+            return cache_results.into_flight();
         }
+
+        update_schema_when_distributed(streams)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
 
         // map payload to query
         let mut query = into_query(&ticket, &session_state)
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
-
-        // if table name is not present it is a Malformed Query
-        let stream_name = query
-            .first_table_name()
-            .ok_or_else(|| Status::invalid_argument("Malformed Query"))?;
 
         let event =
             if send_to_ingester(query.start.timestamp_millis(), query.end.timestamp_millis()) {
@@ -192,10 +237,25 @@ impl FlightService for AirServiceImpl {
             Status::permission_denied("User Does not have permission to access this")
         })?;
         let time = Instant::now();
-        let (results, _) = query
+        let (records, _) = query
             .execute(stream_name.clone())
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
+
+        if let Err(err) = put_results_in_cache(
+            cache_results,
+            user_id,
+            query_cache_manager,
+            &stream_name,
+            &records,
+            query.start.to_rfc3339(),
+            query.end.to_rfc3339(),
+            ticket.query,
+        )
+        .await
+        {
+            log::error!("{}", err);
+        };
 
         /*
         * INFO: No returning the schema with the data.
@@ -208,18 +268,7 @@ impl FlightService for AirServiceImpl {
             .collect::<Vec<_>>();
         let schema = Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
          */
-        let input_stream = futures::stream::iter(results.into_iter().map(Ok));
-        let write_options = IpcWriteOptions::default()
-            .try_with_compression(Some(arrow_ipc::CompressionType(1)))
-            .map_err(|err| Status::failed_precondition(err.to_string()))?;
-
-        let flight_data_stream = FlightDataEncoderBuilder::new()
-            .with_max_flight_data_size(usize::MAX)
-            .with_options(write_options)
-            // .with_schema(schema.into())
-            .build(input_stream);
-
-        let flight_data_stream = flight_data_stream.map_err(|err| Status::unknown(err.to_string()));
+        let out = into_flight_data(records);
 
         if let Some(event) = event {
             event.clear(&stream_name);
@@ -230,9 +279,7 @@ impl FlightService for AirServiceImpl {
             .with_label_values(&[&format!("flight-query-{}", stream_name)])
             .observe(time);
 
-        Ok(Response::new(
-            Box::pin(flight_data_stream) as Self::DoGetStream
-        ))
+        out
     }
 
     async fn do_put(

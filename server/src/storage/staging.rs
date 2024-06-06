@@ -293,7 +293,7 @@ pub fn convert_disk_files_to_parquet(
     }
 }
 
-fn parquet_writer_props(
+pub fn parquet_writer_props(
     time_partition: Option<String>,
     index_time_partition: usize,
     custom_partition_fields: HashMap<String, usize>,

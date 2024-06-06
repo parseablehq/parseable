@@ -49,10 +49,7 @@ impl FileWriter {
     ) -> Result<(), StreamWriterError> {
         match self.get_mut(schema_key) {
             Some(writer) => {
-                writer
-                    .writer
-                    .write(record)
-                    .map_err(StreamWriterError::Writer)?;
+                writer.writer.write(record)?;
             }
             // entry is not present thus we create it
             None => {
@@ -100,8 +97,6 @@ fn init_new_stream_writer_file(
     let mut stream_writer = StreamWriter::try_new(file, &record.schema())
         .expect("File and RecordBatch both are checked");
 
-    stream_writer
-        .write(record)
-        .map_err(StreamWriterError::Writer)?;
+    stream_writer.write(record)?;
     Ok((path, stream_writer))
 }

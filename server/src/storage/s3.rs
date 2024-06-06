@@ -38,6 +38,7 @@ use std::path::Path as StdPath;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::handlers::http::users::USERS_ROOT_DIR;
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
 use crate::storage::{LogStream, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
 
@@ -305,6 +306,7 @@ impl S3 {
             .filter_map(|path| path.parts().next())
             .map(|name| name.as_ref().to_string())
             .filter(|x| x != PARSEABLE_ROOT_DIRECTORY)
+            .filter(|x| x != USERS_ROOT_DIR)
             .collect();
 
         let stream_json_check = FuturesUnordered::new();

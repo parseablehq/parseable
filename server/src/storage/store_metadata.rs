@@ -116,9 +116,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             overwrite_staging = true;
             if CONFIG.parseable.mode ==  Mode::All {
                 standalone_after_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
-                    .map_err(|err| {
-                        ObjectStorageError::Custom(err.to_string())
-                    })?;
+                    ?;
             }
             Ok(metadata)
         },
@@ -128,7 +126,10 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
         EnvChange::NewStaging(mut metadata) => {
             // if server is started in ingest mode,we need to make sure that query mode has been started
             // i.e the metadata is updated to reflect the server mode = Query
-            if Mode::from_string(&metadata.server_mode).map_err(ObjectStorageError::Custom)? == Mode::All && CONFIG.parseable.mode == Mode::Ingest {
+            if Mode::from_string(&metadata.server_mode)
+            .map_err(ObjectStorageError::Custom)
+            ?
+             == Mode::All && CONFIG.parseable.mode == Mode::Ingest {
                 Err("Starting Ingest Mode is not allowed, Since Query Server has not been started yet")
             } else {
                 create_dir_all(CONFIG.staging_dir())?;

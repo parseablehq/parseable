@@ -16,7 +16,9 @@
  *
  */
 
-use crate::{catalog::snapshot::Snapshot, stats::FullStats};
+use crate::{
+    catalog::snapshot::Snapshot, metadata::error::stream_info::MetadataError, stats::FullStats,
+};
 
 use chrono::Local;
 
@@ -209,6 +211,8 @@ pub enum ObjectStorageError {
     UnhandledError(Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("Error: {0}")]
     PathError(relative_path::FromPathError),
+    #[error("Error: {0}")]
+    MetadataError(#[from] MetadataError),
 
     #[allow(dead_code)]
     #[error("Authentication Error: {0}")]

@@ -25,9 +25,10 @@ use human_size::{Byte, Gigibyte, SpecificSize};
 use itertools::{Either, Itertools};
 use object_store::{local::LocalFileSystem, ObjectStore};
 use once_cell::sync::OnceCell;
+use parquet::errors::ParquetError;
 use tokio::{fs, sync::Mutex};
 
-use crate::option::CONFIG;
+use crate::{metadata::error::stream_info::MetadataError, option::CONFIG};
 
 pub const STREAM_CACHE_FILENAME: &str = ".cache.json";
 pub const CACHE_META_FILENAME: &str = ".cache_meta.json";
@@ -256,4 +257,12 @@ pub enum CacheError {
     MoveError(#[from] fs_extra::error::Error),
     #[error("{0}")]
     ObjectStoreError(#[from] object_store::Error),
+    #[error("{0}")]
+    ParquetError(#[from] ParquetError),
+    #[error("{0}")]
+    MetadataError(#[from] MetadataError),
+    #[error("Error: Cache File Does Not Exist")]
+    DoesNotExist,
+    #[error("Error: {0}")]
+    Other(&'static str),
 }

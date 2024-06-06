@@ -180,8 +180,8 @@ async fn collect_from_snapshot(
             .map(|item| item.manifest_path)
             .collect(),
     )
-    .await
-    .map_err(DataFusionError::ObjectStore)?;
+    .await?;
+
     let mut manifest_files: Vec<_> = manifest_files
         .into_iter()
         .flat_map(|file| file.files)
