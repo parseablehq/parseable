@@ -83,13 +83,22 @@ pub fn v2_v3(mut storage_metadata: JsonValue) -> JsonValue {
         // user is an object
         let user = user.as_object_mut().unwrap();
         // take out privileges
-        let JsonValue::Array(privileges) = user.remove("role").expect("role exists for v2") else {
+        let JsonValue::Array(mut privileges) = user.remove("role").expect("role exists for v2")
+        else {
             panic!("privileges is an arrray")
         };
 
         let mut roles = Vec::new();
 
         if !privileges.is_empty() {
+            for privilege in privileges.iter_mut() {
+                let privilege_value = privilege.get_mut("privilege");
+                if let Some(value) = privilege_value {
+                    if value.as_str().unwrap() == "ingester" {
+                        *value = JsonValue::String("ingestor".to_string());
+                    }
+                }
+            }
             let role_name =
                 rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
             privileges_map.push((role_name.clone(), JsonValue::Array(privileges)));
@@ -110,8 +119,9 @@ pub fn v2_v3(mut storage_metadata: JsonValue) -> JsonValue {
 }
 
 // maybe rename
-pub fn update_v3(mut storage_metadata: JsonValue) -> JsonValue {
+pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
     let metadata = storage_metadata.as_object_mut().unwrap();
+    *metadata.get_mut("version").unwrap() = JsonValue::String("v4".to_string());
     let sm = metadata.get("server_mode");
 
     if sm.is_none() || sm.unwrap().as_str().unwrap() == "All" {
@@ -121,6 +131,20 @@ pub fn update_v3(mut storage_metadata: JsonValue) -> JsonValue {
         );
     }
 
+    let roles = metadata.get_mut("roles").unwrap().as_object_mut().unwrap();
+    for (_, privileges) in roles.iter_mut() {
+        let JsonValue::Array(privileges) = privileges else {
+            panic!("privileges is an array")
+        };
+        for privilege in privileges.iter_mut() {
+            let privilege_value = privilege.get_mut("privilege");
+            if let Some(value) = privilege_value {
+                if value.as_str().unwrap() == "ingester" {
+                    *value = JsonValue::String("ingestor".to_string());
+                }
+            }
+        }
+    }
     storage_metadata
 }
 

@@ -53,7 +53,7 @@
  /// since oneof in AnyValue does not allow repeated fields.
  pub struct ArrayValue {
      /// Array of values. The array may be empty (contain 0 elements).
-     pub values: Vec<AnyValue>,
+     pub values: Vec<Value>,
  }
  
  #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -83,13 +83,13 @@
  /// such as the fully qualified name and version.
  pub struct InstrumentationScope {
      /// An empty instrumentation scope name means the name is unknown.
-     pub name: String,
-     pub version: String,
+     pub name: Option<String>,
+     pub version: Option<String>,
      /// Additional attributes that describe the scope. \[Optional\].
      /// Attribute keys MUST be unique (it is not allowed to have more than one
      /// attribute with the same key).
      pub attributes: Option<Vec<KeyValue>>,
      #[serde(rename = "droppedAttributesCount")]
-     pub dropped_attributes_count: u32,
+     pub dropped_attributes_count: Option<u32>,
  }
  

@@ -56,10 +56,18 @@ fn collect_json_from_any_value(
     if value.array_val.is_some() {
         let array_val = value.array_val.as_ref().unwrap();
         let values = &array_val.values;
-
         for value in values {
-            let value = &value.value;
-            value_json = collect_json_from_any_value(key, value.clone());
+            let array_value_json = collect_json_from_any_value(key, value.clone());
+            for key in array_value_json.keys() {
+                value_json.insert(
+                    format!(
+                        "{}_{}",
+                        key.to_owned(),
+                        value_to_string(array_value_json[key].to_owned())
+                    ),
+                    array_value_json[key].to_owned(),
+                );
+            }
         }
     }
 
@@ -69,7 +77,22 @@ fn collect_json_from_any_value(
         let kv_list_val = value.kv_list_val.unwrap();
         for key_value in kv_list_val.values {
             let value = key_value.value;
-            value_json = collect_json_from_values(&value, key);
+            if value.is_some() {
+                let value = value.unwrap();
+                let key_value_json = collect_json_from_any_value(key, value);
+
+                for key in key_value_json.keys() {
+                    value_json.insert(
+                        format!(
+                            "{}_{}_{}",
+                            key.to_owned(),
+                            key_value.key,
+                            value_to_string(key_value_json[key].to_owned())
+                        ),
+                        key_value_json[key].to_owned(),
+                    );
+                }
+            }
         }
     }
     if value.bytes_val.is_some() {
@@ -96,6 +119,14 @@ fn collect_json_from_values(
     value_json
 }
 
+fn value_to_string(value: serde_json::Value) -> String {
+    match value.clone() {
+        e @ Value::Number(_) | e @ Value::Bool(_) => e.to_string(),
+        Value::String(s) => s,
+        _ => "".to_string(),
+    }
+}
+
 pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let mut vec_otel_json: Vec<BTreeMap<String, Value>> = Vec::new();
     let body_str = std::str::from_utf8(body).unwrap();
@@ -117,10 +148,12 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                         }
                     }
                 }
-                if resource.dropped_attributes_count > 0 {
+                if resource.dropped_attributes_count.is_some() {
                     otel_json.insert(
                         "resource_dropped_attributes_count".to_string(),
-                        Value::Number(serde_json::Number::from(resource.dropped_attributes_count)),
+                        Value::Number(serde_json::Number::from(
+                            resource.dropped_attributes_count.unwrap(),
+                        )),
                     );
                 }
             }
@@ -128,16 +161,20 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
             for scope_logs in record.scope_logs.iter() {
                 for scope_log in scope_logs.iter() {
                     for instrumentation_scope in scope_log.scope.iter() {
-                        if !instrumentation_scope.name.is_empty() {
+                        if instrumentation_scope.name.is_some() {
                             otel_json.insert(
                                 "instrumentation_scope_name".to_string(),
-                                Value::String(instrumentation_scope.name.to_string()),
+                                Value::String(
+                                    instrumentation_scope.name.as_ref().unwrap().to_string(),
+                                ),
                             );
                         }
-                        if !instrumentation_scope.version.is_empty() {
+                        if instrumentation_scope.version.is_some() {
                             otel_json.insert(
                                 "instrumentation_scope_version".to_string(),
-                                Value::String(instrumentation_scope.version.to_string()),
+                                Value::String(
+                                    instrumentation_scope.version.as_ref().unwrap().to_string(),
+                                ),
                             );
                         }
                         let attributes = &instrumentation_scope.attributes;
@@ -154,11 +191,11 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                                 }
                             }
                         }
-                        if instrumentation_scope.dropped_attributes_count > 0 {
+                        if instrumentation_scope.dropped_attributes_count.is_some() {
                             otel_json.insert(
                                 "instrumentation_scope_dropped_attributes_count".to_string(),
                                 Value::Number(serde_json::Number::from(
-                                    instrumentation_scope.dropped_attributes_count,
+                                    instrumentation_scope.dropped_attributes_count.unwrap(),
                                 )),
                             );
                         }
@@ -166,25 +203,33 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
 
                     for log_record in scope_log.log_records.iter() {
                         let mut log_record_json: BTreeMap<String, Value> = BTreeMap::new();
-                        if !log_record.time_unix_nano > 0 {
+                        if log_record.time_unix_nano.is_some() {
                             log_record_json.insert(
                                 "time_unix_nano".to_string(),
-                                Value::String(log_record.time_unix_nano.to_string()),
+                                Value::String(
+                                    log_record.time_unix_nano.as_ref().unwrap().to_string(),
+                                ),
                             );
                         }
-                        if !log_record.observed_time_unix_nano > 0 {
+                        if log_record.observed_time_unix_nano.is_some() {
                             log_record_json.insert(
                                 "observed_time_unix_nano".to_string(),
-                                Value::String(log_record.observed_time_unix_nano.to_string()),
+                                Value::String(
+                                    log_record
+                                        .observed_time_unix_nano
+                                        .as_ref()
+                                        .unwrap()
+                                        .to_string(),
+                                ),
                             );
                         }
-                        if log_record.severity_number > 0 {
-                            let severity_number: i32 = log_record.severity_number;
+                        if log_record.severity_number.is_some() {
+                            let severity_number: i32 = log_record.severity_number.unwrap();
                             log_record_json.insert(
                                 "severity_number".to_string(),
                                 Value::Number(serde_json::Number::from(severity_number)),
                             );
-                            if log_record.severity_text.is_empty() {
+                            if log_record.severity_text.is_none() {
                                 log_record_json.insert(
                                     "severity_text".to_string(),
                                     Value::String(
@@ -193,10 +238,12 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                                 );
                             }
                         }
-                        if !log_record.severity_text.is_empty() {
+                        if log_record.severity_text.is_some() {
                             log_record_json.insert(
                                 "severity_text".to_string(),
-                                Value::String(log_record.severity_text.to_string()),
+                                Value::String(
+                                    log_record.severity_text.as_ref().unwrap().to_string(),
+                                ),
                             );
                         }
 
@@ -221,17 +268,17 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                             }
                         }
 
-                        if log_record.dropped_attributes_count > 0 {
+                        if log_record.dropped_attributes_count.is_some() {
                             log_record_json.insert(
                                 "log_record_dropped_attributes_count".to_string(),
                                 Value::Number(serde_json::Number::from(
-                                    log_record.dropped_attributes_count,
+                                    log_record.dropped_attributes_count.unwrap(),
                                 )),
                             );
                         }
 
-                        if log_record.flags > 0 {
-                            let flags: u32 = log_record.flags;
+                        if log_record.flags.is_some() {
+                            let flags: u32 = log_record.flags.unwrap();
                             log_record_json.insert(
                                 "flags_number".to_string(),
                                 Value::Number(serde_json::Number::from(flags)),
@@ -242,17 +289,17 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                             );
                         }
 
-                        if !log_record.span_id.is_empty() {
+                        if log_record.span_id.is_some() {
                             log_record_json.insert(
                                 "span_id".to_string(),
-                                Value::String(log_record.span_id.to_string()),
+                                Value::String(log_record.span_id.as_ref().unwrap().to_string()),
                             );
                         }
 
-                        if !log_record.trace_id.is_empty() {
+                        if log_record.trace_id.is_some() {
                             log_record_json.insert(
                                 "trace_id".to_string(),
-                                Value::String(log_record.trace_id.to_string()),
+                                Value::String(log_record.trace_id.as_ref().unwrap().to_string()),
                             );
                         }
                         for key in log_record_json.keys() {
@@ -261,18 +308,18 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                         vec_otel_json.push(otel_json.clone());
                     }
 
-                    if !scope_log.schema_url.is_empty() {
+                    if scope_log.schema_url.is_some() {
                         otel_json.insert(
                             "scope_log_schema_url".to_string(),
-                            Value::String(scope_log.schema_url.to_string()),
+                            Value::String(scope_log.schema_url.as_ref().unwrap().to_string()),
                         );
                     }
                 }
             }
-            if !record.schema_url.is_empty() {
+            if record.schema_url.is_some() {
                 otel_json.insert(
                     "resource_schema_url".to_string(),
-                    Value::String(record.schema_url.to_string()),
+                    Value::String(record.schema_url.as_ref().unwrap().to_string()),
                 );
             }
         }
