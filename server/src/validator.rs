@@ -38,10 +38,19 @@ const DENIED_NAMES: &[&str] = &[
 ];
 
 pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
+    let alert_name: Vec<&str> = alerts.alerts.iter().map(|a| a.name.as_str()).collect();
+    let mut alert_name_dedup = alert_name.clone();
+    alert_name_dedup.sort();
+    alert_name_dedup.dedup();
+
+    if alert_name.len() != alert_name_dedup.len() {
+        return Err(AlertValidationError::ExistingName);
+    }
     for alert in &alerts.alerts {
         if alert.name.is_empty() {
             return Err(AlertValidationError::EmptyName);
         }
+
         if alert.message.message.is_empty() {
             return Err(AlertValidationError::EmptyMessage);
         }
@@ -145,6 +154,8 @@ pub mod error {
     pub enum AlertValidationError {
         #[error("Alert name cannot be empty")]
         EmptyName,
+        #[error("Alert with the same name already exists")]
+        ExistingName,
         #[error("Alert message cannot be empty")]
         EmptyMessage,
         #[error("Alert's rule.column cannot be empty")]

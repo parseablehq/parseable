@@ -18,7 +18,7 @@
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::Local;
+use chrono::{Local, NaiveDateTime};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -27,10 +27,10 @@ use std::sync::{Arc, RwLock};
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 use crate::alerts::Alerts;
 use crate::metrics::{
-    EVENTS_INGESTED, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_TODAY, EVENTS_INGESTED_TODAY,
-    LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
+    EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
+    EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
-use crate::storage::{LogStream, ObjectStorage, StorageDir};
+use crate::storage::{LogStream, ObjectStorage, ObjectStoreFormat, StorageDir};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
 
@@ -271,7 +271,8 @@ impl StreamInfo {
         let alerts = storage.get_alerts(&stream.name).await?;
         let schema = storage.get_schema_on_server_start(&stream.name).await?;
         let meta = storage.get_stream_metadata(&stream.name).await?;
-
+        let meta_clone = meta.clone();
+        let stream_name = stream.name.clone();
         let schema = update_schema_from_staging(&stream.name, schema);
         let schema = HashMap::from_iter(
             schema
@@ -295,8 +296,28 @@ impl StreamInfo {
         let mut map = self.write().expect(LOCK_EXPECT);
 
         map.insert(stream.name, metadata);
+        Self::load_daily_metrics(meta_clone, &stream_name);
 
         Ok(())
+    }
+
+    fn load_daily_metrics(meta: ObjectStoreFormat, stream_name: &str) {
+        let manifests = meta.snapshot.manifest_list;
+        for manifest in manifests {
+            let manifest_date = manifest.time_lower_bound.date_naive().to_string();
+            let events_ingested = manifest.events_ingested;
+            let ingestion_size = manifest.ingestion_size;
+            let storage_size = manifest.storage_size;
+            EVENTS_INGESTED_DATE
+                .with_label_values(&[stream_name, "json", &manifest_date])
+                .set(events_ingested as i64);
+            EVENTS_INGESTED_SIZE_DATE
+                .with_label_values(&[stream_name, "json", &manifest_date])
+                .set(ingestion_size as i64);
+            EVENTS_STORAGE_SIZE_DATE
+                .with_label_values(&["data", stream_name, "parquet", &manifest_date])
+                .set(storage_size as i64);
+        }
     }
 
     pub fn list_streams(&self) -> Vec<String> {
@@ -313,18 +334,20 @@ impl StreamInfo {
         origin: &'static str,
         size: u64,
         num_rows: u64,
+        parsed_timestamp: NaiveDateTime,
     ) -> Result<(), MetadataError> {
+        let parsed_date = parsed_timestamp.date().to_string();
         EVENTS_INGESTED
             .with_label_values(&[stream_name, origin])
             .add(num_rows as i64);
-        EVENTS_INGESTED_TODAY
-            .with_label_values(&[stream_name, origin])
+        EVENTS_INGESTED_DATE
+            .with_label_values(&[stream_name, origin, parsed_date.as_str()])
             .add(num_rows as i64);
         EVENTS_INGESTED_SIZE
             .with_label_values(&[stream_name, origin])
             .add(size as i64);
-        EVENTS_INGESTED_SIZE_TODAY
-            .with_label_values(&[stream_name, origin])
+        EVENTS_INGESTED_SIZE_DATE
+            .with_label_values(&[stream_name, origin, parsed_date.as_str()])
             .add(size as i64);
         LIFETIME_EVENTS_INGESTED
             .with_label_values(&[stream_name, origin])

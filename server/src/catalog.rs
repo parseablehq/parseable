@@ -20,9 +20,9 @@ use std::{io::ErrorKind, sync::Arc};
 
 use self::{column::Column, snapshot::ManifestItem};
 use crate::handlers::http::base_path_without_preceding_slash;
-use crate::metrics::{EVENTS_INGESTED_SIZE_TODAY, EVENTS_INGESTED_TODAY, STORAGE_SIZE_TODAY};
+use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::CONFIG;
-use crate::stats::{event_labels, storage_size_labels, update_deleted_stats};
+use crate::stats::{event_labels_date, storage_size_labels_date, update_deleted_stats};
 use crate::{
     catalog::manifest::Manifest,
     event::DEFAULT_TIMESTAMP_KEY,
@@ -102,22 +102,6 @@ pub async fn update_snapshot(
     stream_name: &str,
     change: manifest::File,
 ) -> Result<(), ObjectStorageError> {
-    // get current snapshot
-    let event_labels = event_labels(stream_name, "json");
-    let storage_size_labels = storage_size_labels(stream_name);
-    let events_ingested = EVENTS_INGESTED_TODAY
-        .get_metric_with_label_values(&event_labels)
-        .unwrap()
-        .get() as u64;
-    let ingestion_size = EVENTS_INGESTED_SIZE_TODAY
-        .get_metric_with_label_values(&event_labels)
-        .unwrap()
-        .get() as u64;
-    let storage_size = STORAGE_SIZE_TODAY
-        .get_metric_with_label_values(&storage_size_labels)
-        .unwrap()
-        .get() as u64;
-
     let mut meta = storage.get_object_store_format(stream_name).await?;
     let meta_clone = meta.clone();
     let manifests = &mut meta.snapshot.manifest_list;
@@ -132,6 +116,21 @@ pub async fn update_snapshot(
             lower_bound
         }
     };
+    let date = lower_bound.date_naive().format("%Y-%m-%d").to_string();
+    let event_labels = event_labels_date(stream_name, "json", &date);
+    let storage_size_labels = storage_size_labels_date(stream_name, &date);
+    let events_ingested = EVENTS_INGESTED_DATE
+        .get_metric_with_label_values(&event_labels)
+        .unwrap()
+        .get() as u64;
+    let ingestion_size = EVENTS_INGESTED_SIZE_DATE
+        .get_metric_with_label_values(&event_labels)
+        .unwrap()
+        .get() as u64;
+    let storage_size = EVENTS_STORAGE_SIZE_DATE
+        .get_metric_with_label_values(&storage_size_labels)
+        .unwrap()
+        .get() as u64;
     let pos = manifests.iter().position(|item| {
         item.time_lower_bound <= lower_bound && lower_bound < item.time_upper_bound
     });
@@ -149,6 +148,25 @@ pub async fn update_snapshot(
         for m in manifests.iter_mut() {
             let p = manifest_path("").to_string();
             if m.manifest_path.contains(&p) {
+                let date = m
+                    .time_lower_bound
+                    .date_naive()
+                    .format("%Y-%m-%d")
+                    .to_string();
+                let event_labels = event_labels_date(stream_name, "json", &date);
+                let storage_size_labels = storage_size_labels_date(stream_name, &date);
+                let events_ingested = EVENTS_INGESTED_DATE
+                    .get_metric_with_label_values(&event_labels)
+                    .unwrap()
+                    .get() as u64;
+                let ingestion_size = EVENTS_INGESTED_SIZE_DATE
+                    .get_metric_with_label_values(&event_labels)
+                    .unwrap()
+                    .get() as u64;
+                let storage_size = EVENTS_STORAGE_SIZE_DATE
+                    .get_metric_with_label_values(&storage_size_labels)
+                    .unwrap()
+                    .get() as u64;
                 ch = true;
                 m.events_ingested = events_ingested;
                 m.ingestion_size = ingestion_size;
