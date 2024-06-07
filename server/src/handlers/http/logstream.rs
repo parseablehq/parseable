@@ -23,6 +23,7 @@ use super::cluster::{fetch_stats_from_ingestors, INTERNAL_STREAM_NAME};
 use crate::alerts::Alerts;
 use crate::handlers::{
     CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
+    UPDATE_STREAM_KEY,
 };
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
@@ -185,11 +186,24 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 }
 
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
-
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let mut update_stream = false;
-    if metadata::STREAM_INFO.stream_exists(&stream_name) {
-        update_stream = true;
+    let update_stream = if let Some((_, update_stream)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == UPDATE_STREAM_KEY)
+    {
+        update_stream.to_str().unwrap()
+    } else {
+        ""
+    };
+    if metadata::STREAM_INFO.stream_exists(&stream_name) && update_stream != "true" {
+        // Error if the log stream already exists
+        return Err(StreamError::Custom {
+            msg: format!(
+                "Logstream {stream_name} already exists, please create a new log stream with unique name"
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
     }
 
     let time_partition = if let Some((_, time_partition_name)) = req
@@ -202,11 +216,9 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
         ""
     };
 
-    if !time_partition.is_empty() && update_stream == true {
+    if !time_partition.is_empty() && update_stream == "true" {
         return Err(StreamError::Custom {
-            msg: format!(
-                "Altering the time partition of an existing stream is restricted."
-            ),
+            msg: "Altering the time partition of an existing stream is restricted.".to_string(),
             status: StatusCode::BAD_REQUEST,
         });
     }
@@ -219,18 +231,29 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
         let time_partition_limit = time_partition_limit_name.to_str().unwrap();
         if !time_partition_limit.ends_with('d') {
             return Err(StreamError::Custom {
-                msg: "missing 'd' suffix for duration value".to_string(),
+                msg: "Missing 'd' suffix for duration value".to_string(),
                 status: StatusCode::BAD_REQUEST,
             });
         }
         let days = &time_partition_limit[0..time_partition_limit.len() - 1];
         if days.parse::<NonZeroU32>().is_err() {
             return Err(StreamError::Custom {
-                msg: "could not convert duration to an unsigned number".to_string(),
+                msg: "Could not convert duration to an unsigned number".to_string(),
                 status: StatusCode::BAD_REQUEST,
             });
         } else {
             time_partition_in_days = days;
+            if update_stream == "true" {
+                if let Err(err) = update_time_partition_limit_in_stream(
+                    stream_name.clone(),
+                    time_partition_in_days,
+                )
+                .await
+                {
+                    return Err(StreamError::CreateStream(err));
+                }
+                return Ok(("Log stream updated", StatusCode::OK));
+            }
         }
     }
     let static_schema_flag = if let Some((_, static_schema_flag)) = req
@@ -243,11 +266,9 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
         ""
     };
 
-    if !static_schema_flag.is_empty() && update_stream == true {
+    if !static_schema_flag.is_empty() && update_stream == "true" {
         return Err(StreamError::Custom {
-            msg: format!(
-                "Altering the schema of an existing stream is restricted."
-            ),
+            msg: "Altering the schema of an existing stream is restricted.".to_string(),
             status: StatusCode::BAD_REQUEST,
         });
     }
@@ -262,14 +283,21 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
         let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
         if custom_partition_list.len() > 3 {
             return Err(StreamError::Custom {
-                msg: "maximum 3 custom partition keys are supported".to_string(),
+                msg: "Maximum 3 custom partition keys are supported".to_string(),
                 status: StatusCode::BAD_REQUEST,
             });
         }
+        if update_stream == "true" {
+            if let Err(err) =
+                update_custom_partition_in_stream(stream_name.clone(), custom_partition).await
+            {
+                return Err(StreamError::CreateStream(err));
+            }
+            return Ok(("Log stream updated", StatusCode::OK));
+        }
     }
-    
+
     let mut schema = Arc::new(Schema::empty());
-    
 
     if !body.is_empty() && static_schema_flag == "true" {
         let static_schema: StaticSchema = serde_json::from_slice(&body)?;
@@ -283,14 +311,14 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
             schema = parsed_schema;
         } else {
             return Err(StreamError::Custom {
-                msg: format!("unable to commit static schema, logstream {stream_name} not created"),
+                msg: format!("Unable to commit static schema, logstream {stream_name} not created"),
                 status: StatusCode::BAD_REQUEST,
             });
         }
     } else if body.is_empty() && static_schema_flag == "true" {
         return Err(StreamError::Custom {
                     msg: format!(
-                        "please provide schema in the request body for static schema logstream {stream_name}"
+                        "Please provide schema in the request body for static schema logstream {stream_name}"
                     ),
                     status: StatusCode::BAD_REQUEST,
                 });
@@ -303,11 +331,10 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
         custom_partition,
         static_schema_flag,
         schema,
-        update_stream
     )
     .await?;
 
-    Ok(("log stream created", StatusCode::OK))
+    Ok(("Log stream created", StatusCode::OK))
 }
 
 pub async fn put_alert(
@@ -601,17 +628,53 @@ fn remove_id_from_alerts(value: &mut Value) {
 }
 
 pub async fn update_time_partition_limit_in_stream(
-    stream_name: String,time_partition_limit: &str,)-> Result<(), CreateStreamError>{
-        if let Err(err) = storage
-            .update_stream(
-                &stream_name,
-                time_partition_limit,
-                custom_partition,
-            )
-            .await
-        {
-            return Err(CreateStreamError::Storage { stream_name, err });
-        }
+    stream_name: String,
+    time_partition_limit: &str,
+) -> Result<(), CreateStreamError> {
+    let storage = CONFIG.storage().get_object_store();
+    if let Err(err) = storage
+        .update_time_partition_limit_in_stream(&stream_name, time_partition_limit)
+        .await
+    {
+        return Err(CreateStreamError::Storage { stream_name, err });
+    }
+
+    if metadata::STREAM_INFO
+        .update_time_partition_limit(&stream_name, time_partition_limit.to_string())
+        .is_err()
+    {
+        return Err(CreateStreamError::Custom {
+            msg: "failed to update time partition limit in metadata".to_string(),
+            status: StatusCode::EXPECTATION_FAILED,
+        });
+    }
+
+    Ok(())
+}
+
+pub async fn update_custom_partition_in_stream(
+    stream_name: String,
+    custom_partition: &str,
+) -> Result<(), CreateStreamError> {
+    let storage = CONFIG.storage().get_object_store();
+    if let Err(err) = storage
+        .update_custom_partition_in_stream(&stream_name, custom_partition)
+        .await
+    {
+        return Err(CreateStreamError::Storage { stream_name, err });
+    }
+
+    if metadata::STREAM_INFO
+        .update_custom_partition(&stream_name, custom_partition.to_string())
+        .is_err()
+    {
+        return Err(CreateStreamError::Custom {
+            msg: "failed to update custom partition in metadata".to_string(),
+            status: StatusCode::EXPECTATION_FAILED,
+        });
+    }
+
+    Ok(())
 }
 
 pub async fn create_stream(
@@ -621,7 +684,6 @@ pub async fn create_stream(
     custom_partition: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
-    update_stream: bool
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     if stream_name.ne(INTERNAL_STREAM_NAME) {
@@ -630,20 +692,7 @@ pub async fn create_stream(
 
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
-
-    if update_stream {
-        if let Err(err) = storage
-            .update_stream(
-                &stream_name,
-                time_partition_limit,
-                custom_partition,
-            )
-            .await
-        {
-            return Err(CreateStreamError::Storage { stream_name, err });
-        }
-    }else{
-        if let Err(err) = storage
+    if let Err(err) = storage
         .create_stream(
             &stream_name,
             time_partition,
@@ -653,10 +702,9 @@ pub async fn create_stream(
             schema.clone(),
         )
         .await
-        {
-            return Err(CreateStreamError::Storage { stream_name, err });
-        }
-    } 
+    {
+        return Err(CreateStreamError::Storage { stream_name, err });
+    }
 
     let stream_meta = CONFIG
         .storage()
@@ -760,6 +808,8 @@ pub mod error {
             stream_name: String,
             err: ObjectStorageError,
         },
+        #[error("{msg}")]
+        Custom { msg: String, status: StatusCode },
     }
 
     #[derive(Debug, thiserror::Error)]
@@ -810,6 +860,9 @@ pub mod error {
                     StatusCode::BAD_REQUEST
                 }
                 StreamError::CreateStream(CreateStreamError::Storage { .. }) => {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+                StreamError::CreateStream(CreateStreamError::Custom { .. }) => {
                     StatusCode::INTERNAL_SERVER_ERROR
                 }
                 StreamError::CacheNotEnabled(_) => StatusCode::BAD_REQUEST,

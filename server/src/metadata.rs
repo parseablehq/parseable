@@ -175,27 +175,27 @@ impl StreamInfo {
     pub fn update_time_partition_limit(
         &self,
         stream_name: &str,
-        time_partition_limit: Option<String>,
-    )-> Result<(), MetadataError>{
+        time_partition_limit: String,
+    ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
-        .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-        .map(|metadata| {
-            metadata.time_partition_limit = time_partition_limit;
-        })
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.time_partition_limit = Some(time_partition_limit);
+            })
     }
 
     pub fn update_custom_partition(
         &self,
         stream_name: &str,
-        custom_partition: Option<String>,
-    )-> Result<(), MetadataError>{
+        custom_partition: String,
+    ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
-        .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-        .map(|metadata| {
-            metadata.custom_partition = custom_partition;
-        })
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.custom_partition = Some(custom_partition);
+            })
     }
 
     #[allow(clippy::too_many_arguments)]
