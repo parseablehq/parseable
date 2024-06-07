@@ -113,6 +113,47 @@ impl Metrics {
 }
 
 impl Metrics {
+    pub fn get_daily_stats_from_samples(
+        samples: Vec<PromSample>,
+        stream_name: &str,
+        date: &str,
+    ) -> (u64, u64, u64) {
+        let mut events_ingested: u64 = 0;
+        let mut ingestion_size: u64 = 0;
+        let mut storage_size: u64 = 0;
+        for sample in samples {
+            if let PromValue::Gauge(val) = sample.value {
+                match sample.metric.as_str() {
+                    "parseable_events_ingested_date" => {
+                        if sample.labels.get("stream").expect("stream name is present")
+                            == stream_name
+                            && sample.labels.get("date").expect("date is present") == date
+                        {
+                            events_ingested = val as u64;
+                        }
+                    }
+                    "parseable_events_ingested_size_date" => {
+                        if sample.labels.get("stream").expect("stream name is present")
+                            == stream_name
+                            && sample.labels.get("date").expect("date is present") == date
+                        {
+                            ingestion_size = val as u64;
+                        }
+                    }
+                    "parseable_events_storage_size_date" => {
+                        if sample.labels.get("stream").expect("stream name is present")
+                            == stream_name
+                            && sample.labels.get("date").expect("date is present") == date
+                        {
+                            storage_size = val as u64;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (events_ingested, ingestion_size, storage_size)
+    }
     pub async fn from_prometheus_samples(
         samples: Vec<PromSample>,
         ingestor_metadata: &IngestorMetadata,
