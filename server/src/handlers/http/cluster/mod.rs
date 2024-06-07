@@ -50,7 +50,7 @@ use std::time::Duration;
 
 use super::modal::IngestorMetadata;
 use clokwerk::{AsyncScheduler, Interval};
-pub const INTERNAL_STREAM_NAME: &str = "meta";
+pub const INTERNAL_STREAM_NAME: &str = "pmeta";
 
 const CLUSTER_METRICS_INTERVAL_SECONDS: Interval = clokwerk::Interval::Minutes(1);
 
