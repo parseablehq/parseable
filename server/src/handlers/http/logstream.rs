@@ -25,8 +25,10 @@ use crate::handlers::{
     CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
 };
 use crate::metadata::STREAM_INFO;
+use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
+use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{
     catalog::{self, remove_manifest_from_snapshot},
@@ -482,12 +484,54 @@ pub async fn put_enable_cache(
         StatusCode::OK,
     ))
 }
+pub async fn get_stats_date(stream_name: &str, date: &str) -> Result<Stats, StreamError> {
+    let event_labels = event_labels_date(stream_name, "json", date);
+    let storage_size_labels = storage_size_labels_date(stream_name, date);
+    let events_ingested = EVENTS_INGESTED_DATE
+        .get_metric_with_label_values(&event_labels)
+        .unwrap()
+        .get() as u64;
+    let ingestion_size = EVENTS_INGESTED_SIZE_DATE
+        .get_metric_with_label_values(&event_labels)
+        .unwrap()
+        .get() as u64;
+    let storage_size = EVENTS_STORAGE_SIZE_DATE
+        .get_metric_with_label_values(&storage_size_labels)
+        .unwrap()
+        .get() as u64;
+
+    let stats = Stats {
+        events: events_ingested,
+        ingestion: ingestion_size,
+        storage: storage_size,
+    };
+    Ok(stats)
+}
 
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         return Err(StreamError::StreamNotFound(stream_name));
+    }
+
+    let query_string = req.query_string();
+    if !query_string.is_empty() {
+        let date_key = query_string.split('=').collect::<Vec<&str>>()[0];
+        let date_value = query_string.split('=').collect::<Vec<&str>>()[1];
+        if date_key != "date" {
+            return Err(StreamError::Custom {
+                msg: "Invalid query parameter".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
+
+        if !date_value.is_empty() {
+            let stats = get_stats_date(&stream_name, date_value).await?;
+            let stats = serde_json::to_value(stats)?;
+
+            return Ok((web::Json(stats), StatusCode::OK));
+        }
     }
 
     let stats = stats::get_current_stats(&stream_name, "json")

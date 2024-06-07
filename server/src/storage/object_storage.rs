@@ -27,7 +27,7 @@ use super::{
 
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
-use crate::metrics::{LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE_TODAY};
+use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
 use crate::{
     alerts::Alerts,
@@ -468,20 +468,7 @@ pub trait ObjectStorage: Sync + 'static {
                     commit_schema_to_storage(stream, schema).await?;
                 }
             }
-            let mut compressed_size: u64 = 0;
             let parquet_files = dir.parquet_files();
-            parquet_files.iter().for_each(|file| {
-                compressed_size += file.metadata().map_or(0, |meta| meta.len());
-            });
-            STORAGE_SIZE
-                .with_label_values(&["data", stream, "parquet"])
-                .add(compressed_size as i64);
-            STORAGE_SIZE_TODAY
-                .with_label_values(&["data", stream, "parquet"])
-                .add(compressed_size as i64);
-            LIFETIME_EVENTS_STORAGE_SIZE
-                .with_label_values(&["data", stream, "parquet"])
-                .add(compressed_size as i64);
 
             for file in parquet_files {
                 let filename = file
@@ -489,6 +476,18 @@ pub trait ObjectStorage: Sync + 'static {
                     .expect("only parquet files are returned by iterator")
                     .to_str()
                     .expect("filename is valid string");
+                let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
+                file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
+                let compressed_size = file.metadata().map_or(0, |meta| meta.len());
+                STORAGE_SIZE
+                    .with_label_values(&["data", stream, "parquet"])
+                    .add(compressed_size as i64);
+                EVENTS_STORAGE_SIZE_DATE
+                    .with_label_values(&["data", stream, "parquet", file_date_part])
+                    .add(compressed_size as i64);
+                LIFETIME_EVENTS_STORAGE_SIZE
+                    .with_label_values(&["data", stream, "parquet"])
+                    .add(compressed_size as i64);
                 let mut file_suffix = str::replacen(filename, ".", "/", 3);
 
                 let custom_partition_clone = custom_partition.clone();
