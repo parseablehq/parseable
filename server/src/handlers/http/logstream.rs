@@ -19,7 +19,9 @@
 use self::error::{CreateStreamError, StreamError};
 use super::base_path_without_preceding_slash;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
-use super::cluster::{fetch_stats_from_ingestors, INTERNAL_STREAM_NAME};
+use super::cluster::{
+    fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors, INTERNAL_STREAM_NAME,
+};
 use crate::alerts::Alerts;
 use crate::handlers::{
     CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
@@ -527,10 +529,24 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         }
 
         if !date_value.is_empty() {
-            let stats = get_stats_date(&stream_name, date_value).await?;
-            let stats = serde_json::to_value(stats)?;
+            if CONFIG.parseable.mode == Mode::Query {
+                let querier_stats = get_stats_date(&stream_name, date_value).await?;
+                let ingestor_stats =
+                    fetch_daily_stats_from_ingestors(&stream_name, date_value).await?;
+                let total_stats = Stats {
+                    events: querier_stats.events + ingestor_stats.events,
+                    ingestion: querier_stats.ingestion + ingestor_stats.ingestion,
+                    storage: querier_stats.storage + ingestor_stats.storage,
+                };
+                let stats = serde_json::to_value(total_stats)?;
 
-            return Ok((web::Json(stats), StatusCode::OK));
+                return Ok((web::Json(stats), StatusCode::OK));
+            } else {
+                let stats = get_stats_date(&stream_name, date_value).await?;
+                let stats = serde_json::to_value(stats)?;
+
+                return Ok((web::Json(stats), StatusCode::OK));
+            }
         }
     }
 

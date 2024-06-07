@@ -27,6 +27,7 @@ use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
+use crate::stats::Stats;
 use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
@@ -154,6 +155,67 @@ pub async fn sync_streams_with_ingestors(
     }
 
     Ok(())
+}
+
+pub async fn fetch_daily_stats_from_ingestors(
+    stream_name: &str,
+    date: &str,
+) -> Result<Stats, StreamError> {
+    let mut total_events_ingested: u64 = 0;
+    let mut total_ingestion_size: u64 = 0;
+    let mut total_storage_size: u64 = 0;
+
+    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        StreamError::Anyhow(err)
+    })?;
+    for ingestor in ingestor_infos.iter() {
+        let uri = Url::parse(&format!(
+            "{}{}/metrics",
+            &ingestor.domain_name,
+            base_path_without_preceding_slash()
+        ))
+        .map_err(|err| {
+            StreamError::Anyhow(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
+        })?;
+
+        let res = reqwest::Client::new()
+            .get(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .send()
+            .await;
+
+        if let Ok(res) = res {
+            let text = res
+                .text()
+                .await
+                .map_err(|err| StreamError::Anyhow(anyhow::anyhow!("Request failed: {}", err)))?;
+            let lines: Vec<Result<String, std::io::Error>> =
+                text.lines().map(|line| Ok(line.to_owned())).collect_vec();
+
+            let sample = prometheus_parse::Scrape::parse(lines.into_iter())
+                .map_err(|err| {
+                    StreamError::Anyhow(anyhow::anyhow!(
+                        "Invalid URL in Ingestor Metadata: {}",
+                        err
+                    ))
+                })?
+                .samples;
+
+            let (events_ingested, ingestion_size, storage_size) =
+                Metrics::get_daily_stats_from_samples(sample, stream_name, date);
+            total_events_ingested += events_ingested;
+            total_ingestion_size += ingestion_size;
+            total_storage_size += storage_size;
+        }
+    }
+
+    let stats = Stats {
+        events: total_events_ingested,
+        ingestion: total_ingestion_size,
+        storage: total_storage_size,
+    };
+    Ok(stats)
 }
 
 /// get the cumulative stats from all ingestors
