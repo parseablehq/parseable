@@ -33,6 +33,6 @@
      /// no attributes were dropped.
  
      #[serde(rename = "droppedAttributesCount")]
-     pub dropped_attributes_count: u32,
+     pub dropped_attributes_count: Option<u32>,
  }
  

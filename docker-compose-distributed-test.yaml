@@ -94,135 +94,7 @@ services:
         condition: on-failure
         delay: 20s
         max_attempts: 3
-  # ingest server two
-  parseable-ingest-two:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["parseable", "s3-store"]
-    ports:
-      - 8000
-    environment:
-      - P_S3_URL=http://minio:9000
-      - P_S3_ACCESS_KEY=parseable
-      - P_S3_SECRET_KEY=supersecret
-      - P_S3_REGION=us-east-1
-      - P_S3_BUCKET=parseable
-      - P_STAGING_DIR=/tmp/data
-      - P_USERNAME=parseableadmin
-      - P_PASSWORD=parseableadmin
-      - P_CHECK_UPDATE=false
-      - P_PARQUET_COMPRESSION_ALGO=snappy
-      - P_MODE=ingest
-      - P_INGESTOR_ENDPOINT=parseable-ingest-two:8000
-    networks:
-      - parseable-internal
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
-      interval: 15s
-      timeout: 20s
-      retries: 5
-    depends_on:
-      - parseable-query
-      - minio
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 20s
-        max_attempts: 3
-  # ingest server three
-  parseable-ingest-three:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["parseable", "s3-store"]
-    ports:
-      - 8000
-    environment:
-      - P_S3_URL=http://minio:9000
-      - P_S3_ACCESS_KEY=parseable
-      - P_S3_SECRET_KEY=supersecret
-      - P_S3_REGION=us-east-1
-      - P_S3_BUCKET=parseable
-      - P_STAGING_DIR=/tmp/data
-      - P_USERNAME=parseableadmin
-      - P_PASSWORD=parseableadmin
-      - P_CHECK_UPDATE=false
-      - P_PARQUET_COMPRESSION_ALGO=snappy
-      - P_MODE=ingest
-      - P_INGESTOR_ENDPOINT=parseable-ingest-three:8000
-    networks:
-      - parseable-internal
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
-      interval: 15s
-      timeout: 20s
-      retries: 5
-    depends_on:
-      - parseable-query
-      - minio
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 20s
-        max_attempts: 3
-  # ingest server four
-  parseable-ingest-four:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["parseable", "s3-store"]
-    ports:
-      - 8000
-    environment:
-      - P_S3_URL=http://minio:9000
-      - P_S3_ACCESS_KEY=parseable
-      - P_S3_SECRET_KEY=supersecret
-      - P_S3_REGION=us-east-1
-      - P_S3_BUCKET=parseable
-      - P_STAGING_DIR=/tmp/data
-      - P_USERNAME=parseableadmin
-      - P_PASSWORD=parseableadmin
-      - P_CHECK_UPDATE=false
-      - P_PARQUET_COMPRESSION_ALGO=snappy
-      - P_MODE=ingest
-      - P_INGESTOR_ENDPOINT=parseable-ingest-four:8000
-    networks:
-      - parseable-internal
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
-      interval: 15s
-      timeout: 20s
-      retries: 5
-    depends_on:
-      - parseable-query
-      - minio
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 20s
-        max_attempts: 3
-  # penguin lb
-  penguin:
-    platform: linux/amd64
-    image: parseable/penguin:edge
-    command: ["./target/release/penguin"]
-    environment:
-      - P_ADDR_ONE=parseable-ingest-one:8000
-      - P_ADDR_TWO=parseable-ingest-two:8000
-      - P_ADDR_THREE=parseable-ingest-three:8000
-      - P_ADDR_FOUR=parseable-ingest-four:8000
-    ports:
-      - 6188:6188
-    depends_on:
-      - parseable-query
-      - minio
-      - parseable-ingest-one
-      - parseable-ingest-two
-      - parseable-ingest-three
-      - parseable-ingest-four
-    networks:
-      - parseable-internal
+  
   quest:
     platform: linux/amd64
     image: ghcr.io/parseablehq/quest:main
@@ -239,7 +111,7 @@ services:
         "parseable",
         "supersecret",
         "parseable",
-        "http://penguin:6188",
+        "http://parseable-ingest-one:8000",
         "parseableadmin",
         "parseableadmin",
       ]
@@ -247,7 +119,7 @@ services:
       - parseable-internal
     depends_on:
       - parseable-query
-      - penguin
+      - parseable-ingest-one
       - minio
     deploy:
       restart_policy:
