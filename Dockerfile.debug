@@ -18,7 +18,7 @@ FROM rust:1.77.1-bookworm as builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
-LABEL org.opencontainers.image.vendor="Cloudnatively Pvt Ltd"
+LABEL org.opencontainers.image.vendor="Parseable Inc"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 WORKDIR /parseable
