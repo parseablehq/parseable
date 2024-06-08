@@ -42,15 +42,15 @@ jobs:
       - name: Create Artifact
         uses: actions/upload-artifact@v3
         with:
-          name: Parseable_${{ matrix.target }}
-          path: Parseable_${{ matrix.target }}
+          name: Parseable_oss_${{ matrix.target }}
+          path: Parseable_oss_${{ matrix.target }}
 
       - name: Publish Archive to Release Page
         uses: softprops/action-gh-release@v0.1.15
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         with:
           draft: false
-          files: Parseable_${{ matrix.target }}
+          files: Parseable_oss_${{ matrix.target }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -73,20 +73,20 @@ jobs:
 
       - name: Rename binary
         run: |
-          mv target/x86_64-pc-windows-msvc/release/PARSEABLE.exe Parseable_x86_64-pc-windows-msvc.exe
+          mv target/x86_64-pc-windows-msvc/release/PARSEABLE.exe Parseable_oss_x86_64-pc-windows-msvc.exe
 
       - name: Create artifact for Windows
         uses: actions/upload-artifact@v2
         with:
-          name: Parseable_x86_64-pc-windows-msvc.exe
-          path: Parseable_x86_64-pc-windows-msvc.exe
+          name: Parseable_oss_x86_64-pc-windows-msvc.exe
+          path: Parseable_oss_x86_64-pc-windows-msvc.exe
 
       - name: Publish Archive to Release Page
         uses: softprops/action-gh-release@v0.1.15
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         with:
           draft: false
-          files: Parseable_x86_64-pc-windows-msvc.exe
+          files: Parseable_oss_x86_64-pc-windows-msvc.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -118,20 +118,20 @@ jobs:
 
       - name: Rename binary
         run: |
-          mv target/${{ matrix.target }}/release/Parseable Parseable_${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/Parseable Parseable_oss_${{ matrix.target }}
 
       - name: Create artifact
         uses: actions/upload-artifact@v2
         with:
-          name: Parseable_${{ matrix.target }}
-          path: Parseable_${{ matrix.target }}
+          name: Parseable_oss_${{ matrix.target }}
+          path: Parseable_oss_${{ matrix.target }}
 
       - name: Publish Archive to Release Page
         uses: softprops/action-gh-release@v0.1.15
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         with:
           draft: false
-          files: Parseable_${{ matrix.target }}
+          files: Parseable_oss_${{ matrix.target }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -144,7 +144,7 @@ jobs:
 
       - name: Run shasum command
         run: |
-          find . -type f -name "Parseable_*" -exec shasum {} \; | sed 's/.\/.*\///' > checksum.txt
+          find . -type f -name "Parseable_oss_*" -exec shasum {} \; | sed 's/.\/.*\///' > checksum.txt
 
       - name: Create artifact
         uses: actions/upload-artifact@v2
