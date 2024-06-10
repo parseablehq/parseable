@@ -324,7 +324,8 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
         .parseable
         .address
         .parse()
-        .expect("valid socket address");
+        .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as a socket address. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000)",
+CONFIG.parseable.address, err));
     addr.set_port(CONFIG.parseable.flight_port);
 
     let service = AirServiceImpl {};

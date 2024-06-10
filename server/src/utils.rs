@@ -238,13 +238,21 @@ pub fn get_url() -> Url {
             CONFIG.parseable.address
         )
         .parse::<Url>() // if the value was improperly set, this will panic before hand
-        .expect("Valid URL");
+        .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000)",
+            err, CONFIG.parseable.address));
     }
-    let addr_from_env = CONFIG
-        .parseable
-        .ingestor_endpoint
-        .split(':')
-        .collect::<Vec<&str>>();
+
+    let ingestor_endpoint = &CONFIG.parseable.ingestor_endpoint;
+
+    if ingestor_endpoint.starts_with("http") {
+        panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000)", ingestor_endpoint);
+    }
+
+    let addr_from_env = ingestor_endpoint.split(':').collect::<Vec<&str>>();
+
+    if addr_from_env.len() != 2 {
+        panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000)", ingestor_endpoint);
+    }
 
     let mut hostname = addr_from_env[0].to_string();
     let mut port = addr_from_env[1].to_string();
@@ -254,15 +262,29 @@ pub fn get_url() -> Url {
     if hostname.starts_with('$') {
         let var_hostname = hostname[1..].to_string();
         hostname = get_from_env(&var_hostname);
-    }
-    if !hostname.starts_with("http") {
-        hostname = format!("{}://{}", CONFIG.parseable.get_scheme(), hostname);
+
+        if hostname.is_empty() {
+            panic!("The environement variable `{}` is not set, please set as <ip address / DNS> without the scheme (e.g., 192.168.1.1 or example.com)", var_hostname);
+        }
+        if hostname.starts_with("http") {
+            panic!("Invalid value `{}`, please set the environement variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com)", hostname, var_hostname);
+        } else {
+            hostname = format!("{}://{}", CONFIG.parseable.get_scheme(), hostname);
+        }
     }
 
     if port.starts_with('$') {
         let var_port = port[1..].to_string();
         port = get_from_env(&var_port);
+
+        if port.is_empty() {
+            panic!(
+                "Port is not set in the environement variable `{}`",
+                var_port
+            );
+        }
     }
+
     format!("{}:{}", hostname, port)
         .parse::<Url>()
         .expect("Valid URL")
