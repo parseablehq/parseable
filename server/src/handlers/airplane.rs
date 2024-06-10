@@ -324,7 +324,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
         .parseable
         .address
         .parse()
-        .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as a socket address. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000)",
+        .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as a socket address. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.",
 CONFIG.parseable.address, err));
     addr.set_port(CONFIG.parseable.flight_port);
 

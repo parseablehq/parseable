@@ -238,20 +238,20 @@ pub fn get_url() -> Url {
             CONFIG.parseable.address
         )
         .parse::<Url>() // if the value was improperly set, this will panic before hand
-        .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000)",
+        .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.",
             err, CONFIG.parseable.address));
     }
 
     let ingestor_endpoint = &CONFIG.parseable.ingestor_endpoint;
 
     if ingestor_endpoint.starts_with("http") {
-        panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000)", ingestor_endpoint);
+        panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", ingestor_endpoint);
     }
 
     let addr_from_env = ingestor_endpoint.split(':').collect::<Vec<&str>>();
 
     if addr_from_env.len() != 2 {
-        panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000)", ingestor_endpoint);
+        panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", ingestor_endpoint);
     }
 
     let mut hostname = addr_from_env[0].to_string();
@@ -264,10 +264,10 @@ pub fn get_url() -> Url {
         hostname = get_from_env(&var_hostname);
 
         if hostname.is_empty() {
-            panic!("The environement variable `{}` is not set, please set as <ip address / DNS> without the scheme (e.g., 192.168.1.1 or example.com)", var_hostname);
+            panic!("The environement variable `{}` is not set, please set as <ip address / DNS> without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", var_hostname);
         }
         if hostname.starts_with("http") {
-            panic!("Invalid value `{}`, please set the environement variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com)", hostname, var_hostname);
+            panic!("Invalid value `{}`, please set the environement variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", hostname, var_hostname);
         } else {
             hostname = format!("{}://{}", CONFIG.parseable.get_scheme(), hostname);
         }
@@ -279,13 +279,13 @@ pub fn get_url() -> Url {
 
         if port.is_empty() {
             panic!(
-                "Port is not set in the environement variable `{}`",
+                "Port is not set in the environement variable `{}`. Please refer to the documentation: https://logg.ing/env for more details.",
                 var_port
             );
         }
     }
 
-    format!("{}:{}", hostname, port)
+    format!("{}://{}:{}", CONFIG.parseable.get_scheme(), hostname, port)
         .parse::<Url>()
         .expect("Valid URL")
 }
