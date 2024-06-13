@@ -30,6 +30,7 @@ use crate::metrics::{
     EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
+use crate::storage::retention::Retention;
 use crate::storage::{LogStream, ObjectStorage, ObjectStoreFormat, StorageDir};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
@@ -45,6 +46,7 @@ pub struct StreamInfo(RwLock<HashMap<String, LogStreamMetadata>>);
 pub struct LogStreamMetadata {
     pub schema: HashMap<String, Arc<Field>>,
     pub alerts: Alerts,
+    pub retention: Option<Retention>,
     pub cache_enabled: bool,
     pub created_at: String,
     pub first_event_at: Option<String>,
@@ -97,11 +99,28 @@ impl StreamInfo {
             .map(|metadata| metadata.cache_enabled)
     }
 
+    pub fn get_first_event(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.first_event_at.clone())
+    }
+
     pub fn get_time_partition(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         map.get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| metadata.time_partition.clone())
+    }
+
+    pub fn get_time_partition_limit(
+        &self,
+        stream_name: &str,
+    ) -> Result<Option<String>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.time_partition_limit.clone())
     }
 
     pub fn get_custom_partition(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
@@ -119,6 +138,13 @@ impl StreamInfo {
         map.get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| metadata.static_schema_flag.clone())
+    }
+
+    pub fn get_retention(&self, stream_name: &str) -> Result<Option<Retention>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.retention.clone())
     }
 
     pub fn set_stream_cache(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
@@ -156,6 +182,19 @@ impl StreamInfo {
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
                 metadata.alerts = alerts;
+            })
+    }
+
+    pub fn set_retention(
+        &self,
+        stream_name: &str,
+        retention: Retention,
+    ) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        map.get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.retention = Some(retention);
             })
     }
 
@@ -251,28 +290,16 @@ impl StreamInfo {
         map.remove(stream_name);
     }
 
-    pub async fn load(&self, storage: &(impl ObjectStorage + ?Sized)) -> Result<(), LoadError> {
-        // When loading streams this funtion will assume list_streams only returns valid streams.
-        // a valid stream would have a .schema file.
-        // .schema file could be empty in that case it will be treated as an uninitialized stream.
-        // return error in case of an error from object storage itself.
-
-        for stream in storage.list_streams().await? {
-            self.upsert_stream_info(storage, stream).await?;
-        }
-        Ok(())
-    }
-
     pub async fn upsert_stream_info(
         &self,
         storage: &(impl ObjectStorage + ?Sized),
         stream: LogStream,
     ) -> Result<(), LoadError> {
         let alerts = storage.get_alerts(&stream.name).await?;
-        let schema = storage.get_schema_on_server_start(&stream.name).await?;
-        let meta = storage.get_stream_metadata(&stream.name).await?;
-        let meta_clone = meta.clone();
-        let stream_name = stream.name.clone();
+
+        let schema = storage.upsert_schema_to_storage(&stream.name).await?;
+        let meta = storage.upsert_stream_metadata(&stream.name).await?;
+        let retention = meta.retention;
         let schema = update_schema_from_staging(&stream.name, schema);
         let schema = HashMap::from_iter(
             schema
@@ -284,6 +311,7 @@ impl StreamInfo {
         let metadata = LogStreamMetadata {
             schema,
             alerts,
+            retention,
             cache_enabled: meta.cache_enabled,
             created_at: meta.created_at,
             first_event_at: meta.first_event_at,
@@ -296,28 +324,7 @@ impl StreamInfo {
         let mut map = self.write().expect(LOCK_EXPECT);
 
         map.insert(stream.name, metadata);
-        Self::load_daily_metrics(meta_clone, &stream_name);
-
         Ok(())
-    }
-
-    fn load_daily_metrics(meta: ObjectStoreFormat, stream_name: &str) {
-        let manifests = meta.snapshot.manifest_list;
-        for manifest in manifests {
-            let manifest_date = manifest.time_lower_bound.date_naive().to_string();
-            let events_ingested = manifest.events_ingested;
-            let ingestion_size = manifest.ingestion_size;
-            let storage_size = manifest.storage_size;
-            EVENTS_INGESTED_DATE
-                .with_label_values(&[stream_name, "json", &manifest_date])
-                .set(events_ingested as i64);
-            EVENTS_INGESTED_SIZE_DATE
-                .with_label_values(&[stream_name, "json", &manifest_date])
-                .set(ingestion_size as i64);
-            EVENTS_STORAGE_SIZE_DATE
-                .with_label_values(&["data", stream_name, "parquet", &manifest_date])
-                .set(storage_size as i64);
-        }
     }
 
     pub fn list_streams(&self) -> Vec<String> {
@@ -366,6 +373,60 @@ fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Sche
         .merged_schema();
 
     Schema::try_merge(vec![schema, current_schema]).unwrap()
+}
+
+pub async fn load_stream_metadata_on_server_start(
+    storage: &(impl ObjectStorage + ?Sized),
+    stream_name: &str,
+    schema: Schema,
+    meta: &ObjectStoreFormat,
+) -> Result<(), LoadError> {
+    let alerts = storage.get_alerts(stream_name).await?;
+    let schema = update_schema_from_staging(stream_name, schema);
+    let schema = HashMap::from_iter(
+        schema
+            .fields
+            .iter()
+            .map(|v| (v.name().to_owned(), v.clone())),
+    );
+
+    let metadata = LogStreamMetadata {
+        schema,
+        alerts,
+        retention: meta.retention.clone(),
+        cache_enabled: meta.cache_enabled,
+        created_at: meta.created_at.clone(),
+        first_event_at: meta.first_event_at.clone(),
+        time_partition: meta.time_partition.clone(),
+        time_partition_limit: meta.time_partition_limit.clone(),
+        custom_partition: meta.custom_partition.clone(),
+        static_schema_flag: meta.static_schema_flag.clone(),
+    };
+
+    let mut map = STREAM_INFO.write().expect(LOCK_EXPECT);
+
+    map.insert(stream_name.to_string(), metadata);
+    load_daily_metrics(meta, stream_name);
+    Ok(())
+}
+
+fn load_daily_metrics(meta: &ObjectStoreFormat, stream_name: &str) {
+    let manifests = &meta.snapshot.manifest_list;
+    for manifest in manifests {
+        let manifest_date = manifest.time_lower_bound.date_naive().to_string();
+        let events_ingested = manifest.events_ingested;
+        let ingestion_size = manifest.ingestion_size;
+        let storage_size = manifest.storage_size;
+        EVENTS_INGESTED_DATE
+            .with_label_values(&[stream_name, "json", &manifest_date])
+            .set(events_ingested as i64);
+        EVENTS_INGESTED_SIZE_DATE
+            .with_label_values(&[stream_name, "json", &manifest_date])
+            .set(ingestion_size as i64);
+        EVENTS_STORAGE_SIZE_DATE
+            .with_label_values(&["data", stream_name, "parquet", &manifest_date])
+            .set(storage_size as i64);
+    }
 }
 
 pub mod error {

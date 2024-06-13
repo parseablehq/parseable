@@ -24,17 +24,7 @@ use crate::handlers::http::cluster::INTERNAL_STREAM_NAME;
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
-    "select",
-    "from",
-    "where",
-    "group",
-    "by",
-    "order",
-    "limit",
-    "offset",
-    "join",
-    "and",
-    INTERNAL_STREAM_NAME,
+    "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
 ];
 
 pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
@@ -125,6 +115,12 @@ pub fn stream_name(stream_name: &str) -> Result<(), StreamNameValidationError> {
         ));
     }
 
+    if stream_name == INTERNAL_STREAM_NAME {
+        return Err(StreamNameValidationError::InternalStream(
+            stream_name.to_owned(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -182,6 +178,8 @@ pub mod error {
         NameUpperCase(String),
         #[error("SQL keyword cannot be used as stream name")]
         SQLKeyword(String),
+        #[error("`pmeta` is an internal stream name and cannot be used.")]
+        InternalStream(String),
     }
 
     #[derive(Debug, thiserror::Error)]

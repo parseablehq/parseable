@@ -172,10 +172,10 @@ impl Metrics {
                     "parseable_lifetime_events_ingested_size" => {
                         prom_dress.parseable_lifetime_events_ingested_size += val
                     }
-                    "parseable_deleted_events_ingested" => {
+                    "parseable_events_deleted" => {
                         prom_dress.parseable_deleted_events_ingested += val
                     }
-                    "parseable_deleted_events_ingested_size" => {
+                    "parseable_events_deleted_size" => {
                         prom_dress.parseable_deleted_events_ingested_size += val
                     }
                     "parseable_staging_files" => prom_dress.parseable_staging_files += val,

@@ -43,6 +43,7 @@ use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
 use crate::event;
+use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 use crate::storage::{ObjectStorageProvider, StorageDir};
 
@@ -106,9 +107,7 @@ impl Query {
         &self,
         stream_name: String,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let store = CONFIG.storage().get_object_store();
-        let object_store_format = store.get_object_store_format(&stream_name).await?;
-        let time_partition = object_store_format.time_partition;
+        let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
 
         let df = QUERY_SESSION
             .execute_logical_plan(self.final_logical_plan(&time_partition))
@@ -389,7 +388,7 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
 }
 
 pub mod error {
-    use crate::storage::ObjectStorageError;
+    use crate::{metadata::error::stream_info::MetadataError, storage::ObjectStorageError};
     use datafusion::error::DataFusionError;
 
     #[derive(Debug, thiserror::Error)]
@@ -398,6 +397,8 @@ pub mod error {
         ObjectStorage(#[from] ObjectStorageError),
         #[error("Query Execution failed due to error in datafusion: {0}")]
         Datafusion(#[from] DataFusionError),
+        #[error("Query Execution failed due to error in fetching metadata: {0}")]
+        Metadata(#[from] MetadataError),
     }
 }
 

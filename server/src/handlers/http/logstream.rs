@@ -19,9 +19,7 @@
 use self::error::{CreateStreamError, StreamError};
 use super::base_path_without_preceding_slash;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
-use super::cluster::{
-    fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors, INTERNAL_STREAM_NAME,
-};
+use super::cluster::{fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors};
 use crate::alerts::Alerts;
 use crate::handlers::{
     CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
@@ -105,28 +103,8 @@ pub async fn retention_cleanup(
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let storage = CONFIG.storage().get_object_store();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        // here the ingest server has not found the stream
-        // so it should check if the stream exists in storage
-        let check = storage
-            .list_streams()
-            .await?
-            .iter()
-            .map(|stream| stream.name.clone())
-            .contains(&stream_name);
-
-        if !check {
-            log::error!("Stream {} not found", stream_name.clone());
-            return Err(StreamError::StreamNotFound(stream_name.clone()));
-        }
-        metadata::STREAM_INFO
-            .upsert_stream_info(
-                &*storage,
-                LogStream {
-                    name: stream_name.clone().to_owned(),
-                },
-            )
-            .await
-            .map_err(|_| StreamError::StreamNotFound(stream_name.clone()))?;
+        log::error!("Stream {} not found", stream_name.clone());
+        return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
     let date_list: Vec<String> = serde_json::from_slice(&body).unwrap();
     let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
@@ -270,6 +248,7 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
         &custom_partition,
         &static_schema_flag,
         schema.unwrap(),
+        false,
     )
     .await?;
 
@@ -435,19 +414,21 @@ pub async fn put_alert(
 
 pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let objectstore = CONFIG.storage().get_object_store();
-
-    if !objectstore.stream_exists(&stream_name).await? {
+    if !STREAM_INFO.stream_exists(&stream_name) {
         return Err(StreamError::StreamNotFound(stream_name.to_string()));
     }
+    let retention = STREAM_INFO.get_retention(&stream_name);
 
-    let retention = CONFIG
-        .storage()
-        .get_object_store()
-        .get_retention(&stream_name)
-        .await?;
-
-    Ok((web::Json(retention), StatusCode::OK))
+    match retention {
+        Ok(retention) => {
+            if let Some(retention) = retention {
+                Ok((web::Json(retention), StatusCode::OK))
+            } else {
+                Ok((web::Json(Retention::default()), StatusCode::OK))
+            }
+        }
+        Err(err) => Err(StreamError::from(err)),
+    }
 }
 
 pub async fn put_retention(
@@ -467,6 +448,10 @@ pub async fn put_retention(
         .get_object_store()
         .put_retention(&stream_name, &retention)
         .await?;
+
+    metadata::STREAM_INFO
+        .set_retention(&stream_name, retention)
+        .expect("retention set on existing stream");
 
     Ok((
         format!("set retention configuration for log stream {stream_name}"),
@@ -554,7 +539,7 @@ pub async fn put_enable_cache(
         }
     }
     let enable_cache = body.into_inner();
-    let mut stream_metadata = storage.get_stream_metadata(&stream_name).await?;
+    let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
     stream_metadata.cache_enabled = enable_cache;
     storage
         .put_stream_manifest(&stream_name, &stream_metadata)
@@ -779,15 +764,16 @@ pub async fn create_stream(
     custom_partition: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
+    internal_stream: bool,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
-    if stream_name.ne(INTERNAL_STREAM_NAME) {
+    if !internal_stream {
         validator::stream_name(&stream_name)?;
     }
-
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage
+
+    match storage
         .create_stream(
             &stream_name,
             time_partition,
@@ -798,36 +784,31 @@ pub async fn create_stream(
         )
         .await
     {
-        return Err(CreateStreamError::Storage { stream_name, err });
+        Ok(created_at) => {
+            let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
+
+            for (field_name, field) in schema
+                .fields()
+                .iter()
+                .map(|field| (field.name().to_string(), field.clone()))
+            {
+                static_schema.insert(field_name, field);
+            }
+
+            metadata::STREAM_INFO.add_stream(
+                stream_name.to_string(),
+                created_at,
+                time_partition.to_string(),
+                time_partition_limit.to_string(),
+                custom_partition.to_string(),
+                static_schema_flag.to_string(),
+                static_schema,
+            );
+        }
+        Err(err) => {
+            return Err(CreateStreamError::Storage { stream_name, err });
+        }
     }
-
-    let stream_meta = CONFIG
-        .storage()
-        .get_object_store()
-        .get_stream_metadata(&stream_name)
-        .await;
-    let stream_meta = stream_meta.unwrap();
-    let created_at = stream_meta.created_at;
-    let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
-
-    for (field_name, field) in schema
-        .fields()
-        .iter()
-        .map(|field| (field.name().to_string(), field.clone()))
-    {
-        static_schema.insert(field_name, field);
-    }
-
-    metadata::STREAM_INFO.add_stream(
-        stream_name.to_string(),
-        created_at,
-        time_partition.to_string(),
-        time_partition_limit.to_string(),
-        custom_partition.to_string(),
-        static_schema_flag.to_string(),
-        static_schema,
-    );
-
     Ok(())
 }
 
@@ -896,7 +877,7 @@ pub mod error {
 
     #[derive(Debug, thiserror::Error)]
     pub enum CreateStreamError {
-        #[error("Stream name validation failed due to {0}")]
+        #[error("Stream name validation failed: {0}")]
         StreamNameValidation(#[from] StreamNameValidationError),
         #[error("failed to create log stream {stream_name} due to err: {err}")]
         Storage {

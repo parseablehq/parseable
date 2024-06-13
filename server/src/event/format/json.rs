@@ -221,6 +221,9 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
             }
         }
         DataType::Timestamp(_, _) => value.is_string() || value.is_number(),
-        _ => unreachable!(),
+        _ => {
+            log::error!("Unsupported datatype {:?}, value {:?}", data_type, value);
+            unreachable!()
+        }
     }
 }

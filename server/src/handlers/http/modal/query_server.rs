@@ -25,7 +25,7 @@ use crate::rbac::role::Action;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
-use crate::{analytics, banner, metadata, metrics, migration, rbac, storage};
+use crate::{analytics, banner, metrics, migration, rbac, storage};
 use actix_web::web;
 use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
@@ -91,9 +91,9 @@ impl ParseableServer for QueryServer {
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
         migration::run_file_migration(&CONFIG).await?;
-        CONFIG.validate_storage().await?;
-        migration::run_metadata_migration(&CONFIG).await?;
-        let metadata = storage::resolve_parseable_metadata().await?;
+        let parseable_json = CONFIG.validate_storage().await?;
+        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+        let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
         banner::print(&CONFIG, &metadata).await;
         // initialize the rbac map
         rbac::map::init(&metadata);
@@ -174,16 +174,8 @@ impl QueryServer {
 
         migration::run_migration(&CONFIG).await?;
 
-        let storage = CONFIG.storage().get_object_store();
-        if let Err(e) = metadata::STREAM_INFO.load(&*storage).await {
-            log::warn!("could not populate local metadata. {:?}", e);
-        }
-
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
-
-        // load data from stats back to prometheus metrics
-        metrics::fetch_stats_from_storage().await;
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
 

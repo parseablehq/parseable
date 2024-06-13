@@ -36,18 +36,18 @@ use crate::{
     metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
     option::CONFIG,
-    stats::{self, FullStats, Stats},
+    stats::FullStats,
 };
 
 use actix_web_prometheus::PrometheusMetrics;
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Local;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
 use itertools::Itertools;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use serde_json::Value;
 
 use std::{
     collections::HashMap,
@@ -132,11 +132,12 @@ pub trait ObjectStorage: Sync + 'static {
         custom_partition: &str,
         static_schema_flag: &str,
         schema: Arc<Schema>,
-    ) -> Result<(), ObjectStorageError> {
+    ) -> Result<String, ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
         format.set_id(CONFIG.parseable.username.clone());
         let permission = Permisssion::new(CONFIG.parseable.username.clone());
         format.permissions = vec![permission];
+        format.created_at = Local::now().to_rfc3339();
         if time_partition.is_empty() {
             format.time_partition = None;
         } else {
@@ -164,7 +165,7 @@ pub trait ObjectStorage: Sync + 'static {
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
 
-        Ok(())
+        Ok(format.created_at)
     }
 
     async fn update_time_partition_limit_in_stream(
@@ -252,7 +253,7 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
-    async fn get_schema_on_server_start(
+    async fn upsert_schema_to_storage(
         &self,
         stream_name: &str,
     ) -> Result<Schema, ObjectStorageError> {
@@ -262,8 +263,7 @@ pub trait ObjectStorage: Sync + 'static {
         let schema_path = schema_path(stream_name);
         let byte_data = match self.get_object(&schema_path).await {
             Ok(bytes) => bytes,
-            Err(err) => {
-                log::info!("{:?}", err);
+            Err(_) => {
                 // base schema path
                 let schema_path = RelativePathBuf::from_iter([
                     stream_name,
@@ -303,7 +303,7 @@ pub trait ObjectStorage: Sync + 'static {
         }
     }
 
-    async fn get_stream_metadata(
+    async fn upsert_stream_metadata(
         &self,
         stream_name: &str,
     ) -> Result<ObjectStoreFormat, ObjectStorageError> {
@@ -344,52 +344,6 @@ pub trait ObjectStorage: Sync + 'static {
         self.put_object(&path, to_bytes(manifest)).await
     }
 
-    /// for future use
-    #[allow(dead_code)]
-    async fn get_stats_for_first_time(
-        &self,
-        stream_name: &str,
-    ) -> Result<Stats, ObjectStorageError> {
-        let path = RelativePathBuf::from_iter([stream_name, STREAM_METADATA_FILE_NAME]);
-        let stream_metadata = self.get_object(&path).await?;
-        let stream_metadata: Value =
-            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
-        let stats = &stream_metadata["stats"];
-
-        let stats = serde_json::from_value(stats.clone()).unwrap_or_default();
-
-        Ok(stats)
-    }
-
-    async fn get_stats(&self, stream_name: &str) -> Result<FullStats, ObjectStorageError> {
-        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
-        let stream_metadata: Value =
-            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
-
-        let stats = &stream_metadata["stats"];
-
-        let stats = serde_json::from_value(stats.clone()).unwrap_or_default();
-
-        Ok(stats)
-    }
-
-    async fn get_retention(&self, stream_name: &str) -> Result<Retention, ObjectStorageError> {
-        let stream_metadata = self.get_object(&stream_json_path(stream_name)).await?;
-        let stream_metadata: Value =
-            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
-
-        let retention = stream_metadata
-            .as_object()
-            .expect("is object")
-            .get("retention")
-            .cloned();
-        if let Some(retention) = retention {
-            Ok(serde_json::from_value(retention)?)
-        } else {
-            Ok(Retention::default())
-        }
-    }
-
     async fn get_metadata(&self) -> Result<Option<StorageMetadata>, ObjectStorageError> {
         let parseable_metadata: Option<StorageMetadata> =
             match self.get_object(&parseable_json_path()).await {
@@ -406,15 +360,6 @@ pub trait ObjectStorage: Sync + 'static {
             };
 
         Ok(parseable_metadata)
-    }
-
-    async fn stream_exists(&self, stream_name: &str) -> Result<bool, ObjectStorageError> {
-        let res = self.get_object(&stream_json_path(stream_name)).await;
-        match res {
-            Ok(_) => Ok(true),
-            Err(ObjectStorageError::NoSuchKey(_)) => Ok(false),
-            Err(e) => Err(e),
-        }
     }
 
     // get the manifest info
@@ -461,7 +406,7 @@ pub trait ObjectStorage: Sync + 'static {
         stream: &str,
         snapshot: Snapshot,
     ) -> Result<(), ObjectStorageError> {
-        let mut stream_meta = self.get_stream_metadata(stream).await?;
+        let mut stream_meta = self.upsert_stream_metadata(stream).await?;
         stream_meta.snapshot = snapshot;
         self.put_object(&stream_json_path(stream), to_bytes(&stream_meta))
             .await
@@ -543,12 +488,6 @@ pub trait ObjectStorage: Sync + 'static {
                 let manifest =
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
-                let stats = stats::get_current_stats(stream, "json");
-                if let Some(stats) = stats {
-                    if let Err(e) = self.put_stats(stream, &stats).await {
-                        log::warn!("Error updating stats to objectstore due to error [{}]", e);
-                    }
-                }
                 if cache_enabled && cache_manager.is_some() {
                     cache_updates
                         .entry(stream)

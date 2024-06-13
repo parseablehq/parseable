@@ -24,23 +24,34 @@ mod stream_metadata_migration;
 use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{
+    metadata::load_stream_metadata_on_server_start,
+    metrics::fetch_stats_from_storage,
     option::Config,
     storage::{
         object_storage::{parseable_json_path, stream_json_path},
-        ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-        SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
+        PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
     },
 };
+use arrow_schema::Schema;
 use bytes::Bytes;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
+use serde_json::Value;
 
 /// Migrate the metdata from v1 or v2 to v3
 /// This is a one time migration
-pub async fn run_metadata_migration(config: &Config) -> anyhow::Result<()> {
+pub async fn run_metadata_migration(
+    config: &Config,
+    parseable_json: &Option<Bytes>,
+) -> anyhow::Result<()> {
     let object_store = config.storage().get_object_store();
-    let storage_metadata = get_storage_metadata(&*object_store).await?;
+    let mut storage_metadata: Option<Value> = None;
+    if parseable_json.is_some() {
+        storage_metadata = serde_json::from_slice(parseable_json.as_ref().unwrap())
+            .expect("parseable config is valid json");
+    }
     let staging_metadata = get_staging_metadata(config)?;
 
     fn get_version(metadata: &serde_json::Value) -> Option<&str> {
@@ -114,8 +125,13 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
     if stream_metadata.is_empty() {
         return Ok(());
     }
-    let stream_metadata: serde_json::Value =
+    let mut stream_metadata: serde_json::Value =
         serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
+
+    let schema_path = RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
+    let schema = storage.get_object(&schema_path).await?;
+
+    let mut arrow_schema: Schema = Schema::empty();
 
     let version = stream_metadata
         .as_object()
@@ -124,39 +140,54 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
 
     match version {
         Some("v1") => {
-            let new_stream_metadata = stream_metadata_migration::v1_v4(stream_metadata);
+            stream_metadata = stream_metadata_migration::v1_v4(stream_metadata);
             storage
-                .put_object(&path, to_bytes(&new_stream_metadata))
+                .put_object(&path, to_bytes(&stream_metadata))
                 .await?;
-
-            let schema_path =
-                RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
-            let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema).ok();
-            let map = schema_migration::v1_v4(schema)?;
-            storage.put_object(&schema_path, to_bytes(&map)).await?;
+            arrow_schema = schema_migration::v1_v4(schema)?;
+            storage
+                .put_object(&schema_path, to_bytes(&arrow_schema))
+                .await?;
         }
         Some("v2") => {
-            let new_stream_metadata = stream_metadata_migration::v2_v4(stream_metadata);
+            stream_metadata = stream_metadata_migration::v2_v4(stream_metadata);
             storage
-                .put_object(&path, to_bytes(&new_stream_metadata))
+                .put_object(&path, to_bytes(&stream_metadata))
                 .await?;
 
-            let schema_path =
-                RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
-            let schema = storage.get_object(&schema_path).await?;
             let schema = serde_json::from_slice(&schema)?;
-            let map = schema_migration::v2_v4(schema)?;
-            storage.put_object(&schema_path, to_bytes(&map)).await?;
+            arrow_schema = schema_migration::v2_v4(schema)?;
+            storage
+                .put_object(&schema_path, to_bytes(&arrow_schema))
+                .await?;
         }
         Some("v3") => {
-            let new_stream_metadata = stream_metadata_migration::v3_v4(stream_metadata);
+            stream_metadata = stream_metadata_migration::v3_v4(stream_metadata);
             storage
-                .put_object(&path, to_bytes(&new_stream_metadata))
+                .put_object(&path, to_bytes(&stream_metadata))
                 .await?;
         }
         _ => (),
     }
+
+    if arrow_schema.fields().is_empty() {
+        arrow_schema = serde_json::from_slice(&schema)?;
+    }
+
+    //load stream metadata from storage
+    let meta: ObjectStoreFormat =
+        serde_json::from_slice(&serde_json::to_vec(&stream_metadata).unwrap()).unwrap();
+    if let Err(err) =
+        load_stream_metadata_on_server_start(storage, stream, arrow_schema, &meta).await
+    {
+        log::error!("could not populate local metadata. {:?}", err);
+        return Err(err.into());
+    }
+
+    //load stats from storage
+    let stats = meta.stats;
+    fetch_stats_from_storage(stream, stats).await;
 
     Ok(())
 }
@@ -169,8 +200,7 @@ pub fn to_bytes(any: &(impl ?Sized + Serialize)) -> Bytes {
 }
 
 pub fn get_staging_metadata(config: &Config) -> anyhow::Result<Option<serde_json::Value>> {
-    let path = parseable_json_path().to_path(config.staging_dir());
-
+    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME).to_path(config.staging_dir());
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {
@@ -181,24 +211,6 @@ pub fn get_staging_metadata(config: &Config) -> anyhow::Result<Option<serde_json
     let meta: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
     Ok(Some(meta))
-}
-
-async fn get_storage_metadata(
-    storage: &dyn ObjectStorage,
-) -> anyhow::Result<Option<serde_json::Value>> {
-    let path = parseable_json_path();
-    match storage.get_object(&path).await {
-        Ok(bytes) => Ok(Some(
-            serde_json::from_slice(&bytes).expect("parseable config is valid json"),
-        )),
-        Err(err) => {
-            if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-                Ok(None)
-            } else {
-                Err(err.into())
-            }
-        }
-    }
 }
 
 pub async fn put_remote_metadata(
@@ -244,8 +256,6 @@ async fn run_meta_file_migration(
     object_store: &Arc<dyn ObjectStorage + Send>,
     old_meta_file_path: RelativePathBuf,
 ) -> anyhow::Result<()> {
-    log::info!("Migrating metadata files to new location");
-
     // get the list of all meta files
     let mut meta_files = object_store.get_ingestor_meta_file_paths().await?;
     meta_files.push(old_meta_file_path);

@@ -41,13 +41,13 @@ fn collect_json_from_any_value(
     if value.int_val.is_some() {
         value_json.insert(
             key.to_string(),
-            Value::Number(serde_json::Number::from(value.int_val.unwrap())),
+            Value::String(value.int_val.as_ref().unwrap().to_owned()),
         );
     }
     if value.double_val.is_some() {
         value_json.insert(
             key.to_string(),
-            Value::Number(serde_json::Number::from_f64(value.double_val.unwrap()).unwrap()),
+            Value::String(value.double_val.as_ref().unwrap().to_owned()),
         );
     }
 
@@ -130,7 +130,6 @@ fn value_to_string(value: serde_json::Value) -> String {
 pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let mut vec_otel_json: Vec<BTreeMap<String, Value>> = Vec::new();
     let body_str = std::str::from_utf8(body).unwrap();
-
     let message: LogsData = serde_json::from_str(body_str).unwrap();
     for records in message.resource_logs.iter() {
         for record in records.iter() {
