@@ -635,7 +635,7 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
                         if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
                             let stream_name = INTERNAL_STREAM_NAME;
 
-                            if ingest_internal_stream(stream_name, metrics_bytes)
+                            if ingest_internal_stream(stream_name.to_string(), metrics_bytes.into())
                                 .await
                                 .is_ok()
                             {

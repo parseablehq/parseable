@@ -371,8 +371,7 @@ pub async fn get_first_event(
                 );
                 let Some(manifest) = storage.get_manifest(&path).await? else {
                     return Err(ObjectStorageError::UnhandledError(
-                        "Manifest found in snapshot but not in object-storage"
-                            .into(),
+                        "Manifest found in snapshot but not in object-storage".into(),
                     ));
                 };
                 if let Some(first_event) = manifest.files.first() {
