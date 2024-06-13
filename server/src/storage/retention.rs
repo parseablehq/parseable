@@ -29,7 +29,6 @@ use derive_more::Display;
 use once_cell::sync::Lazy;
 
 use crate::metadata::STREAM_INFO;
-use crate::option::CONFIG;
 
 type SchedulerHandle = thread::JoinHandle<()>;
 
@@ -54,15 +53,14 @@ pub fn init_scheduler() {
     let func = move || async {
         //get retention every day at 12 am
         for stream in STREAM_INFO.list_streams() {
-            let res = CONFIG
-                .storage()
-                .get_object_store()
-                .get_retention(&stream)
-                .await;
+            let retention = STREAM_INFO.get_retention(&stream);
 
-            match res {
+            match retention {
                 Ok(config) => {
-                    for Task { action, days, .. } in config.tasks.into_iter() {
+                    if config.is_none() {
+                        continue;
+                    }
+                    for Task { action, days, .. } in config.unwrap().tasks.into_iter() {
                         match action {
                             Action::Delete => {
                                 let stream = stream.to_string();

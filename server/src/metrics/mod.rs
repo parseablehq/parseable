@@ -19,7 +19,7 @@
 pub mod prom_utils;
 pub mod storage;
 
-use crate::{handlers::http::metrics_path, metadata::STREAM_INFO, option::CONFIG};
+use crate::{handlers::http::metrics_path, stats::FullStats};
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use once_cell::sync::Lazy;
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
@@ -257,42 +257,33 @@ fn prom_process_metrics(metrics: &PrometheusMetrics) {
 #[cfg(not(target_os = "linux"))]
 fn prom_process_metrics(_metrics: &PrometheusMetrics) {}
 
-pub async fn fetch_stats_from_storage() {
-    for stream_name in STREAM_INFO.list_streams() {
-        let stats = CONFIG
-            .storage()
-            .get_object_store()
-            .get_stats(&stream_name)
-            .await
-            .expect("stats are loaded properly");
+pub async fn fetch_stats_from_storage(stream_name: &str, stats: FullStats) {
+    EVENTS_INGESTED
+        .with_label_values(&[stream_name, "json"])
+        .set(stats.current_stats.events as i64);
+    EVENTS_INGESTED_SIZE
+        .with_label_values(&[stream_name, "json"])
+        .set(stats.current_stats.ingestion as i64);
+    STORAGE_SIZE
+        .with_label_values(&["data", stream_name, "parquet"])
+        .set(stats.current_stats.storage as i64);
+    EVENTS_DELETED
+        .with_label_values(&[stream_name, "json"])
+        .set(stats.deleted_stats.events as i64);
+    EVENTS_DELETED_SIZE
+        .with_label_values(&[stream_name, "json"])
+        .set(stats.deleted_stats.ingestion as i64);
+    DELETED_EVENTS_STORAGE_SIZE
+        .with_label_values(&["data", stream_name, "parquet"])
+        .set(stats.deleted_stats.storage as i64);
 
-        EVENTS_INGESTED
-            .with_label_values(&[&stream_name, "json"])
-            .set(stats.current_stats.events as i64);
-        EVENTS_INGESTED_SIZE
-            .with_label_values(&[&stream_name, "json"])
-            .set(stats.current_stats.ingestion as i64);
-        STORAGE_SIZE
-            .with_label_values(&["data", &stream_name, "parquet"])
-            .set(stats.current_stats.storage as i64);
-        EVENTS_DELETED
-            .with_label_values(&[&stream_name, "json"])
-            .set(stats.deleted_stats.events as i64);
-        EVENTS_DELETED_SIZE
-            .with_label_values(&[&stream_name, "json"])
-            .set(stats.deleted_stats.ingestion as i64);
-        DELETED_EVENTS_STORAGE_SIZE
-            .with_label_values(&["data", &stream_name, "parquet"])
-            .set(stats.deleted_stats.storage as i64);
-
-        LIFETIME_EVENTS_INGESTED
-            .with_label_values(&[&stream_name, "json"])
-            .set(stats.lifetime_stats.events as i64);
-        LIFETIME_EVENTS_INGESTED_SIZE
-            .with_label_values(&[&stream_name, "json"])
-            .set(stats.lifetime_stats.ingestion as i64);
-        LIFETIME_EVENTS_STORAGE_SIZE
-            .with_label_values(&["data", &stream_name, "parquet"])
-            .set(stats.lifetime_stats.storage as i64);
-    }
+    LIFETIME_EVENTS_INGESTED
+        .with_label_values(&[stream_name, "json"])
+        .set(stats.lifetime_stats.events as i64);
+    LIFETIME_EVENTS_INGESTED_SIZE
+        .with_label_values(&[stream_name, "json"])
+        .set(stats.lifetime_stats.ingestion as i64);
+    LIFETIME_EVENTS_STORAGE_SIZE
+        .with_label_values(&["data", stream_name, "parquet"])
+        .set(stats.lifetime_stats.storage as i64);
 }

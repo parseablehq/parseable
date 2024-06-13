@@ -29,7 +29,6 @@ use crate::handlers::http::users::filters;
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
 use crate::localcache::LocalCacheManager;
-use crate::metadata;
 use crate::metrics;
 use crate::migration;
 use crate::rbac;
@@ -115,9 +114,9 @@ impl ParseableServer for Server {
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
         migration::run_file_migration(&CONFIG).await?;
-        CONFIG.validate_storage().await?;
-        migration::run_metadata_migration(&CONFIG).await?;
-        let metadata = storage::resolve_parseable_metadata().await?;
+        let parseable_json = CONFIG.validate_storage().await?;
+        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+        let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
         banner::print(&CONFIG, &metadata).await;
         rbac::map::init(&metadata);
         metadata.set_global();
@@ -499,15 +498,9 @@ impl Server {
 
         migration::run_migration(&CONFIG).await?;
 
-        let storage = CONFIG.storage().get_object_store();
-        if let Err(err) = metadata::STREAM_INFO.load(&*storage).await {
-            log::warn!("could not populate local metadata. {:?}", err);
-        }
-
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
 
-        metrics::fetch_stats_from_storage().await;
         storage::retention::load_retention_from_global();
 
         let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();

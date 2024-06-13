@@ -15,14 +15,12 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
 use crate::analytics;
 use crate::banner;
 use crate::handlers::airplane;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::RouteExt;
 use crate::localcache::LocalCacheManager;
-use crate::metadata;
 use crate::metrics;
 use crate::migration;
 use crate::migration::metadata_migration::migrate_ingester_metadata;
@@ -52,6 +50,7 @@ use actix_web_prometheus::PrometheusMetrics;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use base64::Engine;
+use bytes::Bytes;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
@@ -110,17 +109,15 @@ impl ParseableServer for IngestServer {
         self.validate()?;
 
         // check for querier state. Is it there, or was it there in the past
-        self.check_querier_state().await?;
+        let parseable_json = self.check_querier_state().await?;
         // to get the .parseable.json file in staging
         self.validate_credentials().await?;
-
-        let metadata = storage::resolve_parseable_metadata().await?;
+        let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
 
         banner::print(&CONFIG, &metadata).await;
         rbac::map::init(&metadata);
         // set the info in the global metadata
         metadata.set_global();
-
         self.initialize().await
     }
 
@@ -219,7 +216,7 @@ impl IngestServer {
 
     // create the ingestor metadata and put the .ingestor.json file in the object store
     async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
-        migrate_ingester_metadata().await?;
+        let storage_ingestor_metadata = migrate_ingester_metadata().await?;
         let store = CONFIG.storage().get_object_store();
 
         // find the meta file in staging if not generate new metadata
@@ -229,18 +226,10 @@ impl IngestServer {
         let path = ingestor_metadata_path(None);
 
         // we are considering that we can always get from object store
-        if let Ok(store_meta) = store.get_object(&path).await {
-            log::info!("Ingestor Metadata is present. Checking for updates");
-            let mut store_data = serde_json::from_slice::<IngestorMetadata>(&store_meta)
-                .map_err(|_| anyhow!("IngestorMetadata was not parseable as valid json"))?;
+        if storage_ingestor_metadata.is_some() {
+            let mut store_data = storage_ingestor_metadata.unwrap();
 
             if store_data.domain_name != INGESTOR_META.domain_name {
-                log::info!("Ingestor Metadata update needed.");
-                log::info!(
-                    "Old Domain Name: {}, New Domain Name: {}",
-                    store_data.domain_name,
-                    INGESTOR_META.domain_name
-                );
                 store_data
                     .domain_name
                     .clone_from(&INGESTOR_META.domain_name);
@@ -256,20 +245,20 @@ impl IngestServer {
                     .await
                     .map_err(|err| anyhow!(err));
             }
+        } else {
+            let resource = serde_json::to_string(&resource)?
+                .try_into_bytes()
+                .map_err(|err| anyhow!(err))?;
+
+            store.put_object(&path, resource).await?;
         }
-
-        let resource = serde_json::to_string(&resource)?
-            .try_into_bytes()
-            .map_err(|err| anyhow!(err))?;
-
-        store.put_object(&path, resource).await?;
 
         Ok(())
     }
 
     // check for querier state. Is it there, or was it there in the past
     // this should happen before the set the ingestor metadata
-    async fn check_querier_state(&self) -> anyhow::Result<(), ObjectStorageError> {
+    async fn check_querier_state(&self) -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
         // how do we check for querier state?
         // based on the work flow of the system, the querier will always need to start first
         // i.e the querier will create the `.parseable.json` file
@@ -277,8 +266,9 @@ impl IngestServer {
         let store = CONFIG.storage().get_object_store();
         let path = parseable_json_path();
 
-        match store.get_object(&path).await {
-            Ok(_) => Ok(()),
+        let parseable_json = store.get_object(&path).await;
+        match parseable_json {
+            Ok(_) => Ok(Some(parseable_json.unwrap())),
             Err(_) => Err(ObjectStorageError::Custom(
                 "Query Server has not been started yet. Please start the querier server first."
                     .to_string(),
@@ -297,10 +287,8 @@ impl IngestServer {
             )
             .await?
             .iter()
-            // this unwrap will most definateley shoot me in the foot later
             .map(|x| serde_json::from_slice::<IngestorMetadata>(x).unwrap_or_default())
             .collect_vec();
-
         if !ingestor_metadata.is_empty() {
             let check = ingestor_metadata[0].token.clone();
 
@@ -312,7 +300,6 @@ impl IngestServer {
             let token = format!("Basic {}", token);
 
             if check != token {
-                log::error!("Credentials do not match with other ingestors. Please check your credentials and try again.");
                 return Err(anyhow::anyhow!("Credentials do not match with other ingestors. Please check your credentials and try again."));
             }
         }
@@ -332,13 +319,6 @@ impl IngestServer {
         CONFIG.storage().register_store_metrics(&prometheus);
 
         migration::run_migration(&CONFIG).await?;
-
-        let storage = CONFIG.storage().get_object_store();
-        if let Err(err) = metadata::STREAM_INFO.load(&*storage).await {
-            log::warn!("could not populate local metadata. {:?}", err);
-        }
-
-        metrics::fetch_stats_from_storage().await;
 
         let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =

@@ -16,6 +16,10 @@
  *
  */
 
+use crate::cli::Cli;
+use crate::storage::object_storage::parseable_json_path;
+use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
+use bytes::Bytes;
 use clap::error::ErrorKind;
 use clap::{command, Args, Command, FromArgMatches};
 use core::fmt;
@@ -24,10 +28,6 @@ use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-use crate::cli::Cli;
-use crate::storage::object_storage::parseable_json_path;
-use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
 pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
@@ -111,11 +111,14 @@ Log Lake for the cloud-native world
 
     // validate the storage, if the proper path for staging directory is provided
     // if the proper data directory is provided, or s3 bucket is provided etc
-    pub async fn validate_storage(&self) -> Result<(), ObjectStorageError> {
+    pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {
         let obj_store = self.storage.get_object_store();
         let rel_path = parseable_json_path();
-
-        let has_parseable_json = obj_store.get_object(&rel_path).await.is_ok();
+        let mut has_parseable_json = false;
+        let parseable_json_result = obj_store.get_object(&rel_path).await;
+        if parseable_json_result.is_ok() {
+            has_parseable_json = true;
+        }
 
         // Lists all the directories in the root of the bucket/directory
         // can be a stream (if it contains .stream.json file) or not
@@ -125,9 +128,11 @@ Log Lake for the cloud-native world
         };
 
         let has_streams = obj_store.list_streams().await.is_ok();
-
-        if has_streams || !has_dirs && !has_parseable_json {
-            return Ok(());
+        if !has_dirs && !has_parseable_json {
+            return Ok(None);
+        }
+        if has_streams {
+            return Ok(Some(parseable_json_result.unwrap()));
         }
 
         if self.get_storage_mode_string() == "Local drive" {

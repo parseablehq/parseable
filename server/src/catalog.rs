@@ -20,9 +20,12 @@ use std::{io::ErrorKind, sync::Arc};
 
 use self::{column::Column, snapshot::ManifestItem};
 use crate::handlers::http::base_path_without_preceding_slash;
+use crate::metadata::STREAM_INFO;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::CONFIG;
-use crate::stats::{event_labels_date, storage_size_labels_date, update_deleted_stats};
+use crate::stats::{
+    event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats,
+};
 use crate::{
     catalog::manifest::Manifest,
     event::DEFAULT_TIMESTAMP_KEY,
@@ -103,9 +106,8 @@ pub async fn update_snapshot(
     change: manifest::File,
 ) -> Result<(), ObjectStorageError> {
     let mut meta = storage.get_object_store_format(stream_name).await?;
-    let meta_clone = meta.clone();
     let manifests = &mut meta.snapshot.manifest_list;
-    let time_partition = &meta_clone.time_partition;
+    let time_partition = &meta.time_partition;
     let lower_bound = match time_partition {
         Some(time_partition) => {
             let (lower_bound, _) = get_file_bounds(&change, time_partition.to_string());
@@ -174,12 +176,17 @@ pub async fn update_snapshot(
             }
         }
 
-        meta.snapshot.manifest_list = manifests.to_vec();
-        storage.put_snapshot(stream_name, meta.snapshot).await?;
         if ch {
             if let Some(mut manifest) = storage.get_manifest(&path).await? {
                 manifest.apply_change(change);
                 storage.put_manifest(&path, manifest).await?;
+                let stats = get_current_stats(stream_name, "json");
+                if let Some(stats) = stats {
+                    meta.stats = stats;
+                }
+                meta.snapshot.manifest_list = manifests.to_vec();
+
+                storage.put_stream_manifest(stream_name, &meta).await?;
             } else {
                 //instead of returning an error, create a new manifest (otherwise local to storage sync fails)
                 //but don't update the snapshot
@@ -189,7 +196,7 @@ pub async fn update_snapshot(
                     storage.clone(),
                     stream_name,
                     false,
-                    meta_clone,
+                    meta,
                     events_ingested,
                     ingestion_size,
                     storage_size,
@@ -203,7 +210,7 @@ pub async fn update_snapshot(
                 storage.clone(),
                 stream_name,
                 true,
-                meta_clone,
+                meta,
                 events_ingested,
                 ingestion_size,
                 storage_size,
@@ -217,7 +224,7 @@ pub async fn update_snapshot(
             storage.clone(),
             stream_name,
             true,
-            meta_clone,
+            meta,
             events_ingested,
             ingestion_size,
             storage_size,
@@ -256,6 +263,30 @@ async fn create_manifest(
         files: vec![change],
         ..Manifest::default()
     };
+    let mut first_event_at = STREAM_INFO.get_first_event(stream_name)?;
+    if first_event_at.is_none() {
+        if let Some(first_event) = manifest.files.first() {
+            let time_partition = &meta.time_partition;
+            let lower_bound = match time_partition {
+                Some(time_partition) => {
+                    let (lower_bound, _) = get_file_bounds(first_event, time_partition.to_string());
+                    lower_bound
+                }
+                None => {
+                    let (lower_bound, _) =
+                        get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
+                    lower_bound
+                }
+            };
+            first_event_at = Some(lower_bound.with_timezone(&Local).to_rfc3339());
+            if let Err(err) = STREAM_INFO.set_first_event_at(stream_name, first_event_at.clone()) {
+                log::error!(
+                    "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
+                    stream_name
+                );
+            }
+        }
+    }
 
     let mainfest_file_name = manifest_path("").to_string();
     let path = partition_path(stream_name, lower_bound, upper_bound).join(&mainfest_file_name);
@@ -275,7 +306,12 @@ async fn create_manifest(
         };
         manifests.push(new_snapshot_entry);
         meta.snapshot.manifest_list = manifests;
-        storage.put_snapshot(stream_name, meta.snapshot).await?;
+        let stats = get_current_stats(stream_name, "json");
+        if let Some(stats) = stats {
+            meta.stats = stats;
+        }
+        meta.first_event_at = first_event_at;
+        storage.put_stream_manifest(stream_name, &meta).await?;
     }
 
     Ok(())
@@ -294,6 +330,8 @@ pub async fn remove_manifest_from_snapshot(
         let manifests = &mut meta.snapshot.manifest_list;
         // Filter out items whose manifest_path contains any of the dates_to_delete
         manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
+        meta.first_event_at = None;
+        STREAM_INFO.set_first_event_at(stream_name, None)?;
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
     match CONFIG.parseable.mode {
@@ -313,39 +351,48 @@ pub async fn get_first_event(
     match CONFIG.parseable.mode {
         Mode::All | Mode::Ingest => {
             // get current snapshot
-            let mut meta = storage.get_object_store_format(stream_name).await?;
-            let manifests = &mut meta.snapshot.manifest_list;
-            let time_partition = meta.time_partition;
-            if manifests.is_empty() {
-                log::info!("No manifest found for stream {stream_name}");
-                return Err(ObjectStorageError::Custom("No manifest found".to_string()));
-            }
-            let manifest = &manifests[0];
-            let path = partition_path(
-                stream_name,
-                manifest.time_lower_bound,
-                manifest.time_upper_bound,
-            );
-            let Some(manifest) = storage.get_manifest(&path).await? else {
-                return Err(ObjectStorageError::UnhandledError(
-                    "Manifest found in snapshot but not in object-storage"
-                        .to_string()
-                        .into(),
-                ));
-            };
-            if let Some(first_event) = manifest.files.first() {
-                let lower_bound = match time_partition {
-                    Some(time_partition) => {
-                        let (lower_bound, _) = get_file_bounds(first_event, time_partition);
-                        lower_bound
-                    }
-                    None => {
-                        let (lower_bound, _) =
-                            get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
-                        lower_bound
-                    }
+            let stream_first_event = STREAM_INFO.get_first_event(stream_name)?;
+            if stream_first_event.is_some() {
+                first_event_at = stream_first_event.unwrap();
+            } else {
+                let mut meta = storage.get_object_store_format(stream_name).await?;
+                let meta_clone = meta.clone();
+                let manifests = meta_clone.snapshot.manifest_list;
+                let time_partition = meta_clone.time_partition;
+                if manifests.is_empty() {
+                    log::info!("No manifest found for stream {stream_name}");
+                    return Err(ObjectStorageError::Custom("No manifest found".to_string()));
+                }
+                let manifest = &manifests[0];
+                let path = partition_path(
+                    stream_name,
+                    manifest.time_lower_bound,
+                    manifest.time_upper_bound,
+                );
+                let Some(manifest) = storage.get_manifest(&path).await? else {
+                    return Err(ObjectStorageError::UnhandledError(
+                        "Manifest found in snapshot but not in object-storage"
+                            .to_string()
+                            .into(),
+                    ));
                 };
-                first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
+                if let Some(first_event) = manifest.files.first() {
+                    let lower_bound = match time_partition {
+                        Some(time_partition) => {
+                            let (lower_bound, _) = get_file_bounds(first_event, time_partition);
+                            lower_bound
+                        }
+                        None => {
+                            let (lower_bound, _) =
+                                get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
+                            lower_bound
+                        }
+                    };
+                    first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
+                    meta.first_event_at = Some(first_event_at.clone());
+                    storage.put_stream_manifest(stream_name, &meta).await?;
+                    STREAM_INFO.set_first_event_at(stream_name, Some(first_event_at.clone()))?;
+                }
             }
         }
         Mode::Query => {

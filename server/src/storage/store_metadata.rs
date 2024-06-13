@@ -22,7 +22,9 @@ use std::{
     path::PathBuf,
 };
 
+use bytes::Bytes;
 use once_cell::sync::OnceCell;
+use relative_path::RelativePathBuf;
 use std::io;
 
 use crate::{
@@ -33,11 +35,11 @@ use crate::{
     utils::uid,
 };
 
-use super::{object_storage::parseable_json_path, PARSEABLE_METADATA_FILE_NAME};
+use super::PARSEABLE_METADATA_FILE_NAME;
 
 // Expose some static variables for internal usage
 pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();
-
+pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v4";
 // For use in global static
 #[derive(Debug, PartialEq, Eq)]
 pub struct StaticStorageMetadata {
@@ -66,7 +68,7 @@ pub struct StorageMetadata {
 impl StorageMetadata {
     pub fn new() -> Self {
         Self {
-            version: "v3".to_string(),
+            version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
             mode: CONFIG.storage_name.to_owned(),
             staging: CONFIG.staging_dir().to_path_buf(),
             storage: CONFIG.storage().get_endpoint(),
@@ -98,14 +100,19 @@ impl StorageMetadata {
 /// deals with the staging directory creation and metadata resolution
 /// always returns remote metadata as it is source of truth
 /// overwrites staging metadata while updating storage info
-pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStorageError> {
+pub async fn resolve_parseable_metadata(
+    parseable_metadata: &Option<Bytes>,
+) -> Result<StorageMetadata, ObjectStorageError> {
     let staging_metadata = get_staging_metadata()?;
-    let storage = CONFIG.storage().get_object_store();
-    let remote_metadata = storage.get_metadata().await?;
-
+    let mut remote_metadata: Option<StorageMetadata> = None;
+    if parseable_metadata.is_some() {
+        remote_metadata = Some(
+            serde_json::from_slice(parseable_metadata.as_ref().unwrap())
+                .expect("parseable config is valid json"),
+        );
+    }
     // Env Change needs to be updated
     let check = determine_environment(staging_metadata, remote_metadata);
-
     // flags for if metadata needs to be synced
     let mut overwrite_staging = false;
     let mut overwrite_remote = false;
@@ -115,7 +122,7 @@ pub async fn resolve_parseable_metadata() -> Result<StorageMetadata, ObjectStora
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
             if CONFIG.parseable.mode ==  Mode::All {
-                standalone_after_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid at here"))
+                standalone_after_distributed(Mode::from_string(&metadata.server_mode).expect("mode should be valid here"))
                     ?;
             }
             Ok(metadata)
@@ -245,7 +252,7 @@ fn standalone_after_distributed(remote_server_mode: Mode) -> Result<(), Metadata
 }
 
 pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
-    let path = parseable_json_path().to_path(CONFIG.staging_dir());
+    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME).to_path(CONFIG.staging_dir());
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {

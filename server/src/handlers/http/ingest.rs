@@ -31,6 +31,7 @@ use crate::handlers::{
     STREAM_NAME_HEADER_KEY,
 };
 use crate::localcache::CacheError;
+use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{self, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
 use crate::storage::{LogStream, ObjectStorageError};
@@ -62,7 +63,7 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
                 stream_name
             )));
         }
-        create_stream_if_not_exists(&stream_name).await?;
+        create_stream_if_not_exists(&stream_name, false).await?;
 
         flatten_and_push_logs(req, body, stream_name).await?;
         Ok(HttpResponse::Ok().finish())
@@ -72,7 +73,7 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    create_stream_if_not_exists(&stream_name).await?;
+    create_stream_if_not_exists(&stream_name, true).await?;
     let size: usize = body.len();
     let parsed_timestamp = Utc::now().naive_utc();
     let (rb, is_first) = {
@@ -115,7 +116,7 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
-        create_stream_if_not_exists(&stream_name).await?;
+        create_stream_if_not_exists(&stream_name, false).await?;
 
         //flatten logs
         if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
@@ -128,7 +129,6 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
                     push_logs(stream_name.to_string(), req.clone(), body).await?;
                 }
             } else {
-                log::warn!("Unknown log source: {}", log_source);
                 return Err(PostError::CustomError("Unknown log source".to_string()));
             }
         } else {
@@ -206,16 +206,10 @@ pub async fn push_logs_unchecked(
 }
 
 async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
-    let glob_storage = CONFIG.storage().get_object_store();
-    let object_store_format = glob_storage
-        .get_object_store_format(&stream_name)
-        .await
-        .map_err(|_| PostError::StreamNotFound(stream_name.clone()))?;
-
-    let time_partition = object_store_format.time_partition;
-    let time_partition_limit = object_store_format.time_partition_limit;
-    let static_schema_flag = object_store_format.static_schema_flag;
-    let custom_partition = object_store_format.custom_partition;
+    let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
+    let time_partition_limit = STREAM_INFO.get_time_partition_limit(&stream_name)?;
+    let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name)?;
+    let custom_partition = STREAM_INFO.get_custom_partition(&stream_name)?;
     let body_val: Value = serde_json::from_slice(&body)?;
     let size: usize = body.len();
     let mut parsed_timestamp = Utc::now().naive_utc();
@@ -414,7 +408,10 @@ fn into_event_batch(
 }
 
 // Check if the stream exists and create a new stream if doesn't exist
-pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostError> {
+pub async fn create_stream_if_not_exists(
+    stream_name: &str,
+    internal_stream: bool,
+) -> Result<(), PostError> {
     if STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
     }
@@ -427,6 +424,7 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
                 "",
                 "",
                 Arc::new(Schema::empty()),
+                internal_stream,
             )
             .await?;
         }
@@ -440,7 +438,7 @@ pub async fn create_stream_if_not_exists(stream_name: &str) -> Result<(), PostEr
             }) {
                 log::error!("Stream {} not found", stream_name);
                 return Err(PostError::Invalid(anyhow::anyhow!(
-                    "Stream {} not found. Has it been created?",
+                    "Stream `{}` not found. Please create it using the Query server.",
                     stream_name
                 )));
             }
@@ -472,6 +470,8 @@ pub enum PostError {
     Invalid(#[from] anyhow::Error),
     #[error("{0}")]
     CreateStream(#[from] CreateStreamError),
+    #[error("Error: {0}")]
+    MetadataStreamError(#[from] MetadataError),
     #[allow(unused)]
     #[error("Error: {0}")]
     CustomError(String),
@@ -498,6 +498,7 @@ impl actix_web::ResponseError for PostError {
                 StatusCode::BAD_REQUEST
             }
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::MetadataStreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
             PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,
