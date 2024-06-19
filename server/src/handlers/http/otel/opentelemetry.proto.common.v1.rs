@@ -39,7 +39,7 @@
      #[serde(rename = "intValue")]
      pub int_val: Option<String>,
      #[serde(rename = "doubleValue")]
-     pub double_val: Option<String>,
+     pub double_val: Option<f64>,
      #[serde(rename = "arrayValue")]
      pub array_val: Option<ArrayValue>,
      #[serde(rename = "keyVauleList")]
