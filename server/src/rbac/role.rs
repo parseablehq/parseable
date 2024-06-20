@@ -30,8 +30,8 @@ pub enum Action {
     DeleteStream,
     GetRetention,
     PutRetention,
-    GetCacheEnabled,
-    PutCacheEnabled,
+    GetHotTierEnabled,
+    PutHotTierEnabled,
     PutAlert,
     GetAlert,
     PutUser,
@@ -133,8 +133,8 @@ impl RoleBuilder {
                 | Action::GetStats
                 | Action::GetRetention
                 | Action::PutRetention
-                | Action::GetCacheEnabled
-                | Action::PutCacheEnabled
+                | Action::GetHotTierEnabled
+                | Action::PutHotTierEnabled
                 | Action::PutAlert
                 | Action::GetAlert
                 | Action::All => Permission::Stream(action, self.stream.clone().unwrap()),
@@ -204,8 +204,8 @@ pub mod model {
                 Action::GetStats,
                 Action::GetRetention,
                 Action::PutRetention,
-                Action::PutCacheEnabled,
-                Action::GetCacheEnabled,
+                Action::PutHotTierEnabled,
+                Action::GetHotTierEnabled,
                 Action::PutAlert,
                 Action::GetAlert,
                 Action::GetAbout,

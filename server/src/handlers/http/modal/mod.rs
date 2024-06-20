@@ -28,6 +28,7 @@ use async_trait::async_trait;
 use openid::Discovered;
 
 use crate::oidc;
+use crate::option::CONFIG;
 use base64::Engine;
 use serde::Deserialize;
 use serde::Serialize;
@@ -63,6 +64,8 @@ pub struct IngestorMetadata {
     pub token: String,
     pub ingestor_id: String,
     pub flight_port: String,
+    pub hot_tier_capacity: Option<u64>,
+    pub hot_tier_time_range: Option<i64>,
 }
 
 impl IngestorMetadata {
@@ -80,7 +83,12 @@ impl IngestorMetadata {
         let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
 
         let token = format!("Basic {}", token);
-
+        let mut hot_tier_capacity: Option<u64> = None;
+        let mut hot_tier_time_range: Option<i64> = None;
+        if CONFIG.is_hot_tier_enabled() {
+            hot_tier_capacity = Some(CONFIG.parseable.hot_tier_size);
+            hot_tier_time_range = Some(CONFIG.parseable.hot_tier_time_range);
+        }
         Self {
             port,
             domain_name,
@@ -89,6 +97,8 @@ impl IngestorMetadata {
             token,
             ingestor_id,
             flight_port,
+            hot_tier_capacity,
+            hot_tier_time_range,
         }
     }
 

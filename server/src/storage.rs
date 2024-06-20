@@ -66,7 +66,7 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 // const PERMISSIONS_DELETE: &str = "delete";
 // const PERMISSIONS_READ_WRITE: &str = "readwrite";
 const ACCESS_ALL: &str = "all";
-
+pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v5";
 pub const CURRENT_OBJECT_STORE_VERSION: &str = "v4";
 pub const CURRENT_SCHEMA_VERSION: &str = "v4";
 
@@ -88,7 +88,7 @@ pub struct ObjectStoreFormat {
     #[serde(default)]
     pub snapshot: Snapshot,
     #[serde(default)]
-    pub cache_enabled: bool,
+    pub hot_tier_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention: Option<Retention>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,7 +109,7 @@ pub struct StreamInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_event_at: Option<String>,
     #[serde(default)]
-    pub cache_enabled: bool,
+    pub hot_tier_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,7 +160,7 @@ impl Default for ObjectStoreFormat {
             permissions: vec![Permisssion::new("parseable".to_string())],
             stats: FullStats::default(),
             snapshot: Snapshot::default(),
-            cache_enabled: false,
+            hot_tier_enabled: false,
             retention: None,
             time_partition: None,
             time_partition_limit: None,

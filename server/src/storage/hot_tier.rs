@@ -18,80 +18,111 @@
 
 use chrono::Utc;
 use clokwerk::{AsyncScheduler, Job, TimeUnits};
+use once_cell::sync::Lazy;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
-use tokio::fs as AsyncFs;
 
+use crate::hottier::LocalHotTierManager;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
+type SchedulerHandle = thread::JoinHandle<()>;
 
-async fn cleanup() {
+static SCHEDULER_HANDLER: Lazy<Mutex<Option<SchedulerHandle>>> = Lazy::new(|| Mutex::new(None));
+
+fn async_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .thread_name("hot-tier-cleanup-task-thread")
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+pub fn cleanup_hot_tier() {
+    if CONFIG.is_hot_tier_enabled() {
+        init_scheduler();
+    }
+}
+
+fn init_scheduler() {
+    log::info!("Setting up schedular");
+    let mut scheduler = AsyncScheduler::new();
+    let func = move || async {
+        cleanup().await;
+    };
+
+    // Execute once on startup
+    thread::spawn(move || {
+        let rt = async_runtime();
+        rt.block_on(func());
+    });
+
+    scheduler.every(1.day()).at("00:00").run(func);
+
+    let scheduler_handler = thread::spawn(|| {
+        let rt = async_runtime();
+        rt.block_on(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                scheduler.run_pending().await;
+            }
+        });
+    });
+
+    *SCHEDULER_HANDLER.lock().unwrap() = Some(scheduler_handler);
+    log::info!("Scheduler is initialized")
+}
+
+pub async fn cleanup() {
     let path = CONFIG.parseable.hot_tier_storage_path.as_ref().unwrap();
-    let cleanup_interval = CONFIG
-        .parseable
-        .hot_tier_time_range
-        .expect("alredy checked for none");
-    let streams = STREAM_INFO.list_streams();
-
-    let now = Utc::now().date_naive();
-
-    for stream in streams {
-        let path = PathBuf::from(path).join(stream);
-        let mut files = AsyncFs::read_dir(path).await.unwrap();
-
-        while let Ok(file) = files.next_entry().await {
-            if let Some(file) = file {
-                if file.path().extension().expect("should have an extension") == "parquet" {
-                    let file_str = file
-                        .file_name()
-                        .to_str()
-                        .expect("should be valid str")
-                        .to_owned();
-                    // 2024-05-24
-
-                    let date = file_str
-                        .split_once('.')
-                        .expect("should be valid split")
-                        .0
-                        .split_once('=')
-                        .expect("should be valid split")
-                        .0;
-
-                    let date_time = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                        .expect("should be valid date");
-
-                    let time_delta = now - date_time;
-                    if time_delta.num_days() > cleanup_interval {
-                        if let Err(err) = AsyncFs::remove_file(file.path()).await {
-                            log::error!("Failed to remove file: {:?}", err);
+    let hot_tier_manager = LocalHotTierManager::global().unwrap();
+    for stream in STREAM_INFO.list_streams() {
+        let path = PathBuf::from(path).join(stream.clone());
+        let hot_tier_enable = STREAM_INFO.hot_tier_enabled(&stream).unwrap();
+        if !hot_tier_enable || !path.exists(){
+            continue;
+        }
+        let files = std::fs::read_dir(path).unwrap().collect::<Vec<_>>();
+        for file in files.iter(){
+            match file{
+                Err(err) => {
+                    log::error!("Failed to read file: {:?}", err);
+                    continue;
+                }
+                Ok(file)=>{
+                    if file.path().extension().expect("should have an extension") == "parquet" {
+                        let file_name = file
+                            .file_name()
+                            .to_str()
+                            .expect("should be valid str")
+                            .to_owned();
+        
+                        let date = file_name
+                            .split_once('.')
+                            .expect("should be valid split")
+                            .0
+                            .split_once('=')
+                            .expect("should be valid split")
+                            .1;
+                        let date_time = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                            .expect("should be valid date");
+                        let time_delta = Utc::now().date_naive() - date_time;
+                        if time_delta.num_days() > CONFIG.parseable.hot_tier_time_range {
+                            if let Err(err) = hot_tier_manager
+                                .delete_from_hot_tier(&stream, file.path())
+                                .await
+                            {
+                                log::error!("Failed to delete file: {:?}", err);
+                            }
                         }
                     }
                 }
             }
+            
         }
-    }
-}
-
-async fn run() -> anyhow::Result<()> {
-    log::info!("Setting up schedular for hot tier files cleanup");
-
-    let mut scheduler = AsyncScheduler::new();
-    scheduler.every(1u32.day()).at("00:00").run(cleanup);
-
-    tokio::spawn(async move {
-        loop {
-            scheduler.run_pending().await;
-            tokio::time::sleep(Duration::from_secs(10)).await;
-        }
-    });
-
-    Ok(())
-}
-
-pub async fn setup_hot_tier_scheduler() -> anyhow::Result<()> {
-    if CONFIG.is_hot_tier_enabled() {
-        run().await?;
+            
+            }
+        
     }
 
-    Ok(())
-}

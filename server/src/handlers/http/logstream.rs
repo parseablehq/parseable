@@ -459,23 +459,23 @@ pub async fn put_retention(
     ))
 }
 
-pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, StreamError> {
+pub async fn get_hot_tier_enabled(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     match CONFIG.parseable.mode {
         Mode::Ingest | Mode::All => {
             if CONFIG.parseable.hot_tier_storage_path.is_none() {
-                return Err(StreamError::CacheNotEnabled(stream_name));
+                return Err(StreamError::HotTierNotEnabled(stream_name));
             }
         }
         _ => {}
     }
 
-    let cache_enabled = STREAM_INFO.cache_enabled(&stream_name)?;
-    Ok((web::Json(cache_enabled), StatusCode::OK))
+    let hot_tier_enabled = STREAM_INFO.hot_tier_enabled(&stream_name)?;
+    Ok((web::Json(hot_tier_enabled), StatusCode::OK))
 }
 
-pub async fn put_enable_cache(
+pub async fn put_enable_hot_tier(
     req: HttpRequest,
     body: web::Json<bool>,
 ) -> Result<impl Responder, StreamError> {
@@ -493,7 +493,7 @@ pub async fn put_enable_cache(
             })?;
             for ingestor in ingestor_metadata {
                 let url = format!(
-                    "{}{}/logstream/{}/cache",
+                    "{}{}/logstream/{}/hottier",
                     ingestor.domain_name,
                     base_path_without_preceding_slash(),
                     stream_name
@@ -504,7 +504,7 @@ pub async fn put_enable_cache(
         }
         Mode::Ingest => {
             if CONFIG.parseable.hot_tier_storage_path.is_none() {
-                return Err(StreamError::CacheNotEnabled(stream_name));
+                return Err(StreamError::HotTierNotEnabled(stream_name));
             }
             // here the ingest server has not found the stream
             // so it should check if the stream exists in storage
@@ -534,20 +534,20 @@ pub async fn put_enable_cache(
                 return Err(StreamError::StreamNotFound(stream_name));
             }
             if CONFIG.parseable.hot_tier_storage_path.is_none() {
-                return Err(StreamError::CacheNotEnabled(stream_name));
+                return Err(StreamError::HotTierNotEnabled(stream_name));
             }
         }
     }
-    let enable_cache = body.into_inner();
+    let enable_hot_tier = body.into_inner();
     let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
-    stream_metadata.cache_enabled = enable_cache;
+    stream_metadata.hot_tier_enabled = enable_hot_tier;
     storage
         .put_stream_manifest(&stream_name, &stream_metadata)
         .await?;
 
-    STREAM_INFO.set_stream_cache(&stream_name, enable_cache)?;
+    STREAM_INFO.set_stream_hot_tier(&stream_name, enable_hot_tier)?;
     Ok((
-        format!("Cache set to {enable_cache} for log stream {stream_name}"),
+        format!("Hot tier set to {enable_hot_tier} for log stream {stream_name}"),
         StatusCode::OK,
     ))
 }
@@ -842,7 +842,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         time_partition: stream_meta.time_partition.clone(),
         time_partition_limit: stream_meta.time_partition_limit.clone(),
         custom_partition: stream_meta.custom_partition.clone(),
-        cache_enabled: stream_meta.cache_enabled,
+        hot_tier_enabled: stream_meta.hot_tier_enabled,
         static_schema_flag: stream_meta.static_schema_flag.clone(),
     };
 
@@ -897,9 +897,9 @@ pub mod error {
         #[error("Log stream {0} does not exist")]
         StreamNotFound(String),
         #[error(
-            "Caching not enabled at Parseable server config. Can't enable cache for stream {0}"
+            "Hot tier is not enabled at Parseable server config. Can't enable hot tier for stream {0}"
         )]
-        CacheNotEnabled(String),
+        HotTierNotEnabled(String),
         #[error("Log stream is not initialized, send an event to this logstream and try again")]
         UninitializedLogstream,
         #[error("Storage Error {0}")]
@@ -946,7 +946,7 @@ pub mod error {
                 StreamError::CreateStream(CreateStreamError::SerdeError(_)) => {
                     StatusCode::BAD_REQUEST
                 }
-                StreamError::CacheNotEnabled(_) => StatusCode::BAD_REQUEST,
+                StreamError::HotTierNotEnabled(_) => StatusCode::BAD_REQUEST,
                 StreamError::StreamNotFound(_) => StatusCode::NOT_FOUND,
                 StreamError::Custom { status, .. } => *status,
                 StreamError::UninitializedLogstream => StatusCode::METHOD_NOT_ALLOWED,

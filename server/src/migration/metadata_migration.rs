@@ -131,14 +131,6 @@ pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
         );
     }
 
-    let hot_tier_capacity = metadata.get("hot_tier_capacity");
-    if hot_tier_capacity.is_none() {
-        metadata.insert(
-            "hot_tier_capacity".to_string(),
-            JsonValue::Bool(CONFIG.is_hot_tier_enabled()),
-        );
-    }
-
     let roles = metadata.get_mut("roles").unwrap().as_object_mut().unwrap();
     for (_, privileges) in roles.iter_mut() {
         let JsonValue::Array(privileges) = privileges else {
@@ -168,14 +160,11 @@ pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetada
     let meta = json
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingester Metadata"))?;
-    let fp = meta.get("flight_port");
 
-    if fp.is_none() {
-        meta.insert(
-            "flight_port".to_owned(),
-            JsonValue::String(CONFIG.parseable.flight_port.to_string()),
-        );
-    }
+    meta.insert(
+        "flight_port".to_owned(),
+        JsonValue::String(CONFIG.parseable.flight_port.to_string()),
+    );
     let bytes = serde_json::to_string(&json)?
         .try_into_bytes()
         .map_err(|err| anyhow::anyhow!(err))?;

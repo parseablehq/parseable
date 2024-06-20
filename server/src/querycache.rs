@@ -26,15 +26,18 @@ use itertools::Itertools;
 use object_store::{local::LocalFileSystem, ObjectStore};
 use once_cell::sync::OnceCell;
 use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
+use parquet::errors::ParquetError;
 use std::collections::HashMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use tokio::fs as AsyncFs;
 use tokio::{fs, sync::Mutex};
 
 use crate::handlers::http::users::USERS_ROOT_DIR;
+use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::STREAM_INFO;
 use crate::storage::staging::parquet_writer_props;
-use crate::{localcache::CacheError, option::CONFIG, utils::hostname_unchecked};
+use crate::{option::CONFIG, utils::hostname_unchecked};
 
 pub const QUERY_CACHE_FILENAME: &str = ".cache.json";
 pub const QUERY_CACHE_META_FILENAME: &str = ".cache_meta.json";
@@ -406,4 +409,24 @@ fn query_cache_meta_path(
 ) -> Result<object_store::path::Path, object_store::path::Error> {
     let path = root.as_ref().join(QUERY_CACHE_META_FILENAME);
     object_store::path::Path::from_absolute_path(path)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CacheError {
+    #[error("{0}")]
+    Serde(#[from] serde_json::Error),
+    #[error("{0}")]
+    IOError(#[from] io::Error),
+    #[error("{0}")]
+    MoveError(#[from] fs_extra::error::Error),
+    #[error("{0}")]
+    ObjectStoreError(#[from] object_store::Error),
+    #[error("{0}")]
+    ParquetError(#[from] ParquetError),
+    #[error("{0}")]
+    MetadataError(#[from] MetadataError),
+    #[error("Error: Cache File Does Not Exist")]
+    DoesNotExist,
+    #[error("Error: {0}")]
+    Other(&'static str),
 }

@@ -93,7 +93,7 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
 /// Prints information about the `ObjectStorage`.
 /// - Mode (`Local drive`, `S3 bucket`)
 /// - Staging (temporary landing point for incoming events)
-/// - Cache (local cache of data)
+/// - HotTier (local hot tier of data)
 /// - Store (path where the data is stored and its latency)
 async fn storage_info(config: &Config) {
     let storage = config.storage();
@@ -114,13 +114,15 @@ async fn storage_info(config: &Config) {
             SpecificSize::new(config.parseable.hot_tier_size as f64, human_size::Byte)
                 .unwrap()
                 .into();
+        let time_range = config.parseable.hot_tier_time_range;
 
         eprintln!(
             "\
-        {:8}Cache:              \"{}\", (size: {})",
+        {:8}Hot Tier:           \"{}\", (size: {}, time range: {} days)",
             "",
             path.display(),
-            size
+            size,
+            time_range
         );
     }
 

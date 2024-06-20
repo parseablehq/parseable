@@ -46,7 +46,7 @@ use crate::handlers::http::query::{
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::querycache::QueryCacheManager;
 use crate::utils::arrow::flight::{
-    append_temporary_events, get_from_ingester_cache, get_query_from_ticket, into_flight_data,
+    append_temporary_events, get_from_ingester_hot_tier, get_query_from_ticket, into_flight_data,
     run_do_get_rpc, send_to_ingester,
 };
 use arrow_flight::{
@@ -134,7 +134,7 @@ impl FlightService for AirServiceImpl {
 
         let ticket = get_query_from_ticket(&req)?;
 
-        log::info!("query requested to airplane: {:?}", ticket);
+        println!("query requested to airplane: {:?}", ticket);
 
         // get the query session_state
         let session_state = QUERY_SESSION.state();
@@ -202,12 +202,17 @@ impl FlightService for AirServiceImpl {
         let mut query = into_query(&ticket, &session_state)
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
+        println!("{:?}", query);
+        let ingestors_results =
+            get_from_ingester_hot_tier(&query.start, &query.end, ticket.clone(), &stream_name).await;
 
-        // deal with ingester local cache
-        if let Some(early) =
-            get_from_ingester_cache(&query.start, &query.end, &stream_name, ticket.clone()).await
-        {
-            return into_flight_data(early);
+        match ingestors_results {
+            Ok(early) => {
+                return into_flight_data(early);
+            }
+            Err(err) => {
+                log::error!("Failed to get data from ingester: {}", err);
+            }
         }
 
         let event =

@@ -37,13 +37,13 @@ use arrow_array::RecordBatch;
 
 use crate::event::commit_schema;
 use crate::handlers::{CACHE_RESULTS_HEADER_KEY, CACHE_VIEW_HEADER_KEY, USER_ID_HEADER_KEY};
-use crate::localcache::CacheError;
+
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
 use crate::query::Query as LogicalQuery;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::querycache::{CacheMetadata, QueryCacheManager};
+use crate::querycache::{CacheError, CacheMetadata, QueryCacheManager};
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -252,7 +252,7 @@ pub async fn get_results_from_cache(
     match (show_cached, query_cache_manager) {
         (Some(_), None) => {
             log::warn!(
-                "Instructed to show cached results but Query Caching is not Enabled on Server"
+                "Cannot show cached results as Query Caching is not enabled on the server"
             );
             None
         }

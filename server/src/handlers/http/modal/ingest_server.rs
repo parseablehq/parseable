@@ -20,7 +20,7 @@ use crate::banner;
 use crate::handlers::airplane;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::RouteExt;
-use crate::localcache::LocalCacheManager;
+use crate::hottier::LocalHotTierManager;
 use crate::metrics;
 use crate::migration;
 use crate::migration::metadata_migration::migrate_ingester_metadata;
@@ -32,7 +32,6 @@ use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::staging;
 use crate::storage::ObjectStorageError;
-use crate::storage::StorageMetadata;
 use crate::sync;
 
 use super::server::Server;
@@ -113,7 +112,7 @@ impl ParseableServer for IngestServer {
         // check for querier state. Is it there, or was it there in the past
         let parseable_json = self.check_querier_state().await?;
         // to get the .parseable.json file in staging
-        self.validate_credentials().await?;
+        self.validate_ingestor_metadata().await?;
         let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
 
         banner::print(&CONFIG, &metadata).await;
@@ -213,18 +212,18 @@ impl IngestServer {
                         ),
                 )
                 .service(
-                    web::resource("/cache")
-                        // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
+                    web::resource("/hottier")
+                        // PUT "/logstream/{logstream}/hottier" ==> Set hot_tier for given logstream
                         .route(
                             web::put()
-                                .to(logstream::put_enable_cache)
-                                .authorize_for_stream(Action::PutCacheEnabled),
+                                .to(logstream::put_enable_hot_tier)
+                                .authorize_for_stream(Action::PutHotTierEnabled),
                         )
-                        // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
+                        // GET "/logstream/{logstream}/hottier" ==> Get hot_tier for given logstream
                         .route(
                             web::get()
-                                .to(logstream::get_cache_enabled)
-                                .authorize_for_stream(Action::GetCacheEnabled),
+                                .to(logstream::get_hot_tier_enabled)
+                                .authorize_for_stream(Action::GetHotTierEnabled),
                         ),
                 ),
         )
@@ -232,7 +231,8 @@ impl IngestServer {
 
     // create the ingestor metadata and put the .ingestor.json file in the object store
     async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
-        let storage_ingestor_metadata = migrate_ingester_metadata().await?;
+        let storage_ingestor_metadata: Option<IngestorMetadata> =
+            migrate_ingester_metadata().await?;
         let store = CONFIG.storage().get_object_store();
 
         // find the meta file in staging if not generate new metadata
@@ -245,12 +245,11 @@ impl IngestServer {
         if storage_ingestor_metadata.is_some() {
             let mut store_data = storage_ingestor_metadata.unwrap();
 
-            if store_data.domain_name != INGESTOR_META.domain_name {
-                store_data
+            store_data
                     .domain_name
                     .clone_from(&INGESTOR_META.domain_name);
                 store_data.port.clone_from(&INGESTOR_META.port);
-
+                store_data.flight_port = CONFIG.parseable.flight_port.to_string();
                 let resource = serde_json::to_string(&store_data)?
                     .try_into_bytes()
                     .map_err(|err| anyhow!(err))?;
@@ -260,7 +259,6 @@ impl IngestServer {
                     .put_object(&path, resource)
                     .await
                     .map_err(|err| anyhow!(err));
-            }
         } else {
             let resource = serde_json::to_string(&resource)?
                 .try_into_bytes()
@@ -284,30 +282,14 @@ impl IngestServer {
 
         let parseable_json = store.get_object(&path).await;
         match parseable_json {
-            Ok(bytes) => {
-                let size = serde_json::from_slice::<StorageMetadata>(&bytes)?.hot_tier_capacity;
-                let hot_tier_enabled = CONFIG.is_hot_tier_enabled();
-                match size {
-                    Some(size) => {
-                        if hot_tier_enabled && CONFIG.parseable.hot_tier_size != size {
-                            return Err(ObjectStorageError::Custom("Hot Tier Capacity does not match with Other Nodes. Please check the hot tier capacity and try again."));
-                        }
-                    }
-                    None => {
-                        if hot_tier_enabled {
-                            return Err(ObjectStorageError::Custom("Hot Tier is active on Current Node but disabled on Other Nodes. Please set hot tier and try again."));
-                        }
-                    }
-                }
-                Ok(Some(bytes))
-            }
+            Ok(_) => Ok(Some(parseable_json.unwrap())),
             Err(_) => Err(ObjectStorageError::Custom(
                 "Query Server has not been started yet. Please start the querier server first.",
             )),
         }
     }
 
-    async fn validate_credentials(&self) -> anyhow::Result<()> {
+    async fn validate_ingestor_metadata(&self) -> anyhow::Result<()> {
         // check if your creds match with others
         let store = CONFIG.storage().get_object_store();
         let base_path = RelativePathBuf::from("");
@@ -333,14 +315,29 @@ impl IngestServer {
             if check != token {
                 return Err(anyhow::anyhow!("Credentials do not match with other ingestors. Please check your credentials and try again."));
             }
+
+            let hot_tier_capacity = ingestor_metadata[0].hot_tier_capacity;
+            let hot_tier_time_range = ingestor_metadata[0].hot_tier_time_range;
+
+            if hot_tier_capacity.is_some()
+                && hot_tier_capacity.unwrap() != CONFIG.parseable.hot_tier_size
+            {
+                return Err(anyhow::anyhow!("Hot Tier Capacity does not match with other ingestors. Please check the hot tier capacity and try again."));
+            }
+
+            if hot_tier_time_range.is_some()
+                && hot_tier_time_range.unwrap() != CONFIG.parseable.hot_tier_time_range
+            {
+                return Err(anyhow::anyhow!("Hot Tier Time Range does not match with other ingestors. Please check the hot tier time range and try again."));
+            }
         }
 
         Ok(())
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            cache_manager
+        if let Some(hot_tier_manager) = LocalHotTierManager::global() {
+            hot_tier_manager
                 .validate(CONFIG.parseable.hot_tier_size)
                 .await?;
         };
@@ -354,7 +351,7 @@ impl IngestServer {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync();
 
-        hot_tier::setup_hot_tier_scheduler().await?;
+        hot_tier::cleanup_hot_tier();
 
         tokio::spawn(airplane::server());
 

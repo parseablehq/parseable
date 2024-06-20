@@ -52,7 +52,7 @@ pub struct Cli {
     pub hot_tier_size: u64,
 
     /// Size for local hot_tier
-    pub hot_tier_time_range: Option<i64>,
+    pub hot_tier_time_range: i64,
 
     /// Username for the basic authentication on the server
     pub username: String,
@@ -207,6 +207,7 @@ impl Cli {
                     .long(Self::HOT_TIER_TIME_RANGE)
                     .env("P_HOT_TIER_TIME_RANGE")
                     .value_name("days")
+                    .default_value("1")
                     .value_parser(value_parser!(i64))
                     .help("Maximum allowed time in days for all streams combined (In human readable format, e.g 1, 2)")
                     .next_line_help(true),
@@ -416,7 +417,10 @@ impl FromArgMatches for Cli {
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
 
-        self.hot_tier_time_range = m.get_one::<i64>(Self::HOT_TIER_TIME_RANGE).cloned();
+        self.hot_tier_time_range = m
+            .get_one::<i64>(Self::HOT_TIER_TIME_RANGE)
+            .cloned()
+            .expect("default value for hot tier time range");
 
         self.address = m
             .get_one::<String>(Self::ADDRESS)
@@ -435,7 +439,7 @@ impl FromArgMatches for Cli {
         self.hot_tier_size = m
             .get_one::<u64>(Self::HOT_TIER_SIZE)
             .cloned()
-            .expect("default value for cache size");
+            .expect("default value for hot tier size");
         self.query_cache_size = m
             .get_one(Self::QUERY_CACHE_SIZE)
             .cloned()

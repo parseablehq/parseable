@@ -151,11 +151,11 @@ Log Lake for the cloud-native world
         &self.parseable.local_staging_path
     }
 
-    pub fn cache_size(&self) -> u64 {
+    pub fn hot_tier_size(&self) -> u64 {
         self.parseable.hot_tier_size
     }
 
-    pub fn cache_dir(&self) -> &Option<PathBuf> {
+    pub fn hot_tier_storage_dir(&self) -> &Option<PathBuf> {
         &self.parseable.hot_tier_storage_path
     }
 
@@ -184,7 +184,6 @@ Log Lake for the cloud-native world
 
     pub fn is_hot_tier_enabled(&self) -> bool {
         self.parseable.hot_tier_storage_path.is_some()
-            && self.parseable.hot_tier_time_range.is_some()
     }
 }
 

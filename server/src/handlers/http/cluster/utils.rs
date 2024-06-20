@@ -57,6 +57,7 @@ pub struct ClusterInfo {
     reachable: bool,
     staging_path: String,
     storage_path: String,
+    hot_tier: String,
     error: Option<String>,  // error message if the ingestor is not reachable
     status: Option<String>, // status message if the ingestor is reachable
 }
@@ -67,6 +68,7 @@ impl ClusterInfo {
         reachable: bool,
         staging_path: String,
         storage_path: String,
+        hot_tier: String,
         error: Option<String>,
         status: Option<String>,
     ) -> Self {
@@ -75,9 +77,14 @@ impl ClusterInfo {
             reachable,
             staging_path,
             storage_path,
+            hot_tier,
             error,
             status,
         }
+    }
+
+    pub fn get_hot_tier(&self) -> String {
+        self.hot_tier.clone()
     }
 }
 

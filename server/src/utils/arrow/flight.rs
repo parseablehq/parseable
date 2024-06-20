@@ -17,9 +17,11 @@
  */
 
 use crate::event::Event;
+use crate::handlers::http::cluster::{get_cluster_details, get_ingestor_info};
 use crate::handlers::http::ingest::push_logs_unchecked;
+use crate::handlers::http::logstream::error::StreamError;
 use crate::handlers::http::query::Query as QueryJson;
-use crate::localcache::LocalCacheManager;
+use crate::hottier::LocalHotTierManager;
 use crate::metadata::STREAM_INFO;
 use crate::query::stream_schema_provider::include_now;
 use crate::{
@@ -37,8 +39,9 @@ use datafusion::logical_expr::BinaryExpr;
 use datafusion::prelude::Expr;
 use datafusion::scalar::ScalarValue;
 use futures::{stream, TryStreamExt};
+use itertools::Itertools;
 use serde_json::json;
-
+use std::path::PathBuf;
 use tonic::{Request, Response, Status};
 
 use arrow_flight::FlightClient;
@@ -60,10 +63,11 @@ pub async fn run_do_get_rpc(
         .domain_name
         .rsplit_once(':')
         .ok_or(Status::failed_precondition(
-            "Ingester metadata is courupted",
+            "Ingestor metadata is courupted",
         ))?
         .0;
     let url = format!("{}:{}", url, im.flight_port);
+    println!("URL: {:?}", url);
     let url = url
         .parse::<Uri>()
         .map_err(|_| Status::failed_precondition("Ingester metadata is courupted"))?;
@@ -86,10 +90,14 @@ pub async fn run_do_get_rpc(
     let response = client
         .do_get(Ticket {
             ticket: ticket.into(),
-        })
-        .await?;
-
-    Ok(response.try_collect().await?)
+        }).await;
+    if let Err(error) = response {
+        return Err(Status::failed_precondition(error.to_string()));
+    }
+    println!("Response: {:?}", response.as_ref().unwrap());
+    let batches: Vec<RecordBatch> = response.unwrap().try_collect().await?;
+    println!("batches: {:?}", batches);
+    Ok(batches)
 }
 
 /// all the records from the ingesters are concatinated into one event and pushed to memory
@@ -162,61 +170,84 @@ pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStrea
     Ok(Response::new(Box::pin(flight_data_stream) as DoGetStream))
 }
 
-pub async fn get_from_ingester_cache(
+pub async fn get_from_ingester_hot_tier(
     start: &DateTime<Utc>,
     end: &DateTime<Utc>,
-    stream_name: &str,
     ticket: QueryJson,
-) -> Option<Vec<RecordBatch>> {
-    LocalCacheManager::global()?;
+    stream_name: &str,
+) -> Result<Vec<RecordBatch>, StreamError> {
+    println!("Ticket: {:?}", ticket);
+    println!("Start: {:?}", start);
+    println!("End: {:?}", end);
+    println!("Mode: {:?}", CONFIG.parseable.mode);
+    
+    let mut result_from_ingestor: Vec<RecordBatch> = vec![];
 
+    LocalHotTierManager::global();
     let time_delta = *end - *start;
-    let goto_ingester = time_delta.num_days()
-        < CONFIG
-            .parseable
-            .hot_tier_time_range
-            .expect("alredy checked for none");
-    let goto_ingester = goto_ingester
-        && STREAM_INFO
-            .read()
-            .expect("lock should not be poisoned")
-            .get(stream_name)?
-            .cache_enabled;
+    println!("Time Delta: {:?}", time_delta.num_days());
+    if CONFIG.parseable.mode == Mode::Query {
+        let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+            log::error!("Fatal: failed to get ingestor info: {:?}", err);
+            StreamError::Anyhow(err)
+        })?;
 
-    if CONFIG.parseable.mode == Mode::Query && goto_ingester {
-        // send the grpc call to then ingesters, if fails continue with normal flow
-        let start_time = ticket.start_time;
-        let end_time = ticket.end_time;
-        let sql = ticket.query;
-        let out_ticket = json!({
-            "query": sql,
-            "startTime": start_time,
-            "endTime": end_time
-        })
-        .to_string();
+        let infos = get_cluster_details(&ingestor_infos).await.map_err(|err| {
+            log::error!("Fatal: failed to get ingestor info: {:?}", err);
+            StreamError::Anyhow(err.into())
+        })?;
+        let mut goto_ingestor = false;
+        infos.iter().for_each(|info| {
+            let ingestor_hot_tier = info.get_hot_tier();
+            if ingestor_hot_tier.contains("Enabled") {
+                let time_range = ingestor_hot_tier.split(',').collect_vec()[3]
+                    .split(':')
+                    .collect_vec()[1]
+                    .trim();
+                println!("Time Range: {:?}", time_range);
+                if time_delta.num_days() <= time_range.parse::<i64>().unwrap() {
+                    goto_ingestor = true;
+                }
+            }
+        });
+        if goto_ingestor {
+            // send the grpc call to then ingesters, if fails continue with normal flow
+            let start_time = ticket.start_time;
+            let end_time = ticket.end_time;
+            let sql = ticket.query;
+            let out_ticket = json!({
+                "query": sql,
+                "startTime": start_time,
+                "endTime": end_time
+            })
+            .to_string();
+            println!("Ticket: {:?}", out_ticket);
 
-        // todo: cleanup the namespace
-        let ingester_metadatas = crate::handlers::http::cluster::get_ingestor_info()
-            .await
-            .ok()?;
-        let mut result_from_ingester: Vec<RecordBatch> = vec![];
-
-        let mut error = false;
-        for im in ingester_metadatas {
-            if let Ok(mut batches) = run_do_get_rpc(im, out_ticket.clone()).await {
-                result_from_ingester.append(&mut batches);
-            } else {
-                error = true;
-                break;
+            for im in ingestor_infos {
+                match run_do_get_rpc(im, out_ticket.clone()).await {
+                    Ok(mut batches) => {
+                        result_from_ingestor.append(&mut batches);
+                    }
+                    Err(err) => {
+                        return Err(StreamError::Anyhow(err.into()));
+                    }
+                }
             }
         }
-
-        if error {
-            None
-        } else {
-            Some(result_from_ingester)
-        }
-    } else {
-        None
     }
+    if CONFIG.parseable.mode == Mode::Ingest {
+        if let Some(hot_tier_manager) = LocalHotTierManager::global() {
+            let hot_tier_path = CONFIG.parseable.hot_tier_storage_path.as_ref().unwrap();
+            let stream_hot_tier_path  = PathBuf::from(hot_tier_path).join(stream_name);
+            println!("path: {:?}", stream_hot_tier_path);
+            if let Ok(batches) = hot_tier_manager.get_hottier_records(&stream_hot_tier_path).await {
+                let mut batches = batches.0;
+                println!("Batches: {:?}", batches);
+                result_from_ingestor.append(&mut batches);
+            } else {
+                // Handle the error case here
+            }
+        }
+    }
+Ok(result_from_ingestor)
 }

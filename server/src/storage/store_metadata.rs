@@ -35,11 +35,11 @@ use crate::{
     utils::uid,
 };
 
-use super::PARSEABLE_METADATA_FILE_NAME;
+use super::{CURRENT_STORAGE_METADATA_VERSION, PARSEABLE_METADATA_FILE_NAME};
 
 // Expose some static variables for internal usage
 pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();
-pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v4";
+
 // For use in global static
 #[derive(Debug, PartialEq, Eq)]
 pub struct StaticStorageMetadata {
@@ -63,17 +63,10 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
-    pub hot_tier_capacity: Option<u64>,
 }
 
 impl StorageMetadata {
     pub fn new() -> Self {
-        let hot_tier_capacity = if CONFIG.is_hot_tier_enabled() {
-            Some(CONFIG.parseable.hot_tier_size)
-        } else {
-            None
-        };
-
         Self {
             version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
             mode: CONFIG.storage_name.to_owned(),
@@ -85,7 +78,6 @@ impl StorageMetadata {
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
-            hot_tier_capacity,
         }
     }
 

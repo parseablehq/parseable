@@ -30,10 +30,10 @@ use crate::handlers::{
     LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     STREAM_NAME_HEADER_KEY,
 };
-use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{self, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
+use crate::querycache::CacheError;
 use crate::storage::{LogStream, ObjectStorageError};
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use crate::utils::json::convert_array_to_object;

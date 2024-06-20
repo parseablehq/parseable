@@ -28,12 +28,11 @@ use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
-use crate::localcache::LocalCacheManager;
+use crate::hottier::LocalHotTierManager;
 use crate::metrics;
 use crate::migration;
 use crate::rbac;
 use crate::storage;
-use crate::storage::hot_tier;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
@@ -328,18 +327,18 @@ impl Server {
                             ),
                     )
                     .service(
-                        web::resource("/cache")
-                            // PUT "/logstream/{logstream}/cache" ==> Set cache for given logstream
+                        web::resource("/hottier")
+                            // PUT "/logstream/{logstream}/hottier" ==> Set hot_tier for given logstream
                             .route(
                                 web::put()
-                                    .to(logstream::put_enable_cache)
-                                    .authorize_for_stream(Action::PutCacheEnabled),
+                                    .to(logstream::put_enable_hot_tier)
+                                    .authorize_for_stream(Action::PutHotTierEnabled),
                             )
-                            // GET "/logstream/{logstream}/cache" ==> Get cache for given logstream
+                            // GET "/logstream/{logstream}/hottier" ==> Get hot_tier for given logstream
                             .route(
                                 web::get()
-                                    .to(logstream::get_cache_enabled)
-                                    .authorize_for_stream(Action::GetCacheEnabled),
+                                    .to(logstream::get_hot_tier_enabled)
+                                    .authorize_for_stream(Action::GetHotTierEnabled),
                             ),
                     ),
             )
@@ -496,8 +495,8 @@ impl Server {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            cache_manager
+        if let Some(hot_tier_manager) = LocalHotTierManager::global() {
+            hot_tier_manager
                 .validate(CONFIG.parseable.hot_tier_size)
                 .await?;
         };
@@ -519,8 +518,6 @@ impl Server {
         if CONFIG.parseable.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
-
-        hot_tier::setup_hot_tier_scheduler().await?;
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
