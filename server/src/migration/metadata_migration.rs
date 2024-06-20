@@ -160,14 +160,11 @@ pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetada
     let meta = json
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingester Metadata"))?;
-    let fp = meta.get("flight_port");
 
-    if fp.is_none() {
-        meta.insert(
-            "flight_port".to_owned(),
-            JsonValue::String(CONFIG.parseable.flight_port.to_string()),
-        );
-    }
+    meta.insert(
+        "flight_port".to_owned(),
+        JsonValue::String(CONFIG.parseable.flight_port.to_string()),
+    );
     let bytes = serde_json::to_string(&json)?
         .try_into_bytes()
         .map_err(|err| anyhow::anyhow!(err))?;

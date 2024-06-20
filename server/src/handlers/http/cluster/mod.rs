@@ -42,6 +42,7 @@ use serde::de::Error;
 use serde_json::error::Error as SerdeError;
 use serde_json::Value as JsonValue;
 use url::Url;
+use utils::ClusterInfo;
 type IngestorMetadataArr = Vec<IngestorMetadata>;
 
 use self::utils::StorageStats;
@@ -60,37 +61,23 @@ pub async fn sync_cache_with_ingestors(
     ingestor: IngestorMetadata,
     body: bool,
 ) -> Result<(), StreamError> {
-    if !utils::check_liveness(&ingestor.domain_name).await {
-        return Ok(());
-    }
-    let request_body: Bytes = Bytes::from(body.to_string());
-    let client = reqwest::Client::new();
-    let resp = client
+    let res = reqwest::Client::new()
         .put(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, ingestor.token)
-        .body(request_body)
+        .body(Bytes::from(body.to_string()))
         .send()
-        .await
-        .map_err(|err| {
-            // log the error and return a custom error
+        .await;
+        
+        if let Err(err) = res {
             log::error!(
-                "Fatal: failed to set cache: {}\n Error: {:?}",
+                "Fatal: failed to sync cache with ingestor: {}\n Error: {:?}",
                 ingestor.domain_name,
                 err
             );
-            StreamError::Network(err)
-        })?;
+        }
 
-    // if the response is not successful, log the error and return a custom error
-    // this could be a bit too much, but we need to be sure it covers all cases
-    if !resp.status().is_success() {
-        log::error!(
-            "failed to set cache: {}\nResponse Returned: {:?}",
-            ingestor.domain_name,
-            resp.text().await
-        );
-    }
+
 
     Ok(())
 }
@@ -407,7 +394,7 @@ pub async fn send_retention_cleanup_request(
                 ingestor.domain_name,
                 err
             );
-            ObjectStorageError::Custom(err.to_string())
+            ObjectStorageError::ReqwestError(err)
         })?;
 
     // if the response is not successful, log the error and return a custom error
@@ -422,7 +409,7 @@ pub async fn send_retention_cleanup_request(
 
     let resp_data = resp.bytes().await.map_err(|err| {
         log::error!("Fatal: failed to parse response to bytes: {:?}", err);
-        ObjectStorageError::Custom(err.to_string())
+        err
     })?;
 
     first_event_at = String::from_utf8_lossy(&resp_data).to_string();
@@ -435,8 +422,17 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         StreamError::Anyhow(err)
     })?;
 
-    let mut infos = vec![];
+    let infos = get_cluster_details(&ingestor_infos).await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        StreamError::Anyhow(err.into())
+    })?;
+    Ok(actix_web::HttpResponse::Ok().json(infos))
+}
 
+pub async fn get_cluster_details(
+    ingestor_infos: &Vec<IngestorMetadata>,
+) -> Result<Vec<ClusterInfo>, StreamError> {
+    let mut infos = vec![];
     for ingestor in ingestor_infos {
         let uri = Url::parse(&format!(
             "{}{}/about",
@@ -452,7 +448,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
             .send()
             .await;
 
-        let (reachable, staging_path, error, status) = if let Ok(resp) = resp {
+        let (reachable, staging_path, hot_tier, error, status) = if let Ok(resp) = resp {
             let status = Some(resp.status().to_string());
 
             let resp_data = resp.bytes().await.map_err(|err| {
@@ -475,10 +471,26 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
                 )))?
                 .to_string();
 
-            (true, sp, None, status)
+            let hot_tier = serde_json::from_slice::<JsonValue>(&resp_data)
+                .map_err(|err| {
+                    log::error!("Fatal: failed to parse ingestor info: {:?}", err);
+                    StreamError::SerdeError(err)
+                })?
+                .get("hotTier")
+                .ok_or(StreamError::SerdeError(SerdeError::missing_field(
+                    "hotTier",
+                )))?
+                .as_str()
+                .ok_or(StreamError::SerdeError(SerdeError::custom(
+                    "hotTier not provided",
+                )))?
+                .to_string();
+
+            (true, sp, hot_tier, None, status)
         } else {
             (
                 false,
+                "".to_owned(),
                 "".to_owned(),
                 resp.as_ref().err().map(|e| e.to_string()),
                 resp.unwrap_err().status().map(|s| s.to_string()),
@@ -490,12 +502,12 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
             reachable,
             staging_path,
             CONFIG.storage().get_endpoint(),
+            hot_tier,
             error,
             status,
         ));
     }
-
-    Ok(actix_web::HttpResponse::Ok().json(infos))
+    Ok(infos)
 }
 
 pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
@@ -638,14 +650,10 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
                         if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
                             let stream_name = INTERNAL_STREAM_NAME;
 
-                            if matches!(
-                                ingest_internal_stream(
-                                    stream_name.to_string(),
-                                    bytes::Bytes::from(metrics_bytes),
-                                )
-                                .await,
-                                Ok(())
-                            ) {
+                            if ingest_internal_stream(stream_name.to_string(), metrics_bytes.into())
+                                .await
+                                .is_ok()
+                            {
                                 log::info!(
                                     "Cluster metrics successfully ingested into internal stream"
                                 );

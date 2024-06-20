@@ -32,7 +32,7 @@ use crate::option::Mode;
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
-    localcache::LocalCacheManager,
+    hottier::LocalHotTierManager,
     metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
     option::CONFIG,
@@ -419,12 +419,12 @@ pub trait ObjectStorage: Sync + 'static {
 
         let streams = STREAM_INFO.list_streams();
 
-        let cache_manager = LocalCacheManager::global();
-        let mut cache_updates: HashMap<&String, Vec<_>> = HashMap::new();
+        let hot_tier_manager = LocalHotTierManager::global();
+        let mut hot_tier_updates: HashMap<&String, Vec<_>> = HashMap::new();
 
         for stream in &streams {
-            let cache_enabled = STREAM_INFO
-                .cache_enabled(stream)
+            let hot_tier_enabled = STREAM_INFO
+                .hot_tier_enabled(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let time_partition = STREAM_INFO
                 .get_time_partition(stream)
@@ -488,8 +488,8 @@ pub trait ObjectStorage: Sync + 'static {
                 let manifest =
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
-                if cache_enabled && cache_manager.is_some() {
-                    cache_updates
+                if hot_tier_enabled && hot_tier_manager.is_some() {
+                    hot_tier_updates
                         .entry(stream)
                         .or_default()
                         .push((absolute_path, file));
@@ -499,17 +499,17 @@ pub trait ObjectStorage: Sync + 'static {
             }
         }
 
-        if let Some(manager) = cache_manager {
-            let cache_updates = cache_updates
+        if let Some(manager) = hot_tier_manager {
+            let hot_tier_updates = hot_tier_updates
                 .into_iter()
                 .map(|(key, value)| (key.to_owned(), value))
                 .collect_vec();
 
             tokio::spawn(async move {
-                for (stream, files) in cache_updates {
+                for (stream, files) in hot_tier_updates {
                     for (storage_path, file) in files {
                         manager
-                            .move_to_cache(&stream, storage_path, file.to_owned())
+                            .move_to_hot_tier(&stream, storage_path, file.to_owned())
                             .await
                             .unwrap()
                     }

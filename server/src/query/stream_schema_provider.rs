@@ -60,7 +60,7 @@ use crate::{
         self, column::TypedStatistics, manifest::Manifest, snapshot::ManifestItem, ManifestFile,
     },
     event::{self, DEFAULT_TIMESTAMP_KEY},
-    localcache::LocalCacheManager,
+    hottier::LocalHotTierManager,
     metadata::STREAM_INFO,
     metrics::QUERY_CACHE_HIT,
     option::CONFIG,
@@ -379,8 +379,8 @@ impl TableProvider for StandardTableProvider {
         }
 
         // Based on entries in the manifest files, find them in the cache and create a physical plan.
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            let (cached, remainder) = cache_manager
+        if let Some(hot_tier_manager) = LocalHotTierManager::global() {
+            let (cached, remainder) = hot_tier_manager
                 .partition_on_cached(&self.stream, manifest_files, |file| &file.file_path)
                 .await
                 .map_err(|err| DataFusionError::External(Box::new(err)))?;

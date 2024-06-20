@@ -21,6 +21,7 @@ use arrow_schema::{Field, Fields, Schema};
 use chrono::{Local, NaiveDateTime};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use relative_path::RelativePathBuf;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -30,8 +31,9 @@ use crate::metrics::{
     EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
+use crate::option::{Mode, CONFIG};
 use crate::storage::retention::Retention;
-use crate::storage::{LogStream, ObjectStorage, ObjectStoreFormat, StorageDir};
+use crate::storage::{LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
 
@@ -47,7 +49,7 @@ pub struct LogStreamMetadata {
     pub schema: HashMap<String, Arc<Field>>,
     pub alerts: Alerts,
     pub retention: Option<Retention>,
-    pub cache_enabled: bool,
+    pub hot_tier_enabled: bool,
     pub created_at: String,
     pub first_event_at: Option<String>,
     pub time_partition: Option<String>,
@@ -92,11 +94,11 @@ impl StreamInfo {
         Ok(!self.schema(stream_name)?.fields.is_empty())
     }
 
-    pub fn cache_enabled(&self, stream_name: &str) -> Result<bool, MetadataError> {
+    pub fn hot_tier_enabled(&self, stream_name: &str) -> Result<bool, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         map.get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.cache_enabled)
+            .map(|metadata| metadata.hot_tier_enabled)
     }
 
     pub fn get_first_event(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
@@ -147,12 +149,16 @@ impl StreamInfo {
             .map(|metadata| metadata.retention.clone())
     }
 
-    pub fn set_stream_cache(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
+    pub fn set_stream_hot_tier(
+        &self,
+        stream_name: &str,
+        enable: bool,
+    ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         let stream = map
             .get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?;
-        stream.cache_enabled = enable;
+        stream.hot_tier_enabled = enable;
         Ok(())
     }
 
@@ -312,7 +318,7 @@ impl StreamInfo {
             schema,
             alerts,
             retention,
-            cache_enabled: meta.cache_enabled,
+            hot_tier_enabled: meta.hot_tier_enabled,
             created_at: meta.created_at,
             first_event_at: meta.first_event_at,
             time_partition: meta.time_partition,
@@ -389,17 +395,48 @@ pub async fn load_stream_metadata_on_server_start(
             .iter()
             .map(|v| (v.name().to_owned(), v.clone())),
     );
+    let mut retention = meta.retention.clone();
+    let mut hot_tier_enabled = meta.hot_tier_enabled;
+    let mut time_partition_limit = meta.time_partition_limit.clone();
+    let mut custom_partition = meta.custom_partition.clone();
+
+    if CONFIG.parseable.mode == Mode::Ingest{
+        // get the base stream metadata
+        let bytes = storage
+            .get_object(&RelativePathBuf::from_iter([
+                stream_name,
+                STREAM_ROOT_DIRECTORY,
+                STREAM_METADATA_FILE_NAME,
+            ]))
+            .await?;
+        let querier_meta: ObjectStoreFormat = serde_json::from_slice(&bytes).unwrap();
+        println!("hot_tier_enabled: {}", querier_meta.hot_tier_enabled);
+        retention = querier_meta.retention.clone();
+        hot_tier_enabled = querier_meta.hot_tier_enabled;
+        time_partition_limit = querier_meta.time_partition_limit.clone();
+        custom_partition = querier_meta.custom_partition.clone();
+
+        let updated_stream_meta: ObjectStoreFormat = ObjectStoreFormat {
+            retention: retention.clone(),
+            hot_tier_enabled,
+            time_partition_limit: time_partition_limit.clone(),
+            custom_partition: custom_partition.clone(),
+            ..meta.clone()
+        };
+        storage.put_stream_manifest(stream_name, &updated_stream_meta).await?;
+    }
+    
 
     let metadata = LogStreamMetadata {
         schema,
         alerts,
-        retention: meta.retention.clone(),
-        cache_enabled: meta.cache_enabled,
+        retention,
+        hot_tier_enabled,
         created_at: meta.created_at.clone(),
         first_event_at: meta.first_event_at.clone(),
         time_partition: meta.time_partition.clone(),
-        time_partition_limit: meta.time_partition_limit.clone(),
-        custom_partition: meta.custom_partition.clone(),
+        time_partition_limit,
+        custom_partition,
         static_schema_flag: meta.static_schema_flag.clone(),
     };
 

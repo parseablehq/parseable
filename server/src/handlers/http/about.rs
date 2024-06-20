@@ -79,18 +79,19 @@ pub async fn about() -> Json<serde_json::Value> {
     let is_oidc_active = CONFIG.parseable.openid.is_some();
     let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
-    let cache_details: String = if CONFIG.cache_dir().is_none() {
+    let hot_tier_details: String = if CONFIG.hot_tier_storage_dir().is_none() {
         "Disabled".to_string()
     } else {
-        let cache_dir: &Option<PathBuf> = CONFIG.cache_dir();
-        let cache_size: SpecificSize<human_size::Gigibyte> =
-            SpecificSize::new(CONFIG.cache_size() as f64, human_size::Byte)
+        let hot_tier_storage_dir: &Option<PathBuf> = CONFIG.hot_tier_storage_dir();
+        let hot_tier_size: SpecificSize<human_size::Gigibyte> =
+            SpecificSize::new(CONFIG.hot_tier_size() as f64, human_size::Byte)
                 .unwrap()
                 .into();
         format!(
-            "Enabled, Path: {} (Size: {})",
-            cache_dir.as_ref().unwrap().display(),
-            cache_size
+            "Enabled, Path: {}, Size: {}, Time Range: {}",
+            hot_tier_storage_dir.as_ref().unwrap().display(),
+            hot_tier_size,
+            CONFIG.parseable.hot_tier_time_range
         )
     };
 
@@ -107,7 +108,7 @@ pub async fn about() -> Json<serde_json::Value> {
         "license": "AGPL-3.0-only",
         "mode": mode,
         "staging": staging,
-        "cache": cache_details,
+        "hotTier": hot_tier_details,
         "grpcPort": grpc_port,
         "store": {
             "type": CONFIG.get_storage_mode_string(),
