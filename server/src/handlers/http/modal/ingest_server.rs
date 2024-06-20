@@ -165,11 +165,17 @@ impl IngestServer {
         web::scope("/logstream").service(
             web::scope("/{logstream}")
                 .service(
-                    web::resource("").route(
-                        web::delete()
-                            .to(logstream::delete)
-                            .authorize_for_stream(Action::DeleteStream),
-                    ),
+                    web::resource("")
+                        .route(
+                            web::delete()
+                                .to(logstream::delete)
+                                .authorize_for_stream(Action::DeleteStream),
+                        )
+                        .route(
+                            web::put()
+                                .to(logstream::put_stream)
+                                .authorize_for_stream(Action::CreateStream),
+                        ),
                 )
                 .service(
                     // GET "/logstream/{logstream}/info" ==> Get info for given log stream

@@ -25,12 +25,11 @@ use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{
     metadata::load_stream_metadata_on_server_start,
-    metrics::fetch_stats_from_storage,
-    option::Config,
+    option::{Config, Mode, CONFIG},
     storage::{
         object_storage::{parseable_json_path, stream_json_path},
-        ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
-        PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
+        SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
     },
 };
 use arrow_schema::Schema;
@@ -119,75 +118,74 @@ pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
 }
 
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
-    let path = stream_json_path(stream);
-
-    let stream_metadata = storage.get_object(&path).await.unwrap_or_default();
-    if stream_metadata.is_empty() {
-        return Ok(());
-    }
-    let mut stream_metadata: serde_json::Value =
-        serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
-
+    let mut arrow_schema: Schema = Schema::empty();
     let schema_path = RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
     let schema = storage.get_object(&schema_path).await?;
 
-    let mut arrow_schema: Schema = Schema::empty();
-
-    let version = stream_metadata
-        .as_object()
-        .and_then(|meta| meta.get("version"))
-        .and_then(|version| version.as_str());
-
-    match version {
-        Some("v1") => {
-            stream_metadata = stream_metadata_migration::v1_v4(stream_metadata);
-            storage
-                .put_object(&path, to_bytes(&stream_metadata))
-                .await?;
-            let schema = serde_json::from_slice(&schema).ok();
-            arrow_schema = schema_migration::v1_v4(schema)?;
-            storage
-                .put_object(&schema_path, to_bytes(&arrow_schema))
-                .await?;
+    let path = stream_json_path(stream);
+    let stream_metadata = storage.get_object(&path).await.unwrap_or_default();
+    let mut stream_meta_found = true;
+    if stream_metadata.is_empty() {
+        if CONFIG.parseable.mode != Mode::Ingest {
+            return Ok(());
         }
-        Some("v2") => {
-            stream_metadata = stream_metadata_migration::v2_v4(stream_metadata);
-            storage
-                .put_object(&path, to_bytes(&stream_metadata))
-                .await?;
+        stream_meta_found = false;
+    }
+    let mut stream_metadata_value = Value::Null;
+    if stream_meta_found {
+        stream_metadata_value =
+            serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
 
-            let schema = serde_json::from_slice(&schema)?;
-            arrow_schema = schema_migration::v2_v4(schema)?;
-            storage
-                .put_object(&schema_path, to_bytes(&arrow_schema))
-                .await?;
+        let version = stream_metadata_value
+            .as_object()
+            .and_then(|meta| meta.get("version"))
+            .and_then(|version| version.as_str());
+
+        match version {
+            Some("v1") => {
+                stream_metadata_value = stream_metadata_migration::v1_v4(stream_metadata_value);
+                storage
+                    .put_object(&path, to_bytes(&stream_metadata_value))
+                    .await?;
+                let schema = serde_json::from_slice(&schema).ok();
+                arrow_schema = schema_migration::v1_v4(schema)?;
+                storage
+                    .put_object(&schema_path, to_bytes(&arrow_schema))
+                    .await?;
+            }
+            Some("v2") => {
+                stream_metadata_value = stream_metadata_migration::v2_v4(stream_metadata_value);
+                storage
+                    .put_object(&path, to_bytes(&stream_metadata_value))
+                    .await?;
+
+                let schema = serde_json::from_slice(&schema)?;
+                arrow_schema = schema_migration::v2_v4(schema)?;
+                storage
+                    .put_object(&schema_path, to_bytes(&arrow_schema))
+                    .await?;
+            }
+            Some("v3") => {
+                stream_metadata_value = stream_metadata_migration::v3_v4(stream_metadata_value);
+                storage
+                    .put_object(&path, to_bytes(&stream_metadata_value))
+                    .await?;
+            }
+            _ => (),
         }
-        Some("v3") => {
-            stream_metadata = stream_metadata_migration::v3_v4(stream_metadata);
-            storage
-                .put_object(&path, to_bytes(&stream_metadata))
-                .await?;
-        }
-        _ => (),
     }
 
     if arrow_schema.fields().is_empty() {
         arrow_schema = serde_json::from_slice(&schema)?;
     }
 
-    //load stream metadata from storage
-    let meta: ObjectStoreFormat =
-        serde_json::from_slice(&serde_json::to_vec(&stream_metadata).unwrap()).unwrap();
     if let Err(err) =
-        load_stream_metadata_on_server_start(storage, stream, arrow_schema, &meta).await
+        load_stream_metadata_on_server_start(storage, stream, arrow_schema, stream_metadata_value)
+            .await
     {
         log::error!("could not populate local metadata. {:?}", err);
         return Err(err.into());
     }
-
-    //load stats from storage
-    let stats = meta.stats;
-    fetch_stats_from_storage(stream, stats).await;
 
     Ok(())
 }
