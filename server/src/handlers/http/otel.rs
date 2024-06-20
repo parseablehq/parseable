@@ -47,7 +47,7 @@ fn collect_json_from_any_value(
     if value.double_val.is_some() {
         value_json.insert(
             key.to_string(),
-            Value::String(value.double_val.as_ref().unwrap().to_owned()),
+            Value::Number(serde_json::Number::from_f64(value.double_val.unwrap()).unwrap()),
         );
     }
 
