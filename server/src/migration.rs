@@ -221,7 +221,7 @@ pub async fn put_remote_metadata(
 }
 
 pub fn put_staging_metadata(config: &Config, metadata: &serde_json::Value) -> anyhow::Result<()> {
-    let path = parseable_json_path().to_path(config.staging_dir());
+    let path = config.staging_dir().join(".parseable.json");
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)

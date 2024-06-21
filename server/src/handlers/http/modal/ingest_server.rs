@@ -31,6 +31,7 @@ use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::staging;
 use crate::storage::ObjectStorageError;
+use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::sync;
 
 use super::server::Server;
@@ -285,7 +286,7 @@ impl IngestServer {
     async fn validate_credentials(&self) -> anyhow::Result<()> {
         // check if your creds match with others
         let store = CONFIG.storage().get_object_store();
-        let base_path = RelativePathBuf::from("");
+        let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
         let ingestor_metadata = store
             .get_objects(
                 Some(&base_path),
