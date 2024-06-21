@@ -424,7 +424,7 @@ pub trait ObjectStorage: Sync + 'static {
 
         for stream in &streams {
             let cache_enabled = STREAM_INFO
-                .cache_enabled(stream)
+                .get_cache_enabled(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let time_partition = STREAM_INFO
                 .get_time_partition(stream)

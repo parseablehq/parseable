@@ -23,7 +23,6 @@ use crate::handlers::http::cluster::utils::{
 };
 use crate::handlers::http::ingest::{ingest_internal_stream, PostError};
 use crate::handlers::http::logstream::error::StreamError;
-use crate::handlers::{STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY};
 use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
@@ -96,19 +95,17 @@ pub async fn sync_cache_with_ingestors(
 }
 
 // forward the request to all ingestors to keep them in sync
-#[allow(dead_code)]
 pub async fn sync_streams_with_ingestors(
+    req: HttpRequest,
+    body: Bytes,
     stream_name: &str,
-    time_partition: &str,
-    static_schema: &str,
-    schema: Bytes,
 ) -> Result<(), StreamError> {
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
 
-    let mut errored = false;
+    let client = reqwest::Client::new();
     for ingestor in ingestor_infos.iter() {
         let url = format!(
             "{}{}/logstream/{}",
@@ -116,42 +113,29 @@ pub async fn sync_streams_with_ingestors(
             base_path_without_preceding_slash(),
             stream_name
         );
+        let res = client
+            .put(url)
+            .headers(req.headers().into())
+            .header(header::AUTHORIZATION, &ingestor.token)
+            .body(body.clone())
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to forward upsert stream request to ingestor: {}\n Error: {:?}",
+                    ingestor.domain_name,
+                    err
+                );
+                StreamError::Network(err)
+            })?;
 
-        match send_stream_sync_request(
-            &url,
-            ingestor.clone(),
-            time_partition,
-            static_schema,
-            schema.clone(),
-        )
-        .await
-        {
-            Ok(_) => continue,
-            Err(_) => {
-                errored = true;
-                break;
-            }
-        }
-    }
-
-    if errored {
-        for ingestor in ingestor_infos {
-            let url = format!(
-                "{}{}/logstream/{}",
+        if !res.status().is_success() {
+            log::error!(
+                "failed to forward upsert stream request to ingestor: {}\nResponse Returned: {:?}",
                 ingestor.domain_name,
-                base_path_without_preceding_slash(),
-                stream_name
+                res
             );
-
-            // delete the stream
-            send_stream_delete_request(&url, ingestor.clone()).await?;
         }
-
-        // this might be a bit too much
-        return Err(StreamError::Custom {
-            msg: "Failed to sync stream with ingestors".to_string(),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-        });
     }
 
     Ok(())
@@ -299,49 +283,6 @@ pub async fn fetch_stats_from_ingestors(
     );
 
     Ok(vec![qs])
-}
-
-#[allow(dead_code)]
-async fn send_stream_sync_request(
-    url: &str,
-    ingestor: IngestorMetadata,
-    time_partition: &str,
-    static_schema: &str,
-    schema: Bytes,
-) -> Result<(), StreamError> {
-    if !utils::check_liveness(&ingestor.domain_name).await {
-        return Ok(());
-    }
-
-    let client = reqwest::Client::new();
-    let res = client
-        .put(url)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(TIME_PARTITION_KEY, time_partition)
-        .header(STATIC_SCHEMA_FLAG, static_schema)
-        .header(header::AUTHORIZATION, ingestor.token)
-        .body(schema)
-        .send()
-        .await
-        .map_err(|err| {
-            log::error!(
-                "Fatal: failed to forward create stream request to ingestor: {}\n Error: {:?}",
-                ingestor.domain_name,
-                err
-            );
-            StreamError::Network(err)
-        })?;
-
-    if !res.status().is_success() {
-        log::error!(
-            "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
-            ingestor.domain_name,
-            res
-        );
-        return Err(StreamError::Network(res.error_for_status().unwrap_err()));
-    }
-
-    Ok(())
 }
 
 /// send a delete stream request to all ingestors

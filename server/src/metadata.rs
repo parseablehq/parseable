@@ -21,17 +21,24 @@ use arrow_schema::{Field, Fields, Schema};
 use chrono::{Local, NaiveDateTime};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use relative_path::RelativePathBuf;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 use crate::alerts::Alerts;
 use crate::metrics::{
-    EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
-    EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
+    fetch_stats_from_storage, EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE,
+    EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED,
+    LIFETIME_EVENTS_INGESTED_SIZE,
 };
+use crate::option::{Mode, CONFIG};
 use crate::storage::retention::Retention;
-use crate::storage::{LogStream, ObjectStorage, ObjectStoreFormat, StorageDir};
+use crate::storage::{
+    LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, STREAM_METADATA_FILE_NAME,
+    STREAM_ROOT_DIRECTORY,
+};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
 
@@ -92,13 +99,6 @@ impl StreamInfo {
         Ok(!self.schema(stream_name)?.fields.is_empty())
     }
 
-    pub fn cache_enabled(&self, stream_name: &str) -> Result<bool, MetadataError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        map.get(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.cache_enabled)
-    }
-
     pub fn get_first_event(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         map.get(stream_name)
@@ -145,15 +145,6 @@ impl StreamInfo {
         map.get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| metadata.retention.clone())
-    }
-
-    pub fn set_stream_cache(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
-        let mut map = self.write().expect(LOCK_EXPECT);
-        let stream = map
-            .get_mut(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?;
-        stream.cache_enabled = enable;
-        Ok(())
     }
 
     pub fn schema(&self, stream_name: &str) -> Result<Arc<Schema>, MetadataError> {
@@ -235,6 +226,22 @@ impl StreamInfo {
             .map(|metadata| {
                 metadata.custom_partition = Some(custom_partition);
             })
+    }
+
+    pub fn get_cache_enabled(&self, stream_name: &str) -> Result<bool, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.cache_enabled)
+    }
+
+    pub fn set_cache_enabled(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        let stream = map
+            .get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?;
+        stream.cache_enabled = enable;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -379,8 +386,55 @@ pub async fn load_stream_metadata_on_server_start(
     storage: &(impl ObjectStorage + ?Sized),
     stream_name: &str,
     schema: Schema,
-    meta: &ObjectStoreFormat,
+    stream_metadata_value: Value,
 ) -> Result<(), LoadError> {
+    let mut meta: ObjectStoreFormat = ObjectStoreFormat::default();
+    if !stream_metadata_value.is_null() {
+        meta =
+            serde_json::from_slice(&serde_json::to_vec(&stream_metadata_value).unwrap()).unwrap();
+    }
+
+    let mut retention = meta.retention.clone();
+    let mut time_partition = meta.time_partition.clone();
+    let mut time_partition_limit = meta.time_partition_limit.clone();
+    let mut custom_partition = meta.custom_partition.clone();
+    let mut cache_enabled = meta.cache_enabled;
+    let mut static_schema_flag = meta.static_schema_flag.clone();
+    if CONFIG.parseable.mode == Mode::Ingest {
+        storage.put_schema(stream_name, &schema).await?;
+        // get the base stream metadata
+        let bytes = storage
+            .get_object(&RelativePathBuf::from_iter([
+                stream_name,
+                STREAM_ROOT_DIRECTORY,
+                STREAM_METADATA_FILE_NAME,
+            ]))
+            .await?;
+        let querier_meta: ObjectStoreFormat = serde_json::from_slice(&bytes).unwrap();
+        retention.clone_from(&querier_meta.retention);
+        time_partition.clone_from(&querier_meta.time_partition);
+        time_partition_limit.clone_from(&querier_meta.time_partition_limit);
+        custom_partition.clone_from(&querier_meta.custom_partition);
+        cache_enabled.clone_from(&querier_meta.cache_enabled);
+        static_schema_flag.clone_from(&querier_meta.static_schema_flag);
+
+        meta = ObjectStoreFormat {
+            retention: retention.clone(),
+            cache_enabled,
+            time_partition: time_partition.clone(),
+            time_partition_limit: time_partition_limit.clone(),
+            custom_partition: custom_partition.clone(),
+            static_schema_flag: static_schema_flag.clone(),
+            ..meta.clone()
+        };
+        storage.put_stream_manifest(stream_name, &meta).await?;
+    }
+
+    //load stats from storage
+    let stats = meta.stats;
+    fetch_stats_from_storage(stream_name, stats).await;
+    load_daily_metrics(&meta, stream_name);
+
     let alerts = storage.get_alerts(stream_name).await?;
     let schema = update_schema_from_staging(stream_name, schema);
     let schema = HashMap::from_iter(
@@ -393,20 +447,20 @@ pub async fn load_stream_metadata_on_server_start(
     let metadata = LogStreamMetadata {
         schema,
         alerts,
-        retention: meta.retention.clone(),
-        cache_enabled: meta.cache_enabled,
+        retention,
+        cache_enabled,
         created_at: meta.created_at.clone(),
         first_event_at: meta.first_event_at.clone(),
         time_partition: meta.time_partition.clone(),
-        time_partition_limit: meta.time_partition_limit.clone(),
-        custom_partition: meta.custom_partition.clone(),
+        time_partition_limit,
+        custom_partition,
         static_schema_flag: meta.static_schema_flag.clone(),
     };
 
     let mut map = STREAM_INFO.write().expect(LOCK_EXPECT);
 
     map.insert(stream_name.to_string(), metadata);
-    load_daily_metrics(meta, stream_name);
+
     Ok(())
 }
 

@@ -19,7 +19,9 @@
 use self::error::{CreateStreamError, StreamError};
 use super::base_path_without_preceding_slash;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
-use super::cluster::{fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors};
+use super::cluster::{
+    fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors, sync_streams_with_ingestors,
+};
 use crate::alerts::Alerts;
 use crate::handlers::{
     CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
@@ -169,88 +171,13 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let (time_partition, time_partition_limit, custom_partition, static_schema_flag, update_stream) =
-        fetch_headers_from_put_stream_request(&req);
 
-    if metadata::STREAM_INFO.stream_exists(&stream_name) && update_stream != "true" {
-        // Error if the log stream already exists
-        return Err(StreamError::Custom {
-            msg: format!(
-                "Logstream {stream_name} already exists, please create a new log stream with unique name"
-            ),
-            status: StatusCode::BAD_REQUEST,
-        });
+    if CONFIG.parseable.mode == Mode::Query {
+        create_update_stream(&req, &body, &stream_name).await?;
+        sync_streams_with_ingestors(req, body, &stream_name).await?;
+    } else {
+        create_update_stream(&req, &body, &stream_name).await?;
     }
-
-    if !time_partition.is_empty() && update_stream == "true" {
-        return Err(StreamError::Custom {
-            msg: "Altering the time partition of an existing stream is restricted.".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-    let mut time_partition_in_days: &str = "";
-    if !time_partition_limit.is_empty() {
-        let time_partition_days = validate_time_partition_limit(&time_partition_limit);
-        if let Err(err) = time_partition_days {
-            return Err(StreamError::CreateStream(err));
-        } else {
-            time_partition_in_days = time_partition_days.unwrap();
-            if update_stream == "true" {
-                if let Err(err) = update_time_partition_limit_in_stream(
-                    stream_name.clone(),
-                    time_partition_in_days,
-                )
-                .await
-                {
-                    return Err(StreamError::CreateStream(err));
-                }
-                return Ok(("Log stream updated", StatusCode::OK));
-            }
-        }
-    }
-
-    if !static_schema_flag.is_empty() && update_stream == "true" {
-        return Err(StreamError::Custom {
-            msg: "Altering the schema of an existing stream is restricted.".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-
-    if !custom_partition.is_empty() {
-        if let Err(err) = validate_custom_partition(&custom_partition) {
-            return Err(StreamError::CreateStream(err));
-        }
-        if update_stream == "true" {
-            if let Err(err) =
-                update_custom_partition_in_stream(stream_name.clone(), &custom_partition).await
-            {
-                return Err(StreamError::CreateStream(err));
-            }
-            return Ok(("Log stream updated", StatusCode::OK));
-        }
-    }
-
-    let schema = validate_static_schema(
-        &body,
-        &stream_name,
-        &time_partition,
-        &custom_partition,
-        &static_schema_flag,
-    );
-    if let Err(err) = schema {
-        return Err(StreamError::CreateStream(err));
-    }
-
-    create_stream(
-        stream_name,
-        &time_partition,
-        time_partition_in_days,
-        &custom_partition,
-        &static_schema_flag,
-        schema.unwrap(),
-        false,
-    )
-    .await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
@@ -355,6 +282,96 @@ fn validate_static_schema(
     Ok(schema)
 }
 
+async fn create_update_stream(
+    req: &HttpRequest,
+    body: &Bytes,
+    stream_name: &str,
+) -> Result<(), StreamError> {
+    let (time_partition, time_partition_limit, custom_partition, static_schema_flag, update_stream) =
+        fetch_headers_from_put_stream_request(req);
+
+    if metadata::STREAM_INFO.stream_exists(stream_name) && update_stream != "true" {
+        // Error if the log stream already exists
+        return Err(StreamError::Custom {
+        msg: format!(
+            "Logstream {stream_name} already exists, please create a new log stream with unique name"
+        ),
+        status: StatusCode::BAD_REQUEST,
+    });
+    }
+
+    if !time_partition.is_empty() && update_stream == "true" {
+        return Err(StreamError::Custom {
+            msg: "Altering the time partition of an existing stream is restricted.".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+    let mut time_partition_in_days: &str = "";
+    if !time_partition_limit.is_empty() {
+        let time_partition_days = validate_time_partition_limit(&time_partition_limit);
+        if let Err(err) = time_partition_days {
+            return Err(StreamError::CreateStream(err));
+        } else {
+            time_partition_in_days = time_partition_days.unwrap();
+            if update_stream == "true" {
+                if let Err(err) = update_time_partition_limit_in_stream(
+                    stream_name.to_string(),
+                    time_partition_in_days,
+                )
+                .await
+                {
+                    return Err(StreamError::CreateStream(err));
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    if !static_schema_flag.is_empty() && update_stream == "true" {
+        return Err(StreamError::Custom {
+            msg: "Altering the schema of an existing stream is restricted.".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+
+    if !custom_partition.is_empty() {
+        if let Err(err) = validate_custom_partition(&custom_partition) {
+            return Err(StreamError::CreateStream(err));
+        }
+        if update_stream == "true" {
+            if let Err(err) =
+                update_custom_partition_in_stream(stream_name.to_string(), &custom_partition).await
+            {
+                return Err(StreamError::CreateStream(err));
+            }
+            return Ok(());
+        }
+    }
+
+    let schema = validate_static_schema(
+        body,
+        stream_name,
+        &time_partition,
+        &custom_partition,
+        &static_schema_flag,
+    );
+    if let Err(err) = schema {
+        return Err(StreamError::CreateStream(err));
+    }
+
+    create_stream(
+        stream_name.to_string(),
+        &time_partition,
+        time_partition_in_days,
+        &custom_partition,
+        &static_schema_flag,
+        schema.unwrap(),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
 pub async fn put_alert(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
@@ -471,7 +488,7 @@ pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, Strea
         _ => {}
     }
 
-    let cache_enabled = STREAM_INFO.cache_enabled(&stream_name)?;
+    let cache_enabled = STREAM_INFO.get_cache_enabled(&stream_name)?;
     Ok((web::Json(cache_enabled), StatusCode::OK))
 }
 
@@ -545,7 +562,7 @@ pub async fn put_enable_cache(
         .put_stream_manifest(&stream_name, &stream_metadata)
         .await?;
 
-    STREAM_INFO.set_stream_cache(&stream_name, enable_cache)?;
+    STREAM_INFO.set_cache_enabled(&stream_name, enable_cache)?;
     Ok((
         format!("Cache set to {enable_cache} for log stream {stream_name}"),
         StatusCode::OK,
