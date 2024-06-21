@@ -52,9 +52,9 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
-use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
+use serde_json::Value;
 
 /// ! have to use a guard before using it
 pub static INGESTOR_META: Lazy<IngestorMetadata> =
@@ -292,12 +292,16 @@ impl IngestServer {
                 Some(&base_path),
                 Box::new(|file_name| file_name.starts_with("ingestor")),
             )
-            .await?
-            .iter()
-            .map(|x| serde_json::from_slice::<IngestorMetadata>(x).unwrap_or_default())
-            .collect_vec();
-        if !ingestor_metadata.is_empty() {
-            let check = ingestor_metadata[0].token.clone();
+            .await?;
+
+        if !ingestor_metadata.len() > 0 {
+            let ingestor_metadata_value: Value =
+                serde_json::from_slice(&ingestor_metadata[0]).expect("ingestor.json is valid json");
+            let check = ingestor_metadata_value
+                .as_object()
+                .and_then(|meta| meta.get("token"))
+                .and_then(|token| token.as_str())
+                .unwrap();
 
             let token = base64::prelude::BASE64_STANDARD.encode(format!(
                 "{}:{}",
