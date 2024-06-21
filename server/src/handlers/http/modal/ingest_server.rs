@@ -293,8 +293,7 @@ impl IngestServer {
                 Box::new(|file_name| file_name.starts_with("ingestor")),
             )
             .await?;
-
-        if !ingestor_metadata.len() > 0 {
+        if ingestor_metadata.len() > 0 {
             let ingestor_metadata_value: Value =
                 serde_json::from_slice(&ingestor_metadata[0]).expect("ingestor.json is valid json");
             let check = ingestor_metadata_value
