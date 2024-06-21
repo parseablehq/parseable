@@ -388,16 +388,6 @@ pub async fn load_stream_metadata_on_server_start(
     schema: Schema,
     stream_metadata_value: Value,
 ) -> Result<(), LoadError> {
-    storage.put_schema(stream_name, &schema).await?;
-    let alerts = storage.get_alerts(stream_name).await?;
-    let schema = update_schema_from_staging(stream_name, schema);
-    let schema = HashMap::from_iter(
-        schema
-            .fields
-            .iter()
-            .map(|v| (v.name().to_owned(), v.clone())),
-    );
-
     let mut meta: ObjectStoreFormat = ObjectStoreFormat::default();
     if !stream_metadata_value.is_null() {
         meta =
@@ -411,6 +401,7 @@ pub async fn load_stream_metadata_on_server_start(
     let mut cache_enabled = meta.cache_enabled;
     let mut static_schema_flag = meta.static_schema_flag.clone();
     if CONFIG.parseable.mode == Mode::Ingest {
+        storage.put_schema(stream_name, &schema).await?;
         // get the base stream metadata
         let bytes = storage
             .get_object(&RelativePathBuf::from_iter([
@@ -443,6 +434,15 @@ pub async fn load_stream_metadata_on_server_start(
     let stats = meta.stats;
     fetch_stats_from_storage(stream_name, stats).await;
     load_daily_metrics(&meta, stream_name);
+
+    let alerts = storage.get_alerts(stream_name).await?;
+    let schema = update_schema_from_staging(stream_name, schema);
+    let schema = HashMap::from_iter(
+        schema
+            .fields
+            .iter()
+            .map(|v| (v.name().to_owned(), v.clone())),
+    );
 
     let metadata = LogStreamMetadata {
         schema,
