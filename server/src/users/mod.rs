@@ -21,7 +21,7 @@ pub mod filters;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
 pub struct TimeFilter {
     to: String,
     from: String,

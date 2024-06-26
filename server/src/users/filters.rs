@@ -26,14 +26,43 @@ use crate::{handlers::http::users::USERS_ROOT_DIR, metadata::LOCK_EXPECT, option
 
 pub static FILTERS: Lazy<Filters> = Lazy::new(Filters::default);
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Filter {
     version: String,
     stream_name: String,
     filter_name: String,
     filter_id: String,
-    query: String,
+    query: FilterQuery,
     time_filter: Option<TimeFilter>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct FilterQuery {
+    filter_type: String,
+    filter_query: Option<String>,
+    filter_builder: Option<FilterBuilder>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct FilterBuilder {
+    id: String,
+    combinator: String,
+    rules: Vec<FilterRules>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct FilterRules {
+    id: String,
+    combinator: String,
+    rules: Vec<Rules>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct Rules {
+    id: String,
+    field: String,
+    value: String,
+    operator: String,
 }
 
 impl Filter {
@@ -70,7 +99,7 @@ impl Filters {
 
     pub fn update(&self, filter: Filter) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-
+        s.retain(|f| f.filter_id() != filter.filter_id());
         s.push(filter);
     }
 
