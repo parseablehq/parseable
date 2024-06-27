@@ -168,11 +168,19 @@ impl StorageDir {
         let random_string =
             rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
         for arrow_file_path in arrow_files {
-            let key = Self::arrow_path_to_parquet(&arrow_file_path, random_string.clone());
-            grouped_arrow_file
-                .entry(key)
-                .or_default()
-                .push(arrow_file_path);
+            if arrow_file_path.metadata().unwrap().len() == 0 {
+                log::error!(
+                    "Invalid arrow file detected, removing it: {:?}",
+                    arrow_file_path
+                );
+                fs::remove_file(&arrow_file_path).unwrap();
+            } else {
+                let key = Self::arrow_path_to_parquet(&arrow_file_path, random_string.clone());
+                grouped_arrow_file
+                    .entry(key)
+                    .or_default()
+                    .push(arrow_file_path);
+            }
         }
         grouped_arrow_file
     }
