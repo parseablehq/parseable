@@ -17,7 +17,7 @@
  */
 
 use crate::{
-    handlers::{http::ingest::PostError, STREAM_NAME_HEADER_KEY},
+    handlers::http::ingest::PostError,
     option::CONFIG,
     storage::{object_storage::filter_path, ObjectStorageError},
     users::filters::{Filter, CURRENT_FILTER_VERSION, FILTERS},
@@ -33,15 +33,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
         .match_info()
         .get("user_id")
         .ok_or(FiltersError::Metadata("No User Id Provided"))?;
-    let stream_name = req
-        .headers()
-        .iter()
-        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-        .ok_or_else(|| FiltersError::Metadata("Stream Name Not Provided"))?
-        .1
-        .to_str()
-        .map_err(|_| FiltersError::Metadata("Non ASCII Stream Name Provided"))?;
-    let filters = FILTERS.list_filters_by_user_and_stream(user_id, stream_name);
+    let filters = FILTERS.list_filters_by_user(user_id);
 
     Ok((web::Json(filters), StatusCode::OK))
 }
@@ -59,7 +51,7 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     Err(FiltersError::Metadata("Filter Not Found"))
 }
 
-pub async fn post(body: Bytes) -> Result<HttpResponse, PostError> {
+pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
     let filter: Filter = serde_json::from_slice(&body)?;
     let filter_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 10);
     let user_id = &filter.user_id;
@@ -75,7 +67,7 @@ pub async fn post(body: Bytes) -> Result<HttpResponse, PostError> {
     let filter_bytes = serde_json::to_vec(&cloned_filter)?;
     store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok((web::Json(cloned_filter), StatusCode::OK))
 }
 
 pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
