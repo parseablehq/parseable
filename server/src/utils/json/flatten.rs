@@ -122,7 +122,9 @@ pub fn validate_custom_partition(
                     .get(custom_partition_field.trim())
                     .unwrap()
                     .to_string();
-                if custom_partition_value.is_empty() {
+                if custom_partition_value.is_empty()
+                    || custom_partition_value.eq_ignore_ascii_case("null")
+                {
                     return Err(anyhow!(format!(
                         "ingestion failed as field {} is empty",
                         custom_partition_field
@@ -155,7 +157,7 @@ pub fn validate_time_partition(
             30
         };
         let body_timestamp = value.get(&time_partition.clone().unwrap().to_string());
-        if body_timestamp.is_some() {
+        if body_timestamp.is_some() && body_timestamp.unwrap().to_owned().as_str().is_some() {
             if body_timestamp
                 .unwrap()
                 .to_owned()
