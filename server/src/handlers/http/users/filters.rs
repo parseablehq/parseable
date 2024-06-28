@@ -20,19 +20,19 @@ use crate::{
     handlers::{http::ingest::PostError, STREAM_NAME_HEADER_KEY},
     option::CONFIG,
     storage::{object_storage::filter_path, ObjectStorageError},
-    users::filters::{Filter, FILTERS},
+    users::filters::{Filter, CURRENT_FILTER_VERSION, FILTERS},
 };
 use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
 use http::StatusCode;
-use serde_json::{Error as SerdeError, Value as JsonValue};
+use rand::distributions::DistString;
+use serde_json::Error as SerdeError;
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     let user_id = req
         .match_info()
         .get("user_id")
         .ok_or(FiltersError::Metadata("No User Id Provided"))?;
-
     let stream_name = req
         .headers()
         .iter()
@@ -41,116 +41,84 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
         .1
         .to_str()
         .map_err(|_| FiltersError::Metadata("Non ASCII Stream Name Provided"))?;
+    let filters = FILTERS.list_filters_by_user_and_stream(user_id, stream_name);
 
-    // .users/user_id/filters/stream_name/filter_id
-    let path = filter_path(user_id, stream_name, "");
-
-    let store = CONFIG.storage().get_object_store();
-    let filters = store
-        .get_objects(
-            Some(&path),
-            Box::new(|file_name: String| file_name.ends_with("json")),
-        )
-        .await?;
-
-    let mut filt = vec![];
-    for filter in filters {
-        filt.push(serde_json::from_slice::<JsonValue>(&filter)?)
-    }
-
-    Ok((web::Json(filt), StatusCode::OK))
+    Ok((web::Json(filters), StatusCode::OK))
 }
 
 pub async fn get(req: HttpRequest) -> Result<impl Responder, FiltersError> {
-    let user_id = req
-        .match_info()
-        .get("user_id")
-        .ok_or(FiltersError::Metadata("No User Id Provided"))?;
-
-    let filt_id = req
+    let filter_id = req
         .match_info()
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
 
-    let stream_name = req
-        .headers()
-        .iter()
-        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-        .ok_or_else(|| FiltersError::Metadata("Stream Name Not Provided"))?
-        .1
-        .to_str()
-        .map_err(|_| FiltersError::Metadata("Non ASCII Stream Name Provided"))?;
-
-    if let Some(filter) = FILTERS.find(filt_id) {
+    if let Some(filter) = FILTERS.get_filter(filter_id) {
         return Ok((web::Json(filter), StatusCode::OK));
     }
 
-    // if it is not in memory go to s3
-    let path = filter_path(user_id, stream_name, &format!("{}.json", filt_id));
-    let resource = CONFIG
-        .storage()
-        .get_object_store()
-        .get_object(&path)
-        .await?;
-
-    let resource = serde_json::from_slice::<Filter>(&resource)?;
-
-    Ok((web::Json(resource), StatusCode::OK))
+    Err(FiltersError::Metadata("Filter Not Found"))
 }
 
-pub async fn post(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
-    let user_id = req
-        .match_info()
-        .get("user_id")
-        .ok_or(FiltersError::Metadata("No User Id Provided"))?;
+pub async fn post(body: Bytes) -> Result<HttpResponse, PostError> {
+    let filter: Filter = serde_json::from_slice(&body)?;
+    let filter_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 10);
+    let user_id = &filter.user_id;
+    let stream_name = &filter.stream_name;
+    let mut cloned_filter = filter.clone();
+    cloned_filter.filter_id = Some(filter_id.clone());
+    cloned_filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+    FILTERS.update(&cloned_filter);
 
-    let filt_id = req
+    let path = filter_path(user_id, stream_name, &format!("{}.json", filter_id));
+
+    let store = CONFIG.storage().get_object_store();
+    let filter_bytes = serde_json::to_vec(&cloned_filter)?;
+    store.put_object(&path, Bytes::from(filter_bytes)).await?;
+
+    Ok(HttpResponse::Ok().finish())
+}
+
+pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+    let filter_id = req
         .match_info()
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
+    let filter = FILTERS
+        .get_filter(filter_id)
+        .ok_or(FiltersError::Metadata("Filter Not Found"))?;
+    let user_id = &filter.user_id;
+    let stream_name = &filter.stream_name;
 
-    let stream_name = req
-        .headers()
-        .iter()
-        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-        .ok_or_else(|| FiltersError::Metadata("Stream Name Not Provided"))?
-        .1
-        .to_str()
-        .map_err(|_| FiltersError::Metadata("Non ASCII Stream Name Provided"))?;
+    let mut cloned_filter: Filter = serde_json::from_slice(&body)?;
+    cloned_filter.filter_id = Some(filter_id.to_string());
+    cloned_filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+    FILTERS.update(&cloned_filter);
 
-    let path = filter_path(user_id, stream_name, &format!("{}.json", filt_id));
-    let filter: Filter = serde_json::from_slice(&body)?;
-    FILTERS.update(filter);
+    let path = filter_path(user_id, stream_name, &format!("{}.json", filter_id));
 
     let store = CONFIG.storage().get_object_store();
-    store.put_object(&path, body).await?;
+    let filter_bytes = serde_json::to_vec(&cloned_filter)?;
+    store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
 
 pub async fn delete(req: HttpRequest) -> Result<HttpResponse, PostError> {
-    let user_id = req
-        .match_info()
-        .get("user_id")
-        .ok_or(FiltersError::Metadata("No User Id Provided"))?;
-
-    let filt_id = req
+    let filter_id = req
         .match_info()
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
+    let filter = FILTERS
+        .get_filter(filter_id)
+        .ok_or(FiltersError::Metadata("Filter Not Found"))?;
+    let stream_name = &filter.stream_name;
+    let user_id = &filter.user_id;
 
-    let stream_name = req
-        .headers()
-        .iter()
-        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-        .ok_or_else(|| FiltersError::Metadata("Stream Name Not Provided"))?
-        .1
-        .to_str()
-        .map_err(|_| FiltersError::Metadata("Non ASCII Stream Name Provided"))?;
-
-    let path = filter_path(user_id, stream_name, &format!("{}.json", filt_id));
+    let path = filter_path(user_id, stream_name, &format!("{}.json", filter_id));
     let store = CONFIG.storage().get_object_store();
     store.delete_object(&path).await?;
+
+    FILTERS.delete_filter(filter_id);
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -161,7 +129,7 @@ pub enum FiltersError {
     ObjectStorage(#[from] ObjectStorageError),
     #[error("Serde Error: {0}")]
     Serde(#[from] SerdeError),
-    #[error("Cannot perform this operation: {0}")]
+    #[error("Operation cannot be performed: {0}")]
     Metadata(&'static str),
 }
 
