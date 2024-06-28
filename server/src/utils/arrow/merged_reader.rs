@@ -21,7 +21,12 @@ use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::Schema;
 use itertools::kmerge_by;
-use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc};
+use std::{
+    fs::{self, File},
+    io::BufReader,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use super::{
     adapt_batch,
@@ -39,8 +44,15 @@ impl MergedRecordReader {
         let mut readers = Vec::with_capacity(files.len());
 
         for file in files {
-            let reader = StreamReader::try_new(File::open(file).unwrap(), None).map_err(|_| ())?;
-            readers.push(reader);
+            //remove empty files before reading
+            if file.metadata().unwrap().len() == 0 {
+                log::error!("Invalid file detected, removing it: {:?}", file);
+                fs::remove_file(file).unwrap();
+            } else {
+                let reader =
+                    StreamReader::try_new(File::open(file).unwrap(), None).map_err(|_| ())?;
+                readers.push(reader);
+            }
         }
 
         Ok(Self { readers })
