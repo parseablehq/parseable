@@ -17,58 +17,52 @@
  */
 
 use once_cell::sync::Lazy;
-use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
 
 use super::TimeFilter;
-use crate::{handlers::http::users::USERS_ROOT_DIR, metadata::LOCK_EXPECT, option::CONFIG};
+use crate::{metadata::LOCK_EXPECT, option::CONFIG};
 
 pub static FILTERS: Lazy<Filters> = Lazy::new(Filters::default);
-
+pub const CURRENT_FILTER_VERSION: &str = "v1";
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Filter {
-    version: String,
-    stream_name: String,
-    filter_name: String,
-    filter_id: String,
-    query: FilterQuery,
-    time_filter: Option<TimeFilter>,
+    pub version: Option<String>,
+    pub user_id: String,
+    pub stream_name: String,
+    pub filter_name: String,
+    pub filter_id: Option<String>,
+    pub query: FilterQuery,
+    pub time_filter: Option<TimeFilter>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct FilterQuery {
-    filter_type: String,
-    filter_query: Option<String>,
-    filter_builder: Option<FilterBuilder>,
+    pub filter_type: String,
+    pub filter_query: Option<String>,
+    pub filter_builder: Option<FilterBuilder>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct FilterBuilder {
-    id: String,
-    combinator: String,
-    rules: Vec<FilterRules>,
+    pub id: String,
+    pub combinator: String,
+    pub rules: Vec<FilterRules>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct FilterRules {
-    id: String,
-    combinator: String,
-    rules: Vec<Rules>,
+    pub id: String,
+    pub combinator: String,
+    pub rules: Vec<Rules>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Rules {
-    id: String,
-    field: String,
-    value: String,
-    operator: String,
-}
-
-impl Filter {
-    pub fn filter_id(&self) -> &str {
-        &self.filter_id
-    }
+    pub id: String,
+    pub field: String,
+    pub value: String,
+    pub operator: String,
 }
 
 #[derive(Debug, Default)]
@@ -77,16 +71,11 @@ pub struct Filters(RwLock<Vec<Filter>>);
 impl Filters {
     pub async fn load(&self) -> anyhow::Result<()> {
         let mut this = vec![];
-        let path = RelativePathBuf::from(USERS_ROOT_DIR);
         let store = CONFIG.storage().get_object_store();
+        let filters = store.get_all_saved_filters().await.unwrap_or_default();
 
-        let objs = store
-            .get_objects(Some(&path), Box::new(|path| path.ends_with(".json")))
-            .await
-            .unwrap_or_default();
-
-        for obj in objs {
-            if let Ok(filter) = serde_json::from_slice::<Filter>(&obj) {
+        for filter in filters {
+            if let Ok(filter) = serde_json::from_slice::<Filter>(&filter) {
                 this.push(filter);
             }
         }
@@ -97,18 +86,33 @@ impl Filters {
         Ok(())
     }
 
-    pub fn update(&self, filter: Filter) {
+    pub fn update(&self, filter: &Filter) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|f| f.filter_id() != filter.filter_id());
-        s.push(filter);
+        s.retain(|f| f.filter_id != filter.filter_id);
+        s.push(filter.clone());
     }
 
-    pub fn find(&self, filter_id: &str) -> Option<Filter> {
+    pub fn delete_filter(&self, filter_id: &str) {
+        let mut s = self.0.write().expect(LOCK_EXPECT);
+        s.retain(|f| f.filter_id != Some(filter_id.to_string()));
+    }
+
+    pub fn get_filter(&self, filter_id: &str) -> Option<Filter> {
         self.0
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .find(|filter| filter.filter_id() == filter_id)
+            .find(|f| f.filter_id == Some(filter_id.to_string()))
             .cloned()
+    }
+
+    pub fn list_filters_by_user_and_stream(&self, user_id: &str, stream_name: &str) -> Vec<Filter> {
+        self.0
+            .read()
+            .expect(LOCK_EXPECT)
+            .iter()
+            .filter(|f| f.user_id == user_id && f.stream_name == stream_name)
+            .cloned()
+            .collect()
     }
 }

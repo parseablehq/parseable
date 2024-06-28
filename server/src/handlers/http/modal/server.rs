@@ -190,29 +190,33 @@ impl Server {
 
     // get the filters web scope
     pub fn get_filters_webscope() -> Scope {
-        web::scope("/filters").service(
-            web::scope("/{user_id}")
-                .service(
-                    web::resource("")
-                        .route(web::get().to(filters::list).authorize(Action::ListFilter)),
-                )
-                .service(
-                    web::scope("/{filter_id}").service(
-                        web::resource("")
-                            .route(web::get().to(filters::get).authorize(Action::GetFilter))
-                            .route(
-                                web::post()
-                                    .to(filters::post)
-                                    .authorize(Action::CreateFilter),
-                            )
-                            .route(
-                                web::delete()
-                                    .to(filters::delete)
-                                    .authorize(Action::DeleteFilter),
-                            ),
-                    ),
+        web::scope("/filters")
+            .service(
+                web::resource("").route(
+                    web::post()
+                        .to(filters::post)
+                        .authorize(Action::CreateFilter),
                 ),
-        )
+            )
+            .service(
+                web::scope("/filter").service(
+                    web::resource("/{filter_id}")
+                        .route(web::get().to(filters::get).authorize(Action::GetFilter))
+                        .route(
+                            web::delete()
+                                .to(filters::delete)
+                                .authorize(Action::DeleteFilter),
+                        )
+                        .route(
+                            web::put()
+                                .to(filters::update)
+                                .authorize(Action::CreateFilter),
+                        ),
+                ),
+            )
+            .service(web::scope("/{user_id}").service(
+                web::resource("").route(web::get().to(filters::list).authorize(Action::ListFilter)),
+            ))
     }
 
     // get the query factory
