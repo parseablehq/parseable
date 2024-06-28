@@ -106,12 +106,12 @@ impl Filters {
             .cloned()
     }
 
-    pub fn list_filters_by_user_and_stream(&self, user_id: &str, stream_name: &str) -> Vec<Filter> {
+    pub fn list_filters_by_user(&self, user_id: &str) -> Vec<Filter> {
         self.0
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|f| f.user_id == user_id && f.stream_name == stream_name)
+            .filter(|f| f.user_id == user_id)
             .cloned()
             .collect()
     }
