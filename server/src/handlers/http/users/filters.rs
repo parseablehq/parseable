@@ -59,7 +59,7 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     Err(FiltersError::Metadata("Filter Not Found"))
 }
 
-pub async fn post(body: Bytes) -> Result<HttpResponse, PostError> {
+pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
     let filter: Filter = serde_json::from_slice(&body)?;
     let filter_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 10);
     let user_id = &filter.user_id;
@@ -75,7 +75,7 @@ pub async fn post(body: Bytes) -> Result<HttpResponse, PostError> {
     let filter_bytes = serde_json::to_vec(&cloned_filter)?;
     store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok((web::Json(cloned_filter), StatusCode::OK))
 }
 
 pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
