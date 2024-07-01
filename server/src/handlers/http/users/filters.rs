@@ -24,8 +24,8 @@ use crate::{
 };
 use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
+use chrono::Utc;
 use http::StatusCode;
-use rand::distributions::DistString;
 use serde_json::Error as SerdeError;
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
@@ -48,26 +48,32 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, FiltersError> {
         return Ok((web::Json(filter), StatusCode::OK));
     }
 
-    Err(FiltersError::Metadata("Filter Not Found"))
+    Err(FiltersError::Metadata("Filter does not exist"))
 }
 
 pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
-    let filter: Filter = serde_json::from_slice(&body)?;
-    let filter_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 10);
-    let user_id = &filter.user_id;
-    let stream_name = &filter.stream_name;
-    let mut cloned_filter = filter.clone();
-    cloned_filter.filter_id = Some(filter_id.clone());
-    cloned_filter.version = Some(CURRENT_FILTER_VERSION.to_string());
-    FILTERS.update(&cloned_filter);
+    let mut filter: Filter = serde_json::from_slice(&body)?;
+    let filter_id = format!(
+        "{}.{}.{}",
+        &filter.user_id,
+        &filter.stream_name,
+        Utc::now().timestamp_millis()
+    );
+    filter.filter_id = Some(filter_id.clone());
+    filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+    FILTERS.update(&filter);
 
-    let path = filter_path(user_id, stream_name, &format!("{}.json", filter_id));
+    let path = filter_path(
+        &filter.user_id,
+        &filter.stream_name,
+        &format!("{}.json", filter_id),
+    );
 
     let store = CONFIG.storage().get_object_store();
-    let filter_bytes = serde_json::to_vec(&cloned_filter)?;
+    let filter_bytes = serde_json::to_vec(&filter)?;
     store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
-    Ok((web::Json(cloned_filter), StatusCode::OK))
+    Ok((web::Json(filter), StatusCode::OK))
 }
 
 pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
@@ -75,21 +81,24 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         .match_info()
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
-    let filter = FILTERS
-        .get_filter(filter_id)
-        .ok_or(FiltersError::Metadata("Filter Not Found"))?;
-    let user_id = &filter.user_id;
-    let stream_name = &filter.stream_name;
+    if FILTERS.get_filter(filter_id).is_none() {
+        return Err(PostError::FiltersError(FiltersError::Metadata(
+            "Filter does not exist",
+        )));
+    }
+    let mut filter: Filter = serde_json::from_slice(&body)?;
+    filter.filter_id = Some(filter_id.to_string());
+    filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+    FILTERS.update(&filter);
 
-    let mut cloned_filter: Filter = serde_json::from_slice(&body)?;
-    cloned_filter.filter_id = Some(filter_id.to_string());
-    cloned_filter.version = Some(CURRENT_FILTER_VERSION.to_string());
-    FILTERS.update(&cloned_filter);
-
-    let path = filter_path(user_id, stream_name, &format!("{}.json", filter_id));
+    let path = filter_path(
+        &filter.user_id,
+        &filter.stream_name,
+        &format!("{}.json", filter_id),
+    );
 
     let store = CONFIG.storage().get_object_store();
-    let filter_bytes = serde_json::to_vec(&cloned_filter)?;
+    let filter_bytes = serde_json::to_vec(&filter)?;
     store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -102,11 +111,13 @@ pub async fn delete(req: HttpRequest) -> Result<HttpResponse, PostError> {
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
     let filter = FILTERS
         .get_filter(filter_id)
-        .ok_or(FiltersError::Metadata("Filter Not Found"))?;
-    let stream_name = &filter.stream_name;
-    let user_id = &filter.user_id;
+        .ok_or(FiltersError::Metadata("Filter does not exist"))?;
 
-    let path = filter_path(user_id, stream_name, &format!("{}.json", filter_id));
+    let path = filter_path(
+        &filter.user_id,
+        &filter.stream_name,
+        &format!("{}.json", filter_id),
+    );
     let store = CONFIG.storage().get_object_store();
     store.delete_object(&path).await?;
 
