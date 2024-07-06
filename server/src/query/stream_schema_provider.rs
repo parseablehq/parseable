@@ -230,6 +230,8 @@ fn partitioned_files(
             columns,
             ..
         } = file;
+        // temporary (and cheap) fix for https://github.com/parseablehq/parseable/issues/824
+        let file_path = file_path.replace("\\","/");
         partitioned_files[index].push(PartitionedFile::new(file_path, file.file_size));
         columns.into_iter().for_each(|col| {
             column_statistics
