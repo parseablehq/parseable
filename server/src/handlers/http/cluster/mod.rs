@@ -472,7 +472,9 @@ pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostErr
     let domain_name = to_url_string(domain_name);
 
     if check_liveness(&domain_name).await {
-        return Err(PostError::Invalid(anyhow::anyhow!("Node Online")));
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "The ingestor is currently live and cannot be removed"
+        )));
     }
     let object_store = CONFIG.storage().get_object_store();
 
@@ -500,13 +502,13 @@ pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostErr
         .await
     {
         Ok(_) => {
-            format!("Node {} Removed Successfully", domain_name)
+            format!("Ingestor {} removed successfully", domain_name)
         }
         Err(err) => {
             if matches!(err, ObjectStorageError::IoError(_)) {
-                format!("Node {} Not Found", domain_name)
+                format!("Ingestor {} is not found", domain_name)
             } else {
-                format!("Error Removing Node {}\n Reason: {}", domain_name, err)
+                format!("Error removing ingestor {}\n Reason: {}", domain_name, err)
             }
         }
     };
