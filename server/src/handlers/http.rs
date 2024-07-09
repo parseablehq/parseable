@@ -54,7 +54,7 @@ pub fn metrics_path() -> String {
 }
 
 pub(crate) fn cross_origin_config() -> Cors {
-    if cfg!(feature = "debug") {
+    if !CONFIG.parseable.cors || cfg!(feature = "debug") {
         Cors::permissive().block_on_origin_mismatch(false)
     } else {
         Cors::default().block_on_origin_mismatch(false)
