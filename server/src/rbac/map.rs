@@ -133,11 +133,10 @@ pub enum SessionKey {
 }
 
 impl SessionKey {
-    pub fn is_admin(&self) -> bool {
-        if let SessionKey::BasicAuth{username, password} = self {
-            return username.eq(&CONFIG.parseable.username) && password.eq(&CONFIG.parseable.password)
-        }
-        return false
+    /// Checks if the session key belongs to an admin user.
+    pub fn is_admin_session(&self) -> bool {
+        matches!(self, SessionKey::BasicAuth { username, password }
+            if username == &CONFIG.parseable.username && password == &CONFIG.parseable.password)
     }
 }
 

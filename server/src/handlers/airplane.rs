@@ -234,7 +234,9 @@ impl FlightService for AirServiceImpl {
                 None
             };
 
-        let permissions = if key.is_admin() {
+        // Override permissions if the session belongs to the admin.
+        // Fixes: https://github.com/parseablehq/parseable/issues/822
+        let permissions = if key.is_admin_session() {
             RoleBuilder::from(&DefaultPrivilege::Admin).build()
         } else {
             Users.get_permissions(&key)
