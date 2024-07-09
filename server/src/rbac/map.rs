@@ -132,6 +132,15 @@ pub enum SessionKey {
     SessionId(ulid::Ulid),
 }
 
+impl SessionKey {
+    pub fn is_admin(&self) -> bool {
+        if let SessionKey::BasicAuth{username, password} = self {
+            return username.eq(&CONFIG.parseable.username) && password.eq(&CONFIG.parseable.password)
+        }
+        return false
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Sessions {
     // map session key to user and their permission
