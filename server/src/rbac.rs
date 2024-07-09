@@ -105,11 +105,7 @@ impl Users {
     }
 
     pub fn remove_session(&self, session: &SessionKey) -> Option<String> {
-        if !session.is_admin() {
-            mut_sessions().remove_session(session)
-        } else {
-            None
-        }
+        mut_sessions().remove_session(session)
     }
 
     pub fn new_session(&self, user: &User, session: SessionKey) {

@@ -60,6 +60,8 @@ use tonic::{Request, Response, Status, Streaming};
 
 use crate::handlers::livetail::extract_session_key;
 use crate::metadata::STREAM_INFO;
+use crate::rbac::role::model::DefaultPrivilege;
+use crate::rbac::role::RoleBuilder;
 use crate::rbac::Users;
 
 use super::http::query::get_results_from_cache;
@@ -231,7 +233,12 @@ impl FlightService for AirServiceImpl {
             } else {
                 None
             };
-        let permissions = Users.get_permissions(&key);
+
+        let permissions = if key.is_admin() {
+            RoleBuilder::from(&DefaultPrivilege::Admin).build()
+        } else {
+            Users.get_permissions(&key)
+        };
 
         authorize_and_set_filter_tags(&mut query, permissions, &stream_name).map_err(|_| {
             Status::permission_denied("User Does not have permission to access this")
