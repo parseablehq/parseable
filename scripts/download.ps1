@@ -7,7 +7,10 @@
 #  of them when querying for the architecture.
 #>
 [System.String[]]$SUPPORTED_ARCH = @("x86_64", "arm64", "amd64")
-[System.String]$DOWNLOAD_BASE_URL="cdn.parseable.com/"
+
+# Progress bar in powershell slows down downloads a lot, disable it
+# https://stackoverflow.com/questions/28682642/powershell-why-is-using-invoke-webrequest-much-slower-than-a-browser-download
+$ProgressPreference = 'SilentlyContinue'
 
 #  util functions
 function Get-Env {
@@ -105,14 +108,29 @@ function Install-Parseable {
     Write-Output "Fetching latest release..."
     # Get the latest release information using GitHub API
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/parseablehq/parseable/releases/latest"
-    # Loop through binaries in the release and find the appropriate one
-    $download_url = $DOWNLOAD_BASE_URL + $CPU_ARCH + "-" + $OS + "." + $release.tag_name
-
-    mkdir -Force $INSTALLDIR
+    # Write-Host ($release | Format-List | Out-String) # Write-Host formats the object while printing
+    
+    $installation_found_flag = 0
+    $required_installation = "Parseable_OSS_" + $CPU_ARCH + "-" + "pc" + "-" + $OS + "-msvc.exe"
+    # Loop through assets and select one based on `name`
+    foreach($asset in $release.assets) {
+        if ($asset.name -contains $required_installation) {
+            $installation_found_flag = 1
+            $download_url = $asset.browser_download_url
+            # Create installdir since we were able to find the required installation
+            mkdir -Force $INSTALLDIR
+        }
+    }
 
     Write-Output "Downloading Parseable version $release_tag, for OS: $OS, CPU architecture: $CPU_ARCH`n`n"
     # Download the binary using Invoke-WebRequest
-    Invoke-WebRequest -Uri $download_url -OutFile $BIN
+    if ($installation_found_flag) {
+        Invoke-WebRequest -Uri $download_url -OutFile $BIN
+    } else {
+        Write-Output "Unable to find correct installation. Exiting"
+        exit
+    }
+    
 
     Write-Output "Adding Parseable to PATH..."
     # Only try adding to path if there isn't already a bun.exe in the path
