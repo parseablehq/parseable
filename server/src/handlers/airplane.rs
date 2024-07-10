@@ -61,8 +61,6 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::handlers::livetail::extract_session_key;
 use crate::metadata::STREAM_INFO;
 use crate::rbac;
-use crate::rbac::role::model::DefaultPrivilege;
-use crate::rbac::role::RoleBuilder;
 use crate::rbac::Users;
 
 use super::http::query::get_results_from_cache;
