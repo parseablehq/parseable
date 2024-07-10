@@ -98,6 +98,9 @@ pub struct Cli {
 
     /// Size for local cache
     pub query_cache_size: u64,
+
+    /// CORS behaviour
+    pub cors: bool,
 }
 
 impl Cli {
@@ -130,6 +133,7 @@ impl Cli {
     pub const DEFAULT_USERNAME: &'static str = "admin";
     pub const DEFAULT_PASSWORD: &'static str = "admin";
     pub const FLIGHT_PORT: &'static str = "flight-port";
+    pub const CORS: &'static str = "cors";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -317,6 +321,16 @@ impl Cli {
                     .help("Port for Arrow Flight Querying Engine"),
             )
             .arg(
+                Arg::new(Self::CORS)
+                .long(Self::CORS)
+                .env("P_CORS")
+                .value_name("BOOL")
+                .required(false)
+                .default_value("true")
+                .value_parser(value_parser!(bool))
+                .help("Enable/Disable CORS, default disabled"),
+            )
+            .arg(
                 Arg::new(Self::LIVETAIL_CAPACITY)
                     .long(Self::LIVETAIL_CAPACITY)
                     .env("P_LIVETAIL_CAPACITY")
@@ -451,6 +465,10 @@ impl FromArgMatches for Cli {
             .get_one::<u16>(Self::FLIGHT_PORT)
             .cloned()
             .expect("default for flight port");
+        self.cors = m
+            .get_one::<bool>(Self::CORS)
+            .cloned()
+            .expect("default for CORS");
         self.livetail_channel_capacity = m
             .get_one::<usize>(Self::LIVETAIL_CAPACITY)
             .cloned()
