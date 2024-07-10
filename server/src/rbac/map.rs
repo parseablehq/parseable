@@ -132,14 +132,6 @@ pub enum SessionKey {
     SessionId(ulid::Ulid),
 }
 
-impl SessionKey {
-    /// Checks if the session key belongs to an admin user.
-    pub fn is_admin_session(&self) -> bool {
-        matches!(self, SessionKey::BasicAuth { username, password }
-            if username == &CONFIG.parseable.username && password == &CONFIG.parseable.password)
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct Sessions {
     // map session key to user and their permission
