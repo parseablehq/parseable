@@ -60,6 +60,7 @@ use tonic::{Request, Response, Status, Streaming};
 
 use crate::handlers::livetail::extract_session_key;
 use crate::metadata::STREAM_INFO;
+use crate::rbac;
 use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::role::RoleBuilder;
 use crate::rbac::Users;
@@ -234,13 +235,20 @@ impl FlightService for AirServiceImpl {
                 None
             };
 
-        // Override permissions if the session belongs to the admin.
-        // Fixes: https://github.com/parseablehq/parseable/issues/822
-        let permissions = if key.is_admin_session() {
-            RoleBuilder::from(&DefaultPrivilege::Admin).build()
-        } else {
-            Users.get_permissions(&key)
-        };
+        // try authorize
+        match Users.authorize(key.clone(), rbac::role::Action::Query, None, None) {
+            rbac::Response::Authorized => (),
+            rbac::Response::UnAuthorized => {
+                return Err(Status::permission_denied(
+                    "user is not authenticated to access this resource",
+                ))
+            }
+            rbac::Response::ReloadRequired => {
+                return Err(Status::unauthenticated("reload required"))
+            }
+        }
+
+        let permissions = Users.get_permissions(&key);
 
         authorize_and_set_filter_tags(&mut query, permissions, &stream_name).map_err(|_| {
             Status::permission_denied("User Does not have permission to access this")
