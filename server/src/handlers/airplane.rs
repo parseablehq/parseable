@@ -60,6 +60,7 @@ use tonic::{Request, Response, Status, Streaming};
 
 use crate::handlers::livetail::extract_session_key;
 use crate::metadata::STREAM_INFO;
+use crate::rbac;
 use crate::rbac::Users;
 
 use super::http::query::get_results_from_cache;
@@ -231,6 +232,20 @@ impl FlightService for AirServiceImpl {
             } else {
                 None
             };
+
+        // try authorize
+        match Users.authorize(key.clone(), rbac::role::Action::Query, None, None) {
+            rbac::Response::Authorized => (),
+            rbac::Response::UnAuthorized => {
+                return Err(Status::permission_denied(
+                    "user is not authenticated to access this resource",
+                ))
+            }
+            rbac::Response::ReloadRequired => {
+                return Err(Status::unauthenticated("reload required"))
+            }
+        }
+
         let permissions = Users.get_permissions(&key);
 
         authorize_and_set_filter_tags(&mut query, permissions, &stream_name).map_err(|_| {
