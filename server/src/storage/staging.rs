@@ -280,7 +280,7 @@ pub fn convert_disk_files_to_parquet(
         }
 
         writer.close()?;
-        if parquet_file.metadata().unwrap().len() == 0 {
+        if parquet_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
             log::error!(
                 "Invalid parquet file {:?} detected for stream {}, removing it",
                 &parquet_path,
