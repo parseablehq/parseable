@@ -94,6 +94,8 @@ pub async fn about() -> Json<serde_json::Value> {
         )
     };
 
+    let send_analytics = CONFIG.parseable.send_analytics;
+
     Json(json!({
         "version": current_version,
         "uiVersion": ui_version,
@@ -112,6 +114,7 @@ pub async fn about() -> Json<serde_json::Value> {
         "store": {
             "type": CONFIG.get_storage_mode_string(),
             "path": store_endpoint
-        }
+        },
+        "sendAnalytics": send_analytics
     }))
 }
