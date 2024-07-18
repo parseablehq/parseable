@@ -131,24 +131,27 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let mut vec_otel_json: Vec<BTreeMap<String, Value>> = Vec::new();
     let body_str = std::str::from_utf8(body).unwrap();
     let message: LogsData = serde_json::from_str(body_str).unwrap();
-    for records in message.resource_logs.iter() {
+
+    if let Some(records) = message.resource_logs.as_ref() {
+        let mut vec_resource_logs_json: Vec<BTreeMap<String, Value>> = Vec::new();
         for record in records.iter() {
-            let mut otel_json: BTreeMap<String, Value> = BTreeMap::new();
-            for resource in record.resource.iter() {
-                let attributes = &resource.attributes;
-                for attributes in attributes.iter() {
+            let mut resource_log_json: BTreeMap<String, Value> = BTreeMap::new();
+
+            if let Some(resource) = record.resource.as_ref() {
+                if let Some(attributes) = resource.attributes.as_ref() {
                     for attribute in attributes {
                         let key = &attribute.key;
                         let value = &attribute.value;
                         let value_json =
                             collect_json_from_values(value, &format!("resource_{}", key));
                         for key in value_json.keys() {
-                            otel_json.insert(key.to_owned(), value_json[key].to_owned());
+                            resource_log_json.insert(key.to_owned(), value_json[key].to_owned());
                         }
                     }
                 }
+
                 if resource.dropped_attributes_count.is_some() {
-                    otel_json.insert(
+                    resource_log_json.insert(
                         "resource_dropped_attributes_count".to_string(),
                         Value::Number(serde_json::Number::from(
                             resource.dropped_attributes_count.unwrap(),
@@ -157,11 +160,14 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                 }
             }
 
-            for scope_logs in record.scope_logs.iter() {
+            if let Some(scope_logs) = record.scope_logs.as_ref() {
+                let mut vec_scope_log_json: Vec<BTreeMap<String, Value>> = Vec::new();
                 for scope_log in scope_logs.iter() {
-                    for instrumentation_scope in scope_log.scope.iter() {
+                    let mut scope_log_json: BTreeMap<String, Value> = BTreeMap::new();
+                    if scope_log.scope.is_some() {
+                        let instrumentation_scope = scope_log.scope.as_ref().unwrap();
                         if instrumentation_scope.name.is_some() {
-                            otel_json.insert(
+                            scope_log_json.insert(
                                 "instrumentation_scope_name".to_string(),
                                 Value::String(
                                     instrumentation_scope.name.as_ref().unwrap().to_string(),
@@ -169,16 +175,16 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                             );
                         }
                         if instrumentation_scope.version.is_some() {
-                            otel_json.insert(
+                            scope_log_json.insert(
                                 "instrumentation_scope_version".to_string(),
                                 Value::String(
                                     instrumentation_scope.version.as_ref().unwrap().to_string(),
                                 ),
                             );
                         }
-                        let attributes = &instrumentation_scope.attributes;
-                        for attributes in attributes.iter() {
-                            for attribute in attributes {
+
+                        if let Some(attributes) = instrumentation_scope.attributes.as_ref() {
+                            for attribute in attributes.iter() {
                                 let key = &attribute.key;
                                 let value = &attribute.value;
                                 let value_json = collect_json_from_values(
@@ -186,18 +192,26 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                                     &format!("instrumentation_scope_{}", key),
                                 );
                                 for key in value_json.keys() {
-                                    otel_json.insert(key.to_owned(), value_json[key].to_owned());
+                                    scope_log_json
+                                        .insert(key.to_owned(), value_json[key].to_owned());
                                 }
                             }
                         }
+
                         if instrumentation_scope.dropped_attributes_count.is_some() {
-                            otel_json.insert(
+                            scope_log_json.insert(
                                 "instrumentation_scope_dropped_attributes_count".to_string(),
                                 Value::Number(serde_json::Number::from(
                                     instrumentation_scope.dropped_attributes_count.unwrap(),
                                 )),
                             );
                         }
+                    }
+                    if scope_log.schema_url.is_some() {
+                        scope_log_json.insert(
+                            "scope_log_schema_url".to_string(),
+                            Value::String(scope_log.schema_url.as_ref().unwrap().to_string()),
+                        );
                     }
 
                     for log_record in scope_log.log_records.iter() {
@@ -254,7 +268,7 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                             }
                         }
 
-                        for attributes in log_record.attributes.iter() {
+                        if let Some(attributes) = log_record.attributes.as_ref() {
                             for attribute in attributes {
                                 let key = &attribute.key;
                                 let value = &attribute.value;
@@ -302,25 +316,31 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                             );
                         }
                         for key in log_record_json.keys() {
-                            otel_json.insert(key.to_owned(), log_record_json[key].to_owned());
+                            scope_log_json.insert(key.to_owned(), log_record_json[key].to_owned());
                         }
-                        vec_otel_json.push(otel_json.clone());
+                        vec_scope_log_json.push(scope_log_json.clone());
                     }
-
-                    if scope_log.schema_url.is_some() {
-                        otel_json.insert(
-                            "scope_log_schema_url".to_string(),
-                            Value::String(scope_log.schema_url.as_ref().unwrap().to_string()),
-                        );
-                    }
+                }
+                for scope_log_json in vec_scope_log_json.iter() {
+                    vec_resource_logs_json.push(scope_log_json.clone());
                 }
             }
             if record.schema_url.is_some() {
-                otel_json.insert(
-                    "resource_schema_url".to_string(),
+                resource_log_json.insert(
+                    "schema_url".to_string(),
                     Value::String(record.schema_url.as_ref().unwrap().to_string()),
                 );
             }
+
+            for resource_logs_json in vec_resource_logs_json.iter_mut() {
+                for key in resource_log_json.keys() {
+                    resource_logs_json.insert(key.to_owned(), resource_log_json[key].to_owned());
+                }
+            }
+        }
+
+        for resource_logs_json in vec_resource_logs_json.iter() {
+            vec_otel_json.push(resource_logs_json.clone());
         }
     }
     vec_otel_json
