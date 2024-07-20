@@ -101,6 +101,9 @@ pub struct Cli {
 
     /// CORS behaviour
     pub cors: bool,
+
+    /// The local hot_tier path is used for optimising the query performance in the distributed systems
+    pub hot_tier_storage_path: Option<PathBuf>,
 }
 
 impl Cli {
@@ -134,6 +137,7 @@ impl Cli {
     pub const DEFAULT_PASSWORD: &'static str = "admin";
     pub const FLIGHT_PORT: &'static str = "flight-port";
     pub const CORS: &'static str = "cors";
+    pub const HOT_TIER_PATH: &'static str = "hot-tier-path";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -395,6 +399,15 @@ impl Cli {
                         "lz4",
                         "zstd"])
                     .help("Parquet compression algorithm"),
+            )
+            .arg(
+                Arg::new(Self::HOT_TIER_PATH)
+                    .long(Self::HOT_TIER_PATH)
+                    .env("P_HOT_TIER_DIR")
+                    .value_name("DIR")
+                    .value_parser(validation::canonicalize_path)
+                    .help("Local path on this device to be used for hot tier data")
+                    .next_line_help(true),
             ).group(
                 ArgGroup::new("oidc")
                     .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
@@ -531,6 +544,8 @@ impl FromArgMatches for Cli {
             "all" => Mode::All,
             _ => unreachable!(),
         };
+
+        self.hot_tier_storage_path = m.get_one::<PathBuf>(Self::HOT_TIER_PATH).cloned();
 
         Ok(())
     }

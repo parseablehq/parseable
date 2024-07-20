@@ -411,6 +411,11 @@ impl ObjectStorage for LocalFS {
         Ok(dates.into_iter().flatten().collect())
     }
 
+    async fn list_files(&self, _stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
+        //unimplemented
+        Ok(vec![])
+    }
+
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         let op = CopyOptions {
             overwrite: true,

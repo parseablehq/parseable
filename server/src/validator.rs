@@ -16,11 +16,15 @@
  *
  */
 
+use chrono::NaiveDate;
+use error::HotTierValidationError;
+
 use self::error::{AlertValidationError, StreamNameValidationError, UsernameValidationError};
 use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
 use crate::handlers::http::cluster::INTERNAL_STREAM_NAME;
+use crate::option::validation::{cache_size, human_size_to_bytes};
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
@@ -144,6 +148,29 @@ pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
     Ok(())
 }
 
+pub fn hot_tier(
+    start_date: &str,
+    end_date: &str,
+    size: &str,
+) -> Result<(), HotTierValidationError> {
+    if human_size_to_bytes(size).is_err() {
+        return Err(HotTierValidationError::Size);
+    }
+    cache_size(size).map_err(|_| HotTierValidationError::Size)?;
+
+    let start_date: NaiveDate = start_date
+        .parse()
+        .map_err(|_| HotTierValidationError::StartDate)?;
+    let end_date: NaiveDate = end_date
+        .parse()
+        .map_err(|_| HotTierValidationError::EndDate)?;
+
+    if start_date > end_date {
+        return Err(HotTierValidationError::DateRange);
+    }
+
+    Ok(())
+}
 pub mod error {
 
     #[derive(Debug, thiserror::Error)]
@@ -190,5 +217,21 @@ pub mod error {
             "Username contains invalid characters. Please use lowercase, alphanumeric or underscore"
         )]
         SpecialChar,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum HotTierValidationError {
+        #[error("Invalid size given for hot tier, please provide size in human readable format, e.g 1GiB, 2GiB")]
+        Size,
+        #[error(
+            "Invalid start date given for hot tier, please provide the date in yyyy-mm-dd format"
+        )]
+        StartDate,
+        #[error(
+            "Invalid end date given for hot tier, please provide the date in yyyy-mm-dd format"
+        )]
+        EndDate,
+        #[error("End date should be greater than start date")]
+        DateRange,
     }
 }

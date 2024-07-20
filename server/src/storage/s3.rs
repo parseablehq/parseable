@@ -343,6 +343,33 @@ impl S3 {
         Ok(dates)
     }
 
+    async fn _list_files(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
+        let mut result_file_list = vec![];
+        let resp = self
+            .client
+            .list_with_delimiter(Some(&(stream.into())))
+            .await?;
+
+        let dates = resp
+            .common_prefixes
+            .iter()
+            .flat_map(|path| path.parts())
+            .filter(|name| name.as_ref() != stream && name.as_ref() != STREAM_ROOT_DIRECTORY)
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>();
+        for date in dates.clone() {
+            let hour_path = object_store::path::Path::from(format!("{}/{}", stream, date));
+            let resp = self.client.list_with_delimiter(Some(&hour_path)).await?;
+            let manifest = resp
+                .objects
+                .iter()
+                .map(|name| name.location.to_string())
+                .collect::<String>();
+            result_file_list.push(manifest);
+        }
+
+        Ok(result_file_list)
+    }
     async fn _upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
 
@@ -602,6 +629,12 @@ impl ObjectStorage for S3 {
         let streams = self._list_dates(stream_name).await?;
 
         Ok(streams)
+    }
+
+    async fn list_files(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
+        let files = self._list_files(stream_name).await?;
+
+        Ok(files)
     }
 
     async fn upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {

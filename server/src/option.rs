@@ -328,7 +328,7 @@ pub mod validation {
         url::Url::parse(s).map_err(|_| "Invalid URL provided".to_string())
     }
 
-    fn human_size_to_bytes(s: &str) -> Result<u64, String> {
+    pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
         fn parse_and_map<T: human_size::Multiple>(
             s: &str,
         ) -> Result<u64, human_size::ParsingError> {
@@ -343,13 +343,29 @@ pub mod validation {
             .or(parse_and_map::<multiples::Terabyte>(s))
             .map_err(|_| "Could not parse given size".to_string())?;
 
-        if size < MIN_CACHE_SIZE_BYTES {
-            return Err(
-                "Specified value of cache size is smaller than current minimum of 1GiB".to_string(),
-            );
-        }
-
         Ok(size)
+    }
+
+    pub fn bytes_to_human_size(bytes: u64) -> String {
+        const KIB: u64 = 1024;
+        const MIB: u64 = KIB * 1024;
+        const GIB: u64 = MIB * 1024;
+        const TIB: u64 = GIB * 1024;
+        const PIB: u64 = TIB * 1024;
+
+        if bytes < KIB {
+            format!("{} B", bytes)
+        } else if bytes < MIB {
+            format!("{:.2} KB", bytes as f64 / KIB as f64)
+        } else if bytes < GIB {
+            format!("{:.2} MiB", bytes as f64 / MIB as f64)
+        } else if bytes < TIB {
+            format!("{:.2} GiB", bytes as f64 / GIB as f64)
+        } else if bytes < PIB {
+            format!("{:.2} TiB", bytes as f64 / TIB as f64)
+        } else {
+            format!("{:.2} PiB", bytes as f64 / PIB as f64)
+        }
     }
 
     pub fn cache_size(s: &str) -> Result<u64, String> {

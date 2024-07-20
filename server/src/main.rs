@@ -24,6 +24,7 @@ mod catalog;
 mod cli;
 mod event;
 mod handlers;
+mod hottier;
 mod livetail;
 mod localcache;
 mod metadata;

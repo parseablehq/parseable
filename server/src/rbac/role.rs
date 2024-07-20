@@ -32,6 +32,8 @@ pub enum Action {
     PutRetention,
     GetCacheEnabled,
     PutCacheEnabled,
+    PutHotTierEnabled,
+    GetHotTierEnabled,
     PutAlert,
     GetAlert,
     PutUser,
@@ -117,6 +119,8 @@ impl RoleBuilder {
                 | Action::ListCluster
                 | Action::ListClusterMetrics
                 | Action::Deleteingestor
+                | Action::PutHotTierEnabled
+                | Action::GetHotTierEnabled
                 | Action::ListDashboard
                 | Action::GetDashboard
                 | Action::CreateDashboard
@@ -206,6 +210,8 @@ pub mod model {
                 Action::PutRetention,
                 Action::PutCacheEnabled,
                 Action::GetCacheEnabled,
+                Action::PutHotTierEnabled,
+                Action::GetHotTierEnabled,
                 Action::PutAlert,
                 Action::GetAlert,
                 Action::GetAbout,
@@ -249,6 +255,7 @@ pub mod model {
                 Action::GetAbout,
                 Action::QueryLLM,
                 Action::ListCluster,
+                Action::GetHotTierEnabled,
             ],
             stream: None,
             tag: None,
