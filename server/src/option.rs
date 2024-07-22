@@ -45,9 +45,8 @@ impl Config {
         let cli = create_parseable_cli_command()
             .name("Parseable")
             .about(
-                r#"A Cloud Native, log analytics platform
-Log Lake for the cloud-native world
-"#,
+                r#"
+Cloud Native, log analytics platform for modern applications."#,
             )
             .arg_required_else_help(true)
             .subcommand_required(true)
