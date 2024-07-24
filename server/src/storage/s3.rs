@@ -360,12 +360,12 @@ impl S3 {
         for date in dates.clone() {
             let hour_path = object_store::path::Path::from(format!("{}/{}", stream, date));
             let resp = self.client.list_with_delimiter(Some(&hour_path)).await?;
-            let manifest = resp
+            let manifest: Vec<String> = resp
                 .objects
                 .iter()
                 .map(|name| name.location.to_string())
-                .collect::<String>();
-            result_file_list.push(manifest);
+                .collect();
+            result_file_list.extend(manifest);
         }
 
         Ok(result_file_list)

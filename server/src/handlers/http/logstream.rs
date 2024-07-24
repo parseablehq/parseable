@@ -962,13 +962,6 @@ pub async fn put_stream_hot_tier(
         &hottier.size.to_string(),
     )?;
 
-    let storage = CONFIG.storage().get_object_store();
-    let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
-    stream_metadata.hot_tier_enabled = Some(true);
-    storage
-        .put_stream_manifest(&stream_name, &stream_metadata)
-        .await?;
-
     STREAM_INFO.set_hot_tier(&stream_name, true)?;
     if let Some(hot_tier_manager) = HotTierManager::global() {
         let hottier = StreamHotTier {
@@ -983,6 +976,12 @@ pub async fn put_stream_hot_tier(
 
         hot_tier_manager
             .put_hot_tier(&stream_name, &hottier)
+            .await?;
+        let storage = CONFIG.storage().get_object_store();
+        let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
+        stream_metadata.hot_tier_enabled = Some(true);
+        storage
+            .put_stream_manifest(&stream_name, &stream_metadata)
             .await?;
     }
 
