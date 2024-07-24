@@ -939,6 +939,17 @@ pub async fn put_stream_hot_tier(
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 
+    if STREAM_INFO
+        .get_time_partition(&stream_name)
+        .unwrap()
+        .is_some()
+    {
+        return Err(StreamError::Custom {
+            msg: "Hot tier can not be enabled for stream with time partition".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+
     let body = body.into_inner();
     let hottier: StreamHotTier = match serde_json::from_value(body) {
         Ok(hottier) => hottier,
@@ -946,9 +957,9 @@ pub async fn put_stream_hot_tier(
     };
 
     validator::hot_tier(
-        &hottier.hot_tier_start_date,
-        &hottier.hot_tier_end_date,
-        &hottier.hot_tier_size.to_string(),
+        &hottier.start_date,
+        &hottier.end_date,
+        &hottier.size.to_string(),
     )?;
 
     let storage = CONFIG.storage().get_object_store();
@@ -961,12 +972,15 @@ pub async fn put_stream_hot_tier(
     STREAM_INFO.set_hot_tier(&stream_name, true)?;
     if let Some(hot_tier_manager) = HotTierManager::global() {
         let hottier = StreamHotTier {
-            hot_tier_start_date: hottier.hot_tier_start_date,
-            hot_tier_end_date: hottier.hot_tier_end_date,
-            hot_tier_size: hottier.hot_tier_size.clone(),
-            hot_tier_used_size: Some(0.to_string()),
-            hot_tier_available_size: Some(hottier.hot_tier_size),
+            start_date: hottier.start_date,
+            end_date: hottier.end_date,
+            size: hottier.size.clone(),
+            used_size: Some("0GiB".to_string()),
+            available_size: Some(hottier.size),
         };
+
+        hot_tier_manager.validate(&stream_name, &hottier).await?;
+
         hot_tier_manager
             .put_hot_tier(&stream_name, &hottier)
             .await?;
@@ -1095,7 +1109,7 @@ pub mod error {
         InvalidHotTierConfig(serde_json::Error),
         #[error("Hot tier validation failed due to {0}")]
         HotTierValidation(#[from] HotTierValidationError),
-        #[error("Failed to update stream hot tier due to err: {0}")]
+        #[error("{0}")]
         HotTierError(#[from] HotTierError),
     }
 

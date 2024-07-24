@@ -27,7 +27,8 @@ use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use itertools::Itertools;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::env;
+use std::path::PathBuf;
+use std::{env, fs};
 use url::Url;
 
 #[allow(dead_code)]
@@ -303,6 +304,27 @@ pub fn get_ingestor_id() -> String {
     let result = result.split_at(15).0.to_string();
     log::debug!("Ingestor ID: {}", &result);
     result
+}
+
+pub fn get_dir_size(path: PathBuf) -> Result<u64, anyhow::Error> {
+    fn dir_size_recursive(path: &PathBuf) -> Result<u64, anyhow::Error> {
+        let mut size = 0;
+
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+
+            if metadata.is_dir() {
+                size += dir_size_recursive(&entry.path())?;
+            } else {
+                size += metadata.len();
+            }
+        }
+
+        Ok(size)
+    }
+
+    dir_size_recursive(&path)
 }
 
 #[cfg(test)]

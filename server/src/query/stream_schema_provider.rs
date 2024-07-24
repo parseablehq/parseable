@@ -16,6 +16,7 @@
  *
  */
 
+use crate::hottier::HotTierManager;
 use crate::Mode;
 use crate::{
     catalog::snapshot::{self, Snapshot},
@@ -293,6 +294,7 @@ impl TableProvider for StandardTableProvider {
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut memory_exec = None;
         let mut cache_exec = None;
+        let mut hot_tier_exec = None;
         let object_store = state
             .runtime_env()
             .object_store_registry
@@ -416,10 +418,53 @@ impl TableProvider for StandardTableProvider {
             cache_exec = Some(plan)
         }
 
+        // Hot tier data fetch
+        if let Some(hot_tier_manager) = HotTierManager::global() {
+            if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
+                let (hot_tier_files, remainder) = hot_tier_manager
+                    .get_hot_tier_manifests(&self.stream, manifest_files)
+                    .await
+                    .map_err(|err| DataFusionError::External(Box::new(err)))?;
+                // Assign remaining entries back to manifest list
+                // This is to be used for remote query
+                manifest_files = remainder;
+
+                let hot_tier_files = hot_tier_files
+                    .into_iter()
+                    .map(|mut file| {
+                        let path = CONFIG
+                            .parseable
+                            .hot_tier_storage_path
+                            .as_ref()
+                            .unwrap()
+                            .join(&file.file_path);
+                        file.file_path = path.to_str().unwrap().to_string();
+                        file
+                    })
+                    .collect();
+
+                let (partitioned_files, statistics) =
+                    partitioned_files(hot_tier_files, &self.schema, 1);
+                let plan = create_parquet_physical_plan(
+                    ObjectStoreUrl::parse("file:///").unwrap(),
+                    partitioned_files,
+                    statistics,
+                    self.schema.clone(),
+                    projection,
+                    filters,
+                    limit,
+                    state,
+                    time_partition.clone(),
+                )
+                .await?;
+
+                hot_tier_exec = Some(plan)
+            }
+        }
         if manifest_files.is_empty() {
             QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
             return final_plan(
-                vec![memory_exec, cache_exec],
+                vec![memory_exec, cache_exec, hot_tier_exec],
                 projection,
                 self.schema.clone(),
             );
@@ -440,7 +485,7 @@ impl TableProvider for StandardTableProvider {
         .await?;
 
         Ok(final_plan(
-            vec![memory_exec, cache_exec, Some(remote_exec)],
+            vec![memory_exec, cache_exec, hot_tier_exec, Some(remote_exec)],
             projection,
             self.schema.clone(),
         )?)

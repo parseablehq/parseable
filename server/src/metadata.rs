@@ -258,13 +258,6 @@ impl StreamInfo {
         Ok(())
     }
 
-    pub fn get_hot_tier(&self, stream_name: &str) -> Result<bool, MetadataError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        map.get(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.hot_tier_enabled.unwrap_or(false))
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn add_stream(
         &self,

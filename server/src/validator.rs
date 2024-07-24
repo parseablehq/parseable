@@ -16,7 +16,7 @@
  *
  */
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use error::HotTierValidationError;
 
 use self::error::{AlertValidationError, StreamNameValidationError, UsernameValidationError};
@@ -158,18 +158,38 @@ pub fn hot_tier(
     }
     cache_size(size).map_err(|_| HotTierValidationError::Size)?;
 
-    let start_date: NaiveDate = start_date
-        .parse()
-        .map_err(|_| HotTierValidationError::StartDate)?;
-    let end_date: NaiveDate = end_date
-        .parse()
-        .map_err(|_| HotTierValidationError::EndDate)?;
+    let (start_date, end_date) = parse_human_date(start_date, end_date)?;
 
-    if start_date > end_date {
+    if start_date >= end_date {
         return Err(HotTierValidationError::DateRange);
     }
 
     Ok(())
+}
+
+pub fn parse_human_date(
+    start_time: &str,
+    end_time: &str,
+) -> Result<(NaiveDate, NaiveDate), HotTierValidationError> {
+    let start: NaiveDate;
+    let end: NaiveDate;
+
+    if end_time == "now" {
+        end = Utc::now().naive_utc().date();
+        start = if let Ok(parsed_date) = NaiveDate::parse_from_str(start_time, "%Y-%m-%d") {
+            parsed_date
+        } else {
+            end - chrono::Duration::from_std(humantime::parse_duration(start_time)?)
+                .map_err(|_| HotTierValidationError::StartDate)?
+        };
+    } else {
+        start = NaiveDate::parse_from_str(start_time, "%Y-%m-%d")
+            .map_err(|_| HotTierValidationError::StartDate)?;
+        end = NaiveDate::parse_from_str(end_time, "%Y-%m-%d")
+            .map_err(|_| HotTierValidationError::EndDate)?;
+    };
+
+    Ok((start, end))
 }
 pub mod error {
 
@@ -231,7 +251,17 @@ pub mod error {
             "Invalid end date given for hot tier, please provide the date in yyyy-mm-dd format"
         )]
         EndDate,
+
         #[error("End date should be greater than start date")]
         DateRange,
+
+        #[error("While generating times for 'now' failed to parse duration")]
+        NotValidDuration(#[from] humantime::DurationError),
+
+        #[error("Parsed duration out of range")]
+        OutOfRange(#[from] chrono::OutOfRangeError),
+
+        #[error("Hot tier not found for stream {0}")]
+        NotFound(String),
     }
 }
