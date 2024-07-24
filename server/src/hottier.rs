@@ -29,7 +29,7 @@ use crate::{
     utils::get_dir_size,
     validator::{error::HotTierValidationError, parse_human_date},
 };
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use clokwerk::{AsyncScheduler, Interval, Job};
 use futures::TryStreamExt;
 use futures_util::TryFutureExt;
@@ -119,7 +119,7 @@ impl HotTierManager {
         if human_size_to_bytes(&stream_hot_tier.size).unwrap() < total_size_to_download {
             return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(
                 format!(
-                    "Total size required to download the files - {}, size provided for the hot tier - {}, not enough space in hot tier",
+                    "Total size required to download the files: {}. Provided hot tier size: {}. Not enough space in the hot tier. Please increase the hot tier size.",
                     bytes_to_human_size(total_size_to_download),
                     &stream_hot_tier.size
                 ),
@@ -259,6 +259,10 @@ impl HotTierManager {
         object_store: Arc<dyn ObjectStorage + Send>,
     ) -> Result<(), HotTierError> {
         let date_str = date.to_string();
+        let available_date_list = self.get_hot_tier_date_list(stream).await?;
+        if available_date_list.contains(&date) && !date.eq(&Utc::now().date_naive()) {
+            return Ok(());
+        }
         let manifest_files_to_download = s3_file_list
             .iter()
             .filter(|file| file.starts_with(&format!("{}/date={}", stream, date_str)))
@@ -301,14 +305,11 @@ impl HotTierManager {
         let parquet_path = self.hot_tier_path.join(parquet_file_path);
 
         if !parquet_path.exists() {
-            fs::create_dir_all(parquet_path.parent().unwrap()).await?;
             let parquet_file_path = RelativePathBuf::from(parquet_file_path);
-
             if human_size_to_bytes(&stream_hot_tier.available_size.clone().unwrap()).unwrap()
                 <= parquet_file.file_size
             {
-                let date_list =
-                    self.get_date_list(&stream_hot_tier.start_date, &stream_hot_tier.end_date)?;
+                let date_list = self.get_hot_tier_date_list(stream).await?;
                 let date_to_delete = vec![*date_list.first().unwrap()];
                 self.delete_from_hot_tier(stream_hot_tier, stream, &date_to_delete, false)
                     .await?;
@@ -347,6 +348,15 @@ impl HotTierManager {
             if path.exists() {
                 if !validate {
                     let size = get_dir_size(path.clone())?;
+                    if self
+                        .check_current_date_for_deletion(stream_hot_tier, stream)
+                        .await?
+                    {
+                        return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(
+                            format!(
+                                "Hot tier capacity for stream {} is exhausted (Total: {}, Available - {})Today's data cannot be deleted. Please increase the hot tier size. Download will resume tomorrow"
+                            , stream, stream_hot_tier.size, stream_hot_tier.available_size.clone().unwrap()) )));
+                    }
                     stream_hot_tier.used_size = Some(bytes_to_human_size(
                         human_size_to_bytes(&stream_hot_tier.used_size.clone().unwrap()).unwrap()
                             - size,
@@ -362,6 +372,20 @@ impl HotTierManager {
         }
 
         Ok(())
+    }
+
+    async fn check_current_date_for_deletion(
+        &self,
+        stream_hot_tier: &StreamHotTier,
+        stream: &str,
+    ) -> Result<bool, HotTierError> {
+        let current_date = Utc::now().date_naive();
+        let (_, end_date) =
+            parse_human_date(&stream_hot_tier.start_date, &stream_hot_tier.end_date)?;
+        let is_end_date_today = end_date == current_date;
+        let available_date_list = self.get_hot_tier_date_list(stream).await?;
+        let is_current_date_available = available_date_list.contains(&current_date);
+        Ok(available_date_list.len() == 1 && is_current_date_available && is_end_date_today)
     }
 
     pub async fn get_hot_tier_date_list(
@@ -414,6 +438,7 @@ impl HotTierManager {
                     .all(|file| !file.file_path.eq(&manifest_file.file_path))
             })
             .collect();
+
         Ok((hot_tier_files, remaining_files))
     }
 
