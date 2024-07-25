@@ -107,6 +107,10 @@ pub async fn sync_streams_with_ingestors(
 
     let client = reqwest::Client::new();
     for ingestor in ingestor_infos.iter() {
+        if !utils::check_liveness(&ingestor.domain_name).await {
+            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            continue;
+        }
         let url = format!(
             "{}{}/logstream/{}",
             ingestor.domain_name,

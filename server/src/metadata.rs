@@ -224,6 +224,10 @@ impl StreamInfo {
         map.get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
+                if custom_partition.is_empty() {
+                    metadata.custom_partition = None;
+                    return;
+                }
                 metadata.custom_partition = Some(custom_partition);
             })
     }
