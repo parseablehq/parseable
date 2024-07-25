@@ -246,6 +246,23 @@ fn validate_custom_partition(custom_partition: &str) -> Result<(), CreateStreamE
     Ok(())
 }
 
+fn validate_time_with_custom_partition(
+    time_partition: &str,
+    custom_partition: &str,
+) -> Result<(), CreateStreamError> {
+    let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
+    if custom_partition_list.contains(&time_partition) {
+        return Err(CreateStreamError::Custom {
+            msg: format!(
+                "time partition {} cannot be set as custom partition",
+                time_partition
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+    Ok(())
+}
+
 fn validate_static_schema(
     body: &Bytes,
     stream_name: &str,
@@ -336,6 +353,10 @@ async fn create_update_stream(
     }
     if !custom_partition.is_empty() {
         validate_custom_partition(&custom_partition)?;
+    }
+
+    if !time_partition.is_empty() && !custom_partition.is_empty() {
+        validate_time_with_custom_partition(&time_partition, &custom_partition)?;
     }
 
     let schema = validate_static_schema(
@@ -741,6 +762,7 @@ pub async fn update_custom_partition_in_stream(
     custom_partition: &str,
 ) -> Result<(), CreateStreamError> {
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name).unwrap();
+    let time_partition = STREAM_INFO.get_time_partition(&stream_name).unwrap();
     if static_schema_flag.is_some() {
         let schema = STREAM_INFO.schema(&stream_name).unwrap();
 
@@ -765,6 +787,18 @@ pub async fn update_custom_partition_in_stream(
                         msg: format!("custom partition field {} does not exist in the schema for the stream {}", partition, stream_name),
                         status: StatusCode::BAD_REQUEST,
                     });
+                }
+
+                if let Some(time_partition) = time_partition.clone() {
+                    if time_partition == *partition {
+                        return Err(CreateStreamError::Custom {
+                            msg: format!(
+                                "time partition {} cannot be set as custom partition",
+                                partition
+                            ),
+                            status: StatusCode::BAD_REQUEST,
+                        });
+                    }
                 }
             }
         }

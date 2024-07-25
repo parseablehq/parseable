@@ -307,7 +307,7 @@ async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result
 }
 
 fn get_parsed_timestamp(body: &Value, time_partition: &Option<String>) -> NaiveDateTime {
-    let body_timestamp = body.get(&time_partition.clone().unwrap().to_string());
+    let body_timestamp = body.get(time_partition.clone().unwrap().to_string());
     let parsed_timestamp = body_timestamp
         .unwrap()
         .to_owned()

@@ -156,7 +156,7 @@ pub fn validate_time_partition(
         } else {
             30
         };
-        let body_timestamp = value.get(&time_partition.clone().unwrap().to_string());
+        let body_timestamp = value.get(time_partition.clone().unwrap().to_string());
         if body_timestamp.is_some() && body_timestamp.unwrap().to_owned().as_str().is_some() {
             if body_timestamp
                 .unwrap()

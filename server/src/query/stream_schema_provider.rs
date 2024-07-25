@@ -427,7 +427,7 @@ impl TableProvider for StandardTableProvider {
 
         let (partitioned_files, statistics) = partitioned_files(manifest_files, &self.schema, 1);
         let remote_exec = create_parquet_physical_plan(
-            ObjectStoreUrl::parse(&glob_storage.store_url()).unwrap(),
+            ObjectStoreUrl::parse(glob_storage.store_url()).unwrap(),
             partitioned_files,
             statistics,
             self.schema.clone(),
