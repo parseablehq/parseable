@@ -65,27 +65,25 @@ pub fn convert_static_schema_to_arrow_schema(
         fields: Vec::new(),
         metadata: HashMap::new(),
     };
-    let mut time_partition_exists: bool = false;
+    let mut time_partition_exists = false;
 
     if !custom_partition.is_empty() {
         let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-        let mut custom_partition_exists: HashMap<String, bool> =
-            HashMap::with_capacity(custom_partition_list.len());
+        let mut custom_partition_exists = HashMap::with_capacity(custom_partition_list.len());
 
         for partition in &custom_partition_list {
-            for field in &static_schema.fields {
-                if &field.name == partition {
-                    custom_partition_exists.insert(partition.to_string(), true);
-                }
+            if static_schema
+                .fields
+                .iter()
+                .any(|field| &field.name == partition)
+            {
+                custom_partition_exists.insert(partition.to_string(), true);
             }
         }
-        for partition in custom_partition_list {
-            if !custom_partition_exists.contains_key(partition) {
-                return Err(anyhow! {
-                    format!(
-                        "custom partition field {partition} does not exist in the schema for the static schema logstream"
-                    ),
-                });
+
+        for partition in &custom_partition_list {
+            if !custom_partition_exists.contains_key(*partition) {
+                return Err(anyhow!("custom partition field {partition} does not exist in the schema for the static schema logstream"));
             }
         }
     }
@@ -135,11 +133,7 @@ pub fn convert_static_schema_to_arrow_schema(
             ),
         });
     }
-    let schema = add_parseable_fields_to_static_schema(parsed_schema);
-    if schema.is_err() {
-        return Err(schema.err().unwrap());
-    }
-    Ok(schema.unwrap())
+    add_parseable_fields_to_static_schema(parsed_schema)
 }
 
 fn add_parseable_fields_to_static_schema(
