@@ -422,7 +422,7 @@ impl TableProvider for StandardTableProvider {
         if let Some(hot_tier_manager) = HotTierManager::global() {
             if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
                 let (hot_tier_files, remainder) = hot_tier_manager
-                    .get_hot_tier_manifests(&self.stream, manifest_files)
+                    .get_hot_tier_manifest_files(&self.stream, manifest_files)
                     .await
                     .map_err(|err| DataFusionError::External(Box::new(err)))?;
                 // Assign remaining entries back to manifest list

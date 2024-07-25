@@ -964,18 +964,19 @@ pub async fn put_stream_hot_tier(
 
     STREAM_INFO.set_hot_tier(&stream_name, true)?;
     if let Some(hot_tier_manager) = HotTierManager::global() {
-        let hottier = StreamHotTier {
+        let mut hottier = StreamHotTier {
             start_date: hottier.start_date,
             end_date: hottier.end_date,
             size: hottier.size.clone(),
             used_size: Some("0GiB".to_string()),
             available_size: Some(hottier.size),
+            updated_date_range: None,
         };
 
         hot_tier_manager.validate(&stream_name, &hottier).await?;
 
         hot_tier_manager
-            .put_hot_tier(&stream_name, &hottier)
+            .put_hot_tier(&stream_name, &mut hottier)
             .await?;
         let storage = CONFIG.storage().get_object_store();
         let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
