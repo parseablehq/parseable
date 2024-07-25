@@ -31,10 +31,11 @@ pub const CURRENT_DASHBOARD_VERSION: &str = "v1";
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Tiles {
     name: String,
-    tile_id: Option<String>,
+    pub tile_id: Option<String>,
     description: String,
     stream: String,
     query: String,
+    order: Option<u64>,
     visualization: Visualization,
 }
 
@@ -74,7 +75,7 @@ pub struct Dashboard {
     pub user_id: String,
     pub time_filter: Option<TimeFilter>,
     refresh_interval: u64,
-    tiles: Vec<Tiles>,
+    pub tiles: Vec<Tiles>,
 }
 
 #[derive(Default, Debug)]

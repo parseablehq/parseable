@@ -58,6 +58,13 @@ pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
     dashboard.dashboard_id = Some(dashboard_id.clone());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
     DASHBOARDS.update(&dashboard);
+    for tile in dashboard.tiles.iter_mut() {
+        tile.tile_id = Some(format!(
+            "{}.{}",
+            &dashboard.user_id,
+            Utc::now().timestamp_micros()
+        ));
+    }
 
     let path = dashboard_path(&dashboard.user_id, &format!("{}.json", dashboard_id));
 
