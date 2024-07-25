@@ -640,6 +640,38 @@ impl ObjectStorage for S3 {
             .collect::<Vec<_>>())
     }
 
+    async fn get_all_dashboards(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
+        let mut dashboards = vec![];
+        let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
+        let resp = self
+            .client
+            .list_with_delimiter(Some(&users_root_path))
+            .await?;
+
+        let users = resp
+            .common_prefixes
+            .iter()
+            .flat_map(|path| path.parts())
+            .filter(|name| name.as_ref() != USERS_ROOT_DIR)
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>();
+        for user in users {
+            let user_dashboard_path = object_store::path::Path::from(format!(
+                "{}/{}/{}",
+                USERS_ROOT_DIR, user, "dashboards"
+            ));
+            let dashboards_path = RelativePathBuf::from(&user_dashboard_path);
+            let dashboard_bytes = self
+                .get_objects(
+                    Some(&dashboards_path),
+                    Box::new(|file_name| file_name.ends_with(".json")),
+                )
+                .await?;
+            dashboards.extend(dashboard_bytes);
+        }
+        Ok(dashboards)
+    }
+
     async fn get_all_saved_filters(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
         let mut filters = vec![];
         let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);

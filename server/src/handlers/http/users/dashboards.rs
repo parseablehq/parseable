@@ -20,103 +20,103 @@ use crate::{
     handlers::http::ingest::PostError,
     option::CONFIG,
     storage::{object_storage::dashboard_path, ObjectStorageError},
-    users::dashboards::{Dashboard, DASHBOARDS},
+    users::dashboards::{Dashboard, CURRENT_DASHBOARD_VERSION, DASHBOARDS},
 };
 use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
 
+use chrono::Utc;
 use http::StatusCode;
-use serde_json::{Error as SerdeError, Value as JsonValue};
+use serde_json::Error as SerdeError;
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, DashboardError> {
     let user_id = req
         .match_info()
         .get("user_id")
         .ok_or(DashboardError::Metadata("No User Id Provided"))?;
+    let dashboards = DASHBOARDS.list_dashboards_by_user(user_id);
 
-    // .users/user_id/dashboards/
-    let path = dashboard_path(user_id, "");
-
-    let store = CONFIG.storage().get_object_store();
-    let dashboards = store
-        .get_objects(
-            Some(&path),
-            Box::new(|file_name: String| file_name.ends_with("json")),
-        )
-        .await?;
-
-    let mut dash = vec![];
-    for dashboard in dashboards {
-        dash.push(serde_json::from_slice::<JsonValue>(&dashboard)?)
-    }
-
-    Ok((web::Json(dash), StatusCode::OK))
+    Ok((web::Json(dashboards), StatusCode::OK))
 }
 
 pub async fn get(req: HttpRequest) -> Result<impl Responder, DashboardError> {
-    let user_id = req
-        .match_info()
-        .get("user_id")
-        .ok_or(DashboardError::Metadata("No User Id Provided"))?;
-
-    let dash_id = req
+    let dashboard_id = req
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
 
-    if let Some(dashboard) = DASHBOARDS.find(dash_id) {
+    if let Some(dashboard) = DASHBOARDS.get_dashboard(dashboard_id) {
         return Ok((web::Json(dashboard), StatusCode::OK));
     }
 
-    //if dashboard is not in memory fetch from s3
-    let dash_file_path = dashboard_path(user_id, &format!("{}.json", dash_id));
-    let resource = CONFIG
-        .storage()
-        .get_object_store()
-        .get_object(&dash_file_path)
-        .await?;
-    let resource = serde_json::from_slice::<Dashboard>(&resource)?;
-
-    Ok((web::Json(resource), StatusCode::OK))
+    Err(DashboardError::Metadata("Dashboard does not exist"))
 }
 
-pub async fn post(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
-    let user_id = req
-        .match_info()
-        .get("user_id")
-        .ok_or(DashboardError::Metadata("No User Id Provided"))?;
+pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
+    let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
+    let dashboard_id = format!("{}.{}", &dashboard.user_id, Utc::now().timestamp_millis());
+    dashboard.dashboard_id = Some(dashboard_id.clone());
+    dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
+    DASHBOARDS.update(&dashboard);
+    for tile in dashboard.tiles.iter_mut() {
+        tile.tile_id = Some(format!(
+            "{}.{}",
+            &dashboard.user_id,
+            Utc::now().timestamp_micros()
+        ));
+    }
 
-    let dash_id = req
+    let path = dashboard_path(&dashboard.user_id, &format!("{}.json", dashboard_id));
+
+    let store = CONFIG.storage().get_object_store();
+    let dashboard_bytes = serde_json::to_vec(&dashboard)?;
+    store
+        .put_object(&path, Bytes::from(dashboard_bytes))
+        .await?;
+
+    Ok((web::Json(dashboard), StatusCode::OK))
+}
+
+pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+    let dashboard_id = req
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
+    if DASHBOARDS.get_dashboard(dashboard_id).is_none() {
+        return Err(PostError::DashboardError(DashboardError::Metadata(
+            "Dashboard does not exist",
+        )));
+    }
+    let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
+    dashboard.dashboard_id = Some(dashboard_id.to_string());
+    dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
+    DASHBOARDS.update(&dashboard);
 
-    let dash_file_path = dashboard_path(user_id, &format!("{}.json", dash_id));
-
-    let dashboard = serde_json::from_slice::<Dashboard>(&body)?;
-    DASHBOARDS.update(dashboard);
+    let path = dashboard_path(&dashboard.user_id, &format!("{}.json", dashboard_id));
 
     let store = CONFIG.storage().get_object_store();
-    store.put_object(&dash_file_path, body).await?;
+    let dashboard_bytes = serde_json::to_vec(&dashboard)?;
+    store
+        .put_object(&path, Bytes::from(dashboard_bytes))
+        .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
 
 pub async fn delete(req: HttpRequest) -> Result<HttpResponse, PostError> {
-    let user_id = req
-        .match_info()
-        .get("user_id")
-        .ok_or(DashboardError::Metadata("No User Id Provided"))?;
-
-    let dash_id = req
+    let dashboard_id = req
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
+    let dashboard = DASHBOARDS
+        .get_dashboard(dashboard_id)
+        .ok_or(DashboardError::Metadata("Dashboard does not exist"))?;
 
-    let dash_file_path = dashboard_path(user_id, &format!("{}.json", dash_id));
-
+    let path = dashboard_path(&dashboard.user_id, &format!("{}.json", dashboard_id));
     let store = CONFIG.storage().get_object_store();
-    store.delete_object(&dash_file_path).await?;
+    store.delete_object(&path).await?;
+
+    DASHBOARDS.delete_dashboard(dashboard_id);
 
     Ok(HttpResponse::Ok().finish())
 }

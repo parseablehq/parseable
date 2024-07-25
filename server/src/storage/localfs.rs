@@ -350,6 +350,26 @@ impl ObjectStorage for LocalFS {
         Ok(dirs)
     }
 
+    async fn get_all_dashboards(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
+        let mut dashboards = vec![];
+        let users_root_path = self.root.join(USERS_ROOT_DIR);
+        let directories = ReadDirStream::new(fs::read_dir(&users_root_path).await?);
+        let users: Vec<DirEntry> = directories.try_collect().await?;
+        for user in users {
+            if !user.path().is_dir() {
+                continue;
+            }
+            let dashboards_path = users_root_path.join(user.path()).join("dashboards");
+            let directories = ReadDirStream::new(fs::read_dir(&dashboards_path).await?);
+            let dashboards_files: Vec<DirEntry> = directories.try_collect().await?;
+            for dashboard in dashboards_files {
+                let file = fs::read(dashboard.path()).await?;
+                dashboards.push(file.into());
+            }
+        }
+        Ok(dashboards)
+    }
+
     async fn get_all_saved_filters(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
         let mut filters = vec![];
         let users_root_path = self.root.join(USERS_ROOT_DIR);

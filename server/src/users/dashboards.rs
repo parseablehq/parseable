@@ -19,39 +19,63 @@
 use std::sync::RwLock;
 
 use once_cell::sync::Lazy;
-use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 
-use crate::{handlers::http::users::USERS_ROOT_DIR, metadata::LOCK_EXPECT, option::CONFIG};
+use crate::{metadata::LOCK_EXPECT, option::CONFIG};
 
 use super::TimeFilter;
 
 pub static DASHBOARDS: Lazy<Dashboards> = Lazy::new(Dashboards::default);
+pub const CURRENT_DASHBOARD_VERSION: &str = "v1";
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct Pannel {
-    stream_name: String,
+pub struct Tiles {
+    name: String,
+    pub tile_id: Option<String>,
+    description: String,
+    stream: String,
     query: String,
-    chart_type: String,
-    columns: Vec<String>,
-    headers: Vec<String>,
-    dimensions: Vec<u64>,
+    order: Option<u64>,
+    visualization: Visualization,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct Visualization {
+    visualization_type: String,
+    circular_chart_config: Option<CircularChartConfig>,
+    graph_config: Option<GraphConfig>,
+    size: String,
+    color_config: Vec<ColorConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct CircularChartConfig {
+    name_key: String,
+    value_key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct GraphConfig {
+    x_key: String,
+    y_key: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct ColorConfig {
+    field_name: String,
+    color_palette: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Dashboard {
-    version: String,
-    dashboard_name: String,
-    dashboard_id: String,
-    time_filter: TimeFilter,
+    pub version: Option<String>,
+    name: String,
+    description: String,
+    pub dashboard_id: Option<String>,
+    pub user_id: String,
+    pub time_filter: Option<TimeFilter>,
     refresh_interval: u64,
-    pannels: Vec<Pannel>,
-}
-
-impl Dashboard {
-    pub fn dashboard_id(&self) -> &str {
-        &self.dashboard_id
-    }
+    pub tiles: Vec<Tiles>,
 }
 
 #[derive(Default, Debug)]
@@ -60,16 +84,12 @@ pub struct Dashboards(RwLock<Vec<Dashboard>>);
 impl Dashboards {
     pub async fn load(&self) -> anyhow::Result<()> {
         let mut this = vec![];
-        let path = RelativePathBuf::from(USERS_ROOT_DIR);
         let store = CONFIG.storage().get_object_store();
-        let objs = store
-            .get_objects(Some(&path), Box::new(|path| path.ends_with(".json")))
-            .await
-            .unwrap_or_default();
+        let dashboards = store.get_all_dashboards().await.unwrap_or_default();
 
-        for obj in objs {
-            if let Ok(filter) = serde_json::from_slice::<Dashboard>(&obj) {
-                this.push(filter);
+        for dashboard in dashboards {
+            if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard) {
+                this.push(dashboard);
             }
         }
 
@@ -79,18 +99,33 @@ impl Dashboards {
         Ok(())
     }
 
-    pub fn update(&self, dashboard: Dashboard) {
+    pub fn update(&self, dashboard: &Dashboard) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-
-        s.push(dashboard);
+        s.retain(|f| f.dashboard_id != dashboard.dashboard_id);
+        s.push(dashboard.clone());
     }
 
-    pub fn find(&self, dashboard_id: &str) -> Option<Dashboard> {
+    pub fn delete_dashboard(&self, dashboard_id: &str) {
+        let mut s = self.0.write().expect(LOCK_EXPECT);
+        s.retain(|f| f.dashboard_id != Some(dashboard_id.to_string()));
+    }
+
+    pub fn get_dashboard(&self, dashboard_id: &str) -> Option<Dashboard> {
         self.0
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .find(|dashboard| dashboard.dashboard_id() == dashboard_id)
+            .find(|f| f.dashboard_id == Some(dashboard_id.to_string()))
             .cloned()
+    }
+
+    pub fn list_dashboards_by_user(&self, user_id: &str) -> Vec<Dashboard> {
+        self.0
+            .read()
+            .expect(LOCK_EXPECT)
+            .iter()
+            .filter(|f| f.user_id == user_id)
+            .cloned()
+            .collect()
     }
 }

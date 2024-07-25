@@ -156,36 +156,43 @@ impl Server {
 
     // get the dashboards web scope
     pub fn get_dashboards_webscope() -> Scope {
-        web::scope("/dashboards").service(
-            web::scope("/{user_id}")
-                .service(
+        web::scope("/dashboards")
+            .service(
+                web::resource("").route(
+                    web::post()
+                        .to(dashboards::post)
+                        .authorize(Action::CreateDashboard),
+                ),
+            )
+            .service(
+                web::scope("/dashboard").service(
+                    web::resource("/{dashboard_id}")
+                        .route(
+                            web::get()
+                                .to(dashboards::get)
+                                .authorize(Action::GetDashboard),
+                        )
+                        .route(
+                            web::delete()
+                                .to(dashboards::delete)
+                                .authorize(Action::DeleteDashboard),
+                        )
+                        .route(
+                            web::put()
+                                .to(dashboards::update)
+                                .authorize(Action::CreateDashboard),
+                        ),
+                ),
+            )
+            .service(
+                web::scope("/{user_id}").service(
                     web::resource("").route(
                         web::get()
                             .to(dashboards::list)
                             .authorize(Action::ListDashboard),
                     ),
-                )
-                .service(
-                    web::scope("/{dashboard_id}").service(
-                        web::resource("")
-                            .route(
-                                web::get()
-                                    .to(dashboards::get)
-                                    .authorize(Action::GetDashboard),
-                            )
-                            .route(
-                                web::post()
-                                    .to(dashboards::post)
-                                    .authorize(Action::CreateDashboard),
-                            )
-                            .route(
-                                web::delete()
-                                    .to(dashboards::delete)
-                                    .authorize(Action::DeleteDashboard),
-                            ),
-                    ),
                 ),
-        )
+            )
     }
 
     // get the filters web scope
