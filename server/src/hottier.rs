@@ -575,7 +575,12 @@ impl HotTierManager {
         stream: &str,
         manifest_files: Vec<File>,
     ) -> Result<(Vec<File>, Vec<File>), HotTierError> {
-        let hot_tier_files = self.get_hot_tier_parquet_files(stream).await?;
+        let mut hot_tier_files = self.get_hot_tier_parquet_files(stream).await?;
+        hot_tier_files.retain(|file| {
+            manifest_files
+                .iter()
+                .any(|manifest_file| manifest_file.file_path.eq(&file.file_path))
+        });
         let remaining_files: Vec<File> = manifest_files
             .into_iter()
             .filter(|manifest_file| {
@@ -584,7 +589,6 @@ impl HotTierManager {
                     .all(|file| !file.file_path.eq(&manifest_file.file_path))
             })
             .collect();
-
         Ok((hot_tier_files, remaining_files))
     }
 
