@@ -70,9 +70,10 @@ spec:
   - metadata:
       name: stage-volume
     spec:
-      accessModes: [ "ReadWriteOnce" ]
-      storageClassName: "do-block-storage"
+      accessModes:
+      - {{ .Values.parseable.persistence.ingestor.accessMode | quote }}
+      storageClassName: {{ .Values.parseable.persistence.ingestor.storageClass | quote }}
       resources:
         requests:
-          storage: 10Gi
+          storage: {{ .Values.parseable.persistence.ingestor.size | quote }}
 {{- end }}
