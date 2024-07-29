@@ -16,21 +16,25 @@
  *
  */
 
+use tokio::select;
+use tokio::sync::oneshot;
 use tokio::task;
 use tokio::time::{interval, Duration};
-use tokio::sync::oneshot;
-use tokio::select;
- 
+
 use crate::option::CONFIG;
 use crate::{storage, STORAGE_UPLOAD_INTERVAL};
- 
-pub async fn object_store_sync() -> (task::JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+
+pub async fn object_store_sync() -> (
+    task::JoinHandle<()>,
+    oneshot::Receiver<()>,
+    oneshot::Sender<()>,
+) {
     let (_outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, mut inbox_rx) = oneshot::channel::<()>();
- 
+
     let handle = task::spawn(async move {
         let mut interval = interval(Duration::from_secs((STORAGE_UPLOAD_INTERVAL + 5).into()));
- 
+
         loop {
             select! {
                 _ = interval.tick() => {
@@ -42,11 +46,15 @@ pub async fn object_store_sync() -> (task::JoinHandle<()>, oneshot::Receiver<()>
             }
         }
     });
- 
+
     (handle, outbox_rx, inbox_tx)
 }
- 
-pub async fn run_local_sync() -> (task::JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+
+pub async fn run_local_sync() -> (
+    task::JoinHandle<()>,
+    oneshot::Receiver<()>,
+    oneshot::Sender<()>,
+) {
     let (_outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, mut inbox_rx) = oneshot::channel::<()>();
 

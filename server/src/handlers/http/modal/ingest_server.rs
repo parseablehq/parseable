@@ -330,7 +330,8 @@ impl IngestServer {
 
         migration::run_migration(&CONFIG).await?;
 
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync().await;
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
+            sync::run_local_sync().await;
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
 
