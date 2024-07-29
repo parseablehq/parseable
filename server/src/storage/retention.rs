@@ -16,93 +16,76 @@
  *
  */
 
-use std::hash::Hash;
-use std::num::NonZeroU32;
-use std::sync::Mutex;
-use std::thread;
-use std::time::Duration;
-
-use clokwerk::AsyncScheduler;
-use clokwerk::Job;
-use clokwerk::TimeUnits;
-use derive_more::Display;
-use once_cell::sync::Lazy;
-
-use crate::metadata::STREAM_INFO;
-
-type SchedulerHandle = thread::JoinHandle<()>;
-
-static SCHEDULER_HANDLER: Lazy<Mutex<Option<SchedulerHandle>>> = Lazy::new(|| Mutex::new(None));
-
-fn async_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .thread_name("retention-task-thread")
-        .enable_all()
-        .build()
-        .unwrap()
-}
-
-pub fn load_retention_from_global() {
-    log::info!("loading retention for all streams");
-    init_scheduler();
-}
-
-pub fn init_scheduler() {
-    log::info!("Setting up schedular");
-    let mut scheduler = AsyncScheduler::new();
-    let func = move || async {
-        //get retention every day at 12 am
-        for stream in STREAM_INFO.list_streams() {
-            let retention = STREAM_INFO.get_retention(&stream);
-
-            match retention {
-                Ok(config) => {
-                    if config.is_none() {
-                        continue;
-                    }
-                    for Task { action, days, .. } in config.unwrap().tasks.into_iter() {
-                        match action {
-                            Action::Delete => {
-                                let stream = stream.to_string();
-                                thread::spawn(move || {
-                                    let rt = tokio::runtime::Runtime::new().unwrap();
-                                    rt.block_on(async {
-                                        // Run the asynchronous delete action
-                                        action::delete(stream.clone(), u32::from(days)).await;
-                                    });
-                                });
-                            }
-                        };
-                    }
-                }
-                Err(err) => {
-                    log::warn!("failed to load retention config for {stream} due to {err:?}")
-                }
-            };
-        }
-    };
-
-    // Execute once on startup
-    thread::spawn(move || {
-        let rt = async_runtime();
-        rt.block_on(func());
-    });
-
-    scheduler.every(1.day()).at("00:00").run(func);
-
-    let scheduler_handler = thread::spawn(|| {
-        let rt = async_runtime();
-        rt.block_on(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(10)).await;
-                scheduler.run_pending().await;
-            }
-        });
-    });
-
-    *SCHEDULER_HANDLER.lock().unwrap() = Some(scheduler_handler);
-    log::info!("Scheduler is initialized")
-}
+ use std::hash::Hash;
+ use std::num::NonZeroU32;
+ use std::sync::Mutex;
+ use std::time::Duration;
+ 
+ use clokwerk::AsyncScheduler;
+ use clokwerk::Job;
+ use clokwerk::TimeUnits;
+ use derive_more::Display;
+ use once_cell::sync::Lazy;
+ use tokio::task::JoinHandle;
+ 
+ use crate::metadata::STREAM_INFO;
+ 
+ type SchedulerHandle = JoinHandle<()>;
+ 
+ static SCHEDULER_HANDLER: Lazy<Mutex<Option<SchedulerHandle>>> = Lazy::new(|| Mutex::new(None));
+ 
+ pub fn load_retention_from_global() {
+     log::info!("loading retention for all streams");
+     init_scheduler();
+ }
+ 
+ pub fn init_scheduler() {
+     log::info!("Setting up scheduler");
+     let mut scheduler = AsyncScheduler::new();
+     let func = move || async {
+         //get retention every day at 12 am
+         for stream in STREAM_INFO.list_streams() {
+             let retention = STREAM_INFO.get_retention(&stream);
+ 
+             match retention {
+                 Ok(config) => {
+                     if let Some(config) = config {
+                         for Task { action, days, .. } in config.tasks.into_iter() {
+                             match action {
+                                 Action::Delete => {
+                                     let stream = stream.to_string();
+                                     tokio::spawn(async move {
+                                         action::delete(stream.clone(), u32::from(days)).await;
+                                     });
+                                 }
+                             };
+                         }
+                     }
+                 }
+                 Err(err) => {
+                     log::warn!("failed to load retention config for {stream} due to {err:?}")
+                 }
+             };
+         }
+     };
+ 
+     // Execute once on startup
+     tokio::spawn(async move {
+         func().await;
+     });
+ 
+     scheduler.every(1.day()).at("00:00").run(func);
+ 
+     let scheduler_handler = tokio::spawn(async move {
+         loop {
+             tokio::time::sleep(Duration::from_secs(10)).await;
+             scheduler.run_pending().await;
+         }
+     });
+ 
+     *SCHEDULER_HANDLER.lock().unwrap() = Some(scheduler_handler);
+     log::info!("Scheduler is initialized")
+ }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "Vec<TaskView>")]
