@@ -16,52 +16,52 @@
  *
  */
 
- use tokio::task;
- use tokio::time::{interval, Duration};
- use tokio::sync::oneshot;
- use tokio::select;
+use tokio::task;
+use tokio::time::{interval, Duration};
+use tokio::sync::oneshot;
+use tokio::select;
  
- use crate::option::CONFIG;
- use crate::{storage, STORAGE_UPLOAD_INTERVAL};
+use crate::option::CONFIG;
+use crate::{storage, STORAGE_UPLOAD_INTERVAL};
  
- pub async fn object_store_sync() -> (task::JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
-     let (_outbox_tx, outbox_rx) = oneshot::channel::<()>();
-     let (inbox_tx, mut inbox_rx) = oneshot::channel::<()>();
+pub async fn object_store_sync() -> (task::JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+    let (_outbox_tx, outbox_rx) = oneshot::channel::<()>();
+    let (inbox_tx, mut inbox_rx) = oneshot::channel::<()>();
  
-     let handle = task::spawn(async move {
-         let mut interval = interval(Duration::from_secs((STORAGE_UPLOAD_INTERVAL + 5).into()));
+    let handle = task::spawn(async move {
+        let mut interval = interval(Duration::from_secs((STORAGE_UPLOAD_INTERVAL + 5).into()));
  
-         loop {
-             select! {
-                 _ = interval.tick() => {
-                     if let Err(e) = CONFIG.storage().get_object_store().sync().await {
-                         log::warn!("failed to sync local data with object store. {:?}", e);
-                     }
-                 }
-                 _ = &mut inbox_rx => break,
-             }
-         }
-     });
+        loop {
+            select! {
+                _ = interval.tick() => {
+                    if let Err(e) = CONFIG.storage().get_object_store().sync().await {
+                        log::warn!("failed to sync local data with object store. {:?}", e);
+                    }
+                }
+                _ = &mut inbox_rx => break,
+            }
+        }
+    });
  
-     (handle, outbox_rx, inbox_tx)
- }
+    (handle, outbox_rx, inbox_tx)
+}
  
- pub async fn run_local_sync() -> (task::JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
-     let (_outbox_tx, outbox_rx) = oneshot::channel::<()>();
-     let (inbox_tx, mut inbox_rx) = oneshot::channel::<()>();
- 
-     let handle = task::spawn(async move {
-         let mut interval = interval(Duration::from_secs(storage::LOCAL_SYNC_INTERVAL));
- 
-         loop {
-             select! {
-                 _ = interval.tick() => {
-                     crate::event::STREAM_WRITERS.unset_all();
-                 }
-                 _ = &mut inbox_rx => break,
-             }
-         }
-     });
- 
-     (handle, outbox_rx, inbox_tx)
- }
+pub async fn run_local_sync() -> (task::JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+    let (_outbox_tx, outbox_rx) = oneshot::channel::<()>();
+    let (inbox_tx, mut inbox_rx) = oneshot::channel::<()>();
+
+    let handle = task::spawn(async move {
+        let mut interval = interval(Duration::from_secs(storage::LOCAL_SYNC_INTERVAL));
+
+        loop {
+            select! {
+                _ = interval.tick() => {
+                    crate::event::STREAM_WRITERS.unset_all();
+                }
+                _ = &mut inbox_rx => break,
+            }
+        }
+    });
+
+    (handle, outbox_rx, inbox_tx)
+}
