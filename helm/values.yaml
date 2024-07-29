@@ -49,6 +49,11 @@ parseable:
       storageClass: ""
       accessMode: ReadWriteOnce
       size: 1Gi
+    ingestor:
+      enabled: false
+      storageClass: ""
+      accessMode: ReadWriteOnce
+      size: 1Gi
     data:
       enabled: false
       storageClass: ""
