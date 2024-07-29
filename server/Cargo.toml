@@ -121,8 +121,8 @@ maplit = "1.0"
 rstest = "0.19.0"
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.1/build.zip"
-assets-sha1 = "ca16a2efc6b05058066242ba5a0e8d0dd96074e0"
+assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.2/build.zip"
+assets-sha1 = "7a6d12a56e848b6b40f2913e72df4483431dc611"
 
 [features]
 debug = []
