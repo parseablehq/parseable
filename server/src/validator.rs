@@ -24,7 +24,8 @@ use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
 use crate::handlers::http::cluster::INTERNAL_STREAM_NAME;
-use crate::option::validation::{cache_size, human_size_to_bytes};
+use crate::option::validation::{bytes_to_human_size, human_size_to_bytes};
+use crate::option::CONFIG;
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
@@ -154,9 +155,16 @@ pub fn hot_tier(
     size: &str,
 ) -> Result<(), HotTierValidationError> {
     if human_size_to_bytes(size).is_err() {
-        return Err(HotTierValidationError::Size);
+        return Err(HotTierValidationError::Size(bytes_to_human_size(
+            CONFIG.parseable.min_hot_tier_size,
+        )));
     }
-    cache_size(size).map_err(|_| HotTierValidationError::Size)?;
+
+    if human_size_to_bytes(size).unwrap() < CONFIG.parseable.min_hot_tier_size {
+        return Err(HotTierValidationError::Size(bytes_to_human_size(
+            CONFIG.parseable.min_hot_tier_size,
+        )));
+    }
 
     let (start_date, end_date) = parse_human_date(start_date, end_date)?;
 
@@ -241,8 +249,8 @@ pub mod error {
 
     #[derive(Debug, thiserror::Error)]
     pub enum HotTierValidationError {
-        #[error("Invalid size given for hot tier, please provide size in human readable format, e.g 1GiB, 2GiB")]
-        Size,
+        #[error("Invalid size given for hot tier, please provide size in human readable format, e.g 1GiB, 2GiB, minimum {0}")]
+        Size(String),
         #[error(
             "Invalid start date given for hot tier, please provide the date in yyyy-mm-dd format"
         )]

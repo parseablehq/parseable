@@ -951,7 +951,7 @@ pub async fn put_stream_hot_tier(
     }
 
     let body = body.into_inner();
-    let hottier: StreamHotTier = match serde_json::from_value(body) {
+    let mut hottier: StreamHotTier = match serde_json::from_value(body) {
         Ok(hottier) => hottier,
         Err(err) => return Err(StreamError::InvalidHotTierConfig(err)),
     };
@@ -964,7 +964,7 @@ pub async fn put_stream_hot_tier(
 
     STREAM_INFO.set_hot_tier(&stream_name, true)?;
     if let Some(hot_tier_manager) = HotTierManager::global() {
-        let mut hottier = StreamHotTier {
+        hottier = StreamHotTier {
             start_date: hottier.start_date,
             end_date: hottier.end_date,
             size: hottier.size.clone(),
@@ -973,8 +973,9 @@ pub async fn put_stream_hot_tier(
             updated_date_range: None,
         };
 
-        hot_tier_manager.validate(&stream_name, &hottier).await?;
-
+        hot_tier_manager
+            .validate(&stream_name, &mut hottier)
+            .await?;
         hot_tier_manager
             .put_hot_tier(&stream_name, &mut hottier)
             .await?;
@@ -986,10 +987,7 @@ pub async fn put_stream_hot_tier(
             .await?;
     }
 
-    Ok((
-        format!("hot tier set for log stream {stream_name}"),
-        StatusCode::OK,
-    ))
+    Ok((web::Json(hottier), StatusCode::OK))
 }
 
 pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {

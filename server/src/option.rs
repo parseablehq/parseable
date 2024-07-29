@@ -28,7 +28,7 @@ use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-pub const MIN_CACHE_SIZE_BYTES: u64 = 1000u64.pow(3); // 1 GiB
+pub const MIN_CACHE_SIZE_BYTES: u64 = 1073741824; // 1 GiB
 pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
 pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
@@ -342,7 +342,6 @@ pub mod validation {
             .or(parse_and_map::<multiples::Tebibyte>(s))
             .or(parse_and_map::<multiples::Terabyte>(s))
             .map_err(|_| "Could not parse given size".to_string())?;
-
         Ok(size)
     }
 
@@ -371,10 +370,28 @@ pub mod validation {
     pub fn cache_size(s: &str) -> Result<u64, String> {
         let size = human_size_to_bytes(s)?;
         if size < MIN_CACHE_SIZE_BYTES {
+            return Err(format!(
+                "Specified value of cache size is smaller than current minimum of {}",
+                human_size_to_bytes(&MIN_CACHE_SIZE_BYTES.to_string()).unwrap()
+            ));
+        }
+        Ok(size)
+    }
+
+    pub fn hot_tier_size(s: &str) -> Result<u64, String> {
+        let size = human_size_to_bytes(s)?;
+        if size < MIN_CACHE_SIZE_BYTES {
             return Err(
                 "Specified value of cache size is smaller than current minimum of 1GiB".to_string(),
             );
         }
         Ok(size)
+    }
+
+    pub fn disk_usage(s: &str) -> Result<f64, String> {
+        let disk_usage = s
+            .parse::<f64>()
+            .map_err(|_| "Invalid disk usage value".to_string())?;
+        Ok(disk_usage)
     }
 }
