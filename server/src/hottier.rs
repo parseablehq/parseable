@@ -17,6 +17,7 @@
  */
 
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -27,15 +28,15 @@ use crate::{
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
     option::{
         validation::{bytes_to_human_size, human_size_to_bytes},
-        CONFIG,
+        CONFIG, MAX_DISK_USAGE,
     },
     storage::{ObjectStorage, ObjectStorageError},
-    utils::{extract_datetime, get_dir_size},
-    validator::{error::HotTierValidationError, parse_human_date},
+    utils::extract_datetime,
+    validator::error::HotTierValidationError,
 };
-use chrono::{NaiveDate, Utc};
+use chrono::NaiveDate;
 use clokwerk::{AsyncScheduler, Interval, Job};
-use futures::TryStreamExt;
+use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
 use futures_util::TryFutureExt;
 use object_store::{local::LocalFileSystem, ObjectStore};
 use once_cell::sync::OnceCell;
@@ -48,7 +49,7 @@ use tokio::io::AsyncWriteExt;
 use tokio_stream::wrappers::ReadDirStream;
 
 pub const STREAM_HOT_TIER_FILENAME: &str = ".hot_tier.json";
-
+pub const MIN_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10737418240; // 10 GiB
 const HOT_TIER_SYNC_DURATION: Interval = clokwerk::Interval::Minutes(1);
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -59,12 +60,8 @@ pub struct StreamHotTier {
     pub used_size: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub available_size: Option<String>,
-    #[serde(rename = "start_date")]
-    pub start_date: String,
-    #[serde(rename = "end_date")]
-    pub end_date: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_date_range: Option<Vec<String>>,
+    pub oldest_date_time_entry: Option<String>,
 }
 
 pub struct HotTierManager {
@@ -88,83 +85,58 @@ impl HotTierManager {
         }))
     }
 
-    ///validate the hot tier configuration, check the disk availability
-    /// update the hot tier range if the disk is not available to download the entire set
-    /// delete the existing hot tier files once validation is successful
-    pub async fn validate(
+    ///get the total hot tier size for all streams
+    pub async fn get_hot_tiers_size(&self, current_stream: &str) -> Result<u64, HotTierError> {
+        let mut total_hot_tier_size = 0;
+        for stream in STREAM_INFO.list_streams() {
+            if self.check_stream_hot_tier_exists(&stream) && stream != current_stream {
+                let stream_hot_tier = self.get_hot_tier(&stream).await?;
+                total_hot_tier_size += human_size_to_bytes(&stream_hot_tier.size).unwrap();
+            }
+        }
+        Ok(total_hot_tier_size)
+    }
+
+    /// validate if hot tier size can be fit in the disk
+    /// check disk usage and hot tier size of all other streams
+    /// check if total hot tier size of all streams is less than max disk usage
+    /// delete all the files from hot tier once validation is successful and hot tier is ready to be updated
+    pub async fn validate_hot_tier_size(
         &self,
         stream: &str,
-        stream_hot_tier: &mut StreamHotTier,
+        size: &str,
     ) -> Result<(), HotTierError> {
-        async fn validate_helper(
-            this: &HotTierManager,
-            stream: &str,
-            stream_hot_tier: &mut StreamHotTier,
-        ) -> Result<(), HotTierError> {
-            let date_list = this.get_date_list(
-                &stream_hot_tier.start_date,
-                &stream_hot_tier.end_date,
-                &stream_hot_tier.updated_date_range,
-            )?;
-            let object_store = CONFIG.storage().get_object_store();
-            let s3_file_list = object_store.list_files(stream).await?;
-            let mut manifest_list = Vec::new();
-            let mut total_size_to_download = 0;
+        let (total_disk_space, available_disk_space, used_disk_space) = get_disk_usage();
 
-            for date in &date_list {
-                let date_str = date.to_string();
-                let manifest_files_to_download = s3_file_list
-                    .iter()
-                    .filter(|file| file.starts_with(&format!("{}/date={}", stream, date_str)))
-                    .collect::<Vec<_>>();
+        if let (Some(total_disk_space), Some(available_disk_space), Some(used_disk_space)) =
+            (total_disk_space, available_disk_space, used_disk_space)
+        {
+            let stream_hot_tier_size = human_size_to_bytes(size).unwrap();
+            let total_hot_tier_size = self.get_hot_tiers_size(stream).await?;
+            let projected_disk_usage = used_disk_space + total_hot_tier_size + stream_hot_tier_size;
 
-                for file in manifest_files_to_download {
-                    let manifest_path: RelativePathBuf = RelativePathBuf::from(file);
-                    let manifest_file = object_store.get_object(&manifest_path).await?;
-                    let manifest: Manifest = serde_json::from_slice(&manifest_file)?;
-                    manifest_list.push(manifest.clone());
-                }
+            let usage_percentage = (projected_disk_usage as f64 / total_disk_space as f64) * 100.0;
+
+            if usage_percentage > MAX_DISK_USAGE {
+                return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
+                    "Including the hot tier size of all the streams, the projected disk usage will be {} which is above the set threshold of {}%, hence unable to set the hot tier for the stream. Total Disk Size: {}, Available Disk Size: {}, Used Disk Size: {}, Total Hot Tier Size (all other streams): {}",
+                    usage_percentage,
+                    MAX_DISK_USAGE,
+                    bytes_to_human_size(total_disk_space),
+                    bytes_to_human_size(available_disk_space),
+                    bytes_to_human_size(used_disk_space),
+                    bytes_to_human_size(total_hot_tier_size)
+                ))));
             }
-
-            for manifest in &manifest_list {
-                total_size_to_download += manifest
-                    .files
-                    .iter()
-                    .map(|file| file.file_size)
-                    .sum::<u64>();
-            }
-
-            if (!this
-                .is_disk_available(total_size_to_download, &stream_hot_tier.size)
-                .await?
-                || human_size_to_bytes(&stream_hot_tier.size).unwrap() < total_size_to_download)
-                && date_list.len() > 1
-            {
-                stream_hot_tier.updated_date_range = Some(
-                    date_list
-                        .iter()
-                        .skip(1)
-                        .map(|date| date.to_string())
-                        .collect(),
-                );
-                return Box::pin(validate_helper(this, stream, stream_hot_tier)).await;
-            }
-
-            if let Ok(mut existing_hot_tier) = this.get_hot_tier(stream).await {
-                let available_date_list = this.fetch_hot_tier_dates(stream).await?;
-                this.delete_files_from_hot_tier(
-                    &mut existing_hot_tier,
-                    stream,
-                    &available_date_list,
-                    true,
-                )
-                .await?;
-            }
-
-            Ok(())
         }
 
-        validate_helper(self, stream, stream_hot_tier).await
+        if self.check_stream_hot_tier_exists(stream) {
+            let available_date_list = self.fetch_hot_tier_dates(stream).await?;
+            self.delete_files_from_hot_tier(stream, &available_date_list)
+                .await?;
+        }
+
+        Ok(())
     }
 
     ///get the hot tier metadata file for the stream
@@ -181,7 +153,12 @@ impl HotTierManager {
             .and_then(|resp| resp.bytes())
             .await;
         match res {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(Into::into),
+            Ok(bytes) => {
+                let mut stream_hot_tier: StreamHotTier = serde_json::from_slice(&bytes)?;
+                let oldest_date_time_entry = self.get_oldest_date_time_entry(stream).await?;
+                stream_hot_tier.oldest_date_time_entry = oldest_date_time_entry;
+                Ok(stream_hot_tier)
+            }
             Err(err) => Err(err.into()),
         }
     }
@@ -193,21 +170,8 @@ impl HotTierManager {
         stream: &str,
         hot_tier: &mut StreamHotTier,
     ) -> Result<(), HotTierError> {
-        let date_list = if let Some(updated_date_range) = &hot_tier.updated_date_range {
-            updated_date_range
-                .iter()
-                .map(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap())
-                .collect()
-        } else {
-            self.get_date_list(&hot_tier.start_date, &hot_tier.end_date, &None)?
-        };
-        hot_tier.updated_date_range = date_list
-            .iter()
-            .map(|date| date.to_string())
-            .collect::<Vec<String>>()
-            .into();
         let path = hot_tier_file_path(&self.hot_tier_path, stream)?;
-        let bytes = serde_json::to_vec(hot_tier)?.into();
+        let bytes = serde_json::to_vec(&hot_tier)?.into();
         self.filesystem.put(&path, bytes).await?;
         Ok(())
     }
@@ -239,9 +203,19 @@ impl HotTierManager {
     ///sync the hot tier files from S3 to the hot tier directory for all streams
     async fn sync_hot_tier(&self) -> Result<(), HotTierError> {
         let streams = STREAM_INFO.list_streams();
+        let sync_hot_tier_tasks = FuturesUnordered::new();
         for stream in streams {
             if self.check_stream_hot_tier_exists(&stream) {
-                self.process_stream(stream).await?;
+                sync_hot_tier_tasks.push(async move { self.process_stream(stream).await });
+                //self.process_stream(stream).await?;
+            }
+        }
+
+        let res: Vec<_> = sync_hot_tier_tasks.collect().await;
+        for res in res {
+            if let Err(err) = res {
+                log::error!("Failed to run hot tier sync task {err:?}");
+                return Err(err);
             }
         }
         Ok(())
@@ -250,126 +224,77 @@ impl HotTierManager {
     ///process the hot tier files for the stream
     /// delete the files from the hot tier directory if the available date range is outside the hot tier range
     async fn process_stream(&self, stream: String) -> Result<(), HotTierError> {
-        let mut stream_hot_tier = self.get_hot_tier(&stream).await?;
+        let stream_hot_tier = self.get_hot_tier(&stream).await?;
         let mut parquet_file_size =
             human_size_to_bytes(stream_hot_tier.used_size.as_ref().unwrap()).unwrap();
-        let date_list = self.get_hot_tier_time_range(&stream_hot_tier).await?;
-        let available_date_list = self.fetch_hot_tier_dates(&stream).await?;
-        let dates_to_delete: Vec<NaiveDate> = available_date_list
-            .into_iter()
-            .filter(|available_date| !date_list.contains(available_date))
-            .collect();
-        if !dates_to_delete.is_empty() {
-            self.delete_files_from_hot_tier(&mut stream_hot_tier, &stream, &dates_to_delete, false)
-                .await?;
-        }
-        let object_store = CONFIG.storage().get_object_store();
-        let s3_file_list = object_store.list_files(&stream).await?;
 
-        for date in date_list {
-            self.process_date(
-                &stream,
-                &mut stream_hot_tier,
-                &s3_file_list,
-                date,
-                &mut parquet_file_size,
-                object_store.clone(),
-            )
-            .await?;
-            self.put_hot_tier(&stream, &mut stream_hot_tier).await?;
-        }
+        let object_store = CONFIG.storage().get_object_store();
+        let mut s3_manifest_file_list = object_store.list_manifest_files(&stream).await?;
+        self.process_manifest(
+            &stream,
+            &mut s3_manifest_file_list,
+            &mut parquet_file_size,
+            object_store.clone(),
+        )
+        .await?;
 
         Ok(())
-    }
-
-    ///get the list of date range from hot tier metadata
-    /// if updated_date_range is available, get the list of dates from the updated_date_range
-    /// else get the list of dates from the start and end date
-    fn get_date_list(
-        &self,
-        start_date: &str,
-        end_date: &str,
-        updated_date_range: &Option<Vec<String>>,
-    ) -> Result<Vec<NaiveDate>, HotTierError> {
-        let (dt_start_date, dt_end_date) = if let Some(updated_date_range) = updated_date_range {
-            parse_human_date(
-                updated_date_range.first().unwrap(),
-                updated_date_range.last().unwrap(),
-            )?
-        } else {
-            parse_human_date(start_date, end_date)?
-        };
-
-        let date_list: Vec<NaiveDate> = (0..)
-            .map(|i| dt_start_date + chrono::Duration::days(i))
-            .take_while(|&date| date <= dt_end_date)
-            .collect();
-
-        Ok(date_list)
     }
 
     ///process the hot tier files for the date for the stream
     /// collect all manifests from S3 for the date, sort the parquet file list
     /// in order to download the latest files first
     /// download the parquet files if not present in hot tier directory
-    async fn process_date(
+    async fn process_manifest(
         &self,
         stream: &str,
-        stream_hot_tier: &mut StreamHotTier,
-        s3_file_list: &[String],
-        date: NaiveDate,
+        manifest_files_to_download: &mut BTreeMap<String, Vec<String>>,
         parquet_file_size: &mut u64,
         object_store: Arc<dyn ObjectStorage + Send>,
     ) -> Result<(), HotTierError> {
-        let date_str = date.to_string();
-        let available_date_list = self.fetch_hot_tier_dates(stream).await?;
-        if available_date_list.contains(&date) && !date.eq(&Utc::now().date_naive()) {
+        if manifest_files_to_download.is_empty() {
             return Ok(());
         }
-        let manifest_files_to_download = s3_file_list
-            .iter()
-            .filter(|file| file.starts_with(&format!("{}/date={}", stream, date_str)))
-            .collect::<Vec<_>>();
-        if manifest_files_to_download.is_empty() {
-            self.update_hot_tier_time_range(stream, stream_hot_tier, &date_str)
-                .await?;
-        }
-        let mut manifest_list = Vec::new();
-        for file in manifest_files_to_download {
-            let path = self.hot_tier_path.join(file);
-            fs::create_dir_all(path.parent().unwrap()).await?;
-            let manifest_path: RelativePathBuf = RelativePathBuf::from(file);
-            let manifest_file = object_store.get_object(&manifest_path).await?;
+        for (str_date, manifest_files) in manifest_files_to_download.iter().rev() {
+            let mut storage_combined_manifest = Manifest::default();
 
-            let mut file = fs::File::create(path.clone()).await?;
-            file.write_all(&manifest_file).await?;
-            let manifest: Manifest = serde_json::from_slice(&manifest_file)?;
-            manifest_list.push(manifest.clone());
-        }
-        let mut parquet_file_list = Vec::new();
-        for manifest in manifest_list {
-            parquet_file_list.extend(manifest.files);
-        }
-        parquet_file_list.sort_by_key(|file| file.file_path.clone());
-        parquet_file_list.reverse();
-        for parquet_file in parquet_file_list {
-            let parquet_file_path = &parquet_file.file_path;
-            let parquet_path = self.hot_tier_path.join(parquet_file_path);
-            if !parquet_path.exists() {
-                if !self
-                    .process_parquet_file(
-                        stream,
-                        stream_hot_tier,
-                        &parquet_file,
-                        parquet_file_size,
-                        parquet_path,
-                    )
-                    .await?
-                {
-                    break;
+            for manifest_file in manifest_files {
+                let manifest_path: RelativePathBuf = RelativePathBuf::from(manifest_file.clone());
+                let storage_manifest_bytes = object_store.get_object(&manifest_path).await?;
+                let storage_manifest: Manifest = serde_json::from_slice(&storage_manifest_bytes)?;
+                storage_combined_manifest
+                    .files
+                    .extend(storage_manifest.files);
+            }
+
+            storage_combined_manifest
+                .files
+                .sort_by_key(|file| file.file_path.clone());
+
+            while let Some(parquet_file) = storage_combined_manifest.files.pop() {
+                let parquet_file_path = &parquet_file.file_path;
+                let parquet_path = self.hot_tier_path.join(parquet_file_path);
+
+                if !parquet_path.exists() {
+                    if let Ok(date) =
+                        NaiveDate::parse_from_str(str_date.trim_start_matches("date="), "%Y-%m-%d")
+                    {
+                        if !self
+                            .process_parquet_file(
+                                stream,
+                                &parquet_file,
+                                parquet_file_size,
+                                parquet_path,
+                                date,
+                            )
+                            .await?
+                        {
+                            break;
+                        }
+                    } else {
+                        log::warn!("Invalid date format: {}", str_date);
+                    }
                 }
-            } else {
-                continue;
             }
         }
 
@@ -385,12 +310,13 @@ impl HotTierManager {
     async fn process_parquet_file(
         &self,
         stream: &str,
-        stream_hot_tier: &mut StreamHotTier,
         parquet_file: &File,
         parquet_file_size: &mut u64,
         parquet_path: PathBuf,
+        date: NaiveDate,
     ) -> Result<bool, HotTierError> {
         let mut file_processed = false;
+        let mut stream_hot_tier = self.get_hot_tier(stream).await?;
         if !self
             .is_disk_available(parquet_file.file_size, &stream_hot_tier.size)
             .await?
@@ -398,9 +324,9 @@ impl HotTierManager {
                 <= parquet_file.file_size
         {
             if !self
-                .delete_1minute_data(
+                .cleanup_hot_tier_old_data(
                     stream,
-                    stream_hot_tier,
+                    &mut stream_hot_tier,
                     &parquet_path,
                     parquet_file.file_size,
                 )
@@ -427,7 +353,19 @@ impl HotTierManager {
             human_size_to_bytes(&stream_hot_tier.available_size.clone().unwrap()).unwrap()
                 - parquet_file.file_size,
         ));
+        self.put_hot_tier(stream, &mut stream_hot_tier).await?;
         file_processed = true;
+        let mut hot_tier_manifest = self
+            .get_stream_hot_tier_manifest_for_date(stream, &date)
+            .await?;
+        hot_tier_manifest.files.push(parquet_file.clone());
+        // write the manifest file to the hot tier directory
+        let manifest_path = self
+            .hot_tier_path
+            .join(stream)
+            .join(format!("date={}/hottier.manifest.json", date));
+        fs::create_dir_all(manifest_path.parent().unwrap()).await?;
+        fs::write(manifest_path, serde_json::to_vec(&hot_tier_manifest)?).await?;
         Ok(file_processed)
     }
 
@@ -435,58 +373,17 @@ impl HotTierManager {
     /// update the used and available size in the hot tier metadata
     pub async fn delete_files_from_hot_tier(
         &self,
-        stream_hot_tier: &mut StreamHotTier,
         stream: &str,
         dates: &[NaiveDate],
-        validate: bool,
     ) -> Result<(), HotTierError> {
         for date in dates.iter() {
             let path = self.hot_tier_path.join(format!("{}/date={}", stream, date));
             if path.exists() {
-                if !validate {
-                    let size = get_dir_size(path.clone())?;
-                    if self
-                        .check_current_date_for_deletion(stream_hot_tier, stream)
-                        .await?
-                    {
-                        return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(
-                            format!(
-                                "Hot tier capacity for stream {} is exhausted (Total: {}, Available - {}). Today's data cannot be deleted. Please increase the hot tier size. Download will resume tomorrow"
-                            , stream, stream_hot_tier.size, stream_hot_tier.available_size.clone().unwrap()) )));
-                    }
-                    stream_hot_tier.used_size = Some(bytes_to_human_size(
-                        human_size_to_bytes(&stream_hot_tier.used_size.clone().unwrap()).unwrap()
-                            - size,
-                    ));
-                    stream_hot_tier.available_size = Some(bytes_to_human_size(
-                        human_size_to_bytes(&stream_hot_tier.available_size.clone().unwrap())
-                            .unwrap()
-                            + size,
-                    ));
-                    self.put_hot_tier(stream, stream_hot_tier).await?;
-                }
                 fs::remove_dir_all(path.clone()).await?;
             }
-            self.update_hot_tier_time_range(stream, stream_hot_tier, &date.to_string())
-                .await?;
         }
 
         Ok(())
-    }
-
-    ///check if the current date is the last date available in the hot tier directory
-    async fn check_current_date_for_deletion(
-        &self,
-        stream_hot_tier: &StreamHotTier,
-        stream: &str,
-    ) -> Result<bool, HotTierError> {
-        let current_date = Utc::now().date_naive();
-        let (_, end_date) =
-            parse_human_date(&stream_hot_tier.start_date, &stream_hot_tier.end_date)?;
-        let is_end_date_today = end_date == current_date;
-        let available_date_list = self.fetch_hot_tier_dates(stream).await?;
-        let is_current_date_available = available_date_list.contains(&current_date);
-        Ok(available_date_list.len() == 1 && is_current_date_available && is_end_date_today)
     }
 
     ///fetch the list of dates available in the hot tier directory for the stream and sort them
@@ -511,62 +408,34 @@ impl HotTierManager {
         Ok(date_list)
     }
 
-    ///update the hot tier time range for the stream
-    /// remove the date given from the updated_date_range
-    /// put the hot tier metadata file for the stream
-    pub async fn update_hot_tier_time_range(
+    ///get hot tier manifest for the stream and date
+    pub async fn get_stream_hot_tier_manifest_for_date(
         &self,
         stream: &str,
-        stream_hot_tier: &mut StreamHotTier,
-        date: &str,
-    ) -> Result<(), HotTierError> {
-        if stream_hot_tier.updated_date_range.as_ref().unwrap().len() == 1
-            && stream_hot_tier
-                .updated_date_range
-                .as_ref()
-                .unwrap()
-                .contains(&Utc::now().date_naive().to_string())
-        {
-            return Ok(());
+        date: &NaiveDate,
+    ) -> Result<Manifest, HotTierError> {
+        let mut hot_tier_manifest = Manifest::default();
+        let path = self
+            .hot_tier_path
+            .join(stream)
+            .join(format!("date={}", date));
+        if path.exists() {
+            let date_dirs = ReadDirStream::new(fs::read_dir(&path).await?);
+            let manifest_files: Vec<DirEntry> = date_dirs.try_collect().await?;
+            for manifest in manifest_files {
+                if !manifest
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".manifest.json")
+                {
+                    continue;
+                }
+                let file = fs::read(manifest.path()).await?;
+                let manifest: Manifest = serde_json::from_slice(&file)?;
+                hot_tier_manifest.files.extend(manifest.files);
+            }
         }
-        let mut existing_date_range = stream_hot_tier.updated_date_range.as_ref().unwrap().clone();
-        existing_date_range.retain(|d| d != date);
-        stream_hot_tier.updated_date_range = Some(existing_date_range);
-
-        self.put_hot_tier(stream, stream_hot_tier).await?;
-        Ok(())
-    }
-
-    ///get the updated hot tier time range for the stream
-    /// get the existing dates from the updated_date_range
-    /// update the updated_date_range with the existing dates and the new dates
-    pub async fn get_hot_tier_time_range(
-        &self,
-        stream_hot_tier: &StreamHotTier,
-    ) -> Result<Vec<NaiveDate>, HotTierError> {
-        let (start_date, end_date) =
-            parse_human_date(&stream_hot_tier.start_date, &stream_hot_tier.end_date)?;
-        let date_list: Vec<NaiveDate> = (0..)
-            .map(|i| start_date + chrono::Duration::days(i))
-            .take_while(|&date| date <= end_date)
-            .collect();
-        let mut existing_date_range: Vec<NaiveDate> = stream_hot_tier
-            .updated_date_range
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap())
-            .collect();
-        existing_date_range.sort();
-        let mut updated_date_range = vec![*date_list.last().unwrap()];
-        updated_date_range.extend(
-            date_list
-                .into_iter()
-                .filter(|date| existing_date_range.contains(date)),
-        );
-        updated_date_range.sort();
-        updated_date_range.dedup();
-        Ok(updated_date_range)
+        Ok(hot_tier_manifest)
     }
 
     ///get the list of files from all the manifests present in hot tier directory for the stream
@@ -600,31 +469,12 @@ impl HotTierManager {
         let mut hot_tier_parquet_files: Vec<File> = Vec::new();
         let date_list = self.fetch_hot_tier_dates(stream).await?;
         for date in date_list {
-            let date_str = date.to_string();
-            let path = &self
-                .hot_tier_path
-                .join(stream)
-                .join(format!("date={}", date_str));
-            if !path.exists() {
-                continue;
-            }
+            let manifest = self
+                .get_stream_hot_tier_manifest_for_date(stream, &date)
+                .await?;
 
-            let date_dirs = ReadDirStream::new(fs::read_dir(&path).await?);
-            let manifest_files: Vec<DirEntry> = date_dirs.try_collect().await?;
-            for manifest in manifest_files {
-                if !manifest
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".manifest.json")
-                {
-                    continue;
-                }
-                let file = fs::read(manifest.path()).await?;
-                let manifest: Manifest = serde_json::from_slice(&file)?;
-
-                for parquet_file in manifest.files {
-                    hot_tier_parquet_files.push(parquet_file.clone());
-                }
+            for parquet_file in manifest.files {
+                hot_tier_parquet_files.push(parquet_file.clone());
             }
         }
         Ok(hot_tier_parquet_files)
@@ -645,7 +495,7 @@ impl HotTierManager {
     /// check for the oldest entry to delete if the path exists in hot tier
     /// update the used and available size in the hot tier metadata
     /// loop if available size is still less than the parquet file size
-    pub async fn delete_1minute_data(
+    pub async fn cleanup_hot_tier_old_data(
         &self,
         stream: &str,
         stream_hot_tier: &mut StreamHotTier,
@@ -653,31 +503,26 @@ impl HotTierManager {
         parquet_file_size: u64,
     ) -> Result<bool, HotTierError> {
         let mut delete_successful = false;
-        let date_list = self.get_date_list(
-            &stream_hot_tier.start_date,
-            &stream_hot_tier.end_date,
-            &stream_hot_tier.updated_date_range,
-        )?;
-
-        if let Some(date_to_delete) = date_list.first() {
-            let date_str = date_to_delete.to_string();
-            let path = self
+        let dates = self.fetch_hot_tier_dates(stream).await?;
+        'loop_dates: for date in dates {
+            let date_str = date.to_string();
+            let path = &self
                 .hot_tier_path
                 .join(stream)
                 .join(format!("date={}", date_str));
-
             if !path.exists() {
-                return Ok(delete_successful);
+                continue;
             }
 
             let date_dirs = ReadDirStream::new(fs::read_dir(&path).await?);
             let mut manifest_files: Vec<DirEntry> = date_dirs.try_collect().await?;
-            manifest_files.retain(|file| {
-                file.file_name()
+            manifest_files.retain(|manifest| {
+                manifest
+                    .file_name()
                     .to_string_lossy()
-                    .ends_with("manifest.json")
+                    .ends_with(".manifest.json")
             });
-            'loop_manifests: for manifest_file in manifest_files {
+            for manifest_file in manifest_files {
                 let file = fs::read(manifest_file.path()).await?;
                 let mut manifest: Manifest = serde_json::from_slice(&file)?;
 
@@ -705,7 +550,9 @@ impl HotTierManager {
                         }
 
                         fs::write(manifest_file.path(), serde_json::to_vec(&manifest)?).await?;
-                        fs::remove_dir_all(&path_to_delete.parent().unwrap()).await?;
+
+                        fs::remove_dir_all(path_to_delete.parent().unwrap()).await?;
+                        delete_empty_directory_hot_tier(path_to_delete.parent().unwrap()).await?;
 
                         stream_hot_tier.used_size = Some(bytes_to_human_size(
                             human_size_to_bytes(&stream_hot_tier.used_size.clone().unwrap())
@@ -726,7 +573,7 @@ impl HotTierManager {
                         {
                             continue 'loop_files;
                         } else {
-                            break 'loop_manifests;
+                            break 'loop_dates;
                         }
                     } else {
                         fs::write(manifest_file.path(), serde_json::to_vec(&manifest)?).await?;
@@ -734,6 +581,7 @@ impl HotTierManager {
                 }
             }
         }
+
         Ok(delete_successful)
     }
 
@@ -746,39 +594,90 @@ impl HotTierManager {
     ) -> Result<bool, HotTierError> {
         let (total_disk_space, available_disk_space, used_disk_space) = get_disk_usage();
 
-        if let Some(available_space) = available_disk_space {
+        if let (Some(total_disk_space), Some(available_disk_space), Some(used_disk_space)) =
+            (total_disk_space, available_disk_space, used_disk_space)
+        {
             let hot_tier_size = human_size_to_bytes(hot_tier_size).unwrap();
-            if available_space < hot_tier_size {
+            if available_disk_space < hot_tier_size {
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
                     "Not enough space left in the disk for hot tier. Disk available Size: {}, Hot Tier Size: {}",
-                    bytes_to_human_size(available_space),
+                    bytes_to_human_size(available_disk_space),
                     bytes_to_human_size(hot_tier_size)
                 ))));
             }
 
-            if used_disk_space.unwrap() as f64 * 100.0 / total_disk_space.unwrap() as f64
-                > CONFIG.parseable.max_disk_usage
-            {
+            if used_disk_space as f64 * 100.0 / total_disk_space as f64 > MAX_DISK_USAGE {
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
                     "Disk usage is above the threshold. Disk Used Size: {}, Disk Total Size: {}, Disk Usage {}%",
-                    bytes_to_human_size(used_disk_space.unwrap()),
-                    bytes_to_human_size(total_disk_space.unwrap()),
-                    used_disk_space.unwrap() as f64 * 100.0 / total_disk_space.unwrap() as f64
+                    bytes_to_human_size(used_disk_space),
+                    bytes_to_human_size(total_disk_space),
+                    used_disk_space as f64 * 100.0 / total_disk_space as f64
                 ))));
             }
-            if available_space < size_to_download {
+            if available_disk_space < size_to_download {
                 return Ok(false);
             }
 
-            if ((used_disk_space.unwrap() + size_to_download) as f64 * 100.0
-                / total_disk_space.unwrap() as f64)
-                > CONFIG.parseable.max_disk_usage
+            if ((used_disk_space + size_to_download) as f64 * 100.0 / total_disk_space as f64)
+                > MAX_DISK_USAGE
             {
                 return Ok(false);
             }
         }
 
         Ok(true)
+    }
+
+    pub async fn get_oldest_date_time_entry(
+        &self,
+        stream: &str,
+    ) -> Result<Option<String>, HotTierError> {
+        let date_list = self.fetch_hot_tier_dates(stream).await?;
+        if date_list.is_empty() {
+            return Ok(None);
+        }
+
+        for date in date_list {
+            let path = self
+                .hot_tier_path
+                .join(stream)
+                .join(format!("date={}", date));
+
+            let hours_dir = ReadDirStream::new(fs::read_dir(&path).await?);
+            let mut hours: Vec<DirEntry> = hours_dir.try_collect().await?;
+            hours.retain(|entry| {
+                entry.path().is_dir() && entry.file_name().to_string_lossy().starts_with("hour=")
+            });
+            hours.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
+
+            for hour in hours {
+                let hour_str = hour
+                    .file_name()
+                    .to_string_lossy()
+                    .trim_start_matches("hour=")
+                    .to_string();
+
+                let minutes_dir = ReadDirStream::new(fs::read_dir(hour.path()).await?);
+                let mut minutes: Vec<DirEntry> = minutes_dir.try_collect().await?;
+                minutes.retain(|entry| {
+                    entry.path().is_dir()
+                        && entry.file_name().to_string_lossy().starts_with("minute=")
+                });
+                minutes.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
+
+                if let Some(minute) = minutes.first() {
+                    let minute_str = minute
+                        .file_name()
+                        .to_string_lossy()
+                        .trim_start_matches("minute=")
+                        .to_string();
+                    let oldest_date_time = format!("{} {}:{}:00", date, hour_str, minute_str);
+                    return Ok(Some(oldest_date_time));
+                }
+            }
+        }
+
+        Ok(None)
     }
 }
 
@@ -815,6 +714,38 @@ pub fn get_disk_usage() -> (Option<u64>, Option<u64>, Option<u64>) {
     }
 
     (None, None, None)
+}
+
+async fn delete_empty_directory_hot_tier(path: &Path) -> io::Result<()> {
+    async fn delete_helper(path: &Path) -> io::Result<()> {
+        if path.is_dir() {
+            let mut read_dir = fs::read_dir(path).await?;
+            let mut subdirs = vec![];
+
+            while let Some(entry) = read_dir.next_entry().await? {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    subdirs.push(entry_path);
+                }
+            }
+            let mut tasks = vec![];
+            for subdir in &subdirs {
+                tasks.push(delete_empty_directory_hot_tier(subdir));
+            }
+            futures::stream::iter(tasks)
+                .buffer_unordered(10)
+                .try_collect::<Vec<_>>()
+                .await?;
+
+            // Re-check the directory after deleting its subdirectories
+            let mut read_dir = fs::read_dir(path).await?;
+            if read_dir.next_entry().await?.is_none() {
+                fs::remove_dir(path).await?;
+            }
+        }
+        Ok(())
+    }
+    delete_helper(path).await
 }
 
 #[derive(Debug, thiserror::Error)]

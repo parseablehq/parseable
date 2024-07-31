@@ -29,6 +29,8 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1073741824; // 1 GiB
+
+pub const MAX_DISK_USAGE: f64 = 80.0; //max disk usage is 80%
 pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
 pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
@@ -376,22 +378,5 @@ pub mod validation {
             ));
         }
         Ok(size)
-    }
-
-    pub fn hot_tier_size(s: &str) -> Result<u64, String> {
-        let size = human_size_to_bytes(s)?;
-        if size < MIN_CACHE_SIZE_BYTES {
-            return Err(
-                "Specified value of cache size is smaller than current minimum of 1GiB".to_string(),
-            );
-        }
-        Ok(size)
-    }
-
-    pub fn disk_usage(s: &str) -> Result<f64, String> {
-        let disk_usage = s
-            .parse::<f64>()
-            .map_err(|_| "Invalid disk usage value".to_string())?;
-        Ok(disk_usage)
     }
 }

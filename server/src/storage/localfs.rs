@@ -17,6 +17,7 @@
  */
 
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -411,9 +412,12 @@ impl ObjectStorage for LocalFS {
         Ok(dates.into_iter().flatten().collect())
     }
 
-    async fn list_files(&self, _stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
+    async fn list_manifest_files(
+        &self,
+        _stream_name: &str,
+    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
         //unimplemented
-        Ok(vec![])
+        Ok(BTreeMap::new())
     }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {

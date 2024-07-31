@@ -16,7 +16,6 @@
  *
  */
 
-use chrono::{NaiveDate, Utc};
 use error::HotTierValidationError;
 
 use self::error::{AlertValidationError, StreamNameValidationError, UsernameValidationError};
@@ -24,8 +23,8 @@ use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
 use crate::handlers::http::cluster::INTERNAL_STREAM_NAME;
+use crate::hottier::MIN_STREAM_HOT_TIER_SIZE_BYTES;
 use crate::option::validation::{bytes_to_human_size, human_size_to_bytes};
-use crate::option::CONFIG;
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
@@ -149,55 +148,20 @@ pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
     Ok(())
 }
 
-pub fn hot_tier(
-    start_date: &str,
-    end_date: &str,
-    size: &str,
-) -> Result<(), HotTierValidationError> {
+pub fn hot_tier(size: &str) -> Result<(), HotTierValidationError> {
     if human_size_to_bytes(size).is_err() {
         return Err(HotTierValidationError::Size(bytes_to_human_size(
-            CONFIG.parseable.min_hot_tier_size,
+            MIN_STREAM_HOT_TIER_SIZE_BYTES,
         )));
     }
 
-    if human_size_to_bytes(size).unwrap() < CONFIG.parseable.min_hot_tier_size {
+    if human_size_to_bytes(size).unwrap() < MIN_STREAM_HOT_TIER_SIZE_BYTES {
         return Err(HotTierValidationError::Size(bytes_to_human_size(
-            CONFIG.parseable.min_hot_tier_size,
+            MIN_STREAM_HOT_TIER_SIZE_BYTES,
         )));
-    }
-
-    let (start_date, end_date) = parse_human_date(start_date, end_date)?;
-
-    if start_date >= end_date {
-        return Err(HotTierValidationError::DateRange);
     }
 
     Ok(())
-}
-
-pub fn parse_human_date(
-    start_time: &str,
-    end_time: &str,
-) -> Result<(NaiveDate, NaiveDate), HotTierValidationError> {
-    let start: NaiveDate;
-    let end: NaiveDate;
-
-    if end_time == "now" {
-        end = Utc::now().naive_utc().date();
-        start = if let Ok(parsed_date) = NaiveDate::parse_from_str(start_time, "%Y-%m-%d") {
-            parsed_date
-        } else {
-            end - chrono::Duration::from_std(humantime::parse_duration(start_time)?)
-                .map_err(|_| HotTierValidationError::StartDate)?
-        };
-    } else {
-        start = NaiveDate::parse_from_str(start_time, "%Y-%m-%d")
-            .map_err(|_| HotTierValidationError::StartDate)?;
-        end = NaiveDate::parse_from_str(end_time, "%Y-%m-%d")
-            .map_err(|_| HotTierValidationError::EndDate)?;
-    };
-
-    Ok((start, end))
 }
 pub mod error {
 
@@ -251,17 +215,6 @@ pub mod error {
     pub enum HotTierValidationError {
         #[error("Invalid size given for hot tier, please provide size in human readable format, e.g 1GiB, 2GiB, minimum {0}")]
         Size(String),
-        #[error(
-            "Invalid start date given for hot tier, please provide the date in yyyy-mm-dd format"
-        )]
-        StartDate,
-        #[error(
-            "Invalid end date given for hot tier, please provide the date in yyyy-mm-dd format"
-        )]
-        EndDate,
-
-        #[error("End date should be greater than start date")]
-        DateRange,
 
         #[error("While generating times for 'now' failed to parse duration")]
         NotValidDuration(#[from] humantime::DurationError),

@@ -104,12 +104,6 @@ pub struct Cli {
 
     /// The local hot_tier path is used for optimising the query performance in the distributed systems
     pub hot_tier_storage_path: Option<PathBuf>,
-
-    /// Size for local cache
-    pub min_hot_tier_size: u64,
-
-    ///maximum disk usage for hot tier
-    pub max_disk_usage: f64,
 }
 
 impl Cli {
@@ -144,8 +138,6 @@ impl Cli {
     pub const FLIGHT_PORT: &'static str = "flight-port";
     pub const CORS: &'static str = "cors";
     pub const HOT_TIER_PATH: &'static str = "hot-tier-path";
-    pub const MIN_HOT_TIER_SIZE: &'static str = "hot-tier-size";
-    pub const MAX_DISK_USAGE: &'static str = "max-disk-usage";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -417,25 +409,6 @@ impl Cli {
                     .help("Local path on this device to be used for hot tier data")
                     .next_line_help(true),
             )
-            .arg(
-                Arg::new(Self::MIN_HOT_TIER_SIZE)
-                    .long(Self::MIN_HOT_TIER_SIZE)
-                    .env("P_MIN_HOT_TIER_SIZE")
-                    .value_name("size")
-                    .default_value("100GiB")
-                    .value_parser(validation::hot_tier_size)
-                    .help("Minimum allowed cache size for all streams combined (In human readable format, e.g 1GiB, 2GiB, 100MB)")
-                    .next_line_help(true),
-            )
-            .arg(
-                Arg::new(Self::MAX_DISK_USAGE)
-                    .long(Self::MAX_DISK_USAGE)
-                    .env("P_MAX_DISK_USAGE")
-                    .value_name("size")
-                    .default_value("80.0")
-                    .value_parser(validation::disk_usage)
-                    .help("Maximum disk usage for hot tier"),
-            )
             .group(
                 ArgGroup::new("oidc")
                     .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
@@ -574,15 +547,7 @@ impl FromArgMatches for Cli {
         };
 
         self.hot_tier_storage_path = m.get_one::<PathBuf>(Self::HOT_TIER_PATH).cloned();
-        self.min_hot_tier_size = m
-            .get_one::<u64>(Self::MIN_HOT_TIER_SIZE)
-            .cloned()
-            .expect("default value for cache size");
 
-        self.max_disk_usage = m
-            .get_one::<f64>(Self::MAX_DISK_USAGE)
-            .cloned()
-            .expect("default value for max disk usage");
         Ok(())
     }
 }

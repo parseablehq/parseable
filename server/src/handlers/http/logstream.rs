@@ -956,26 +956,15 @@ pub async fn put_stream_hot_tier(
         Err(err) => return Err(StreamError::InvalidHotTierConfig(err)),
     };
 
-    validator::hot_tier(
-        &hottier.start_date,
-        &hottier.end_date,
-        &hottier.size.to_string(),
-    )?;
+    validator::hot_tier(&hottier.size.to_string())?;
 
     STREAM_INFO.set_hot_tier(&stream_name, true)?;
     if let Some(hot_tier_manager) = HotTierManager::global() {
-        hottier = StreamHotTier {
-            start_date: hottier.start_date,
-            end_date: hottier.end_date,
-            size: hottier.size.clone(),
-            used_size: Some("0GiB".to_string()),
-            available_size: Some(hottier.size),
-            updated_date_range: None,
-        };
-
         hot_tier_manager
-            .validate(&stream_name, &mut hottier)
+            .validate_hot_tier_size(&stream_name, &hottier.size)
             .await?;
+        hottier.used_size = Some("0GiB".to_string());
+        hottier.available_size = Some(hottier.size.clone());
         hot_tier_manager
             .put_hot_tier(&stream_name, &mut hottier)
             .await?;
@@ -987,7 +976,10 @@ pub async fn put_stream_hot_tier(
             .await?;
     }
 
-    Ok((web::Json(hottier), StatusCode::OK))
+    Ok((
+        format!("hot tier set for stream {stream_name}"),
+        StatusCode::OK,
+    ))
 }
 
 pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
