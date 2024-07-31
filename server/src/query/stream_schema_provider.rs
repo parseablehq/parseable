@@ -347,24 +347,6 @@ impl TableProvider for StandardTableProvider {
             merged_snapshot = object_store_format.snapshot;
         }
 
-        // Is query timerange is overlapping with older data.
-        if is_overlapping_query(&merged_snapshot.manifest_list, &time_filters) {
-            return legacy_listing_table(
-                self.stream.clone(),
-                memory_exec,
-                glob_storage,
-                object_store,
-                &time_filters,
-                self.schema.clone(),
-                state,
-                projection,
-                filters,
-                limit,
-                time_partition.clone(),
-            )
-            .await;
-        }
-
         let mut manifest_files = collect_from_snapshot(
             &merged_snapshot,
             &time_filters,
@@ -462,6 +444,7 @@ impl TableProvider for StandardTableProvider {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 async fn legacy_listing_table(
     stream: String,
     mem_exec: Option<Arc<dyn ExecutionPlan>>,
@@ -580,6 +563,7 @@ impl PartialTimeFilter {
     }
 }
 
+#[allow(dead_code)]
 fn is_overlapping_query(
     manifest_list: &[ManifestItem],
     time_filters: &[PartialTimeFilter],
