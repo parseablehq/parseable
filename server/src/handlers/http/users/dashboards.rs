@@ -57,7 +57,6 @@ pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
     let dashboard_id = format!("{}.{}", &dashboard.user_id, Utc::now().timestamp_millis());
     dashboard.dashboard_id = Some(dashboard_id.clone());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
-    DASHBOARDS.update(&dashboard);
     for tile in dashboard.tiles.iter_mut() {
         tile.tile_id = Some(format!(
             "{}.{}",
@@ -65,6 +64,7 @@ pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
             Utc::now().timestamp_micros()
         ));
     }
+    DASHBOARDS.update(&dashboard);
 
     let path = dashboard_path(&dashboard.user_id, &format!("{}.json", dashboard_id));
 
@@ -77,7 +77,7 @@ pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
-pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, PostError> {
     let dashboard_id = req
         .match_info()
         .get("dashboard_id")
@@ -90,6 +90,15 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
     let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
     dashboard.dashboard_id = Some(dashboard_id.to_string());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
+    for tile in dashboard.tiles.iter_mut() {
+        if tile.tile_id.is_none() {
+            tile.tile_id = Some(format!(
+                "{}.{}",
+                &dashboard.user_id,
+                Utc::now().timestamp_micros()
+            ));
+        }
+    }
     DASHBOARDS.update(&dashboard);
 
     let path = dashboard_path(&dashboard.user_id, &format!("{}.json", dashboard_id));
@@ -100,7 +109,7 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         .put_object(&path, Bytes::from(dashboard_bytes))
         .await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok((web::Json(dashboard), StatusCode::OK))
 }
 
 pub async fn delete(req: HttpRequest) -> Result<HttpResponse, PostError> {
