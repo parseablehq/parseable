@@ -317,9 +317,7 @@ impl HotTierManager {
     ) -> Result<bool, HotTierError> {
         let mut file_processed = false;
         let mut stream_hot_tier = self.get_hot_tier(stream).await?;
-        if !self
-            .is_disk_available(parquet_file.file_size, &stream_hot_tier.size)
-            .await?
+        if !self.is_disk_available(parquet_file.file_size).await?
             || human_size_to_bytes(&stream_hot_tier.available_size.clone().unwrap()).unwrap()
                 <= parquet_file.file_size
         {
@@ -587,33 +585,12 @@ impl HotTierManager {
 
     ///check if the disk is available to download the parquet file
     /// check if the disk usage is above the threshold
-    pub async fn is_disk_available(
-        &self,
-        size_to_download: u64,
-        hot_tier_size: &str,
-    ) -> Result<bool, HotTierError> {
+    pub async fn is_disk_available(&self, size_to_download: u64) -> Result<bool, HotTierError> {
         let (total_disk_space, available_disk_space, used_disk_space) = get_disk_usage();
 
         if let (Some(total_disk_space), Some(available_disk_space), Some(used_disk_space)) =
             (total_disk_space, available_disk_space, used_disk_space)
         {
-            let hot_tier_size = human_size_to_bytes(hot_tier_size).unwrap();
-            if available_disk_space < hot_tier_size {
-                return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
-                    "Not enough space left in the disk for hot tier. Disk available Size: {}, Hot Tier Size: {}",
-                    bytes_to_human_size(available_disk_space),
-                    bytes_to_human_size(hot_tier_size)
-                ))));
-            }
-
-            if used_disk_space as f64 * 100.0 / total_disk_space as f64 > MAX_DISK_USAGE {
-                return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
-                    "Disk usage is above the threshold. Disk Used Size: {}, Disk Total Size: {}, Disk Usage {}%",
-                    bytes_to_human_size(used_disk_space),
-                    bytes_to_human_size(total_disk_space),
-                    used_disk_space as f64 * 100.0 / total_disk_space as f64
-                ))));
-            }
             if available_disk_space < size_to_download {
                 return Ok(false);
             }
