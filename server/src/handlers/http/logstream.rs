@@ -1010,6 +1010,33 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
         })
     }
 }
+
+pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    if CONFIG.parseable.mode != Mode::Query {
+        return Err(StreamError::Custom {
+            msg: "Hot tier can only be enabled in query mode".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        return Err(StreamError::StreamNotFound(stream_name));
+    }
+
+    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+        return Err(StreamError::HotTierNotEnabled(stream_name));
+    }
+
+    if let Some(hot_tier_manager) = HotTierManager::global() {
+        hot_tier_manager.delete_hot_tier(&stream_name).await?;
+    }
+    Ok((
+        format!("hot tier deleted for stream {stream_name}"),
+        StatusCode::OK,
+    ))
+}
 #[allow(unused)]
 fn classify_json_error(kind: serde_json::error::Category) -> StatusCode {
     match kind {

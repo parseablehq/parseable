@@ -356,6 +356,11 @@ impl Server {
                                 web::get()
                                     .to(logstream::get_stream_hot_tier)
                                     .authorize_for_stream(Action::GetHotTierEnabled),
+                            )
+                            .route(
+                                web::delete()
+                                    .to(logstream::delete_stream_hot_tier)
+                                    .authorize_for_stream(Action::DeleteHotTierEnabled),
                             ),
                     ),
             )

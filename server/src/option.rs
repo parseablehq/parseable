@@ -30,7 +30,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1073741824; // 1 GiB
 
-pub const MAX_DISK_USAGE: f64 = 80.0; //max disk usage is 80%
 pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
 pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
@@ -378,5 +377,17 @@ pub mod validation {
             ));
         }
         Ok(size)
+    }
+
+    pub fn validate_disk_usage(max_disk_usage: &str) -> Result<f64, String> {
+        if let Ok(max_disk_usage) = max_disk_usage.parse::<f64>() {
+            if (0.0..=100.0).contains(&max_disk_usage) {
+                Ok(max_disk_usage)
+            } else {
+                Err("Invalid value for max disk usage. It should be between 0 and 100".to_string())
+            }
+        } else {
+            Err("Invalid value for max disk usage. It should be given as 90.0 for 90%".to_string())
+        }
     }
 }

@@ -34,6 +34,7 @@ pub enum Action {
     PutCacheEnabled,
     PutHotTierEnabled,
     GetHotTierEnabled,
+    DeleteHotTierEnabled,
     PutAlert,
     GetAlert,
     PutUser,
@@ -121,6 +122,7 @@ impl RoleBuilder {
                 | Action::Deleteingestor
                 | Action::PutHotTierEnabled
                 | Action::GetHotTierEnabled
+                | Action::DeleteHotTierEnabled
                 | Action::ListDashboard
                 | Action::GetDashboard
                 | Action::CreateDashboard
@@ -212,6 +214,7 @@ pub mod model {
                 Action::GetCacheEnabled,
                 Action::PutHotTierEnabled,
                 Action::GetHotTierEnabled,
+                Action::DeleteHotTierEnabled,
                 Action::PutAlert,
                 Action::GetAlert,
                 Action::GetAbout,

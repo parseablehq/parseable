@@ -104,6 +104,9 @@ pub struct Cli {
 
     /// The local hot_tier path is used for optimising the query performance in the distributed systems
     pub hot_tier_storage_path: Option<PathBuf>,
+
+    ///maximum disk usage allowed
+    pub max_disk_usage: f64,
 }
 
 impl Cli {
@@ -138,6 +141,7 @@ impl Cli {
     pub const FLIGHT_PORT: &'static str = "flight-port";
     pub const CORS: &'static str = "cors";
     pub const HOT_TIER_PATH: &'static str = "hot-tier-path";
+    pub const MAX_DISK_USAGE: &'static str = "max-disk-usage";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -409,6 +413,16 @@ impl Cli {
                     .help("Local path on this device to be used for hot tier data")
                     .next_line_help(true),
             )
+            .arg(
+                Arg::new(Self::MAX_DISK_USAGE)
+                    .long(Self::MAX_DISK_USAGE)
+                    .env("P_MAX_DISK_USAGE")
+                    .value_name("percentage")
+                    .default_value("80.0")
+                    .value_parser(validation::validate_disk_usage)
+                    .help("Maximum allowed disk usage in percentage e.g 90.0 for 90%")
+                    .next_line_help(true),
+            )
             .group(
                 ArgGroup::new("oidc")
                     .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
@@ -547,6 +561,10 @@ impl FromArgMatches for Cli {
         };
 
         self.hot_tier_storage_path = m.get_one::<PathBuf>(Self::HOT_TIER_PATH).cloned();
+        self.max_disk_usage = m
+            .get_one::<f64>(Self::MAX_DISK_USAGE)
+            .cloned()
+            .expect("default for max disk usage");
 
         Ok(())
     }

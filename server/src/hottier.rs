@@ -28,7 +28,7 @@ use crate::{
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
     option::{
         validation::{bytes_to_human_size, human_size_to_bytes},
-        CONFIG, MAX_DISK_USAGE,
+        CONFIG,
     },
     storage::{ObjectStorage, ObjectStorageError},
     utils::extract_datetime,
@@ -86,15 +86,21 @@ impl HotTierManager {
     }
 
     ///get the total hot tier size for all streams
-    pub async fn get_hot_tiers_size(&self, current_stream: &str) -> Result<u64, HotTierError> {
+    pub async fn get_hot_tiers_size(
+        &self,
+        current_stream: &str,
+    ) -> Result<(u64, u64), HotTierError> {
         let mut total_hot_tier_size = 0;
+        let mut total_hot_tier_used_size = 0;
         for stream in STREAM_INFO.list_streams() {
             if self.check_stream_hot_tier_exists(&stream) && stream != current_stream {
                 let stream_hot_tier = self.get_hot_tier(&stream).await?;
                 total_hot_tier_size += human_size_to_bytes(&stream_hot_tier.size).unwrap();
+                total_hot_tier_used_size +=
+                    human_size_to_bytes(&stream_hot_tier.used_size.unwrap()).unwrap();
             }
         }
-        Ok(total_hot_tier_size)
+        Ok((total_hot_tier_size, total_hot_tier_used_size))
     }
 
     /// validate if hot tier size can be fit in the disk
@@ -106,9 +112,12 @@ impl HotTierManager {
         stream: &str,
         size: &str,
     ) -> Result<(), HotTierError> {
+        let mut existing_hot_tier_used_size = 0;
         if self.check_stream_hot_tier_exists(stream) {
             //delete existing hot tier if its size is less than the updated hot tier size else return error
             let existing_hot_tier = self.get_hot_tier(stream).await?;
+            existing_hot_tier_used_size =
+                human_size_to_bytes(&existing_hot_tier.used_size.unwrap()).unwrap();
             if human_size_to_bytes(size) < human_size_to_bytes(&existing_hot_tier.size) {
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
                     "The hot tier size for the stream is already set to {} which is greater than the updated hot tier size of {}, reducing the hot tier size is not allowed",
@@ -124,16 +133,18 @@ impl HotTierManager {
             (total_disk_space, available_disk_space, used_disk_space)
         {
             let stream_hot_tier_size = human_size_to_bytes(size).unwrap();
-            let total_hot_tier_size = self.get_hot_tiers_size(stream).await?;
-            let projected_disk_usage = total_hot_tier_size + stream_hot_tier_size;
-
-            let usage_percentage = (projected_disk_usage as f64 / total_disk_space as f64) * 100.0;
-
-            if usage_percentage > MAX_DISK_USAGE {
+            let (total_hot_tier_size, total_hot_tier_used_size) =
+                self.get_hot_tiers_size(stream).await?;
+            let projected_disk_usage = total_hot_tier_size + stream_hot_tier_size + used_disk_space
+                - existing_hot_tier_used_size
+                - total_hot_tier_used_size;
+            let usage_percentage =
+                ((projected_disk_usage as f64 / total_disk_space as f64) * 100.0).round();
+            if usage_percentage > CONFIG.parseable.max_disk_usage {
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
-                    "Including the hot tier size of all the streams, the projected disk usage will be {} which is above the set threshold of {}%, hence unable to set the hot tier for the stream. Total Disk Size: {}, Available Disk Size: {}, Used Disk Size: {}, Total Hot Tier Size (all other streams): {}",
+                    "Including the hot tier size of all the streams, the projected disk usage will be {}% which is above the set threshold of {}%, hence unable to set the hot tier for the stream. Total Disk Size: {}, Available Disk Size: {}, Used Disk Size: {}, Total Hot Tier Size (all other streams): {}",
                     usage_percentage,
-                    MAX_DISK_USAGE,
+                    CONFIG.parseable.max_disk_usage,
                     bytes_to_human_size(total_disk_space),
                     bytes_to_human_size(available_disk_space),
                     bytes_to_human_size(used_disk_space),
@@ -166,6 +177,18 @@ impl HotTierManager {
                 Ok(stream_hot_tier)
             }
             Err(err) => Err(err.into()),
+        }
+    }
+
+    pub async fn delete_hot_tier(&self, stream: &str) -> Result<(), HotTierError> {
+        if self.check_stream_hot_tier_exists(stream) {
+            let path = self.hot_tier_path.join(stream);
+            fs::remove_dir_all(path).await?;
+            Ok(())
+        } else {
+            Err(HotTierError::HotTierValidationError(
+                HotTierValidationError::NotFound(stream.to_owned()),
+            ))
         }
     }
 
@@ -602,7 +625,7 @@ impl HotTierManager {
             }
 
             if ((used_disk_space + size_to_download) as f64 * 100.0 / total_disk_space as f64)
-                > MAX_DISK_USAGE
+                > CONFIG.parseable.max_disk_usage
             {
                 return Ok(false);
             }
