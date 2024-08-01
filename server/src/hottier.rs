@@ -106,6 +106,18 @@ impl HotTierManager {
         stream: &str,
         size: &str,
     ) -> Result<(), HotTierError> {
+        if self.check_stream_hot_tier_exists(stream) {
+            //delete existing hot tier if its size is less than the updated hot tier size else return error
+            let existing_hot_tier = self.get_hot_tier(stream).await?;
+            if human_size_to_bytes(size) < human_size_to_bytes(&existing_hot_tier.size) {
+                return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
+                    "The hot tier size for the stream is already set to {} which is greater than the updated hot tier size of {}, reducing the hot tier size is not allowed",
+                    existing_hot_tier.size,
+                    size
+                ))));
+            }
+        }
+
         let (total_disk_space, available_disk_space, used_disk_space) = get_disk_usage();
 
         if let (Some(total_disk_space), Some(available_disk_space), Some(used_disk_space)) =
@@ -113,7 +125,7 @@ impl HotTierManager {
         {
             let stream_hot_tier_size = human_size_to_bytes(size).unwrap();
             let total_hot_tier_size = self.get_hot_tiers_size(stream).await?;
-            let projected_disk_usage = used_disk_space + total_hot_tier_size + stream_hot_tier_size;
+            let projected_disk_usage = total_hot_tier_size + stream_hot_tier_size;
 
             let usage_percentage = (projected_disk_usage as f64 / total_disk_space as f64) * 100.0;
 
@@ -128,12 +140,6 @@ impl HotTierManager {
                     bytes_to_human_size(total_hot_tier_size)
                 ))));
             }
-        }
-
-        if self.check_stream_hot_tier_exists(stream) {
-            let available_date_list = self.fetch_hot_tier_dates(stream).await?;
-            self.delete_files_from_hot_tier(stream, &available_date_list)
-                .await?;
         }
 
         Ok(())
