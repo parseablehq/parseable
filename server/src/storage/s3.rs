@@ -28,7 +28,7 @@ use futures::{StreamExt, TryStreamExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
-use object_store::{ClientOptions, ObjectStore};
+use object_store::{ClientOptions, ObjectStore, PutPayload};
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -252,7 +252,7 @@ impl S3 {
     async fn _put_object(
         &self,
         path: &RelativePath,
-        resource: Bytes,
+        resource: PutPayload,
     ) -> Result<(), ObjectStorageError> {
         let time = Instant::now();
         let resp = self.client.put(&to_object_store_path(path), resource).await;
@@ -370,14 +370,16 @@ impl S3 {
         let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
         let mut file = OpenOptions::new().read(true).open(path).await?;
 
-        let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
+        // let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
+        let mut async_writer = self.client.put_multipart(&key.into()).await?;
 
-        let close_multipart = |err| async move {
-            log::error!("multipart upload failed. {:?}", err);
-            self.client
-                .abort_multipart(&key.into(), &multipart_id)
-                .await
-        };
+        /* `abort_multipart()` has been removed */
+        // let close_multipart = |err| async move {
+        //     log::error!("multipart upload failed. {:?}", err);
+        //     self.client
+        //         .abort_multipart(&key.into(), &multipart_id)
+        //         .await
+        // };
 
         loop {
             match file.read(&mut buf).await {
@@ -386,16 +388,16 @@ impl S3 {
                         break;
                     }
                     if let Err(err) = async_writer.write_all(&buf[0..len]).await {
-                        close_multipart(err).await?;
+                        // close_multipart(err).await?;
                         break;
                     }
                     if let Err(err) = async_writer.flush().await {
-                        close_multipart(err).await?;
+                        // close_multipart(err).await?;
                         break;
                     }
                 }
                 Err(err) => {
-                    close_multipart(err).await?;
+                    // close_multipart(err).await?;
                     break;
                 }
             }
@@ -514,7 +516,7 @@ impl ObjectStorage for S3 {
         path: &RelativePath,
         resource: Bytes,
     ) -> Result<(), ObjectStorageError> {
-        self._put_object(path, resource)
+        self._put_object(path, resource.into())
             .await
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
 
