@@ -112,6 +112,7 @@ impl OptimizerRule for FilterOptimizerRule {
         // If we didn't find anything then recurse as normal and build the result.
         
         // TODO: replace `optimize_children()` since it will be removed
+        // But it is not being used anywhere, so might as well just let it be for now
         optimize_children(self, plan, config)
     }
 
