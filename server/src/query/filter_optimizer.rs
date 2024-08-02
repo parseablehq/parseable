@@ -18,8 +18,9 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use arrow_schema::Field;
 use datafusion::{
-    common::{DFField, DFSchema},
+    common::DFSchema,
     logical_expr::{Filter, LogicalPlan, Projection},
     optimizer::{optimize_children, OptimizerRule},
     prelude::{lit, or, Column, Expr},
@@ -75,16 +76,22 @@ impl OptimizerRule for FilterOptimizerRule {
                 let tags_index = schema.index_of(&self.column)?;
                 let tags_field = schema.field(tags_index);
                 // modify source table projection to include tags
-                let mut df_schema = table.projected_schema.fields().clone();
-                df_schema.push(DFField::new(
-                    Some(table.table_name.clone()),
+                let df_schema = table.projected_schema.fields().clone();
+                
+                // from datafusion 37.1.0 -> 40.0.0
+                // `DFField` has been removed
+                // `DFSchema.new_with_metadata()` has changed
+                // it requires `qualified_fields`(`Vec<(Option<TableReference>, Arc<Field>)>`) instead of `fields`
+                // hence, use `DFSchema::from_unqualified_fields()` for relatively unchanged code
+
+                df_schema.to_vec().push(Arc::new(Field::new(
                     tags_field.name(),
                     tags_field.data_type().clone(),
                     tags_field.is_nullable(),
-                ));
+                )));
 
                 table.projected_schema =
-                    Arc::new(DFSchema::new_with_metadata(df_schema, HashMap::default())?);
+                    Arc::new(DFSchema::from_unqualified_fields(df_schema, HashMap::default())?);
                 if let Some(projection) = &mut table.projection {
                     projection.push(tags_index)
                 }
@@ -103,6 +110,8 @@ impl OptimizerRule for FilterOptimizerRule {
         }
 
         // If we didn't find anything then recurse as normal and build the result.
+        
+        // TODO: replace `optimize_children()` since it will be removed
         optimize_children(self, plan, config)
     }
 

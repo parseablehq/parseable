@@ -491,18 +491,26 @@ impl TableProvider for StandardTableProvider {
         )?)
     }
 
-    fn supports_filter_pushdown(
+    /*
+    Updated the function signature (and name)
+    Now it handles multiple filters
+    */
+    fn supports_filters_pushdown(
         &self,
-        filter: &Expr,
-    ) -> Result<TableProviderFilterPushDown, DataFusionError> {
-        if expr_in_boundary(filter) {
-            // if filter can be handled by time partiton pruning, it is exact
-            Ok(TableProviderFilterPushDown::Exact)
-        } else {
-            // otherwise, we still might be able to handle the filter with file
-            // level mechanisms such as Parquet row group pruning.
-            Ok(TableProviderFilterPushDown::Inexact)
-        }
+        filters: &[&Expr],
+    ) -> Result<Vec<TableProviderFilterPushDown>, DataFusionError> {
+        let res_vec = filters.into_iter()
+            .map(|filter| {
+                if expr_in_boundary(filter) {
+                    // if filter can be handled by time partiton pruning, it is exact
+                    TableProviderFilterPushDown::Exact
+                } else {
+                    // otherwise, we still might be able to handle the filter with file
+                    // level mechanisms such as Parquet row group pruning.
+                    TableProviderFilterPushDown::Inexact
+                }
+            }).collect_vec();
+        Ok(res_vec)
     }
 }
 
@@ -722,11 +730,12 @@ fn extract_from_lit(expr: BinaryExpr, time_partition: Option<String>) -> Option<
     }
 }
 
+/* `BinaryExp` doesn't implement `Copy` */
 fn extract_timestamp_bound(
     binexpr: BinaryExpr,
     time_partition: Option<String>,
 ) -> Option<(Operator, NaiveDateTime)> {
-    Some((binexpr.op, extract_from_lit(binexpr, time_partition)?))
+    Some((binexpr.op.clone(), extract_from_lit(binexpr, time_partition)?))
 }
 
 async fn collect_manifest_files(
@@ -796,7 +805,8 @@ trait ManifestExt: ManifestFile {
             let Expr::Literal(value) = &*expr.right else {
                 return None;
             };
-            Some((expr.op, value))
+            /* `BinaryExp` doesn't implement `Copy` */
+            Some((expr.op.clone(), value))
         }
 
         let Some(col) = self.find_matching_column(partial_filter) else {
