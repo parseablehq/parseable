@@ -346,10 +346,14 @@ impl S3 {
     async fn _upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
 
-        let should_multipart = std::fs::metadata(path)?.len() > MULTIPART_UPLOAD_SIZE as u64;
+        // // TODO: Uncomment this when multipart is fixed
+        // let should_multipart = std::fs::metadata(path)?.len() > MULTIPART_UPLOAD_SIZE as u64;
+
+        let should_multipart = false;
 
         let res = if should_multipart {
-            self._upload_multipart(key, path).await
+            todo!();
+            // self._upload_multipart(key, path).await
         } else {
             let bytes = tokio::fs::read(path).await?;
             let result = self.client.put(&key.into(), bytes.into()).await?;
@@ -366,47 +370,48 @@ impl S3 {
         res
     }
 
-    async fn _upload_multipart(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
-        let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
-        let mut file = OpenOptions::new().read(true).open(path).await?;
+    // TODO: introduce parallel, multipart-uploads if required
+    // async fn _upload_multipart(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+    //     let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
+    //     let mut file = OpenOptions::new().read(true).open(path).await?;
 
-        // let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
-        let mut async_writer = self.client.put_multipart(&key.into()).await?;
+    //     // let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
+    //     let mut async_writer = self.client.put_multipart(&key.into()).await?;
 
-        /* `abort_multipart()` has been removed */
-        // let close_multipart = |err| async move {
-        //     log::error!("multipart upload failed. {:?}", err);
-        //     self.client
-        //         .abort_multipart(&key.into(), &multipart_id)
-        //         .await
-        // };
+    //     /* `abort_multipart()` has been removed */
+    //     // let close_multipart = |err| async move {
+    //     //     log::error!("multipart upload failed. {:?}", err);
+    //     //     self.client
+    //     //         .abort_multipart(&key.into(), &multipart_id)
+    //     //         .await
+    //     // };
 
-        loop {
-            match file.read(&mut buf).await {
-                Ok(len) => {
-                    if len == 0 {
-                        break;
-                    }
-                    if let Err(err) = async_writer.write_all(&buf[0..len]).await {
-                        // close_multipart(err).await?;
-                        break;
-                    }
-                    if let Err(err) = async_writer.flush().await {
-                        // close_multipart(err).await?;
-                        break;
-                    }
-                }
-                Err(err) => {
-                    // close_multipart(err).await?;
-                    break;
-                }
-            }
-        }
+    //     loop {
+    //         match file.read(&mut buf).await {
+    //             Ok(len) => {
+    //                 if len == 0 {
+    //                     break;
+    //                 }
+    //                 if let Err(err) = async_writer.write_all(&buf[0..len]).await {
+    //                     // close_multipart(err).await?;
+    //                     break;
+    //                 }
+    //                 if let Err(err) = async_writer.flush().await {
+    //                     // close_multipart(err).await?;
+    //                     break;
+    //                 }
+    //             }
+    //             Err(err) => {
+    //                 // close_multipart(err).await?;
+    //                 break;
+    //             }
+    //         }
+    //     }
 
-        async_writer.shutdown().await?;
+    //     async_writer.shutdown().await?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
 
 #[async_trait]
