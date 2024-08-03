@@ -416,7 +416,7 @@ impl Cli {
             .arg(
                 Arg::new(Self::MAX_DISK_USAGE)
                     .long(Self::MAX_DISK_USAGE)
-                    .env("P_MAX_DISK_USAGE")
+                    .env("P_MAX_DISK_USAGE_PERCENT")
                     .value_name("percentage")
                     .default_value("80.0")
                     .value_parser(validation::validate_disk_usage)
