@@ -16,11 +16,12 @@
  *
  */
 
-use std::panic::{self, AssertUnwindSafe};
-use tokio::select;
 use tokio::sync::oneshot;
 use tokio::task;
 use tokio::time::{interval, Duration};
+use std::panic::AssertUnwindSafe;
+use clokwerk::{AsyncScheduler, TimeUnits, Job};
+use futures::FutureExt;
 
 use crate::option::CONFIG;
 use crate::{storage, STORAGE_UPLOAD_INTERVAL};
@@ -31,36 +32,49 @@ pub async fn object_store_sync() -> (
     oneshot::Sender<()>,
 ) {
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
-    let (inbox_tx, mut inbox_rx) = oneshot::channel::<()>();
+    let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
 
     let handle = task::spawn(async move {
-        let mut interval = interval(Duration::from_secs((STORAGE_UPLOAD_INTERVAL + 5).into()));
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
+            let mut scheduler = AsyncScheduler::new();
+            scheduler
+                .every(STORAGE_UPLOAD_INTERVAL.seconds())
+                .plus(5u32.seconds())
+                .run(|| async {
+                    if let Err(e) = CONFIG.storage().get_object_store().sync().await {
+                        log::warn!("failed to sync local data with object store. {:?}", e);
+                    }
+                });
 
-        loop {
-            select! {
-                _ = interval.tick() => {
-                    match task::spawn(async {
-                        CONFIG.storage().get_object_store().sync().await
-                    }).await {
-                        Ok(Ok(_)) => {
-                            log::info!("Successfully synced local data with object store.");
-                        }
-                        Ok(Err(e)) => {
-                            log::warn!("Failed to sync local data with object store: {:?}", e);
-                        }
-                        Err(e) => {
-                            log::error!("Task panicked during sync: {:?}", e);
-                            if let Err(send_err) = outbox_tx.send(()) {
-                                log::error!("Failed to send outbox message: {:?}", send_err);
-                            }
-                            break;
-                        }
+            let mut inbox_rx = AssertUnwindSafe(inbox_rx);
+            let mut check_interval = interval(Duration::from_secs(1));
+
+            loop {
+                check_interval.tick().await;
+                scheduler.run_pending().await;
+
+                match inbox_rx.try_recv() {
+                    Ok(_) => break,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        log::warn!("Inbox channel closed unexpectedly");
+                        break;
                     }
                 }
-                _ = &mut inbox_rx => break,
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+        }));
+
+        match result {
+            Ok(future) => {
+                future.await;
+            }
+            Err(panic_error) => {
+                log::error!("Panic in object store sync task: {:?}", panic_error);
+                let _ = outbox_tx.send(());
+            }
         }
+
+        log::info!("Object store sync task ended");
     });
 
     (handle, outbox_rx, inbox_tx)
@@ -76,26 +90,34 @@ pub async fn run_local_sync() -> (
 
     let handle = task::spawn(async move {
         log::info!("Local sync task started");
-        let mut inbox_rx = inbox_rx;
-        let result = panic::catch_unwind(AssertUnwindSafe(|| async move {
-            let mut interval = interval(Duration::from_secs(storage::LOCAL_SYNC_INTERVAL));
+        let mut inbox_rx = AssertUnwindSafe(inbox_rx);
+        
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
+            let mut sync_interval = interval(Duration::from_secs(storage::LOCAL_SYNC_INTERVAL));
+            let mut check_interval = interval(Duration::from_millis(50));
+
             loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        crate::event::STREAM_WRITERS.unset_all();
-                    }
-                    _ = &mut inbox_rx => {
-                        log::info!("Received signal to stop local sync");
-                        return;  // Exit the async block when signaled
+                // Run STREAM_WRITERS.unset_all() at every interval tick
+                if sync_interval.tick().now_or_never().is_some() {
+                    crate::event::STREAM_WRITERS.unset_all();
+                }
+
+                // Check inbox every 50ms
+                check_interval.tick().await;
+                match inbox_rx.try_recv() {
+                    Ok(_) => break,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        log::warn!("Inbox channel closed unexpectedly");
+                        break;
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }));
 
         match result {
             Ok(future) => {
-                future.await; // We don't need to check the result here
+                future.await;
             }
             Err(panic_error) => {
                 log::error!("Panic in local sync task: {:?}", panic_error);
