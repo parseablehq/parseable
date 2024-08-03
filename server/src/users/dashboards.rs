@@ -33,7 +33,6 @@ pub struct Tiles {
     name: String,
     pub tile_id: Option<String>,
     description: String,
-    stream: String,
     query: String,
     order: Option<u64>,
     visualization: Visualization,
@@ -57,7 +56,7 @@ pub struct CircularChartConfig {
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct GraphConfig {
     x_key: String,
-    y_key: Vec<String>,
+    y_keys: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
