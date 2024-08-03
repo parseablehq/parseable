@@ -16,11 +16,11 @@
  *
  */
 
+use std::panic::{self, AssertUnwindSafe};
 use tokio::select;
 use tokio::sync::oneshot;
 use tokio::task;
 use tokio::time::{interval, Duration};
-use std::panic::{self, AssertUnwindSafe};
 
 use crate::option::CONFIG;
 use crate::{storage, STORAGE_UPLOAD_INTERVAL};
@@ -59,6 +59,7 @@ pub async fn object_store_sync() -> (
                 }
                 _ = &mut inbox_rx => break,
             }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
 
@@ -88,12 +89,13 @@ pub async fn run_local_sync() -> (
                         return;  // Exit the async block when signaled
                     }
                 }
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }));
 
         match result {
             Ok(future) => {
-                future.await;  // We don't need to check the result here
+                future.await; // We don't need to check the result here
             }
             Err(panic_error) => {
                 log::error!("Panic in local sync task: {:?}", panic_error);
