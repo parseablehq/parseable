@@ -32,6 +32,7 @@ spec:
         {{- include "parseable.ingestorLabelsSelector" . | nindent 8 }}
     spec:
       terminationGracePeriodSeconds: 10 
+      serviceAccountName: {{ include "parseable.serviceAccountName" . }}
       containers:
       - name: {{ .Chart.Name }}
         securityContext:
