@@ -16,12 +16,11 @@
  *
  */
 
+use clokwerk::{AsyncScheduler, Job, TimeUnits};
+use std::panic::AssertUnwindSafe;
 use tokio::sync::oneshot;
 use tokio::task;
-use tokio::time::{interval, Duration};
-use std::panic::AssertUnwindSafe;
-use clokwerk::{AsyncScheduler, TimeUnits, Job};
-use futures::FutureExt;
+use tokio::time::{interval, sleep, Duration};
 
 use crate::option::CONFIG;
 use crate::{storage, STORAGE_UPLOAD_INTERVAL};
@@ -90,20 +89,24 @@ pub async fn run_local_sync() -> (
 
     let handle = task::spawn(async move {
         log::info!("Local sync task started");
-        let mut inbox_rx = AssertUnwindSafe(inbox_rx);
-        
+        let mut inbox_rx = inbox_rx;
+
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
-            let mut sync_interval = interval(Duration::from_secs(storage::LOCAL_SYNC_INTERVAL));
-            let mut check_interval = interval(Duration::from_millis(50));
+            let mut scheduler = AsyncScheduler::new();
+            scheduler
+                .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
+                .run(|| async {
+                    crate::event::STREAM_WRITERS.unset_all();
+                });
 
             loop {
-                // Run STREAM_WRITERS.unset_all() at every interval tick
-                if sync_interval.tick().now_or_never().is_some() {
-                    crate::event::STREAM_WRITERS.unset_all();
-                }
+                // Sleep for 50ms
+                sleep(Duration::from_millis(50)).await;
 
-                // Check inbox every 50ms
-                check_interval.tick().await;
+                // Run any pending scheduled tasks
+                scheduler.run_pending().await;
+
+                // Check inbox
                 match inbox_rx.try_recv() {
                     Ok(_) => break,
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
@@ -124,7 +127,6 @@ pub async fn run_local_sync() -> (
             }
         }
 
-        // Signal that the task has ended, regardless of how it ended
         let _ = outbox_tx.send(());
         log::info!("Local sync task ended");
     });
