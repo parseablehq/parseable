@@ -16,11 +16,15 @@
  *
  */
 
+use error::HotTierValidationError;
+
 use self::error::{AlertValidationError, StreamNameValidationError, UsernameValidationError};
 use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
 use crate::handlers::http::cluster::INTERNAL_STREAM_NAME;
+use crate::hottier::MIN_STREAM_HOT_TIER_SIZE_BYTES;
+use crate::option::validation::{bytes_to_human_size, human_size_to_bytes};
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
@@ -144,6 +148,21 @@ pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
     Ok(())
 }
 
+pub fn hot_tier(size: &str) -> Result<(), HotTierValidationError> {
+    if human_size_to_bytes(size).is_err() {
+        return Err(HotTierValidationError::Size(bytes_to_human_size(
+            MIN_STREAM_HOT_TIER_SIZE_BYTES,
+        )));
+    }
+
+    if human_size_to_bytes(size).unwrap() < MIN_STREAM_HOT_TIER_SIZE_BYTES {
+        return Err(HotTierValidationError::Size(bytes_to_human_size(
+            MIN_STREAM_HOT_TIER_SIZE_BYTES,
+        )));
+    }
+
+    Ok(())
+}
 pub mod error {
 
     #[derive(Debug, thiserror::Error)]
@@ -190,5 +209,20 @@ pub mod error {
             "Username contains invalid characters. Please use lowercase, alphanumeric or underscore"
         )]
         SpecialChar,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum HotTierValidationError {
+        #[error("Invalid size given for hot tier, please provide size in human readable format, e.g 1GiB, 2GiB, minimum {0}")]
+        Size(String),
+
+        #[error("While generating times for 'now' failed to parse duration")]
+        NotValidDuration(#[from] humantime::DurationError),
+
+        #[error("Parsed duration out of range")]
+        OutOfRange(#[from] chrono::OutOfRangeError),
+
+        #[error("Hot tier not found for stream {0}")]
+        NotFound(String),
     }
 }

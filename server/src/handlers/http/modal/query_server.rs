@@ -20,7 +20,7 @@ use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
-
+use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
@@ -188,8 +188,10 @@ impl QueryServer {
         if matches!(init_cluster_metrics_schedular(), Ok(())) {
             log::info!("Cluster metrics scheduler started successfully");
         }
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
+        if let Some(hot_tier_manager) = HotTierManager::global() {
+            hot_tier_manager.download_from_s3()?;
+        };
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync().await;
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
 

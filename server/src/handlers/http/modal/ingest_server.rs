@@ -18,6 +18,7 @@
 use crate::analytics;
 use crate::banner;
 use crate::handlers::airplane;
+use crate::handlers::http::ingest;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::RouteExt;
 use crate::localcache::LocalCacheManager;
@@ -167,15 +168,23 @@ impl IngestServer {
             web::scope("/{logstream}")
                 .service(
                     web::resource("")
+                        // DELETE "/logstream/{logstream}" ==> Delete a log stream
                         .route(
                             web::delete()
                                 .to(logstream::delete)
                                 .authorize_for_stream(Action::DeleteStream),
                         )
+                        // PUT "/logstream/{logstream}" ==> Create a new log stream
                         .route(
                             web::put()
                                 .to(logstream::put_stream)
                                 .authorize_for_stream(Action::CreateStream),
+                        )
+                        // POST "/logstream/{logstream}" ==> Post logs to given log stream
+                        .route(
+                            web::post()
+                                .to(ingest::post_event)
+                                .authorize_for_stream(Action::Ingest),
                         ),
                 )
                 .service(

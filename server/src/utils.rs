@@ -23,13 +23,13 @@ pub mod json;
 pub mod uid;
 pub mod update;
 use crate::option::CONFIG;
-use chrono::{DateTime, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 use itertools::Itertools;
+use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use url::Url;
-
 #[allow(dead_code)]
 pub fn hostname() -> Option<String> {
     hostname::get()
@@ -303,6 +303,22 @@ pub fn get_ingestor_id() -> String {
     let result = result.split_at(15).0.to_string();
     log::debug!("Ingestor ID: {}", &result);
     result
+}
+
+pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
+    let re = Regex::new(r"date=(\d{4}-\d{2}-\d{2})/hour=(\d{2})/minute=(\d{2})").unwrap();
+    if let Some(caps) = re.captures(path) {
+        let date_str = caps.get(1)?.as_str();
+        let hour_str = caps.get(2)?.as_str();
+        let minute_str = caps.get(3)?.as_str();
+
+        let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
+        let time =
+            NaiveTime::parse_from_str(&format!("{}:{}", hour_str, minute_str), "%H:%M").ok()?;
+        Some(NaiveDateTime::new(date, time))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
