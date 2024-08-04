@@ -33,6 +33,7 @@ use relative_path::{RelativePath, RelativePathBuf};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use std::collections::BTreeMap;
 use std::iter::Iterator;
 use std::path::Path as StdPath;
 use std::sync::Arc;
@@ -343,6 +344,36 @@ impl S3 {
         Ok(dates)
     }
 
+    async fn _list_manifest_files(
+        &self,
+        stream: &str,
+    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
+        let mut result_file_list: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let resp = self
+            .client
+            .list_with_delimiter(Some(&(stream.into())))
+            .await?;
+
+        let dates = resp
+            .common_prefixes
+            .iter()
+            .flat_map(|path| path.parts())
+            .filter(|name| name.as_ref() != stream && name.as_ref() != STREAM_ROOT_DIRECTORY)
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>();
+        for date in dates {
+            let date_path = object_store::path::Path::from(format!("{}/{}", stream, &date));
+            let resp = self.client.list_with_delimiter(Some(&date_path)).await?;
+            let manifests: Vec<String> = resp
+                .objects
+                .iter()
+                .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
+                .map(|name| name.location.to_string())
+                .collect();
+            result_file_list.entry(date).or_default().extend(manifests);
+        }
+        Ok(result_file_list)
+    }
     async fn _upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
 
@@ -609,6 +640,15 @@ impl ObjectStorage for S3 {
         let streams = self._list_dates(stream_name).await?;
 
         Ok(streams)
+    }
+
+    async fn list_manifest_files(
+        &self,
+        stream_name: &str,
+    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
+        let files = self._list_manifest_files(stream_name).await?;
+
+        Ok(files)
     }
 
     async fn upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {

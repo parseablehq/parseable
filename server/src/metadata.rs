@@ -61,6 +61,7 @@ pub struct LogStreamMetadata {
     pub time_partition_limit: Option<String>,
     pub custom_partition: Option<String>,
     pub static_schema_flag: Option<String>,
+    pub hot_tier_enabled: Option<bool>,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -248,6 +249,15 @@ impl StreamInfo {
         Ok(())
     }
 
+    pub fn set_hot_tier(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        let stream = map
+            .get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?;
+        stream.hot_tier_enabled = Some(enable);
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn add_stream(
         &self,
@@ -330,6 +340,7 @@ impl StreamInfo {
             time_partition_limit: meta.time_partition_limit,
             custom_partition: meta.custom_partition,
             static_schema_flag: meta.static_schema_flag,
+            hot_tier_enabled: meta.hot_tier_enabled,
         };
 
         let mut map = self.write().expect(LOCK_EXPECT);
@@ -459,6 +470,7 @@ pub async fn load_stream_metadata_on_server_start(
         time_partition_limit,
         custom_partition,
         static_schema_flag: meta.static_schema_flag.clone(),
+        hot_tier_enabled: meta.hot_tier_enabled,
     };
 
     let mut map = STREAM_INFO.write().expect(LOCK_EXPECT);

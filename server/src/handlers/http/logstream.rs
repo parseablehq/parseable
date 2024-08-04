@@ -27,6 +27,7 @@ use crate::handlers::{
     CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
     UPDATE_STREAM_KEY,
 };
+use crate::hottier::{HotTierManager, StreamHotTier};
 use crate::metadata::STREAM_INFO;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
@@ -37,6 +38,7 @@ use crate::{
     catalog::{self, remove_manifest_from_snapshot},
     event, stats,
 };
+
 use crate::{metadata, validator};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
@@ -919,6 +921,122 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
     Ok((web::Json(stream_info), StatusCode::OK))
 }
 
+pub async fn put_stream_hot_tier(
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> Result<impl Responder, StreamError> {
+    if CONFIG.parseable.mode != Mode::Query {
+        return Err(StreamError::Custom {
+            msg: "Hot tier can only be enabled in query mode".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        return Err(StreamError::StreamNotFound(stream_name));
+    }
+    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+        return Err(StreamError::HotTierNotEnabled(stream_name));
+    }
+
+    if STREAM_INFO
+        .get_time_partition(&stream_name)
+        .unwrap()
+        .is_some()
+    {
+        return Err(StreamError::Custom {
+            msg: "Hot tier can not be enabled for stream with time partition".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+
+    let body = body.into_inner();
+    let mut hottier: StreamHotTier = match serde_json::from_value(body) {
+        Ok(hottier) => hottier,
+        Err(err) => return Err(StreamError::InvalidHotTierConfig(err)),
+    };
+
+    validator::hot_tier(&hottier.size.to_string())?;
+
+    STREAM_INFO.set_hot_tier(&stream_name, true)?;
+    if let Some(hot_tier_manager) = HotTierManager::global() {
+        hot_tier_manager
+            .validate_hot_tier_size(&stream_name, &hottier.size)
+            .await?;
+        hottier.used_size = Some("0GiB".to_string());
+        hottier.available_size = Some(hottier.size.clone());
+        hot_tier_manager
+            .put_hot_tier(&stream_name, &mut hottier)
+            .await?;
+        let storage = CONFIG.storage().get_object_store();
+        let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
+        stream_metadata.hot_tier_enabled = Some(true);
+        storage
+            .put_stream_manifest(&stream_name, &stream_metadata)
+            .await?;
+    }
+
+    Ok((
+        format!("hot tier set for stream {stream_name}"),
+        StatusCode::OK,
+    ))
+}
+
+pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    if CONFIG.parseable.mode != Mode::Query {
+        return Err(StreamError::Custom {
+            msg: "Hot tier can only be enabled in query mode".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        return Err(StreamError::StreamNotFound(stream_name));
+    }
+
+    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+        return Err(StreamError::HotTierNotEnabled(stream_name));
+    }
+
+    if let Some(hot_tier_manager) = HotTierManager::global() {
+        let hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
+        Ok((web::Json(hot_tier), StatusCode::OK))
+    } else {
+        Err(StreamError::Custom {
+            msg: format!("hot tier not initialised for stream {}", stream_name),
+            status: (StatusCode::BAD_REQUEST),
+        })
+    }
+}
+
+pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    if CONFIG.parseable.mode != Mode::Query {
+        return Err(StreamError::Custom {
+            msg: "Hot tier can only be enabled in query mode".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        return Err(StreamError::StreamNotFound(stream_name));
+    }
+
+    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+        return Err(StreamError::HotTierNotEnabled(stream_name));
+    }
+
+    if let Some(hot_tier_manager) = HotTierManager::global() {
+        hot_tier_manager.delete_hot_tier(&stream_name).await?;
+    }
+    Ok((
+        format!("hot tier deleted for stream {stream_name}"),
+        StatusCode::OK,
+    ))
+}
 #[allow(unused)]
 fn classify_json_error(kind: serde_json::error::Category) -> StatusCode {
     match kind {
@@ -935,9 +1053,12 @@ pub mod error {
     use http::StatusCode;
 
     use crate::{
+        hottier::HotTierError,
         metadata::error::stream_info::MetadataError,
         storage::ObjectStorageError,
-        validator::error::{AlertValidationError, StreamNameValidationError},
+        validator::error::{
+            AlertValidationError, HotTierValidationError, StreamNameValidationError,
+        },
     };
 
     #[allow(unused)]
@@ -997,6 +1118,16 @@ pub mod error {
         Network(#[from] reqwest::Error),
         #[error("Could not deserialize into JSON object, {0}")]
         SerdeError(#[from] serde_json::Error),
+        #[error(
+            "Hot tier is not enabled at the server config, cannot enable hot tier for stream {0}"
+        )]
+        HotTierNotEnabled(String),
+        #[error("failed to enable hottier due to err: {0}")]
+        InvalidHotTierConfig(serde_json::Error),
+        #[error("Hot tier validation failed due to {0}")]
+        HotTierValidation(#[from] HotTierValidationError),
+        #[error("{0}")]
+        HotTierError(#[from] HotTierError),
     }
 
     impl actix_web::ResponseError for StreamError {
@@ -1030,6 +1161,10 @@ pub mod error {
                 StreamError::Network(err) => {
                     err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
                 }
+                StreamError::HotTierNotEnabled(_) => StatusCode::BAD_REQUEST,
+                StreamError::InvalidHotTierConfig(_) => StatusCode::BAD_REQUEST,
+                StreamError::HotTierValidation(_) => StatusCode::BAD_REQUEST,
+                StreamError::HotTierError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             }
         }
 

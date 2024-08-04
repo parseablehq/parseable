@@ -100,6 +100,8 @@ pub struct ObjectStoreFormat {
     pub custom_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_schema_flag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hot_tier_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -167,6 +169,7 @@ impl Default for ObjectStoreFormat {
             time_partition_limit: None,
             custom_partition: None,
             static_schema_flag: None,
+            hot_tier_enabled: None,
         }
     }
 }
