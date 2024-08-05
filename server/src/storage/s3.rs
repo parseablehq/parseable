@@ -382,8 +382,9 @@ impl S3 {
         let should_multipart = false;
 
         let res = if should_multipart {
-            todo!();
             // self._upload_multipart(key, path).await
+            // this branch will never get executed
+            Ok(())
         } else {
             let bytes = tokio::fs::read(path).await?;
             let result = self.client.put(&key.into(), bytes.into()).await?;
