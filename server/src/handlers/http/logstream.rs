@@ -30,6 +30,7 @@ use crate::handlers::{
 use crate::hottier::{HotTierManager, StreamHotTier};
 use crate::metadata::STREAM_INFO;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
+use crate::option::validation::bytes_to_human_size;
 use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
@@ -960,10 +961,10 @@ pub async fn put_stream_hot_tier(
 
     STREAM_INFO.set_hot_tier(&stream_name, true)?;
     if let Some(hot_tier_manager) = HotTierManager::global() {
-        hot_tier_manager
+        let existing_hot_tier_used_size = hot_tier_manager
             .validate_hot_tier_size(&stream_name, &hottier.size)
             .await?;
-        hottier.used_size = Some("0GiB".to_string());
+        hottier.used_size = Some(bytes_to_human_size(existing_hot_tier_used_size));
         hottier.available_size = Some(hottier.size.clone());
         hot_tier_manager
             .put_hot_tier(&stream_name, &mut hottier)
