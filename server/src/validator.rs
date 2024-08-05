@@ -150,9 +150,7 @@ pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
 
 pub fn hot_tier(size: &str) -> Result<(), HotTierValidationError> {
     if human_size_to_bytes(size).is_err() {
-        return Err(HotTierValidationError::Size(bytes_to_human_size(
-            MIN_STREAM_HOT_TIER_SIZE_BYTES,
-        )));
+        return Err(HotTierValidationError::InvalidFormat);
     }
 
     if human_size_to_bytes(size).unwrap() < MIN_STREAM_HOT_TIER_SIZE_BYTES {
@@ -213,7 +211,10 @@ pub mod error {
 
     #[derive(Debug, thiserror::Error)]
     pub enum HotTierValidationError {
-        #[error("Invalid size given for hot tier, please provide size in human readable format, e.g 1GiB, 2GiB, minimum {0}")]
+        #[error("Please provide size in human readable format, e.g 10GiB, 20GiB")]
+        InvalidFormat,
+
+        #[error("Stream should have atleast {0} size")]
         Size(String),
 
         #[error("While generating times for 'now' failed to parse duration")]
