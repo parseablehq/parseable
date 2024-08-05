@@ -396,6 +396,7 @@ impl HotTierManager {
         Ok(file_processed)
     }
 
+    #[allow(dead_code)]
     ///delete the files for the date range given from the hot tier directory for the stream
     /// update the used and available size in the hot tier metadata
     pub async fn delete_files_from_hot_tier(

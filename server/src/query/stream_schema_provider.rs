@@ -499,7 +499,8 @@ impl TableProvider for StandardTableProvider {
         &self,
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>, DataFusionError> {
-        let res_vec = filters.into_iter()
+        let res_vec = filters
+            .iter()
             .map(|filter| {
                 if expr_in_boundary(filter) {
                     // if filter can be handled by time partiton pruning, it is exact
@@ -509,7 +510,8 @@ impl TableProvider for StandardTableProvider {
                     // level mechanisms such as Parquet row group pruning.
                     TableProviderFilterPushDown::Inexact
                 }
-            }).collect_vec();
+            })
+            .collect_vec();
         Ok(res_vec)
     }
 }
@@ -735,7 +737,10 @@ fn extract_timestamp_bound(
     binexpr: BinaryExpr,
     time_partition: Option<String>,
 ) -> Option<(Operator, NaiveDateTime)> {
-    Some((binexpr.op.clone(), extract_from_lit(binexpr, time_partition)?))
+    Some((
+        binexpr.op.clone(),
+        extract_from_lit(binexpr, time_partition)?,
+    ))
 }
 
 async fn collect_manifest_files(

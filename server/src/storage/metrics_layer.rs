@@ -26,9 +26,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{stream::BoxStream, Stream, StreamExt};
 use object_store::{
-    path::Path, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult
+    path::Path, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOpts, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult,
 };
-use tokio::io::AsyncWrite;
 
 /* NOTE: Keeping these imports as they would make migration to object_store 0.10.0 easier
 use object_store::{MultipartUpload, PutMultipartOpts, PutPayload}
@@ -117,10 +117,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     }
 
     // todo completly tracking multipart upload
-    async fn put_multipart(
-        &self,
-        location: &Path,
-    ) -> ObjectStoreResult<Box<dyn MultipartUpload>> /* ObjectStoreResult<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> */
+    async fn put_multipart(&self, location: &Path) -> ObjectStoreResult<Box<dyn MultipartUpload>> /* ObjectStoreResult<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> */
     {
         let time = time::Instant::now();
         let multipart_upload = self.inner.put_multipart(location).await?;

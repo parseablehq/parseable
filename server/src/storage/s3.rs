@@ -30,8 +30,6 @@ use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
 use object_store::{ClientOptions, ObjectStore, PutPayload};
 use relative_path::{RelativePath, RelativePathBuf};
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use std::collections::BTreeMap;
 use std::iter::Iterator;
@@ -49,6 +47,7 @@ use super::{
     ObjectStorageProvider, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
+#[allow(dead_code)]
 // in bytes
 const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const CONNECT_TIMEOUT_SECS: u64 = 5;
