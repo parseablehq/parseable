@@ -26,10 +26,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{stream::BoxStream, Stream, StreamExt};
 use object_store::{
-    path::Path, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
-    PutOptions, PutResult, Result as ObjectStoreResult,
+    path::Path, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOpts, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult,
 };
-use tokio::io::AsyncWrite;
 
 /* NOTE: Keeping these imports as they would make migration to object_store 0.10.0 easier
 use object_store::{MultipartUpload, PutMultipartOpts, PutPayload}
@@ -60,7 +59,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     async fn put(
         &self,
         location: &Path,
-        bytes: Bytes, /* PutPayload */
+        bytes: PutPayload, /* PutPayload */
     ) -> ObjectStoreResult<PutResult> {
         let time = time::Instant::now();
         let put_result = self.inner.put(location, bytes).await?;
@@ -74,7 +73,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     async fn put_opts(
         &self,
         location: &Path,
-        payload: Bytes, /* PutPayload */
+        payload: PutPayload, /* PutPayload */
         opts: PutOptions,
     ) -> ObjectStoreResult<PutResult> {
         let time = time::Instant::now();
@@ -86,22 +85,22 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         return Ok(put_result);
     }
 
-    // ! removed in object_store 0.10.0
-    async fn abort_multipart(
-        &self,
-        location: &Path,
-        multipart_id: &MultipartId,
-    ) -> object_store::Result<()> {
-        let time = time::Instant::now();
-        let elapsed = time.elapsed().as_secs_f64();
-        self.inner.abort_multipart(location, multipart_id).await?;
-        QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&["PUT_MULTIPART_ABORT", "200"])
-            .observe(elapsed);
-        Ok(())
-    }
+    // // ! removed in object_store 0.10.0
+    // async fn abort_multipart(
+    //     &self,
+    //     location: &Path,
+    //     multipart_id: &MultipartId,
+    // ) -> object_store::Result<()> {
+    //     let time = time::Instant::now();
+    //     let elapsed = time.elapsed().as_secs_f64();
+    //     self.inner.abort_multipart(location, multipart_id).await?;
+    //     QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME
+    //         .with_label_values(&["PUT_MULTIPART_ABORT", "200"])
+    //         .observe(elapsed);
+    //     Ok(())
+    // }
 
-    /* Keep for easier migration to object_store 0.10.0
+    /* Keep for easier migration to object_store 0.10.0 */
     async fn put_multipart_opts(
         &self,
         location: &Path,
@@ -115,13 +114,10 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
             .observe(elapsed);
 
         Ok(multipart_upload)
-    } */
+    }
 
     // todo completly tracking multipart upload
-    async fn put_multipart(
-        &self,
-        location: &Path,
-    ) -> ObjectStoreResult<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> /* ObjectStoreResult<Box<dyn MultipartUpload>> */
+    async fn put_multipart(&self, location: &Path) -> ObjectStoreResult<Box<dyn MultipartUpload>> /* ObjectStoreResult<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> */
     {
         let time = time::Instant::now();
         let multipart_upload = self.inner.put_multipart(location).await?;

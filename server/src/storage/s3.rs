@@ -28,10 +28,8 @@ use futures::{StreamExt, TryStreamExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
-use object_store::{ClientOptions, ObjectStore};
+use object_store::{ClientOptions, ObjectStore, PutPayload};
 use relative_path::{RelativePath, RelativePathBuf};
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use std::collections::BTreeMap;
 use std::iter::Iterator;
@@ -49,6 +47,7 @@ use super::{
     ObjectStorageProvider, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
+#[allow(dead_code)]
 // in bytes
 const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -253,7 +252,7 @@ impl S3 {
     async fn _put_object(
         &self,
         path: &RelativePath,
-        resource: Bytes,
+        resource: PutPayload,
     ) -> Result<(), ObjectStorageError> {
         let time = Instant::now();
         let resp = self.client.put(&to_object_store_path(path), resource).await;
@@ -377,10 +376,15 @@ impl S3 {
     async fn _upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
 
-        let should_multipart = std::fs::metadata(path)?.len() > MULTIPART_UPLOAD_SIZE as u64;
+        // // TODO: Uncomment this when multipart is fixed
+        // let should_multipart = std::fs::metadata(path)?.len() > MULTIPART_UPLOAD_SIZE as u64;
+
+        let should_multipart = false;
 
         let res = if should_multipart {
-            self._upload_multipart(key, path).await
+            // self._upload_multipart(key, path).await
+            // this branch will never get executed
+            Ok(())
         } else {
             let bytes = tokio::fs::read(path).await?;
             let result = self.client.put(&key.into(), bytes.into()).await?;
@@ -397,45 +401,48 @@ impl S3 {
         res
     }
 
-    async fn _upload_multipart(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
-        let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
-        let mut file = OpenOptions::new().read(true).open(path).await?;
+    // TODO: introduce parallel, multipart-uploads if required
+    // async fn _upload_multipart(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+    //     let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
+    //     let mut file = OpenOptions::new().read(true).open(path).await?;
 
-        let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
+    //     // let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
+    //     let mut async_writer = self.client.put_multipart(&key.into()).await?;
 
-        let close_multipart = |err| async move {
-            log::error!("multipart upload failed. {:?}", err);
-            self.client
-                .abort_multipart(&key.into(), &multipart_id)
-                .await
-        };
+    //     /* `abort_multipart()` has been removed */
+    //     // let close_multipart = |err| async move {
+    //     //     log::error!("multipart upload failed. {:?}", err);
+    //     //     self.client
+    //     //         .abort_multipart(&key.into(), &multipart_id)
+    //     //         .await
+    //     // };
 
-        loop {
-            match file.read(&mut buf).await {
-                Ok(len) => {
-                    if len == 0 {
-                        break;
-                    }
-                    if let Err(err) = async_writer.write_all(&buf[0..len]).await {
-                        close_multipart(err).await?;
-                        break;
-                    }
-                    if let Err(err) = async_writer.flush().await {
-                        close_multipart(err).await?;
-                        break;
-                    }
-                }
-                Err(err) => {
-                    close_multipart(err).await?;
-                    break;
-                }
-            }
-        }
+    //     loop {
+    //         match file.read(&mut buf).await {
+    //             Ok(len) => {
+    //                 if len == 0 {
+    //                     break;
+    //                 }
+    //                 if let Err(err) = async_writer.write_all(&buf[0..len]).await {
+    //                     // close_multipart(err).await?;
+    //                     break;
+    //                 }
+    //                 if let Err(err) = async_writer.flush().await {
+    //                     // close_multipart(err).await?;
+    //                     break;
+    //                 }
+    //             }
+    //             Err(err) => {
+    //                 // close_multipart(err).await?;
+    //                 break;
+    //             }
+    //         }
+    //     }
 
-        async_writer.shutdown().await?;
+    //     async_writer.shutdown().await?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
 
 #[async_trait]
@@ -545,7 +552,7 @@ impl ObjectStorage for S3 {
         path: &RelativePath,
         resource: Bytes,
     ) -> Result<(), ObjectStorageError> {
-        self._put_object(path, resource)
+        self._put_object(path, resource.into())
             .await
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
 
