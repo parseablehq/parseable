@@ -113,13 +113,11 @@ impl HotTierManager {
         size: &str,
     ) -> Result<u64, HotTierError> {
         let mut existing_hot_tier_used_size = 0;
-        let mut existing_hot_tier_size = 0;
         if self.check_stream_hot_tier_exists(stream) {
             //delete existing hot tier if its size is less than the updated hot tier size else return error
             let existing_hot_tier = self.get_hot_tier(stream).await?;
             existing_hot_tier_used_size =
                 human_size_to_bytes(&existing_hot_tier.used_size.unwrap()).unwrap();
-            existing_hot_tier_size = human_size_to_bytes(&existing_hot_tier.size).unwrap();
             if human_size_to_bytes(size) < human_size_to_bytes(&existing_hot_tier.size) {
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
                     "Reducing hot tier size is not supported, failed to reduce the hot tier size from {} to {}",
@@ -137,19 +135,19 @@ impl HotTierManager {
             let stream_hot_tier_size = human_size_to_bytes(size).unwrap();
             let (total_hot_tier_size, total_hot_tier_used_size) =
                 self.get_hot_tiers_size(stream).await?;
-            let projected_disk_usage = total_hot_tier_size + stream_hot_tier_size + used_disk_space
-                - existing_hot_tier_used_size
-                - total_hot_tier_used_size;
-            let usage_percentage =
-                ((projected_disk_usage as f64 / total_disk_space as f64) * 100.0).round();
-            let max_allowed_hot_tier_size =
-                ((CONFIG.parseable.max_disk_usage * total_disk_space as f64) / 100.0)
-                    - (used_disk_space + total_hot_tier_used_size + existing_hot_tier_used_size
-                        - existing_hot_tier_size) as f64;
+            let disk_threshold =
+                (CONFIG.parseable.max_disk_usage * total_disk_space as f64) / 100.0;
+            let max_allowed_hot_tier_size = disk_threshold
+                - total_hot_tier_size as f64
+                - (used_disk_space as f64
+                    - total_hot_tier_used_size as f64
+                    - existing_hot_tier_used_size as f64);
 
-            if usage_percentage > CONFIG.parseable.max_disk_usage {
+            if stream_hot_tier_size as f64 > max_allowed_hot_tier_size {
+                log::error!("disk_threshold: {}, used_disk_space: {}, total_hot_tier_used_size: {}, existing_hot_tier_used_size: {}, total_hot_tier_size: {}",
+                    disk_threshold, used_disk_space, total_hot_tier_used_size, existing_hot_tier_used_size, total_hot_tier_size);
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
-                    "{} is the total usable disk space for hot tier, cannot set a bigger value.", max_allowed_hot_tier_size
+                    "{} is the total usable disk space for hot tier, cannot set a bigger value.", bytes_to_human_size(max_allowed_hot_tier_size as u64)
                 ))));
             }
         }
