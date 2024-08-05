@@ -94,7 +94,7 @@ pub async fn about() -> Json<serde_json::Value> {
         )
     };
 
-    let send_analytics = CONFIG.parseable.send_analytics;
+    let ms_clarity_tag = &CONFIG.parseable.ms_clarity_tag;
 
     Json(json!({
         "version": current_version,
@@ -115,6 +115,9 @@ pub async fn about() -> Json<serde_json::Value> {
             "type": CONFIG.get_storage_mode_string(),
             "path": store_endpoint
         },
-        "sendAnalytics": send_analytics
+        "analytics": {
+            "clarityTag": ms_clarity_tag
+        }
+
     }))
 }

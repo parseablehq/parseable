@@ -107,6 +107,8 @@ pub struct Cli {
 
     ///maximum disk usage allowed
     pub max_disk_usage: f64,
+
+    pub ms_clarity_tag: Option<String>,
 }
 
 impl Cli {
@@ -142,6 +144,7 @@ impl Cli {
     pub const CORS: &'static str = "cors";
     pub const HOT_TIER_PATH: &'static str = "hot-tier-path";
     pub const MAX_DISK_USAGE: &'static str = "max-disk-usage";
+    pub const MS_CLARITY_TAG: &'static str = "ms-clarity-tag";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -423,6 +426,14 @@ impl Cli {
                     .help("Maximum allowed disk usage in percentage e.g 90.0 for 90%")
                     .next_line_help(true),
             )
+            .arg(
+                Arg::new(Self::MS_CLARITY_TAG)
+                    .long(Self::MS_CLARITY_TAG)
+                    .env("P_MS_CLARITY_TAG")
+                    .value_name("STRING")
+                    .required(false)
+                    .help("Tag for MS Clarity"),
+            )
             .group(
                 ArgGroup::new("oidc")
                     .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
@@ -565,6 +576,8 @@ impl FromArgMatches for Cli {
             .get_one::<f64>(Self::MAX_DISK_USAGE)
             .cloned()
             .expect("default for max disk usage");
+
+        self.ms_clarity_tag = m.get_one::<String>(Self::MS_CLARITY_TAG).cloned();
 
         Ok(())
     }
