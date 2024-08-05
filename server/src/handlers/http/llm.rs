@@ -95,7 +95,7 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
     let stream_name = &body.stream;
     let schema = STREAM_INFO.schema(stream_name)?;
     let filtered_schema = schema
-        .all_fields()
+        .flattened_fields()
         .into_iter()
         .map(Field::from)
         .collect_vec();

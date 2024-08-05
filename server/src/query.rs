@@ -190,7 +190,7 @@ impl TableScanVisitor {
     }
 }
 
-impl TreeNodeVisitor for TableScanVisitor {
+impl TreeNodeVisitor<'_> for TableScanVisitor {
     type Node = LogicalPlan;
 
     fn f_down(&mut self, node: &Self::Node) -> Result<TreeNodeRecursion, DataFusionError> {
@@ -232,13 +232,13 @@ fn transform(
                         _start_time_filter =
                             PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
                                 .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned_reference()),
+                                    Some(table.table_name.to_owned()),
                                     time_partition.clone(),
                                 )));
                         _end_time_filter =
                             PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
                                 .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned_reference()),
+                                    Some(table.table_name.to_owned()),
                                     time_partition,
                                 )));
                     }
@@ -246,13 +246,13 @@ fn transform(
                         _start_time_filter =
                             PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
                                 .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned_reference()),
+                                    Some(table.table_name.to_owned()),
                                     event::DEFAULT_TIMESTAMP_KEY,
                                 )));
                         _end_time_filter =
                             PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
                                 .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned_reference()),
+                                    Some(table.table_name.to_owned()),
                                     event::DEFAULT_TIMESTAMP_KEY,
                                 )));
                     }
