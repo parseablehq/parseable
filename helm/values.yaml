@@ -59,6 +59,11 @@ parseable:
       storageClass: ""
       accessMode: ReadWriteOnce
       size: 1Gi
+    querier:
+      enabled: false
+      storageClass: ""
+      accessMode: ReadWriteOnce
+      size: 1Gi
   localModeSecret:
     - type: env
       name: parseable-env-secret
