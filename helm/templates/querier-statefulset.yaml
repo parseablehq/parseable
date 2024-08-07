@@ -40,8 +40,8 @@ spec:
           {{- toYaml .Values.parseable.securityContext | nindent 8 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
-        command: ["/bin/sh", "-c"]
-        args: ["parseable", "s3-store"]
+        command: ["parseable"]
+        args: ["s3-store"]
         env:
           {{- range $key, $value :=  .Values.parseable.env }}
           - name: {{ $key }}
