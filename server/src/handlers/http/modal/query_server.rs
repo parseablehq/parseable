@@ -105,8 +105,8 @@ impl ParseableServer for QueryServer {
     fn validate(&self) -> anyhow::Result<()> {
         if CONFIG.get_storage_mode_string() == "Local drive" {
             return Err(anyhow::anyhow!(
-                "Query Server cannot be started in local storage mode. Please start the server in a supported storage mode.",
-            ));
+                 "Query Server cannot be started in local storage mode. Please start the server in a supported storage mode.",
+             ));
         }
 
         Ok(())
@@ -188,13 +188,13 @@ impl QueryServer {
         if matches!(init_cluster_metrics_schedular(), Ok(())) {
             log::info!("Cluster metrics scheduler started successfully");
         }
-
         if let Some(hot_tier_manager) = HotTierManager::global() {
             hot_tier_manager.download_from_s3()?;
         };
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
+            sync::run_local_sync().await;
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync();
+            sync::object_store_sync().await;
 
         tokio::spawn(airplane::server());
         let app = self.start(prometheus, CONFIG.parseable.openid.clone());
@@ -206,8 +206,12 @@ impl QueryServer {
                     // actix server finished .. stop other threads and stop the server
                     remote_sync_inbox.send(()).unwrap_or(());
                     localsync_inbox.send(()).unwrap_or(());
-                    localsync_handler.join().unwrap_or(());
-                    remote_sync_handler.join().unwrap_or(());
+                    if let Err(e) = localsync_handler.await {
+                        log::error!("Error joining localsync_handler: {:?}", e);
+                    }
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
                     return e
                 },
                 _ = &mut localsync_outbox => {
@@ -217,8 +221,10 @@ impl QueryServer {
                 },
                 _ = &mut remote_sync_outbox => {
                     // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    remote_sync_handler.join().unwrap_or(());
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync();
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
                 }
 
             };

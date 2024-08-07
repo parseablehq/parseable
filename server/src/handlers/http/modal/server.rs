@@ -533,9 +533,10 @@ impl Server {
 
         storage::retention::load_retention_from_global();
 
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) = sync::run_local_sync();
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
+            sync::run_local_sync().await;
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync();
+            sync::object_store_sync().await;
 
         if CONFIG.parseable.send_analytics {
             analytics::init_analytics_scheduler()?;
@@ -553,8 +554,12 @@ impl Server {
                     // actix server finished .. stop other threads and stop the server
                     remote_sync_inbox.send(()).unwrap_or(());
                     localsync_inbox.send(()).unwrap_or(());
-                    localsync_handler.join().unwrap_or(());
-                    remote_sync_handler.join().unwrap_or(());
+                    if let Err(e) = localsync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
                     return e
                 },
                 _ = &mut localsync_outbox => {
@@ -564,8 +569,10 @@ impl Server {
                 },
                 _ = &mut remote_sync_outbox => {
                     // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    remote_sync_handler.join().unwrap_or(());
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync();
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
                 }
             };
         }
