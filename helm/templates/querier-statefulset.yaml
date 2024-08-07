@@ -1,0 +1,88 @@
+{{- if eq .Values.parseable.highAvailability.enabled true }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "parseable.fullname" . }}-querier-headless
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+    - port: 8000
+      name: "parseable-port"
+  clusterIP: None
+  selector:
+    {{- include "parseable.querierLabelsSelector" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "parseable.fullname" . }}-querier
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.querierLabels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "parseable.querierLabelsSelector" . | nindent 6 }}
+  serviceName: {{ include "parseable.fullname" . }}-querier-headless
+  ## TODO: this will change as we scale queriers
+  replicas: 1
+  minReadySeconds: 2
+  template:
+    metadata:
+      labels:
+        {{- include "parseable.querierLabelsSelector" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 10 
+      serviceAccountName: {{ include "parseable.serviceAccountName" . }}
+      containers:
+      - name: {{ .Chart.Name }}
+        securityContext:
+          {{- toYaml .Values.parseable.securityContext | nindent 8 }}
+        image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
+        imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
+        command: ["parseable"]
+        args: ["s3-store"]
+        env:
+          {{- range $key, $value :=  .Values.parseable.env }}
+          - name: {{ $key }}
+            value: {{ tpl $value $ | quote }}
+          {{- end }}
+          {{- range $secret := .Values.parseable.s3ModeSecret }}
+          {{- range $key := $secret.keys }}
+          {{- $envPrefix := $secret.prefix | default "" | upper }}
+          {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+          - name: {{ $envPrefix }}{{ $envKey }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $secret.name }}
+                key: {{ $key }}
+          {{- end }}
+          {{- end }}
+          - name: P_MODE
+            value: "query"
+          {{- if .Values.parseable.persistence.querier.enabled }}
+          - name: P_HOT_TIER_DIR
+            value: "/parseable/hot-tier"
+          {{- end }}
+        ports:
+          - containerPort: 8000
+        resources:
+          {{- toYaml .Values.parseable.resources | nindent 12 }}
+        {{- if .Values.parseable.persistence.querier.enabled }}
+        volumeMounts:
+        - mountPath: "/parseable/hot-tier"
+          name: hot-tier-volume
+        {{- end }}
+  volumeClaimTemplates:
+  {{- if .Values.parseable.persistence.querier.enabled }}
+  - metadata:
+      name: hot-tier-volume
+    spec:
+      accessModes:
+      - {{ .Values.parseable.persistence.querier.accessMode | quote }}
+      storageClassName: {{ .Values.parseable.persistence.querier.storageClass | quote }}
+      resources:
+        requests:
+          storage: {{ .Values.parseable.persistence.querier.size | quote }}
+  {{- end }}
+{{- end }}
