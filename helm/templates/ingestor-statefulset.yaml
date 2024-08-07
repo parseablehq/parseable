@@ -63,11 +63,13 @@ spec:
           - containerPort: {{ .Values.parseable.highAvailability.ingestor.port }}
         resources:
           {{- toYaml .Values.parseable.highAvailability.ingestor.resources | nindent 12 }}
+        {{- if .Values.parseable.persistence.ingestor.enabled }}
         volumeMounts:
-          ## No data volume for ingestor
         - mountPath: "/parseable/staging"
           name: stage-volume
+        {{- end }}
   volumeClaimTemplates:
+  {{- if .Values.parseable.persistence.ingestor.enabled }}
   - metadata:
       name: stage-volume
     spec:
@@ -77,4 +79,5 @@ spec:
       resources:
         requests:
           storage: {{ .Values.parseable.persistence.ingestor.size | quote }}
+  {{- end }}
 {{- end }}
