@@ -21,6 +21,7 @@ use crate::{
 };
 
 use chrono::Local;
+use utoipa::ToSchema;
 
 use std::fmt::Debug;
 
@@ -104,7 +105,7 @@ pub struct ObjectStoreFormat {
     pub hot_tier_enabled: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ToSchema)]
 pub struct StreamInfo {
     #[serde(rename = "created-at")]
     pub created_at: String,

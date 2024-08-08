@@ -17,6 +17,7 @@
  */
 
 pub mod ingest_server;
+pub mod openapi;
 pub mod query_server;
 pub mod server;
 pub mod ssl_acceptor;

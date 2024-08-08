@@ -25,6 +25,7 @@ use datafusion::arrow::datatypes::Schema;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use utoipa::ToSchema;
 
 pub mod parser;
 pub mod rule;
@@ -39,7 +40,7 @@ use crate::{storage, utils};
 pub use self::rule::Rule;
 use self::target::Target;
 
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
     pub version: AlertVerison,
