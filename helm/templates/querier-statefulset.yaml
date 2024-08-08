@@ -68,11 +68,16 @@ spec:
           - containerPort: 8000
         resources:
           {{- toYaml .Values.parseable.resources | nindent 12 }}
-        {{- if .Values.parseable.persistence.querier.enabled }}
         volumeMounts:
+        - mountPath: "/parseable/staging"
+          name: stage-volume
+        {{- if .Values.parseable.persistence.querier.enabled }}
         - mountPath: "/parseable/hot-tier"
           name: hot-tier-volume
         {{- end }}
+      volumes:
+      - emptyDir: {}
+        name: stage-volume
   volumeClaimTemplates:
   {{- if .Values.parseable.persistence.querier.enabled }}
   - metadata:
