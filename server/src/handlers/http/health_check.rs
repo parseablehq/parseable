@@ -21,10 +21,32 @@ use actix_web::HttpResponse;
 
 use crate::option::CONFIG;
 
+#[utoipa::path(
+    get,
+    tag = "health check",
+    context_path = "/api/v1",
+    path = "/liveness",
+    responses(
+        (status = 200, description = "The server is live.")
+    )
+)]
 pub async fn liveness() -> HttpResponse {
     HttpResponse::new(StatusCode::OK)
 }
 
+#[utoipa::path(
+    get,
+    tag = "health check",
+    context_path = "/api/v1",
+    path = "/readiness",
+    responses(
+        (status = 200, description = "The object store is live."),
+        (status = 503, description = "Service Unavailable.")
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn readiness() -> HttpResponse {
     if CONFIG.storage().get_object_store().check().await.is_ok() {
         return HttpResponse::new(StatusCode::OK);

@@ -48,6 +48,18 @@ use std::path::PathBuf;
 ///         "path": store_endpoint
 ///     }
 /// }
+#[utoipa::path(
+    get,
+    tag = "about",
+    context_path = "/api/v1",
+    path = "/about",
+    responses(
+        (status = 200, body = Value)
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn about() -> Json<serde_json::Value> {
     let meta = StorageMetadata::global();
 

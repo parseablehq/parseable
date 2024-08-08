@@ -45,6 +45,8 @@ use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
     handlers::http::{
@@ -58,6 +60,7 @@ use crate::{
 
 // use super::generate;
 use super::generate;
+use super::openapi::ApiDoc;
 use super::ssl_acceptor::get_ssl_acceptor;
 use super::OpenIdClient;
 use super::ParseableServer;
@@ -133,6 +136,10 @@ impl Server {
     fn configure_routes(config: &mut web::ServiceConfig, oidc_client: Option<OpenIdClient>) {
         // there might be a bug in the configure routes method
         config
+            .service(
+                SwaggerUi::new("/swagger-ui/{_:.*}")
+                    .url("/api-docs/openapi.json", ApiDoc::openapi()),
+            )
             .service(
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body

@@ -174,6 +174,27 @@ async fn flatten_and_push_logs(
 // Handler for POST /api/v1/logstream/{logstream}
 // only ingests events into the specified logstream
 // fails if the logstream does not exist
+#[utoipa::path(
+    post,
+    tag = "logstream",
+    context_path = "/api/v1",
+    path = "/logstream/{logstream}",
+    params(
+        ("logstream" = String, Path, description = "Name of stream")
+    ),
+    request_body(
+        content = Vec<Object>, description = "Log events"
+    ),
+    responses(
+        (status = 200, description = "Ingested event", body = Vec<String>),
+        (status = 400, description = "Error", body = HttpResponse),
+        (status = 500, description = "Failure", body = HttpResponse),
+        (status = 404, description = "Stream not found", body = HttpResponse),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let internal_stream_names = STREAM_INFO.list_internal_streams();

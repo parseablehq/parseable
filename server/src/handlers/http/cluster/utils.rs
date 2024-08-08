@@ -26,8 +26,9 @@ use itertools::Itertools;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use url::Url;
+use utoipa::ToSchema;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, ToSchema)]
 pub struct QueriedStats {
     pub stream: String,
     pub time: DateTime<Utc>,
@@ -81,7 +82,7 @@ impl ClusterInfo {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, ToSchema)]
 pub struct IngestionStats {
     pub count: u64,
     pub size: String,
@@ -114,7 +115,7 @@ impl IngestionStats {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, ToSchema)]
 pub struct StorageStats {
     pub size: String,
     pub format: String,

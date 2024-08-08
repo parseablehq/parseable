@@ -18,6 +18,7 @@
 
 use actix_web::{http::header::ContentType, web, HttpResponse, Responder};
 use http::StatusCode;
+use utoipa::ToSchema;
 
 use crate::{
     option::CONFIG,
@@ -30,6 +31,26 @@ use crate::{
 
 // Handler for PUT /api/v1/role/{name}
 // Creates a new role or update existing one
+#[utoipa::path(
+    put,
+    tag = "role",
+    context_path = "/api/v1/role",
+    path = "/{name}",
+    params(
+        ("name" = String, Path, description = "Name of the role to create or update")
+    ),
+    request_body(
+        content = Vec<Object>, description = "Privilege and resource stream"
+    ),
+    responses(
+        (status = 200, description = "Created/updated the role"),
+        (status = 500, description = "Failed to connect to storage: 0"),
+        (status = 400, description = "Cannot perform this operation as role is assigned to an existing user.")
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn put(
     name: web::Path<String>,
     body: web::Json<Vec<DefaultPrivilege>>,
@@ -45,6 +66,23 @@ pub async fn put(
 
 // Handler for GET /api/v1/role/{name}
 // Fetch role by name
+#[utoipa::path(
+    get,
+    tag = "role",
+    context_path = "/api/v1/role",
+    path = "/{name}",
+    params(
+        ("name" = String, Path, description = "Name of the role to fetch")
+    ),
+    responses(
+        (status = 200, description = "Fetched role"),
+        (status = 500, description = "Failed to connect to storage: 0"),
+        (status = 400, description = "Cannot perform this operation as role is assigned to an existing user.")
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn get(name: web::Path<String>) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let metadata = get_metadata().await?;
@@ -54,6 +92,20 @@ pub async fn get(name: web::Path<String>) -> Result<impl Responder, RoleError> {
 
 // Handler for GET /api/v1/role
 // Fetch all roles in the system
+#[utoipa::path(
+    get,
+    tag = "role",
+    context_path = "/api/v1",
+    path = "/role",
+    responses(
+        (status = 200, description = "Fetches all roles in the system", body = Object<Vec<String>>),
+        (status = 500, description = "Failed to connect to storage: 0"),
+        (status = 400, description = "Cannot perform this operation as role is assigned to an existing user.")
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn list() -> Result<impl Responder, RoleError> {
     let metadata = get_metadata().await?;
     let roles: Vec<String> = metadata.roles.keys().cloned().collect();
@@ -62,6 +114,23 @@ pub async fn list() -> Result<impl Responder, RoleError> {
 
 // Handler for DELETE /api/v1/role/{username}
 // Delete existing role
+#[utoipa::path(
+    delete,
+    tag = "role",
+    context_path = "/api/v1/role",
+    path = "/{name}",
+    params(
+        ("name" = String, Path, description = "Deletes the given role")
+    ),
+    responses(
+        (status = 200, description = "Deleted given role"),
+        (status = 500, description = "Failed to connect to storage: 0"),
+        (status = 400, description = "Cannot perform this operation as role is assigned to an existing user.")
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let mut metadata = get_metadata().await?;
@@ -75,7 +144,22 @@ pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError
 }
 
 // Handler for PUT /api/v1/role/default
-// Delete existing role
+// Put default role
+#[utoipa::path(
+    put,
+    tag = "role",
+    context_path = "/api/v1/role",
+    path = "/default",
+    request_body(content = String, description = "Name of the role", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Created a default role with the given name"),
+        (status = 500, description = "Failed to connect to storage: 0"),
+        (status = 400, description = "Cannot perform this operation as role is assigned to an existing user.")
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn put_default(name: web::Json<String>) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let mut metadata = get_metadata().await?;
@@ -86,7 +170,21 @@ pub async fn put_default(name: web::Json<String>) -> Result<impl Responder, Role
 }
 
 // Handler for GET /api/v1/role/default
-// Delete existing role
+// get the default role
+#[utoipa::path(
+    get,
+    tag = "role",
+    context_path = "/api/v1/role",
+    path = "/default",
+    responses(
+        (status = 200, description = "Fetched the default role", body = Object<String>),
+        (status = 500, description = "Failed to connect to storage: 0"),
+        (status = 400, description = "Cannot perform this operation as role is assigned to an existing user.")
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn get_default() -> Result<impl Responder, RoleError> {
     let res = match DEFAULT_ROLE.lock().unwrap().clone() {
         Some(role) => serde_json::Value::String(role),
@@ -112,7 +210,7 @@ async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageErr
     Ok(())
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, ToSchema)]
 pub enum RoleError {
     #[error("Failed to connect to storage: {0}")]
     ObjectStorageError(#[from] ObjectStorageError),
