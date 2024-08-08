@@ -163,7 +163,7 @@ pub async fn resolve_parseable_metadata(
                         // update the server mode for local metadata
                         metadata.server_mode = CONFIG.parseable.mode.to_string();
                         metadata.staging = CONFIG.staging_dir().to_path_buf();
-                    },
+                      },
                 }
                 Ok(metadata)
             }
@@ -272,12 +272,15 @@ pub async fn put_remote_metadata(metadata: &StorageMetadata) -> Result<(), Objec
 }
 
 pub fn put_staging_metadata(meta: &StorageMetadata) -> io::Result<()> {
+    let mut staging_metadata = meta.clone();
+    staging_metadata.server_mode = CONFIG.parseable.mode.to_string();
+    staging_metadata.staging = CONFIG.staging_dir().to_path_buf();
     let path = CONFIG.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
         .open(path)?;
-    serde_json::to_writer(&mut file, meta)?;
+    serde_json::to_writer(&mut file, &staging_metadata)?;
     Ok(())
 }
