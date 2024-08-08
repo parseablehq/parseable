@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "parseable.fullname" . }}-ingestor-headless
+  name: {{ include "parseable.fullname" . }}-querier-headless
   namespace: {{ .Release.Namespace }}
 spec:
   ports:
@@ -10,26 +10,27 @@ spec:
       name: "parseable-port"
   clusterIP: None
   selector:
-    {{- include "parseable.ingestorLabelsSelector" . | nindent 4 }}
+    {{- include "parseable.querierLabelsSelector" . | nindent 4 }}
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "parseable.fullname" . }}-ingestor
+  name: {{ include "parseable.fullname" . }}-querier
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "parseable.ingestorLabels" . | nindent 4 }}
+    {{- include "parseable.querierLabels" . | nindent 4 }}
 spec:
   selector:
     matchLabels:
-      {{- include "parseable.ingestorLabelsSelector" . | nindent 6 }}
-  serviceName: {{ include "parseable.fullname" . }}-ingestor-headless
-  replicas: {{ .Values.parseable.highAvailability.ingestor.count }}
+      {{- include "parseable.querierLabelsSelector" . | nindent 6 }}
+  serviceName: {{ include "parseable.fullname" . }}-querier-headless
+  ## TODO: this will change as we scale queriers
+  replicas: 1
   minReadySeconds: 2
   template:
     metadata:
       labels:
-        {{- include "parseable.ingestorLabelsSelector" . | nindent 8 }}
+        {{- include "parseable.querierLabelsSelector" . | nindent 8 }}
     spec:
       terminationGracePeriodSeconds: 10 
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
@@ -39,10 +40,10 @@ spec:
           {{- toYaml .Values.parseable.securityContext | nindent 8 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
-        command: ["/bin/sh", "-c"]
-        args: ["parseable s3-store --ingestor-endpoint=${HOSTNAME}.{{ include "parseable.fullname" . }}-ingestor-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.parseable.highAvailability.ingestor.port }}"]
+        command: ["parseable"]
+        args: ["s3-store"]
         env:
-          {{- range $key, $value :=  .Values.parseable.highAvailability.ingestor.env }}
+          {{- range $key, $value :=  .Values.parseable.env }}
           - name: {{ $key }}
             value: {{ tpl $value $ | quote }}
           {{- end }}
@@ -58,26 +59,30 @@ spec:
           {{- end }}
           {{- end }}
           - name: P_MODE
-            value: "ingest"
+            value: "query"
+          {{- if .Values.parseable.persistence.querier.enabled }}
+          - name: P_HOT_TIER_DIR
+            value: "/parseable/hot-tier"
+          {{- end }}
         ports:
-          - containerPort: {{ .Values.parseable.highAvailability.ingestor.port }}
+          - containerPort: 8000
         resources:
-          {{- toYaml .Values.parseable.highAvailability.ingestor.resources | nindent 12 }}
-        {{- if .Values.parseable.persistence.ingestor.enabled }}
+          {{- toYaml .Values.parseable.resources | nindent 12 }}
+        {{- if .Values.parseable.persistence.querier.enabled }}
         volumeMounts:
-        - mountPath: "/parseable/staging"
-          name: stage-volume
+        - mountPath: "/parseable/hot-tier"
+          name: hot-tier-volume
         {{- end }}
   volumeClaimTemplates:
-  {{- if .Values.parseable.persistence.ingestor.enabled }}
+  {{- if .Values.parseable.persistence.querier.enabled }}
   - metadata:
-      name: stage-volume
+      name: hot-tier-volume
     spec:
       accessModes:
-      - {{ .Values.parseable.persistence.ingestor.accessMode | quote }}
-      storageClassName: {{ .Values.parseable.persistence.ingestor.storageClass | quote }}
+      - {{ .Values.parseable.persistence.querier.accessMode | quote }}
+      storageClassName: {{ .Values.parseable.persistence.querier.storageClass | quote }}
       resources:
         requests:
-          storage: {{ .Values.parseable.persistence.ingestor.size | quote }}
+          storage: {{ .Values.parseable.persistence.querier.size | quote }}
   {{- end }}
 {{- end }}
