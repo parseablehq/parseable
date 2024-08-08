@@ -26,6 +26,7 @@ use crate::handlers::http::logstream::error::StreamError;
 use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
+use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
@@ -39,13 +40,15 @@ use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::de::Error;
 use serde_json::error::Error as SerdeError;
-use serde_json::Value as JsonValue;
+use serde_json::{to_vec, Value as JsonValue};
 use url::Url;
 type IngestorMetadataArr = Vec<IngestorMetadata>;
 
 use self::utils::StorageStats;
 
 use super::base_path_without_preceding_slash;
+use super::rbac::RBACError;
+use std::collections::HashSet;
 use std::time::Duration;
 
 use super::modal::IngestorMetadata;
@@ -94,7 +97,7 @@ pub async fn sync_cache_with_ingestors(
     Ok(())
 }
 
-// forward the request to all ingestors to keep them in sync
+// forward the create/update stream request to all ingestors to keep them in sync
 pub async fn sync_streams_with_ingestors(
     headers: HeaderMap,
     body: Bytes,
@@ -142,7 +145,218 @@ pub async fn sync_streams_with_ingestors(
             log::error!(
                 "failed to forward upsert stream request to ingestor: {}\nResponse Returned: {:?}",
                 ingestor.domain_name,
-                res
+                res.text().await
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// forward the role update request to all ingestors to keep them in sync
+pub async fn sync_users_with_roles_with_ingestors(
+    username: &String,
+    role: &HashSet<String>,
+) -> Result<(), RBACError> {
+    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        RBACError::Anyhow(err)
+    })?;
+
+    let client = reqwest::Client::new();
+    let role = to_vec(&role.clone()).map_err(|err| {
+        log::error!("Fatal: failed to serialize role: {:?}", err);
+        RBACError::SerdeError(err)
+    })?;
+    for ingestor in ingestor_infos.iter() {
+        if !utils::check_liveness(&ingestor.domain_name).await {
+            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            continue;
+        }
+        let url = format!(
+            "{}{}/user/{}/role",
+            ingestor.domain_name,
+            base_path_without_preceding_slash(),
+            username
+        );
+
+        let res = client
+            .put(url)
+            .header(header::AUTHORIZATION, &ingestor.token)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(role.clone())
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                    ingestor.domain_name,
+                    err
+                );
+                RBACError::Network(err)
+            })?;
+
+        if !res.status().is_success() {
+            log::error!(
+                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                ingestor.domain_name,
+                res.text().await
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// forward the delete user request to all ingestors to keep them in sync
+pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), RBACError> {
+    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        RBACError::Anyhow(err)
+    })?;
+
+    let client = reqwest::Client::new();
+    for ingestor in ingestor_infos.iter() {
+        if !utils::check_liveness(&ingestor.domain_name).await {
+            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            continue;
+        }
+        let url = format!(
+            "{}{}/user/{}",
+            ingestor.domain_name,
+            base_path_without_preceding_slash(),
+            username
+        );
+
+        let res = client
+            .delete(url)
+            .header(header::AUTHORIZATION, &ingestor.token)
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                    ingestor.domain_name,
+                    err
+                );
+                RBACError::Network(err)
+            })?;
+
+        if !res.status().is_success() {
+            log::error!(
+                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                ingestor.domain_name,
+                res.text().await
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// forward the create user request to all ingestors to keep them in sync
+pub async fn sync_user_creation_with_ingestors(
+    user: User,
+    role: &Option<HashSet<String>>,
+) -> Result<(), RBACError> {
+    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        RBACError::Anyhow(err)
+    })?;
+
+    let mut user = user.clone();
+
+    if let Some(role) = role {
+        user.roles.clone_from(role);
+    }
+    let username = user.username();
+    let client = reqwest::Client::new();
+
+    let user = to_vec(&user).map_err(|err| {
+        log::error!("Fatal: failed to serialize user: {:?}", err);
+        RBACError::SerdeError(err)
+    })?;
+
+    for ingestor in ingestor_infos.iter() {
+        if !utils::check_liveness(&ingestor.domain_name).await {
+            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            continue;
+        }
+        let url = format!(
+            "{}{}/user/{}",
+            ingestor.domain_name,
+            base_path_without_preceding_slash(),
+            username
+        );
+
+        let res = client
+            .post(url)
+            .header(header::AUTHORIZATION, &ingestor.token)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(user.clone())
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                    ingestor.domain_name,
+                    err
+                );
+                RBACError::Network(err)
+            })?;
+
+        if !res.status().is_success() {
+            log::error!(
+                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                ingestor.domain_name,
+                res.text().await
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// forward the password reset request to all ingestors to keep them in sync
+pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(), RBACError> {
+    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        RBACError::Anyhow(err)
+    })?;
+    let client = reqwest::Client::new();
+
+    for ingestor in ingestor_infos.iter() {
+        if !utils::check_liveness(&ingestor.domain_name).await {
+            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            continue;
+        }
+        let url = format!(
+            "{}{}/user/{}/generate-new-password",
+            ingestor.domain_name,
+            base_path_without_preceding_slash(),
+            username
+        );
+
+        let res = client
+            .post(url)
+            .header(header::AUTHORIZATION, &ingestor.token)
+            .header(header::CONTENT_TYPE, "application/json")
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                    ingestor.domain_name,
+                    err
+                );
+                RBACError::Network(err)
+            })?;
+
+        if !res.status().is_success() {
+            log::error!(
+                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                ingestor.domain_name,
+                res.text().await
             );
         }
     }

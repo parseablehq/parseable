@@ -18,9 +18,11 @@
 use crate::analytics;
 use crate::banner;
 use crate::handlers::airplane;
+use crate::handlers::http;
 use crate::handlers::http::health_check;
 use crate::handlers::http::ingest;
 use crate::handlers::http::logstream;
+use crate::handlers::http::middleware::DisAllowRootUser;
 use crate::handlers::http::middleware::RouteExt;
 use crate::localcache::LocalCacheManager;
 use crate::metrics;
@@ -181,6 +183,7 @@ impl IngestServer {
                     .service(Server::get_about_factory())
                     .service(Self::analytics_factory())
                     .service(Server::get_liveness_factory())
+                    .service(Self::get_user_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_readiness_factory()),
             )
@@ -197,7 +200,46 @@ impl IngestServer {
             ),
         )
     }
-
+    // get the user webscope
+    fn get_user_webscope() -> Scope {
+        web::scope("/user")
+            .service(
+                web::resource("/{username}")
+                    // PUT /user/{username} => Create a new user
+                    .route(
+                        web::post()
+                            .to(http::rbac::post_user)
+                            .authorize(Action::PutUser),
+                    )
+                    // DELETE /user/{username} => Delete a user
+                    .route(
+                        web::delete()
+                            .to(http::rbac::delete_user)
+                            .authorize(Action::DeleteUser),
+                    )
+                    .wrap(DisAllowRootUser),
+            )
+            .service(
+                web::resource("/{username}/role")
+                    // PUT /user/{username}/roles => Put roles for user
+                    .route(
+                        web::put()
+                            .to(http::rbac::put_role)
+                            .authorize(Action::PutUserRoles)
+                            .wrap(DisAllowRootUser),
+                    ),
+            )
+            .service(
+                web::resource("/{username}/generate-new-password")
+                    // POST /user/{username}/generate-new-password => reset password for this user
+                    .route(
+                        web::post()
+                            .to(http::rbac::post_gen_password)
+                            .authorize(Action::PutUser)
+                            .wrap(DisAllowRootUser),
+                    ),
+            )
+    }
     fn logstream_api() -> Scope {
         web::scope("/logstream").service(
             web::scope("/{logstream}")
