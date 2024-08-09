@@ -25,6 +25,7 @@ use std::{
 
 use crate::{
     catalog::manifest::{File, Manifest},
+    handlers::http::cluster::INTERNAL_STREAM_NAME,
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
     option::{
         validation::{bytes_to_human_size, human_size_to_bytes},
@@ -684,6 +685,22 @@ impl HotTierManager {
         }
 
         Ok(None)
+    }
+
+    pub async fn put_internal_stream_hot_tier(&self) -> Result<(), HotTierError> {
+        if CONFIG.parseable.hot_tier_storage_path.is_some()
+            && !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME)
+        {
+            let mut stream_hot_tier = StreamHotTier {
+                size: "10MiB".to_string(),
+                used_size: Some("0B".to_string()),
+                available_size: Some("10MiB".to_string()),
+                oldest_date_time_entry: None,
+            };
+            self.put_hot_tier(INTERNAL_STREAM_NAME, &mut stream_hot_tier)
+                .await?;
+        }
+        Ok(())
     }
 }
 

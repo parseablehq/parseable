@@ -30,6 +30,7 @@ use crate::handlers::{
     LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     STREAM_NAME_HEADER_KEY,
 };
+use crate::hottier::{HotTierError, HotTierManager};
 use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{self, STREAM_INFO};
@@ -74,6 +75,9 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
     create_stream_if_not_exists(&stream_name, true).await?;
+    if let Some(hot_tier_manager) = HotTierManager::global() {
+        hot_tier_manager.put_internal_stream_hot_tier().await?;
+    }
     let size: usize = body.len();
     let parsed_timestamp = Utc::now().naive_utc();
     let (rb, is_first) = {
@@ -488,6 +492,8 @@ pub enum PostError {
     DashboardError(#[from] DashboardError),
     #[error("Error: {0}")]
     CacheError(#[from] CacheError),
+    #[error("{0}")]
+    HotTierError(#[from] HotTierError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -509,6 +515,7 @@ impl actix_web::ResponseError for PostError {
             PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::CacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::HotTierError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
