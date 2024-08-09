@@ -21,6 +21,7 @@ use super::base_path_without_preceding_slash;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use super::cluster::{
     fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors, sync_streams_with_ingestors,
+    INTERNAL_STREAM_NAME,
 };
 use crate::alerts::Alerts;
 use crate::handlers::{
@@ -935,6 +936,13 @@ pub async fn put_stream_hot_tier(
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         return Err(StreamError::StreamNotFound(stream_name));
+    }
+
+    if stream_name.eq(INTERNAL_STREAM_NAME) {
+        return Err(StreamError::Custom {
+            msg: "Hot tier can not be updated for internal stream".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
     }
     if CONFIG.parseable.hot_tier_storage_path.is_none() {
         return Err(StreamError::HotTierNotEnabled(stream_name));
