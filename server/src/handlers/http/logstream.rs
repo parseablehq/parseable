@@ -957,6 +957,13 @@ pub async fn put_stream_hot_tier(
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         return Err(StreamError::StreamNotFound(stream_name));
     }
+
+    if stream_name.eq(INTERNAL_STREAM_NAME) {
+        return Err(StreamError::Custom {
+            msg: "Hot tier can not be updated for internal stream".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
     if CONFIG.parseable.hot_tier_storage_path.is_none() {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
