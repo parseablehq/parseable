@@ -23,7 +23,7 @@ use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
 use crate::hottier::MIN_STREAM_HOT_TIER_SIZE_BYTES;
-use crate::option::validation::{bytes_to_human_size, human_size_to_bytes};
+use crate::option::validation::bytes_to_human_size;
 use crate::storage::StreamType;
 
 // Add more sql keywords here in lower case
@@ -149,17 +149,16 @@ pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
 }
 
 pub fn hot_tier(size: &str) -> Result<(), HotTierValidationError> {
-    if human_size_to_bytes(size).is_err() {
-        return Err(HotTierValidationError::InvalidFormat);
+    if let Ok(size) = size.parse::<u64>() {
+        if size < MIN_STREAM_HOT_TIER_SIZE_BYTES {
+            return Err(HotTierValidationError::Size(bytes_to_human_size(
+                MIN_STREAM_HOT_TIER_SIZE_BYTES,
+            )));
+        }
+        Ok(())
+    } else {
+        Err(HotTierValidationError::InvalidFormat)
     }
-
-    if human_size_to_bytes(size).unwrap() < MIN_STREAM_HOT_TIER_SIZE_BYTES {
-        return Err(HotTierValidationError::Size(bytes_to_human_size(
-            MIN_STREAM_HOT_TIER_SIZE_BYTES,
-        )));
-    }
-
-    Ok(())
 }
 pub mod error {
 
@@ -211,7 +210,7 @@ pub mod error {
 
     #[derive(Debug, thiserror::Error)]
     pub enum HotTierValidationError {
-        #[error("Please provide size in human readable format, e.g 10GiB, 20GiB")]
+        #[error("Please provide size in bytes")]
         InvalidFormat,
 
         #[error("Stream should have atleast {0} size")]
