@@ -19,7 +19,10 @@
 
 use serde_json::{json, Value};
 
-use crate::{catalog::snapshot::CURRENT_SNAPSHOT_VERSION, storage};
+use crate::{
+    catalog::snapshot::CURRENT_SNAPSHOT_VERSION, handlers::http::cluster::INTERNAL_STREAM_NAME,
+    storage,
+};
 
 pub fn v1_v4(mut stream_metadata: Value) -> Value {
     let stream_metadata_map = stream_metadata.as_object_mut().unwrap();
@@ -139,6 +142,35 @@ pub fn v3_v4(mut stream_metadata: Value) -> Value {
     if matches!(version, Some("v1")) {
         let updated_snapshot = v1_v2_snapshot_migration(snapshot);
         stream_metadata_map.insert("snapshot".to_owned(), updated_snapshot);
+    }
+
+    stream_metadata
+}
+
+pub fn v4_v5(mut stream_metadata: Value, stream_name: &str) -> Value {
+    let stream_metadata_map: &mut serde_json::Map<String, Value> =
+        stream_metadata.as_object_mut().unwrap();
+    stream_metadata_map.insert(
+        "objectstore-format".to_owned(),
+        Value::String(storage::CURRENT_OBJECT_STORE_VERSION.into()),
+    );
+    stream_metadata_map.insert(
+        "version".to_owned(),
+        Value::String(storage::CURRENT_SCHEMA_VERSION.into()),
+    );
+    let stream_type = stream_metadata_map.get("stream_type");
+    if stream_type.is_none() {
+        if stream_name.eq(INTERNAL_STREAM_NAME) {
+            stream_metadata_map.insert(
+                "stream_type".to_owned(),
+                Value::String(storage::StreamType::Internal.to_string()),
+            );
+        } else {
+            stream_metadata_map.insert(
+                "stream_type".to_owned(),
+                Value::String(storage::StreamType::UserDefined.to_string()),
+            );
+        }
     }
 
     stream_metadata

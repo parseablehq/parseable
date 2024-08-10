@@ -34,6 +34,7 @@ use crate::option::validation::bytes_to_human_size;
 use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
+use crate::storage::StreamType;
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{
     catalog::{self, remove_manifest_from_snapshot},
@@ -377,7 +378,7 @@ async fn create_update_stream(
         &custom_partition,
         &static_schema_flag,
         schema,
-        false,
+        StreamType::UserDefined,
     )
     .await?;
 
@@ -835,11 +836,11 @@ pub async fn create_stream(
     custom_partition: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
-    internal_stream: bool,
+    stream_type: StreamType,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
-    if !internal_stream {
-        validator::stream_name(&stream_name)?;
+    if stream_type != StreamType::Internal {
+        validator::stream_name(&stream_name, &stream_type)?;
     }
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
@@ -852,6 +853,7 @@ pub async fn create_stream(
             custom_partition,
             static_schema_flag,
             schema.clone(),
+            stream_type,
         )
         .await
     {
@@ -908,6 +910,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
     let stream_info: StreamInfo = StreamInfo {
+        stream_type: stream_meta.stream_type.clone(),
         created_at: stream_meta.created_at.clone(),
         first_event_at: stream_meta.first_event_at.clone(),
         time_partition: stream_meta.time_partition.clone(),

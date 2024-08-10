@@ -36,7 +36,7 @@ use crate::metrics::{
 use crate::option::{Mode, CONFIG};
 use crate::storage::retention::Retention;
 use crate::storage::{
-    LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, STREAM_METADATA_FILE_NAME,
+    LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, StreamType, STREAM_METADATA_FILE_NAME,
     STREAM_ROOT_DIRECTORY,
 };
 use crate::utils::arrow::MergedRecordReader;
@@ -62,6 +62,7 @@ pub struct LogStreamMetadata {
     pub custom_partition: Option<String>,
     pub static_schema_flag: Option<String>,
     pub hot_tier_enabled: Option<bool>,
+    pub stream_type: StreamType,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -341,6 +342,7 @@ impl StreamInfo {
             custom_partition: meta.custom_partition,
             static_schema_flag: meta.static_schema_flag,
             hot_tier_enabled: meta.hot_tier_enabled,
+            stream_type: meta.stream_type,
         };
 
         let mut map = self.write().expect(LOCK_EXPECT);
@@ -354,6 +356,15 @@ impl StreamInfo {
             .expect(LOCK_EXPECT)
             .keys()
             .map(String::clone)
+            .collect()
+    }
+
+    pub fn list_internal_streams(&self) -> Vec<String> {
+        self.read()
+            .expect(LOCK_EXPECT)
+            .iter()
+            .filter(|(_, v)| v.stream_type != StreamType::UserDefined)
+            .map(|(k, _)| k.clone())
             .collect()
     }
 
@@ -471,6 +482,7 @@ pub async fn load_stream_metadata_on_server_start(
         custom_partition,
         static_schema_flag: meta.static_schema_flag.clone(),
         hot_tier_enabled: meta.hot_tier_enabled,
+        stream_type: meta.stream_type,
     };
 
     let mut map = STREAM_INFO.write().expect(LOCK_EXPECT);

@@ -144,6 +144,8 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         match version {
             Some("v1") => {
                 stream_metadata_value = stream_metadata_migration::v1_v4(stream_metadata_value);
+                stream_metadata_value =
+                    stream_metadata_migration::v4_v5(stream_metadata_value, stream);
                 storage
                     .put_object(&path, to_bytes(&stream_metadata_value))
                     .await?;
@@ -155,6 +157,8 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
             }
             Some("v2") => {
                 stream_metadata_value = stream_metadata_migration::v2_v4(stream_metadata_value);
+                stream_metadata_value =
+                    stream_metadata_migration::v4_v5(stream_metadata_value, stream);
                 storage
                     .put_object(&path, to_bytes(&stream_metadata_value))
                     .await?;
@@ -167,6 +171,15 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
             }
             Some("v3") => {
                 stream_metadata_value = stream_metadata_migration::v3_v4(stream_metadata_value);
+                stream_metadata_value =
+                    stream_metadata_migration::v4_v5(stream_metadata_value, stream);
+                storage
+                    .put_object(&path, to_bytes(&stream_metadata_value))
+                    .await?;
+            }
+            Some("v4") => {
+                stream_metadata_value =
+                    stream_metadata_migration::v4_v5(stream_metadata_value, stream);
                 storage
                     .put_object(&path, to_bytes(&stream_metadata_value))
                     .await?;

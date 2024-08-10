@@ -34,7 +34,7 @@ use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{self, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
-use crate::storage::{LogStream, ObjectStorageError};
+use crate::storage::{LogStream, ObjectStorageError, StreamType};
 use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
 use crate::utils::json::convert_array_to_object;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
@@ -57,13 +57,15 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
-        if stream_name.eq(INTERNAL_STREAM_NAME) {
+        let internal_stream_names = STREAM_INFO.list_internal_streams();
+
+        if internal_stream_names.contains(&stream_name) || stream_name == INTERNAL_STREAM_NAME {
             return Err(PostError::Invalid(anyhow::anyhow!(
-                "Stream {} is an internal stream and cannot be ingested into",
+                "The stream {} is reserved for internal use and cannot be ingested into",
                 stream_name
             )));
         }
-        create_stream_if_not_exists(&stream_name, false).await?;
+        create_stream_if_not_exists(&stream_name, StreamType::UserDefined).await?;
 
         flatten_and_push_logs(req, body, stream_name).await?;
         Ok(HttpResponse::Ok().finish())
@@ -73,7 +75,7 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    create_stream_if_not_exists(&stream_name, true).await?;
+    create_stream_if_not_exists(&stream_name, StreamType::Internal).await?;
     let size: usize = body.len();
     let parsed_timestamp = Utc::now().naive_utc();
     let (rb, is_first) = {
@@ -100,6 +102,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
         parsed_timestamp,
         time_partition: None,
         custom_partition_values: HashMap::new(),
+        stream_type: StreamType::Internal,
     }
     .process()
     .await?;
@@ -116,7 +119,7 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
-        create_stream_if_not_exists(&stream_name, false).await?;
+        create_stream_if_not_exists(&stream_name, StreamType::UserDefined).await?;
 
         //flatten logs
         if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
@@ -176,7 +179,8 @@ async fn flatten_and_push_logs(
 // fails if the logstream does not exist
 pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    if stream_name.eq(INTERNAL_STREAM_NAME) {
+    let internal_stream_names = STREAM_INFO.list_internal_streams();
+    if internal_stream_names.contains(&stream_name) || stream_name == INTERNAL_STREAM_NAME {
         return Err(PostError::Invalid(anyhow::anyhow!(
             "Stream {} is an internal stream and cannot be ingested into",
             stream_name
@@ -202,6 +206,7 @@ pub async fn push_logs_unchecked(
         time_partition: None,
         is_first_event: true,                    // NOTE: Maybe should be false
         custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
+        stream_type: StreamType::UserDefined,
     };
     unchecked_event.process_unchecked()?;
 
@@ -369,6 +374,7 @@ async fn create_process_record_batch(
         parsed_timestamp,
         time_partition: time_partition.clone(),
         custom_partition_values: custom_partition_values.clone(),
+        stream_type: StreamType::UserDefined,
     }
     .process()
     .await?;
@@ -413,7 +419,7 @@ fn into_event_batch(
 // Check if the stream exists and create a new stream if doesn't exist
 pub async fn create_stream_if_not_exists(
     stream_name: &str,
-    internal_stream: bool,
+    stream_type: StreamType,
 ) -> Result<(), PostError> {
     if STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
@@ -427,7 +433,7 @@ pub async fn create_stream_if_not_exists(
                 "",
                 "",
                 Arc::new(Schema::empty()),
-                internal_stream,
+                stream_type,
             )
             .await?;
         }
