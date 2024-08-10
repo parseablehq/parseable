@@ -16,97 +16,120 @@
  *
  */
 
-use clokwerk::{AsyncScheduler, Job, Scheduler, TimeUnits};
-use thread_priority::{ThreadBuilder, ThreadPriority};
+use clokwerk::{AsyncScheduler, Job, TimeUnits};
+use std::panic::AssertUnwindSafe;
 use tokio::sync::oneshot;
-use tokio::sync::oneshot::error::TryRecvError;
-
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use tokio::task;
+use tokio::time::{interval, sleep, Duration};
 
 use crate::option::CONFIG;
 use crate::{storage, STORAGE_UPLOAD_INTERVAL};
 
-pub fn object_store_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+pub async fn object_store_sync() -> (
+    task::JoinHandle<()>,
+    oneshot::Receiver<()>,
+    oneshot::Sender<()>,
+) {
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
-    let mut inbox_rx = AssertUnwindSafe(inbox_rx);
-    let handle = thread::spawn(move || {
-        let res = catch_unwind(move || {
-            let rt = actix_web::rt::System::new();
-            rt.block_on(async {
-                let mut scheduler = AsyncScheduler::new();
-                scheduler
-                    .every(STORAGE_UPLOAD_INTERVAL.seconds())
-                    // Extra time interval is added so that this schedular does not race with local sync.
-                    .plus(5u32.seconds())
-                    .run(|| async {
-                        if let Err(e) = CONFIG.storage().get_object_store().sync().await {
-                            log::warn!("failed to sync local data with object store. {:?}", e);
-                        }
-                    });
 
-                loop {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    scheduler.run_pending().await;
-                    match AssertUnwindSafe(|| inbox_rx.try_recv())() {
-                        Ok(_) => break,
-                        Err(TryRecvError::Empty) => continue,
-                        Err(TryRecvError::Closed) => {
-                            // should be unreachable but breaking anyways
-                            break;
-                        }
+    let handle = task::spawn(async move {
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
+            let mut scheduler = AsyncScheduler::new();
+            scheduler
+                .every(STORAGE_UPLOAD_INTERVAL.seconds())
+                .plus(5u32.seconds())
+                .run(|| async {
+                    if let Err(e) = CONFIG.storage().get_object_store().sync().await {
+                        log::warn!("failed to sync local data with object store. {:?}", e);
+                    }
+                });
+
+            let mut inbox_rx = AssertUnwindSafe(inbox_rx);
+            let mut check_interval = interval(Duration::from_secs(1));
+
+            loop {
+                check_interval.tick().await;
+                scheduler.run_pending().await;
+
+                match inbox_rx.try_recv() {
+                    Ok(_) => break,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        log::warn!("Inbox channel closed unexpectedly");
+                        break;
                     }
                 }
-            })
-        });
+            }
+        }));
 
-        if res.is_err() {
-            outbox_tx.send(()).unwrap();
+        match result {
+            Ok(future) => {
+                future.await;
+            }
+            Err(panic_error) => {
+                log::error!("Panic in object store sync task: {:?}", panic_error);
+                let _ = outbox_tx.send(());
+            }
         }
+
+        log::info!("Object store sync task ended");
     });
 
     (handle, outbox_rx, inbox_tx)
 }
 
-pub fn run_local_sync() -> (JoinHandle<()>, oneshot::Receiver<()>, oneshot::Sender<()>) {
+pub async fn run_local_sync() -> (
+    task::JoinHandle<()>,
+    oneshot::Receiver<()>,
+    oneshot::Sender<()>,
+) {
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
-    let mut inbox_rx = AssertUnwindSafe(inbox_rx);
 
-    let handle = ThreadBuilder::default()
-        .name("local-sync")
-        .priority(ThreadPriority::Max)
-        .spawn(move |priority_result| {
-            if priority_result.is_err() {
-                log::warn!("Max priority cannot be set for sync thread. Make sure that user/program is allowed to set thread priority.")
-            }
-            let res = catch_unwind(move || {
-                let mut scheduler = Scheduler::new();
-                scheduler
-                    .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
-                    .run(move || crate::event::STREAM_WRITERS.unset_all());
+    let handle = task::spawn(async move {
+        log::info!("Local sync task started");
+        let mut inbox_rx = inbox_rx;
 
-                loop {
-                    thread::sleep(Duration::from_millis(50));
-                    scheduler.run_pending();
-                    match AssertUnwindSafe(|| inbox_rx.try_recv())() {
-                        Ok(_) => break,
-                        Err(TryRecvError::Empty) => continue,
-                        Err(TryRecvError::Closed) => {
-                            // should be unreachable but breaking anyways
-                            break;
-                        }
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
+            let mut scheduler = AsyncScheduler::new();
+            scheduler
+                .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
+                .run(|| async {
+                    crate::event::STREAM_WRITERS.unset_all();
+                });
+
+            loop {
+                // Sleep for 50ms
+                sleep(Duration::from_millis(50)).await;
+
+                // Run any pending scheduled tasks
+                scheduler.run_pending().await;
+
+                // Check inbox
+                match inbox_rx.try_recv() {
+                    Ok(_) => break,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        log::warn!("Inbox channel closed unexpectedly");
+                        break;
                     }
                 }
-            });
-
-            if res.is_err() {
-                outbox_tx.send(()).unwrap();
             }
-        })
-        .unwrap();
+        }));
+
+        match result {
+            Ok(future) => {
+                future.await;
+            }
+            Err(panic_error) => {
+                log::error!("Panic in local sync task: {:?}", panic_error);
+            }
+        }
+
+        let _ = outbox_tx.send(());
+        log::info!("Local sync task ended");
+    });
 
     (handle, outbox_rx, inbox_tx)
 }
