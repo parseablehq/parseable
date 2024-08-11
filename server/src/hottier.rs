@@ -692,9 +692,9 @@ impl HotTierManager {
             && !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME)
         {
             let mut stream_hot_tier = StreamHotTier {
-                size: "10MiB".to_string(),
-                used_size: Some("0B".to_string()),
-                available_size: Some("10MiB".to_string()),
+                size: "10485760".to_string(),
+                used_size: Some("0".to_string()),
+                available_size: Some("10485760".to_string()),
                 oldest_date_time_entry: None,
             };
             self.put_hot_tier(INTERNAL_STREAM_NAME, &mut stream_hot_tier)
