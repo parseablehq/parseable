@@ -714,7 +714,7 @@ impl HotTierManager {
                         .to_string_lossy()
                         .trim_start_matches("minute=")
                         .to_string();
-                    let oldest_date_time = format!("{} {}:{}:00", date, hour_str, minute_str);
+                    let oldest_date_time = format!("{}T{}:{}:00.000Z", date, hour_str, minute_str);
                     return Ok(Some(oldest_date_time));
                 }
             }

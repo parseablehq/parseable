@@ -1029,7 +1029,10 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
     }
 
     if let Some(hot_tier_manager) = HotTierManager::global() {
-        let hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
+        let mut hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
+        hot_tier.size = format!("{} {}", hot_tier.size, "Bytes");
+        hot_tier.used_size = Some(format!("{} {}", hot_tier.used_size.unwrap(), "Bytes"));
+        hot_tier.available_size = Some(format!("{} {}", hot_tier.available_size.unwrap(), "Bytes"));
         Ok((web::Json(hot_tier), StatusCode::OK))
     } else {
         Err(StreamError::Custom {
