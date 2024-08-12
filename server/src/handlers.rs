@@ -34,6 +34,7 @@ const STATIC_SCHEMA_FLAG: &str = "x-p-static-schema-flag";
 const AUTHORIZATION_KEY: &str = "authorization";
 const SEPARATOR: char = '^';
 const UPDATE_STREAM_KEY: &str = "x-p-update-stream";
+const STREAM_TYPE_KEY: &str = "x-p-stream-type";
 const OIDC_SCOPE: &str = "openid profile email";
 const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";

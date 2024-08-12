@@ -18,6 +18,7 @@
 
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
+use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
 use crate::hottier::HotTierManager;
@@ -173,6 +174,9 @@ impl QueryServer {
         CONFIG.storage().register_store_metrics(&prometheus);
 
         migration::run_migration(&CONFIG).await?;
+
+        //create internal stream at server start
+        create_internal_stream_if_not_exists().await?;
 
         FILTERS.load().await?;
         DASHBOARDS.load().await?;

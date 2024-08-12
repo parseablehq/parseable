@@ -16,8 +16,7 @@
  *
  */
 
-use super::cluster::INTERNAL_STREAM_NAME;
-use super::logstream::error::CreateStreamError;
+use super::logstream::error::{CreateStreamError, StreamError};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 use super::{kinesis, otel};
@@ -58,14 +57,13 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
         let internal_stream_names = STREAM_INFO.list_internal_streams();
-
-        if internal_stream_names.contains(&stream_name) || stream_name == INTERNAL_STREAM_NAME {
+        if internal_stream_names.contains(&stream_name) {
             return Err(PostError::Invalid(anyhow::anyhow!(
                 "The stream {} is reserved for internal use and cannot be ingested into",
                 stream_name
             )));
         }
-        create_stream_if_not_exists(&stream_name, StreamType::UserDefined).await?;
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
         flatten_and_push_logs(req, body, stream_name).await?;
         Ok(HttpResponse::Ok().finish())
@@ -75,7 +73,6 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    create_stream_if_not_exists(&stream_name, StreamType::Internal).await?;
     let size: usize = body.len();
     let parsed_timestamp = Utc::now().naive_utc();
     let (rb, is_first) = {
@@ -119,7 +116,7 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
-        create_stream_if_not_exists(&stream_name, StreamType::UserDefined).await?;
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
         //flatten logs
         if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
@@ -180,7 +177,7 @@ async fn flatten_and_push_logs(
 pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let internal_stream_names = STREAM_INFO.list_internal_streams();
-    if internal_stream_names.contains(&stream_name) || stream_name == INTERNAL_STREAM_NAME {
+    if internal_stream_names.contains(&stream_name) {
         return Err(PostError::Invalid(anyhow::anyhow!(
             "Stream {} is an internal stream and cannot be ingested into",
             stream_name
@@ -419,7 +416,7 @@ fn into_event_batch(
 // Check if the stream exists and create a new stream if doesn't exist
 pub async fn create_stream_if_not_exists(
     stream_name: &str,
-    stream_type: StreamType,
+    stream_type: &str,
 ) -> Result<(), PostError> {
     if STREAM_INFO.stream_exists(stream_name) {
         return Ok(());
@@ -494,6 +491,8 @@ pub enum PostError {
     DashboardError(#[from] DashboardError),
     #[error("Error: {0}")]
     CacheError(#[from] CacheError),
+    #[error("Error: {0}")]
+    StreamError(#[from] StreamError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -515,6 +514,7 @@ impl actix_web::ResponseError for PostError {
             PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::CacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
