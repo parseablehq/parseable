@@ -29,7 +29,7 @@ use crate::handlers::{
     CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
     TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
 };
-use crate::hottier::{HotTierManager, StreamHotTier};
+use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::STREAM_INFO;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
@@ -993,6 +993,7 @@ pub async fn put_stream_hot_tier(
             .await?;
         hottier.used_size = Some(existing_hot_tier_used_size.to_string());
         hottier.available_size = Some(hottier.size.clone());
+        hottier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
         hot_tier_manager
             .put_hot_tier(&stream_name, &mut hottier)
             .await?;
