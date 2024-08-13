@@ -23,19 +23,18 @@ use crate::handlers::http::cluster::utils::{
 };
 use crate::handlers::http::ingest::{ingest_internal_stream, PostError};
 use crate::handlers::http::logstream::error::StreamError;
-use crate::handlers::STREAM_TYPE_KEY;
 use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
 use crate::stats::Stats;
 use crate::storage::object_storage::ingestor_metadata_path;
+use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
-use crate::storage::{StreamType, PARSEABLE_ROOT_DIRECTORY};
-use actix_web::http::header;
+use actix_web::http::header::{self, HeaderMap};
 use actix_web::{HttpRequest, Responder};
 use bytes::Bytes;
 use chrono::Utc;
-use http::StatusCode;
+use http::{header as http_header, StatusCode};
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::de::Error;
@@ -97,10 +96,15 @@ pub async fn sync_cache_with_ingestors(
 
 // forward the request to all ingestors to keep them in sync
 pub async fn sync_streams_with_ingestors(
-    req: HttpRequest,
+    headers: HeaderMap,
     body: Bytes,
     stream_name: &str,
 ) -> Result<(), StreamError> {
+    let mut reqwest_headers = http_header::HeaderMap::new();
+
+    for (key, value) in headers.iter() {
+        reqwest_headers.insert(key.clone(), value.clone());
+    }
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
@@ -120,7 +124,7 @@ pub async fn sync_streams_with_ingestors(
         );
         let res = client
             .put(url)
-            .headers(req.headers().into())
+            .headers(reqwest_headers.clone())
             .header(header::AUTHORIZATION, &ingestor.token)
             .body(body.clone())
             .send()
@@ -139,53 +143,6 @@ pub async fn sync_streams_with_ingestors(
                 "failed to forward upsert stream request to ingestor: {}\nResponse Returned: {:?}",
                 ingestor.domain_name,
                 res
-            );
-        }
-    }
-
-    Ok(())
-}
-
-/// sync internal streams with all ingestors
-pub async fn sync_internal_streams_with_ingestors(stream_name: &str) -> Result<(), StreamError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
-        StreamError::Anyhow(err)
-    })?;
-
-    let client = reqwest::Client::new();
-    for ingestor in ingestor_infos.iter() {
-        if !utils::check_liveness(&ingestor.domain_name).await {
-            log::warn!("Ingestor {} is not live", ingestor.domain_name);
-            continue;
-        }
-        let url = format!(
-            "{}{}/logstream/{}",
-            ingestor.domain_name,
-            base_path_without_preceding_slash(),
-            stream_name
-        );
-        let res = client
-            .put(url)
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(STREAM_TYPE_KEY, StreamType::Internal.to_string())
-            .send()
-            .await
-            .map_err(|err| {
-                log::error!(
-                    "Fatal: failed to forward upsert stream request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name,
-                    err
-                );
-                StreamError::Network(err)
-            })?;
-
-        if !res.status().is_success() {
-            log::error!(
-                "failed to forward upsert stream request to ingestor: {}\nResponse Returned: {:?}",
-                ingestor.domain_name,
-                res.text().await
             );
         }
     }

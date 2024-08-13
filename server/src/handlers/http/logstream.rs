@@ -20,8 +20,8 @@ use self::error::{CreateStreamError, StreamError};
 use super::base_path_without_preceding_slash;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use super::cluster::{
-    fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors,
-    sync_internal_streams_with_ingestors, sync_streams_with_ingestors, INTERNAL_STREAM_NAME,
+    fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors, sync_streams_with_ingestors,
+    INTERNAL_STREAM_NAME,
 };
 use super::ingest::create_stream_if_not_exists;
 use crate::alerts::Alerts;
@@ -44,16 +44,19 @@ use crate::{
 };
 
 use crate::{metadata, validator};
+use actix_web::http::header::{self, HeaderMap};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
+use http::{HeaderName, HeaderValue};
 use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::num::NonZeroU32;
+use std::str::FromStr;
 use std::sync::Arc;
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
@@ -179,12 +182,9 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if CONFIG.parseable.mode == Mode::Query {
-        create_update_stream(&req, &body, &stream_name).await?;
-        sync_streams_with_ingestors(req, body, &stream_name).await?;
+        let headers = create_update_stream(&req, &body, &stream_name).await?;
+        sync_streams_with_ingestors(headers, body, &stream_name).await?;
     } else {
-        if STREAM_INFO.stream_exists(&stream_name) {
-            return Ok(("Log stream already exists", StatusCode::OK));
-        }
         create_update_stream(&req, &body, &stream_name).await?;
     }
 
@@ -314,7 +314,7 @@ async fn create_update_stream(
     req: &HttpRequest,
     body: &Bytes,
     stream_name: &str,
-) -> Result<(), StreamError> {
+) -> Result<HeaderMap, StreamError> {
     let (
         time_partition,
         time_partition_limit,
@@ -355,17 +355,16 @@ async fn create_update_stream(
             let time_partition_days = validate_time_partition_limit(&time_partition_limit)?;
             update_time_partition_limit_in_stream(stream_name.to_string(), time_partition_days)
                 .await?;
-            return Ok(());
+            return Ok(req.headers().clone());
         }
 
         if !custom_partition.is_empty() {
             validate_custom_partition(&custom_partition)?;
             update_custom_partition_in_stream(stream_name.to_string(), &custom_partition).await?;
-            return Ok(());
         } else {
             update_custom_partition_in_stream(stream_name.to_string(), "").await?;
-            return Ok(());
         }
+        return Ok(req.headers().clone());
     }
     let mut time_partition_in_days = "";
     if !time_partition_limit.is_empty() {
@@ -398,7 +397,7 @@ async fn create_update_stream(
     )
     .await?;
 
-    Ok(())
+    Ok(req.headers().clone())
 }
 pub async fn put_alert(
     req: HttpRequest,
@@ -1066,7 +1065,16 @@ pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
         .await
         .is_ok()
     {
-        sync_internal_streams_with_ingestors(INTERNAL_STREAM_NAME).await?;
+        let mut header_map = HeaderMap::new();
+        header_map.insert(
+            HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
+            HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
+        );
+        header_map.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME).await?;
     }
     Ok(())
 }
