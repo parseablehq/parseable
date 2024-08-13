@@ -35,7 +35,6 @@ use crate::{
 };
 use arrow_schema::Schema;
 use bytes::Bytes;
-use chrono::NaiveDateTime;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
@@ -129,24 +128,19 @@ async fn migration_hot_tier(stream: &str) -> anyhow::Result<()> {
             let mut stream_hot_tier = hot_tier_manager.get_hot_tier(stream).await?;
             if stream_hot_tier.version.is_none() {
                 stream_hot_tier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
-                stream_hot_tier.size = format!(
-                    "{} Bytes",
-                    human_size_to_bytes(&stream_hot_tier.size).unwrap()
+                stream_hot_tier.size = human_size_to_bytes(&stream_hot_tier.size)
+                    .unwrap()
+                    .to_string();
+                stream_hot_tier.available_size = Some(
+                    human_size_to_bytes(&stream_hot_tier.available_size.unwrap())
+                        .unwrap()
+                        .to_string(),
                 );
-                stream_hot_tier.available_size = Some(format!(
-                    "{} Bytes",
-                    human_size_to_bytes(&stream_hot_tier.available_size.unwrap()).unwrap()
-                ));
-                stream_hot_tier.used_size = Some(format!(
-                    "{} Bytes",
-                    human_size_to_bytes(&stream_hot_tier.used_size.unwrap()).unwrap()
-                ));
-                let mut oldest_entry = stream_hot_tier.oldest_date_time_entry.unwrap();
-                let naive_date =
-                    NaiveDateTime::parse_from_str(&oldest_entry, "%Y-%m-%d %H:%M:%S").unwrap();
-                oldest_entry = naive_date.format("%Y-%m-%dT%H:%M:00.000Z").to_string();
-
-                stream_hot_tier.oldest_date_time_entry = Some(oldest_entry);
+                stream_hot_tier.used_size = Some(
+                    human_size_to_bytes(&stream_hot_tier.used_size.unwrap())
+                        .unwrap()
+                        .to_string(),
+                );
                 hot_tier_manager
                     .put_hot_tier(stream, &mut stream_hot_tier)
                     .await?;
