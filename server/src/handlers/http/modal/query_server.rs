@@ -195,7 +195,6 @@ impl QueryServer {
         if let Some(hot_tier_manager) = HotTierManager::global() {
             hot_tier_manager.put_internal_stream_hot_tier().await?;
             hot_tier_manager.download_from_s3()?;
-
         };
         let (localsync_handler, mut localsync_outbox, localsync_inbox) =
             sync::run_local_sync().await;
