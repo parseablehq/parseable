@@ -26,8 +26,8 @@ use std::{
 };
 
 use crate::{
-    handlers::http::cluster::INTERNAL_STREAM_NAME,
     option::{Mode, CONFIG},
+    storage::StreamType,
     utils,
 };
 
@@ -92,6 +92,7 @@ impl WriterTable {
         record: RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: HashMap<String, String>,
+        stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
         let hashmap_guard = self.read().unwrap();
 
@@ -104,6 +105,7 @@ impl WriterTable {
                     record,
                     parsed_timestamp,
                     &custom_partition_values,
+                    stream_type,
                 )?;
             }
             None => {
@@ -118,12 +120,14 @@ impl WriterTable {
                     record,
                     parsed_timestamp,
                     &custom_partition_values,
+                    stream_type,
                 )?;
             }
         };
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_existing_writer(
         &self,
         stream_writer: &Mutex<Writer>,
@@ -132,8 +136,9 @@ impl WriterTable {
         record: RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
+        stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
-        if CONFIG.parseable.mode != Mode::Query || stream_name == INTERNAL_STREAM_NAME {
+        if CONFIG.parseable.mode != Mode::Query || *stream_type == StreamType::Internal {
             stream_writer.lock().unwrap().push(
                 stream_name,
                 schema_key,
@@ -151,6 +156,7 @@ impl WriterTable {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_missing_writer(
         &self,
         mut map: RwLockWriteGuard<HashMap<String, Mutex<Writer>>>,
@@ -159,10 +165,11 @@ impl WriterTable {
         record: RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
+        stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
         match map.get(stream_name) {
             Some(writer) => {
-                if CONFIG.parseable.mode != Mode::Query || stream_name == INTERNAL_STREAM_NAME {
+                if CONFIG.parseable.mode != Mode::Query || *stream_type == StreamType::Internal {
                     writer.lock().unwrap().push(
                         stream_name,
                         schema_key,
@@ -175,7 +182,7 @@ impl WriterTable {
                 }
             }
             None => {
-                if CONFIG.parseable.mode != Mode::Query || stream_name == INTERNAL_STREAM_NAME {
+                if CONFIG.parseable.mode != Mode::Query || *stream_type == StreamType::Internal {
                     let mut writer = Writer::default();
                     writer.push(
                         stream_name,

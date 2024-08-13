@@ -36,7 +36,7 @@ use crate::metrics::{
 use crate::option::{Mode, CONFIG};
 use crate::storage::retention::Retention;
 use crate::storage::{
-    LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, STREAM_METADATA_FILE_NAME,
+    LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, StreamType, STREAM_METADATA_FILE_NAME,
     STREAM_ROOT_DIRECTORY,
 };
 use crate::utils::arrow::MergedRecordReader;
@@ -62,6 +62,7 @@ pub struct LogStreamMetadata {
     pub custom_partition: Option<String>,
     pub static_schema_flag: Option<String>,
     pub hot_tier_enabled: Option<bool>,
+    pub stream_type: String,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -268,6 +269,7 @@ impl StreamInfo {
         custom_partition: String,
         static_schema_flag: String,
         static_schema: HashMap<String, Arc<Field>>,
+        stream_type: &str,
     ) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
@@ -301,6 +303,7 @@ impl StreamInfo {
             } else {
                 static_schema
             },
+            stream_type: stream_type.to_string(),
             ..Default::default()
         };
         map.insert(stream_name, metadata);
@@ -341,6 +344,7 @@ impl StreamInfo {
             custom_partition: meta.custom_partition,
             static_schema_flag: meta.static_schema_flag,
             hot_tier_enabled: meta.hot_tier_enabled,
+            stream_type: meta.stream_type,
         };
 
         let mut map = self.write().expect(LOCK_EXPECT);
@@ -355,6 +359,22 @@ impl StreamInfo {
             .keys()
             .map(String::clone)
             .collect()
+    }
+
+    pub fn list_internal_streams(&self) -> Vec<String> {
+        self.read()
+            .expect(LOCK_EXPECT)
+            .iter()
+            .filter(|(_, v)| v.stream_type == StreamType::Internal.to_string())
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    pub fn stream_type(&self, stream_name: &str) -> Result<String, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.stream_type.clone())
     }
 
     pub fn update_stats(
@@ -415,6 +435,7 @@ pub async fn load_stream_metadata_on_server_start(
     let mut custom_partition = meta.custom_partition.clone();
     let mut cache_enabled = meta.cache_enabled;
     let mut static_schema_flag = meta.static_schema_flag.clone();
+    let mut stream_type = meta.stream_type.clone();
     if CONFIG.parseable.mode == Mode::Ingest {
         storage.put_schema(stream_name, &schema).await?;
         // get the base stream metadata
@@ -432,7 +453,7 @@ pub async fn load_stream_metadata_on_server_start(
         custom_partition.clone_from(&querier_meta.custom_partition);
         cache_enabled.clone_from(&querier_meta.cache_enabled);
         static_schema_flag.clone_from(&querier_meta.static_schema_flag);
-
+        stream_type.clone_from(&querier_meta.stream_type);
         meta = ObjectStoreFormat {
             retention: retention.clone(),
             cache_enabled,
@@ -440,6 +461,7 @@ pub async fn load_stream_metadata_on_server_start(
             time_partition_limit: time_partition_limit.clone(),
             custom_partition: custom_partition.clone(),
             static_schema_flag: static_schema_flag.clone(),
+            stream_type: stream_type.clone(),
             ..meta.clone()
         };
         storage.put_stream_manifest(stream_name, &meta).await?;
@@ -471,6 +493,7 @@ pub async fn load_stream_metadata_on_server_start(
         custom_partition,
         static_schema_flag: meta.static_schema_flag.clone(),
         hot_tier_enabled: meta.hot_tier_enabled,
+        stream_type: meta.stream_type,
     };
 
     let mut map = STREAM_INFO.write().expect(LOCK_EXPECT);

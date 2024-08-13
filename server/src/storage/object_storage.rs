@@ -131,6 +131,7 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn create_stream(
         &self,
         stream_name: &str,
@@ -139,12 +140,14 @@ pub trait ObjectStorage: Sync + 'static {
         custom_partition: &str,
         static_schema_flag: &str,
         schema: Arc<Schema>,
+        stream_type: &str,
     ) -> Result<String, ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
         format.set_id(CONFIG.parseable.username.clone());
         let permission = Permisssion::new(CONFIG.parseable.username.clone());
         format.permissions = vec![permission];
         format.created_at = Local::now().to_rfc3339();
+        format.stream_type = stream_type.to_string();
         if time_partition.is_empty() {
             format.time_partition = None;
         } else {

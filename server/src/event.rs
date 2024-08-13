@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
-use crate::{handlers::http::ingest::PostError, metadata};
+use crate::{handlers::http::ingest::PostError, metadata, storage::StreamType};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
@@ -45,6 +45,7 @@ pub struct Event {
     pub parsed_timestamp: NaiveDateTime,
     pub time_partition: Option<String>,
     pub custom_partition_values: HashMap<String, String>,
+    pub stream_type: StreamType,
 }
 
 // Events holds the schema related to a each event for a single log stream
@@ -75,6 +76,7 @@ impl Event {
             self.rb.clone(),
             self.parsed_timestamp,
             &self.custom_partition_values,
+            &self.stream_type,
         )?;
 
         metadata::STREAM_INFO.update_stats(
@@ -106,6 +108,7 @@ impl Event {
             self.rb.clone(),
             self.parsed_timestamp,
             &self.custom_partition_values,
+            &self.stream_type,
         )
         .map_err(PostError::Event)
     }
@@ -122,6 +125,7 @@ impl Event {
         rb: RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
+        stream_type: &StreamType,
     ) -> Result<(), EventError> {
         STREAM_WRITERS.append_to_local(
             stream_name,
@@ -129,6 +133,7 @@ impl Event {
             rb,
             parsed_timestamp,
             custom_partition_values.clone(),
+            stream_type,
         )?;
         Ok(())
     }

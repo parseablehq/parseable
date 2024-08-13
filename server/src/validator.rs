@@ -22,9 +22,9 @@ use self::error::{AlertValidationError, StreamNameValidationError, UsernameValid
 use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
-use crate::handlers::http::cluster::INTERNAL_STREAM_NAME;
 use crate::hottier::MIN_STREAM_HOT_TIER_SIZE_BYTES;
 use crate::option::validation::{bytes_to_human_size, human_size_to_bytes};
+use crate::storage::StreamType;
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
@@ -75,7 +75,7 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
     Ok(())
 }
 
-pub fn stream_name(stream_name: &str) -> Result<(), StreamNameValidationError> {
+pub fn stream_name(stream_name: &str, stream_type: &str) -> Result<(), StreamNameValidationError> {
     if stream_name.is_empty() {
         return Err(StreamNameValidationError::EmptyName);
     }
@@ -119,7 +119,7 @@ pub fn stream_name(stream_name: &str) -> Result<(), StreamNameValidationError> {
         ));
     }
 
-    if stream_name == INTERNAL_STREAM_NAME {
+    if stream_type == StreamType::Internal.to_string() {
         return Err(StreamNameValidationError::InternalStream(
             stream_name.to_owned(),
         ));
@@ -195,7 +195,7 @@ pub mod error {
         NameUpperCase(String),
         #[error("SQL keyword cannot be used as stream name")]
         SQLKeyword(String),
-        #[error("`pmeta` is an internal stream name and cannot be used.")]
+        #[error("The stream {0} is reserved for internal use and cannot be used for user defined streams")]
         InternalStream(String),
     }
 

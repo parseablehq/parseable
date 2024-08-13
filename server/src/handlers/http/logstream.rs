@@ -21,11 +21,13 @@ use super::base_path_without_preceding_slash;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use super::cluster::{
     fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors, sync_streams_with_ingestors,
+    INTERNAL_STREAM_NAME,
 };
+use super::ingest::create_stream_if_not_exists;
 use crate::alerts::Alerts;
 use crate::handlers::{
-    CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
-    UPDATE_STREAM_KEY,
+    CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
+    TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
 };
 use crate::hottier::{HotTierManager, StreamHotTier};
 use crate::metadata::STREAM_INFO;
@@ -34,6 +36,7 @@ use crate::option::validation::bytes_to_human_size;
 use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
+use crate::storage::StreamType;
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
 use crate::{
     catalog::{self, remove_manifest_from_snapshot},
@@ -41,16 +44,19 @@ use crate::{
 };
 
 use crate::{metadata, validator};
+use actix_web::http::header::{self, HeaderMap};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
+use http::{HeaderName, HeaderValue};
 use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::num::NonZeroU32;
+use std::str::FromStr;
 use std::sync::Arc;
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
@@ -176,8 +182,8 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if CONFIG.parseable.mode == Mode::Query {
-        create_update_stream(&req, &body, &stream_name).await?;
-        sync_streams_with_ingestors(req, body, &stream_name).await?;
+        let headers = create_update_stream(&req, &body, &stream_name).await?;
+        sync_streams_with_ingestors(headers, body, &stream_name).await?;
     } else {
         create_update_stream(&req, &body, &stream_name).await?;
     }
@@ -187,12 +193,13 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
 
 fn fetch_headers_from_put_stream_request(
     req: &HttpRequest,
-) -> (String, String, String, String, String) {
+) -> (String, String, String, String, String, String) {
     let mut time_partition = String::default();
     let mut time_partition_limit = String::default();
     let mut custom_partition = String::default();
     let mut static_schema_flag = String::default();
     let mut update_stream = String::default();
+    let mut stream_type = StreamType::UserDefined.to_string();
     req.headers().iter().for_each(|(key, value)| {
         if key == TIME_PARTITION_KEY {
             time_partition = value.to_str().unwrap().to_string();
@@ -209,6 +216,9 @@ fn fetch_headers_from_put_stream_request(
         if key == UPDATE_STREAM_KEY {
             update_stream = value.to_str().unwrap().to_string();
         }
+        if key == STREAM_TYPE_KEY {
+            stream_type = value.to_str().unwrap().to_string();
+        }
     });
 
     (
@@ -217,6 +227,7 @@ fn fetch_headers_from_put_stream_request(
         custom_partition,
         static_schema_flag,
         update_stream,
+        stream_type,
     )
 }
 
@@ -303,9 +314,15 @@ async fn create_update_stream(
     req: &HttpRequest,
     body: &Bytes,
     stream_name: &str,
-) -> Result<(), StreamError> {
-    let (time_partition, time_partition_limit, custom_partition, static_schema_flag, update_stream) =
-        fetch_headers_from_put_stream_request(req);
+) -> Result<HeaderMap, StreamError> {
+    let (
+        time_partition,
+        time_partition_limit,
+        custom_partition,
+        static_schema_flag,
+        update_stream,
+        stream_type,
+    ) = fetch_headers_from_put_stream_request(req);
 
     if metadata::STREAM_INFO.stream_exists(stream_name) && update_stream != "true" {
         return Err(StreamError::Custom {
@@ -338,17 +355,16 @@ async fn create_update_stream(
             let time_partition_days = validate_time_partition_limit(&time_partition_limit)?;
             update_time_partition_limit_in_stream(stream_name.to_string(), time_partition_days)
                 .await?;
-            return Ok(());
+            return Ok(req.headers().clone());
         }
 
         if !custom_partition.is_empty() {
             validate_custom_partition(&custom_partition)?;
             update_custom_partition_in_stream(stream_name.to_string(), &custom_partition).await?;
-            return Ok(());
         } else {
             update_custom_partition_in_stream(stream_name.to_string(), "").await?;
-            return Ok(());
         }
+        return Ok(req.headers().clone());
     }
     let mut time_partition_in_days = "";
     if !time_partition_limit.is_empty() {
@@ -377,11 +393,11 @@ async fn create_update_stream(
         &custom_partition,
         &static_schema_flag,
         schema,
-        false,
+        &stream_type,
     )
     .await?;
 
-    Ok(())
+    Ok(req.headers().clone())
 }
 pub async fn put_alert(
     req: HttpRequest,
@@ -646,7 +662,9 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats = if CONFIG.parseable.mode == Mode::Query {
+    let ingestor_stats = if CONFIG.parseable.mode == Mode::Query
+        && STREAM_INFO.stream_type(&stream_name).unwrap() == StreamType::UserDefined.to_string()
+    {
         Some(fetch_stats_from_ingestors(&stream_name).await?)
     } else {
         None
@@ -835,11 +853,11 @@ pub async fn create_stream(
     custom_partition: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
-    internal_stream: bool,
+    stream_type: &str,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
-    if !internal_stream {
-        validator::stream_name(&stream_name)?;
+    if stream_type != StreamType::Internal.to_string() {
+        validator::stream_name(&stream_name, stream_type)?;
     }
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
@@ -852,6 +870,7 @@ pub async fn create_stream(
             custom_partition,
             static_schema_flag,
             schema.clone(),
+            stream_type,
         )
         .await
     {
@@ -874,6 +893,7 @@ pub async fn create_stream(
                 custom_partition.to_string(),
                 static_schema_flag.to_string(),
                 static_schema,
+                stream_type,
             );
         }
         Err(err) => {
@@ -908,6 +928,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
     let stream_info: StreamInfo = StreamInfo {
+        stream_type: stream_meta.stream_type.clone(),
         created_at: stream_meta.created_at.clone(),
         first_event_at: stream_meta.first_event_at.clone(),
         time_partition: stream_meta.time_partition.clone(),
@@ -1037,6 +1058,25 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
         format!("hot tier deleted for stream {stream_name}"),
         StatusCode::OK,
     ))
+}
+
+pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
+    if create_stream_if_not_exists(INTERNAL_STREAM_NAME, &StreamType::Internal.to_string())
+        .await
+        .is_ok()
+    {
+        let mut header_map = HeaderMap::new();
+        header_map.insert(
+            HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
+            HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
+        );
+        header_map.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME).await?;
+    }
+    Ok(())
 }
 #[allow(unused)]
 fn classify_json_error(kind: serde_json::error::Category) -> StatusCode {

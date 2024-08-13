@@ -30,11 +30,11 @@ use crate::stats::Stats;
 use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
-use actix_web::http::header;
+use actix_web::http::header::{self, HeaderMap};
 use actix_web::{HttpRequest, Responder};
 use bytes::Bytes;
 use chrono::Utc;
-use http::StatusCode;
+use http::{header as http_header, StatusCode};
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::de::Error;
@@ -96,10 +96,15 @@ pub async fn sync_cache_with_ingestors(
 
 // forward the request to all ingestors to keep them in sync
 pub async fn sync_streams_with_ingestors(
-    req: HttpRequest,
+    headers: HeaderMap,
     body: Bytes,
     stream_name: &str,
 ) -> Result<(), StreamError> {
+    let mut reqwest_headers = http_header::HeaderMap::new();
+
+    for (key, value) in headers.iter() {
+        reqwest_headers.insert(key.clone(), value.clone());
+    }
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
@@ -119,7 +124,7 @@ pub async fn sync_streams_with_ingestors(
         );
         let res = client
             .put(url)
-            .headers(req.headers().into())
+            .headers(reqwest_headers.clone())
             .header(header::AUTHORIZATION, &ingestor.token)
             .body(body.clone())
             .send()
@@ -572,7 +577,6 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
 
 pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
     log::info!("Setting up schedular for cluster metrics ingestion");
-
     let mut scheduler = AsyncScheduler::new();
     scheduler
         .every(CLUSTER_METRICS_INTERVAL_SECONDS)
@@ -583,11 +587,9 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
                     if !metrics.is_empty() {
                         log::info!("Cluster metrics fetched successfully from all ingestors");
                         if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
-                            let stream_name = INTERNAL_STREAM_NAME;
-
                             if matches!(
                                 ingest_internal_stream(
-                                    stream_name.to_string(),
+                                    INTERNAL_STREAM_NAME.to_string(),
                                     bytes::Bytes::from(metrics_bytes),
                                 )
                                 .await,

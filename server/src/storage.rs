@@ -68,8 +68,8 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 // const PERMISSIONS_READ_WRITE: &str = "readwrite";
 const ACCESS_ALL: &str = "all";
 
-pub const CURRENT_OBJECT_STORE_VERSION: &str = "v4";
-pub const CURRENT_SCHEMA_VERSION: &str = "v4";
+pub const CURRENT_OBJECT_STORE_VERSION: &str = "v5";
+pub const CURRENT_SCHEMA_VERSION: &str = "v5";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ObjectStoreFormat {
@@ -102,6 +102,7 @@ pub struct ObjectStoreFormat {
     pub static_schema_flag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hot_tier_enabled: Option<bool>,
+    pub stream_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -121,6 +122,23 @@ pub struct StreamInfo {
     pub custom_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_schema_flag: Option<String>,
+    pub stream_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub enum StreamType {
+    #[default]
+    UserDefined,
+    Internal,
+}
+
+impl std::fmt::Display for StreamType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamType::UserDefined => write!(f, "UserDefined"),
+            StreamType::Internal => write!(f, "Internal"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -157,6 +175,7 @@ impl Default for ObjectStoreFormat {
         Self {
             version: CURRENT_SCHEMA_VERSION.to_string(),
             objectstore_format: CURRENT_OBJECT_STORE_VERSION.to_string(),
+            stream_type: StreamType::UserDefined.to_string(),
             created_at: Local::now().to_rfc3339(),
             first_event_at: None,
             owner: Owner::new("".to_string(), "".to_string()),
