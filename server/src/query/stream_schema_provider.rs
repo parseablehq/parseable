@@ -718,6 +718,9 @@ fn extract_from_lit(expr: BinaryExpr, time_partition: Option<String>) -> Option<
             ScalarValue::TimestampMillisecond(Some(value), _) => {
                 Some(DateTime::from_timestamp_millis(value).unwrap().naive_utc())
             }
+            ScalarValue::TimestampNanosecond(Some(value), _) => {
+                Some(DateTime::from_timestamp_nanos(value).naive_utc())
+            }
             ScalarValue::Utf8(Some(str_value)) => {
                 if time_partition.is_some() && column_name == time_partition.unwrap() {
                     Some(str_value.parse::<NaiveDateTime>().unwrap())
