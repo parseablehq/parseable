@@ -25,6 +25,7 @@ use std::{
 
 use crate::{
     catalog::manifest::{File, Manifest},
+    handlers::http::cluster::INTERNAL_STREAM_NAME,
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
     option::{
         validation::{bytes_to_human_size, human_size_to_bytes},
@@ -51,6 +52,7 @@ use tokio_stream::wrappers::ReadDirStream;
 pub const STREAM_HOT_TIER_FILENAME: &str = ".hot_tier.json";
 pub const MIN_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10737418240; // 10 GiB
 const HOT_TIER_SYNC_DURATION: Interval = clokwerk::Interval::Minutes(1);
+pub const INTERNAL_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10485760; //10 MiB
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct StreamHotTier {
@@ -684,6 +686,22 @@ impl HotTierManager {
         }
 
         Ok(None)
+    }
+
+    pub async fn put_internal_stream_hot_tier(&self) -> Result<(), HotTierError> {
+        if CONFIG.parseable.hot_tier_storage_path.is_some()
+            && !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME)
+        {
+            let mut stream_hot_tier = StreamHotTier {
+                size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES.to_string(),
+                used_size: Some("0".to_string()),
+                available_size: Some(INTERNAL_STREAM_HOT_TIER_SIZE_BYTES.to_string()),
+                oldest_date_time_entry: None,
+            };
+            self.put_hot_tier(INTERNAL_STREAM_NAME, &mut stream_hot_tier)
+                .await?;
+        }
+        Ok(())
     }
 }
 
