@@ -16,13 +16,18 @@
  *
  */
 
-use std::{fs::File, io::BufReader, path::PathBuf};
+use std::{
+    fs::{self, File},
+    io::BufReader,
+    path::PathBuf,
+};
 
 use rustls::ServerConfig;
 
 pub fn get_ssl_acceptor(
     tls_cert: &Option<PathBuf>,
     tls_key: &Option<PathBuf>,
+    other_certs: &Option<PathBuf>,
 ) -> anyhow::Result<Option<ServerConfig>> {
     match (tls_cert, tls_key) {
         (Some(cert), Some(key)) => {
@@ -30,7 +35,23 @@ pub fn get_ssl_acceptor(
 
             let cert_file = &mut BufReader::new(File::open(cert)?);
             let key_file = &mut BufReader::new(File::open(key)?);
-            let certs = rustls_pemfile::certs(cert_file).collect::<Result<Vec<_>, _>>()?;
+
+            let mut certs = rustls_pemfile::certs(cert_file).collect::<Result<Vec<_>, _>>()?;
+            // Load CA certificates from the directory
+            if let Some(other_cert_dir) = other_certs {
+                if other_cert_dir.is_dir() {
+                    for entry in fs::read_dir(other_cert_dir)? {
+                        let path = entry.unwrap().path();
+
+                        if path.is_file() {
+                            let other_cert_file = &mut BufReader::new(File::open(&path)?);
+                            let mut other_certs = rustls_pemfile::certs(other_cert_file)
+                                .collect::<Result<Vec<_>, _>>()?;
+                            certs.append(&mut other_certs);
+                        }
+                    }
+                }
+            }
             let private_key = rustls_pemfile::private_key(key_file)?
                 .ok_or(anyhow::anyhow!("Could not parse private key."))?;
 
