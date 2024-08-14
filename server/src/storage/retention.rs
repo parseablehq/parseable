@@ -26,8 +26,8 @@ use clokwerk::Job;
 use clokwerk::TimeUnits;
 use derive_more::Display;
 use once_cell::sync::Lazy;
-use utoipa::ToSchema;
 use tokio::task::JoinHandle;
+use utoipa::ToSchema;
 
 use crate::metadata::STREAM_INFO;
 
