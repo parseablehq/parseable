@@ -17,7 +17,7 @@
  */
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{Local, NaiveDateTime};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
@@ -417,6 +417,40 @@ fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Sche
     Schema::try_merge(vec![schema, current_schema]).unwrap()
 }
 
+pub async fn update_data_type_time_partition(
+    storage: &(impl ObjectStorage + ?Sized),
+    stream_name: &str,
+    schema: Schema,
+    meta: ObjectStoreFormat,
+) -> anyhow::Result<Schema> {
+    let mut schema = schema.clone();
+    if meta.time_partition.is_some() {
+        let time_partition = meta.time_partition.unwrap();
+        let time_partition_data_type = schema
+            .field_with_name(&time_partition)
+            .unwrap()
+            .data_type()
+            .clone();
+        if time_partition_data_type != DataType::Timestamp(TimeUnit::Millisecond, None) {
+            let mut fields = schema
+                .fields()
+                .iter()
+                .filter(|field| *field.name() != time_partition)
+                .cloned()
+                .collect::<Vec<Arc<Field>>>();
+            let time_partition_field = Arc::new(Field::new(
+                time_partition,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            ));
+            fields.push(time_partition_field);
+            schema = Schema::new(fields);
+            storage.put_schema(stream_name, &schema).await?;
+        }
+    }
+    Ok(schema)
+}
+
 pub async fn load_stream_metadata_on_server_start(
     storage: &(impl ObjectStorage + ?Sized),
     stream_name: &str,
@@ -428,7 +462,8 @@ pub async fn load_stream_metadata_on_server_start(
         meta =
             serde_json::from_slice(&serde_json::to_vec(&stream_metadata_value).unwrap()).unwrap();
     }
-
+    let schema =
+        update_data_type_time_partition(storage, stream_name, schema, meta.clone()).await?;
     let mut retention = meta.retention.clone();
     let mut time_partition = meta.time_partition.clone();
     let mut time_partition_limit = meta.time_partition_limit.clone();
@@ -546,6 +581,8 @@ pub mod error {
         pub enum LoadError {
             #[error("Error while loading from object storage: {0}")]
             ObjectStorage(#[from] ObjectStorageError),
+            #[error(" Error: {0}")]
+            Anyhow(#[from] anyhow::Error),
         }
     }
 }
