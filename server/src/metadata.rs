@@ -417,6 +417,11 @@ fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Sche
     Schema::try_merge(vec![schema, current_schema]).unwrap()
 }
 
+///this function updates the data type of time partition field
+/// from utf-8 to timestamp if it is not already timestamp
+/// and updates the schema in the storage
+/// required only when migrating from version 1.2.0 and below
+/// this function will be removed in the future
 pub async fn update_data_type_time_partition(
     storage: &(impl ObjectStorage + ?Sized),
     stream_name: &str,
