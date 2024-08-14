@@ -115,6 +115,10 @@ impl ParseableServer for Server {
 
     /// implementation of init should just invoke a call to initialize
     async fn init(&self) -> anyhow::Result<()> {
+        let openapi = ApiDoc::openapi();
+        let yaml_spec = openapi.to_yaml()?;
+        std::fs::write("./openapi.yaml", yaml_spec)?;
+
         self.validate()?;
         migration::run_file_migration(&CONFIG).await?;
         let parseable_json = CONFIG.validate_storage().await?;

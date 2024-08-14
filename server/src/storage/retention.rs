@@ -98,12 +98,14 @@ pub struct Retention {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ToSchema)]
 pub struct Task {
     description: String,
+    #[schema(value_type = String)]
     action: Action,
+    #[schema(value_type = u32)]
     days: NonZeroU32,
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Display, serde::Serialize, serde::Deserialize, ToSchema,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Display, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
 enum Action {

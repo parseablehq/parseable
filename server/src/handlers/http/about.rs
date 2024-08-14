@@ -50,7 +50,8 @@ use std::path::PathBuf;
 /// }
 #[utoipa::path(
     get,
-    tag = "about",
+    tag = "About",
+    operation_id = "About Parseable Server",
     context_path = "/api/v1",
     path = "/about",
     responses(

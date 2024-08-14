@@ -23,7 +23,7 @@ use crate::option::CONFIG;
 
 #[utoipa::path(
     get,
-    tag = "health check",
+    tag = "Health Status",
     context_path = "/api/v1",
     path = "/liveness",
     responses(
@@ -36,7 +36,7 @@ pub async fn liveness() -> HttpResponse {
 
 #[utoipa::path(
     get,
-    tag = "health check",
+    tag = "Health Status",
     context_path = "/api/v1",
     path = "/readiness",
     responses(

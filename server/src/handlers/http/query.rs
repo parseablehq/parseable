@@ -72,14 +72,15 @@ pub struct Query {
 
 #[utoipa::path(
     post,
-    tag = "query",
+    tag = "Log Stream Query",
+    operation_id = "Query a Log Stream",
     context_path = "/api/v1",
     path = "/query",
     request_body = Query,
     responses(
-        (status = 200, description = "", body = QueryResponse),
-        (status = 400, description = "Error", body = HttpResponse),
-        (status = 500, description = "Failure", body = HttpResponse),
+        (status = 200, description = "Queries successfully", body = QueryResponse),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
     ),
     security(
         ("basic_auth" = [])
@@ -470,7 +471,7 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
     Some(q)
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, ToSchema)]
 pub enum QueryError {
     #[error("Query cannot be empty")]
     EmptyQuery,

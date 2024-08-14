@@ -33,7 +33,8 @@ use crate::{
 // Creates a new role or update existing one
 #[utoipa::path(
     put,
-    tag = "role",
+    tag = "Role Management",
+    operation_id = "Create a role",
     context_path = "/api/v1/role",
     path = "/{name}",
     params(
@@ -68,7 +69,8 @@ pub async fn put(
 // Fetch role by name
 #[utoipa::path(
     get,
-    tag = "role",
+    tag = "Role Management",
+    operation_id = "Get a role",
     context_path = "/api/v1/role",
     path = "/{name}",
     params(
@@ -94,7 +96,8 @@ pub async fn get(name: web::Path<String>) -> Result<impl Responder, RoleError> {
 // Fetch all roles in the system
 #[utoipa::path(
     get,
-    tag = "role",
+    tag = "Role Management",
+    operation_id = "List all roles",
     context_path = "/api/v1",
     path = "/role",
     responses(
@@ -116,7 +119,8 @@ pub async fn list() -> Result<impl Responder, RoleError> {
 // Delete existing role
 #[utoipa::path(
     delete,
-    tag = "role",
+    tag = "Role Management",
+    operation_id = "Delete a role",
     context_path = "/api/v1/role",
     path = "/{name}",
     params(
@@ -147,7 +151,8 @@ pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError
 // Put default role
 #[utoipa::path(
     put,
-    tag = "role",
+    tag = "Role Management",
+    operation_id = "Set defautl role",
     context_path = "/api/v1/role",
     path = "/default",
     request_body(content = String, description = "Name of the role", content_type = "application/json"),
@@ -173,7 +178,8 @@ pub async fn put_default(name: web::Json<String>) -> Result<impl Responder, Role
 // get the default role
 #[utoipa::path(
     get,
-    tag = "role",
+    tag = "Role Management",
+    operation_id = "Get default role",
     context_path = "/api/v1/role",
     path = "/default",
     responses(

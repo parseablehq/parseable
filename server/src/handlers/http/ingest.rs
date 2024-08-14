@@ -45,10 +45,39 @@ use http::StatusCode;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use utoipa::ToSchema;
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
+#[utoipa::path(
+    post,
+    tag = "Log Stream Ingestion",
+    operation_id = "Ingest with HTTP Header",
+    context_path = "/api/v1",
+    path = "/ingest",
+    params(
+        ("X-P-META-{someTag}" = String, Header, description = "(Optional) Creates a meta tag with the given name"),
+        ("X-P-Stream" = String, Header, description = "(Mandatory) Name of stream"),
+      ),
+    request_body(
+        content = Vec<Object>, description = "Log events", content_type = "application/json", example = json!(
+            "[
+                {key: value}
+             ]
+            "
+        )
+    ),
+    responses(
+        (status = 200, description = "Ingested event", body = Vec<String>),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     if let Some((_, stream_name)) = req
         .headers()
@@ -176,20 +205,23 @@ async fn flatten_and_push_logs(
 // fails if the logstream does not exist
 #[utoipa::path(
     post,
-    tag = "logstream",
+    tag = "Log Stream Ingestion",
+    operation_id = "Send logs to log stream",
     context_path = "/api/v1",
-    path = "/logstream/{logstream}",
+    path = "/logstream/{streamName}",
     params(
-        ("logstream" = String, Path, description = "Name of stream")
+        ("streamName" = String, Path, description = "Name of stream"),
+        ("X-P-Time-Partition" = String, Header, description = "(Optional) Identifies a field from the logs as the time partition field (a field `p_timestamp` is created and used otherwise", example = "DateTime"),
+        ("X-P-Time-Partition-Limit" = String, Header, description = "(Mandatory if `X-P-Time-Partition` is being used) The number of days, prior to log creation time, till which data from the given source is to be ingested. 30 days by default", example = "50d"),
     ),
     request_body(
         content = Vec<Object>, description = "Log events"
     ),
     responses(
         (status = 200, description = "Ingested event", body = Vec<String>),
-        (status = 400, description = "Error", body = HttpResponse),
-        (status = 500, description = "Failure", body = HttpResponse),
-        (status = 404, description = "Stream not found", body = HttpResponse),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
     ),
     security(
         ("basic_auth" = [])
@@ -483,7 +515,7 @@ pub async fn create_stream_if_not_exists(
     Ok(())
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, ToSchema)]
 pub enum PostError {
     #[error("Stream {0} not found")]
     StreamNotFound(String),

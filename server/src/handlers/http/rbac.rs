@@ -56,7 +56,8 @@ impl From<&user::User> for User {
 // returns list of all registerd users
 #[utoipa::path(
     get,
-    tag = "user",
+    tag = "User Management",
+    operation_id = "Get all users",
     context_path = "/api/v1",
     path = "/user",
     responses(
@@ -74,7 +75,8 @@ pub async fn list_users() -> impl Responder {
 // Creates a new user by username if it does not exists
 #[utoipa::path(
     post,
-    tag = "user",
+    tag = "User Management",
+    operation_id = "Create a user",
     context_path = "/api/v1/user",
     path = "/{username}",
     params(
@@ -85,9 +87,9 @@ pub async fn list_users() -> impl Responder {
     ),
     responses(
         (status = 200, description = "Created user and returned the initial password", body = String),
-        (status = 400, description = "Error", body = HttpResponse),
-        (status = 500, description = "Failure", body = HttpResponse),
-        (status = 404, description = "User not found", body = HttpResponse),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "User not found"),
     ),
     security(
         ("basic_auth" = [])
@@ -97,7 +99,6 @@ pub async fn post_user(
     username: web::Path<String>,
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
-    log::info!("body- {body:?}");
     let username = username.into_inner();
     let roles: Option<HashSet<String>> = body
         .map(|body| serde_json::from_value(body.into_inner()))
@@ -134,7 +135,8 @@ pub async fn post_user(
 // Resets password for the user to a newly generated one and returns it
 #[utoipa::path(
     post,
-    tag = "user",
+    tag = "User Management",
+    operation_id = "Set a new password for user",
     context_path = "/api/v1/user",
     path = "/{username}/generate-new-password",
     params(
@@ -145,9 +147,9 @@ pub async fn post_user(
     ),
     responses(
         (status = 200, description = "Assigned new password", body = String),
-        (status = 400, description = "Error", body = HttpResponse),
-        (status = 500, description = "Failure", body = HttpResponse),
-        (status = 404, description = "User not found", body = HttpResponse),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "User not found"),
     ),
     security(
         ("basic_auth" = [])
@@ -180,7 +182,8 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
 // returns role for a user if that user exists
 #[utoipa::path(
     get,
-    tag = "user",
+    tag = "User Management",
+    operation_id = "Get a user's roles",
     context_path = "/api/v1/user",
     path = "/{username}/role",
     params(
@@ -188,9 +191,9 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     ),
     responses(
         (status = 200, description = "Fetched role for the given user", body = Object<String>),
-        (status = 400, description = "Error", body = HttpResponse),
-        (status = 500, description = "Failure", body = HttpResponse),
-        (status = 404, description = "User not found", body = HttpResponse),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "User not found"),
     ),
     security(
         ("basic_auth" = [])
@@ -216,7 +219,8 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
 // Handler for DELETE /api/v1/user/delete/{username}
 #[utoipa::path(
     delete,
-    tag = "user",
+    tag = "User Management",
+    operation_id = "Delete a user",
     context_path = "/api/v1/user",
     path = "/{username}",
     params(
@@ -224,9 +228,9 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
     ),
     responses(
         (status = 200, description = "Deleted the user", body = String),
-        (status = 400, description = "Error", body = HttpResponse),
-        (status = 500, description = "Failure", body = HttpResponse),
-        (status = 404, description = "User not found", body = HttpResponse),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "User not found"),
     ),
     security(
         ("basic_auth" = [])
@@ -252,7 +256,8 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
 // Put roles for given user
 #[utoipa::path(
     put,
-    tag = "user",
+    tag = "RBAC",
+    operation_id = "Add role to a user",
     context_path = "/api/v1/user",
     path = "/{username}/role",
     params(
@@ -263,9 +268,9 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     ),
     responses(
         (status = 200, description = "Assigned roles to the user", body = Object<String>),
-        (status = 400, description = "Error", body = HttpResponse),
-        (status = 500, description = "Failure", body = HttpResponse),
-        (status = 404, description = "User not found", body = HttpResponse),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "User not found"),
     ),
     security(
         ("basic_auth" = [])
@@ -316,7 +321,7 @@ async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageErr
     Ok(())
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, ToSchema)]
 pub enum RBACError {
     #[error("User exists already")]
     UserExists,

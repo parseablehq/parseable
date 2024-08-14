@@ -17,15 +17,23 @@
  */
 
 use crate::{
-    alerts::Alerts,
+    alerts::{Alert, AlertVersion, Alerts},
     handlers::http::{
-        about,
+        // about,
         cluster::utils::{IngestionStats, QueriedStats, StorageStats},
-        health_check, ingest, logstream, query, rbac, role,
+        health_check,
+        ingest::{self},
+        logstream::{self},
+        query::{self},
+        rbac::{self},
+        role,
     },
     hottier::StreamHotTier,
     response,
-    storage::{retention::Retention, StreamInfo},
+    storage::{
+        retention::{Retention, Task},
+        StreamInfo,
+    },
 };
 use utoipa::{
     openapi::security::{HttpBuilder, SecurityScheme},
@@ -38,7 +46,7 @@ paths(
     query::query,
     health_check::liveness,
     health_check::readiness,
-    about::about,
+    // about::about,
     role::list,
     role::put_default,
     role::delete,
@@ -53,6 +61,7 @@ paths(
     rbac::post_gen_password,
     logstream::put_stream,
     ingest::post_event,
+    ingest::ingest,
     logstream::get_stream_info,
     logstream::put_alert,
     logstream::get_alert,
@@ -76,7 +85,10 @@ components(
         IngestionStats,
         StorageStats,
         Retention,
-        StreamHotTier
+        StreamHotTier,
+        AlertVersion,
+        Alert,
+        Task,
     )
 ),
 info(
@@ -85,12 +97,17 @@ info(
 ),
 modifiers(&SecurityAddon),
 tags(
-    (name = "role", description = "Roles retrieval and management"),
-    (name = "user", description = "Users retrieval and management"),
-    (name = "health check", description = "Health of services"),
-    (name = "about", description = "Details about this Parseable executable"),
-    (name = "query", description = "Running queries against the server"),
-    (name = "logstream", description = "Upsert, delete, and ingest data to streams")
+    (name = "About", description = "Details about this Parseable executable"),
+    (name = "Health Status", description = "Health of Parseable server"),
+    (name = "Log Stream Ingestion", description = "Sending data to log streams"),
+    (name = "Log Stream Alerts", description = "Manipulation of alerts for log streams"),
+    (name = "Log Stream Management", description = "Create, List, Delete, log streams"),
+    (name = "Log Stream Query", description = "Query log streams"),
+    (name = "Log Stream Retention", description = "Get and Set retention policies for log streams"),
+    (name = "Log Stream Hottier", description = "Hottier related actions for a log stream"),
+    (name = "User Management", description = "Actions pertaining to Users"),
+    (name = "Role Management", description = "Actions pertaining to Roles"),
+    (name = "RBAC", description = "Add a role to a user"),
 )
 )]
 pub struct ApiDoc;

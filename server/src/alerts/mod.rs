@@ -24,6 +24,7 @@ use datafusion::arrow::compute::kernels::cast;
 use datafusion::arrow::datatypes::Schema;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+
 use std::fmt;
 use utoipa::ToSchema;
 
@@ -43,26 +44,30 @@ use self::target::Target;
 #[derive(Default, Debug, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
-    pub version: AlertVerison,
+    pub version: AlertVersion,
     pub alerts: Vec<Alert>,
 }
 
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
-pub enum AlertVerison {
+pub enum AlertVersion {
     #[default]
     V1,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
     #[serde(default = "crate::utils::uid::gen")]
+    #[schema(value_type = String)]
     pub id: uid::Uid,
     pub name: String,
     #[serde(flatten)]
+    #[schema(value_type = String)]
     pub message: Message,
+    #[schema(value_type = String)]
     pub rule: Rule,
+    #[schema(value_type = Vec<Object>)]
     pub targets: Vec<Target>,
 }
 
