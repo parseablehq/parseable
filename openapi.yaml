@@ -1,0 +1,1081 @@
+openapi: 3.0.3
+info:
+  title: parseable
+  description: Parseable API documents [https://www.parseable.com/docs/](https://www.parseable.com/docs/)
+  contact:
+    name: Parseable
+    url: https://www.parseable.com/
+    email: hi@parseable.com
+  license:
+    name: ''
+  version: 1.4.0
+paths:
+  /api/v1/ingest:
+    post:
+      tags:
+      - Log Stream Ingestion
+      operationId: Ingest with HTTP Header
+      parameters:
+      - name: X-P-META-{someTag}
+        in: header
+        description: (Optional) Creates a meta tag with the given name
+        required: true
+        schema:
+          type: string
+      - name: X-P-Stream
+        in: header
+        description: (Mandatory) Name of stream
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: Log events
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+            example: "[\n                {key: value}\n             ]\n            "
+        required: true
+      responses:
+        '200':
+          description: Ingested event
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/liveness:
+    get:
+      tags:
+      - Health Status
+      operationId: liveness
+      responses:
+        '200':
+          description: The server is live.
+  /api/v1/logstream/{streamName}:
+    post:
+      tags:
+      - Log Stream Ingestion
+      operationId: Send logs to log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      - name: X-P-Time-Partition
+        in: header
+        description: (Optional) Identifies a field from the logs as the time partition field (a field `p_timestamp` is created and used otherwise
+        required: true
+        schema:
+          type: string
+        example: DateTime
+      - name: X-P-Time-Partition-Limit
+        in: header
+        description: (Mandatory if `X-P-Time-Partition` is being used) The number of days, prior to log creation time, till which data from the given source is to be ingested. 30 days by default
+        required: true
+        schema:
+          type: string
+        example: 50d
+      requestBody:
+        description: Log events
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+        required: true
+      responses:
+        '200':
+          description: Ingested event
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+    put:
+      tags:
+      - Log Stream Management
+      operationId: Create a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: ''
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+        required: true
+      responses:
+        '200':
+          description: Created new stream
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/logstream/{streamName}/alert:
+    get:
+      tags:
+      - Log Stream Alerts
+      operationId: Get alert for a stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Fetched alert for stream
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+    put:
+      tags:
+      - Log Stream Alerts
+      operationId: Set alert for a stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: Alert to be set
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Alerts'
+        required: true
+      responses:
+        '200':
+          description: Put alert for stream
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Log stream not initialized
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/logstream/{streamName}/cache:
+    get:
+      tags:
+      - Log Stream Management
+      operationId: Get cache state state for a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            text/plain:
+              schema:
+                type: boolean
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+    put:
+      tags:
+      - Log Stream Management
+      operationId: Enable cache for a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: ''
+        content:
+          text/plain:
+            schema:
+              type: boolean
+        required: true
+      responses:
+        '200':
+          description: Enabled cache for stream
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/logstream/{streamName}/hottier:
+    get:
+      tags:
+      - Log Stream Hottier
+      operationId: Get hottier state for a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Fetched hottier for stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamHotTier'
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+    put:
+      tags:
+      - Log Stream Hottier
+      operationId: Enable hottier for a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: ''
+        content:
+          application/json:
+            schema: {}
+        required: true
+      responses:
+        '200':
+          description: Enabled hottier for stream
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+    delete:
+      tags:
+      - Log Stream Hottier
+      operationId: Delete hottier for a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Deleted hottier for stream
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/logstream/{streamName}/info:
+    get:
+      tags:
+      - Log Stream Management
+      operationId: Get info for log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Stream info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamInfo'
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/logstream/{streamName}/retention:
+    get:
+      tags:
+      - Log Stream Retention
+      operationId: Get retention for a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Fetched retention for stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Retention'
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+    put:
+      tags:
+      - Log Stream Retention
+      operationId: Set retention for a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: Retention details
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Retention'
+        required: true
+      responses:
+        '200':
+          description: Put retention for stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Retention'
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/logstream/{streamName}/schema:
+    get:
+      tags:
+      - Log Stream Management
+      operationId: Get schema of a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Fetched schema for stream
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/logstream/{streamName}/stats:
+    get:
+      tags:
+      - Log Stream Management
+      operationId: Get stats of a log stream
+      parameters:
+      - name: streamName
+        in: path
+        description: Name of stream
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Fetched stats for stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueriedStats'
+        '400':
+          description: Error
+        '404':
+          description: Stream not found
+        '405':
+          description: Method not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/query:
+    post:
+      tags:
+      - Log Stream Query
+      operationId: Query a Log Stream
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Query'
+        required: true
+      responses:
+        '200':
+          description: Queries successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '400':
+          description: Error
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/readiness:
+    get:
+      tags:
+      - Health Status
+      operationId: readiness
+      responses:
+        '200':
+          description: The object store is live.
+        '503':
+          description: Service Unavailable.
+      security:
+      - basic_auth: []
+  /api/v1/role:
+    get:
+      tags:
+      - Role Management
+      operationId: List all roles
+      responses:
+        '200':
+          description: Fetches all roles in the system
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Cannot perform this operation as role is assigned to an existing user.
+        '500':
+          description: 'Failed to connect to storage: 0'
+      security:
+      - basic_auth: []
+  /api/v1/role/default:
+    get:
+      tags:
+      - Role Management
+      operationId: Get default role
+      responses:
+        '200':
+          description: Fetched the default role
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Cannot perform this operation as role is assigned to an existing user.
+        '500':
+          description: 'Failed to connect to storage: 0'
+      security:
+      - basic_auth: []
+    put:
+      tags:
+      - Role Management
+      operationId: Set defautl role
+      requestBody:
+        description: Name of the role
+        content:
+          application/json:
+            schema:
+              type: string
+        required: true
+      responses:
+        '200':
+          description: Created a default role with the given name
+        '400':
+          description: Cannot perform this operation as role is assigned to an existing user.
+        '500':
+          description: 'Failed to connect to storage: 0'
+      security:
+      - basic_auth: []
+  /api/v1/role/{name}:
+    get:
+      tags:
+      - Role Management
+      operationId: Get a role
+      parameters:
+      - name: name
+        in: path
+        description: Name of the role to fetch
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Fetched role
+        '400':
+          description: Cannot perform this operation as role is assigned to an existing user.
+        '500':
+          description: 'Failed to connect to storage: 0'
+      security:
+      - basic_auth: []
+    put:
+      tags:
+      - Role Management
+      operationId: Create a role
+      parameters:
+      - name: name
+        in: path
+        description: Name of the role to create or update
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: Privilege and resource stream
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+        required: true
+      responses:
+        '200':
+          description: Created/updated the role
+        '400':
+          description: Cannot perform this operation as role is assigned to an existing user.
+        '500':
+          description: 'Failed to connect to storage: 0'
+      security:
+      - basic_auth: []
+    delete:
+      tags:
+      - Role Management
+      operationId: Delete a role
+      parameters:
+      - name: name
+        in: path
+        description: Deletes the given role
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Deleted given role
+        '400':
+          description: Cannot perform this operation as role is assigned to an existing user.
+        '500':
+          description: 'Failed to connect to storage: 0'
+      security:
+      - basic_auth: []
+  /api/v1/user:
+    get:
+      tags:
+      - User Management
+      operationId: Get all users
+      responses:
+        '200':
+          description: Fetches all users in the system
+          content:
+            application/json:
+              schema:
+                type: object
+      security:
+      - basic_auth: []
+  /api/v1/user/{username}:
+    post:
+      tags:
+      - User Management
+      operationId: Create a user
+      parameters:
+      - name: username
+        in: path
+        description: username of the user to be created
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: List of roles to be assigned to the user
+        content:
+          application/json:
+            schema:
+              type: object
+        required: true
+      responses:
+        '200':
+          description: Created user and returned the initial password
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          description: Error
+        '404':
+          description: User not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+    delete:
+      tags:
+      - User Management
+      operationId: Delete a user
+      parameters:
+      - name: username
+        in: path
+        description: username of the user to be deleted
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Deleted the user
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          description: Error
+        '404':
+          description: User not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/user/{username}/generate-new-password:
+    post:
+      tags:
+      - User Management
+      operationId: Set a new password for user
+      parameters:
+      - name: username
+        in: path
+        description: username of the user
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: Password for the user
+        content:
+          text/plain:
+            schema:
+              type: string
+        required: true
+      responses:
+        '200':
+          description: Assigned new password
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          description: Error
+        '404':
+          description: User not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+  /api/v1/user/{username}/role:
+    get:
+      tags:
+      - User Management
+      operationId: Get a user's roles
+      parameters:
+      - name: username
+        in: path
+        description: username for which the role needs to be fetched
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Fetched role for the given user
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Error
+        '404':
+          description: User not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+    put:
+      tags:
+      - RBAC
+      operationId: Add role to a user
+      parameters:
+      - name: username
+        in: path
+        description: username to which the roles need to be assigned
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: Roles to be assigned to the user
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: string
+        required: true
+      responses:
+        '200':
+          description: Assigned roles to the user
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Error
+        '404':
+          description: User not found
+        '500':
+          description: Failure
+      security:
+      - basic_auth: []
+components:
+  schemas:
+    Alert:
+      allOf:
+      - type: string
+      - type: object
+        required:
+        - name
+        - rule
+        - targets
+        properties:
+          id:
+            type: string
+          name:
+            type: string
+          rule:
+            type: string
+          targets:
+            type: array
+            items:
+              type: object
+    AlertVersion:
+      type: string
+      enum:
+      - v1
+    Alerts:
+      type: object
+      required:
+      - version
+      - alerts
+      properties:
+        version:
+          $ref: '#/components/schemas/AlertVersion'
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alert'
+    IngestionStats:
+      type: object
+      required:
+      - count
+      - size
+      - format
+      - lifetime_count
+      - lifetime_size
+      - deleted_count
+      - deleted_size
+      properties:
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+        size:
+          type: string
+        format:
+          type: string
+        lifetime_count:
+          type: integer
+          format: int64
+          minimum: 0
+        lifetime_size:
+          type: string
+        deleted_count:
+          type: integer
+          format: int64
+          minimum: 0
+        deleted_size:
+          type: string
+    QueriedStats:
+      type: object
+      required:
+      - stream
+      - time
+      - ingestion
+      - storage
+      properties:
+        stream:
+          type: string
+        time:
+          type: string
+          format: date-time
+        ingestion:
+          $ref: '#/components/schemas/IngestionStats'
+        storage:
+          $ref: '#/components/schemas/StorageStats'
+    Query:
+      type: object
+      description: Query Request through http endpoint.
+      required:
+      - query
+      - startTime
+      - endTime
+      properties:
+        query:
+          type: string
+          example: SELECT * FROM test;
+        startTime:
+          type: string
+          example: 2024-07-06T14:34:00.000Z
+        endTime:
+          type: string
+          example: 2024-07-06T14:45:00.000Z
+        sendNull:
+          type: boolean
+    QueryResponse:
+      type: object
+      required:
+      - records
+      - fields
+      - fill_null
+      - with_fields
+      properties:
+        records:
+          type: array
+          items:
+            type: object
+        fields:
+          type: array
+          items:
+            type: string
+        fill_null:
+          type: boolean
+        with_fields:
+          type: boolean
+    Retention:
+      type: object
+      required:
+      - tasks
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+    StorageStats:
+      type: object
+      required:
+      - size
+      - format
+      - lifetime_size
+      - deleted_size
+      properties:
+        size:
+          type: string
+        format:
+          type: string
+        lifetime_size:
+          type: string
+        deleted_size:
+          type: string
+    StreamHotTier:
+      type: object
+      required:
+      - size
+      properties:
+        size:
+          type: string
+        used_size:
+          type: string
+          nullable: true
+        available_size:
+          type: string
+          nullable: true
+        oldest_date_time_entry:
+          type: string
+          nullable: true
+    StreamInfo:
+      type: object
+      required:
+      - created-at
+      - stream_type
+      properties:
+        created-at:
+          type: string
+        first-event-at:
+          type: string
+          nullable: true
+        cache_enabled:
+          type: boolean
+        time_partition:
+          type: string
+          nullable: true
+        time_partition_limit:
+          type: string
+          nullable: true
+        custom_partition:
+          type: string
+          nullable: true
+        static_schema_flag:
+          type: string
+          nullable: true
+        stream_type:
+          type: string
+    Task:
+      type: object
+      required:
+      - description
+      - action
+      - days
+      properties:
+        description:
+          type: string
+        action:
+          type: string
+        days:
+          type: integer
+          format: int32
+          minimum: 0
+  securitySchemes:
+    basic_auth:
+      type: http
+      scheme: basic
+tags:
+- name: About
+  description: Details about this Parseable executable
+- name: Health Status
+  description: Health of Parseable server
+- name: Log Stream Ingestion
+  description: Sending data to log streams
+- name: Log Stream Alerts
+  description: Manipulation of alerts for log streams
+- name: Log Stream Management
+  description: Create, List, Delete, log streams
+- name: Log Stream Query
+  description: Query log streams
+- name: Log Stream Retention
+  description: Get and Set retention policies for log streams
+- name: Log Stream Hottier
+  description: Hottier related actions for a log stream
+- name: User Management
+  description: Actions pertaining to Users
+- name: Role Management
+  description: Actions pertaining to Roles
+- name: RBAC
+  description: Add a role to a user

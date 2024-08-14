@@ -48,13 +48,14 @@ use sysinfo::{Disks, System};
 use tokio::fs::{self, DirEntry};
 use tokio::io::AsyncWriteExt;
 use tokio_stream::wrappers::ReadDirStream;
+use utoipa::ToSchema;
 
 pub const STREAM_HOT_TIER_FILENAME: &str = ".hot_tier.json";
 pub const MIN_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10737418240; // 10 GiB
 const HOT_TIER_SYNC_DURATION: Interval = clokwerk::Interval::Minutes(1);
 pub const INTERNAL_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10485760; //10 MiB
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, ToSchema)]
 pub struct StreamHotTier {
     #[serde(rename = "size")]
     pub size: String,

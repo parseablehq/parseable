@@ -59,6 +59,25 @@ use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::Arc;
 
+#[utoipa::path(
+    delete,
+    tag = "Log Stream Management",
+    operation_id = "Delete a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Deleted stream", body = Vec<String>),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
@@ -129,6 +148,23 @@ pub async fn retention_cleanup(
     Ok((first_event_at, StatusCode::OK))
 }
 
+#[utoipa::path(
+    get,
+    tag = "Log Stream Management",
+    operation_id = "List all log streams",
+    context_path = "/api/v1",
+    path = "/logstream",
+    responses(
+        (status = 200, description = "Fetched all streams in the system", body = Vec<String>),
+        (status = 400, description = "Error", body = HttpResponse),
+        (status = 500, description = "Failure", body = HttpResponse),
+        (status = 404, description = "Stream not found", body = HttpResponse),
+        (status = 405, description = "Method not found", body = HttpResponse),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn list(_: HttpRequest) -> impl Responder {
     let res: Vec<LogStream> = STREAM_INFO
         .list_streams()
@@ -139,12 +175,52 @@ pub async fn list(_: HttpRequest) -> impl Responder {
     web::Json(res)
 }
 
+#[utoipa::path(
+    get,
+    tag = "Log Stream Management",
+    operation_id = "Get schema of a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/schema",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Fetched schema for stream", body = Object),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let schema = STREAM_INFO.schema(&stream_name)?;
     Ok((web::Json(schema), StatusCode::OK))
 }
 
+#[utoipa::path(
+    get,
+    tag = "Log Stream Alerts",
+    operation_id = "Get alert for a stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/alert",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Fetched alert for stream", body = Object),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
@@ -178,6 +254,26 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
     Ok((web::Json(alerts), StatusCode::OK))
 }
 
+#[utoipa::path(
+    put,
+    tag = "Log Stream Management",
+    operation_id = "Create a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}",
+    params(
+        ("streamName" = String, Path, description = "Name of stream"),
+    ),
+    responses(
+        (status = 200, description = "Created new stream", body = Vec<String>),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
@@ -399,6 +495,30 @@ async fn create_update_stream(
 
     Ok(req.headers().clone())
 }
+
+#[utoipa::path(
+    put,
+    tag = "Log Stream Alerts",
+    operation_id = "Set alert for a stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/alert",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    request_body(
+        content =  Alerts, description = "Alert to be set"
+    ),
+    responses(
+        (status = 200, description = "Put alert for stream", body = Vec<String>),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Log stream not initialized"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn put_alert(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
@@ -456,6 +576,26 @@ pub async fn put_alert(
     ))
 }
 
+#[utoipa::path(
+    get,
+    tag = "Log Stream Retention",
+    operation_id = "Get retention for a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/retention",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Fetched retention for stream", body = Retention),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !STREAM_INFO.stream_exists(&stream_name) {
@@ -475,6 +615,29 @@ pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamErr
     }
 }
 
+#[utoipa::path(
+    put,
+    tag = "Log Stream Retention",
+    operation_id = "Set retention for a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/retention",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    request_body(
+        content = Retention, description = "Retention details"
+    ),
+    responses(
+        (status = 200, description = "Put retention for stream", body = Retention),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn put_retention(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
@@ -503,6 +666,26 @@ pub async fn put_retention(
     ))
 }
 
+#[utoipa::path(
+    get,
+    tag = "Log Stream Management",
+    operation_id = "Get cache state state for a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/cache",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, body = bool),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
@@ -519,6 +702,26 @@ pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, Strea
     Ok((web::Json(cache_enabled), StatusCode::OK))
 }
 
+#[utoipa::path(
+    put,
+    tag = "Log Stream Management",
+    operation_id = "Enable cache for a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/cache",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Enabled cache for stream"),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn put_enable_cache(
     req: HttpRequest,
     body: web::Json<bool>,
@@ -619,6 +822,26 @@ pub async fn get_stats_date(stream_name: &str, date: &str) -> Result<Stats, Stre
     Ok(stats)
 }
 
+#[utoipa::path(
+    get,
+    tag = "Log Stream Management",
+    operation_id = "Get stats of a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/stats",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Fetched stats for stream", body = QueriedStats),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
@@ -903,6 +1126,26 @@ pub async fn create_stream(
     Ok(())
 }
 
+#[utoipa::path(
+    get,
+    tag = "Log Stream Management",
+    operation_id = "Get info for log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/info",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Stream info", body = StreamInfo),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
@@ -943,6 +1186,26 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
     Ok((web::Json(stream_info), StatusCode::OK))
 }
 
+#[utoipa::path(
+    put,
+    tag = "Log Stream Hottier",
+    operation_id = "Enable hottier for a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/hottier",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Enabled hottier for stream"),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn put_stream_hot_tier(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
@@ -1011,6 +1274,26 @@ pub async fn put_stream_hot_tier(
     ))
 }
 
+#[utoipa::path(
+    get,
+    tag = "Log Stream Hottier",
+    operation_id = "Get hottier state for a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/hottier",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Fetched hottier for stream", body = StreamHotTier),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
     if CONFIG.parseable.mode != Mode::Query {
         return Err(StreamError::Custom {
@@ -1040,6 +1323,26 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
     }
 }
 
+#[utoipa::path(
+    delete,
+    tag = "Log Stream Hottier",
+    operation_id = "Delete hottier for a log stream",
+    context_path = "/api/v1",
+    path = "/logstream/{streamName}/hottier",
+    params(
+        ("streamName" = String, Path, description = "Name of stream")
+    ),
+    responses(
+        (status = 200, description = "Deleted hottier for stream"),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+        (status = 404, description = "Stream not found"),
+        (status = 405, description = "Method not found"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
     if CONFIG.parseable.mode != Mode::Query {
         return Err(StreamError::Custom {
@@ -1099,6 +1402,7 @@ pub mod error {
 
     use actix_web::http::header::ContentType;
     use http::StatusCode;
+    use utoipa::ToSchema;
 
     use crate::{
         hottier::HotTierError,
@@ -1127,7 +1431,7 @@ pub mod error {
         SerdeError(#[from] serde_json::Error),
     }
 
-    #[derive(Debug, thiserror::Error)]
+    #[derive(Debug, thiserror::Error, ToSchema)]
     pub enum StreamError {
         #[error("{0}")]
         CreateStream(#[from] CreateStreamError),

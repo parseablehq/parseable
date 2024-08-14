@@ -28,11 +28,17 @@ use datafusion::arrow::record_batch::RecordBatch;
 use itertools::Itertools;
 use serde_json::{json, Value};
 use tonic::{Response, Status};
+use utoipa::ToSchema;
 
+#[derive(ToSchema)]
 pub struct QueryResponse {
+    #[schema(value_type = Vec<Object>)]
     pub records: Vec<RecordBatch>,
+    #[schema(value_type = Vec<String>)]
     pub fields: Vec<String>,
+    #[schema(value_type = bool)]
     pub fill_null: bool,
+    #[schema(value_type = bool)]
     pub with_fields: bool,
 }
 

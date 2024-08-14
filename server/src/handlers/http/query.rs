@@ -50,13 +50,17 @@ use crate::response::QueryResponse;
 use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
+use utoipa::ToSchema;
 
 /// Query Request through http endpoint.
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
+    #[schema(example = "SELECT * FROM test;", required = true)]
     pub query: String,
+    #[schema(example = "2024-07-06T14:34:00.000Z", required = true)]
     pub start_time: String,
+    #[schema(example = "2024-07-06T14:45:00.000Z", required = true)]
     pub end_time: String,
     #[serde(default)]
     pub send_null: bool,
@@ -66,6 +70,22 @@ pub struct Query {
     pub filter_tags: Option<Vec<String>>,
 }
 
+#[utoipa::path(
+    post,
+    tag = "Log Stream Query",
+    operation_id = "Query a Log Stream",
+    context_path = "/api/v1",
+    path = "/query",
+    request_body = Query,
+    responses(
+        (status = 200, description = "Queries successfully", body = QueryResponse),
+        (status = 400, description = "Error"),
+        (status = 500, description = "Failure"),
+    ),
+    security(
+        ("basic_auth" = [])
+    )
+)]
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
     let session_state = QUERY_SESSION.state();
 
@@ -451,7 +471,7 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
     Some(q)
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, ToSchema)]
 pub enum QueryError {
     #[error("Query cannot be empty")]
     EmptyQuery,

@@ -27,6 +27,7 @@ use clokwerk::TimeUnits;
 use derive_more::Display;
 use once_cell::sync::Lazy;
 use tokio::task::JoinHandle;
+use utoipa::ToSchema;
 
 use crate::metadata::STREAM_INFO;
 
@@ -87,17 +88,19 @@ pub fn init_scheduler() {
     log::info!("Scheduler is initialized")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(try_from = "Vec<TaskView>")]
 #[serde(into = "Vec<TaskView>")]
 pub struct Retention {
     tasks: Vec<Task>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ToSchema)]
 pub struct Task {
     description: String,
+    #[schema(value_type = String)]
     action: Action,
+    #[schema(value_type = u32)]
     days: NonZeroU32,
 }
 
