@@ -24,8 +24,9 @@ mod stream_metadata_migration;
 use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{
+    hottier::{HotTierManager, CURRENT_HOT_TIER_VERSION},
     metadata::load_stream_metadata_on_server_start,
-    option::{Config, Mode, CONFIG},
+    option::{validation::human_size_to_bytes, Config, Mode, CONFIG},
     storage::{
         object_storage::{parseable_json_path, stream_json_path},
         ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
@@ -111,9 +112,41 @@ pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
     let streams = storage.list_streams().await?;
 
     for stream in streams {
-        migration_stream(&stream.name, &*storage).await?
+        migration_stream(&stream.name, &*storage).await?;
+        if CONFIG.parseable.hot_tier_storage_path.is_some() {
+            migration_hot_tier(&stream.name).await?;
+        }
     }
 
+    Ok(())
+}
+
+/// run the migration for hot tier
+async fn migration_hot_tier(stream: &str) -> anyhow::Result<()> {
+    if let Some(hot_tier_manager) = HotTierManager::global() {
+        if hot_tier_manager.check_stream_hot_tier_exists(stream) {
+            let mut stream_hot_tier = hot_tier_manager.get_hot_tier(stream).await?;
+            if stream_hot_tier.version.is_none() {
+                stream_hot_tier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
+                stream_hot_tier.size = human_size_to_bytes(&stream_hot_tier.size)
+                    .unwrap()
+                    .to_string();
+                stream_hot_tier.available_size = Some(
+                    human_size_to_bytes(&stream_hot_tier.available_size.unwrap())
+                        .unwrap()
+                        .to_string(),
+                );
+                stream_hot_tier.used_size = Some(
+                    human_size_to_bytes(&stream_hot_tier.used_size.unwrap())
+                        .unwrap()
+                        .to_string(),
+                );
+                hot_tier_manager
+                    .put_hot_tier(stream, &mut stream_hot_tier)
+                    .await?;
+            }
+        }
+    }
     Ok(())
 }
 

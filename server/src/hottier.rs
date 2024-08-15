@@ -27,10 +27,7 @@ use crate::{
     catalog::manifest::{File, Manifest},
     handlers::http::cluster::INTERNAL_STREAM_NAME,
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
-    option::{
-        validation::{bytes_to_human_size, human_size_to_bytes},
-        CONFIG,
-    },
+    option::{validation::bytes_to_human_size, CONFIG},
     storage::{ObjectStorage, ObjectStorageError},
     utils::extract_datetime,
     validator::error::HotTierValidationError,
@@ -53,9 +50,10 @@ pub const STREAM_HOT_TIER_FILENAME: &str = ".hot_tier.json";
 pub const MIN_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10737418240; // 10 GiB
 const HOT_TIER_SYNC_DURATION: Interval = clokwerk::Interval::Minutes(1);
 pub const INTERNAL_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10485760; //10 MiB
-
+pub const CURRENT_HOT_TIER_VERSION: &str = "v2";
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct StreamHotTier {
+    pub version: Option<String>,
     #[serde(rename = "size")]
     pub size: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,9 +95,13 @@ impl HotTierManager {
         for stream in STREAM_INFO.list_streams() {
             if self.check_stream_hot_tier_exists(&stream) && stream != current_stream {
                 let stream_hot_tier = self.get_hot_tier(&stream).await?;
-                total_hot_tier_size += human_size_to_bytes(&stream_hot_tier.size).unwrap();
-                total_hot_tier_used_size +=
-                    human_size_to_bytes(&stream_hot_tier.used_size.unwrap()).unwrap();
+                total_hot_tier_size += &stream_hot_tier.size.parse::<u64>().unwrap();
+                total_hot_tier_used_size += &stream_hot_tier
+                    .used_size
+                    .clone()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap();
             }
         }
         Ok((total_hot_tier_size, total_hot_tier_used_size))
@@ -112,19 +114,21 @@ impl HotTierManager {
     pub async fn validate_hot_tier_size(
         &self,
         stream: &str,
-        size: &str,
+        stream_hot_tier_size: &str,
     ) -> Result<u64, HotTierError> {
+        let stream_hot_tier_size = stream_hot_tier_size.parse::<u64>().unwrap();
         let mut existing_hot_tier_used_size = 0;
         if self.check_stream_hot_tier_exists(stream) {
             //delete existing hot tier if its size is less than the updated hot tier size else return error
             let existing_hot_tier = self.get_hot_tier(stream).await?;
             existing_hot_tier_used_size =
-                human_size_to_bytes(&existing_hot_tier.used_size.unwrap()).unwrap();
-            if human_size_to_bytes(size) < human_size_to_bytes(&existing_hot_tier.size) {
+                existing_hot_tier.used_size.unwrap().parse::<u64>().unwrap();
+
+            if stream_hot_tier_size < existing_hot_tier_used_size {
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
                     "Reducing hot tier size is not supported, failed to reduce the hot tier size from {} to {}",
-                    existing_hot_tier.size,
-                    size
+                    bytes_to_human_size(existing_hot_tier_used_size),
+                    bytes_to_human_size(stream_hot_tier_size)
                 ))));
             }
         }
@@ -134,7 +138,6 @@ impl HotTierManager {
         if let (Some(total_disk_space), _, Some(used_disk_space)) =
             (total_disk_space, available_disk_space, used_disk_space)
         {
-            let stream_hot_tier_size = human_size_to_bytes(size).unwrap();
             let (total_hot_tier_size, total_hot_tier_used_size) =
                 self.get_hot_tiers_size(stream).await?;
             let disk_threshold =
@@ -147,7 +150,7 @@ impl HotTierManager {
 
             if stream_hot_tier_size as f64 > max_allowed_hot_tier_size {
                 log::error!("disk_threshold: {}, used_disk_space: {}, total_hot_tier_used_size: {}, existing_hot_tier_used_size: {}, total_hot_tier_size: {}",
-                    disk_threshold, used_disk_space, total_hot_tier_used_size, existing_hot_tier_used_size, total_hot_tier_size);
+                    bytes_to_human_size(disk_threshold as u64), bytes_to_human_size(used_disk_space), bytes_to_human_size(total_hot_tier_used_size), bytes_to_human_size(existing_hot_tier_used_size), bytes_to_human_size(total_hot_tier_size));
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
                     "{} is the total usable disk space for hot tier, cannot set a bigger value.", bytes_to_human_size(max_allowed_hot_tier_size as u64)
                 ))));
@@ -255,8 +258,12 @@ impl HotTierManager {
     /// delete the files from the hot tier directory if the available date range is outside the hot tier range
     async fn process_stream(&self, stream: String) -> Result<(), HotTierError> {
         let stream_hot_tier = self.get_hot_tier(&stream).await?;
-        let mut parquet_file_size =
-            human_size_to_bytes(stream_hot_tier.used_size.as_ref().unwrap()).unwrap();
+        let mut parquet_file_size = stream_hot_tier
+            .used_size
+            .as_ref()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
 
         let object_store = CONFIG.storage().get_object_store();
         let mut s3_manifest_file_list = object_store.list_manifest_files(&stream).await?;
@@ -348,7 +355,12 @@ impl HotTierManager {
         let mut file_processed = false;
         let mut stream_hot_tier = self.get_hot_tier(stream).await?;
         if !self.is_disk_available(parquet_file.file_size).await?
-            || human_size_to_bytes(&stream_hot_tier.available_size.clone().unwrap()).unwrap()
+            || stream_hot_tier
+                .available_size
+                .as_ref()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
                 <= parquet_file.file_size
         {
             if !self
@@ -362,8 +374,12 @@ impl HotTierManager {
             {
                 return Ok(file_processed);
             }
-            *parquet_file_size =
-                human_size_to_bytes(&stream_hot_tier.used_size.clone().unwrap()).unwrap();
+            *parquet_file_size = stream_hot_tier
+                .used_size
+                .as_ref()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
         }
         let parquet_file_path = RelativePathBuf::from(parquet_file.file_path.clone());
         fs::create_dir_all(parquet_path.parent().unwrap()).await?;
@@ -375,12 +391,18 @@ impl HotTierManager {
             .await?;
         file.write_all(&parquet_data).await?;
         *parquet_file_size += parquet_file.file_size;
-        stream_hot_tier.used_size = Some(bytes_to_human_size(*parquet_file_size));
+        stream_hot_tier.used_size = Some(parquet_file_size.to_string());
 
-        stream_hot_tier.available_size = Some(bytes_to_human_size(
-            human_size_to_bytes(&stream_hot_tier.available_size.clone().unwrap()).unwrap()
-                - parquet_file.file_size,
-        ));
+        stream_hot_tier.available_size = Some(
+            (stream_hot_tier
+                .available_size
+                .as_ref()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                - parquet_file.file_size)
+                .to_string(),
+        );
         self.put_hot_tier(stream, &mut stream_hot_tier).await?;
         file_processed = true;
         let mut hot_tier_manifest = self
@@ -583,20 +605,34 @@ impl HotTierManager {
                         fs::remove_dir_all(path_to_delete.parent().unwrap()).await?;
                         delete_empty_directory_hot_tier(path_to_delete.parent().unwrap()).await?;
 
-                        stream_hot_tier.used_size = Some(bytes_to_human_size(
-                            human_size_to_bytes(&stream_hot_tier.used_size.clone().unwrap())
+                        stream_hot_tier.used_size = Some(
+                            (stream_hot_tier
+                                .used_size
+                                .as_ref()
                                 .unwrap()
-                                - file_size,
-                        ));
-                        stream_hot_tier.available_size = Some(bytes_to_human_size(
-                            human_size_to_bytes(&stream_hot_tier.available_size.clone().unwrap())
+                                .parse::<u64>()
                                 .unwrap()
-                                + file_size,
-                        ));
+                                - file_size)
+                                .to_string(),
+                        );
+                        stream_hot_tier.available_size = Some(
+                            (stream_hot_tier
+                                .available_size
+                                .as_ref()
+                                .unwrap()
+                                .parse::<u64>()
+                                .unwrap()
+                                + file_size)
+                                .to_string(),
+                        );
                         self.put_hot_tier(stream, stream_hot_tier).await?;
                         delete_successful = true;
 
-                        if human_size_to_bytes(&stream_hot_tier.available_size.clone().unwrap())
+                        if stream_hot_tier
+                            .available_size
+                            .as_ref()
+                            .unwrap()
+                            .parse::<u64>()
                             .unwrap()
                             <= parquet_file_size
                         {
@@ -679,7 +715,7 @@ impl HotTierManager {
                         .to_string_lossy()
                         .trim_start_matches("minute=")
                         .to_string();
-                    let oldest_date_time = format!("{} {}:{}:00", date, hour_str, minute_str);
+                    let oldest_date_time = format!("{}T{}:{}:00.000Z", date, hour_str, minute_str);
                     return Ok(Some(oldest_date_time));
                 }
             }
@@ -693,6 +729,7 @@ impl HotTierManager {
             && !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME)
         {
             let mut stream_hot_tier = StreamHotTier {
+                version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
                 size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES.to_string(),
                 used_size: Some("0".to_string()),
                 available_size: Some(INTERNAL_STREAM_HOT_TIER_SIZE_BYTES.to_string()),

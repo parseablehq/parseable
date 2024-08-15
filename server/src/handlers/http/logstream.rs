@@ -29,10 +29,9 @@ use crate::handlers::{
     CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
     TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
 };
-use crate::hottier::{HotTierManager, StreamHotTier};
+use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::STREAM_INFO;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::option::validation::bytes_to_human_size;
 use crate::option::{Mode, CONFIG};
 use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
@@ -992,8 +991,9 @@ pub async fn put_stream_hot_tier(
         let existing_hot_tier_used_size = hot_tier_manager
             .validate_hot_tier_size(&stream_name, &hottier.size)
             .await?;
-        hottier.used_size = Some(bytes_to_human_size(existing_hot_tier_used_size));
+        hottier.used_size = Some(existing_hot_tier_used_size.to_string());
         hottier.available_size = Some(hottier.size.clone());
+        hottier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
         hot_tier_manager
             .put_hot_tier(&stream_name, &mut hottier)
             .await?;
@@ -1030,7 +1030,10 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
     }
 
     if let Some(hot_tier_manager) = HotTierManager::global() {
-        let hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
+        let mut hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
+        hot_tier.size = format!("{} {}", hot_tier.size, "Bytes");
+        hot_tier.used_size = Some(format!("{} {}", hot_tier.used_size.unwrap(), "Bytes"));
+        hot_tier.available_size = Some(format!("{} {}", hot_tier.available_size.unwrap(), "Bytes"));
         Ok((web::Json(hot_tier), StatusCode::OK))
     } else {
         Err(StreamError::Custom {
@@ -1172,7 +1175,7 @@ pub mod error {
         HotTierNotEnabled(String),
         #[error("failed to enable hottier due to err: {0}")]
         InvalidHotTierConfig(serde_json::Error),
-        #[error("Hot tier validation failed due to {0}")]
+        #[error("Hot tier validation failed: {0}")]
         HotTierValidation(#[from] HotTierValidationError),
         #[error("{0}")]
         HotTierError(#[from] HotTierError),
