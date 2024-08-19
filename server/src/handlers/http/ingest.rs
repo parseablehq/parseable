@@ -417,9 +417,11 @@ fn into_event_batch(
 pub async fn create_stream_if_not_exists(
     stream_name: &str,
     stream_type: &str,
-) -> Result<(), PostError> {
+) -> Result<bool, PostError> {
+    let mut stream_exists = false;
     if STREAM_INFO.stream_exists(stream_name) {
-        return Ok(());
+        stream_exists = true;
+        return Ok(stream_exists);
     }
     match &CONFIG.parseable.mode {
         Mode::All | Mode::Query => {
@@ -459,7 +461,7 @@ pub async fn create_stream_if_not_exists(
                 .map_err(|_| PostError::StreamNotFound(stream_name.to_owned()))?;
         }
     }
-    Ok(())
+    Ok(stream_exists)
 }
 
 #[derive(Debug, thiserror::Error)]

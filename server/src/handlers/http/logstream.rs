@@ -662,7 +662,8 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
     let ingestor_stats = if CONFIG.parseable.mode == Mode::Query
-        && STREAM_INFO.stream_type(&stream_name).unwrap() == StreamType::UserDefined.to_string()
+        && STREAM_INFO.stream_type(&stream_name).unwrap()
+            == Some(StreamType::UserDefined.to_string())
     {
         Some(fetch_stats_from_ingestors(&stream_name).await?)
     } else {
@@ -957,7 +958,7 @@ pub async fn put_stream_hot_tier(
         return Err(StreamError::StreamNotFound(stream_name));
     }
 
-    if STREAM_INFO.stream_type(&stream_name).unwrap() == StreamType::Internal.to_string() {
+    if STREAM_INFO.stream_type(&stream_name).unwrap() == Some(StreamType::Internal.to_string()) {
         return Err(StreamError::Custom {
             msg: "Hot tier can not be updated for internal stream".to_string(),
             status: StatusCode::BAD_REQUEST,
@@ -1060,10 +1061,12 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
 }
 
 pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
-    if create_stream_if_not_exists(INTERNAL_STREAM_NAME, &StreamType::Internal.to_string())
-        .await
-        .is_ok()
+    if let Ok(stream_exists) =
+        create_stream_if_not_exists(INTERNAL_STREAM_NAME, &StreamType::Internal.to_string()).await
     {
+        if stream_exists {
+            return Ok(());
+        }
         let mut header_map = HeaderMap::new();
         header_map.insert(
             HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
