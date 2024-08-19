@@ -967,17 +967,6 @@ pub async fn put_stream_hot_tier(
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 
-    if STREAM_INFO
-        .get_time_partition(&stream_name)
-        .unwrap()
-        .is_some()
-    {
-        return Err(StreamError::Custom {
-            msg: "Hot tier can not be enabled for stream with time partition".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-
     let body = body.into_inner();
     let mut hottier: StreamHotTier = match serde_json::from_value(body) {
         Ok(hottier) => hottier,
