@@ -147,7 +147,7 @@ pub trait ObjectStorage: Sync + 'static {
         let permission = Permisssion::new(CONFIG.parseable.username.clone());
         format.permissions = vec![permission];
         format.created_at = Local::now().to_rfc3339();
-        format.stream_type = stream_type.to_string();
+        format.stream_type = Some(stream_type.to_string());
         if time_partition.is_empty() {
             format.time_partition = None;
         } else {
