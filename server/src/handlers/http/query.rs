@@ -16,20 +16,25 @@
  *
  */
 
+use actix_web::body::MessageBody;
 use actix_web::http::header::ContentType;
-use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, Responder};
+use actix_web::web::{self, Bytes, Json};
+use actix_web::{Error, FromRequest, HttpRequest, HttpResponse, Responder, rt};
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
+use futures::SinkExt;
+use futures::{channel::mpsc, StreamExt};
 use futures_util::Future;
 use http::StatusCode;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::time::interval;
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
@@ -66,7 +71,46 @@ pub struct Query {
     pub filter_tags: Option<Vec<String>>,
 }
 
-pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
+pub async fn query_keep_alive(
+    req: HttpRequest,
+    query_request: web::Json<Query>,
+) -> Result<HttpResponse, Error> {
+    let (mut tx, rx) = mpsc::channel::<Result<Bytes, Error>>(10);
+
+    // Spawn a task to handle the query and keepalive messages
+    rt::spawn(async move {
+        let heartbeat_interval = 30;
+        // Create a stream that sends keepalive messages every 30 seconds
+        let interval = interval(Duration::from_secs(heartbeat_interval));
+        let mut keepalive = IntervalStream::new(interval).map(|_| Ok(Bytes::from("keepalive\n")));
+
+        // Send keepalive messages
+        while let Some(item) = keepalive.next().await {
+            if tx.send(item).await.is_err() {
+                return;
+            }
+        }
+
+        // Execute the query
+        match query(req.clone(), query_request.into_inner()).await {
+            Ok(response) => {
+                if let Ok(res_body) = response.respond_to(&req).into_body().try_into_bytes() {
+                    let _ = tx.send(Ok(res_body)).await;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Ok(Bytes::from(format!("Error: {}", e)))).await;
+            }
+        }
+    });
+
+    // Return the streaming response
+    Ok(HttpResponse::Ok()
+        .content_type("application/octet-stream")
+        .streaming(rx))
+}
+
+async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
     let session_state = QUERY_SESSION.state();
 
     // get the logical plan and extract the table name
