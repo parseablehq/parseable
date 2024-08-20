@@ -45,6 +45,7 @@ pub struct Visualization {
     graph_config: Option<GraphConfig>,
     size: String,
     color_config: Vec<ColorConfig>,
+    tick_config: Vec<TickConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -63,6 +64,12 @@ pub struct GraphConfig {
 pub struct ColorConfig {
     field_name: String,
     color_palette: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct TickConfig {
+    key: String,
+    unit: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
