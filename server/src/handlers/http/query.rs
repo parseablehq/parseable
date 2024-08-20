@@ -73,7 +73,7 @@ pub struct Query {
 
 pub async fn query_keep_alive(
     req: HttpRequest,
-    query_request: web::Json<Query>,
+    query_request: Query,
 ) -> Result<HttpResponse, Error> {
     let (mut tx, rx) = mpsc::channel::<Result<Bytes, Error>>(10);
 
@@ -92,7 +92,7 @@ pub async fn query_keep_alive(
         }
 
         // Execute the query
-        match query(req.clone(), query_request.into_inner()).await {
+        match query(req.clone(), query_request).await {
             Ok(response) => {
                 if let Ok(res_body) = response.respond_to(&req).into_body().try_into_bytes() {
                     let _ = tx.send(Ok(res_body)).await;
