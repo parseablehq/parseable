@@ -26,7 +26,7 @@ use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use futures::SinkExt;
-use futures::{channel::mpsc, StreamExt};
+use futures::channel::mpsc;
 use futures_util::Future;
 use http::StatusCode;
 use std::collections::HashMap;
@@ -34,7 +34,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::interval;
-use tokio_stream::wrappers::IntervalStream;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
@@ -80,28 +79,40 @@ pub async fn query_keep_alive(
     // Spawn a task to handle the query and keepalive messages
     rt::spawn(async move {
         let heartbeat_interval = 30;
-        // Create a stream that sends keepalive messages every 30 seconds
-        let interval = interval(Duration::from_secs(heartbeat_interval));
-        let mut keepalive = IntervalStream::new(interval).map(|_| Ok(Bytes::from("keepalive\n")));
+        let mut interval = interval(Duration::from_secs(heartbeat_interval));
 
-        // Send keepalive messages
-        while let Some(item) = keepalive.next().await {
-            if tx.send(item).await.is_err() {
-                return;
-            }
-        }
+        let query_future = query(req.clone(), query_request);
+        let mut query_result = Box::pin(query_future);
 
-        // Execute the query
-        match query(req.clone(), query_request).await {
-            Ok(response) => {
-                if let Ok(res_body) = response.respond_to(&req).into_body().try_into_bytes() {
-                    let _ = tx.send(Ok(res_body)).await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    // Send a keepalive message
+                    if tx.send(Ok(Bytes::from("keepalive\n"))).await.is_err() {
+                        // If the receiver is dropped, stop the loop
+                        return;
+                    }
+                },
+                result = &mut query_result => {
+                    // Handle the query result and send it
+                    match result {
+                        Ok(response) => {
+                            if let Ok(res_body) = response.respond_to(&req).into_body().try_into_bytes() {
+                                let _ = tx.send(Ok(res_body)).await;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Ok(Bytes::from(format!("Error: {}", e)))).await;
+                        }
+                    }
+                    // Break the loop after sending the query result
+                    break;
                 }
             }
-            Err(e) => {
-                let _ = tx.send(Ok(Bytes::from(format!("Error: {}", e)))).await;
-            }
         }
+
+        // After the loop, close the channel to signal completion
+        drop(tx);
     });
 
     // Return the streaming response
@@ -110,7 +121,7 @@ pub async fn query_keep_alive(
         .streaming(rx))
 }
 
-async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
+pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
     let session_state = QUERY_SESSION.state();
 
     // get the logical plan and extract the table name

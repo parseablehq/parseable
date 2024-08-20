@@ -228,7 +228,7 @@ impl Server {
 
     // get the query factory
     pub fn get_query_factory() -> Resource {
-        web::resource("/query").route(web::post().to(query::query_keep_alive).authorize(Action::Query))
+        web::resource("/query").route(web::post().to(query::query).authorize(Action::Query))
     }
 
     pub fn get_cache_webscope() -> Scope {
