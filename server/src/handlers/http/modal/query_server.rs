@@ -32,6 +32,7 @@ use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::option::CONFIG;
 
@@ -74,8 +75,10 @@ impl ParseableServer for QueryServer {
                 .wrap(cross_origin_config())
         };
 
+        let keep_alive_timeout = 120;
+
         // concurrent workers equal to number of cores on the cpu
-        let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
+        let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get()).keep_alive(Duration::from_secs(keep_alive_timeout));
         if let Some(config) = ssl {
             http_server
                 .bind_rustls_0_22(&CONFIG.parseable.address, config)?
