@@ -133,7 +133,8 @@ impl S3Config {
     fn get_default_builder(&self) -> AmazonS3Builder {
         let mut client_options = ClientOptions::default()
             .with_allow_http(true)
-            .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS));
+            .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .with_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS));
 
         if self.skip_tls {
             client_options = client_options.with_allow_invalid_certificates(true)
