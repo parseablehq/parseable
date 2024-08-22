@@ -176,7 +176,7 @@ impl Query {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct TableScanVisitor {
     tables: Vec<String>,
 }

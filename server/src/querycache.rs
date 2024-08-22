@@ -390,7 +390,7 @@ impl QueryCacheManager {
     }
 }
 
-fn generate_hash(start: &str, end: &str, query: &str) -> u64 {
+pub fn generate_hash(start: &str, end: &str, query: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     start.hash(&mut hasher);
     end.hash(&mut hasher);
