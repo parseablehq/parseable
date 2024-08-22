@@ -16,31 +16,25 @@
  *
  */
 
-use actix_web::body::MessageBody;
 use actix_web::http::header::ContentType;
-use actix_web::web::{self, Bytes, Json};
-use actix_web::{Error, FromRequest, HttpRequest, HttpResponse, Responder, rt};
-use anyhow::anyhow;
+use actix_web::web::{self, Json};
+use actix_web::{FromRequest, HttpRequest, Responder};
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
-use futures::SinkExt;
-use futures::channel::mpsc;
 use futures_util::Future;
 use http::StatusCode;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::time::interval;
+use std::time::Instant;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
 use arrow_array::RecordBatch;
 
 use crate::event::commit_schema;
-use crate::handlers::{CACHE_RESULTS_HEADER_KEY, CACHE_VIEW_HEADER_KEY, USER_ID_HEADER_KEY};
 use crate::localcache::CacheError;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
@@ -70,55 +64,9 @@ pub struct Query {
     pub filter_tags: Option<Vec<String>>,
 }
 
-pub async fn query_keep_alive(
-    req: HttpRequest,
-    query_request: Query,
-) -> Result<HttpResponse, Error> {
-    let (mut tx, rx) = mpsc::channel::<Result<Bytes, Error>>(10);
-
-    // Spawn a task to handle the query and keepalive messages
-    rt::spawn(async move {
-        let heartbeat_interval = 30;
-        let mut interval = interval(Duration::from_secs(heartbeat_interval));
-
-        let query_future = query(req.clone(), query_request);
-        let mut query_result = Box::pin(query_future);
-
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    // Send a keepalive message
-                    if tx.send(Ok(Bytes::from("keepalive\n"))).await.is_err() {
-                        // If the receiver is dropped, stop the loop
-                        return;
-                    }
-                },
-                result = &mut query_result => {
-                    // Handle the query result and send it
-                    match result {
-                        Ok(response) => {
-                            if let Ok(res_body) = response.respond_to(&req).into_body().try_into_bytes() {
-                                let _ = tx.send(Ok(res_body)).await;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Ok(Bytes::from(format!("Error: {}", e)))).await;
-                        }
-                    }
-                    // Break the loop after sending the query result
-                    break;
-                }
-            }
-        }
-
-        // After the loop, close the channel to signal completion
-        drop(tx);
-    });
-
-    // Return the streaming response
-    Ok(HttpResponse::Ok()
-        .content_type("application/octet-stream")
-        .streaming(rx))
+enum QueryStatus {
+    Processing,
+    Result(Query),
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
@@ -132,33 +80,15 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     // create a visitor to extract the table name
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
-    let stream = visitor
+    let _stream = visitor
         .top()
         .ok_or_else(|| QueryError::MalformedQuery("Table Name not found in SQL"))?;
 
-    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
-        .await
-        .unwrap_or(None);
-
-    let cache_results = req
-        .headers()
-        .get(CACHE_RESULTS_HEADER_KEY)
-        .and_then(|value| value.to_str().ok());
-    let show_cached = req
-        .headers()
-        .get(CACHE_VIEW_HEADER_KEY)
-        .and_then(|value| value.to_str().ok());
-    let user_id = req
-        .headers()
-        .get(USER_ID_HEADER_KEY)
-        .and_then(|value| value.to_str().ok());
+    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size).await?;
 
     // deal with cached data
     if let Ok(results) = get_results_from_cache(
-        show_cached,
         query_cache_manager,
-        stream,
-        user_id,
         &query_request.start_time,
         &query_request.end_time,
         &query_request.query,
@@ -187,8 +117,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let (records, fields) = query.execute(table_name.clone()).await?;
     // deal with cache saving
     if let Err(err) = put_results_in_cache(
-        cache_results,
-        user_id,
         query_cache_manager,
         &table_name,
         &records,
@@ -235,119 +163,73 @@ pub async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), Q
 
 #[allow(clippy::too_many_arguments)]
 pub async fn put_results_in_cache(
-    cache_results: Option<&str>,
-    user_id: Option<&str>,
-    query_cache_manager: Option<&QueryCacheManager>,
+    query_cache_manager: &QueryCacheManager,
     stream: &str,
     records: &[RecordBatch],
     start: String,
     end: String,
     query: String,
 ) -> Result<(), QueryError> {
-    match (cache_results, query_cache_manager) {
-        (Some(_), None) => {
-            log::warn!(
-                "Instructed to cache query results but Query Caching is not Enabled in Server"
-            );
+    let mut cache = query_cache_manager.get_cache(&start, &end, &query).await?;
 
-            Ok(())
-        }
-        // do cache
-        (Some(should_cache), Some(query_cache_manager)) => {
-            if should_cache != "true" {
-                log::error!("value of cache results header is false");
-                return Err(QueryError::CacheError(CacheError::Other(
-                    "should not cache results",
-                )));
-            }
+    let cache_key = CacheMetadata::new(query.clone(), start.clone(), end.clone());
 
-            let user_id = user_id.ok_or(CacheError::Other("User Id not provided"))?;
-            let mut cache = query_cache_manager.get_cache(stream, user_id).await?;
-
-            let cache_key = CacheMetadata::new(query.clone(), start.clone(), end.clone());
-
-            // guard to stop multiple caching of the same content
-            if let Some(path) = cache.get_file(&cache_key) {
-                log::info!("File already exists in cache, Removing old file");
-                cache.delete(&cache_key, path).await?;
-            }
-
-            if let Err(err) = query_cache_manager
-                .create_parquet_cache(stream, records, user_id, start, end, query)
-                .await
-            {
-                log::error!("Error occured while caching query results: {:?}", err);
-                if query_cache_manager
-                    .clear_cache(stream, user_id)
-                    .await
-                    .is_err()
-                {
-                    log::error!("Error Clearing Unwanted files from cache dir");
-                }
-            }
-            // fallthrough
-            Ok(())
-        }
-        (None, _) => Ok(()),
+    // guard to stop multiple caching of the same content
+    if let Some(path) = cache.get_file(&cache_key) {
+        log::info!("File already exists in cache, Removing old file");
+        cache.delete(&cache_key, path).await?;
     }
+
+    if let Err(err) = query_cache_manager
+        .create_parquet_cache(stream, records, &start, &end, &query)
+        .await
+    {
+        log::error!("Error occured while caching query results: {:?}", err);
+        if query_cache_manager
+            .clear_cache(&start, &end, &query)
+            .await
+            .is_err()
+        {
+            log::error!("Error Clearing Unwanted files from cache dir");
+        }
+    }
+    // fallthrough
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn get_results_from_cache(
-    show_cached: Option<&str>,
-    query_cache_manager: Option<&QueryCacheManager>,
-    stream: &str,
-    user_id: Option<&str>,
+    query_cache_manager: &QueryCacheManager,
     start_time: &str,
     end_time: &str,
     query: &str,
     send_null: bool,
     send_fields: bool,
 ) -> Result<QueryResponse, QueryError> {
-    match (show_cached, query_cache_manager) {
-        (Some(_), None) => {
-            log::warn!(
-                "Instructed to show cached results but Query Caching is not Enabled on Server"
-            );
-            None
-        }
-        (Some(should_show), Some(query_cache_manager)) => {
-            if should_show != "true" {
-                log::error!("value of show cached header is false");
-                return Err(QueryError::CacheError(CacheError::Other(
-                    "should not return cached results",
-                )));
-            }
+    let mut query_cache = query_cache_manager
+        .get_cache(start_time, end_time, query)
+        .await?;
 
-            let user_id =
-                user_id.ok_or_else(|| QueryError::Anyhow(anyhow!("User Id not provided")))?;
+    let (start, end) = parse_human_time(start_time, end_time)?;
 
-            let mut query_cache = query_cache_manager.get_cache(stream, user_id).await?;
+    let file_path = query_cache.get_file(&CacheMetadata::new(
+        query.to_string(),
+        start.to_rfc3339(),
+        end.to_rfc3339(),
+    ));
+    if let Some(file_path) = file_path {
+        let (records, fields) = query_cache.get_cached_records(&file_path).await?;
+        let response = QueryResponse {
+            records,
+            fields,
+            fill_null: send_null,
+            with_fields: send_fields,
+        };
 
-            let (start, end) = parse_human_time(start_time, end_time)?;
-
-            let file_path = query_cache.get_file(&CacheMetadata::new(
-                query.to_string(),
-                start.to_rfc3339(),
-                end.to_rfc3339(),
-            ));
-            if let Some(file_path) = file_path {
-                let (records, fields) = query_cache.get_cached_records(&file_path).await?;
-                let response = QueryResponse {
-                    records,
-                    fields,
-                    fill_null: send_null,
-                    with_fields: send_fields,
-                };
-
-                Some(Ok(response))
-            } else {
-                None
-            }
-        }
-        (_, _) => None,
+        Ok(response)
+    } else {
+        Err(QueryError::CacheMiss)
     }
-    .map_or_else(|| Err(QueryError::CacheMiss), |ret_val| ret_val)
 }
 
 pub fn authorize_and_set_filter_tags(
