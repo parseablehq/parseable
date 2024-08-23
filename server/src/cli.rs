@@ -109,6 +109,8 @@ pub struct Cli {
     pub max_disk_usage: f64,
 
     pub ms_clarity_tag: Option<String>,
+
+    pub proxy_timeout: u64
 }
 
 impl Cli {
@@ -145,6 +147,7 @@ impl Cli {
     pub const HOT_TIER_PATH: &'static str = "hot-tier-path";
     pub const MAX_DISK_USAGE: &'static str = "max-disk-usage";
     pub const MS_CLARITY_TAG: &'static str = "ms-clarity-tag";
+    pub const PROXY_TIMEOUT: &'static str = "proxy-timeout";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -434,6 +437,16 @@ impl Cli {
                     .required(false)
                     .help("Tag for MS Clarity"),
             )
+            .arg(
+                Arg::new(Self::PROXY_TIMEOUT)
+                    .long(Self::PROXY_TIMEOUT)
+                    .env("P_PROXY_TIMEOUT")
+                    .value_name("NUMBER")
+                    .required(false)
+                    .default_value("60")
+                    .value_parser(value_parser!(u64))
+                    .help("Time to wait before responding to a query request.")
+            )
             .group(
                 ArgGroup::new("oidc")
                     .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
@@ -578,6 +591,7 @@ impl FromArgMatches for Cli {
             .expect("default for max disk usage");
 
         self.ms_clarity_tag = m.get_one::<String>(Self::MS_CLARITY_TAG).cloned();
+        self.proxy_timeout = m.get_one::<u64>(Self::PROXY_TIMEOUT).cloned().expect("Please specify a default timeout for query requests.");
 
         Ok(())
     }

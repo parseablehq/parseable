@@ -93,8 +93,8 @@ pub async fn query(
         if let Some(status) = query_map.get(&hash) {
             match status {
                 QueryStatus::Processing => {
-                    // Wait for 55 seconds and check again
-                    sleep(Duration::from_secs(55)).await;
+                    // Wait and check again
+                    sleep(Duration::from_secs(CONFIG.parseable.proxy_timeout)).await;
                     if let Some(QueryStatus::Result(response)) = query_map.get(&hash) {
                         return Ok(response.clone().to_http()?);
                     } else {
@@ -142,8 +142,8 @@ pub async fn query(
         }
     });
 
-    // Wait for 55 seconds and respond with HTTP 202
-    sleep(Duration::from_secs(55)).await;
+    // Wait and respond with HTTP 202
+    sleep(Duration::from_secs(CONFIG.parseable.proxy_timeout)).await;
     Ok(HttpResponse::Accepted().finish())
 }
 
