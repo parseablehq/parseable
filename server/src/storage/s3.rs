@@ -50,7 +50,8 @@ use super::{
 #[allow(dead_code)]
 // in bytes
 const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
-const CONNECT_TIMEOUT_SECS: u64 = 300;
+const CONNECT_TIMEOUT_SECS: u64 = 5;
+const REQUEST_TIMEOUT_SECS: u64 = 300;
 const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
 
 #[derive(Debug, Clone, clap::Args)]
@@ -133,7 +134,8 @@ impl S3Config {
     fn get_default_builder(&self) -> AmazonS3Builder {
         let mut client_options = ClientOptions::default()
             .with_allow_http(true)
-            .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS));
+            .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .with_timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
 
         if self.skip_tls {
             client_options = client_options.with_allow_invalid_certificates(true)
