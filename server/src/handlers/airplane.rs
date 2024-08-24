@@ -155,9 +155,9 @@ impl FlightService for AirServiceImpl {
 
         let streams = visitor.into_inner();
 
-        let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
-            .await
-            .unwrap_or(None);
+        // let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
+        //     .await
+        //     .unwrap_or(None);
 
         let cache_results = req
             .metadata()
@@ -179,21 +179,21 @@ impl FlightService for AirServiceImpl {
             .to_owned();
 
         // send the cached results
-        if let Ok(cache_results) = get_results_from_cache(
-            show_cached,
-            query_cache_manager,
-            &stream_name,
-            user_id,
-            &ticket.start_time,
-            &ticket.end_time,
-            &ticket.query,
-            ticket.send_null,
-            ticket.fields,
-        )
-        .await
-        {
-            return cache_results.into_flight();
-        }
+        // if let Ok(cache_results) = get_results_from_cache(
+        //     show_cached,
+        //     query_cache_manager,
+        //     &stream_name,
+        //     user_id,
+        //     &ticket.start_time,
+        //     &ticket.end_time,
+        //     &ticket.query,
+        //     ticket.send_null,
+        //     ticket.fields,
+        // )
+        // .await
+        // {
+        //     return cache_results.into_flight();
+        // }
 
         update_schema_when_distributed(streams)
             .await
@@ -257,20 +257,20 @@ impl FlightService for AirServiceImpl {
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
-        if let Err(err) = put_results_in_cache(
-            cache_results,
-            user_id,
-            query_cache_manager,
-            &stream_name,
-            &records,
-            query.start.to_rfc3339(),
-            query.end.to_rfc3339(),
-            ticket.query,
-        )
-        .await
-        {
-            log::error!("{}", err);
-        };
+        // if let Err(err) = put_results_in_cache(
+        //     cache_results,
+        //     user_id,
+        //     query_cache_manager,
+        //     &stream_name,
+        //     &records,
+        //     query.start.to_rfc3339(),
+        //     query.end.to_rfc3339(),
+        //     ticket.query,
+        // )
+        // .await
+        // {
+        //     log::error!("{}", err);
+        // };
 
         /*
         * INFO: No returning the schema with the data.

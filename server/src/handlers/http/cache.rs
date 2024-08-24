@@ -40,30 +40,33 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, PostError> {
         .get("user_id")
         .ok_or_else(|| PostError::Invalid(anyhow!("Invalid User ID not in Resource path")))?;
 
-    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
-        .await
-        .unwrap_or(None);
+    // let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
+    //     .await
+    //     .unwrap_or(None);
 
-    if let Some(query_cache_manager) = query_cache_manager {
-        let cache = query_cache_manager
-            .get_cache(stream, user_id)
-            .await
-            .map_err(PostError::CacheError)?;
+    // if let Some(query_cache_manager) = query_cache_manager {
+    //     let cache = query_cache_manager
+    //         .get_cache(stream, user_id)
+    //         .await
+    //         .map_err(PostError::CacheError)?;
 
-        let size = cache.used_cache_size();
-        let queries = cache.queries();
+    //     let size = cache.used_cache_size();
+    //     let queries = cache.queries();
 
-        let out = json!({
-            "used_capacity": size,
-            "cache": queries
-        });
+    //     let out = json!({
+    //         "used_capacity": size,
+    //         "cache": queries
+    //     });
 
-        Ok((web::Json(out), StatusCode::OK))
-    } else {
-        Err(PostError::Invalid(anyhow!(
-            "Query Caching is not active on server "
-        )))
-    }
+    //     Ok((web::Json(out), StatusCode::OK))
+    // } else {
+    //     Err(PostError::Invalid(anyhow!(
+    //         "Query Caching is not active on server "
+    //     )))
+    // }
+
+    Ok(HttpResponse::Ok().finish())
+
 }
 
 pub async fn remove(req: HttpRequest, body: Bytes) -> Result<impl Responder, PostError> {
@@ -79,17 +82,19 @@ pub async fn remove(req: HttpRequest, body: Bytes) -> Result<impl Responder, Pos
 
     let query = serde_json::from_slice::<CacheMetadata>(&body)?;
 
-    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
-        .await
-        .unwrap_or(None);
+    // let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
+    //     .await
+    //     .unwrap_or(None);
 
-    if let Some(query_cache_manager) = query_cache_manager {
-        query_cache_manager
-            .remove_from_cache(query, stream, user_id)
-            .await?;
+    // if let Some(query_cache_manager) = query_cache_manager {
+    //     query_cache_manager
+    //         .remove_from_cache(query, stream, user_id)
+    //         .await?;
 
-        Ok(HttpResponse::Ok().finish())
-    } else {
-        Err(PostError::Invalid(anyhow!("Query Caching is not enabled")))
-    }
+    //     Ok(HttpResponse::Ok().finish())
+    // } else {
+    //     Err(PostError::Invalid(anyhow!("Query Caching is not enabled")))
+    // }
+
+    Ok(HttpResponse::Ok().finish())
 }
