@@ -18,6 +18,7 @@ metadata:
   name: {{ include "parseable.fullname" . }}-ingestor
   namespace: {{ .Release.Namespace }}
   labels:
+    {{- .Values.parseable.highAvailability.ingestor.labels | toYaml | nindent 4 }}
     {{- include "parseable.ingestorLabels" . | nindent 4 }}
 spec:
   selector:

@@ -18,6 +18,7 @@ metadata:
   name: {{ include "parseable.fullname" . }}-querier
   namespace: {{ .Release.Namespace }}
   labels:
+    {{- .Values.parseable.podLabels | toYaml | nindent 4 }}
     {{- include "parseable.querierLabels" . | nindent 4 }}
 spec:
   selector:
@@ -75,9 +76,25 @@ spec:
         - mountPath: "/parseable/hot-tier"
           name: hot-tier-volume
         {{- end }}
-      volumes:
-      - emptyDir: {}
-        name: stage-volume
+      {{- if .Values.parseable.sidecar.enabled}}
+      - name: {{ .Chart.Name }}-sidecar
+        securityContext:
+          {{- toYaml .Values.parseable.securityContext | nindent 8 }}
+        image: {{ .Values.parseable.sidecar.image.repository }}:{{ .Values.parseable.sidecar.image.tag }}
+        imagePullPolicy: {{ .Values.parseable.sidecar.image.pullPolicy }}
+        command: {{ .Values.parseable.sidecar.command  }}
+        args: {{ .Values.parseable.sidecar.args  }}
+        env:
+          {{- range $key, $value :=  .Values.parseable.sidecar.env }}
+          - name: {{ $key }}
+            value: {{ tpl $value $ | quote }}
+          {{- end }}
+        ports:
+          - containerPort: {{ .Values.parseable.sidecar.ports }}
+        resources:
+          {{- toYaml .Values.parseable.sidecar.resources | nindent 10 }}
+        volumeMounts: {{ .Values.parseable.sidecar.volumeMounts | toYaml | nindent 10 }}
+      {{- end }}
   volumeClaimTemplates:
   {{- if .Values.parseable.persistence.querier.enabled }}
   - metadata:
@@ -89,5 +106,8 @@ spec:
       resources:
         requests:
           storage: {{ .Values.parseable.persistence.querier.size | quote }}
+  {{- end }}
+  {{- if .Values.parseable.sidecar.enabled}}
+    {{- .Values.parseable.sidecar.volumeClaimTemplates | toYaml | nindent 4 }}
   {{- end }}
 {{- end }}

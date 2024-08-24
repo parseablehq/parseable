@@ -12,6 +12,10 @@ parseable:
     enabled: false
     ingestor: 
       port: 8000
+      podAnnotations: {}
+      labels:
+        app: parseable
+        component: ingestor
       count: 3
       env: 
         RUST_LOG: warn
@@ -107,6 +111,38 @@ parseable:
     requests:
       cpu: 250m
       memory: 1Gi
+  ## works only when highAvailability is enabled
+  ## Set it to true if you want to deploy Parseable 
+  ## Query node with a sidecar
+  sidecar:
+    enabled: false
+    image:
+      repository: busybox
+      tag: latest
+      pullPolicy: IfNotPresent
+    command: []
+    args: []
+    env: 
+      RUST_LOG: warn
+    ports: 8000
+    volumeMounts:
+      - name: test-volume
+        mountPath: /parseable/test
+    volumeClaimTemplates:
+      - metadata:
+          name: test-volume
+        spec:
+          accessModes: [ "ReadWriteOnce" ]
+          resources:
+            requests:
+              storage: 1Gi
+    resources:
+      limits:
+        cpu: 500m
+        memory: 4Gi
+      requests:
+        cpu: 250m
+        memory: 1Gi
   securityContext:
     allowPrivilegeEscalation: false
   podAnnotations:
@@ -122,6 +158,9 @@ parseable:
   fullnameOverride: ""
   nodeSelector: {}
   affinity: {}
+  podLabels:
+    app: parseable
+    component: query
   tolerations: []
   ## Use this section to create ServiceMonitor object for
   ## this Parseable deployment. Read more on ServiceMonitor
