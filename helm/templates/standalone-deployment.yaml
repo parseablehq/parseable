@@ -18,6 +18,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
+        {{- .Values.parseable.podLabels | toYaml | nindent 4 }}
         {{- include "parseable.labelsSelector" . | nindent 8 }}
     spec:
       {{- with .Values.parseable.imagePullSecrets }}
