@@ -68,7 +68,7 @@ pub struct Query {
 }
 
 pub type QueryMap = Arc<Mutex<HashMap<u64, QueryStatus>>>;
-enum QueryStatus {
+pub enum QueryStatus {
     Processing,
     Result(QueryResponse),
 }
@@ -78,6 +78,21 @@ pub async fn query(
     query_request: Query,
     query_map: web::Data<QueryMap>,
 ) -> Result<HttpResponse, QueryError> {
+
+    // If result is there in cache, just return it.
+    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
+    .await?; // since query_cache_manager is used inside get_results_from_cache() only, it'd be better to move it inside function body.
+    if let Ok(result) = get_results_from_cache(
+        query_cache_manager,
+        &query_request.start_time, 
+        &query_request.end_time, 
+        &query_request.query, 
+        true, 
+        true
+    ).await {
+        return Ok(result.to_http()?);
+    }
+
     let session_state = QUERY_SESSION.state();
 
     // Generate hash for the query based on start, end, and query string
