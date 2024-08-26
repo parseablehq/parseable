@@ -295,6 +295,7 @@ impl TableProvider for StandardTableProvider {
         let mut memory_exec = None;
         let mut cache_exec = None;
         let mut hot_tier_exec = None;
+        let mut remote_table = None;
         let object_store = state
             .runtime_env()
             .object_store_registry
@@ -307,7 +308,7 @@ impl TableProvider for StandardTableProvider {
             .await
             .map_err(|err| DataFusionError::Plan(err.to_string()))?;
         let time_partition = object_store_format.time_partition;
-        let time_filters = extract_primary_filter(filters, time_partition.clone());
+        let mut time_filters = extract_primary_filter(filters, time_partition.clone());
         if time_filters.is_empty() {
             return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
         }
@@ -350,21 +351,31 @@ impl TableProvider for StandardTableProvider {
         }
 
         // Is query timerange is overlapping with older data.
+        // if true, then get listing table time filters and execution plan separately
         if is_overlapping_query(&merged_snapshot.manifest_list, &time_filters) {
-            return legacy_listing_table(
-                self.stream.clone(),
-                memory_exec,
-                glob_storage,
-                object_store,
-                &time_filters,
-                self.schema.clone(),
-                state,
-                projection,
-                filters,
-                limit,
-                time_partition.clone(),
-            )
-            .await;
+            let (listing_time_fiters, new_time_filters) =
+                return_listing_time_filters(&merged_snapshot.manifest_list, time_filters);
+
+            let listing_tables = if let Some(listing_time_filter) = listing_time_fiters {
+                legacy_listing_table(
+                    self.stream.clone(),
+                    glob_storage.clone(),
+                    object_store.clone(),
+                    &listing_time_filter,
+                    self.schema.clone(),
+                    state,
+                    projection,
+                    filters,
+                    limit,
+                    time_partition.clone(),
+                )
+                .await?
+            } else {
+                None
+            };
+            time_filters = new_time_filters;
+
+            remote_table = listing_tables;
         }
 
         let mut manifest_files = collect_from_snapshot(
@@ -377,7 +388,11 @@ impl TableProvider for StandardTableProvider {
         .await?;
 
         if manifest_files.is_empty() {
-            return final_plan(vec![memory_exec], projection, self.schema.clone());
+            return final_plan(
+                vec![remote_table, memory_exec],
+                projection,
+                self.schema.clone(),
+            );
         }
 
         // Based on entries in the manifest files, find them in the cache and create a physical plan.
@@ -464,7 +479,7 @@ impl TableProvider for StandardTableProvider {
         if manifest_files.is_empty() {
             QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
             return final_plan(
-                vec![memory_exec, cache_exec, hot_tier_exec],
+                vec![remote_table, memory_exec, cache_exec, hot_tier_exec],
                 projection,
                 self.schema.clone(),
             );
@@ -485,7 +500,13 @@ impl TableProvider for StandardTableProvider {
         .await?;
 
         Ok(final_plan(
-            vec![memory_exec, cache_exec, hot_tier_exec, Some(remote_exec)],
+            vec![
+                remote_table,
+                memory_exec,
+                cache_exec,
+                hot_tier_exec,
+                Some(remote_exec),
+            ],
             projection,
             self.schema.clone(),
         )?)
@@ -519,7 +540,6 @@ impl TableProvider for StandardTableProvider {
 #[allow(clippy::too_many_arguments)]
 async fn legacy_listing_table(
     stream: String,
-    mem_exec: Option<Arc<dyn ExecutionPlan>>,
     glob_storage: Arc<dyn ObjectStorage + Send>,
     object_store: Arc<dyn ObjectStore>,
     time_filters: &[PartialTimeFilter],
@@ -529,7 +549,7 @@ async fn legacy_listing_table(
     filters: &[Expr],
     limit: Option<usize>,
     time_partition: Option<String>,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
     let remote_table = ListingTableBuilder::new(stream)
         .populate_via_listing(glob_storage.clone(), object_store, time_filters)
         .and_then(|builder| async {
@@ -546,7 +566,7 @@ async fn legacy_listing_table(
         })
         .await?;
 
-    final_plan(vec![mem_exec, remote_table], projection, schema)
+    Ok(remote_table)
 }
 
 fn final_plan(
@@ -581,7 +601,7 @@ fn reversed_mem_table(
     MemTable::try_new(schema, vec![records])
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PartialTimeFilter {
     Low(Bound<NaiveDateTime>),
     High(Bound<NaiveDateTime>),
@@ -660,6 +680,62 @@ fn is_overlapping_query(
     }
 
     false
+}
+
+/// This function will accept time filters provided to the query and will split them
+/// into listing time filters and manifest time filters
+/// This makes parseable backwards compatible for when it did not have manifests
+/// Logic-
+/// The control flow will only come to this function if there exists data without manifest files
+/// Two new time filter vec![] are created
+/// For listing table time filters, we will use OG time filter low bound and either OG time filter upper bound
+/// or manifest lower bound
+/// For manifest time filter, we will manifest lower bound and OG upper bound
+fn return_listing_time_filters(
+    manifest_list: &[ManifestItem],
+    time_filters: Vec<PartialTimeFilter>,
+) -> (Option<Vec<PartialTimeFilter>>, Vec<PartialTimeFilter>) {
+    // vec to hold timestamps for listing
+    let mut vec_listing_timestamps = Vec::new();
+
+    let Some(first_entry_lower_bound) =
+        manifest_list.iter().map(|file| file.time_lower_bound).min()
+    else {
+        return (None, time_filters);
+    };
+
+    let mut new_time_filters = vec![PartialTimeFilter::Low(Bound::Included(
+        first_entry_lower_bound.naive_utc(),
+    ))];
+
+    time_filters.into_iter().for_each(|filter| {
+        match filter {
+            // since we've already determined that there is a need to list tables,
+            // we just need to check whether the filter's upper bound is < manifest lower bound
+            PartialTimeFilter::High(Bound::Included(upper))
+            | PartialTimeFilter::High(Bound::Excluded(upper)) => {
+                if upper.lt(&first_entry_lower_bound.naive_utc()) {
+                    // filter upper bound is less than manifest lower bound, continue using filter upper bound
+                    vec_listing_timestamps.push(filter.clone());
+                } else {
+                    // use manifest lower bound as excluded
+                    vec_listing_timestamps.push(PartialTimeFilter::High(Bound::Excluded(
+                        first_entry_lower_bound.naive_utc(),
+                    )));
+                }
+                new_time_filters.push(filter.clone());
+            }
+            _ => {
+                vec_listing_timestamps.push(filter);
+            }
+        }
+    });
+
+    if vec_listing_timestamps.len().gt(&0) {
+        (Some(vec_listing_timestamps), new_time_filters)
+    } else {
+        (None, new_time_filters)
+    }
 }
 
 pub fn include_now(filters: &[Expr], time_partition: Option<String>) -> bool {
