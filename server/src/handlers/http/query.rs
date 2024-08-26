@@ -23,12 +23,17 @@ use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
+use futures::TryStreamExt;
 use futures_util::Future;
 use http::StatusCode;
+use itertools::Itertools;
+use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::fs as AsyncFs;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
@@ -78,18 +83,12 @@ pub async fn query(
     query_request: Query,
     query_map: web::Data<QueryMap>,
 ) -> Result<HttpResponse, QueryError> {
-
     // If result is there in cache, just return it.
-    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
-    .await?; // since query_cache_manager is used inside get_results_from_cache() only, it'd be better to move it inside function body.
-    if let Ok(result) = get_results_from_cache(
-        query_cache_manager,
-        &query_request.start_time, 
-        &query_request.end_time, 
-        &query_request.query, 
-        true, 
-        true
-    ).await {
+    if let Some(result) = find_from_cache(
+        &query_request.start_time,
+        &query_request.end_time,
+        &query_request.query,
+    ).await.unwrap() {
         return Ok(result.to_http()?);
     }
 
@@ -139,11 +138,7 @@ pub async fn query(
     tokio::spawn(async move {
         let mut query_map = query_map.lock().await;
 
-        let result = process_query(
-            query_request_clone,
-            Arc::new(session_state_clone),
-            creds,
-        ).await;
+        let result = process_query(query_request_clone, Arc::new(session_state_clone), creds).await;
 
         // Update the query status in the map
         match result {
@@ -167,9 +162,12 @@ async fn process_query(
     session_state: Arc<SessionState>,
     creds: SessionKey,
 ) -> Result<QueryResponse, QueryError> {
+    sleep(Duration::from_secs(120)).await;
+
     let raw_logical_plan = session_state
         .create_logical_plan(&query_request.query)
-        .await.unwrap();
+        .await
+        .unwrap();
 
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
@@ -187,7 +185,8 @@ async fn process_query(
 
     let permissions = Users.get_permissions(&creds);
 
-    let table_name = query.first_table_name()
+    let table_name = query
+        .first_table_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
 
     authorize_and_set_filter_tags(&mut query, permissions, &table_name)?;
@@ -195,9 +194,8 @@ async fn process_query(
     let time = Instant::now();
     let (records, fields) = query.execute(table_name.clone()).await?;
 
-    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
-        .await?;
-    
+    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size).await?;
+
     // Cache the results
     put_results_in_cache(
         &query_cache_manager,
@@ -238,6 +236,73 @@ pub async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), Q
     }
 
     Ok(())
+}
+
+async fn cache_query_results(
+    records: &[RecordBatch],
+    start: &str,
+    end: &str,
+    query: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parquet_path = PathBuf::from_iter([
+        "/home/vishalds/query-cache",
+        &format!("{}.parquet", generate_hash(start, end, query)),
+    ]);
+    AsyncFs::create_dir_all(parquet_path.parent().expect("parent path exists")).await?;
+    let parquet_file = AsyncFs::File::create(&parquet_path).await?;
+
+    let sch = if let Some(record) = records.first() {
+        record.schema()
+    } else {
+        // the record batch is empty, do not cache and return early
+        return Ok(());
+    };
+
+    let mut arrow_writer = AsyncArrowWriter::try_new(parquet_file, sch, None)?;
+
+    for record in records {
+        if let Err(e) = arrow_writer.write(record).await {
+            log::error!("Error While Writing to Query Cache: {}", e);
+        }
+    }
+
+    arrow_writer.close().await?;
+    Ok(())
+}
+
+async fn find_from_cache(
+    start: &str,
+    end: &str,
+    query: &str,
+) -> Result<Option<QueryResponse>, Box<dyn std::error::Error>> {
+    let parquet_path = PathBuf::from_iter([
+        "/home/vishalds/query-cache",
+        &format!("{}.parquet", generate_hash(start, end, query)),
+    ]);
+
+    if let Ok(file) = AsyncFs::File::open(parquet_path).await {
+        let builder = ParquetRecordBatchStreamBuilder::new(file).await?;
+        // Build a async parquet reader.
+        let stream = builder.build()?;
+
+        let records = stream.try_collect::<Vec<_>>().await?;
+        let fields = records.first().map_or_else(Vec::new, |record| {
+            record
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name())
+                .cloned()
+                .collect_vec()
+        });
+
+        Ok(Some(QueryResponse {
+            records,
+            fields,
+            fill_null: true,
+            with_fields: true,
+        }))
+    } else{ Ok(None) }
 }
 
 #[allow(clippy::too_many_arguments)]
