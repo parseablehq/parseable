@@ -66,6 +66,36 @@ pub struct Query {
     pub filter_tags: Option<Vec<String>>,
 }
 
+/// A function to execute the query and fetch QueryResponse
+/// This won't look in the cache
+/// TODO: Improve this function and make this a part of the query API
+pub async fn get_records_and_fields(
+    query_request: &Query,
+) -> Result<(Option<Vec<RecordBatch>>, Option<Vec<String>>), QueryError> {
+    let session_state = QUERY_SESSION.state();
+
+    // get the logical plan and extract the table name
+    let raw_logical_plan = session_state
+        .create_logical_plan(&query_request.query)
+        .await?;
+
+    // create a visitor to extract the table name
+    let mut visitor = TableScanVisitor::default();
+    let _ = raw_logical_plan.visit(&mut visitor);
+
+    let tables = visitor.into_inner();
+    update_schema_when_distributed(tables).await?;
+    let query: LogicalQuery = into_query(query_request, &session_state).await?;
+
+    let table_name = query
+        .first_table_name()
+        .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
+
+    let (records, fields) = query.execute(table_name.clone()).await?;
+
+    Ok((Some(records), Some(fields)))
+}
+
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
     let session_state = QUERY_SESSION.state();
 

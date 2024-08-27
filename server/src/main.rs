@@ -32,6 +32,7 @@ mod metrics;
 mod migration;
 mod oidc;
 mod option;
+mod panorama;
 mod query;
 mod querycache;
 mod rbac;
