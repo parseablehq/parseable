@@ -16,6 +16,7 @@
  *
  */
 
+use crate::catalog::manifest::File;
 use crate::hottier::HotTierManager;
 use crate::Mode;
 use crate::{
@@ -397,30 +398,10 @@ impl TableProvider for StandardTableProvider {
 
         // Based on entries in the manifest files, find them in the cache and create a physical plan.
         if let Some(cache_manager) = LocalCacheManager::global() {
-            let (cached, remainder) = cache_manager
-                .partition_on_cached(&self.stream, manifest_files, |file| &file.file_path)
-                .await
-                .map_err(|err| DataFusionError::External(Box::new(err)))?;
-
-            // Assign remaining entries back to manifest list
-            // This is to be used for remote query
-            manifest_files = remainder;
-
-            let cached = cached
-                .into_iter()
-                .map(|(mut file, cache_path)| {
-                    let cache_path =
-                        object_store::path::Path::from_absolute_path(cache_path).unwrap();
-                    file.file_path = cache_path.to_string();
-                    file
-                })
-                .collect();
-
-            let (partitioned_files, statistics) = partitioned_files(cached, &self.schema, 1);
-            let plan = create_parquet_physical_plan(
-                ObjectStoreUrl::parse("file:///").unwrap(),
-                partitioned_files,
-                statistics,
+            cache_exec = get_cache_exectuion_plan(
+                cache_manager,
+                &self.stream,
+                &mut manifest_files,
                 self.schema.clone(),
                 projection,
                 filters,
@@ -429,41 +410,15 @@ impl TableProvider for StandardTableProvider {
                 time_partition.clone(),
             )
             .await?;
-
-            cache_exec = Some(plan)
         }
 
         // Hot tier data fetch
         if let Some(hot_tier_manager) = HotTierManager::global() {
             if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
-                let (hot_tier_files, remainder) = hot_tier_manager
-                    .get_hot_tier_manifest_files(&self.stream, manifest_files)
-                    .await
-                    .map_err(|err| DataFusionError::External(Box::new(err)))?;
-                // Assign remaining entries back to manifest list
-                // This is to be used for remote query
-                manifest_files = remainder;
-
-                let hot_tier_files = hot_tier_files
-                    .into_iter()
-                    .map(|mut file| {
-                        let path = CONFIG
-                            .parseable
-                            .hot_tier_storage_path
-                            .as_ref()
-                            .unwrap()
-                            .join(&file.file_path);
-                        file.file_path = path.to_str().unwrap().to_string();
-                        file
-                    })
-                    .collect();
-
-                let (partitioned_files, statistics) =
-                    partitioned_files(hot_tier_files, &self.schema, 1);
-                let plan = create_parquet_physical_plan(
-                    ObjectStoreUrl::parse("file:///").unwrap(),
-                    partitioned_files,
-                    statistics,
+                hot_tier_exec = get_hottier_exectuion_plan(
+                    hot_tier_manager,
+                    &self.stream,
+                    &mut manifest_files,
                     self.schema.clone(),
                     projection,
                     filters,
@@ -472,8 +427,6 @@ impl TableProvider for StandardTableProvider {
                     time_partition.clone(),
                 )
                 .await?;
-
-                hot_tier_exec = Some(plan)
             }
         }
         if manifest_files.is_empty() {
@@ -535,6 +488,106 @@ impl TableProvider for StandardTableProvider {
             .collect_vec();
         Ok(res_vec)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn get_cache_exectuion_plan(
+    cache_manager: &LocalCacheManager,
+    stream: &str,
+    manifest_files: &mut Vec<File>,
+    schema: Arc<Schema>,
+    projection: Option<&Vec<usize>>,
+    filters: &[Expr],
+    limit: Option<usize>,
+    state: &SessionState,
+    time_partition: Option<String>,
+) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
+    let (cached, remainder) = cache_manager
+        .partition_on_cached(stream, manifest_files.clone(), |file: &File| {
+            &file.file_path
+        })
+        .await
+        .map_err(|err| DataFusionError::External(Box::new(err)))?;
+
+    // Assign remaining entries back to manifest list
+    // This is to be used for remote query
+    *manifest_files = remainder;
+
+    let cached = cached
+        .into_iter()
+        .map(|(mut file, cache_path)| {
+            let cache_path = object_store::path::Path::from_absolute_path(cache_path).unwrap();
+            file.file_path = cache_path.to_string();
+            file
+        })
+        .collect();
+
+    let (partitioned_files, statistics) = partitioned_files(cached, &schema, 1);
+    let plan = create_parquet_physical_plan(
+        ObjectStoreUrl::parse("file:///").unwrap(),
+        partitioned_files,
+        statistics,
+        schema.clone(),
+        projection,
+        filters,
+        limit,
+        state,
+        time_partition.clone(),
+    )
+    .await?;
+
+    Ok(Some(plan))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn get_hottier_exectuion_plan(
+    hot_tier_manager: &HotTierManager,
+    stream: &str,
+    manifest_files: &mut Vec<File>,
+    schema: Arc<Schema>,
+    projection: Option<&Vec<usize>>,
+    filters: &[Expr],
+    limit: Option<usize>,
+    state: &SessionState,
+    time_partition: Option<String>,
+) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
+    let (hot_tier_files, remainder) = hot_tier_manager
+        .get_hot_tier_manifest_files(stream, manifest_files.clone())
+        .await
+        .map_err(|err| DataFusionError::External(Box::new(err)))?;
+    // Assign remaining entries back to manifest list
+    // This is to be used for remote query
+    *manifest_files = remainder;
+
+    let hot_tier_files = hot_tier_files
+        .into_iter()
+        .map(|mut file| {
+            let path = CONFIG
+                .parseable
+                .hot_tier_storage_path
+                .as_ref()
+                .unwrap()
+                .join(&file.file_path);
+            file.file_path = path.to_str().unwrap().to_string();
+            file
+        })
+        .collect();
+
+    let (partitioned_files, statistics) = partitioned_files(hot_tier_files, &schema, 1);
+    let plan = create_parquet_physical_plan(
+        ObjectStoreUrl::parse("file:///").unwrap(),
+        partitioned_files,
+        statistics,
+        schema.clone(),
+        projection,
+        filters,
+        limit,
+        state,
+        time_partition.clone(),
+    )
+    .await?;
+
+    Ok(Some(plan))
 }
 
 #[allow(clippy::too_many_arguments)]
