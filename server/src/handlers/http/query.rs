@@ -41,6 +41,7 @@ use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
 use crate::metadata::STREAM_INFO;
 use crate::rbac::map::SessionKey;
+use crate::utils::get_disk_usage;
 use arrow_array::RecordBatch;
 
 use crate::event::commit_schema;
@@ -55,8 +56,8 @@ use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::object_storage::commit_schema_to_storage;
-use crate::storage::ObjectStorageError;
 use crate::storage::staging::parquet_writer_props;
+use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 
 /// Query Request through http endpoint.
@@ -89,11 +90,10 @@ pub async fn query(
     );
 
     // If result is in cache, just return it.
-    if let Some(result) = find_from_cache(
-        hash,
-        query_request.send_null,
-        query_request.fields
-    ).await.unwrap() {
+    if let Some(result) = find_from_cache(hash, query_request.send_null, query_request.fields)
+        .await
+        .unwrap()
+    {
         return Ok(result.to_http()?);
     }
 
@@ -105,7 +105,8 @@ pub async fn query(
     };
 
     // insert the hash into the set anyway, it'll return true if not previously present
-    if should_spawn { // if this hash is new to the set,
+    if should_spawn {
+        // if this hash is new to the set,
         // Clone necessary data for the spawned task
         let query_request_clone = query_request.clone();
         let hash_clone = hash.clone();
@@ -116,8 +117,13 @@ pub async fn query(
         tokio::spawn(async move {
             let mut query_set = query_set.lock().await;
 
-            if let Err(err) =
-                process_query(query_request_clone, Arc::new(session_state_clone), creds, hash_clone).await
+            if let Err(err) = process_query(
+                query_request_clone,
+                Arc::new(session_state_clone),
+                creds,
+                hash_clone,
+            )
+            .await
             {
                 log::error!("Error processing query: {:?}", err);
             }
@@ -131,11 +137,10 @@ pub async fn query(
     let timeout = Duration::from_secs(CONFIG.parseable.proxy_timeout - 5);
 
     while start_time.elapsed() < timeout {
-        if let Some(result) = find_from_cache(
-            hash,
-            query_request.send_null,
-            query_request.fields
-        ).await.unwrap() {
+        if let Some(result) = find_from_cache(hash, query_request.send_null, query_request.fields)
+            .await
+            .unwrap()
+        {
             return Ok(result.to_http()?);
         }
         sleep(Duration::from_secs(1)).await;
@@ -149,7 +154,7 @@ async fn process_query(
     query_request: Query,
     session_state: Arc<SessionState>,
     creds: SessionKey,
-    hash: u64
+    hash: u64,
 ) -> Result<QueryResponse, QueryError> {
     sleep(Duration::from_secs(120)).await;
 
@@ -181,13 +186,9 @@ async fn process_query(
     let (records, fields) = query.execute(table_name.clone()).await?;
 
     // Cache the results
-    cache_query_results(
-        &records,
-        &table_name,
-        hash
-    )
-    .await
-    .unwrap();
+    cache_query_results(&records, &table_name, hash)
+        .await
+        .unwrap();
 
     // Create the response
     let response = QueryResponse {
@@ -223,12 +224,30 @@ pub async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), Q
 async fn cache_query_results(
     records: &[RecordBatch],
     table_name: &str,
-    hash: u64
+    hash: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root_path = match &CONFIG.parseable.query_cache_path {
         Some(path) => path,
-        None => &PathBuf::from("~/.query-cache")
+        None => &PathBuf::from("~/.query-cache"),
     };
+
+    let (total_disk_space, available_disk_space, used_disk_space) =
+            get_disk_usage(root_path);
+    let size_to_download = records.len().try_into().unwrap();
+    if let (Some(total_disk_space), Some(available_disk_space), Some(used_disk_space)) =
+        (total_disk_space, available_disk_space, used_disk_space)
+    {
+        if available_disk_space < size_to_download {
+            return Err("parseable is out of disk space to cache this query.".into());
+        }
+
+        if ((used_disk_space + size_to_download) as f64 * 100.0 / total_disk_space as f64)
+            > CONFIG.parseable.max_disk_usage
+        {
+            return Err("parseable is out of disk space to cache this query.".into());
+        }
+    }
+
     let parquet_path = root_path.join(&format!("{}.parquet", hash));
 
     AsyncFs::create_dir_all(parquet_path.parent().expect("parent path exists")).await?;
@@ -256,35 +275,45 @@ async fn cache_query_results(
     // delete this file after the preset time
     let parquet_path_clone = parquet_path.clone();
     tokio::spawn(async move {
-
         // 24 hours for now
         sleep(Duration::from_secs(24 * 60 * 60)).await;
         if let Err(e) = AsyncFs::remove_file(&parquet_path_clone).await {
             log::error!("Error deleting cached query file: {}", e);
         } else {
-            log::info!("Successfully deleted cached query file: {:?}", parquet_path_clone);
+            log::info!(
+                "Successfully deleted cached query file: {:?}",
+                parquet_path_clone
+            );
         }
     });
 
     Ok(())
 }
 
-async fn find_from_cache(hash: u64, fill_null: bool, with_fields: bool) -> Result<Option<QueryResponse>, Box<dyn std::error::Error>> {
+async fn find_from_cache(
+    hash: u64,
+    fill_null: bool,
+    with_fields: bool,
+) -> Result<Option<QueryResponse>, Box<dyn std::error::Error>> {
     let root_path = match &CONFIG.parseable.query_cache_path {
         Some(path) => path,
-        None => &PathBuf::from("~/.query-cache")
+        None => &PathBuf::from("~/.query-cache"),
     };
     let parquet_path = root_path.join(&format!("{}.parquet", hash));
 
     if let Ok(file) = AsyncFs::File::open(parquet_path).await {
-
         // check if this is an empty response
         let length = file.metadata().await.unwrap().len();
 
         if length < 1 {
-            return Ok(Some(QueryResponse { records: vec![], fields: vec![], fill_null, with_fields}))
+            return Ok(Some(QueryResponse {
+                records: vec![],
+                fields: vec![],
+                fill_null,
+                with_fields,
+            }));
         }
-        
+
         let builder = ParquetRecordBatchStreamBuilder::new(file).await?;
         // Build a async parquet reader.
         let stream = builder.build()?;

@@ -28,8 +28,10 @@ use itertools::Itertools;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::env;
+use std::{env, path::PathBuf};
 use url::Url;
+use sysinfo::{Disks, System};
+
 #[allow(dead_code)]
 pub fn hostname() -> Option<String> {
     hostname::get()
@@ -319,6 +321,32 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
     } else {
         None
     }
+}
+
+pub fn get_disk_usage(
+    path: &PathBuf
+) -> (Option<u64>, Option<u64>, Option<u64>) {
+    let mut sys = System::new_all();
+    sys.refresh_all();
+
+    let mut disks = Disks::new_with_refreshed_list();
+    disks.sort_by_key(|disk| disk.mount_point().to_str().unwrap().len());
+    disks.reverse();
+
+    for disk in disks.iter() {
+        if path.starts_with(disk.mount_point().to_str().unwrap()) {
+            let total_disk_space = disk.total_space();
+            let available_disk_space = disk.available_space();
+            let used_disk_space = total_disk_space - available_disk_space;
+            return (
+                Some(total_disk_space),
+                Some(available_disk_space),
+                Some(used_disk_space),
+            );
+        }
+    }
+
+    (None, None, None)
 }
 
 #[cfg(test)]

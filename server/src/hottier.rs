@@ -29,7 +29,7 @@ use crate::{
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
     option::{validation::bytes_to_human_size, CONFIG},
     storage::{ObjectStorage, ObjectStorageError},
-    utils::extract_datetime,
+    utils::{extract_datetime, get_disk_usage},
     validator::error::HotTierValidationError,
 };
 use chrono::NaiveDate;
@@ -41,7 +41,6 @@ use once_cell::sync::OnceCell;
 use parquet::errors::ParquetError;
 use relative_path::RelativePathBuf;
 use std::time::Duration;
-use sysinfo::{Disks, System};
 use tokio::fs::{self, DirEntry};
 use tokio::io::AsyncWriteExt;
 use tokio_stream::wrappers::ReadDirStream;
@@ -133,7 +132,8 @@ impl HotTierManager {
             }
         }
 
-        let (total_disk_space, available_disk_space, used_disk_space) = get_disk_usage();
+        let (total_disk_space, available_disk_space, used_disk_space) =
+            get_disk_usage(CONFIG.parseable.hot_tier_storage_path.as_ref().unwrap());
 
         if let (Some(total_disk_space), _, Some(used_disk_space)) =
             (total_disk_space, available_disk_space, used_disk_space)
@@ -653,7 +653,8 @@ impl HotTierManager {
     ///check if the disk is available to download the parquet file
     /// check if the disk usage is above the threshold
     pub async fn is_disk_available(&self, size_to_download: u64) -> Result<bool, HotTierError> {
-        let (total_disk_space, available_disk_space, used_disk_space) = get_disk_usage();
+        let (total_disk_space, available_disk_space, used_disk_space) =
+            get_disk_usage(CONFIG.parseable.hot_tier_storage_path.as_ref().unwrap());
 
         if let (Some(total_disk_space), Some(available_disk_space), Some(used_disk_space)) =
             (total_disk_space, available_disk_space, used_disk_space)
@@ -749,32 +750,6 @@ pub fn hot_tier_file_path(
 ) -> Result<object_store::path::Path, object_store::path::Error> {
     let path = root.as_ref().join(stream).join(STREAM_HOT_TIER_FILENAME);
     object_store::path::Path::from_absolute_path(path)
-}
-
-///get the disk usage for the hot tier storage path
-pub fn get_disk_usage() -> (Option<u64>, Option<u64>, Option<u64>) {
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    let path = CONFIG.parseable.hot_tier_storage_path.as_ref().unwrap();
-
-    let mut disks = Disks::new_with_refreshed_list();
-    disks.sort_by_key(|disk| disk.mount_point().to_str().unwrap().len());
-    disks.reverse();
-
-    for disk in disks.iter() {
-        if path.starts_with(disk.mount_point().to_str().unwrap()) {
-            let total_disk_space = disk.total_space();
-            let available_disk_space = disk.available_space();
-            let used_disk_space = total_disk_space - available_disk_space;
-            return (
-                Some(total_disk_space),
-                Some(available_disk_space),
-                Some(used_disk_space),
-            );
-        }
-    }
-
-    (None, None, None)
 }
 
 async fn delete_empty_directory_hot_tier(path: &Path) -> io::Result<()> {
