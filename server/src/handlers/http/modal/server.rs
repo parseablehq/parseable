@@ -36,7 +36,7 @@ use crate::storage;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -86,7 +86,7 @@ impl ParseableServer for Server {
         };
 
         let create_app_fn = move || {
-            let query_set: query::QuerySet = Arc::new(Mutex::new(HashSet::new()));
+            let query_set: query::QueryMap = Arc::new(Mutex::new(HashMap::new()));
 
             App::new()
                 .app_data(Data::new(query_set))

@@ -32,7 +32,7 @@ use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -69,7 +69,7 @@ impl ParseableServer for QueryServer {
         )?;
 
         let create_app_fn = move || {
-            let query_set: query::QuerySet = Arc::new(Mutex::new(HashSet::new()));
+            let query_set: query::QueryMap = Arc::new(Mutex::new(HashMap::new()));
 
             App::new()
                 .app_data(Data::new(query_set))

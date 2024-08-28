@@ -94,7 +94,7 @@ pub struct Cli {
     pub flight_port: u16,
 
     /// to query cached data
-    pub query_cache_path: Option<PathBuf>,
+    pub query_cache_path: PathBuf,
 
     /// Size for local cache
     pub query_cache_size: u64,
@@ -222,6 +222,7 @@ impl Cli {
                     .long(Self::QUERY_CACHE)
                     .env("P_QUERY_CACHE_DIR")
                     .value_name("DIR")
+                    .default_value("./query-cache")
                     .value_parser(validation::canonicalize_path)
                     .help("Local path on this device to be used for caching data")
                     .next_line_help(true),
@@ -465,7 +466,6 @@ impl FromArgMatches for Cli {
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
         self.local_cache_path = m.get_one::<PathBuf>(Self::CACHE).cloned();
-        self.query_cache_path = m.get_one::<PathBuf>(Self::QUERY_CACHE).cloned();
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
@@ -492,6 +492,10 @@ impl FromArgMatches for Cli {
             .get_one(Self::QUERY_CACHE_SIZE)
             .cloned()
             .expect("default value for query cache size");
+        self.query_cache_path = m
+            .get_one(Self::QUERY_CACHE)
+            .cloned()
+            .expect("default value foor query cache directory");
         self.username = m
             .get_one::<String>(Self::USERNAME)
             .cloned()

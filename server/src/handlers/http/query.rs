@@ -18,7 +18,7 @@
 
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, HttpResponse};
+use actix_web::{FromRequest, HttpRequest, HttpResponse, ResponseError};
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
@@ -28,8 +28,7 @@ use futures_util::Future;
 use http::StatusCode;
 use itertools::Itertools;
 use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -75,21 +74,26 @@ pub struct Query {
     pub filter_tags: Option<Vec<String>>,
 }
 
-pub type QuerySet = Arc<Mutex<HashSet<u64>>>;
+pub type QueryMap = Arc<Mutex<HashMap<u64, QueryStatus>>>;
+
+pub enum QueryStatus {
+    Processing,
+    Error(QueryError),
+}
+unsafe impl Send for QueryStatus {}
+unsafe impl Sync for QueryStatus {}
 
 pub async fn query(
     req: HttpRequest,
     query_request: Query,
-    query_set: web::Data<QuerySet>,
+    query_map: web::Data<QueryMap>,
 ) -> Result<HttpResponse, QueryError> {
-    // Generate hash for the query based on start, end, and query string
     let hash = generate_hash(
         &query_request.start_time,
         &query_request.end_time,
         &query_request.query,
     );
 
-    // If result is in cache, just return it.
     if let Some(result) = find_from_cache(hash, query_request.send_null, query_request.fields)
         .await
         .unwrap()
@@ -99,40 +103,41 @@ pub async fn query(
 
     let session_state = QUERY_SESSION.state();
 
-    let should_spawn = {
-        let mut query_set = query_set.lock().await;
-        query_set.insert(hash.clone())
+    let should_spawn_task = {
+        let mut query_map = query_map.lock().await;
+        match query_map.get(&hash) {
+            Some(QueryStatus::Error(error)) => {
+                return Ok(error.error_response());
+            }
+            Some(QueryStatus::Processing) => false,
+            None => {
+                query_map.insert(hash, QueryStatus::Processing);
+                true
+            }
+        }
     };
 
-    // insert the hash into the set anyway, it'll return true if not previously present
-    if should_spawn {
-        // if this hash is new to the set,
-        // Clone necessary data for the spawned task
+    if should_spawn_task {
         let query_request_clone = query_request.clone();
-        let hash_clone = hash.clone();
-        let session_state_clone = session_state.clone();
+        let hash_clone = hash;
+        let session_state_clone = Arc::new(session_state);
         let creds = extract_session_key_from_req(&req).unwrap().to_owned();
+        let query_map_clone = query_map.clone();
 
-        // Spawn a separate task to process the query and cache the results
         tokio::spawn(async move {
-            let mut query_set = query_set.lock().await;
+            let mut query_map = query_map_clone.lock().await;
 
-            if let Err(err) = process_query(
-                query_request_clone,
-                Arc::new(session_state_clone),
-                creds,
-                hash_clone,
-            )
-            .await
-            {
-                log::error!("Error processing query: {:?}", err);
-            }
-
-            query_set.remove(&hash_clone);
+            match process_query(query_request_clone, session_state_clone, creds, hash_clone).await {
+                Ok(_) => {
+                    query_map.remove(&hash_clone);
+                }
+                Err(err) => {
+                    query_map.insert(hash_clone, QueryStatus::Error(err));
+                }
+            };
         });
     }
 
-    // wait for a (proxy timeout - 5) seconds and at each second, check if the query has finished processing
     let start_time = Instant::now();
     let timeout = Duration::from_secs(CONFIG.parseable.proxy_timeout - 5);
 
@@ -143,11 +148,16 @@ pub async fn query(
         {
             return Ok(result.to_http()?);
         }
+
+        let query_map = query_map.lock().await;
+        if let Some(QueryStatus::Error(err)) = query_map.get(&hash) {
+            return Ok(err.error_response());
+        }
+
         sleep(Duration::from_secs(1)).await;
     }
 
-    // If we've timed out, return HTTP 202
-    return Ok(HttpResponse::Accepted().finish());
+    Ok(HttpResponse::Accepted().finish())
 }
 
 async fn process_query(
@@ -156,12 +166,9 @@ async fn process_query(
     creds: SessionKey,
     hash: u64,
 ) -> Result<QueryResponse, QueryError> {
-    sleep(Duration::from_secs(120)).await;
-
     let raw_logical_plan = session_state
         .create_logical_plan(&query_request.query)
-        .await
-        .unwrap();
+        .await?;
 
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
@@ -226,13 +233,8 @@ async fn cache_query_results(
     table_name: &str,
     hash: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let root_path = match &CONFIG.parseable.query_cache_path {
-        Some(path) => path,
-        None => &PathBuf::from("~/.query-cache"),
-    };
-
     let (total_disk_space, available_disk_space, used_disk_space) =
-            get_disk_usage(root_path);
+        get_disk_usage(&CONFIG.parseable.query_cache_path);
     let size_to_download = records.len().try_into().unwrap();
     if let (Some(total_disk_space), Some(available_disk_space), Some(used_disk_space)) =
         (total_disk_space, available_disk_space, used_disk_space)
@@ -248,7 +250,10 @@ async fn cache_query_results(
         }
     }
 
-    let parquet_path = root_path.join(&format!("{}.parquet", hash));
+    let parquet_path = CONFIG
+        .parseable
+        .query_cache_path
+        .join(&format!("{}.parquet", hash));
 
     AsyncFs::create_dir_all(parquet_path.parent().expect("parent path exists")).await?;
     let parquet_file = AsyncFs::File::create(&parquet_path).await?;
@@ -276,7 +281,7 @@ async fn cache_query_results(
     let parquet_path_clone = parquet_path.clone();
     tokio::spawn(async move {
         // 24 hours for now
-        sleep(Duration::from_secs(24 * 60 * 60)).await;
+        sleep(Duration::from_secs(60 * 60)).await;
         if let Err(e) = AsyncFs::remove_file(&parquet_path_clone).await {
             log::error!("Error deleting cached query file: {}", e);
         } else {
@@ -295,11 +300,10 @@ async fn find_from_cache(
     fill_null: bool,
     with_fields: bool,
 ) -> Result<Option<QueryResponse>, Box<dyn std::error::Error>> {
-    let root_path = match &CONFIG.parseable.query_cache_path {
-        Some(path) => path,
-        None => &PathBuf::from("~/.query-cache"),
-    };
-    let parquet_path = root_path.join(&format!("{}.parquet", hash));
+    let parquet_path = CONFIG
+        .parseable
+        .query_cache_path
+        .join(&format!("{}.parquet", hash));
 
     if let Ok(file) = AsyncFs::File::open(parquet_path).await {
         // check if this is an empty response
