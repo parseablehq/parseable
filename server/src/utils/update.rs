@@ -21,7 +21,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 
-use crate::about;
+use crate::{about, analytics::ANALYTICS_SERVER_URL};
 
 use super::uid;
 
@@ -39,7 +39,7 @@ pub async fn get_latest(deployment_id: &uid::Uid) -> Result<LatestRelease, anyho
         .expect("client can be built on this system");
 
     let json: serde_json::Value = agent
-        .get("https://download.parseable.io/latest-version")
+        .get(format!("{}/latest-version", ANALYTICS_SERVER_URL))
         .send()
         .await?
         .json()
