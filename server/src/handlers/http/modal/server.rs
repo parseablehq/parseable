@@ -36,7 +36,7 @@ use crate::storage;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -86,10 +86,10 @@ impl ParseableServer for Server {
         };
 
         let create_app_fn = move || {
-            let query_map: query::QueryMap = Arc::new(Mutex::new(HashMap::new()));
-            
+            let query_set: query::QuerySet = Arc::new(Mutex::new(HashSet::new()));
+
             App::new()
-                .app_data(Data::new(query_map))
+                .app_data(Data::new(query_set))
                 .wrap(prometheus.clone())
                 .configure(|cfg| Server::configure_routes(cfg, oidc_client.clone()))
                 .wrap(actix_web::middleware::Logger::default())

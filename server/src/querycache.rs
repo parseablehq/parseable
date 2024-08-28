@@ -36,7 +36,7 @@ use crate::metadata::STREAM_INFO;
 use crate::storage::staging::parquet_writer_props;
 use crate::{localcache::CacheError, option::CONFIG};
 
-pub const QUERY_CACHE_FILENAME: &str = ".cache.json";
+// pub const QUERY_CACHE_FILENAME: &str = ".cache.json";
 pub const QUERY_CACHE_META_FILENAME: &str = ".cache_meta.json";
 pub const CURRENT_QUERY_CACHE_VERSION: &str = "v1";
 
@@ -159,11 +159,11 @@ impl QueryCacheManager {
         static INSTANCE: OnceCell<QueryCacheManager> = OnceCell::new();
 
         let cache_manager = INSTANCE.get_or_init(|| {
-            let cache_path = String::from("/query-cache");
+            let cache_path = PathBuf::from("/home/vishalds/query-cache");
             std::fs::create_dir_all(&cache_path).unwrap();
             Self {
                 filesystem: LocalFileSystem::new(),
-                cache_path: cache_path.into(),
+                cache_path,
                 total_cache_capacity: CONFIG.parseable.query_cache_size,
                 semaphore: Mutex::new(()),
             }
@@ -254,16 +254,15 @@ impl QueryCacheManager {
         query: &str,
     ) -> Result<(), CacheError> {
         let mut cache = self.get_cache(start, end, query).await?;
-    
+
         if let Some(file_for_removal) = cache.remove(&key) {
             self.put_cache(start, end, query, &cache).await?;
-            tokio::spawn(fs::remove_file(file_for_removal));            
+            tokio::spawn(fs::remove_file(file_for_removal));
             Ok(())
         } else {
             Err(CacheError::DoesNotExist)
         }
     }
-    
 
     pub async fn put_cache(
         &self,
@@ -392,6 +391,9 @@ impl QueryCacheManager {
 
 pub fn generate_hash(start: &str, end: &str, query: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
+    // let (start_t, end_t) = parse_human_time(start, end).unwrap();
+    // start_t.to_string().as_str().hash(&mut hasher);
+    // end_t.to_string().as_str().hash(&mut hasher);
     start.hash(&mut hasher);
     end.hash(&mut hasher);
     query.hash(&mut hasher);
