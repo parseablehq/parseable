@@ -37,11 +37,12 @@ use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use std::sync::Arc;
+use tokio::sync::Notify;
 
 use actix_web::web::resource;
 use actix_web::Resource;
 use actix_web::Scope;
-use actix_web::{web, App, HttpServer};
+use actix_web::{web, App, HttpServer, Responder};
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
@@ -95,6 +96,16 @@ impl ParseableServer for Server {
             &CONFIG.parseable.tls_cert_path,
             &CONFIG.parseable.tls_key_path,
         )?;
+
+
+        let notify_shutdown = Arc::new(Notify::new());
+        let notify_shutdown_clone = notify_shutdown.clone();
+
+        tokio::spawn(async move {
+            health_check::handle_signals().await;
+            println!("Received shutdown signal, notifying server to shut down...");
+            notify_shutdown_clone.notify_one();
+        });
 
         // concurrent workers equal to number of cores on the cpu
         let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
@@ -523,6 +534,7 @@ impl Server {
                 .await?;
         };
 
+
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -530,10 +542,6 @@ impl Server {
 
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
-
-        tokio::spawn(async {
-            health_check::handle_signals().await;
-        });
 
         storage::retention::load_retention_from_global();
 
@@ -552,6 +560,7 @@ impl Server {
         let app = self.start(prometheus, CONFIG.parseable.openid.clone());
 
         tokio::pin!(app);
+
         loop {
             tokio::select! {
                 e = &mut app => {
@@ -578,6 +587,7 @@ impl Server {
                     }
                     (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
                 }
+
             };
         }
     }

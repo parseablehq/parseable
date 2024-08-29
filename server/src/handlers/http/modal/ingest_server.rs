@@ -34,6 +34,8 @@ use crate::storage::staging;
 use crate::storage::ObjectStorageError;
 use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::sync;
+use crate::handlers::http::health_check;
+use std::sync::Arc;
 
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
@@ -56,6 +58,7 @@ use bytes::Bytes;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
+use tokio::sync::Notify;
 
 /// ! have to use a guard before using it
 pub static INGESTOR_META: Lazy<IngestorMetadata> =
@@ -91,6 +94,15 @@ impl ParseableServer for IngestServer {
                 .wrap(cross_origin_config())
         };
 
+        let notify_shutdown = Arc::new(Notify::new());
+        let notify_shutdown_clone = notify_shutdown.clone();
+
+        tokio::spawn(async move {
+            health_check::handle_signals().await;
+            println!("Received shutdown signal, notifying server to shut down...");
+            notify_shutdown_clone.notify_one();
+        });
+
         // concurrent workers equal to number of logical cores
         let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
 
@@ -102,6 +114,9 @@ impl ParseableServer for IngestServer {
         } else {
             http_server.bind(&CONFIG.parseable.address)?.run().await?;
         }
+
+        notify_shutdown.notified().await;
+
 
         Ok(())
     }

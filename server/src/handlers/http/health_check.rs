@@ -2,7 +2,6 @@ use crate::option::CONFIG;
 use actix_web::http::StatusCode;
 use actix_web::HttpResponse;
 use lazy_static::lazy_static;
-use std::cmp::min;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Mutex;
@@ -23,22 +22,26 @@ pub async fn handle_signals() {
 
     let mut sigterm =
         signal(SignalKind::terminate()).expect("Failed to set up SIGTERM signal handler");
-        eprintln!("Signal handler task started");
-        loop {
-            match sigterm.recv().await {
-                Some(_) => {
-                    eprintln!("Received SIGTERM signal");
-                    let mut shutdown_flag = signal_received.lock().await;
-                    *shutdown_flag = true;
-                    eprintln!("Current signal flag value: {:?}", *shutdown_flag);
+    println!("Signal handler task started");
 
+    // Block until SIGTERM is received
+    match sigterm.recv().await {
+        Some(_) => {
+            println!("Received SIGTERM signal");
+            let mut shutdown_flag = signal_received.lock().await;
+            *shutdown_flag = true;
+            println!("Current signal flag value: {:?}", *shutdown_flag);
 
-                }
-                None => {
-                    eprintln!("Signal handler received None, indicating an error or end of stream");
-                }
-            }
-        };
+            // Delay to allow readiness probe to return SERVICE_UNAVAILABLE
+            let _ = sleep(Duration::from_secs(15)).await;
+
+        }
+        None => {
+            println!("Signal handler received None, indicating an error or end of stream");
+        }
+    }
+
+    eprintln!("Signal handler task completed");
 }
 
 pub async fn readiness() -> HttpResponse {
