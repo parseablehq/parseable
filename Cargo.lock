@@ -3009,6 +3009,7 @@ dependencies = [
  "humantime",
  "humantime-serde",
  "itertools 0.13.0",
+ "lazy_static",
  "log",
  "maplit",
  "mime",

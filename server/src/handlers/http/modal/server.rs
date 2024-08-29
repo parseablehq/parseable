@@ -531,6 +531,10 @@ impl Server {
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
 
+        tokio::spawn(async {
+            health_check::handle_signals().await;
+        });
+
         storage::retention::load_retention_from_global();
 
         let (localsync_handler, mut localsync_outbox, localsync_inbox) =
