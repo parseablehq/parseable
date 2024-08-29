@@ -2,6 +2,7 @@ use crate::option::CONFIG;
 use actix_web::http::StatusCode;
 use actix_web::HttpResponse;
 use lazy_static::lazy_static;
+use std::cmp::min;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Mutex;
@@ -22,14 +23,16 @@ pub async fn handle_signals() {
 
     let mut sigterm =
         signal(SignalKind::terminate()).expect("Failed to set up SIGTERM signal handler");
-        println!("Signal handler task started");
+        eprintln!("Signal handler task started");
         loop {
             match sigterm.recv().await {
                 Some(_) => {
-                    println!("Received SIGTERM signal");
+                    eprintln!("Received SIGTERM signal");
                     let mut shutdown_flag = signal_received.lock().await;
                     *shutdown_flag = true;
-                    println!("Current signal flag value: {:?}", *shutdown_flag);
+                    eprintln!("Current signal flag value: {:?}", *shutdown_flag);
+
+
                 }
                 None => {
                     eprintln!("Signal handler received None, indicating an error or end of stream");
