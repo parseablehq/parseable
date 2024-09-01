@@ -409,6 +409,9 @@ impl HotTierManager {
             .get_stream_hot_tier_manifest_for_date(stream, &date)
             .await?;
         hot_tier_manifest.files.push(parquet_file.clone());
+        hot_tier_manifest
+            .files
+            .sort_by_key(|file| file.file_path.clone());
         // write the manifest file to the hot tier directory
         let manifest_path = self
             .hot_tier_path
@@ -501,7 +504,9 @@ impl HotTierManager {
                 .iter()
                 .any(|manifest_file| manifest_file.file_path.eq(&file.file_path))
         });
-        let remaining_files: Vec<File> = manifest_files
+        hot_tier_files.sort_unstable_by(|a, b| b.file_path.cmp(&a.file_path));
+
+        let mut remaining_files: Vec<File> = manifest_files
             .into_iter()
             .filter(|manifest_file| {
                 hot_tier_files
@@ -509,6 +514,8 @@ impl HotTierManager {
                     .all(|file| !file.file_path.eq(&manifest_file.file_path))
             })
             .collect();
+        remaining_files.sort_unstable_by(|a, b| b.file_path.cmp(&a.file_path));
+
         Ok((hot_tier_files, remaining_files))
     }
 
