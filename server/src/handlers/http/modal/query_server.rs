@@ -92,7 +92,7 @@ impl ParseableServer for QueryServer {
         // Create the HTTP server
         let http_server = HttpServer::new(create_app_fn)
             .workers(num_cpus::get())
-            .shutdown_timeout(60);
+            .shutdown_timeout(120);
 
         // Start the server with or without TLS
         let srv = if let Some(config) = ssl {
