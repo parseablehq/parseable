@@ -86,7 +86,6 @@ impl ParseableServer for QueryServer {
         // Spawn the signal handler task
         tokio::spawn(async move {
             health_check::handle_signals(shutdown_signal).await;
-            println!("Received shutdown signal, notifying server to shut down...");
         });
 
         // Create the HTTP server

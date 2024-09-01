@@ -69,11 +69,11 @@ pub async fn handle_signals(shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()
             log::info!("Local and S3 Sync done, handler SIGTERM completed.");
         }
         None => {
-            println!("Signal handler received None, indicating an error or end of stream");
+            log::info!("Signal handler received None, indicating an error or end of stream");
         }
     }
 
-    eprintln!("Signal handler task completed");
+    log::info!("Signal handler task completed");
 }
 
 pub async fn readiness() -> HttpResponse {
