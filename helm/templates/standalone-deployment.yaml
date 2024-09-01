@@ -18,7 +18,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- .Values.parseable.podLabels | toYaml | nindent 4 }}
+        {{- .Values.parseable.podLabels | toYaml | nindent 8 }}
         {{- include "parseable.labelsSelector" . | nindent 8 }}
     spec:
       {{- with .Values.parseable.imagePullSecrets }}
@@ -73,6 +73,10 @@ spec:
             {{- end }}
           ports:
             - containerPort: 8000
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{ toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.parseable.resources | nindent 12 }}
           volumeMounts:

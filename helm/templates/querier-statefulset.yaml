@@ -67,6 +67,10 @@ spec:
           {{- end }}
         ports:
           - containerPort: 8000
+        {{- with .Values.readinessProbe }}
+        readinessProbe:
+          {{ toYaml . | nindent 12 }}
+        {{- end }}
         resources:
           {{- toYaml .Values.parseable.resources | nindent 12 }}
         volumeMounts:

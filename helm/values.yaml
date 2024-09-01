@@ -23,7 +23,11 @@ parseable:
       ## Console (UI) is available on the other service (that points to the query pod)
       service:
         type: ClusterIP
-        port: 80 
+        port: 80
+      readinessProbe:
+        httpGet:
+          path: /api/v1/readiness
+          port: 8000
       resources:
         limits:
           cpu: 500m
@@ -104,6 +108,10 @@ parseable:
   service:
     type: ClusterIP
     port: 80
+  readinessProbe:
+    httpGet:
+      path: /api/v1/readiness
+      port: 8000
   resources:
     limits:
       cpu: 500m

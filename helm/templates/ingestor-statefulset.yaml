@@ -62,6 +62,10 @@ spec:
             value: "ingest"
         ports:
           - containerPort: {{ .Values.parseable.highAvailability.ingestor.port }}
+      {{- with .Values.readinessProbe }}
+        readinessProbe:
+          {{ toYaml . | nindent 12 }}
+      {{- end }}
         resources:
           {{- toYaml .Values.parseable.highAvailability.ingestor.resources | nindent 12 }}
         {{- if .Values.parseable.persistence.ingestor.enabled }}
