@@ -18,6 +18,7 @@
 use crate::analytics;
 use crate::banner;
 use crate::handlers::airplane;
+use crate::handlers::http::health_check;
 use crate::handlers::http::ingest;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::RouteExt;
@@ -34,7 +35,7 @@ use crate::storage::staging;
 use crate::storage::ObjectStorageError;
 use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::sync;
-use crate::handlers::http::health_check;
+
 use std::sync::Arc;
 
 use super::server::Server;
@@ -58,7 +59,7 @@ use bytes::Bytes;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
-use tokio::sync::Notify;
+use tokio::sync::{oneshot, Mutex};
 
 /// ! have to use a guard before using it
 pub static INGESTOR_META: Lazy<IngestorMetadata> =
@@ -94,29 +95,47 @@ impl ParseableServer for IngestServer {
                 .wrap(cross_origin_config())
         };
 
-        let notify_shutdown = Arc::new(Notify::new());
-        let notify_shutdown_clone = notify_shutdown.clone();
+        // Create a channel to trigger server shutdown
+        let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
+        let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
 
+        // Clone the shutdown signal for the signal handler
+        let shutdown_signal = server_shutdown_signal.clone();
+
+        // Spawn the signal handler task
         tokio::spawn(async move {
-            health_check::handle_signals().await;
+            health_check::handle_signals(shutdown_signal).await;
             println!("Received shutdown signal, notifying server to shut down...");
-            notify_shutdown_clone.notify_one();
         });
 
-        // concurrent workers equal to number of logical cores
-        let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
+        // Create the HTTP server
+        let http_server = HttpServer::new(create_app_fn)
+            .workers(num_cpus::get())
+            .shutdown_timeout(60);
 
-        if let Some(config) = ssl {
+        // Start the server with or without TLS
+        let srv = if let Some(config) = ssl {
             http_server
                 .bind_rustls_0_22(&CONFIG.parseable.address, config)?
                 .run()
-                .await?;
         } else {
-            http_server.bind(&CONFIG.parseable.address)?.run().await?;
-        }
+            http_server.bind(&CONFIG.parseable.address)?.run()
+        };
 
-        notify_shutdown.notified().await;
+        // Graceful shutdown handling
+        let srv_handle = srv.handle();
 
+        tokio::spawn(async move {
+            // Wait for the shutdown signal
+            shutdown_rx.await.ok();
+
+            // Initiate graceful shutdown
+            log::info!("Graceful shutdown of HTTP server triggered");
+            srv_handle.stop(true).await;
+        });
+
+        // Await the server to run and handle shutdown
+        srv.await?;
 
         Ok(())
     }

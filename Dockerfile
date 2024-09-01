@@ -34,4 +34,4 @@ WORKDIR /parseable
 COPY --from=builder /bin/sh /bin/sh
 COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
 
-CMD ["parseable"]
+CMD ["/usr/bin/parseable"]

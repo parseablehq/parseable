@@ -18,6 +18,7 @@
 
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
+use crate::handlers::http::health_check;
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
@@ -32,6 +33,7 @@ use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
 use std::sync::Arc;
+use tokio::sync::{oneshot, Mutex};
 
 use crate::option::CONFIG;
 
@@ -74,16 +76,47 @@ impl ParseableServer for QueryServer {
                 .wrap(cross_origin_config())
         };
 
-        // concurrent workers equal to number of cores on the cpu
-        let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
-        if let Some(config) = ssl {
+        // Create a channel to trigger server shutdown
+        let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
+        let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
+
+        // Clone the shutdown signal for the signal handler
+        let shutdown_signal = server_shutdown_signal.clone();
+
+        // Spawn the signal handler task
+        tokio::spawn(async move {
+            health_check::handle_signals(shutdown_signal).await;
+            println!("Received shutdown signal, notifying server to shut down...");
+        });
+
+        // Create the HTTP server
+        let http_server = HttpServer::new(create_app_fn)
+            .workers(num_cpus::get())
+            .shutdown_timeout(60);
+
+        // Start the server with or without TLS
+        let srv = if let Some(config) = ssl {
             http_server
                 .bind_rustls_0_22(&CONFIG.parseable.address, config)?
                 .run()
-                .await?;
         } else {
-            http_server.bind(&CONFIG.parseable.address)?.run().await?;
-        }
+            http_server.bind(&CONFIG.parseable.address)?.run()
+        };
+
+        // Graceful shutdown handling
+        let srv_handle = srv.handle();
+
+        tokio::spawn(async move {
+            // Wait for the shutdown signal
+            shutdown_rx.await.ok();
+
+            // Initiate graceful shutdown
+            log::info!("Graceful shutdown of HTTP server triggered");
+            srv_handle.stop(true).await;
+        });
+
+        // Await the server to run and handle shutdown
+        srv.await?;
 
         Ok(())
     }

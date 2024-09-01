@@ -32,4 +32,4 @@ WORKDIR /parseable
 
 COPY --from=builder /parseable/target/debug/parseable /usr/bin/parseable
 
-CMD ["parseable"]
+CMD ["/usr/bin/parseable"]

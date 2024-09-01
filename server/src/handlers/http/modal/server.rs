@@ -37,12 +37,12 @@ use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use std::sync::Arc;
-use tokio::sync::Notify;
+use tokio::sync::{oneshot, Mutex};
 
 use actix_web::web::resource;
 use actix_web::Resource;
 use actix_web::Scope;
-use actix_web::{web, App, HttpServer, Responder};
+use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
@@ -97,26 +97,47 @@ impl ParseableServer for Server {
             &CONFIG.parseable.tls_key_path,
         )?;
 
+        // Create a channel to trigger server shutdown
+        let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
+        let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
 
-        let notify_shutdown = Arc::new(Notify::new());
-        let notify_shutdown_clone = notify_shutdown.clone();
+        // Clone the shutdown signal for the signal handler
+        let shutdown_signal = server_shutdown_signal.clone();
 
+        // Spawn the signal handler task
         tokio::spawn(async move {
-            health_check::handle_signals().await;
+            health_check::handle_signals(shutdown_signal).await;
             println!("Received shutdown signal, notifying server to shut down...");
-            notify_shutdown_clone.notify_one();
         });
 
-        // concurrent workers equal to number of cores on the cpu
-        let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
-        if let Some(config) = ssl {
+        // Create the HTTP server
+        let http_server = HttpServer::new(create_app_fn)
+            .workers(num_cpus::get())
+            .shutdown_timeout(60);
+
+        // Start the server with or without TLS
+        let srv = if let Some(config) = ssl {
             http_server
                 .bind_rustls_0_22(&CONFIG.parseable.address, config)?
                 .run()
-                .await?;
         } else {
-            http_server.bind(&CONFIG.parseable.address)?.run().await?;
-        }
+            http_server.bind(&CONFIG.parseable.address)?.run()
+        };
+
+        // Graceful shutdown handling
+        let srv_handle = srv.handle();
+
+        tokio::spawn(async move {
+            // Wait for the shutdown signal
+            shutdown_rx.await.ok();
+
+            // Initiate graceful shutdown
+            log::info!("Graceful shutdown of HTTP server triggered");
+            srv_handle.stop(true).await;
+        });
+
+        // Await the server to run and handle shutdown
+        srv.await?;
 
         Ok(())
     }
@@ -533,7 +554,6 @@ impl Server {
                 .validate(CONFIG.parseable.local_cache_size)
                 .await?;
         };
-
 
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
