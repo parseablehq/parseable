@@ -14,4 +14,4 @@ parseable
 parseable_*
 parseable-env-secret
 cache
-
+query-cache/

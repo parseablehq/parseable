@@ -18,41 +18,49 @@
 
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, Responder};
-use anyhow::anyhow;
+use actix_web::{FromRequest, HttpRequest, HttpResponse, ResponseError};
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
+use futures::TryStreamExt;
 use futures_util::Future;
 use http::StatusCode;
+use itertools::Itertools;
+use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::fs as AsyncFs;
+use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
+use crate::metadata::STREAM_INFO;
+use crate::rbac::map::SessionKey;
+use crate::utils::get_disk_usage;
 use arrow_array::RecordBatch;
 
 use crate::event::commit_schema;
-use crate::handlers::{CACHE_RESULTS_HEADER_KEY, CACHE_VIEW_HEADER_KEY, USER_ID_HEADER_KEY};
 use crate::localcache::CacheError;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
 use crate::query::Query as LogicalQuery;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::querycache::{CacheMetadata, QueryCacheManager};
+use crate::querycache::{generate_hash, CacheMetadata, QueryCacheManager};
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::object_storage::commit_schema_to_storage;
+use crate::storage::staging::parquet_writer_props;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 
 /// Query Request through http endpoint.
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     pub query: String,
@@ -66,60 +74,113 @@ pub struct Query {
     pub filter_tags: Option<Vec<String>>,
 }
 
-pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
+pub type QueryMap = Arc<Mutex<HashMap<u64, QueryStatus>>>;
+
+pub enum QueryStatus {
+    Processing,
+    Error(QueryError),
+}
+unsafe impl Send for QueryStatus {}
+unsafe impl Sync for QueryStatus {}
+
+pub async fn query(
+    req: HttpRequest,
+    query_request: Query,
+    query_map: web::Data<QueryMap>,
+) -> Result<HttpResponse, QueryError> {
+    let hash = generate_hash(
+        &query_request.start_time,
+        &query_request.end_time,
+        &query_request.query,
+    );
+
+    if let Some(result) = find_from_cache(hash, query_request.send_null, query_request.fields)
+        .await
+        .unwrap()
+    {
+        return Ok(result.to_http()?);
+    }
+
     let session_state = QUERY_SESSION.state();
 
-    // get the logical plan and extract the table name
+    let should_spawn_task = {
+        let mut query_map = query_map.lock().await;
+        match query_map.get(&hash) {
+            Some(QueryStatus::Error(error)) => {
+                return Ok(error.error_response());
+            }
+            Some(QueryStatus::Processing) => false,
+            None => {
+                query_map.insert(hash, QueryStatus::Processing);
+                true
+            }
+        }
+    };
+
+    if should_spawn_task {
+        let query_request_clone = query_request.clone();
+        let hash_clone = hash;
+        let session_state_clone = Arc::new(session_state);
+        let creds = extract_session_key_from_req(&req).unwrap().to_owned();
+        let query_map_clone = query_map.clone();
+
+        tokio::spawn(async move {
+            let mut query_map = query_map_clone.lock().await;
+
+            match process_query(query_request_clone, session_state_clone, creds, hash_clone).await {
+                Ok(_) => {
+                    query_map.remove(&hash_clone);
+                }
+                Err(err) => {
+                    query_map.insert(hash_clone, QueryStatus::Error(err));
+                }
+            };
+        });
+    }
+
+    let start_time = Instant::now();
+    let timeout = Duration::from_secs(CONFIG.parseable.proxy_timeout - 5);
+
+    while start_time.elapsed() < timeout {
+        if let Some(result) = find_from_cache(hash, query_request.send_null, query_request.fields)
+            .await
+            .unwrap()
+        {
+            return Ok(result.to_http()?);
+        }
+
+        let query_map = query_map.lock().await;
+        if let Some(QueryStatus::Error(err)) = query_map.get(&hash) {
+            return Ok(err.error_response());
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+
+    Ok(HttpResponse::Accepted().finish())
+}
+
+async fn process_query(
+    query_request: Query,
+    session_state: Arc<SessionState>,
+    creds: SessionKey,
+    hash: u64,
+) -> Result<QueryResponse, QueryError> {
     let raw_logical_plan = session_state
         .create_logical_plan(&query_request.query)
         .await?;
 
-    // create a visitor to extract the table name
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
-    let stream = visitor
-        .top()
-        .ok_or_else(|| QueryError::MalformedQuery("Table Name not found in SQL"))?;
 
-    let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
-        .await
-        .unwrap_or(None);
+    let visitor_clone = visitor.clone();
 
-    let cache_results = req
-        .headers()
-        .get(CACHE_RESULTS_HEADER_KEY)
-        .and_then(|value| value.to_str().ok());
-    let show_cached = req
-        .headers()
-        .get(CACHE_VIEW_HEADER_KEY)
-        .and_then(|value| value.to_str().ok());
-    let user_id = req
-        .headers()
-        .get(USER_ID_HEADER_KEY)
-        .and_then(|value| value.to_str().ok());
-
-    // deal with cached data
-    if let Ok(results) = get_results_from_cache(
-        show_cached,
-        query_cache_manager,
-        stream,
-        user_id,
-        &query_request.start_time,
-        &query_request.end_time,
-        &query_request.query,
-        query_request.send_null,
-        query_request.fields,
-    )
-    .await
-    {
-        return results.to_http();
-    };
-
-    let tables = visitor.into_inner();
+    // Process the query
+    let tables = visitor_clone.into_inner();
     update_schema_when_distributed(tables).await?;
+
     let mut query: LogicalQuery = into_query(&query_request, &session_state).await?;
 
-    let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
     let table_name = query
@@ -130,32 +191,21 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 
     let time = Instant::now();
     let (records, fields) = query.execute(table_name.clone()).await?;
-    // deal with cache saving
-    if let Err(err) = put_results_in_cache(
-        cache_results,
-        user_id,
-        query_cache_manager,
-        &table_name,
-        &records,
-        query.start.to_rfc3339(),
-        query.end.to_rfc3339(),
-        query_request.query,
-    )
-    .await
-    {
-        log::error!("{}", err);
-    };
 
+    // Cache the results
+    cache_query_results(&records, &table_name, hash)
+        .await
+        .unwrap();
+
+    // Create the response
     let response = QueryResponse {
         records,
         fields,
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
-    }
-    .to_http()?;
+    };
 
     let time = time.elapsed().as_secs_f64();
-
     QUERY_EXECUTE_TIME
         .with_label_values(&[&table_name])
         .observe(time);
@@ -178,121 +228,193 @@ pub async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), Q
     Ok(())
 }
 
+async fn cache_query_results(
+    records: &[RecordBatch],
+    table_name: &str,
+    hash: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (total_disk_space, available_disk_space, used_disk_space) =
+        get_disk_usage(&CONFIG.parseable.query_cache_path);
+    let size_to_download = records.len().try_into().unwrap();
+    if let (Some(total_disk_space), Some(available_disk_space), Some(used_disk_space)) =
+        (total_disk_space, available_disk_space, used_disk_space)
+    {
+        if available_disk_space < size_to_download {
+            return Err("parseable is out of disk space to cache this query.".into());
+        }
+
+        if ((used_disk_space + size_to_download) as f64 * 100.0 / total_disk_space as f64)
+            > CONFIG.parseable.max_disk_usage
+        {
+            return Err("parseable is out of disk space to cache this query.".into());
+        }
+    }
+
+    let parquet_path = CONFIG
+        .parseable
+        .query_cache_path
+        .join(&format!("{}.parquet", hash));
+
+    AsyncFs::create_dir_all(parquet_path.parent().expect("parent path exists")).await?;
+    let parquet_file = AsyncFs::File::create(&parquet_path).await?;
+    let time_partition = STREAM_INFO.get_time_partition(table_name)?;
+    let props = parquet_writer_props(time_partition.clone(), 0, HashMap::new()).build();
+
+    let sch = if let Some(record) = records.first() {
+        record.schema()
+    } else {
+        // the record batch is empty, do not cache and return early
+        return Ok(());
+    };
+
+    let mut arrow_writer = AsyncArrowWriter::try_new(parquet_file, sch, Some(props))?;
+
+    for record in records {
+        if let Err(e) = arrow_writer.write(record).await {
+            log::error!("Error While Writing to Query Cache: {}", e);
+        }
+    }
+
+    arrow_writer.close().await?;
+
+    // delete this file after the preset time
+    let parquet_path_clone = parquet_path.clone();
+    tokio::spawn(async move {
+        // 24 hours for now
+        sleep(Duration::from_secs(60 * 60)).await;
+        if let Err(e) = AsyncFs::remove_file(&parquet_path_clone).await {
+            log::error!("Error deleting cached query file: {}", e);
+        } else {
+            log::info!(
+                "Successfully deleted cached query file: {:?}",
+                parquet_path_clone
+            );
+        }
+    });
+
+    Ok(())
+}
+
+async fn find_from_cache(
+    hash: u64,
+    fill_null: bool,
+    with_fields: bool,
+) -> Result<Option<QueryResponse>, Box<dyn std::error::Error>> {
+    let parquet_path = CONFIG
+        .parseable
+        .query_cache_path
+        .join(&format!("{}.parquet", hash));
+
+    if let Ok(file) = AsyncFs::File::open(parquet_path).await {
+        // check if this is an empty response
+        let length = file.metadata().await.unwrap().len();
+
+        if length < 1 {
+            return Ok(Some(QueryResponse {
+                records: vec![],
+                fields: vec![],
+                fill_null,
+                with_fields,
+            }));
+        }
+
+        let builder = ParquetRecordBatchStreamBuilder::new(file).await?;
+        // Build a async parquet reader.
+        let stream = builder.build()?;
+
+        let records = stream.try_collect::<Vec<_>>().await?;
+        let fields = records.first().map_or_else(Vec::new, |record| {
+            record
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name())
+                .cloned()
+                .collect_vec()
+        });
+
+        Ok(Some(QueryResponse {
+            records,
+            fields,
+            fill_null,
+            with_fields,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub async fn put_results_in_cache(
-    cache_results: Option<&str>,
-    user_id: Option<&str>,
-    query_cache_manager: Option<&QueryCacheManager>,
+    query_cache_manager: &QueryCacheManager,
     stream: &str,
     records: &[RecordBatch],
     start: String,
     end: String,
     query: String,
 ) -> Result<(), QueryError> {
-    match (cache_results, query_cache_manager) {
-        (Some(_), None) => {
-            log::warn!(
-                "Instructed to cache query results but Query Caching is not Enabled in Server"
-            );
+    let mut cache = query_cache_manager.get_cache(&start, &end, &query).await?;
 
-            Ok(())
-        }
-        // do cache
-        (Some(should_cache), Some(query_cache_manager)) => {
-            if should_cache != "true" {
-                log::error!("value of cache results header is false");
-                return Err(QueryError::CacheError(CacheError::Other(
-                    "should not cache results",
-                )));
-            }
+    let cache_key = CacheMetadata::new(query.clone(), start.clone(), end.clone());
 
-            let user_id = user_id.ok_or(CacheError::Other("User Id not provided"))?;
-            let mut cache = query_cache_manager.get_cache(stream, user_id).await?;
-
-            let cache_key = CacheMetadata::new(query.clone(), start.clone(), end.clone());
-
-            // guard to stop multiple caching of the same content
-            if let Some(path) = cache.get_file(&cache_key) {
-                log::info!("File already exists in cache, Removing old file");
-                cache.delete(&cache_key, path).await?;
-            }
-
-            if let Err(err) = query_cache_manager
-                .create_parquet_cache(stream, records, user_id, start, end, query)
-                .await
-            {
-                log::error!("Error occured while caching query results: {:?}", err);
-                if query_cache_manager
-                    .clear_cache(stream, user_id)
-                    .await
-                    .is_err()
-                {
-                    log::error!("Error Clearing Unwanted files from cache dir");
-                }
-            }
-            // fallthrough
-            Ok(())
-        }
-        (None, _) => Ok(()),
+    // guard to stop multiple caching of the same content
+    if let Some(path) = cache.get_file(&cache_key) {
+        log::info!("File already exists in cache, Removing old file");
+        cache.delete(&cache_key, path).await?;
     }
+
+    if let Err(err) = query_cache_manager
+        .create_parquet_cache(stream, records, &start, &end, &query)
+        .await
+    {
+        log::error!("Error occured while caching query results: {:?}", err);
+        if query_cache_manager
+            .clear_cache(&start, &end, &query)
+            .await
+            .is_err()
+        {
+            log::error!("Error Clearing Unwanted files from cache dir");
+        }
+    }
+    // fallthrough
+    Ok(())
 }
 
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub async fn get_results_from_cache(
-    show_cached: Option<&str>,
-    query_cache_manager: Option<&QueryCacheManager>,
-    stream: &str,
-    user_id: Option<&str>,
+    query_cache_manager: &QueryCacheManager,
     start_time: &str,
     end_time: &str,
     query: &str,
     send_null: bool,
     send_fields: bool,
 ) -> Result<QueryResponse, QueryError> {
-    match (show_cached, query_cache_manager) {
-        (Some(_), None) => {
-            log::warn!(
-                "Instructed to show cached results but Query Caching is not Enabled on Server"
-            );
-            None
-        }
-        (Some(should_show), Some(query_cache_manager)) => {
-            if should_show != "true" {
-                log::error!("value of show cached header is false");
-                return Err(QueryError::CacheError(CacheError::Other(
-                    "should not return cached results",
-                )));
-            }
+    let mut query_cache = query_cache_manager
+        .get_cache(start_time, end_time, query)
+        .await?;
 
-            let user_id =
-                user_id.ok_or_else(|| QueryError::Anyhow(anyhow!("User Id not provided")))?;
+    let (start, end) = parse_human_time(start_time, end_time)?;
 
-            let mut query_cache = query_cache_manager.get_cache(stream, user_id).await?;
+    let file_path = query_cache.get_file(&CacheMetadata::new(
+        query.to_string(),
+        start.to_rfc3339(),
+        end.to_rfc3339(),
+    ));
+    if let Some(file_path) = file_path {
+        let (records, fields) = query_cache.get_cached_records(&file_path).await?;
+        let response = QueryResponse {
+            records,
+            fields,
+            fill_null: send_null,
+            with_fields: send_fields,
+        };
 
-            let (start, end) = parse_human_time(start_time, end_time)?;
-
-            let file_path = query_cache.get_file(&CacheMetadata::new(
-                query.to_string(),
-                start.to_rfc3339(),
-                end.to_rfc3339(),
-            ));
-            if let Some(file_path) = file_path {
-                let (records, fields) = query_cache.get_cached_records(&file_path).await?;
-                let response = QueryResponse {
-                    records,
-                    fields,
-                    fill_null: send_null,
-                    with_fields: send_fields,
-                };
-
-                Some(Ok(response))
-            } else {
-                None
-            }
-        }
-        (_, _) => None,
+        Ok(response)
+    } else {
+        Err(QueryError::CacheMiss)
     }
-    .map_or_else(|| Err(QueryError::CacheMiss), |ret_val| ret_val)
 }
 
 pub fn authorize_and_set_filter_tags(
@@ -392,7 +514,7 @@ pub async fn into_query(
     })
 }
 
-fn parse_human_time(
+pub fn parse_human_time(
     start_time: &str,
     end_time: &str,
 ) -> Result<(DateTime<Utc>, DateTime<Utc>), QueryError> {

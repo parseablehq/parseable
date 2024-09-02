@@ -36,15 +36,18 @@ use crate::storage;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use actix_web::web::resource;
+use actix_web::web::{resource, Data};
 use actix_web::Resource;
 use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use crate::{
     handlers::http::{
@@ -83,7 +86,10 @@ impl ParseableServer for Server {
         };
 
         let create_app_fn = move || {
+            let query_set: query::QueryMap = Arc::new(Mutex::new(HashMap::new()));
+
             App::new()
+                .app_data(Data::new(query_set))
                 .wrap(prometheus.clone())
                 .configure(|cfg| Server::configure_routes(cfg, oidc_client.clone()))
                 .wrap(actix_web::middleware::Logger::default())
@@ -96,8 +102,10 @@ impl ParseableServer for Server {
             &CONFIG.parseable.tls_key_path,
         )?;
 
+        let keep_alive_timeout = 120;
+
         // concurrent workers equal to number of cores on the cpu
-        let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
+        let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get()).keep_alive(Duration::from_secs(keep_alive_timeout));
         if let Some(config) = ssl {
             http_server
                 .bind_rustls_0_22(&CONFIG.parseable.address, config)?

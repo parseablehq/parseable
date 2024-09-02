@@ -176,7 +176,7 @@ impl Query {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct TableScanVisitor {
     tables: Vec<String>,
 }
@@ -185,6 +185,8 @@ impl TableScanVisitor {
     pub fn into_inner(self) -> Vec<String> {
         self.tables
     }
+
+    #[allow(dead_code)]
     pub fn top(&self) -> Option<&str> {
         self.tables.first().map(|s| s.as_ref())
     }

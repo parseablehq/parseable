@@ -20,18 +20,21 @@ use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::RouteExt;
-use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
+use crate::handlers::http::{base_path, cross_origin_config, query, API_BASE_PATH, API_VERSION};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metrics, migration, rbac, storage};
-use actix_web::web;
+use actix_web::web::{self, Data};
 use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
+use tokio::sync::Mutex;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::option::CONFIG;
 
@@ -66,7 +69,10 @@ impl ParseableServer for QueryServer {
         )?;
 
         let create_app_fn = move || {
+            let query_set: query::QueryMap = Arc::new(Mutex::new(HashMap::new()));
+
             App::new()
+                .app_data(Data::new(query_set))
                 .wrap(prometheus.clone())
                 .configure(|config| QueryServer::configure_routes(config, oidc_client.clone()))
                 .wrap(actix_web::middleware::Logger::default())
@@ -74,8 +80,12 @@ impl ParseableServer for QueryServer {
                 .wrap(cross_origin_config())
         };
 
+        let keep_alive_timeout = 120;
+
         // concurrent workers equal to number of cores on the cpu
-        let http_server = HttpServer::new(create_app_fn).workers(num_cpus::get());
+        let http_server = HttpServer::new(create_app_fn)
+            .workers(num_cpus::get())
+            .keep_alive(Duration::from_secs(keep_alive_timeout));
         if let Some(config) = ssl {
             http_server
                 .bind_rustls_0_22(&CONFIG.parseable.address, config)?

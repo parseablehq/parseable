@@ -94,7 +94,7 @@ pub struct Cli {
     pub flight_port: u16,
 
     /// to query cached data
-    pub query_cache_path: Option<PathBuf>,
+    pub query_cache_path: PathBuf,
 
     /// Size for local cache
     pub query_cache_size: u64,
@@ -109,6 +109,8 @@ pub struct Cli {
     pub max_disk_usage: f64,
 
     pub ms_clarity_tag: Option<String>,
+
+    pub proxy_timeout: u64
 }
 
 impl Cli {
@@ -145,6 +147,7 @@ impl Cli {
     pub const HOT_TIER_PATH: &'static str = "hot-tier-path";
     pub const MAX_DISK_USAGE: &'static str = "max-disk-usage";
     pub const MS_CLARITY_TAG: &'static str = "ms-clarity-tag";
+    pub const PROXY_TIMEOUT: &'static str = "proxy-timeout";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -219,6 +222,7 @@ impl Cli {
                     .long(Self::QUERY_CACHE)
                     .env("P_QUERY_CACHE_DIR")
                     .value_name("DIR")
+                    .default_value("./query-cache")
                     .value_parser(validation::canonicalize_path)
                     .help("Local path on this device to be used for caching data")
                     .next_line_help(true),
@@ -434,6 +438,16 @@ impl Cli {
                     .required(false)
                     .help("Tag for MS Clarity"),
             )
+            .arg(
+                Arg::new(Self::PROXY_TIMEOUT)
+                    .long(Self::PROXY_TIMEOUT)
+                    .env("P_PROXY_TIMEOUT")
+                    .value_name("NUMBER")
+                    .required(false)
+                    .default_value("60")
+                    .value_parser(value_parser!(u64))
+                    .help("Time to wait before responding to a query request.")
+            )
             .group(
                 ArgGroup::new("oidc")
                     .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
@@ -452,7 +466,6 @@ impl FromArgMatches for Cli {
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
         self.local_cache_path = m.get_one::<PathBuf>(Self::CACHE).cloned();
-        self.query_cache_path = m.get_one::<PathBuf>(Self::QUERY_CACHE).cloned();
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
@@ -479,6 +492,10 @@ impl FromArgMatches for Cli {
             .get_one(Self::QUERY_CACHE_SIZE)
             .cloned()
             .expect("default value for query cache size");
+        self.query_cache_path = m
+            .get_one(Self::QUERY_CACHE)
+            .cloned()
+            .expect("default value foor query cache directory");
         self.username = m
             .get_one::<String>(Self::USERNAME)
             .cloned()
@@ -578,6 +595,7 @@ impl FromArgMatches for Cli {
             .expect("default for max disk usage");
 
         self.ms_clarity_tag = m.get_one::<String>(Self::MS_CLARITY_TAG).cloned();
+        self.proxy_timeout = m.get_one::<u64>(Self::PROXY_TIMEOUT).cloned().expect("Please specify a default timeout for query requests.");
 
         Ok(())
     }
