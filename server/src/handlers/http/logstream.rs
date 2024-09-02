@@ -77,6 +77,12 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
                 )
             }
 
+            if let Some(hot_tier_manager) = HotTierManager::global() {
+                if hot_tier_manager.check_stream_hot_tier_exists(&stream_name) {
+                    hot_tier_manager.delete_hot_tier(&stream_name).await?;
+                }
+            }
+
             let ingestor_metadata = super::cluster::get_ingestor_info().await.map_err(|err| {
                 log::error!("Fatal: failed to get ingestor info: {:?}", err);
                 StreamError::from(err)
