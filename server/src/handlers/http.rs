@@ -37,6 +37,7 @@ pub(crate) mod middleware;
 pub mod modal;
 pub(crate) mod oidc;
 mod otel;
+pub(crate) mod panorama;
 pub(crate) mod query;
 pub(crate) mod rbac;
 pub(crate) mod role;

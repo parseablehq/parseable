@@ -23,6 +23,7 @@ use crate::handlers::http::about;
 use crate::handlers::http::base_path;
 use crate::handlers::http::cache;
 use crate::handlers::http::health_check;
+use crate::handlers::http::panorama;
 use crate::handlers::http::query;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
@@ -137,6 +138,7 @@ impl Server {
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body
                     .service(Self::get_query_factory())
+                    .service(Self::get_panorama_factory())
                     .service(Self::get_cache_webscope())
                     .service(Self::get_ingest_factory())
                     .service(Self::get_liveness_factory())
@@ -224,6 +226,15 @@ impl Server {
             .service(web::scope("/{user_id}").service(
                 web::resource("").route(web::get().to(filters::list).authorize(Action::ListFilter)),
             ))
+    }
+
+    pub fn get_panorama_factory() -> Resource {
+        // TODO: Create auth level for panorama
+        web::resource("/panorama").route(
+            web::post()
+                .to(panorama::panorama_function)
+                .authorize(Action::Query),
+        )
     }
 
     // get the query factory
