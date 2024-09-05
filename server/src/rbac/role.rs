@@ -24,7 +24,7 @@ pub enum Action {
     Query,
     CreateStream,
     ListStream,
-    GetStream,
+    GetStreamInfo,
     GetSchema,
     GetStats,
     DeleteStream,
@@ -63,6 +63,8 @@ pub enum Action {
     DeleteFilter,
     ListCache,
     RemoveCache,
+    Login,
+    Metrics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -102,7 +104,9 @@ impl RoleBuilder {
                     self.stream.clone().unwrap(),
                     self.tag.clone(),
                 ),
-                Action::PutUser
+                Action::Login
+                | Action::Metrics
+                | Action::PutUser
                 | Action::ListUser
                 | Action::PutUserRoles
                 | Action::GetUserRoles
@@ -115,7 +119,7 @@ impl RoleBuilder {
                 | Action::ListRole
                 | Action::CreateStream
                 | Action::DeleteStream
-                | Action::GetStream
+                | Action::GetStreamInfo
                 | Action::ListStream
                 | Action::ListCluster
                 | Action::ListClusterMetrics
@@ -201,11 +205,14 @@ pub mod model {
     fn editor_perm_builder() -> RoleBuilder {
         RoleBuilder {
             actions: vec![
+                Action::Login,
+                Action::Metrics,
                 Action::Ingest,
                 Action::Query,
                 Action::CreateStream,
+                Action::DeleteStream,
                 Action::ListStream,
-                Action::GetStream,
+                Action::GetStreamInfo,
                 Action::GetSchema,
                 Action::GetStats,
                 Action::GetRetention,
@@ -217,8 +224,15 @@ pub mod model {
                 Action::DeleteHotTierEnabled,
                 Action::PutAlert,
                 Action::GetAlert,
-                Action::GetAbout,
                 Action::QueryLLM,
+                Action::CreateFilter,
+                Action::ListFilter,
+                Action::GetFilter,
+                Action::DeleteFilter,
+                Action::ListDashboard,
+                Action::GetDashboard,
+                Action::CreateDashboard,
+                Action::DeleteDashboard,
             ],
             stream: Some("*".to_string()),
             tag: None,
@@ -228,17 +242,32 @@ pub mod model {
     fn writer_perm_builder() -> RoleBuilder {
         RoleBuilder {
             actions: vec![
-                Action::Ingest,
+                Action::Login,
                 Action::Query,
                 Action::ListStream,
-                Action::GetStream,
                 Action::GetSchema,
                 Action::GetStats,
-                Action::GetRetention,
+                Action::PutRetention,
                 Action::PutAlert,
                 Action::GetAlert,
-                Action::GetAbout,
+                Action::PutRetention,
+                Action::GetRetention,
+                Action::PutHotTierEnabled,
+                Action::GetHotTierEnabled,
+                Action::DeleteHotTierEnabled,
+                Action::ListDashboard,
+                Action::GetDashboard,
+                Action::CreateDashboard,
+                Action::DeleteDashboard,
+                Action::Ingest,
                 Action::QueryLLM,
+                Action::GetStreamInfo,
+                Action::GetCacheEnabled,
+                Action::PutCacheEnabled,
+                Action::GetFilter,
+                Action::ListFilter,
+                Action::CreateFilter,
+                Action::DeleteFilter,
             ],
             stream: None,
             tag: None,
@@ -248,17 +277,25 @@ pub mod model {
     fn reader_perm_builder() -> RoleBuilder {
         RoleBuilder {
             actions: vec![
+                Action::Login,
                 Action::Query,
                 Action::ListStream,
-                Action::GetStream,
                 Action::GetSchema,
                 Action::GetStats,
                 Action::GetRetention,
                 Action::GetAlert,
-                Action::GetAbout,
                 Action::QueryLLM,
                 Action::ListCluster,
                 Action::GetHotTierEnabled,
+                Action::ListFilter,
+                Action::GetFilter,
+                Action::CreateFilter,
+                Action::DeleteFilter,
+                Action::ListDashboard,
+                Action::GetDashboard,
+                Action::CreateDashboard,
+                Action::DeleteDashboard,
+                Action::GetStreamInfo,
             ],
             stream: None,
             tag: None,

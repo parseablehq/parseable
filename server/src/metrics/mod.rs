@@ -20,7 +20,9 @@ pub mod prom_utils;
 pub mod storage;
 
 use crate::{handlers::http::metrics_path, stats::FullStats};
+use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
+use error::MetricsError;
 use once_cell::sync::Lazy;
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
@@ -286,4 +288,43 @@ pub async fn fetch_stats_from_storage(stream_name: &str, stats: FullStats) {
     LIFETIME_EVENTS_STORAGE_SIZE
         .with_label_values(&["data", stream_name, "parquet"])
         .set(stats.lifetime_stats.storage as i64);
+}
+
+use actix_web::HttpResponse;
+
+pub async fn get() -> Result<impl Responder, MetricsError> {
+    Ok(HttpResponse::Ok().body(format!("{:?}", build_metrics_handler())))
+}
+
+pub mod error {
+
+    use actix_web::http::header::ContentType;
+    use http::StatusCode;
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum MetricsError {
+        #[error("{0}")]
+        Custom(String, StatusCode),
+    }
+
+    impl actix_web::ResponseError for MetricsError {
+        fn status_code(&self) -> http::StatusCode {
+            match self {
+                Self::Custom(_, _) => StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        }
+
+        fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
+            actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string())
+        }
+    }
+
+    #[allow(dead_code)]
+    fn construct_custom_error() {
+        let error =
+            MetricsError::Custom("Some error".to_string(), StatusCode::INTERNAL_SERVER_ERROR);
+        println!("{:?}", error);
+    }
 }
