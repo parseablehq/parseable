@@ -67,7 +67,9 @@ pub async fn post_user(
     let roles: Option<HashSet<String>> = body
         .map(|body| serde_json::from_value(body.into_inner()))
         .transpose()?;
-
+    if roles.is_none() || roles.as_ref().unwrap().is_empty() {
+        return Err(RBACError::RoleValidationError);
+    }
     validator::user_name(&username)?;
     let _ = UPDATE_LOCK.lock().await;
     if Users.contains(&username) {
@@ -215,6 +217,8 @@ pub enum RBACError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("invalid Username: {0}")]
     ValidationError(#[from] UsernameValidationError),
+    #[error("User cannot be created without a role")]
+    RoleValidationError,
 }
 
 impl actix_web::ResponseError for RBACError {
@@ -225,6 +229,7 @@ impl actix_web::ResponseError for RBACError {
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::ValidationError(_) => StatusCode::BAD_REQUEST,
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::RoleValidationError => StatusCode::BAD_REQUEST,
         }
     }
 
