@@ -140,7 +140,7 @@ jobs:
     needs: [build-linux, build-windows, build-mac]
     steps:
       - name: Download artifacts created
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4.1.7
 
       - name: Run shasum command
         run: |

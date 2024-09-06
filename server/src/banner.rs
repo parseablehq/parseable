@@ -123,6 +123,14 @@ async fn storage_info(config: &Config) {
             size
         );
     }
+    if let Some(path) = &config.parseable.hot_tier_storage_path {
+        eprintln!(
+            "\
+        {:8}Hot Tier:           \"Enabled, Path: {}\"",
+            "",
+            path.display(),
+        );
+    }
 
     eprintln!(
         "\

@@ -159,6 +159,10 @@ Cloud Native, log analytics platform for modern applications."#,
         &self.parseable.local_cache_path
     }
 
+    pub fn hot_tier_dir(&self) -> &Option<PathBuf> {
+        &self.parseable.hot_tier_storage_path
+    }
+
     pub fn is_default_creds(&self) -> bool {
         self.parseable.username == Cli::DEFAULT_USERNAME
             && self.parseable.password == Cli::DEFAULT_PASSWORD
