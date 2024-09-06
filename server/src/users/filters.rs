@@ -28,7 +28,7 @@ pub const CURRENT_FILTER_VERSION: &str = "v1";
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Filter {
     pub version: Option<String>,
-    pub user_id: String,
+    pub user_id: Option<String>,
     pub stream_name: String,
     pub filter_name: String,
     pub filter_id: Option<String>,
@@ -111,7 +111,7 @@ impl Filters {
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|f| f.user_id == user_id)
+            .filter(|f| f.user_id.as_ref().unwrap() == user_id)
             .cloned()
             .collect()
     }

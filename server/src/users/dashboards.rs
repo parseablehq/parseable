@@ -78,7 +78,7 @@ pub struct Dashboard {
     name: String,
     description: String,
     pub dashboard_id: Option<String>,
-    pub user_id: String,
+    pub user_id: Option<String>,
     pub time_filter: Option<TimeFilter>,
     refresh_interval: u64,
     pub tiles: Vec<Tiles>,
@@ -107,13 +107,13 @@ impl Dashboards {
 
     pub fn update(&self, dashboard: &Dashboard) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|f| f.dashboard_id != dashboard.dashboard_id);
+        s.retain(|d| d.dashboard_id != dashboard.dashboard_id);
         s.push(dashboard.clone());
     }
 
     pub fn delete_dashboard(&self, dashboard_id: &str) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|f| f.dashboard_id != Some(dashboard_id.to_string()));
+        s.retain(|d| d.dashboard_id != Some(dashboard_id.to_string()));
     }
 
     pub fn get_dashboard(&self, dashboard_id: &str) -> Option<Dashboard> {
@@ -121,7 +121,7 @@ impl Dashboards {
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .find(|f| f.dashboard_id == Some(dashboard_id.to_string()))
+            .find(|d| d.dashboard_id == Some(dashboard_id.to_string()))
             .cloned()
     }
 
@@ -130,7 +130,7 @@ impl Dashboards {
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|f| f.user_id == user_id)
+            .filter(|d| d.user_id.as_ref().unwrap() == user_id)
             .cloned()
             .collect()
     }

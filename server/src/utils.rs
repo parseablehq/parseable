@@ -22,7 +22,11 @@ pub mod header_parsing;
 pub mod json;
 pub mod uid;
 pub mod update;
+use crate::handlers::http::rbac::RBACError;
 use crate::option::CONFIG;
+use crate::rbac::Users;
+use actix::extract_session_key_from_req;
+use actix_web::HttpRequest;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 use itertools::Itertools;
 use regex::Regex;
@@ -319,6 +323,23 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
     } else {
         None
     }
+}
+
+pub fn get_user_from_request(req: &HttpRequest) -> Result<String, RBACError> {
+    let session_key = extract_session_key_from_req(req).unwrap();
+    let user_id = Users.get_username_from_session(&session_key);
+    if user_id.is_none() {
+        return Err(RBACError::UserDoesNotExist);
+    }
+    let user_id = user_id.unwrap();
+    Ok(user_id)
+}
+
+pub fn get_hash(key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(key);
+    let result = format!("{:x}", hasher.finalize());
+    result
 }
 
 #[cfg(test)]

@@ -224,6 +224,10 @@ impl Sessions {
             })
         })
     }
+
+    pub fn get_username(&self, key: &SessionKey) -> Option<&String> {
+        self.active_sessions.get(key).map(|(username, _)| username)
+    }
 }
 
 // UserMap is a map of [username --> User]
