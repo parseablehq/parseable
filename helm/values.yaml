@@ -1,11 +1,11 @@
 parseable:
   image:
     repository: containers.parseable.com/parseable/parseable
-    tag: v1.4.0
+    tag: v1.5.0
     pullPolicy: Always
   ## Set to true if you want to deploy Parseable in local mode (store logs
   ## on local mount point instead of S3 bucket)
-  local: true
+  local: false
   ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors)
   ## Please note that highAvailability is not supported in local mode
   highAvailability:
@@ -172,18 +172,28 @@ parseable:
   tolerations: []
   ## Use this section to create ServiceMonitor object for
   ## this Parseable deployment. Read more on ServiceMonitor
-  ## here: https://prometheus-operator.dev/docs/operator/design/#servicemonitor
+  ## here: https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.ServiceMonitor
   metrics:
     serviceMonitor:
       enabled: false
       namespace: ""
-      interval: 30s
-      scrapeTimeout: ""
-      relabellings: []
-      metricRelabelings: []
-      honorLabels: false
-      additionalLabels: {}
-      podTargetLabels: []
+      spec:
+        jobLabel: ""
+        targetLabels: []
+        podTargetLabels: []
+        endpoints: []
+        selector: {}
+        namespaceSelector: {}
+        sampleLimit: 0
+        scrapeProtocols: []
+        targetLimit: 0
+        labelLimit: 0
+        labelNameLengthLimit: 0
+        labelValueLengthLimit: 0
+        keepDroppedTargets: 0
+        attachMetadata: {}
+        scrapeClass: ""
+        bodySizeLimit: {}
 
 # Default values for Vector
 # See Vector helm documentation to learn more:

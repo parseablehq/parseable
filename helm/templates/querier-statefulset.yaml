@@ -1,4 +1,4 @@
-{{- if eq .Values.parseable.highAvailability.enabled true }}
+{{- if .Values.parseable.highAvailability.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -18,7 +18,6 @@ metadata:
   name: {{ include "parseable.fullname" . }}-querier
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- .Values.parseable.podLabels | toYaml | nindent 4 }}
     {{- include "parseable.querierLabels" . | nindent 4 }}
 spec:
   selector:
@@ -30,7 +29,10 @@ spec:
   minReadySeconds: 2
   template:
     metadata:
+      annotations:
+      {{- .Values.parseable.podAnnotations | toYaml | nindent 8 }}
       labels:
+        {{- .Values.parseable.podLabels | toYaml | nindent 8 }}
         {{- include "parseable.querierLabelsSelector" . | nindent 8 }}
     spec:
       terminationGracePeriodSeconds: 10 
@@ -86,6 +88,9 @@ spec:
         - mountPath: "/parseable/hot-tier"
           name: hot-tier-volume
         {{- end }}
+      volumes:
+      - emptyDir: {}
+        name: stage-volume
       {{- if .Values.parseable.sidecar.enabled}}
       - name: {{ .Chart.Name }}-sidecar
         securityContext:
