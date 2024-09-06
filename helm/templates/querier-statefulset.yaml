@@ -41,8 +41,9 @@ spec:
           {{- toYaml .Values.parseable.securityContext | nindent 8 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
-        command: ["parseable"]
-        args: ["s3-store"]
+        args: 
+        - /usr/bin/parseable
+        - s3-store
         env:
           {{- range $key, $value :=  .Values.parseable.env }}
           - name: {{ $key }}
@@ -57,6 +58,11 @@ spec:
               secretKeyRef:
                 name: {{ $secret.name }}
                 key: {{ $key }}
+          - name: HOSTNAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
           {{- end }}
           {{- end }}
           - name: P_MODE
@@ -67,6 +73,10 @@ spec:
           {{- end }}
         ports:
           - containerPort: 8000
+        {{- with .Values.readinessProbe }}
+        readinessProbe:
+          {{ toYaml . | nindent 12 }}
+        {{- end }}
         resources:
           {{- toYaml .Values.parseable.resources | nindent 12 }}
         volumeMounts:
