@@ -4,34 +4,63 @@ kind: ServiceMonitor
 metadata:
   name: {{ include "parseable.fullname" . }}
   namespace: {{ default .Release.Namespace .Values.parseable.metrics.serviceMonitor.namespace | quote }}
-  labels: {{- include "parseable.labelsSelector" . | nindent 4 }}
-    {{- if .Values.parseable.metrics.serviceMonitor.additionalLabels }}
-    {{- include (dict "value" .Values.parseable.metrics.serviceMonitor.additionalLabels "context" $) | nindent 4 }}
-    {{- end }}
+  labels: 
+    {{- include "parseable.labels" . | nindent 4 }}
 spec:
-  endpoints:
-    - port: parseable-metrics
-      {{- if .Values.parseable.metrics.serviceMonitor.interval }}
-      interval: {{ .Values.parseable.metrics.serviceMonitor.interval }}
-      {{- end }}
-      {{- if .Values.parseable.metrics.serviceMonitor.scrapeTimeout }}
-      scrapeTimeout: {{ .Values.parseable.metrics.serviceMonitor.scrapeTimeout }}
-      {{- end }}
-      {{- if .Values.parseable.metrics.serviceMonitor.honorLabels }}
-      honorLabels: {{ .Values.parseable.metrics.serviceMonitor.honorLabels }}
-      {{- end }}
-      {{- if .Values.parseable.metrics.serviceMonitor.relabellings }}
-      relabelings: {{- toYaml .Values.parseable.metrics.serviceMonitor.relabellings | nindent 6 }}
-      {{- end }}
-      {{- if .Values.parseable.metrics.serviceMonitor.metricRelabelings }}
-      metricRelabelings: {{- toYaml .Values.parseable.metrics.serviceMonitor.metricRelabelings | nindent 6 }}
-      {{- end }}
-  {{- if .Values.parseable.metrics.serviceMonitor.podTargetLabels }}
-  podTargetLabels: {{- toYaml .Values.parseable.metrics.serviceMonitor.podTargetLabels | nindent 4 }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.jobLabel }}
+  jobLabel: {{ .Values.parseable.metrics.serviceMonitor.spec.jobLabel | quote }}
   {{- end }}
-  namespaceSelector:
-    matchNames:
-      - {{ .Release.Namespace }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.targetLabels }}
+  targetLabels:
+    {{- toYaml .Values.parseable.metrics.serviceMonitor.spec.targetLabels | nindent 4 }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.podTargetLabels }}
+  podTargetLabels:
+    {{- toYaml .Values.parseable.metrics.serviceMonitor.spec.podTargetLabels | nindent 4 }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.endpoints }}
+  endpoints:
+    {{- toYaml .Values.parseable.metrics.serviceMonitor.spec.endpoints | nindent 4 }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.selector }}
   selector:
-    matchLabels: {{- include "parseable.labelsSelector" . | nindent 6 }}
+    {{- toYaml .Values.parseable.metrics.serviceMonitor.spec.selector | nindent 4 }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.namespaceSelector }}
+  namespaceSelector:
+    {{- toYaml .Values.parseable.metrics.serviceMonitor.spec.namespaceSelector | nindent 4 }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.sampleLimit }}
+  sampleLimit: {{ .Values.parseable.metrics.serviceMonitor.spec.sampleLimit }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.scrapeProtocols }}
+  scrapeProtocols:
+    {{- toYaml .Values.parseable.metrics.serviceMonitor.spec.scrapeProtocols | nindent 4 }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.targetLimit }}
+  targetLimit: {{ .Values.parseable.metrics.serviceMonitor.spec.targetLimit }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.labelLimit }}
+  labelLimit: {{ .Values.parseable.metrics.serviceMonitor.spec.labelLimit }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.labelNameLengthLimit }}
+  labelNameLengthLimit: {{ .Values.parseable.metrics.serviceMonitor.spec.labelNameLengthLimit }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.labelValueLengthLimit }}
+  labelValueLengthLimit: {{ .Values.parseable.metrics.serviceMonitor.spec.labelValueLengthLimit }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.keepDroppedTargets }}
+  keepDroppedTargets: {{ .Values.parseable.metrics.serviceMonitor.spec.keepDroppedTargets }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.attachMetadata }}
+  attachMetadata:
+    {{- toYaml .Values.parseable.metrics.serviceMonitor.spec.attachMetadata | nindent 4 }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.scrapeClass }}
+  scrapeClass: {{ .Values.parseable.metrics.serviceMonitor.spec.scrapeClass | quote }}
+  {{- end }}
+  {{ if .Values.parseable.metrics.serviceMonitor.spec.bodySizeLimit }}
+  bodySizeLimit:
+    {{- toYaml .Values.parseable.metrics.serviceMonitor.spec.bodySizeLimit | nindent 4 }}
+  {{- end }}
 {{- end }}

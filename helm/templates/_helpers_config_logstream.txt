@@ -7,7 +7,11 @@ createStream() {
   echo;
   echo \"Creating the log stream $STREAM\";
 
+  {{ if .Values.parseable.highAvailability.enabled }}
+  response=$(curl -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w 'HTTPSTATUS:%{http_code}' --location --request PUT "http://{{ include "parseable.fullname" . }}-querier-service.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM");
+  {{ else }}
   response=$(curl -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w 'HTTPSTATUS:%{http_code}' --location --request PUT "http://{{ include "parseable.fullname" . }}.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM");
+  {{ end }}
 
   HTTP_BODY=$(echo $response | sed -e 's/HTTPSTATUS\:.*//g')
   HTTP_STATUS=$(echo $response | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
@@ -25,7 +29,11 @@ setRetention() {
   echo;
   echo \"Setting the retention for $STREAM\";
 
+  {{ if .Values.parseable.highAvailability.enabled }}
+  response=$(curl -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w 'HTTPSTATUS:%{http_code}' --location --request PUT "http://{{ include "parseable.fullname" . }}-querier-service.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM/retention" --data "[{\"description\":\"$ACTION logs after $DURATION\",\"action\":\"$ACTION\",\"duration\":\"$DURATION\"}]");
+  {{ else }}
   response=$(curl -sS --header 'Content-Type: application/json' -u "$P_USERNAME":"$P_PASSWORD" -w 'HTTPSTATUS:%{http_code}' --location --request PUT "http://{{ include "parseable.fullname" . }}.{{ .Release.Namespace }}:{{ $.Values.parseable.service.port }}/api/v1/logstream/$STREAM/retention" --data "[{\"description\":\"$ACTION logs after $DURATION\",\"action\":\"$ACTION\",\"duration\":\"$DURATION\"}]");
+  {{ end }}
 
   HTTP_BODY=$(echo $response | sed -e 's/HTTPSTATUS\:.*//g')
   HTTP_STATUS=$(echo $response | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
