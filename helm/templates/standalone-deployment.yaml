@@ -37,9 +37,9 @@ spec:
           # Uncomment to debug
           # command: [ "/bin/sh", "-c", "sleep 1000000" ]
           {{- if .Values.parseable.local }}
-          args: ["parseable", "local-store"]
+          args: ["/usr/bin/parseable", "local-store"]
           {{- else }}
-          args: ["parseable", "s3-store"]
+          args: ["/usr/bin/parseable", "s3-store"]
           {{- end }}
           env:
             {{- range $key, $value :=  .Values.parseable.env }}
@@ -56,6 +56,11 @@ spec:
                 secretKeyRef:
                   name: {{ $secret.name }}
                   key: {{ $key }}
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
             {{- end }}
             {{- end }}
             {{- else}}
@@ -73,6 +78,10 @@ spec:
             {{- end }}
           ports:
             - containerPort: 8000
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{ toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.parseable.resources | nindent 12 }}
           volumeMounts:

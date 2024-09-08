@@ -18,7 +18,6 @@ metadata:
   name: {{ include "parseable.fullname" . }}-ingestor
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- .Values.parseable.highAvailability.ingestor.labels | toYaml | nindent 4 }}
     {{- include "parseable.ingestorLabels" . | nindent 4 }}
 spec:
   selector:
@@ -30,6 +29,7 @@ spec:
   template:
     metadata:
       labels:
+        {{- .Values.parseable.highAvailability.ingestor.labels | toYaml | nindent 8 }}
         {{- include "parseable.ingestorLabelsSelector" . | nindent 8 }}
     spec:
       terminationGracePeriodSeconds: 10 
@@ -40,12 +40,19 @@ spec:
           {{- toYaml .Values.parseable.securityContext | nindent 8 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
-        command: ["/bin/sh", "-c"]
-        args: ["parseable s3-store --ingestor-endpoint=${HOSTNAME}.{{ include "parseable.fullname" . }}-ingestor-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.parseable.highAvailability.ingestor.port }}"]
+        args:
+          - /usr/bin/parseable
+          - s3-store 
+          - --ingestor-endpoint=$(HOSTNAME).{{ include "parseable.fullname" . }}-ingestor-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.parseable.highAvailability.ingestor.port }}
         env:
           {{- range $key, $value :=  .Values.parseable.highAvailability.ingestor.env }}
           - name: {{ $key }}
             value: {{ tpl $value $ | quote }}
+          - name: HOSTNAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
           {{- end }}
           {{- range $secret := .Values.parseable.s3ModeSecret }}
           {{- range $key := $secret.keys }}
@@ -62,6 +69,10 @@ spec:
             value: "ingest"
         ports:
           - containerPort: {{ .Values.parseable.highAvailability.ingestor.port }}
+      {{- with .Values.readinessProbe }}
+        readinessProbe:
+          {{ toYaml . | nindent 12 }}
+      {{- end }}
         resources:
           {{- toYaml .Values.parseable.highAvailability.ingestor.resources | nindent 12 }}
         {{- if .Values.parseable.persistence.ingestor.enabled }}

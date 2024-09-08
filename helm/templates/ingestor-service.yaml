@@ -4,6 +4,8 @@ kind: Service
 metadata:
   name: {{ include "parseable.fullname" . }}-ingestor-service
   namespace: {{ .Release.Namespace }}
+  labels: 
+    {{- include "parseable.labelsSelector" . | nindent 4 }}
 spec:
   type: {{ $.Values.parseable.highAvailability.ingestor.service.type }}
   ports:

@@ -94,6 +94,16 @@ pub async fn about() -> Json<serde_json::Value> {
         )
     };
 
+    let hot_tier_details: String = if CONFIG.hot_tier_dir().is_none() {
+        "Disabled".to_string()
+    } else {
+        let hot_tier_dir: &Option<PathBuf> = CONFIG.hot_tier_dir();
+        format!(
+            "Enabled, Path: {}",
+            hot_tier_dir.as_ref().unwrap().display(),
+        )
+    };
+
     let ms_clarity_tag = &CONFIG.parseable.ms_clarity_tag;
 
     Json(json!({
@@ -110,6 +120,7 @@ pub async fn about() -> Json<serde_json::Value> {
         "mode": mode,
         "staging": staging,
         "cache": cache_details,
+        "hotTier": hot_tier_details,
         "grpcPort": grpc_port,
         "store": {
             "type": CONFIG.get_storage_mode_string(),
