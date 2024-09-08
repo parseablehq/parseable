@@ -180,10 +180,17 @@ impl Server {
                     .service(Self::get_filters_webscope())
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope(oidc_client))
-                    .service(Self::get_user_role_webscope()),
+                    .service(Self::get_user_role_webscope())
+                    .service(Self::get_metrics_webscope()),
             )
             .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
+    }
+
+    pub fn get_metrics_webscope() -> Scope {
+        web::scope("/metrics").service(
+            web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),
+        )
     }
 
     // get the dashboards web scope
@@ -312,7 +319,7 @@ impl Server {
                         web::resource("/info").route(
                             web::get()
                                 .to(logstream::get_stream_info)
-                                .authorize_for_stream(Action::GetStream),
+                                .authorize_for_stream(Action::GetStreamInfo),
                         ),
                     )
                     .service(
@@ -423,8 +430,10 @@ impl Server {
     // get the oauth webscope
     pub fn get_oauth_webscope(oidc_client: Option<OpenIdClient>) -> Scope {
         let oauth = web::scope("/o")
-            .service(resource("/login").route(web::get().to(oidc::login)))
-            .service(resource("/logout").route(web::get().to(oidc::logout)))
+            .service(resource("/login").route(web::get().to(oidc::login).authorize(Action::Login)))
+            .service(
+                resource("/logout").route(web::get().to(oidc::logout).authorize(Action::Login)),
+            )
             .service(resource("/code").route(web::get().to(oidc::reply_login)));
 
         if let Some(client) = oidc_client {

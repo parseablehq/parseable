@@ -174,6 +174,7 @@ pub async fn fetch_daily_stats_from_ingestors(
 
         let res = reqwest::Client::new()
             .get(uri)
+            .header(header::AUTHORIZATION, &ingestor.token)
             .header(header::CONTENT_TYPE, "application/json")
             .send()
             .await;
@@ -526,6 +527,7 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
 
         let res = reqwest::Client::new()
             .get(uri)
+            .header(header::AUTHORIZATION, &ingestor.token)
             .header(header::CONTENT_TYPE, "application/json")
             .send()
             .await;

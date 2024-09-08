@@ -181,6 +181,7 @@ impl IngestServer {
                     .service(Server::get_about_factory())
                     .service(Self::analytics_factory())
                     .service(Server::get_liveness_factory())
+                    .service(Server::get_metrics_webscope())
                     .service(Server::get_readiness_factory()),
             )
             .service(Server::get_ingest_otel_factory());
@@ -226,7 +227,7 @@ impl IngestServer {
                     web::resource("/info").route(
                         web::get()
                             .to(logstream::get_stream_info)
-                            .authorize_for_stream(Action::GetStream),
+                            .authorize_for_stream(Action::GetStreamInfo),
                     ),
                 )
                 .service(
