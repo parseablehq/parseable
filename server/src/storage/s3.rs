@@ -322,7 +322,7 @@ impl S3 {
             stream_json_check.push(task);
         }
 
-        stream_json_check.try_collect().await?;
+        stream_json_check.try_collect::<()>().await?;
 
         Ok(dirs.into_iter().map(|name| LogStream { name }).collect())
     }
@@ -633,7 +633,7 @@ impl ObjectStorage for S3 {
             stream_json_check.push(task);
         }
 
-        stream_json_check.try_collect().await?;
+        stream_json_check.try_collect::<()>().await?;
 
         Ok(dirs.into_iter().map(|name| LogStream { name }).collect())
     }

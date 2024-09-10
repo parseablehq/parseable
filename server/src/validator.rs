@@ -31,6 +31,8 @@ const DENIED_NAMES: &[&str] = &[
     "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
 ];
 
+const ALLOWED_SPECIAL_CHARS: &[char] = &['-', '_'];
+
 pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
     let alert_name: Vec<&str> = alerts.alerts.iter().map(|a| a.name.as_str()).collect();
     let mut alert_name_dedup = alert_name.clone();
@@ -80,18 +82,6 @@ pub fn stream_name(stream_name: &str, stream_type: &str) -> Result<(), StreamNam
         return Err(StreamNameValidationError::EmptyName);
     }
 
-    if stream_name.chars().all(char::is_numeric) {
-        return Err(StreamNameValidationError::NameNumericOnly(
-            stream_name.to_owned(),
-        ));
-    }
-
-    if stream_name.chars().next().unwrap().is_numeric() {
-        return Err(StreamNameValidationError::NameCantStartWithNumber(
-            stream_name.to_owned(),
-        ));
-    }
-
     for c in stream_name.chars() {
         match c {
             ' ' => {
@@ -99,15 +89,8 @@ pub fn stream_name(stream_name: &str, stream_type: &str) -> Result<(), StreamNam
                     stream_name.to_owned(),
                 ))
             }
-            c if !c.is_alphanumeric() => {
-                return Err(StreamNameValidationError::NameSpecialChar(
-                    stream_name.to_owned(),
-                ))
-            }
-            c if c.is_ascii_uppercase() => {
-                return Err(StreamNameValidationError::NameUpperCase(
-                    stream_name.to_owned(),
-                ))
+            c if !c.is_alphanumeric() && !ALLOWED_SPECIAL_CHARS.contains(&c) => {
+                return Err(StreamNameValidationError::NameSpecialChar { c })
             }
             _ => {}
         }
@@ -182,16 +165,10 @@ pub mod error {
     pub enum StreamNameValidationError {
         #[error("Stream name cannot be empty")]
         EmptyName,
-        #[error("Invalid stream name with numeric values only")]
-        NameNumericOnly(String),
-        #[error("Stream name cannot start with a number")]
-        NameCantStartWithNumber(String),
         #[error("Stream name cannot contain whitespace")]
         NameWhiteSpace(String),
-        #[error("Stream name cannot contain special characters")]
-        NameSpecialChar(String),
-        #[error("Uppercase character in stream name")]
-        NameUpperCase(String),
+        #[error("Stream name cannot contain special character: {c}")]
+        NameSpecialChar { c: char },
         #[error("SQL keyword cannot be used as stream name")]
         SQLKeyword(String),
         #[error("The stream {0} is reserved for internal use and cannot be used for user defined streams")]
