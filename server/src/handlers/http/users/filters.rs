@@ -17,10 +17,11 @@
  */
 
 use crate::{
-    handlers::http::ingest::PostError,
+    handlers::http::rbac::RBACError,
     option::CONFIG,
     storage::{object_storage::filter_path, ObjectStorageError},
     users::filters::{Filter, CURRENT_FILTER_VERSION, FILTERS},
+    utils::{get_hash, get_user_from_request},
 };
 use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
@@ -29,42 +30,36 @@ use http::StatusCode;
 use serde_json::Error as SerdeError;
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
-    let user_id = req
-        .match_info()
-        .get("user_id")
-        .ok_or(FiltersError::Metadata("No User Id Provided"))?;
-    let filters = FILTERS.list_filters_by_user(user_id);
-
+    let user_id = get_user_from_request(&req)?;
+    let filters = FILTERS.list_filters_by_user(&get_hash(&user_id));
     Ok((web::Json(filters), StatusCode::OK))
 }
 
 pub async fn get(req: HttpRequest) -> Result<impl Responder, FiltersError> {
+    let user_id = get_user_from_request(&req)?;
     let filter_id = req
         .match_info()
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
 
-    if let Some(filter) = FILTERS.get_filter(filter_id) {
+    if let Some(filter) = FILTERS.get_filter(filter_id, &get_hash(&user_id)) {
         return Ok((web::Json(filter), StatusCode::OK));
     }
 
     Err(FiltersError::Metadata("Filter does not exist"))
 }
 
-pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
+pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, FiltersError> {
+    let user_id = get_user_from_request(&req)?;
     let mut filter: Filter = serde_json::from_slice(&body)?;
-    let filter_id = format!(
-        "{}.{}.{}",
-        &filter.user_id,
-        &filter.stream_name,
-        Utc::now().timestamp_millis()
-    );
+    let filter_id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
     filter.filter_id = Some(filter_id.clone());
+    filter.user_id = Some(get_hash(&user_id));
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
     FILTERS.update(&filter);
 
     let path = filter_path(
-        &filter.user_id,
+        &user_id,
         &filter.stream_name,
         &format!("{}.json", filter_id),
     );
@@ -76,15 +71,14 @@ pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
     Ok((web::Json(filter), StatusCode::OK))
 }
 
-pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, FiltersError> {
+    let user_id = get_user_from_request(&req)?;
     let filter_id = req
         .match_info()
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
-    if FILTERS.get_filter(filter_id).is_none() {
-        return Err(PostError::FiltersError(FiltersError::Metadata(
-            "Filter does not exist",
-        )));
+    if FILTERS.get_filter(filter_id, &get_hash(&user_id)).is_none() {
+        return Err(FiltersError::Metadata("Filter does not exist"));
     }
     let mut filter: Filter = serde_json::from_slice(&body)?;
     filter.filter_id = Some(filter_id.to_string());
@@ -92,7 +86,7 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
     FILTERS.update(&filter);
 
     let path = filter_path(
-        &filter.user_id,
+        &user_id,
         &filter.stream_name,
         &format!("{}.json", filter_id),
     );
@@ -104,17 +98,18 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
     Ok(HttpResponse::Ok().finish())
 }
 
-pub async fn delete(req: HttpRequest) -> Result<HttpResponse, PostError> {
+pub async fn delete(req: HttpRequest) -> Result<HttpResponse, FiltersError> {
+    let user_id = get_user_from_request(&req)?;
     let filter_id = req
         .match_info()
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
     let filter = FILTERS
-        .get_filter(filter_id)
+        .get_filter(filter_id, &get_hash(&user_id))
         .ok_or(FiltersError::Metadata("Filter does not exist"))?;
 
     let path = filter_path(
-        &filter.user_id,
+        &user_id,
         &filter.stream_name,
         &format!("{}.json", filter_id),
     );
@@ -134,6 +129,8 @@ pub enum FiltersError {
     Serde(#[from] SerdeError),
     #[error("Operation cannot be performed: {0}")]
     Metadata(&'static str),
+    #[error("User does not exist")]
+    UserDoesNotExist(#[from] RBACError),
 }
 
 impl actix_web::ResponseError for FiltersError {
@@ -142,6 +139,7 @@ impl actix_web::ResponseError for FiltersError {
             Self::ObjectStorage(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Serde(_) => StatusCode::BAD_REQUEST,
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
+            Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
         }
     }
 

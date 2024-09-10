@@ -17,10 +17,11 @@
  */
 
 use crate::{
-    handlers::http::ingest::PostError,
+    handlers::http::rbac::RBACError,
     option::CONFIG,
     storage::{object_storage::dashboard_path, ObjectStorageError},
     users::dashboards::{Dashboard, CURRENT_DASHBOARD_VERSION, DASHBOARDS},
+    utils::{get_hash, get_user_from_request},
 };
 use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
@@ -30,43 +31,39 @@ use http::StatusCode;
 use serde_json::Error as SerdeError;
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, DashboardError> {
-    let user_id = req
-        .match_info()
-        .get("user_id")
-        .ok_or(DashboardError::Metadata("No User Id Provided"))?;
-    let dashboards = DASHBOARDS.list_dashboards_by_user(user_id);
+    let user_id = get_user_from_request(&req)?;
+    let dashboards = DASHBOARDS.list_dashboards_by_user(&get_hash(&user_id));
 
     Ok((web::Json(dashboards), StatusCode::OK))
 }
 
 pub async fn get(req: HttpRequest) -> Result<impl Responder, DashboardError> {
+    let user_id = get_user_from_request(&req)?;
     let dashboard_id = req
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
 
-    if let Some(dashboard) = DASHBOARDS.get_dashboard(dashboard_id) {
+    if let Some(dashboard) = DASHBOARDS.get_dashboard(dashboard_id, &get_hash(&user_id)) {
         return Ok((web::Json(dashboard), StatusCode::OK));
     }
 
     Err(DashboardError::Metadata("Dashboard does not exist"))
 }
 
-pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
+pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, DashboardError> {
+    let user_id = get_user_from_request(&req)?;
     let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
-    let dashboard_id = format!("{}.{}", &dashboard.user_id, Utc::now().timestamp_millis());
+    let dashboard_id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
     dashboard.dashboard_id = Some(dashboard_id.clone());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
+    dashboard.user_id = Some(get_hash(&user_id));
     for tile in dashboard.tiles.iter_mut() {
-        tile.tile_id = Some(format!(
-            "{}.{}",
-            &dashboard.user_id,
-            Utc::now().timestamp_micros()
-        ));
+        tile.tile_id = Some(get_hash(Utc::now().timestamp_micros().to_string().as_str()));
     }
     DASHBOARDS.update(&dashboard);
 
-    let path = dashboard_path(&dashboard.user_id, &format!("{}.json", dashboard_id));
+    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
 
     let store = CONFIG.storage().get_object_store();
     let dashboard_bytes = serde_json::to_vec(&dashboard)?;
@@ -77,31 +74,29 @@ pub async fn post(body: Bytes) -> Result<impl Responder, PostError> {
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
-pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, PostError> {
+pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, DashboardError> {
+    let user_id = get_user_from_request(&req)?;
     let dashboard_id = req
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
-    if DASHBOARDS.get_dashboard(dashboard_id).is_none() {
-        return Err(PostError::DashboardError(DashboardError::Metadata(
-            "Dashboard does not exist",
-        )));
+    if DASHBOARDS
+        .get_dashboard(dashboard_id, &get_hash(&user_id))
+        .is_none()
+    {
+        return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
     let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
     dashboard.dashboard_id = Some(dashboard_id.to_string());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
     for tile in dashboard.tiles.iter_mut() {
         if tile.tile_id.is_none() {
-            tile.tile_id = Some(format!(
-                "{}.{}",
-                &dashboard.user_id,
-                Utc::now().timestamp_micros()
-            ));
+            tile.tile_id = Some(get_hash(Utc::now().timestamp_micros().to_string().as_str()));
         }
     }
     DASHBOARDS.update(&dashboard);
 
-    let path = dashboard_path(&dashboard.user_id, &format!("{}.json", dashboard_id));
+    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
 
     let store = CONFIG.storage().get_object_store();
     let dashboard_bytes = serde_json::to_vec(&dashboard)?;
@@ -112,16 +107,19 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, Pos
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
-pub async fn delete(req: HttpRequest) -> Result<HttpResponse, PostError> {
+pub async fn delete(req: HttpRequest) -> Result<HttpResponse, DashboardError> {
+    let user_id = get_user_from_request(&req)?;
     let dashboard_id = req
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
-    let dashboard = DASHBOARDS
-        .get_dashboard(dashboard_id)
-        .ok_or(DashboardError::Metadata("Dashboard does not exist"))?;
-
-    let path = dashboard_path(&dashboard.user_id, &format!("{}.json", dashboard_id));
+    if DASHBOARDS
+        .get_dashboard(dashboard_id, &get_hash(&user_id))
+        .is_none()
+    {
+        return Err(DashboardError::Metadata("Dashboard does not exist"));
+    }
+    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
     let store = CONFIG.storage().get_object_store();
     store.delete_object(&path).await?;
 
@@ -138,6 +136,8 @@ pub enum DashboardError {
     Serde(#[from] SerdeError),
     #[error("Cannot perform this operation: {0}")]
     Metadata(&'static str),
+    #[error("User does not exist")]
+    UserDoesNotExist(#[from] RBACError),
 }
 
 impl actix_web::ResponseError for DashboardError {
@@ -146,6 +146,7 @@ impl actix_web::ResponseError for DashboardError {
             Self::ObjectStorage(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Serde(_) => StatusCode::BAD_REQUEST,
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
+            Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
         }
     }
 

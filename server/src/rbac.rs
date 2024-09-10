@@ -168,6 +168,10 @@ impl Users {
 
         Response::UnAuthorized
     }
+
+    pub fn get_username_from_session(&self, session: &SessionKey) -> Option<String> {
+        sessions().get_username(session).cloned()
+    }
 }
 
 fn roles_to_permission(roles: Vec<String>) -> Vec<Permission> {
