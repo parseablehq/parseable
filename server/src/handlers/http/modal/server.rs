@@ -430,10 +430,8 @@ impl Server {
     // get the oauth webscope
     pub fn get_oauth_webscope(oidc_client: Option<OpenIdClient>) -> Scope {
         let oauth = web::scope("/o")
-            .service(resource("/login").route(web::get().to(oidc::login).authorize(Action::Login)))
-            .service(
-                resource("/logout").route(web::get().to(oidc::logout).authorize(Action::Login)),
-            )
+            .service(resource("/login").route(web::get().to(oidc::login)))
+            .service(resource("/logout").route(web::get().to(oidc::logout)))
             .service(resource("/code").route(web::get().to(oidc::reply_login)));
 
         if let Some(client) = oidc_client {
