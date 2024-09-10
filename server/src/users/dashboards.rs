@@ -20,13 +20,17 @@ use std::sync::RwLock;
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use crate::{metadata::LOCK_EXPECT, option::CONFIG};
+use crate::{
+    metadata::LOCK_EXPECT, migration::to_bytes, option::CONFIG,
+    storage::object_storage::dashboard_path, utils::get_hash,
+};
 
 use super::TimeFilter;
 
 pub static DASHBOARDS: Lazy<Dashboards> = Lazy::new(Dashboards::default);
-pub const CURRENT_DASHBOARD_VERSION: &str = "v1";
+pub const CURRENT_DASHBOARD_VERSION: &str = "v2";
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Tiles {
@@ -78,7 +82,7 @@ pub struct Dashboard {
     name: String,
     description: String,
     pub dashboard_id: Option<String>,
-    pub user_id: String,
+    pub user_id: Option<String>,
     pub time_filter: Option<TimeFilter>,
     refresh_interval: u64,
     pub tiles: Vec<Tiles>,
@@ -94,8 +98,31 @@ impl Dashboards {
         let dashboards = store.get_all_dashboards().await.unwrap_or_default();
 
         for dashboard in dashboards {
-            if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard) {
-                this.push(dashboard);
+            if dashboard.is_empty() {
+                continue;
+            }
+            let mut dashboard_value = serde_json::from_slice::<serde_json::Value>(&dashboard)?;
+            if let Some(meta) = dashboard_value.clone().as_object() {
+                let version = meta.get("version").and_then(|version| version.as_str());
+                let user_id = meta.get("user_id").and_then(|user_id| user_id.as_str());
+                let dashboard_id = meta
+                    .get("dashboard_id")
+                    .and_then(|dashboard_id| dashboard_id.as_str());
+
+                if version == Some("v1") {
+                    dashboard_value = migrate_v1_v2(dashboard_value);
+                    if let (Some(user_id), Some(dashboard_id)) = (user_id, dashboard_id) {
+                        let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
+                        let dashboard_bytes = to_bytes(&dashboard_value);
+                        store.put_object(&path, dashboard_bytes.clone()).await?;
+                        if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard_bytes)
+                        {
+                            this.push(dashboard);
+                        }
+                    }
+                } else if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard) {
+                    this.push(dashboard);
+                }
             }
         }
 
@@ -107,21 +134,24 @@ impl Dashboards {
 
     pub fn update(&self, dashboard: &Dashboard) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|f| f.dashboard_id != dashboard.dashboard_id);
+        s.retain(|d| d.dashboard_id != dashboard.dashboard_id);
         s.push(dashboard.clone());
     }
 
     pub fn delete_dashboard(&self, dashboard_id: &str) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|f| f.dashboard_id != Some(dashboard_id.to_string()));
+        s.retain(|d| d.dashboard_id != Some(dashboard_id.to_string()));
     }
 
-    pub fn get_dashboard(&self, dashboard_id: &str) -> Option<Dashboard> {
+    pub fn get_dashboard(&self, dashboard_id: &str, user_id: &str) -> Option<Dashboard> {
         self.0
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .find(|f| f.dashboard_id == Some(dashboard_id.to_string()))
+            .find(|d| {
+                d.dashboard_id == Some(dashboard_id.to_string())
+                    && d.user_id == Some(user_id.to_string())
+            })
             .cloned()
     }
 
@@ -130,8 +160,22 @@ impl Dashboards {
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|f| f.user_id == user_id)
+            .filter(|d| d.user_id == Some(user_id.to_string()))
             .cloned()
             .collect()
     }
+}
+
+fn migrate_v1_v2(mut dashboard_meta: Value) -> Value {
+    let dashboard_meta_map = dashboard_meta.as_object_mut().unwrap();
+    let user_id = dashboard_meta_map.get("user_id").unwrap().clone();
+    let str_user_id = user_id.as_str().unwrap();
+    let user_id_hash = get_hash(str_user_id);
+    dashboard_meta_map.insert("user_id".to_owned(), Value::String(user_id_hash));
+    dashboard_meta_map.insert(
+        "version".to_owned(),
+        Value::String(CURRENT_DASHBOARD_VERSION.into()),
+    );
+
+    dashboard_meta
 }
