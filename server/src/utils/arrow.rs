@@ -98,10 +98,8 @@ pub fn record_batches_to_json(records: &[&RecordBatch]) -> Result<Vec<Map<String
 
     let buf = writer.into_inner();
 
-    let json_rows: Vec<Map<String, Value>> = match serde_json::from_reader(buf.as_slice()) {
-        Ok(json) => json,
-        Err(_) => vec![],
-    };
+    let json_rows: Vec<Map<String, Value>> =
+        serde_json::from_reader(buf.as_slice()).unwrap_or_default();
 
     Ok(json_rows)
 }
