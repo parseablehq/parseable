@@ -36,12 +36,13 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
 }
 
 pub async fn get(req: HttpRequest) -> Result<impl Responder, FiltersError> {
+    let user_id = get_user_from_request(&req)?;
     let filter_id = req
         .match_info()
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
 
-    if let Some(filter) = FILTERS.get_filter(filter_id) {
+    if let Some(filter) = FILTERS.get_filter(filter_id, &get_hash(&user_id)) {
         return Ok((web::Json(filter), StatusCode::OK));
     }
 
@@ -76,7 +77,7 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, Filte
         .match_info()
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
-    if FILTERS.get_filter(filter_id).is_none() {
+    if FILTERS.get_filter(filter_id, &get_hash(&user_id)).is_none() {
         return Err(FiltersError::Metadata("Filter does not exist"));
     }
     let mut filter: Filter = serde_json::from_slice(&body)?;
@@ -104,7 +105,7 @@ pub async fn delete(req: HttpRequest) -> Result<HttpResponse, FiltersError> {
         .get("filter_id")
         .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
     let filter = FILTERS
-        .get_filter(filter_id)
+        .get_filter(filter_id, &get_hash(&user_id))
         .ok_or(FiltersError::Metadata("Filter does not exist"))?;
 
     let path = filter_path(

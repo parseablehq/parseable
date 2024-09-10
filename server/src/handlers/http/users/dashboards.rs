@@ -38,12 +38,13 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, DashboardError> {
 }
 
 pub async fn get(req: HttpRequest) -> Result<impl Responder, DashboardError> {
+    let user_id = get_user_from_request(&req)?;
     let dashboard_id = req
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
 
-    if let Some(dashboard) = DASHBOARDS.get_dashboard(dashboard_id) {
+    if let Some(dashboard) = DASHBOARDS.get_dashboard(dashboard_id, &get_hash(&user_id)) {
         return Ok((web::Json(dashboard), StatusCode::OK));
     }
 
@@ -79,7 +80,10 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, Das
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
-    if DASHBOARDS.get_dashboard(dashboard_id).is_none() {
+    if DASHBOARDS
+        .get_dashboard(dashboard_id, &get_hash(&user_id))
+        .is_none()
+    {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
     let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
@@ -109,6 +113,12 @@ pub async fn delete(req: HttpRequest) -> Result<HttpResponse, DashboardError> {
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
+    if DASHBOARDS
+        .get_dashboard(dashboard_id, &get_hash(&user_id))
+        .is_none()
+    {
+        return Err(DashboardError::Metadata("Dashboard does not exist"));
+    }
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
     let store = CONFIG.storage().get_object_store();
     store.delete_object(&path).await?;

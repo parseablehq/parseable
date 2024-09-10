@@ -143,12 +143,15 @@ impl Dashboards {
         s.retain(|d| d.dashboard_id != Some(dashboard_id.to_string()));
     }
 
-    pub fn get_dashboard(&self, dashboard_id: &str) -> Option<Dashboard> {
+    pub fn get_dashboard(&self, dashboard_id: &str, user_id: &str) -> Option<Dashboard> {
         self.0
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .find(|d| d.dashboard_id == Some(dashboard_id.to_string()))
+            .find(|d| {
+                d.dashboard_id == Some(dashboard_id.to_string())
+                    && d.user_id == Some(user_id.to_string())
+            })
             .cloned()
     }
 
@@ -157,7 +160,7 @@ impl Dashboards {
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|d| d.user_id.as_ref().unwrap() == user_id)
+            .filter(|d| d.user_id == Some(user_id.to_string()))
             .cloned()
             .collect()
     }

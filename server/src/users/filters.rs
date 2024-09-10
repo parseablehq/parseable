@@ -130,12 +130,14 @@ impl Filters {
         s.retain(|f| f.filter_id != Some(filter_id.to_string()));
     }
 
-    pub fn get_filter(&self, filter_id: &str) -> Option<Filter> {
+    pub fn get_filter(&self, filter_id: &str, user_id: &str) -> Option<Filter> {
         self.0
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .find(|f| f.filter_id == Some(filter_id.to_string()))
+            .find(|f| {
+                f.filter_id == Some(filter_id.to_string()) && f.user_id == Some(user_id.to_string())
+            })
             .cloned()
     }
 
@@ -144,7 +146,7 @@ impl Filters {
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|f| f.user_id.as_ref().unwrap() == user_id)
+            .filter(|f| f.user_id == Some(user_id.to_string()))
             .cloned()
             .collect()
     }
