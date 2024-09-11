@@ -1,3 +1,21 @@
+/*
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use std::{collections::HashMap, future::Future, pin::Pin};
 
 use actix_web::{
@@ -8,7 +26,10 @@ use http::HeaderMap;
 use serde_json::Value;
 use trino_response::QueryResponse;
 
-use crate::option::CONFIG;
+use crate::{
+    handlers::{AUTHORIZATION_KEY, TRINO_CATALOG, TRINO_SCHEMA, TRINO_USER},
+    option::CONFIG,
+};
 
 use super::query::QueryError;
 
@@ -62,47 +83,38 @@ pub async fn trino_query(
 ) -> Result<impl Responder, QueryError> {
     let sql = query_request.query;
 
-    let catalog = if let Some(catalog) = &CONFIG.parseable.trino_catalog.as_ref() {
-        catalog.to_owned()
-    } else {
-        return Err(QueryError::Anyhow(anyhow::Error::msg(
-            "Value for P_TRINO_CATALOG_NAME required",
-        )));
-    };
-    let schema = if let Some(schema) = &CONFIG.parseable.trino_schema.as_ref() {
-        schema.to_owned()
-    } else {
-        return Err(QueryError::Anyhow(anyhow::Error::msg(
-            "Value for P_TRINO_SCHEMA required",
-        )));
-    };
-    let username = if let Some(username) = &CONFIG.parseable.trino_username.as_ref() {
-        username.to_owned()
-    } else {
-        return Err(QueryError::Anyhow(anyhow::Error::msg(
-            "Value for P_TRINO_USER_NAME required",
-        )));
-    };
-    let auth = &CONFIG.parseable.trino_auth;
-    let endpoint = if let Some(endpoint) = &CONFIG.parseable.trino_endpoint.as_ref() {
-        if endpoint.ends_with("/") {
-            &endpoint[0..endpoint.len() - 1].to_owned()
+    let (endpoint, catalog, schema, username) =
+        if let (Some(endpoint), Some(catalog), Some(schema), Some(username)) = (
+            CONFIG.parseable.trino_endpoint.as_ref(),
+            CONFIG.parseable.trino_catalog.as_ref(),
+            CONFIG.parseable.trino_schema.as_ref(),
+            CONFIG.parseable.trino_username.as_ref(),
+        ) {
+            let endpoint = if endpoint.ends_with('/') {
+                &endpoint[0..endpoint.len() - 1]
+            } else {
+                endpoint
+            };
+            (
+                endpoint.to_string(),
+                catalog.to_string(),
+                schema.to_string(),
+                username.to_string(),
+            )
         } else {
-            endpoint.to_owned()
-        }
-    } else {
-        return Err(QueryError::Anyhow(anyhow::Error::msg(
-            "Value for P_TRINO_ENDPOINT required",
-        )));
-    };
+            return Err(QueryError::Anyhow(anyhow::Error::msg(
+                "Trino endpoint, catalog, schema, or username not set in config",
+            )));
+        };
+    let auth = &CONFIG.parseable.trino_auth;
 
     trino_init(
         &sql,
         query_request.fields,
-        endpoint,
-        catalog,
-        schema,
-        username,
+        &endpoint,
+        &catalog,
+        &schema,
+        &username,
         auth,
     )
     .await?
@@ -219,13 +231,13 @@ pub async fn trino_init(
     auth: &Option<String>,
 ) -> Result<QueryResponse, QueryError> {
     let mut headers = HeaderMap::new();
-    headers.insert("x-trino-schema", schema.parse().unwrap());
-    headers.insert("x-trino-catalog", catalog.parse().unwrap());
-    headers.insert("x-trino-user", user.parse().unwrap());
+    headers.insert(TRINO_SCHEMA, schema.parse().unwrap());
+    headers.insert(TRINO_CATALOG, catalog.parse().unwrap());
+    headers.insert(TRINO_USER, user.parse().unwrap());
 
     // add password if present
     if let Some(auth) = auth {
-        headers.insert("Authorization", format!("Basic {auth}").parse().unwrap());
+        headers.insert(AUTHORIZATION_KEY, format!("Basic {auth}").parse().unwrap());
     }
 
     let response: QueryResultsTrino = match reqwest::Client::new()
