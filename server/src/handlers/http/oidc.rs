@@ -35,6 +35,7 @@ use crate::{
     oidc::{Claims, DiscoveredClient},
     option::CONFIG,
     rbac::{
+        self,
         map::{SessionKey, DEFAULT_ROLE},
         user::{self, User, UserType},
         Users,
@@ -64,13 +65,18 @@ pub async fn login(
 ) -> Result<HttpResponse, OIDCError> {
     let oidc_client = req.app_data::<Data<DiscoveredClient>>();
     let session_key = extract_session_key_from_req(&req).ok();
-
     let (session_key, oidc_client) = match (session_key, oidc_client) {
         (None, None) => return Ok(redirect_no_oauth_setup(query.redirect.clone())),
         (None, Some(client)) => return Ok(redirect_to_oidc(query, client)),
         (Some(session_key), client) => (session_key, client),
     };
-
+    // try authorize
+    match Users.authorize(session_key.clone(), rbac::role::Action::Login, None, None) {
+        rbac::Response::Authorized => (),
+        rbac::Response::UnAuthorized | rbac::Response::ReloadRequired => {
+            return Err(OIDCError::Unauthorized)
+        }
+    }
     match session_key {
         // We can exchange basic auth for session cookie
         SessionKey::BasicAuth { username, password } => match Users.get_user(&username) {
@@ -358,6 +364,8 @@ pub enum OIDCError {
     Serde(#[from] serde_json::Error),
     #[error("Bad Request")]
     BadRequest,
+    #[error("Unauthorized")]
+    Unauthorized,
 }
 
 impl actix_web::ResponseError for OIDCError {
@@ -366,6 +374,7 @@ impl actix_web::ResponseError for OIDCError {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::BadRequest => StatusCode::BAD_REQUEST,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
         }
     }
 
