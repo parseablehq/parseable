@@ -151,14 +151,6 @@ Cloud Native, log analytics platform for modern applications."#,
         &self.parseable.local_staging_path
     }
 
-    pub fn cache_size(&self) -> u64 {
-        self.parseable.local_cache_size
-    }
-
-    pub fn cache_dir(&self) -> &Option<PathBuf> {
-        &self.parseable.local_cache_path
-    }
-
     pub fn hot_tier_dir(&self) -> &Option<PathBuf> {
         &self.parseable.hot_tier_storage_path
     }

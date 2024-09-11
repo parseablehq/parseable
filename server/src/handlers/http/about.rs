@@ -17,7 +17,6 @@
  */
 
 use actix_web::web::Json;
-use human_size::SpecificSize;
 use serde_json::json;
 
 use crate::{
@@ -79,21 +78,6 @@ pub async fn about() -> Json<serde_json::Value> {
     let is_oidc_active = CONFIG.parseable.openid.is_some();
     let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
-    let cache_details: String = if CONFIG.cache_dir().is_none() {
-        "Disabled".to_string()
-    } else {
-        let cache_dir: &Option<PathBuf> = CONFIG.cache_dir();
-        let cache_size: SpecificSize<human_size::Gigibyte> =
-            SpecificSize::new(CONFIG.cache_size() as f64, human_size::Byte)
-                .unwrap()
-                .into();
-        format!(
-            "Enabled, Path: {} (Size: {})",
-            cache_dir.as_ref().unwrap().display(),
-            cache_size
-        )
-    };
-
     let hot_tier_details: String = if CONFIG.hot_tier_dir().is_none() {
         "Disabled".to_string()
     } else {
@@ -105,6 +89,16 @@ pub async fn about() -> Json<serde_json::Value> {
     };
 
     let ms_clarity_tag = &CONFIG.parseable.ms_clarity_tag;
+    let mut query_engine = "Parseable".to_string();
+    if let (Some(_), Some(_), Some(_), Some(_)) = (
+        CONFIG.parseable.trino_endpoint.as_ref(),
+        CONFIG.parseable.trino_catalog.as_ref(),
+        CONFIG.parseable.trino_schema.as_ref(),
+        CONFIG.parseable.trino_username.as_ref(),
+    ) {
+        // Trino is enabled
+        query_engine = "Trino".to_string();
+    }
 
     Json(json!({
         "version": current_version,
@@ -119,7 +113,6 @@ pub async fn about() -> Json<serde_json::Value> {
         "license": "AGPL-3.0-only",
         "mode": mode,
         "staging": staging,
-        "cache": cache_details,
         "hotTier": hot_tier_details,
         "grpcPort": grpc_port,
         "store": {
@@ -128,7 +121,8 @@ pub async fn about() -> Json<serde_json::Value> {
         },
         "analytics": {
             "clarityTag": ms_clarity_tag
-        }
+        },
+        "queryEngine": query_engine
 
     }))
 }
