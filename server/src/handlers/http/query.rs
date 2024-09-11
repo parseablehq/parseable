@@ -511,3 +511,9 @@ impl actix_web::ResponseError for QueryError {
             .body(self.to_string())
     }
 }
+
+impl From<reqwest::Error> for QueryError {
+    fn from(value: reqwest::Error) -> Self {
+        QueryError::Anyhow(anyhow::Error::msg(value.to_string()))
+    }
+}

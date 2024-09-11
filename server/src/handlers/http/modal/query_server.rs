@@ -18,18 +18,18 @@
 
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
-use crate::handlers::http::health_check;
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
+use crate::handlers::http::{health_check, trino};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metrics, migration, rbac, storage};
-use actix_web::web;
 use actix_web::web::ServiceConfig;
+use actix_web::{web, Resource};
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -154,6 +154,7 @@ impl QueryServer {
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body
                     .service(Server::get_query_factory())
+                    .service(Self::get_trino_factory())
                     .service(Server::get_cache_webscope())
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
@@ -169,6 +170,12 @@ impl QueryServer {
                     .service(Self::get_cluster_web_scope()),
             )
             .service(Server::get_generated());
+    }
+
+    // get the trino factory
+    pub fn get_trino_factory() -> Resource {
+        web::resource("/trinoquery")
+            .route(web::post().to(trino::trino_query).authorize(Action::Query))
     }
 
     fn get_cluster_web_scope() -> actix_web::Scope {
