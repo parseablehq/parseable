@@ -207,6 +207,7 @@ pub mod model {
             actions: vec![
                 Action::Login,
                 Action::Metrics,
+                Action::GetAbout,
                 Action::Ingest,
                 Action::Query,
                 Action::CreateStream,
@@ -243,6 +244,7 @@ pub mod model {
         RoleBuilder {
             actions: vec![
                 Action::Login,
+                Action::GetAbout,
                 Action::Query,
                 Action::ListStream,
                 Action::GetSchema,
@@ -277,6 +279,7 @@ pub mod model {
         RoleBuilder {
             actions: vec![
                 Action::Login,
+                Action::GetAbout,
                 Action::Query,
                 Action::ListStream,
                 Action::GetSchema,
