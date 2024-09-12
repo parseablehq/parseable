@@ -63,6 +63,11 @@ pub async fn login(
     req: HttpRequest,
     query: web::Query<RedirectAfterLogin>,
 ) -> Result<HttpResponse, OIDCError> {
+    let conn = req.connection_info();
+    let base_url = format!("{}://{}/", conn.scheme(), conn.host());
+    if !base_url.eq(query.redirect.as_str()) {
+        return Err(OIDCError::BadRequest);
+    }
     let oidc_client = req.app_data::<Data<DiscoveredClient>>();
     let session_key = extract_session_key_from_req(&req).ok();
     let (session_key, oidc_client) = match (session_key, oidc_client) {
