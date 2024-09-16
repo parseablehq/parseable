@@ -34,6 +34,9 @@ pub struct Cli {
     /// The location of TLS Private Key file
     pub tls_key_path: Option<PathBuf>,
 
+    /// The location of other certificates to accept
+    pub trusted_ca_certs_path: Option<PathBuf>,
+
     /// The address on which the http server will listen.
     pub address: String,
 
@@ -122,6 +125,7 @@ impl Cli {
     // identifiers for arguments
     pub const TLS_CERT: &'static str = "tls-cert-path";
     pub const TLS_KEY: &'static str = "tls-key-path";
+    pub const TRUSTED_CA_CERTS_PATH: &'static str = "trusted-ca-certs-path";
     pub const ADDRESS: &'static str = "address";
     pub const DOMAIN_URI: &'static str = "origin";
     pub const STAGING: &'static str = "local-staging-path";
@@ -224,6 +228,14 @@ impl Cli {
                      .value_parser(validation::file_path)
                      .help("Local path on this device where private key file is located. Required to enable TLS"),
              )
+            .arg(
+                Arg::new(Self::TRUSTED_CA_CERTS_PATH)
+                    .long(Self::TRUSTED_CA_CERTS_PATH)
+                    .env("P_TRUSTED_CA_CERTS_DIR")
+                    .value_name("DIR")
+                    .value_parser(validation::canonicalize_path)
+                    .help("Local path on this device where all trusted certificates are located.")
+            )
              .arg(
                  Arg::new(Self::ADDRESS)
                      .long(Self::ADDRESS)
@@ -509,6 +521,7 @@ impl FromArgMatches for Cli {
         self.query_cache_path = m.get_one::<PathBuf>(Self::QUERY_CACHE).cloned();
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
+        self.trusted_ca_certs_path = m.get_one::<PathBuf>(Self::TRUSTED_CA_CERTS_PATH).cloned();
         self.domain_address = m.get_one::<Url>(Self::DOMAIN_URI).cloned();
 
         self.address = m
