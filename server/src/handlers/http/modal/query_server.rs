@@ -65,7 +65,7 @@ impl ParseableServer for QueryServer {
         let ssl = get_ssl_acceptor(
             &CONFIG.parseable.tls_cert_path,
             &CONFIG.parseable.tls_key_path,
-            &CONFIG.parseable.other_cert_path,
+            &CONFIG.parseable.trusted_ca_certs_path,
         )?;
 
         let create_app_fn = move || {
