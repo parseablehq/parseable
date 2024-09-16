@@ -1057,6 +1057,13 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 
+    if STREAM_INFO.stream_type(&stream_name).unwrap() == Some(StreamType::Internal.to_string()) {
+        return Err(StreamError::Custom {
+            msg: "Hot tier can not be deleted for internal stream".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
+
     if let Some(hot_tier_manager) = HotTierManager::global() {
         hot_tier_manager.delete_hot_tier(&stream_name).await?;
     }
