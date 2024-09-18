@@ -40,7 +40,7 @@ jobs:
           mv target/${{ matrix.target }}/release/parseable Parseable_OSS_${{ matrix.target }}
 
       - name: Create Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Parseable_OSS_${{ matrix.target }}
           path: Parseable_OSS_${{ matrix.target }}
@@ -76,7 +76,7 @@ jobs:
           mv target/x86_64-pc-windows-msvc/release/PARSEABLE.exe Parseable_OSS_x86_64-pc-windows-msvc.exe
 
       - name: Create artifact for Windows
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: Parseable_OSS_x86_64-pc-windows-msvc.exe
           path: Parseable_OSS_x86_64-pc-windows-msvc.exe
@@ -121,7 +121,7 @@ jobs:
           mv target/${{ matrix.target }}/release/Parseable Parseable_OSS_${{ matrix.target }}
 
       - name: Create artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: Parseable_OSS_${{ matrix.target }}
           path: Parseable_OSS_${{ matrix.target }}
@@ -147,7 +147,7 @@ jobs:
           find . -type f -name "Parseable_OSS_*" -exec shasum {} \; | sed 's/.\/.*\///' > checksum.txt
 
       - name: Create artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: checksum.txt
           path: checksum.txt
