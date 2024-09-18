@@ -41,5 +41,5 @@ jobs:
           context: .
           file: ./Dockerfile.debug
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/parseable:edge-debug
+          tags: parseable/parseable:edge-debug
           platforms: linux/amd64,linux/arm64
