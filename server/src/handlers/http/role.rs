@@ -17,10 +17,11 @@
  */
 
 use actix_web::{http::header::ContentType, web, HttpResponse, Responder};
+use bytes::Bytes;
 use http::StatusCode;
 
 use crate::{
-    option::CONFIG,
+    option::{Mode, CONFIG},
     rbac::{
         map::{mut_roles, DEFAULT_ROLE},
         role::model::DefaultPrivilege,
@@ -28,18 +29,26 @@ use crate::{
     storage::{self, ObjectStorageError, StorageMetadata},
 };
 
+use super::cluster::sync_role_update_with_ingestors;
+
 // Handler for PUT /api/v1/role/{name}
 // Creates a new role or update existing one
-pub async fn put(
-    name: web::Path<String>,
-    body: web::Json<Vec<DefaultPrivilege>>,
-) -> Result<impl Responder, RoleError> {
+pub async fn put(name: web::Path<String>, body: Bytes) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
-    let privileges = body.into_inner();
+    let privileges = serde_json::from_slice::<Vec<DefaultPrivilege>>(&body)?;
     let mut metadata = get_metadata().await?;
     metadata.roles.insert(name.clone(), privileges.clone());
-    put_metadata(&metadata).await?;
-    mut_roles().insert(name, privileges);
+    if CONFIG.parseable.mode == Mode::Ingest {
+        let _ = storage::put_staging_metadata(&metadata);
+        mut_roles().insert(name.clone(), privileges.clone());
+    } else {
+        put_metadata(&metadata).await?;
+        mut_roles().insert(name.clone(), privileges.clone());
+        if CONFIG.parseable.mode == Mode::Query {
+            sync_role_update_with_ingestors(name.clone(), privileges.clone()).await?;
+        }
+    }
+
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -118,6 +127,12 @@ pub enum RoleError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("Cannot perform this operation as role is assigned to an existing user.")]
     RoleInUse,
+    #[error("Error: {0}")]
+    Anyhow(#[from] anyhow::Error),
+    #[error("{0}")]
+    SerdeError(#[from] serde_json::Error),
+    #[error("Network Error: {0}")]
+    Network(#[from] reqwest::Error),
 }
 
 impl actix_web::ResponseError for RoleError {
@@ -125,6 +140,9 @@ impl actix_web::ResponseError for RoleError {
         match self {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::RoleInUse => StatusCode::BAD_REQUEST,
+            Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::SerdeError(_) => StatusCode::BAD_REQUEST,
+            Self::Network(_) => StatusCode::BAD_GATEWAY,
         }
     }
 

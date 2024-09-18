@@ -190,7 +190,16 @@ pub fn auth_stream_context(
     action: Action,
 ) -> Result<rbac::Response, Error> {
     let creds = extract_session_key(req);
-    let stream = req.match_info().get("logstream");
+    let mut stream = req.match_info().get("logstream");
+    if stream.is_none() {
+        if let Some((_, stream_name)) = req
+            .headers()
+            .iter()
+            .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
+        {
+            stream = Some(stream_name.to_str().unwrap());
+        }
+    }
     creds.map(|key| Users.authorize(key, action, stream, None))
 }
 

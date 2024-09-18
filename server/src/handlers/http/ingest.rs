@@ -186,6 +186,12 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
     if !STREAM_INFO.stream_exists(&stream_name) {
         return Err(PostError::StreamNotFound(stream_name));
     }
+
+    if CONFIG.parseable.mode == Mode::Query {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Ingestion is not allowed in Query mode"
+        )));
+    }
     flatten_and_push_logs(req, body, stream_name).await?;
     Ok(HttpResponse::Ok().finish())
 }

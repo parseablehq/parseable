@@ -185,6 +185,7 @@ impl IngestServer {
                     .service(Self::analytics_factory())
                     .service(Server::get_liveness_factory())
                     .service(Self::get_user_webscope())
+                    .service(Server::get_user_role_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_readiness_factory()),
             )

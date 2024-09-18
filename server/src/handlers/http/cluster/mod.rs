@@ -23,9 +23,11 @@ use crate::handlers::http::cluster::utils::{
 };
 use crate::handlers::http::ingest::{ingest_internal_stream, PostError};
 use crate::handlers::http::logstream::error::StreamError;
+use crate::handlers::http::role::RoleError;
 use crate::option::CONFIG;
 
 use crate::metrics::prom_utils::Metrics;
+use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::object_storage::ingestor_metadata_path;
@@ -350,6 +352,63 @@ pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(),
                     err
                 );
                 RBACError::Network(err)
+            })?;
+
+        if !res.status().is_success() {
+            log::error!(
+                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                ingestor.domain_name,
+                res.text().await
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// forward the put role request to all ingestors to keep them in sync
+pub async fn sync_role_update_with_ingestors(
+    name: String,
+    body: Vec<DefaultPrivilege>,
+) -> Result<(), RoleError> {
+    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        RoleError::Anyhow(err)
+    })?;
+
+    let roles = to_vec(&body).map_err(|err| {
+        log::error!("Fatal: failed to serialize roles: {:?}", err);
+        RoleError::SerdeError(err)
+    })?;
+    let roles = Bytes::from(roles);
+    let client = reqwest::Client::new();
+
+    for ingestor in ingestor_infos.iter() {
+        if !utils::check_liveness(&ingestor.domain_name).await {
+            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            continue;
+        }
+        let url = format!(
+            "{}{}/role/{}",
+            ingestor.domain_name,
+            base_path_without_preceding_slash(),
+            name
+        );
+
+        let res = client
+            .put(url)
+            .header(header::AUTHORIZATION, &ingestor.token)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(roles.clone())
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                    ingestor.domain_name,
+                    err
+                );
+                RoleError::Network(err)
             })?;
 
         if !res.status().is_success() {
