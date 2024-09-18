@@ -41,5 +41,5 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/parseable:edge
+          tags: parseable/parseable:edge
           platforms: linux/amd64,linux/arm64
