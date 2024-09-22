@@ -20,8 +20,7 @@ mod filter_optimizer;
 mod listing_table_builder;
 pub mod stream_schema_provider;
 
-use chrono::{DateTime, Utc};
-use chrono::{NaiveDateTime, TimeZone};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
@@ -318,27 +317,19 @@ fn path_intersects_query(path: &Path, starttime: DateTime<Utc>, endtime: DateTim
 }
 
 fn time_from_path(path: &Path) -> DateTime<Utc> {
-    let prefix = path
+    let path_str = path
         .file_name()
-        .expect("all given path are file")
+        .expect("all given paths are files")
         .to_str()
         .expect("filename is valid");
 
-    // Next three in order will be date, hour and minute
-    let mut components = prefix.splitn(3, '.');
+    const DATETIME_FORMAT: &str = "date=%Y-%m-%d.hour=%H.minute=%M";
 
-    let date = components.next().expect("date=xxxx-xx-xx");
-    let hour = components.next().expect("hour=xx");
-    let minute = components.next().expect("minute=xx");
-
-    let year = date[5..9].parse().unwrap();
-    let month = date[10..12].parse().unwrap();
-    let day = date[13..15].parse().unwrap();
-    let hour = hour[5..7].parse().unwrap();
-    let minute = minute[7..9].parse().unwrap();
-
-    Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
-        .unwrap()
+    // Parse the date-time using the format
+    NaiveDateTime::parse_and_remainder(path_str, DATETIME_FORMAT)
+        .expect("valid date-time")
+        .0
+        .and_utc()
 }
 
 /// unused for now might need it later
@@ -348,39 +339,32 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
         return objects;
     }
 
+    let first_object_first_key = objects
+        .first()
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.keys().next())
+        .unwrap();
+
     // check if all the keys start with "COUNT"
     let flag = objects.iter().all(|obj| {
         obj.as_object()
-            .unwrap()
-            .keys()
-            .all(|key| key.starts_with("COUNT"))
-    }) && objects.iter().all(|obj| {
-        obj.as_object()
-            .unwrap()
-            .keys()
-            .all(|key| key == objects[0].as_object().unwrap().keys().next().unwrap())
+            .map(|obj| {
+                obj.keys()
+                    .all(|key| key.starts_with("COUNT") && key == first_object_first_key)
+            })
+            .unwrap_or_default()
     });
 
     if flag {
-        let mut accum = 0u64;
-        let key = objects[0]
-            .as_object()
-            .unwrap()
-            .keys()
-            .next()
-            .unwrap()
-            .clone();
-
-        for obj in objects {
-            let count = obj.as_object().unwrap().keys().fold(0, |acc, key| {
-                let value = obj.as_object().unwrap().get(key).unwrap().as_u64().unwrap();
-                acc + value
-            });
-            accum += count;
-        }
+        let accum = objects
+            .iter()
+            .filter_map(Value::as_object)
+            .flat_map(|obj| obj.values())
+            .filter_map(Value::as_u64)
+            .sum::<u64>();
 
         vec![json!({
-            key: accum
+            first_object_first_key: accum
         })]
     } else {
         objects

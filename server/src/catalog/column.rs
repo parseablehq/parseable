@@ -84,7 +84,7 @@ impl TypedStatistics {
                     max: max(this.max, other.max),
                 })
             }
-            _ => panic!("Cannot update wrong types"),
+            _ => panic!("Cannot update incompatible types"),
         }
     }
 

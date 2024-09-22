@@ -76,14 +76,14 @@ impl Default for Manifest {
 
 impl Manifest {
     pub fn apply_change(&mut self, change: File) {
-        if let Some(pos) = self
+        if let Some(matched) = self
             .files
-            .iter()
-            .position(|file| file.file_path == change.file_path)
+            .iter_mut()
+            .find(|file| file.file_path == change.file_path)
         {
-            self.files[pos] = change
+            *matched = change;
         } else {
-            self.files.push(change)
+            self.files.push(change);
         }
     }
 }
