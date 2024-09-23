@@ -18,12 +18,12 @@
 use crate::analytics;
 use crate::banner;
 use crate::handlers::airplane;
-use crate::handlers::http;
 use crate::handlers::http::health_check;
 use crate::handlers::http::ingest;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::DisAllowRootUser;
 use crate::handlers::http::middleware::RouteExt;
+use crate::handlers::http::role;
 use crate::localcache::LocalCacheManager;
 use crate::metrics;
 use crate::migration;
@@ -40,6 +40,9 @@ use crate::sync;
 
 use std::sync::Arc;
 
+use super::ingest::ingester_logstream;
+use super::ingest::ingester_rbac;
+use super::ingest::ingester_role;
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
 use super::IngestorMetadata;
@@ -51,6 +54,7 @@ use crate::{
     option::CONFIG,
 };
 use actix_web::body::MessageBody;
+use actix_web::web::resource;
 use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
@@ -185,7 +189,7 @@ impl IngestServer {
                     .service(Self::analytics_factory())
                     .service(Server::get_liveness_factory())
                     .service(Self::get_user_webscope())
-                    .service(Server::get_user_role_webscope())
+                    .service(Self::get_user_role_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_readiness_factory()),
             )
@@ -202,6 +206,26 @@ impl IngestServer {
             ),
         )
     }
+
+    // get the role webscope
+    fn get_user_role_webscope() -> Scope {
+        web::scope("/role")
+            // GET Role List
+            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+            .service(
+                // PUT and GET Default Role
+                resource("/default")
+                    .route(web::put().to(role::put_default).authorize(Action::PutRole))
+                    .route(web::get().to(role::get_default).authorize(Action::GetRole)),
+            )
+            .service(
+                // PUT, GET, DELETE Roles
+                resource("/{name}")
+                    .route(web::put().to(ingester_role::put).authorize(Action::PutRole))
+                    .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
+                    .route(web::get().to(role::get).authorize(Action::GetRole)),
+            )
+    }
     // get the user webscope
     fn get_user_webscope() -> Scope {
         web::scope("/user")
@@ -210,13 +234,13 @@ impl IngestServer {
                     // PUT /user/{username} => Create a new user
                     .route(
                         web::post()
-                            .to(http::rbac::post_user)
+                            .to(ingester_rbac::post_user)
                             .authorize(Action::PutUser),
                     )
                     // DELETE /user/{username} => Delete a user
                     .route(
                         web::delete()
-                            .to(http::rbac::delete_user)
+                            .to(ingester_rbac::delete_user)
                             .authorize(Action::DeleteUser),
                     )
                     .wrap(DisAllowRootUser),
@@ -226,7 +250,7 @@ impl IngestServer {
                     // PUT /user/{username}/roles => Put roles for user
                     .route(
                         web::put()
-                            .to(http::rbac::put_role)
+                            .to(ingester_rbac::put_role)
                             .authorize(Action::PutUserRoles)
                             .wrap(DisAllowRootUser),
                     ),
@@ -236,7 +260,7 @@ impl IngestServer {
                     // POST /user/{username}/generate-new-password => reset password for this user
                     .route(
                         web::post()
-                            .to(http::rbac::post_gen_password)
+                            .to(ingester_rbac::post_gen_password)
                             .authorize(Action::PutUser)
                             .wrap(DisAllowRootUser),
                     ),
@@ -250,13 +274,13 @@ impl IngestServer {
                         // DELETE "/logstream/{logstream}" ==> Delete a log stream
                         .route(
                             web::delete()
-                                .to(logstream::delete)
+                                .to(ingester_logstream::delete)
                                 .authorize_for_stream(Action::DeleteStream),
                         )
                         // PUT "/logstream/{logstream}" ==> Create a new log stream
                         .route(
                             web::put()
-                                .to(logstream::put_stream)
+                                .to(ingester_logstream::put_stream)
                                 .authorize_for_stream(Action::CreateStream),
                         )
                         // POST "/logstream/{logstream}" ==> Post logs to given log stream
@@ -287,13 +311,13 @@ impl IngestServer {
                         // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
                         .route(
                             web::put()
-                                .to(logstream::put_enable_cache)
+                                .to(ingester_logstream::put_enable_cache)
                                 .authorize_for_stream(Action::PutCacheEnabled),
                         )
                         // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
                         .route(
                             web::get()
-                                .to(logstream::get_cache_enabled)
+                                .to(ingester_logstream::get_cache_enabled)
                                 .authorize_for_stream(Action::GetCacheEnabled),
                         ),
                 )

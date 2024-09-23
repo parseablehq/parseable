@@ -238,6 +238,7 @@ pub fn convert_disk_files_to_parquet(
             .set(0);
     }
 
+    // log::warn!("staging files-\n{staging_files:?}\n");
     for (parquet_path, files) in staging_files {
         metrics::STAGING_FILES
             .with_label_values(&[stream])
@@ -289,6 +290,7 @@ pub fn convert_disk_files_to_parquet(
             fs::remove_file(parquet_path).unwrap();
         } else {
             for file in files {
+                // log::warn!("file-\n{file:?}\n");
                 let file_size = file.metadata().unwrap().len();
                 let file_type = file.extension().unwrap().to_str().unwrap();
                 if fs::remove_file(file.clone()).is_err() {

@@ -38,17 +38,10 @@ pub async fn put(name: web::Path<String>, body: Bytes) -> Result<impl Responder,
     let privileges = serde_json::from_slice::<Vec<DefaultPrivilege>>(&body)?;
     let mut metadata = get_metadata().await?;
     metadata.roles.insert(name.clone(), privileges.clone());
-    if CONFIG.parseable.mode == Mode::Ingest {
-        let _ = storage::put_staging_metadata(&metadata);
-        mut_roles().insert(name.clone(), privileges.clone());
-    } else {
-        put_metadata(&metadata).await?;
-        mut_roles().insert(name.clone(), privileges.clone());
-        if CONFIG.parseable.mode == Mode::Query {
-            sync_role_update_with_ingestors(name.clone(), privileges.clone()).await?;
-        }
-    }
-
+   
+    put_metadata(&metadata).await?;
+    mut_roles().insert(name.clone(), privileges.clone());
+    
     Ok(HttpResponse::Ok().finish())
 }
 

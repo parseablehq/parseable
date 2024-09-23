@@ -17,33 +17,32 @@
  */
 
 use super::logstream::error::{CreateStreamError, StreamError};
+use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
-use super::{kinesis, otel};
+use super::otel;
 use crate::event::{
     self,
     error::EventError,
     format::{self, EventFormat},
 };
 use crate::handlers::{
-    LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
-    STREAM_NAME_HEADER_KEY,
+    LOG_SOURCE_KEY, LOG_SOURCE_OTEL, STREAM_NAME_HEADER_KEY,
 };
 use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{self, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
 use crate::storage::{LogStream, ObjectStorageError, StreamType};
-use crate::utils::header_parsing::{collect_labelled_headers, ParseHeaderError};
-use crate::utils::json::convert_array_to_object;
+use crate::utils::header_parsing::ParseHeaderError;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Schema};
+use arrow_schema::Schema;
 use bytes::Bytes;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::Utc;
 use http::StatusCode;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 // Handler for POST /api/v1/ingest
@@ -142,34 +141,6 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
     Ok(HttpResponse::Ok().finish())
 }
 
-async fn flatten_and_push_logs(
-    req: HttpRequest,
-    body: Bytes,
-    stream_name: String,
-) -> Result<(), PostError> {
-    //flatten logs
-    if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY) {
-        let mut json: Vec<BTreeMap<String, Value>> = Vec::new();
-        let log_source: String = log_source.to_str().unwrap().to_owned();
-        match log_source.as_str() {
-            LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
-            LOG_SOURCE_OTEL => {
-                json = otel::flatten_otel_logs(&body);
-            }
-            _ => {
-                log::warn!("Unknown log source: {}", log_source);
-                push_logs(stream_name.to_string(), req.clone(), body).await?;
-            }
-        }
-        for record in json.iter_mut() {
-            let body: Bytes = serde_json::to_vec(record).unwrap().into();
-            push_logs(stream_name.to_string(), req.clone(), body).await?;
-        }
-    } else {
-        push_logs(stream_name.to_string(), req, body).await?;
-    }
-    Ok(())
-}
 
 // Handler for POST /api/v1/logstream/{logstream}
 // only ingests events into the specified logstream
@@ -187,11 +158,6 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
         return Err(PostError::StreamNotFound(stream_name));
     }
 
-    if CONFIG.parseable.mode == Mode::Query {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Ingestion is not allowed in Query mode"
-        )));
-    }
     flatten_and_push_logs(req, body, stream_name).await?;
     Ok(HttpResponse::Ok().finish())
 }
@@ -214,209 +180,6 @@ pub async fn push_logs_unchecked(
     unchecked_event.process_unchecked()?;
 
     Ok(unchecked_event)
-}
-
-async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
-    let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
-    let time_partition_limit = STREAM_INFO.get_time_partition_limit(&stream_name)?;
-    let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name)?;
-    let custom_partition = STREAM_INFO.get_custom_partition(&stream_name)?;
-    let body_val: Value = serde_json::from_slice(&body)?;
-    let size: usize = body.len();
-    let mut parsed_timestamp = Utc::now().naive_utc();
-    if time_partition.is_none() {
-        if custom_partition.is_none() {
-            let size = size as u64;
-            create_process_record_batch(
-                stream_name.clone(),
-                req.clone(),
-                body_val.clone(),
-                static_schema_flag.clone(),
-                None,
-                parsed_timestamp,
-                HashMap::new(),
-                size,
-            )
-            .await?;
-        } else {
-            let data =
-                convert_array_to_object(body_val.clone(), None, None, custom_partition.clone())?;
-            let custom_partition = custom_partition.unwrap();
-            let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-
-            for value in data {
-                let custom_partition_values =
-                    get_custom_partition_values(&value, &custom_partition_list);
-
-                let size = value.to_string().into_bytes().len() as u64;
-                create_process_record_batch(
-                    stream_name.clone(),
-                    req.clone(),
-                    value.clone(),
-                    static_schema_flag.clone(),
-                    None,
-                    parsed_timestamp,
-                    custom_partition_values.clone(),
-                    size,
-                )
-                .await?;
-            }
-        }
-    } else if custom_partition.is_none() {
-        let data = convert_array_to_object(
-            body_val.clone(),
-            time_partition.clone(),
-            time_partition_limit,
-            None,
-        )?;
-        for value in data {
-            parsed_timestamp = get_parsed_timestamp(&value, &time_partition);
-            let size = value.to_string().into_bytes().len() as u64;
-            create_process_record_batch(
-                stream_name.clone(),
-                req.clone(),
-                value.clone(),
-                static_schema_flag.clone(),
-                time_partition.clone(),
-                parsed_timestamp,
-                HashMap::new(),
-                size,
-            )
-            .await?;
-        }
-    } else {
-        let data = convert_array_to_object(
-            body_val.clone(),
-            time_partition.clone(),
-            time_partition_limit,
-            custom_partition.clone(),
-        )?;
-        let custom_partition = custom_partition.unwrap();
-        let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-
-        for value in data {
-            let custom_partition_values =
-                get_custom_partition_values(&value, &custom_partition_list);
-
-            parsed_timestamp = get_parsed_timestamp(&value, &time_partition);
-            let size = value.to_string().into_bytes().len() as u64;
-            create_process_record_batch(
-                stream_name.clone(),
-                req.clone(),
-                value.clone(),
-                static_schema_flag.clone(),
-                time_partition.clone(),
-                parsed_timestamp,
-                custom_partition_values.clone(),
-                size,
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
-}
-
-fn get_parsed_timestamp(body: &Value, time_partition: &Option<String>) -> NaiveDateTime {
-    let body_timestamp = body.get(time_partition.clone().unwrap().to_string());
-    let parsed_timestamp = body_timestamp
-        .unwrap()
-        .to_owned()
-        .as_str()
-        .unwrap()
-        .parse::<DateTime<Utc>>()
-        .unwrap()
-        .naive_utc();
-    parsed_timestamp
-}
-
-fn get_custom_partition_values(
-    body: &Value,
-    custom_partition_list: &[&str],
-) -> HashMap<String, String> {
-    let mut custom_partition_values: HashMap<String, String> = HashMap::new();
-    for custom_partition_field in custom_partition_list {
-        let custom_partition_value = body.get(custom_partition_field.trim()).unwrap().to_owned();
-        let custom_partition_value = match custom_partition_value.clone() {
-            e @ Value::Number(_) | e @ Value::Bool(_) => e.to_string(),
-            Value::String(s) => s,
-            _ => "".to_string(),
-        };
-        custom_partition_values.insert(
-            custom_partition_field.trim().to_string(),
-            custom_partition_value,
-        );
-    }
-    custom_partition_values
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn create_process_record_batch(
-    stream_name: String,
-    req: HttpRequest,
-    value: Value,
-    static_schema_flag: Option<String>,
-    time_partition: Option<String>,
-    parsed_timestamp: NaiveDateTime,
-    custom_partition_values: HashMap<String, String>,
-    origin_size: u64,
-) -> Result<(), PostError> {
-    let (rb, is_first_event) = get_stream_schema(
-        stream_name.clone(),
-        req.clone(),
-        value.clone(),
-        static_schema_flag.clone(),
-        time_partition.clone(),
-    )?;
-    event::Event {
-        rb,
-        stream_name: stream_name.clone(),
-        origin_format: "json",
-        origin_size,
-        is_first_event,
-        parsed_timestamp,
-        time_partition: time_partition.clone(),
-        custom_partition_values: custom_partition_values.clone(),
-        stream_type: StreamType::UserDefined,
-    }
-    .process()
-    .await?;
-
-    Ok(())
-}
-
-fn get_stream_schema(
-    stream_name: String,
-    req: HttpRequest,
-    body: Value,
-    static_schema_flag: Option<String>,
-    time_partition: Option<String>,
-) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let hash_map = STREAM_INFO.read().unwrap();
-    let schema = hash_map
-        .get(&stream_name)
-        .ok_or(PostError::StreamNotFound(stream_name))?
-        .schema
-        .clone();
-    into_event_batch(req, body, schema, static_schema_flag, time_partition)
-}
-
-fn into_event_batch(
-    req: HttpRequest,
-    body: Value,
-    schema: HashMap<String, Arc<Field>>,
-    static_schema_flag: Option<String>,
-    time_partition: Option<String>,
-) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let tags = collect_labelled_headers(&req, PREFIX_TAGS, SEPARATOR)?;
-    let metadata = collect_labelled_headers(&req, PREFIX_META, SEPARATOR)?;
-    let event = format::json::Event {
-        data: body,
-        tags,
-        metadata,
-    };
-    let (rb, is_first) = event.into_recordbatch(schema, static_schema_flag, time_partition)?;
-    Ok((rb, is_first))
 }
 
 // Check if the stream exists and create a new stream if doesn't exist
@@ -547,10 +310,8 @@ mod tests {
 
     use crate::{
         event,
-        handlers::{PREFIX_META, PREFIX_TAGS},
+        handlers::{http::modal::utils::ingest_utils::into_event_batch, PREFIX_META, PREFIX_TAGS},
     };
-
-    use super::into_event_batch;
 
     trait TestExt {
         fn as_int64_arr(&self) -> &Int64Array;

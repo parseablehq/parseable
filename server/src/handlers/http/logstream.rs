@@ -24,16 +24,13 @@ use super::cluster::{
     INTERNAL_STREAM_NAME,
 };
 use super::ingest::create_stream_if_not_exists;
+use super::modal::utils::logstream_utils::create_update_stream;
 use crate::alerts::Alerts;
-use crate::handlers::{
-    CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
-    TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
-};
+use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::STREAM_INFO;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
-use crate::static_schema::{convert_static_schema_to_arrow_schema, StaticSchema};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::StreamType;
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
@@ -54,7 +51,6 @@ use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -63,44 +59,40 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         return Err(StreamError::StreamNotFound(stream_name));
     }
-    match CONFIG.parseable.mode {
-        Mode::Query | Mode::All => {
-            let objectstore = CONFIG.storage().get_object_store();
+    
+    let objectstore = CONFIG.storage().get_object_store();
 
-            objectstore.delete_stream(&stream_name).await?;
-            let stream_dir = StorageDir::new(&stream_name);
-            if fs::remove_dir_all(&stream_dir.data_path).is_err() {
-                log::warn!(
-                    "failed to delete local data for stream {}. Clean {} manually",
-                    stream_name,
-                    stream_dir.data_path.to_string_lossy()
-                )
-            }
+    objectstore.delete_stream(&stream_name).await?;
+    let stream_dir = StorageDir::new(&stream_name);
+    if fs::remove_dir_all(&stream_dir.data_path).is_err() {
+        log::warn!(
+            "failed to delete local data for stream {}. Clean {} manually",
+            stream_name,
+            stream_dir.data_path.to_string_lossy()
+        )
+    }
 
-            if let Some(hot_tier_manager) = HotTierManager::global() {
-                if hot_tier_manager.check_stream_hot_tier_exists(&stream_name) {
-                    hot_tier_manager.delete_hot_tier(&stream_name).await?;
-                }
-            }
-
-            let ingestor_metadata = super::cluster::get_ingestor_info().await.map_err(|err| {
-                log::error!("Fatal: failed to get ingestor info: {:?}", err);
-                StreamError::from(err)
-            })?;
-
-            for ingestor in ingestor_metadata {
-                let url = format!(
-                    "{}{}/logstream/{}",
-                    ingestor.domain_name,
-                    base_path_without_preceding_slash(),
-                    stream_name
-                );
-
-                // delete the stream
-                super::cluster::send_stream_delete_request(&url, ingestor.clone()).await?;
-            }
+    if let Some(hot_tier_manager) = HotTierManager::global() {
+        if hot_tier_manager.check_stream_hot_tier_exists(&stream_name) {
+            hot_tier_manager.delete_hot_tier(&stream_name).await?;
         }
-        _ => {}
+    }
+
+    let ingestor_metadata = super::cluster::get_ingestor_info().await.map_err(|err| {
+        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        StreamError::from(err)
+    })?;
+
+    for ingestor in ingestor_metadata {
+        let url = format!(
+            "{}{}/logstream/{}",
+            ingestor.domain_name,
+            base_path_without_preceding_slash(),
+            stream_name
+        );
+
+        // delete the stream
+        super::cluster::send_stream_delete_request(&url, ingestor.clone()).await?;
     }
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
@@ -186,224 +178,11 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    if CONFIG.parseable.mode == Mode::Query {
-        let headers = create_update_stream(&req, &body, &stream_name).await?;
-        sync_streams_with_ingestors(headers, body, &stream_name).await?;
-    } else {
-        create_update_stream(&req, &body, &stream_name).await?;
-    }
+    create_update_stream(&req, &body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
 
-fn fetch_headers_from_put_stream_request(
-    req: &HttpRequest,
-) -> (String, String, String, String, String, String) {
-    let mut time_partition = String::default();
-    let mut time_partition_limit = String::default();
-    let mut custom_partition = String::default();
-    let mut static_schema_flag = String::default();
-    let mut update_stream = String::default();
-    let mut stream_type = StreamType::UserDefined.to_string();
-    req.headers().iter().for_each(|(key, value)| {
-        if key == TIME_PARTITION_KEY {
-            time_partition = value.to_str().unwrap().to_string();
-        }
-        if key == TIME_PARTITION_LIMIT_KEY {
-            time_partition_limit = value.to_str().unwrap().to_string();
-        }
-        if key == CUSTOM_PARTITION_KEY {
-            custom_partition = value.to_str().unwrap().to_string();
-        }
-        if key == STATIC_SCHEMA_FLAG {
-            static_schema_flag = value.to_str().unwrap().to_string();
-        }
-        if key == UPDATE_STREAM_KEY {
-            update_stream = value.to_str().unwrap().to_string();
-        }
-        if key == STREAM_TYPE_KEY {
-            stream_type = value.to_str().unwrap().to_string();
-        }
-    });
-
-    (
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        static_schema_flag,
-        update_stream,
-        stream_type,
-    )
-}
-
-fn validate_time_partition_limit(time_partition_limit: &str) -> Result<&str, CreateStreamError> {
-    if !time_partition_limit.ends_with('d') {
-        return Err(CreateStreamError::Custom {
-            msg: "Missing 'd' suffix for duration value".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-    let days = &time_partition_limit[0..time_partition_limit.len() - 1];
-    if days.parse::<NonZeroU32>().is_err() {
-        return Err(CreateStreamError::Custom {
-            msg: "Could not convert duration to an unsigned number".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-
-    Ok(days)
-}
-
-fn validate_custom_partition(custom_partition: &str) -> Result<(), CreateStreamError> {
-    let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-    if custom_partition_list.len() > 3 {
-        return Err(CreateStreamError::Custom {
-            msg: "Maximum 3 custom partition keys are supported".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-    Ok(())
-}
-
-fn validate_time_with_custom_partition(
-    time_partition: &str,
-    custom_partition: &str,
-) -> Result<(), CreateStreamError> {
-    let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-    if custom_partition_list.contains(&time_partition) {
-        return Err(CreateStreamError::Custom {
-            msg: format!(
-                "time partition {} cannot be set as custom partition",
-                time_partition
-            ),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-    Ok(())
-}
-
-fn validate_static_schema(
-    body: &Bytes,
-    stream_name: &str,
-    time_partition: &str,
-    custom_partition: &str,
-    static_schema_flag: &str,
-) -> Result<Arc<Schema>, CreateStreamError> {
-    if static_schema_flag == "true" {
-        if body.is_empty() {
-            return Err(CreateStreamError::Custom {
-                msg: format!(
-                    "Please provide schema in the request body for static schema logstream {stream_name}"
-                ),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
-
-        let static_schema: StaticSchema = serde_json::from_slice(body)?;
-        let parsed_schema =
-            convert_static_schema_to_arrow_schema(static_schema, time_partition, custom_partition)
-                .map_err(|_| CreateStreamError::Custom {
-                    msg: format!(
-                        "Unable to commit static schema, logstream {stream_name} not created"
-                    ),
-                    status: StatusCode::BAD_REQUEST,
-                })?;
-
-        return Ok(parsed_schema);
-    }
-
-    Ok(Arc::new(Schema::empty()))
-}
-
-async fn create_update_stream(
-    req: &HttpRequest,
-    body: &Bytes,
-    stream_name: &str,
-) -> Result<HeaderMap, StreamError> {
-    let (
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        static_schema_flag,
-        update_stream,
-        stream_type,
-    ) = fetch_headers_from_put_stream_request(req);
-
-    if metadata::STREAM_INFO.stream_exists(stream_name) && update_stream != "true" {
-        return Err(StreamError::Custom {
-            msg: format!(
-                "Logstream {stream_name} already exists, please create a new log stream with unique name"
-            ),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-
-    if update_stream == "true" {
-        if !STREAM_INFO.stream_exists(stream_name) {
-            return Err(StreamError::StreamNotFound(stream_name.to_string()));
-        }
-        if !time_partition.is_empty() {
-            return Err(StreamError::Custom {
-                msg: "Altering the time partition of an existing stream is restricted.".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
-
-        if !static_schema_flag.is_empty() {
-            return Err(StreamError::Custom {
-                msg: "Altering the schema of an existing stream is restricted.".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
-
-        if !time_partition_limit.is_empty() {
-            let time_partition_days = validate_time_partition_limit(&time_partition_limit)?;
-            update_time_partition_limit_in_stream(stream_name.to_string(), time_partition_days)
-                .await?;
-            return Ok(req.headers().clone());
-        }
-
-        if !custom_partition.is_empty() {
-            validate_custom_partition(&custom_partition)?;
-            update_custom_partition_in_stream(stream_name.to_string(), &custom_partition).await?;
-        } else {
-            update_custom_partition_in_stream(stream_name.to_string(), "").await?;
-        }
-        return Ok(req.headers().clone());
-    }
-    let mut time_partition_in_days = "";
-    if !time_partition_limit.is_empty() {
-        time_partition_in_days = validate_time_partition_limit(&time_partition_limit)?;
-    }
-    if !custom_partition.is_empty() {
-        validate_custom_partition(&custom_partition)?;
-    }
-
-    if !time_partition.is_empty() && !custom_partition.is_empty() {
-        validate_time_with_custom_partition(&time_partition, &custom_partition)?;
-    }
-
-    let schema = validate_static_schema(
-        body,
-        stream_name,
-        &time_partition,
-        &custom_partition,
-        &static_schema_flag,
-    )?;
-
-    create_stream(
-        stream_name.to_string(),
-        &time_partition,
-        time_partition_in_days,
-        &custom_partition,
-        &static_schema_flag,
-        schema,
-        &stream_type,
-    )
-    .await?;
-
-    Ok(req.headers().clone())
-}
 pub async fn put_alert(
     req: HttpRequest,
     body: web::Json<serde_json::Value>,
@@ -600,6 +379,7 @@ pub async fn put_enable_cache(
         StatusCode::OK,
     ))
 }
+
 pub async fn get_stats_date(stream_name: &str, date: &str) -> Result<Stats, StreamError> {
     let event_labels = event_labels_date(stream_name, "json", date);
     let storage_size_labels = storage_size_labels_date(stream_name, date);
@@ -643,38 +423,16 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         }
 
         if !date_value.is_empty() {
-            if CONFIG.parseable.mode == Mode::Query {
-                let querier_stats = get_stats_date(&stream_name, date_value).await?;
-                let ingestor_stats =
-                    fetch_daily_stats_from_ingestors(&stream_name, date_value).await?;
-                let total_stats = Stats {
-                    events: querier_stats.events + ingestor_stats.events,
-                    ingestion: querier_stats.ingestion + ingestor_stats.ingestion,
-                    storage: querier_stats.storage + ingestor_stats.storage,
-                };
-                let stats = serde_json::to_value(total_stats)?;
-
-                return Ok((web::Json(stats), StatusCode::OK));
-            } else {
-                let stats = get_stats_date(&stream_name, date_value).await?;
-                let stats = serde_json::to_value(stats)?;
-
-                return Ok((web::Json(stats), StatusCode::OK));
-            }
+            let stats = get_stats_date(&stream_name, date_value).await?;
+            let stats = serde_json::to_value(stats)?;
+            return Ok((web::Json(stats), StatusCode::OK));
         }
     }
 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats = if CONFIG.parseable.mode == Mode::Query
-        && STREAM_INFO.stream_type(&stream_name).unwrap()
-            == Some(StreamType::UserDefined.to_string())
-    {
-        Some(fetch_stats_from_ingestors(&stream_name).await?)
-    } else {
-        None
-    };
+    let ingestor_stats: Option<Vec<QueriedStats>> = None;
 
     let hash_map = STREAM_INFO.read().expect("Readable");
     let stream_meta = &hash_map
@@ -757,99 +515,6 @@ fn remove_id_from_alerts(value: &mut Value) {
                 map.remove("id");
             });
     }
-}
-
-pub async fn update_time_partition_limit_in_stream(
-    stream_name: String,
-    time_partition_limit: &str,
-) -> Result<(), CreateStreamError> {
-    let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage
-        .update_time_partition_limit_in_stream(&stream_name, time_partition_limit)
-        .await
-    {
-        return Err(CreateStreamError::Storage { stream_name, err });
-    }
-
-    if metadata::STREAM_INFO
-        .update_time_partition_limit(&stream_name, time_partition_limit.to_string())
-        .is_err()
-    {
-        return Err(CreateStreamError::Custom {
-            msg: "failed to update time partition limit in metadata".to_string(),
-            status: StatusCode::EXPECTATION_FAILED,
-        });
-    }
-
-    Ok(())
-}
-
-pub async fn update_custom_partition_in_stream(
-    stream_name: String,
-    custom_partition: &str,
-) -> Result<(), CreateStreamError> {
-    let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name).unwrap();
-    let time_partition = STREAM_INFO.get_time_partition(&stream_name).unwrap();
-    if static_schema_flag.is_some() {
-        let schema = STREAM_INFO.schema(&stream_name).unwrap();
-
-        if !custom_partition.is_empty() {
-            let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-            let custom_partition_exists: HashMap<_, _> = custom_partition_list
-                .iter()
-                .map(|&partition| {
-                    (
-                        partition.to_string(),
-                        schema
-                            .fields()
-                            .iter()
-                            .any(|field| field.name() == partition),
-                    )
-                })
-                .collect();
-
-            for partition in &custom_partition_list {
-                if !custom_partition_exists[*partition] {
-                    return Err(CreateStreamError::Custom {
-                        msg: format!("custom partition field {} does not exist in the schema for the stream {}", partition, stream_name),
-                        status: StatusCode::BAD_REQUEST,
-                    });
-                }
-
-                if let Some(time_partition) = time_partition.clone() {
-                    if time_partition == *partition {
-                        return Err(CreateStreamError::Custom {
-                            msg: format!(
-                                "time partition {} cannot be set as custom partition",
-                                partition
-                            ),
-                            status: StatusCode::BAD_REQUEST,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage
-        .update_custom_partition_in_stream(&stream_name, custom_partition)
-        .await
-    {
-        return Err(CreateStreamError::Storage { stream_name, err });
-    }
-
-    if metadata::STREAM_INFO
-        .update_custom_partition(&stream_name, custom_partition.to_string())
-        .is_err()
-    {
-        return Err(CreateStreamError::Custom {
-            msg: "failed to update custom partition in metadata".to_string(),
-            status: StatusCode::EXPECTATION_FAILED,
-        });
-    }
-
-    Ok(())
 }
 
 pub async fn create_stream(
@@ -950,127 +615,31 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
 }
 
 pub async fn put_stream_hot_tier(
-    req: HttpRequest,
-    body: web::Json<serde_json::Value>,
-) -> Result<impl Responder, StreamError> {
-    if CONFIG.parseable.mode != Mode::Query {
-        return Err(StreamError::Custom {
-            msg: "Hot tier can only be enabled in query mode".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
-    }
-
-    if STREAM_INFO.stream_type(&stream_name).unwrap() == Some(StreamType::Internal.to_string()) {
-        return Err(StreamError::Custom {
-            msg: "Hot tier can not be updated for internal stream".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
-        return Err(StreamError::HotTierNotEnabled(stream_name));
-    }
-
-    let body = body.into_inner();
-    let mut hottier: StreamHotTier = match serde_json::from_value(body) {
-        Ok(hottier) => hottier,
-        Err(err) => return Err(StreamError::InvalidHotTierConfig(err)),
-    };
-
-    validator::hot_tier(&hottier.size.to_string())?;
-
-    STREAM_INFO.set_hot_tier(&stream_name, true)?;
-    if let Some(hot_tier_manager) = HotTierManager::global() {
-        let existing_hot_tier_used_size = hot_tier_manager
-            .validate_hot_tier_size(&stream_name, &hottier.size)
-            .await?;
-        hottier.used_size = Some(existing_hot_tier_used_size.to_string());
-        hottier.available_size = Some(hottier.size.clone());
-        hottier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
-        hot_tier_manager
-            .put_hot_tier(&stream_name, &mut hottier)
-            .await?;
-        let storage = CONFIG.storage().get_object_store();
-        let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
-        stream_metadata.hot_tier_enabled = Some(true);
-        storage
-            .put_stream_manifest(&stream_name, &stream_metadata)
-            .await?;
-    }
-
-    Ok((
-        format!("hot tier set for stream {stream_name}"),
-        StatusCode::OK,
-    ))
+    _req: HttpRequest,
+    _body: web::Json<serde_json::Value>,
+) -> Result<(), StreamError> {
+    Err(StreamError::Custom {
+        msg: "Hot tier can only be enabled in query mode".to_string(),
+        status: StatusCode::BAD_REQUEST,
+    })
 }
 
-pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    if CONFIG.parseable.mode != Mode::Query {
-        return Err(StreamError::Custom {
-            msg: "Hot tier can only be enabled in query mode".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
-    }
-
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
-        return Err(StreamError::HotTierNotEnabled(stream_name));
-    }
-
-    if let Some(hot_tier_manager) = HotTierManager::global() {
-        let mut hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
-        hot_tier.size = format!("{} {}", hot_tier.size, "Bytes");
-        hot_tier.used_size = Some(format!("{} {}", hot_tier.used_size.unwrap(), "Bytes"));
-        hot_tier.available_size = Some(format!("{} {}", hot_tier.available_size.unwrap(), "Bytes"));
-        Ok((web::Json(hot_tier), StatusCode::OK))
-    } else {
-        Err(StreamError::Custom {
-            msg: format!("hot tier not initialised for stream {}", stream_name),
-            status: (StatusCode::BAD_REQUEST),
-        })
-    }
+pub async fn get_stream_hot_tier(
+    _req: HttpRequest
+) -> Result<(), StreamError> {
+    Err(StreamError::Custom {
+        msg: "Hot tier can only be enabled in query mode".to_string(),
+        status: StatusCode::BAD_REQUEST,
+    })
 }
 
-pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    if CONFIG.parseable.mode != Mode::Query {
-        return Err(StreamError::Custom {
-            msg: "Hot tier can only be enabled in query mode".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
-    }
-
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
-        return Err(StreamError::HotTierNotEnabled(stream_name));
-    }
-
-    if STREAM_INFO.stream_type(&stream_name).unwrap() == Some(StreamType::Internal.to_string()) {
-        return Err(StreamError::Custom {
-            msg: "Hot tier can not be deleted for internal stream".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-
-    if let Some(hot_tier_manager) = HotTierManager::global() {
-        hot_tier_manager.delete_hot_tier(&stream_name).await?;
-    }
-    Ok((
-        format!("hot tier deleted for stream {stream_name}"),
-        StatusCode::OK,
-    ))
+pub async fn delete_stream_hot_tier(
+    _req: HttpRequest
+) -> Result<(), StreamError> {
+    Err(StreamError::Custom {
+        msg: "Hot tier can only be enabled in query mode".to_string(),
+        status: StatusCode::BAD_REQUEST,
+    })
 }
 
 pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
