@@ -62,8 +62,8 @@ pub struct CircularChartConfig {
 pub struct GraphConfig {
     x_key: String,
     y_keys: Vec<String>,
-    graph_type: GraphType,
-    orientation: Orientation,
+    graph_type: Option<GraphType>,
+    orientation: Option<Orientation>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -115,7 +115,6 @@ impl Dashboards {
         let mut this = vec![];
         let store = CONFIG.storage().get_object_store();
         let dashboards = store.get_all_dashboards().await.unwrap_or_default();
-
         for dashboard in dashboards {
             if dashboard.is_empty() {
                 continue;
@@ -123,37 +122,45 @@ impl Dashboards {
             let mut dashboard_value = serde_json::from_slice::<serde_json::Value>(&dashboard)?;
             if let Some(meta) = dashboard_value.clone().as_object() {
                 let version = meta.get("version").and_then(|version| version.as_str());
-                let user_id = meta.get("user_id").and_then(|user_id| user_id.as_str());
                 let dashboard_id = meta
                     .get("dashboard_id")
                     .and_then(|dashboard_id| dashboard_id.as_str());
-
                 match version {
                     Some("v1") => {
                         dashboard_value = migrate_v1_v2(dashboard_value);
                         dashboard_value = migrate_v2_v3(dashboard_value);
-                        if let (Some(user_id), Some(dashboard_id)) = (user_id, dashboard_id) {
-                            let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
-                            let dashboard_bytes = to_bytes(&dashboard_value);
-                            store.put_object(&path, dashboard_bytes.clone()).await?;
-                            if let Ok(dashboard) =
-                                serde_json::from_slice::<Dashboard>(&dashboard_bytes)
-                            {
-                                this.push(dashboard);
-                            }
+                        let user_id = dashboard_value
+                            .as_object()
+                            .unwrap()
+                            .get("user_id")
+                            .and_then(|user_id| user_id.as_str());
+                        let path = dashboard_path(
+                            user_id.unwrap(),
+                            &format!("{}.json", dashboard_id.unwrap()),
+                        );
+                        let dashboard_bytes = to_bytes(&dashboard_value);
+                        store.put_object(&path, dashboard_bytes.clone()).await?;
+                        if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard_bytes)
+                        {
+                            this.push(dashboard);
                         }
                     }
                     Some("v2") => {
                         dashboard_value = migrate_v2_v3(dashboard_value);
-                        if let (Some(user_id), Some(dashboard_id)) = (user_id, dashboard_id) {
-                            let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
-                            let dashboard_bytes = to_bytes(&dashboard_value);
-                            store.put_object(&path, dashboard_bytes.clone()).await?;
-                            if let Ok(dashboard) =
-                                serde_json::from_slice::<Dashboard>(&dashboard_bytes)
-                            {
-                                this.push(dashboard);
-                            }
+                        let user_id = dashboard_value
+                            .as_object()
+                            .unwrap()
+                            .get("user_id")
+                            .and_then(|user_id| user_id.as_str());
+                        let path = dashboard_path(
+                            user_id.unwrap(),
+                            &format!("{}.json", dashboard_id.unwrap()),
+                        );
+                        let dashboard_bytes = to_bytes(&dashboard_value);
+                        store.put_object(&path, dashboard_bytes.clone()).await?;
+                        if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard_bytes)
+                        {
+                            this.push(dashboard);
                         }
                     }
                     _ => {
@@ -161,10 +168,6 @@ impl Dashboards {
                             this.push(dashboard);
                         }
                     }
-                }
-                if version == Some("v1") {
-                } else if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard) {
-                    this.push(dashboard);
                 }
             }
         }
@@ -219,6 +222,20 @@ fn migrate_v1_v2(mut dashboard_meta: Value) -> Value {
         "version".to_owned(),
         Value::String(CURRENT_DASHBOARD_VERSION.into()),
     );
+    let tiles = dashboard_meta_map
+        .get_mut("tiles")
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    for tile in tiles.iter_mut() {
+        let tile_map = tile.as_object_mut().unwrap();
+        let visualization = tile_map
+            .get_mut("visualization")
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        visualization.insert("tick_config".to_owned(), Value::Array(vec![]));
+    }
 
     dashboard_meta
 }
