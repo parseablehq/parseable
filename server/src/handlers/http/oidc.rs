@@ -63,7 +63,7 @@ pub async fn login(
     req: HttpRequest,
     query: web::Query<RedirectAfterLogin>,
 ) -> Result<HttpResponse, OIDCError> {
-    let conn = req.connection_info();
+    let conn = req.connection_info().clone();
     let base_url = format!("{}://{}/", conn.scheme(), conn.host());
     if !base_url.eq(query.redirect.as_str()) {
         return Err(OIDCError::BadRequest);
