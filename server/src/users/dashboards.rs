@@ -131,6 +131,7 @@ impl Dashboards {
                 match version {
                     Some("v1") => {
                         dashboard_value = migrate_v1_v2(dashboard_value);
+                        dashboard_value = migrate_v2_v3(dashboard_value);
                         if let (Some(user_id), Some(dashboard_id)) = (user_id, dashboard_id) {
                             let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
                             let dashboard_bytes = to_bytes(&dashboard_value);
@@ -241,13 +242,17 @@ fn migrate_v2_v3(mut dashboard_meta: Value) -> Value {
             .unwrap()
             .as_object_mut()
             .unwrap();
-        let graph_config = visualization
-            .get_mut("graph_config")
-            .unwrap()
-            .as_object_mut()
-            .unwrap();
-        graph_config.insert("orientation".to_owned(), Value::String("horizontal".into()));
-        graph_config.insert("graph_type".to_owned(), Value::String("default".into()));
+        if visualization.get("graph_config").is_some()
+            && !visualization.get("graph_config").unwrap().is_null()
+        {
+            let graph_config = visualization
+                .get_mut("graph_config")
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            graph_config.insert("orientation".to_owned(), Value::String("horizontal".into()));
+            graph_config.insert("graph_type".to_owned(), Value::String("default".into()));
+        }
     }
 
     dashboard_meta
