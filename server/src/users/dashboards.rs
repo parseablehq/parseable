@@ -30,7 +30,7 @@ use crate::{
 use super::TimeFilter;
 
 pub static DASHBOARDS: Lazy<Dashboards> = Lazy::new(Dashboards::default);
-pub const CURRENT_DASHBOARD_VERSION: &str = "v2";
+pub const CURRENT_DASHBOARD_VERSION: &str = "v3";
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Tiles {
@@ -62,6 +62,25 @@ pub struct CircularChartConfig {
 pub struct GraphConfig {
     x_key: String,
     y_keys: Vec<String>,
+    graph_type: GraphType,
+    orientation: Orientation,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum GraphType {
+    #[default]
+    Default,
+    Stacked,
+    Percent,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum Orientation {
+    #[default]
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -109,17 +128,40 @@ impl Dashboards {
                     .get("dashboard_id")
                     .and_then(|dashboard_id| dashboard_id.as_str());
 
-                if version == Some("v1") {
-                    dashboard_value = migrate_v1_v2(dashboard_value);
-                    if let (Some(user_id), Some(dashboard_id)) = (user_id, dashboard_id) {
-                        let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
-                        let dashboard_bytes = to_bytes(&dashboard_value);
-                        store.put_object(&path, dashboard_bytes.clone()).await?;
-                        if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard_bytes)
-                        {
+                match version {
+                    Some("v1") => {
+                        dashboard_value = migrate_v1_v2(dashboard_value);
+                        if let (Some(user_id), Some(dashboard_id)) = (user_id, dashboard_id) {
+                            let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
+                            let dashboard_bytes = to_bytes(&dashboard_value);
+                            store.put_object(&path, dashboard_bytes.clone()).await?;
+                            if let Ok(dashboard) =
+                                serde_json::from_slice::<Dashboard>(&dashboard_bytes)
+                            {
+                                this.push(dashboard);
+                            }
+                        }
+                    }
+                    Some("v2") => {
+                        dashboard_value = migrate_v2_v3(dashboard_value);
+                        if let (Some(user_id), Some(dashboard_id)) = (user_id, dashboard_id) {
+                            let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
+                            let dashboard_bytes = to_bytes(&dashboard_value);
+                            store.put_object(&path, dashboard_bytes.clone()).await?;
+                            if let Ok(dashboard) =
+                                serde_json::from_slice::<Dashboard>(&dashboard_bytes)
+                            {
+                                this.push(dashboard);
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard) {
                             this.push(dashboard);
                         }
                     }
+                }
+                if version == Some("v1") {
                 } else if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard) {
                     this.push(dashboard);
                 }
@@ -176,6 +218,37 @@ fn migrate_v1_v2(mut dashboard_meta: Value) -> Value {
         "version".to_owned(),
         Value::String(CURRENT_DASHBOARD_VERSION.into()),
     );
+
+    dashboard_meta
+}
+
+fn migrate_v2_v3(mut dashboard_meta: Value) -> Value {
+    let dashboard_meta_map = dashboard_meta.as_object_mut().unwrap();
+
+    dashboard_meta_map.insert(
+        "version".to_owned(),
+        Value::String(CURRENT_DASHBOARD_VERSION.into()),
+    );
+    let tiles = dashboard_meta_map
+        .get_mut("tiles")
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    for tile in tiles {
+        let tile_map = tile.as_object_mut().unwrap();
+        let visualization = tile_map
+            .get_mut("visualization")
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        let graph_config = visualization
+            .get_mut("graph_config")
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        graph_config.insert("orientation".to_owned(), Value::String("horizontal".into()));
+        graph_config.insert("graph_type".to_owned(), Value::String("default".into()));
+    }
 
     dashboard_meta
 }
