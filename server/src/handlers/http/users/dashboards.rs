@@ -52,12 +52,14 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, DashboardError> {
 }
 
 pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, DashboardError> {
-    let user_id = get_user_from_request(&req)?;
+    let mut user_id = get_user_from_request(&req)?;
+    user_id = get_hash(&user_id);
     let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
     let dashboard_id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
     dashboard.dashboard_id = Some(dashboard_id.clone());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
-    dashboard.user_id = Some(get_hash(&user_id));
+
+    dashboard.user_id = Some(user_id.clone());
     for tile in dashboard.tiles.iter_mut() {
         tile.tile_id = Some(get_hash(Utc::now().timestamp_micros().to_string().as_str()));
     }
@@ -75,19 +77,19 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Dashb
 }
 
 pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, DashboardError> {
-    let user_id = get_user_from_request(&req)?;
+    let mut user_id = get_user_from_request(&req)?;
+    user_id = get_hash(&user_id);
     let dashboard_id = req
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
-    if DASHBOARDS
-        .get_dashboard(dashboard_id, &get_hash(&user_id))
-        .is_none()
-    {
+
+    if DASHBOARDS.get_dashboard(dashboard_id, &user_id).is_none() {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
     let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
     dashboard.dashboard_id = Some(dashboard_id.to_string());
+    dashboard.user_id = Some(user_id.clone());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
     for tile in dashboard.tiles.iter_mut() {
         if tile.tile_id.is_none() {
@@ -108,15 +110,13 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, Das
 }
 
 pub async fn delete(req: HttpRequest) -> Result<HttpResponse, DashboardError> {
-    let user_id = get_user_from_request(&req)?;
+    let mut user_id = get_user_from_request(&req)?;
+    user_id = get_hash(&user_id);
     let dashboard_id = req
         .match_info()
         .get("dashboard_id")
         .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
-    if DASHBOARDS
-        .get_dashboard(dashboard_id, &get_hash(&user_id))
-        .is_none()
-    {
+    if DASHBOARDS.get_dashboard(dashboard_id, &user_id).is_none() {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));

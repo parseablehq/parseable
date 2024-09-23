@@ -99,16 +99,30 @@ impl Filters {
                     if let (Some(user_id), Some(stream_name), Some(filter_id)) =
                         (user_id, stream_name, filter_id)
                     {
-                        let path =
-                            filter_path(user_id, stream_name, &format!("{}.json", filter_id));
+                        let path = filter_path(
+                            &get_hash(user_id),
+                            stream_name,
+                            &format!("{}.json", filter_id),
+                        );
                         let filter_bytes = to_bytes(&filter_value);
                         store.put_object(&path, filter_bytes.clone()).await?;
                         if let Ok(filter) = serde_json::from_slice::<Filter>(&filter_bytes) {
                             this.push(filter);
                         }
                     }
-                } else if let Ok(filter) = serde_json::from_slice::<Filter>(&filter) {
-                    this.push(filter);
+                } else if let (Some(user_id), Some(stream_name), Some(filter_id)) =
+                    (user_id, stream_name, filter_id)
+                {
+                    let path = filter_path(
+                        &get_hash(user_id),
+                        stream_name,
+                        &format!("{}.json", filter_id),
+                    );
+                    let filter_bytes = to_bytes(&filter_value);
+                    store.put_object(&path, filter_bytes.clone()).await?;
+                    if let Ok(filter) = serde_json::from_slice::<Filter>(&filter) {
+                        this.push(filter);
+                    }
                 }
             }
         }
