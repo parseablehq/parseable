@@ -142,6 +142,7 @@ impl Dashboards {
                         store.put_object(&path, dashboard_bytes.clone()).await?;
                         if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard_bytes)
                         {
+                            this.retain(|d: &Dashboard| d.dashboard_id != dashboard.dashboard_id);
                             this.push(dashboard);
                         }
                     }
@@ -160,11 +161,13 @@ impl Dashboards {
                         store.put_object(&path, dashboard_bytes.clone()).await?;
                         if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard_bytes)
                         {
+                            this.retain(|d| d.dashboard_id != dashboard.dashboard_id);
                             this.push(dashboard);
                         }
                     }
                     _ => {
                         if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard) {
+                            this.retain(|d| d.dashboard_id != dashboard.dashboard_id);
                             this.push(dashboard);
                         }
                     }

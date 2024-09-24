@@ -72,7 +72,7 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Filte
     Ok((web::Json(filter), StatusCode::OK))
 }
 
-pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, FiltersError> {
+pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, FiltersError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = req
@@ -98,7 +98,7 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<HttpResponse, Filte
     let filter_bytes = serde_json::to_vec(&filter)?;
     store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
-    Ok(HttpResponse::Ok().finish())
+    Ok((web::Json(filter), StatusCode::OK))
 }
 
 pub async fn delete(req: HttpRequest) -> Result<HttpResponse, FiltersError> {

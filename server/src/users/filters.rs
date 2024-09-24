@@ -107,6 +107,7 @@ impl Filters {
                         let filter_bytes = to_bytes(&filter_value);
                         store.put_object(&path, filter_bytes.clone()).await?;
                         if let Ok(filter) = serde_json::from_slice::<Filter>(&filter_bytes) {
+                            this.retain(|f: &Filter| f.filter_id != filter.filter_id);
                             this.push(filter);
                         }
                     }
@@ -121,6 +122,7 @@ impl Filters {
                     let filter_bytes = to_bytes(&filter_value);
                     store.put_object(&path, filter_bytes.clone()).await?;
                     if let Ok(filter) = serde_json::from_slice::<Filter>(&filter) {
+                        this.retain(|f: &Filter| f.filter_id != filter.filter_id);
                         this.push(filter);
                     }
                 }
