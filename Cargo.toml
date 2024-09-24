@@ -1,3 +1,6 @@
 [workspace]
 members = ["server"]
 resolver = "2"
+
+[patch.crates-io]
+object_store = { git = "https://github.com/MihirLuthra/arrow-rs.git", branch = "mihir/I-919-0.10.2-with-sse-c" }
