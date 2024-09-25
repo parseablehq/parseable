@@ -231,9 +231,12 @@ impl S3Config {
 
         if let Some(object_sse) = &self.object_sse {
             match object_sse {
-                ObjectSse::SseC { _algorithm, base64_encryption_key } => {
+                ObjectSse::SseC {
+                    _algorithm,
+                    base64_encryption_key,
+                } => {
                     builder = builder.with_ssec_encryption(base64_encryption_key);
-                },
+                }
             }
         }
 
