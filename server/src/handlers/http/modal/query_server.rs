@@ -356,17 +356,17 @@ impl QueryServer {
                             // PUT "/logstream/{logstream}/hottier" ==> Set hottier for given logstream
                             .route(
                                 web::put()
-                                    .to(querier_logstream::put_stream_hot_tier)
+                                    .to(logstream::put_stream_hot_tier)
                                     .authorize_for_stream(Action::PutHotTierEnabled),
                             )
                             .route(
                                 web::get()
-                                    .to(querier_logstream::get_stream_hot_tier)
+                                    .to(logstream::get_stream_hot_tier)
                                     .authorize_for_stream(Action::GetHotTierEnabled),
                             )
                             .route(
                                 web::delete()
-                                    .to(querier_logstream::delete_stream_hot_tier)
+                                    .to(logstream::delete_stream_hot_tier)
                                     .authorize_for_stream(Action::DeleteHotTierEnabled),
                             ),
                     ),

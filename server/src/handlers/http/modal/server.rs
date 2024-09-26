@@ -29,6 +29,7 @@ use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
+use crate::hottier::HotTierManager;
 use crate::localcache::LocalCacheManager;
 use crate::metrics;
 use crate::migration;
@@ -553,6 +554,10 @@ impl Server {
         DASHBOARDS.load().await?;
 
         storage::retention::load_retention_from_global();
+
+        if let Some(hot_tier_manager) = HotTierManager::global() {
+            hot_tier_manager.download_from_s3()?;
+        };
 
         let (localsync_handler, mut localsync_outbox, localsync_inbox) =
             sync::run_local_sync().await;
