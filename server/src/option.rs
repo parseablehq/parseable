@@ -83,6 +83,15 @@ Cloud Native, log analytics platform for modern applications."#,
                         .exit()
                 }
 
+                if cli.hot_tier_storage_path.is_some() {
+                    create_parseable_cli_command()
+                        .error(
+                            ErrorKind::ValueValidation,
+                            "Cannot use hot tier with local-store subcommand.",
+                        )
+                        .exit()
+                }
+
                 Config {
                     parseable: cli,
                     storage: Arc::new(storage),
