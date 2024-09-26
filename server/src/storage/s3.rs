@@ -88,7 +88,7 @@ pub struct S3Config {
 
     /// Server side encryption to use for operations with objects.
     /// Currently, this only supports SSE-C. Value should be
-    /// like AES256:<base64_encoded_encryption_key>.
+    /// like SSE-C:AES256:<base64_encoded_encryption_key>.
     #[arg(long, env = "P_OBJECT_SSE", value_name = "object-sse")]
     pub object_sse: Option<ObjectSse>,
 
@@ -157,9 +157,14 @@ impl FromStr for ObjectSse {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = s.split(':').collect::<Vec<_>>();
-        if parts.len() == 2 {
-            let algorithm = parts[0];
-            let encryption_key = parts[1];
+        if parts.len() == 3 {
+            let sse_type = parts[0];
+            if sse_type != "SSE-C" {
+                return Err("Only SSE-C is supported for object encryption for now".into());
+            }
+
+            let algorithm = parts[1];
+            let encryption_key = parts[2];
 
             let alg = ObjectEncryptionAlgorithm::from_str(algorithm)?;
 
@@ -170,7 +175,7 @@ impl FromStr for ObjectSse {
                 },
             })
         } else {
-            Err("Expected <algorithm>:<base64_encryption_key>".into())
+            Err("Expected SSE-C:AES256:<base64_encryption_key>".into())
         }
     }
 }
