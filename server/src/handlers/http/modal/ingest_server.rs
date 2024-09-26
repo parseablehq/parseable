@@ -221,23 +221,26 @@ impl IngestServer {
             .service(
                 // PUT, GET, DELETE Roles
                 resource("/{name}")
-                    .route(web::put().to(ingester_role::put).authorize(Action::PutRole))
                     .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
+            )
+            .service(
+                resource("/{name}/sync")
+                    .route(web::put().to(ingester_role::put).authorize(Action::PutRole)),
             )
     }
     // get the user webscope
     fn get_user_webscope() -> Scope {
         web::scope("/user")
             .service(
-                web::resource("/{username}")
-                    // PUT /user/{username} => Create a new user
+                web::resource("/{username}/sync")
+                    // PUT /user/{username}/sync => Sync creation of a new user
                     .route(
                         web::post()
                             .to(ingester_rbac::post_user)
                             .authorize(Action::PutUser),
                     )
-                    // DELETE /user/{username} => Delete a user
+                    // DELETE /user/{username} => Sync deletion of a user
                     .route(
                         web::delete()
                             .to(ingester_rbac::delete_user)
@@ -246,7 +249,7 @@ impl IngestServer {
                     .wrap(DisAllowRootUser),
             )
             .service(
-                web::resource("/{username}/role")
+                web::resource("/{username}/role/sync")
                     // PUT /user/{username}/roles => Put roles for user
                     .route(
                         web::put()
@@ -256,7 +259,7 @@ impl IngestServer {
                     ),
             )
             .service(
-                web::resource("/{username}/generate-new-password")
+                web::resource("/{username}/generate-new-password/sync")
                     // POST /user/{username}/generate-new-password => reset password for this user
                     .route(
                         web::post()
@@ -271,23 +274,26 @@ impl IngestServer {
             web::scope("/{logstream}")
                 .service(
                     web::resource("")
-                        // DELETE "/logstream/{logstream}" ==> Delete a log stream
-                        .route(
-                            web::delete()
-                                .to(ingester_logstream::delete)
-                                .authorize_for_stream(Action::DeleteStream),
-                        )
-                        // PUT "/logstream/{logstream}" ==> Create a new log stream
-                        .route(
-                            web::put()
-                                .to(ingester_logstream::put_stream)
-                                .authorize_for_stream(Action::CreateStream),
-                        )
                         // POST "/logstream/{logstream}" ==> Post logs to given log stream
                         .route(
                             web::post()
                                 .to(ingest::post_event)
                                 .authorize_for_stream(Action::Ingest),
+                        ),
+                )
+                .service(
+                    web::resource("/sync")
+                        // DELETE "/logstream/{logstream}/sync" ==> Sync deletion of a log stream
+                        .route(
+                            web::delete()
+                                .to(ingester_logstream::delete)
+                                .authorize(Action::DeleteStream),
+                        )
+                        // PUT "/logstream/{logstream}/sync" ==> Sync creation of a new log stream
+                        .route(
+                            web::put()
+                                .to(ingester_logstream::put_stream)
+                                .authorize_for_stream(Action::CreateStream),
                         ),
                 )
                 .service(
@@ -325,7 +331,7 @@ impl IngestServer {
                     web::scope("/retention").service(
                         web::resource("/cleanup").route(
                             web::post()
-                                .to(logstream::retention_cleanup)
+                                .to(ingester_logstream::retention_cleanup)
                                 .authorize_for_stream(Action::PutRetention),
                         ),
                     ),

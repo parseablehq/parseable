@@ -17,27 +17,20 @@
  */
 
 use self::error::{CreateStreamError, StreamError};
-use super::base_path_without_preceding_slash;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
-use super::cluster::{
-    fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors, sync_streams_with_ingestors,
-    INTERNAL_STREAM_NAME,
-};
+use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::ingest::create_stream_if_not_exists;
 use super::modal::utils::logstream_utils::create_update_stream;
 use crate::alerts::Alerts;
 use crate::handlers::STREAM_TYPE_KEY;
-use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
+use crate::hottier::HotTierManager;
 use crate::metadata::STREAM_INFO;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::option::{Mode, CONFIG};
+use crate::option::CONFIG;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::StreamType;
 use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
-use crate::{
-    catalog::{self, remove_manifest_from_snapshot},
-    event, stats,
-};
+use crate::{catalog, event, stats};
 
 use crate::{metadata, validator};
 use actix_web::http::header::{self, HeaderMap};
@@ -47,7 +40,6 @@ use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderName, HeaderValue};
-use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -59,7 +51,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         return Err(StreamError::StreamNotFound(stream_name));
     }
-    
+
     let objectstore = CONFIG.storage().get_object_store();
 
     objectstore.delete_stream(&stream_name).await?;
@@ -78,23 +70,6 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
         }
     }
 
-    let ingestor_metadata = super::cluster::get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
-        StreamError::from(err)
-    })?;
-
-    for ingestor in ingestor_metadata {
-        let url = format!(
-            "{}{}/logstream/{}",
-            ingestor.domain_name,
-            base_path_without_preceding_slash(),
-            stream_name
-        );
-
-        // delete the stream
-        super::cluster::send_stream_delete_request(&url, ingestor.clone()).await?;
-    }
-
     metadata::STREAM_INFO.delete_stream(&stream_name);
     event::STREAM_WRITERS.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json").unwrap_or_else(|e| {
@@ -102,28 +77,6 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     });
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
-}
-
-pub async fn retention_cleanup(
-    req: HttpRequest,
-    body: Bytes,
-) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let storage = CONFIG.storage().get_object_store();
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        log::error!("Stream {} not found", stream_name.clone());
-        return Err(StreamError::StreamNotFound(stream_name.clone()));
-    }
-    let date_list: Vec<String> = serde_json::from_slice(&body).unwrap();
-    let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
-    let mut first_event_at: Option<String> = None;
-    if let Err(err) = res {
-        log::error!("Failed to update manifest list in the snapshot {err:?}")
-    } else {
-        first_event_at = res.unwrap();
-    }
-
-    Ok((first_event_at, StatusCode::OK))
 }
 
 pub async fn list(_: HttpRequest) -> impl Responder {
@@ -290,13 +243,8 @@ pub async fn put_retention(
 pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    match CONFIG.parseable.mode {
-        Mode::Ingest | Mode::All => {
-            if CONFIG.parseable.local_cache_path.is_none() {
-                return Err(StreamError::CacheNotEnabled(stream_name));
-            }
-        }
-        _ => {}
+    if CONFIG.parseable.local_cache_path.is_none() {
+        return Err(StreamError::CacheNotEnabled(stream_name));
     }
 
     let cache_enabled = STREAM_INFO.get_cache_enabled(&stream_name)?;
@@ -310,61 +258,11 @@ pub async fn put_enable_cache(
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let storage = CONFIG.storage().get_object_store();
 
-    match CONFIG.parseable.mode {
-        Mode::Query => {
-            if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-                return Err(StreamError::StreamNotFound(stream_name));
-            }
-            let ingestor_metadata = super::cluster::get_ingestor_info().await.map_err(|err| {
-                log::error!("Fatal: failed to get ingestor info: {:?}", err);
-                StreamError::from(err)
-            })?;
-            for ingestor in ingestor_metadata {
-                let url = format!(
-                    "{}{}/logstream/{}/cache",
-                    ingestor.domain_name,
-                    base_path_without_preceding_slash(),
-                    stream_name
-                );
-
-                super::cluster::sync_cache_with_ingestors(&url, ingestor.clone(), *body).await?;
-            }
-        }
-        Mode::Ingest => {
-            if CONFIG.parseable.local_cache_path.is_none() {
-                return Err(StreamError::CacheNotEnabled(stream_name));
-            }
-            // here the ingest server has not found the stream
-            // so it should check if the stream exists in storage
-            let check = storage
-                .list_streams()
-                .await?
-                .iter()
-                .map(|stream| stream.name.clone())
-                .contains(&stream_name);
-
-            if !check {
-                log::error!("Stream {} not found", stream_name.clone());
-                return Err(StreamError::StreamNotFound(stream_name.clone()));
-            }
-            metadata::STREAM_INFO
-                .upsert_stream_info(
-                    &*storage,
-                    LogStream {
-                        name: stream_name.clone().to_owned(),
-                    },
-                )
-                .await
-                .map_err(|_| StreamError::StreamNotFound(stream_name.clone()))?;
-        }
-        Mode::All => {
-            if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-                return Err(StreamError::StreamNotFound(stream_name));
-            }
-            if CONFIG.parseable.local_cache_path.is_none() {
-                return Err(StreamError::CacheNotEnabled(stream_name));
-            }
-        }
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        return Err(StreamError::StreamNotFound(stream_name));
+    }
+    if CONFIG.parseable.local_cache_path.is_none() {
+        return Err(StreamError::CacheNotEnabled(stream_name));
     }
     let enable_cache = body.into_inner();
     let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
@@ -612,34 +510,6 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
     // get the other info from
 
     Ok((web::Json(stream_info), StatusCode::OK))
-}
-
-pub async fn put_stream_hot_tier(
-    _req: HttpRequest,
-    _body: web::Json<serde_json::Value>,
-) -> Result<(), StreamError> {
-    Err(StreamError::Custom {
-        msg: "Hot tier can only be enabled in query mode".to_string(),
-        status: StatusCode::BAD_REQUEST,
-    })
-}
-
-pub async fn get_stream_hot_tier(
-    _req: HttpRequest
-) -> Result<(), StreamError> {
-    Err(StreamError::Custom {
-        msg: "Hot tier can only be enabled in query mode".to_string(),
-        status: StatusCode::BAD_REQUEST,
-    })
-}
-
-pub async fn delete_stream_hot_tier(
-    _req: HttpRequest
-) -> Result<(), StreamError> {
-    Err(StreamError::Custom {
-        msg: "Hot tier can only be enabled in query mode".to_string(),
-        status: StatusCode::BAD_REQUEST,
-    })
 }
 
 pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {

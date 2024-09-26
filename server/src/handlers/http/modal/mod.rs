@@ -16,13 +16,13 @@
  *
  */
 
+pub mod ingest;
 pub mod ingest_server;
+pub mod query;
 pub mod query_server;
 pub mod server;
 pub mod ssl_acceptor;
 pub mod utils;
-pub mod ingest;
-pub mod query;
 
 use std::sync::Arc;
 

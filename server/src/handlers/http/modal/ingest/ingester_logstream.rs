@@ -3,7 +3,39 @@ use bytes::Bytes;
 use http::StatusCode;
 use itertools::Itertools;
 
-use crate::{event, handlers::http::{logstream::error::StreamError, modal::utils::logstream_utils::create_update_stream}, metadata::{self, STREAM_INFO}, option::CONFIG, stats, storage::LogStream};
+use crate::{
+    catalog::remove_manifest_from_snapshot,
+    event,
+    handlers::http::{
+        logstream::error::StreamError, modal::utils::logstream_utils::create_update_stream,
+    },
+    metadata::{self, STREAM_INFO},
+    option::CONFIG,
+    stats,
+    storage::LogStream,
+};
+
+pub async fn retention_cleanup(
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<impl Responder, StreamError> {
+    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let storage = CONFIG.storage().get_object_store();
+    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
+        log::error!("Stream {} not found", stream_name.clone());
+        return Err(StreamError::StreamNotFound(stream_name.clone()));
+    }
+    let date_list: Vec<String> = serde_json::from_slice(&body).unwrap();
+    let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
+    let mut first_event_at: Option<String> = None;
+    if let Err(err) = res {
+        log::error!("Failed to update manifest list in the snapshot {err:?}")
+    } else {
+        first_event_at = res.unwrap();
+    }
+
+    Ok((first_event_at, StatusCode::OK))
+}
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -35,7 +67,6 @@ pub async fn put_enable_cache(
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let storage = CONFIG.storage().get_object_store();
 
-
     if CONFIG.parseable.local_cache_path.is_none() {
         return Err(StreamError::CacheNotEnabled(stream_name));
     }
@@ -61,7 +92,7 @@ pub async fn put_enable_cache(
         )
         .await
         .map_err(|_| StreamError::StreamNotFound(stream_name.clone()))?;
-    
+
     let enable_cache = body.into_inner();
     let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
     stream_metadata.cache_enabled = enable_cache;

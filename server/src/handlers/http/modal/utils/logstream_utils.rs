@@ -5,8 +5,18 @@ use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use http::StatusCode;
 
-use crate::{handlers::{http::logstream::error::{CreateStreamError, StreamError}, CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY}, metadata::{self, STREAM_INFO}, option::CONFIG, static_schema::{convert_static_schema_to_arrow_schema, StaticSchema}, storage::StreamType, validator};
-
+use crate::{
+    handlers::{
+        http::logstream::error::{CreateStreamError, StreamError},
+        CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
+        TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
+    },
+    metadata::{self, STREAM_INFO},
+    option::CONFIG,
+    static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
+    storage::StreamType,
+    validator,
+};
 
 pub async fn create_update_stream(
     req: &HttpRequest,
@@ -138,7 +148,9 @@ pub fn fetch_headers_from_put_stream_request(
     )
 }
 
-pub fn validate_time_partition_limit(time_partition_limit: &str) -> Result<&str, CreateStreamError> {
+pub fn validate_time_partition_limit(
+    time_partition_limit: &str,
+) -> Result<&str, CreateStreamError> {
     if !time_partition_limit.ends_with('d') {
         return Err(CreateStreamError::Custom {
             msg: "Missing 'd' suffix for duration value".to_string(),

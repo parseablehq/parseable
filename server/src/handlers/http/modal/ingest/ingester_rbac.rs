@@ -3,8 +3,14 @@ use std::collections::HashSet;
 use actix_web::{web, Responder};
 use tokio::sync::Mutex;
 
-use crate::{handlers::http::{modal::utils::rbac_utils::get_metadata, rbac::RBACError}, rbac::{user::{self, User as ParseableUser}, Users}, storage};
-
+use crate::{
+    handlers::http::{modal::utils::rbac_utils::get_metadata, rbac::RBACError},
+    rbac::{
+        user::{self, User as ParseableUser},
+        Users,
+    },
+    storage,
+};
 
 // async aware lock for updating storage metadata and user map atomicically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
@@ -87,7 +93,7 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     let username = username.into_inner();
     let mut new_hash = String::default();
     let mut metadata = get_metadata().await?;
-    
+
     let _ = storage::put_staging_metadata(&metadata);
     if let Some(user) = metadata
         .users

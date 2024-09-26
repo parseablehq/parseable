@@ -60,7 +60,6 @@ use crate::{
 
 // use super::generate;
 use super::generate;
-use super::query::querier_role;
 use super::ssl_acceptor::get_ssl_acceptor;
 use super::OpenIdClient;
 use super::ParseableServer;
@@ -384,7 +383,7 @@ impl Server {
                                     .to(logstream::get_cache_enabled)
                                     .authorize_for_stream(Action::GetCacheEnabled),
                             ),
-                    )
+                    ),
             )
     }
 
@@ -438,7 +437,7 @@ impl Server {
             .service(
                 // PUT, GET, DELETE Roles
                 resource("/{name}")
-                    .route(web::put().to(querier_role::put).authorize(Action::PutRole))
+                    .route(web::put().to(role::put).authorize(Action::PutRole))
                     .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
             )

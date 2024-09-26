@@ -18,17 +18,15 @@
 
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
+use super::otel;
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
-use super::otel;
 use crate::event::{
     self,
     error::EventError,
     format::{self, EventFormat},
 };
-use crate::handlers::{
-    LOG_SOURCE_KEY, LOG_SOURCE_OTEL, STREAM_NAME_HEADER_KEY,
-};
+use crate::handlers::{LOG_SOURCE_KEY, LOG_SOURCE_OTEL, STREAM_NAME_HEADER_KEY};
 use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{self, STREAM_INFO};
@@ -140,7 +138,6 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
     }
     Ok(HttpResponse::Ok().finish())
 }
-
 
 // Handler for POST /api/v1/logstream/{logstream}
 // only ingests events into the specified logstream

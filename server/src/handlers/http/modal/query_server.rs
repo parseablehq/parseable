@@ -18,19 +18,19 @@
 
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
-use crate::handlers::http;
-use crate::handlers::http::{health_check, ingest, logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::{self, role};
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
+use crate::handlers::http::{health_check, logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metrics, migration, rbac, storage};
+use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
-use actix_web::web::ServiceConfig;
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -38,7 +38,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::option::CONFIG;
 
-use super::query::{querier_ingest, querier_logstream, querier_rbac};
+use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
 use super::{OpenIdClient, ParseableServer};
@@ -168,11 +168,31 @@ impl QueryServer {
                     .service(Server::get_filters_webscope())
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
-                    .service(Server::get_user_role_webscope())
+                    .service(Self::get_user_role_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
             .service(Server::get_generated());
+    }
+
+    // get the role webscope
+    fn get_user_role_webscope() -> Scope {
+        web::scope("/role")
+            // GET Role List
+            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+            .service(
+                // PUT and GET Default Role
+                resource("/default")
+                    .route(web::put().to(role::put_default).authorize(Action::PutRole))
+                    .route(web::get().to(role::get_default).authorize(Action::GetRole)),
+            )
+            .service(
+                // PUT, GET, DELETE Roles
+                resource("/{name}")
+                    .route(web::put().to(querier_role::put).authorize(Action::PutRole))
+                    .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
+                    .route(web::get().to(role::get).authorize(Action::GetRole)),
+            )
     }
 
     // get the user webscope
@@ -257,7 +277,7 @@ impl QueryServer {
                             // DELETE "/logstream/{logstream}" ==> Delete log stream
                             .route(
                                 web::delete()
-                                    .to(logstream::delete)
+                                    .to(querier_logstream::delete)
                                     .authorize_for_stream(Action::DeleteStream),
                             )
                             .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),

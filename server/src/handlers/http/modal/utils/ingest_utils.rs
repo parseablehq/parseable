@@ -1,4 +1,7 @@
-use std::{collections::{BTreeMap, HashMap}, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use actix_web::HttpRequest;
 use arrow_schema::Field;
@@ -6,8 +9,19 @@ use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
 
-use crate::{event::{self, format::{self, EventFormat}}, handlers::{http::{ingest::PostError, kinesis, otel}, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR}, metadata::STREAM_INFO, storage::StreamType, utils::{header_parsing::collect_labelled_headers, json::convert_array_to_object}};
-
+use crate::{
+    event::{
+        self,
+        format::{self, EventFormat},
+    },
+    handlers::{
+        http::{ingest::PostError, kinesis, otel},
+        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+    },
+    metadata::STREAM_INFO,
+    storage::StreamType,
+    utils::{header_parsing::collect_labelled_headers, json::convert_array_to_object},
+};
 
 pub async fn flatten_and_push_logs(
     req: HttpRequest,
@@ -38,7 +52,11 @@ pub async fn flatten_and_push_logs(
     Ok(())
 }
 
-pub async fn push_logs(stream_name: String, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
+pub async fn push_logs(
+    stream_name: String,
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<(), PostError> {
     let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
     let time_partition_limit = STREAM_INFO.get_time_partition_limit(&stream_name)?;
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name)?;

@@ -1,5 +1,7 @@
-use crate::{option::CONFIG, storage::{self, ObjectStorageError, StorageMetadata}};
-
+use crate::{
+    option::CONFIG,
+    storage::{self, ObjectStorageError, StorageMetadata},
+};
 
 pub async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
     let metadata = CONFIG

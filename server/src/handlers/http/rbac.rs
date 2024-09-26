@@ -19,25 +19,15 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    handlers::http::cluster::sync_users_with_roles_with_ingestors,
-    option::{Mode, CONFIG},
-    rbac::{
-        map::roles,
-        role::model::DefaultPrivilege,
-        user::{self},
-        Users,
-    },
-    storage::{self, ObjectStorageError},
+    rbac::{map::roles, role::model::DefaultPrivilege, user, Users},
+    storage::ObjectStorageError,
     validator::{self, error::UsernameValidationError},
 };
 use actix_web::{http::header::ContentType, web, Responder};
 use http::StatusCode;
 use tokio::sync::Mutex;
 
-use super::{cluster::{
-    sync_password_reset_with_ingestors, sync_user_creation_with_ingestors,
-    sync_user_deletion_with_ingestors,
-}, modal::utils::rbac_utils::{get_metadata, put_metadata}};
+use super::modal::utils::rbac_utils::{get_metadata, put_metadata};
 
 // async aware lock for updating storage metadata and user map atomicically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
@@ -209,7 +199,6 @@ pub async fn put_role(
         return Err(RBACError::UserDoesNotExist);
     }
 
-    
     put_metadata(&metadata).await?;
     // update in mem table
     Users.put_role(&username.clone(), role.clone());

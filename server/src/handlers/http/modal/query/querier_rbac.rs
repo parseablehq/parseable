@@ -3,7 +3,18 @@ use std::collections::HashSet;
 use actix_web::{web, Responder};
 use tokio::sync::Mutex;
 
-use crate::{handlers::http::{cluster::{sync_password_reset_with_ingestors, sync_user_creation_with_ingestors, sync_user_deletion_with_ingestors, sync_users_with_roles_with_ingestors}, modal::utils::rbac_utils::{get_metadata, put_metadata}, rbac::RBACError}, rbac::{user, Users}, validator};
+use crate::{
+    handlers::http::{
+        cluster::{
+            sync_password_reset_with_ingestors, sync_user_creation_with_ingestors,
+            sync_user_deletion_with_ingestors, sync_users_with_roles_with_ingestors,
+        },
+        modal::utils::rbac_utils::{get_metadata, put_metadata},
+        rbac::RBACError,
+    },
+    rbac::{user, Users},
+    validator,
+};
 
 // async aware lock for updating storage metadata and user map atomicically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
@@ -47,7 +58,7 @@ pub async fn post_user(
     Users.put_user(user.clone());
 
     sync_user_creation_with_ingestors(user, &Some(roles)).await?;
-    
+
     put_role(
         web::Path::<String>::from(username.clone()),
         web::Json(created_role),
@@ -70,7 +81,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     metadata.users.retain(|user| user.username() != username);
 
     put_metadata(&metadata).await?;
-    
+
     sync_user_deletion_with_ingestors(&username).await?;
 
     // update in mem table
@@ -106,9 +117,9 @@ pub async fn put_role(
     put_metadata(&metadata).await?;
     // update in mem table
     Users.put_role(&username.clone(), role.clone());
-    
+
     sync_users_with_roles_with_ingestors(&username, &role).await?;
-    
+
     Ok(format!("Roles updated successfully for {username}"))
 }
 
@@ -139,9 +150,8 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     }
     put_metadata(&metadata).await?;
     Users.change_password_hash(&username, &new_hash);
-    
+
     sync_password_reset_with_ingestors(&username).await?;
-    
 
     Ok(new_password)
 }
