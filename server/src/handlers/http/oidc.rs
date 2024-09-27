@@ -26,10 +26,10 @@ use actix_web::{
 };
 use http::StatusCode;
 use openid::{Options, Token, Userinfo};
+use regex::Regex;
 use serde::Deserialize;
 use ulid::Ulid;
 use url::Url;
-use regex::Regex;
 
 use crate::{
     handlers::{COOKIE_AGE_DAYS, OIDC_SCOPE, SESSION_COOKIE_NAME, USER_COOKIE_NAME},
@@ -67,8 +67,10 @@ pub async fn login(
     let conn = req.connection_info().clone();
     let base_url_without_scheme = format!("{}/", conn.host());
 
-    if !is_valid_redirect_url(&base_url_without_scheme, query.redirect.as_str() ) {
-        return Err(OIDCError::BadRequest("Bad Request, Invalid redirect url!".to_string()));
+    if !is_valid_redirect_url(&base_url_without_scheme, query.redirect.as_str()) {
+        return Err(OIDCError::BadRequest(
+            "Bad Request, Invalid Redirect URL!".to_string(),
+        ));
     }
 
     let oidc_client = req.app_data::<Data<DiscoveredClient>>();
