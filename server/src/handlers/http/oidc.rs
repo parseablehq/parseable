@@ -26,6 +26,7 @@ use actix_web::{
 };
 use http::StatusCode;
 use openid::{Options, Token, Userinfo};
+use regex::Regex;
 use serde::Deserialize;
 use ulid::Ulid;
 use url::Url;
@@ -64,10 +65,14 @@ pub async fn login(
     query: web::Query<RedirectAfterLogin>,
 ) -> Result<HttpResponse, OIDCError> {
     let conn = req.connection_info().clone();
-    let base_url = format!("{}://{}/", conn.scheme(), conn.host());
-    if !base_url.eq(query.redirect.as_str()) {
-        return Err(OIDCError::BadRequest);
+    let base_url_without_scheme = format!("{}/", conn.host());
+
+    if !is_valid_redirect_url(&base_url_without_scheme, query.redirect.as_str()) {
+        return Err(OIDCError::BadRequest(
+            "Bad Request, Invalid Redirect URL!".to_string(),
+        ));
     }
+
     let oidc_client = req.app_data::<Data<DiscoveredClient>>();
     let session_key = extract_session_key_from_req(&req).ok();
     let (session_key, oidc_client) = match (session_key, oidc_client) {
@@ -99,7 +104,7 @@ pub async fn login(
                     [user_cookie, session_cookie],
                 ))
             }
-            _ => Err(OIDCError::BadRequest),
+            _ => Err(OIDCError::BadRequest("Bad Request".to_string())),
         },
         // if it's a valid active session, just redirect back
         key @ SessionKey::SessionId(_) => {
@@ -367,8 +372,8 @@ pub enum OIDCError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("{0}")]
     Serde(#[from] serde_json::Error),
-    #[error("Bad Request")]
-    BadRequest,
+    #[error("{0}")]
+    BadRequest(String),
     #[error("Unauthorized")]
     Unauthorized,
 }
@@ -378,7 +383,7 @@ impl actix_web::ResponseError for OIDCError {
         match self {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::BadRequest => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
         }
     }
@@ -388,4 +393,11 @@ impl actix_web::ResponseError for OIDCError {
             .insert_header(ContentType::plaintext())
             .body(self.to_string())
     }
+}
+
+fn is_valid_redirect_url(base_url_without_scheme: &str, redirect_url: &str) -> bool {
+    let http_scheme_match_regex = Regex::new(r"^(https?://)").unwrap();
+    let redirect_url_without_scheme = http_scheme_match_regex.replace(redirect_url, "");
+
+    base_url_without_scheme == redirect_url_without_scheme
 }
