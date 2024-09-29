@@ -29,6 +29,7 @@ mod metrics_layer;
 pub(crate) mod object_storage;
 pub mod retention;
 mod s3;
+mod azure_blob;
 pub mod staging;
 mod store_metadata;
 
@@ -37,6 +38,7 @@ pub use self::staging::StorageDir;
 pub use localfs::FSConfig;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::S3Config;
+pub use azure_blob::AzureBlobConfig;
 pub use store_metadata::{
     put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
 };

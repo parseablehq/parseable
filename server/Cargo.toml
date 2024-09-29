@@ -16,7 +16,7 @@ arrow-json = "52.1.0"
 arrow-ipc = { version = "52.1.0", features = ["zstd"] }
 arrow-select = "52.1.0"
 datafusion = { git = "https://github.com/apache/datafusion.git", rev = "a64df83502821f18067fb4ff65dd217815b305c9" }
-object_store = { version = "0.10.2", features = ["cloud", "aws"] }  # cannot update object_store as datafusion has not caught up
+object_store = { version = "0.10.2", features = ["cloud", "aws", "azure"] }  # cannot update object_store as datafusion has not caught up
 parquet = "52.1.0"
 arrow-flight = { version = "52.1.0", features = [ "tls" ] }
 tonic = {version = "0.11.0", features = ["tls", "transport", "gzip", "zstd"] }

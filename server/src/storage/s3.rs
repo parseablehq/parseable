@@ -25,7 +25,7 @@ use datafusion::datasource::object_store::{
 use datafusion::execution::runtime_env::RuntimeConfig;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
-use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
+use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey, Checksum};
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
 use object_store::{ClientOptions, ObjectStore, PutPayload};
@@ -200,7 +200,7 @@ impl ObjectStorageProvider for S3Config {
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
 
-        Arc::new(S3 {
+        Arc::new(ObjStoreClient {
             client: s3,
             bucket: self.bucket_name.clone(),
             root: StorePath::from(""),
@@ -216,17 +216,27 @@ impl ObjectStorageProvider for S3Config {
     }
 }
 
-fn to_object_store_path(path: &RelativePath) -> StorePath {
+pub fn to_object_store_path(path: &RelativePath) -> StorePath {
     StorePath::from(path.as_str())
 }
 
-pub struct S3 {
-    client: LimitStore<AmazonS3>,
+// ObjStoreClient is generic client to enable interactions with different cloudprovider's
+// object store such as S3 and Azure Blob
+pub struct ObjStoreClient <T :ObjectStore>{
+    client: LimitStore<T>,
     bucket: String,
     root: StorePath,
 }
 
-impl S3 {
+impl<T: ObjectStore> ObjStoreClient <T> {
+    pub fn new(client: LimitStore<T>, bucket: String, root: StorePath) -> Self{
+        ObjStoreClient {
+            client: client,
+            bucket: bucket,
+            root:root,
+        }
+    }
+
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let instant = Instant::now();
 
@@ -448,7 +458,7 @@ impl S3 {
 }
 
 #[async_trait]
-impl ObjectStorage for S3 {
+impl<T: ObjectStore> ObjectStorage for ObjStoreClient<T> {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         Ok(self._get_object(path).await?)
     }
