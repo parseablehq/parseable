@@ -273,37 +273,16 @@ impl StreamInfo {
     ) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
-            created_at: if created_at.is_empty() {
-                Local::now().to_rfc3339()
-            } else {
-                created_at
-            },
-            time_partition: if time_partition.is_empty() {
-                None
-            } else {
-                Some(time_partition)
-            },
-            time_partition_limit: if time_partition_limit.is_empty() {
-                None
-            } else {
-                Some(time_partition_limit)
-            },
-            custom_partition: if custom_partition.is_empty() {
-                None
-            } else {
-                Some(custom_partition)
-            },
-            static_schema_flag: if static_schema_flag != "true" {
-                None
-            } else {
-                Some(static_schema_flag)
-            },
-            schema: if static_schema.is_empty() {
-                HashMap::new()
-            } else {
-                static_schema
-            },
-            stream_type: Some(stream_type.to_string()),
+            created_at: (!created_at.is_empty())
+                .then_some(created_at)
+                .unwrap_or_else(|| Local::now().to_rfc3339()),
+            time_partition: (!time_partition.is_empty()).then_some(time_partition),
+            time_partition_limit: (!time_partition_limit.is_empty())
+                .then_some(time_partition_limit),
+            custom_partition: (!custom_partition.is_empty()).then_some(custom_partition),
+            static_schema_flag: static_schema_flag.ne("true").then_some(static_schema_flag),
+            schema: static_schema,
+            stream_type: (!stream_type.is_empty()).then(|| stream_type.to_string()),
             ..Default::default()
         };
         map.insert(stream_name, metadata);
@@ -354,19 +333,17 @@ impl StreamInfo {
     }
 
     pub fn list_streams(&self) -> Vec<String> {
-        self.read()
-            .expect(LOCK_EXPECT)
-            .keys()
-            .map(String::clone)
-            .collect()
+        self.read().expect(LOCK_EXPECT).keys().cloned().collect()
     }
 
     pub fn list_internal_streams(&self) -> Vec<String> {
         self.read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|(_, v)| v.stream_type.clone().unwrap() == StreamType::Internal.to_string())
-            .map(|(k, _)| k.clone())
+            .filter_map(|(k, v)| {
+                (v.stream_type.as_deref().unwrap() == StreamType::Internal.to_string()).then_some(k)
+            })
+            .cloned()
             .collect()
     }
 
@@ -425,30 +402,32 @@ fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Sche
 pub async fn update_data_type_time_partition(
     storage: &(impl ObjectStorage + ?Sized),
     stream_name: &str,
-    schema: Schema,
+    mut schema: Schema,
     meta: ObjectStoreFormat,
 ) -> anyhow::Result<Schema> {
-    let mut schema = schema.clone();
-    if meta.time_partition.is_some() {
-        let time_partition = meta.time_partition.unwrap();
-        if let Ok(time_partition_field) = schema.field_with_name(&time_partition) {
-            if time_partition_field.data_type() != &DataType::Timestamp(TimeUnit::Millisecond, None)
-            {
-                let mut fields = schema
-                    .fields()
-                    .iter()
-                    .filter(|field| *field.name() != time_partition)
-                    .cloned()
-                    .collect::<Vec<Arc<Field>>>();
-                let time_partition_field = Arc::new(Field::new(
-                    time_partition,
-                    DataType::Timestamp(TimeUnit::Millisecond, None),
-                    true,
-                ));
-                fields.push(time_partition_field);
-                schema = Schema::new(fields);
-                storage.put_schema(stream_name, &schema).await?;
-            }
+    if let Some(time_partition) = meta.time_partition {
+        if schema
+            .field_with_name(&time_partition)
+            .ok()
+            .filter(|f| f.data_type() != &DataType::Timestamp(TimeUnit::Millisecond, None))
+            .is_some()
+        {
+            let mut fields = schema
+                .fields()
+                .iter()
+                .filter(|field| *field.name() != time_partition)
+                .cloned()
+                .collect::<Vec<Arc<Field>>>();
+
+            let time_partition_field = Arc::new(Field::new(
+                time_partition,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            ));
+
+            fields.push(time_partition_field);
+            schema = Schema::new(fields);
+            storage.put_schema(stream_name, &schema).await?;
         }
     }
     Ok(schema)

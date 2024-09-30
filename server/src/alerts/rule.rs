@@ -219,10 +219,6 @@ impl ConsecutiveStringRule {
     }
 }
 
-fn one() -> u32 {
-    1
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CompositeRule {
@@ -334,6 +330,9 @@ impl fmt::Display for CompositeRule {
     }
 }
 
+const fn one() -> u32 {
+    1
+}
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConsecutiveRepeatState {
     #[serde(default = "one")]

@@ -134,15 +134,18 @@ pub struct Message {
 }
 
 impl Message {
-    // checks if message (with a column name) is valid (i.e. the column name is present in the schema)
+    /// checks if message (with a column name) is valid (i.e. the column name is present in the schema)
     pub fn valid(&self, schema: &Schema, column: &str) -> bool {
         return get_field(&schema.fields, column).is_some();
     }
 
     pub fn extract_column_names(&self) -> Vec<&str> {
+        lazy_static::lazy_static! {
+            static ref REGEX: Regex = Regex::new(r"\{(.*?)\}").unwrap();
+        }
+
         // the message can have either no column name ({column_name} not present) or any number of {column_name} present
-        Regex::new(r"\{(.*?)\}")
-            .unwrap()
+        REGEX
             .captures_iter(self.message.as_str())
             .map(|cap| cap.get(1).unwrap().as_str())
             .collect()
@@ -156,8 +159,7 @@ impl Message {
                 let arr = cast(value, &DataType::Utf8).unwrap();
                 let value = as_string_array(&arr).value(0);
 
-                replace_message =
-                    replace_message.replace(&format!("{{{column}}}"), value.to_string().as_str());
+                replace_message = replace_message.replace(&format!("{{{column}}}"), value);
             }
         }
         replace_message
@@ -255,18 +257,13 @@ impl DeploymentInfo {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum AlertState {
+    #[default]
     Listening,
     SetToFiring,
     Firing,
     Resolved,
-}
-
-impl Default for AlertState {
-    fn default() -> Self {
-        Self::Listening
-    }
 }
 
 impl fmt::Display for AlertState {

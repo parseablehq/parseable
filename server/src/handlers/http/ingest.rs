@@ -50,12 +50,13 @@ use std::sync::Arc;
 // ingests events by extracting stream name from header
 // creates if stream does not exist
 pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
-    if let Some((_, stream_name)) = req
+    if let Some(stream_name) = req
         .headers()
         .iter()
-        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
+        .find(|(key, _)| (*key == STREAM_NAME_HEADER_KEY))
+        .and_then(|(_, value)| value.to_str().ok())
+        .map(ToString::to_string)
     {
-        let stream_name = stream_name.to_str().unwrap().to_owned();
         let internal_stream_names = STREAM_INFO.list_internal_streams();
         if internal_stream_names.contains(&stream_name) {
             return Err(PostError::Invalid(anyhow::anyhow!(
@@ -148,10 +149,14 @@ async fn flatten_and_push_logs(
     stream_name: String,
 ) -> Result<(), PostError> {
     //flatten logs
-    if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY) {
+    if let Some(log_source) = req
+        .headers()
+        .get(LOG_SOURCE_KEY)
+        .and_then(|v| v.to_str().ok())
+    {
         let mut json: Vec<BTreeMap<String, Value>> = Vec::new();
-        let log_source: String = log_source.to_str().unwrap().to_owned();
-        match log_source.as_str() {
+
+        match log_source {
             LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
             LOG_SOURCE_OTEL => {
                 json = otel::flatten_otel_logs(&body);
@@ -506,23 +511,23 @@ pub enum PostError {
 impl actix_web::ResponseError for PostError {
     fn status_code(&self) -> http::StatusCode {
         match self {
-            PostError::SerdeError(_) => StatusCode::BAD_REQUEST,
-            PostError::Header(_) => StatusCode::BAD_REQUEST,
-            PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::Invalid(_) => StatusCode::BAD_REQUEST,
-            PostError::CreateStream(CreateStreamError::StreamNameValidation(_)) => {
+            Self::SerdeError(_)
+            | Self::Header(_)
+            | Self::Invalid(_)
+            | Self::CreateStream(CreateStreamError::StreamNameValidation(_)) => {
                 StatusCode::BAD_REQUEST
             }
-            PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::MetadataStreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
-            PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::CacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Event(_)
+            | Self::CreateStream(_)
+            | Self::MetadataStreamError(_)
+            | Self::StreamNotFound(_)
+            | Self::CustomError(_)
+            | Self::NetworkError(_)
+            | Self::ObjectStorageError(_)
+            | Self::DashboardError(_)
+            | Self::FiltersError(_)
+            | Self::CacheError(_)
+            | Self::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

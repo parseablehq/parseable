@@ -17,8 +17,6 @@
  *
  */
 
-#![allow(deprecated)]
-
 use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
@@ -127,8 +125,9 @@ impl EventFormat for Event {
     }
 }
 
-// Returns arrow schema with the fields that are present in the request body
-// This schema is an input to convert the request body to arrow record batch
+/// Returns arrow schema with the fields that are present in the request body
+///
+/// This schema is an input to convert the request body to arrow record batch
 fn derive_arrow_schema(
     schema: &HashMap<String, Arc<Field>>,
     fields: Vec<&str>,
@@ -162,18 +161,13 @@ fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a s
 }
 
 fn fields_mismatch(schema: &[Arc<Field>], body: &Value) -> bool {
-    for (name, val) in body.as_object().expect("body is of object variant") {
-        if val.is_null() {
-            continue;
-        }
-        let Some(field) = get_field(schema, name) else {
-            return true;
-        };
-        if !valid_type(field.data_type(), val) {
-            return true;
-        }
-    }
-    false
+    body.as_object()
+        .expect("body is not an object")
+        .iter()
+        .filter(|(_, v)| !v.is_null())
+        .any(|(name, val)| {
+            get_field(schema, name).map_or(true, |field| !valid_type(field.data_type(), val))
+        })
 }
 
 fn valid_type(data_type: &DataType, value: &Value) -> bool {
@@ -185,40 +179,27 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
         DataType::Utf8 => value.is_string(),
         DataType::List(field) => {
             let data_type = field.data_type();
-            if let Value::Array(arr) = value {
-                for elem in arr {
-                    if elem.is_null() {
-                        continue;
-                    }
-                    if !valid_type(data_type, elem) {
-                        return false;
-                    }
-                }
-            }
-            true
+            value.as_array().map_or(true, |arr| {
+                arr.iter()
+                    .filter(|v| !v.is_null())
+                    .all(|v| valid_type(data_type, v))
+            })
         }
         DataType::Struct(fields) => {
-            if let Value::Object(val) = value {
-                for (key, value) in val {
-                    let field = (0..fields.len())
-                        .find(|idx| fields[*idx].name() == key)
-                        .map(|idx| &fields[idx]);
+            let Value::Object(val) = value else {
+                return false;
+            };
+            let fields_map = fields
+                .iter()
+                .map(|field| (field.name(), field))
+                .collect::<HashMap<_, _>>();
 
-                    if let Some(field) = field {
-                        if value.is_null() {
-                            continue;
-                        }
-                        if !valid_type(field.data_type(), value) {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-                true
-            } else {
-                false
-            }
+            val.iter().filter(|(_, v)| !v.is_null()).all(|(key, val)| {
+                fields_map
+                    .get(key)
+                    .map(|field| valid_type(field.data_type(), val))
+                    .unwrap_or_default()
+            })
         }
         DataType::Timestamp(_, _) => value.is_string() || value.is_number(),
         _ => {
