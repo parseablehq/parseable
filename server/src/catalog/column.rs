@@ -136,7 +136,7 @@ pub struct Column {
 impl TryFrom<&Statistics> for TypedStatistics {
     type Error = parquet::errors::ParquetError;
     fn try_from(value: &Statistics) -> Result<Self, Self::Error> {
-        if !value.has_min_max_set() {
+        if value.min_bytes_opt().is_none() || value.max_bytes_opt().is_none() {
             return Err(parquet::errors::ParquetError::General(
                 "min max is not set".to_string(),
             ));
@@ -144,36 +144,52 @@ impl TryFrom<&Statistics> for TypedStatistics {
 
         let res = match value {
             Statistics::Boolean(stats) => TypedStatistics::Bool(BoolType {
-                min: *stats.min(),
-                max: *stats.max(),
+                min: *stats.min_opt().expect("Boolean stats min not set"),
+                max: *stats.max_opt().expect("Boolean stats max not set"),
             }),
             Statistics::Int32(stats) => TypedStatistics::Int(Int64Type {
-                min: *stats.min() as i64,
-                max: *stats.max() as i64,
+                min: *stats.min_opt().expect("Int32 stats min not set") as i64,
+                max: *stats.max_opt().expect("Int32 stats max not set") as i64,
             }),
             Statistics::Int64(stats) => TypedStatistics::Int(Int64Type {
-                min: *stats.min(),
-                max: *stats.max(),
+                min: *stats.min_opt().expect("Int64 stats min not set"),
+                max: *stats.max_opt().expect("Int64 stats max not set"),
             }),
             Statistics::Int96(stats) => TypedStatistics::Int(Int64Type {
-                min: stats.min().to_i64(),
-                max: stats.max().to_i64(),
+                min: stats.min_opt().expect("Int96 stats min not set").to_i64(),
+                max: stats.max_opt().expect("Int96 stats max not set").to_i64(),
             }),
             Statistics::Float(stats) => TypedStatistics::Float(Float64Type {
-                min: *stats.min() as f64,
-                max: *stats.max() as f64,
+                min: *stats.min_opt().expect("Float32 stats min not set") as f64,
+                max: *stats.max_opt().expect("Float32 stats max not set") as f64,
             }),
             Statistics::Double(stats) => TypedStatistics::Float(Float64Type {
-                min: *stats.min(),
-                max: *stats.max(),
+                min: *stats.min_opt().expect("Float64 stats min not set"),
+                max: *stats.max_opt().expect("Float64 stats max not set"),
             }),
             Statistics::ByteArray(stats) => TypedStatistics::String(Utf8Type {
-                min: stats.min().as_utf8()?.to_owned(),
-                max: stats.max().as_utf8()?.to_owned(),
+                min: stats
+                    .min_opt()
+                    .expect("Utf8 stats min not set")
+                    .as_utf8()?
+                    .to_owned(),
+                max: stats
+                    .max_opt()
+                    .expect("Utf8 stats max not set")
+                    .as_utf8()?
+                    .to_owned(),
             }),
             Statistics::FixedLenByteArray(stats) => TypedStatistics::String(Utf8Type {
-                min: stats.min().as_utf8()?.to_owned(),
-                max: stats.max().as_utf8()?.to_owned(),
+                min: stats
+                    .min_opt()
+                    .expect("Utf8 stats min not set")
+                    .as_utf8()?
+                    .to_owned(),
+                max: stats
+                    .max_opt()
+                    .expect("Utf8 stats max not set")
+                    .as_utf8()?
+                    .to_owned(),
             }),
         };
 

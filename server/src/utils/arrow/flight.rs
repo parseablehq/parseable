@@ -39,8 +39,8 @@ use futures::{stream, TryStreamExt};
 use tonic::{Request, Response, Status};
 
 use arrow_flight::FlightClient;
-use http::Uri;
-use tonic::transport::Channel;
+// use http::Uri;
+use tonic::transport::{Channel, Uri};
 
 pub type DoGetStream = stream::BoxStream<'static, Result<FlightData, Status>>;
 

@@ -27,10 +27,11 @@ use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
+use datafusion::catalog::Session;
 use datafusion::common::stats::Precision;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::{
-    catalog::schema::SchemaProvider,
+    catalog::SchemaProvider,
     common::{
         tree_node::{TreeNode, TreeNodeRecursion},
         ToDFSchema,
@@ -122,7 +123,7 @@ async fn create_parquet_physical_plan(
     projection: Option<&Vec<usize>>,
     filters: &[Expr],
     limit: Option<usize>,
-    state: &SessionState,
+    state: &dyn Session,
     time_partition: Option<String>,
 ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
     let filters = if let Some(expr) = conjunction(filters.to_vec()) {
@@ -149,7 +150,7 @@ async fn create_parquet_physical_plan(
     // create the execution plan
     let plan = file_format
         .create_physical_plan(
-            state,
+            state.as_any().downcast_ref::<SessionState>().unwrap(), // Remove this when ParquetFormat catches up
             FileScanConfig {
                 object_store_url,
                 file_schema: schema.clone(),
@@ -288,7 +289,7 @@ impl TableProvider for StandardTableProvider {
 
     async fn scan(
         &self,
-        state: &SessionState,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
@@ -496,7 +497,7 @@ async fn get_cache_exectuion_plan(
     projection: Option<&Vec<usize>>,
     filters: &[Expr],
     limit: Option<usize>,
-    state: &SessionState,
+    state: &dyn Session,
     time_partition: Option<String>,
 ) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
     let (cached, remainder) = cache_manager
@@ -545,7 +546,7 @@ async fn get_hottier_exectuion_plan(
     projection: Option<&Vec<usize>>,
     filters: &[Expr],
     limit: Option<usize>,
-    state: &SessionState,
+    state: &dyn Session,
     time_partition: Option<String>,
 ) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
     let (hot_tier_files, remainder) = hot_tier_manager
@@ -594,7 +595,7 @@ async fn legacy_listing_table(
     object_store: Arc<dyn ObjectStore>,
     time_filters: &[PartialTimeFilter],
     schema: Arc<Schema>,
-    state: &SessionState,
+    state: &dyn Session,
     projection: Option<&Vec<usize>>,
     filters: &[Expr],
     limit: Option<usize>,
@@ -868,10 +869,7 @@ fn extract_timestamp_bound(
     binexpr: BinaryExpr,
     time_partition: Option<String>,
 ) -> Option<(Operator, NaiveDateTime)> {
-    Some((
-        binexpr.op.clone(),
-        extract_from_lit(binexpr, time_partition)?,
-    ))
+    Some((binexpr.op, extract_from_lit(binexpr, time_partition)?))
 }
 
 async fn collect_manifest_files(
@@ -942,7 +940,7 @@ trait ManifestExt: ManifestFile {
                 return None;
             };
             /* `BinaryExp` doesn't implement `Copy` */
-            Some((expr.op.clone(), value))
+            Some((expr.op, value))
         }
 
         let Some(col) = self.find_matching_column(partial_filter) else {
