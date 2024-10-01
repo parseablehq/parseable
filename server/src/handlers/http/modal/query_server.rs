@@ -18,18 +18,19 @@
 
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
-use crate::handlers::http::health_check;
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
-use crate::handlers::http::middleware::RouteExt;
+use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::{self, role};
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
+use crate::handlers::http::{health_check, logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metrics, migration, rbac, storage};
-use actix_web::web;
-use actix_web::web::ServiceConfig;
+use actix_web::web::{resource, ServiceConfig};
+use actix_web::{web, Scope};
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::option::CONFIG;
 
+use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
 use super::{OpenIdClient, ParseableServer};
@@ -160,17 +162,215 @@ impl QueryServer {
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
                     .service(Server::get_about_factory())
-                    .service(Server::get_logstream_webscope())
-                    .service(Server::get_user_webscope())
+                    .service(Self::get_logstream_webscope())
+                    .service(Self::get_user_webscope())
                     .service(Server::get_dashboards_webscope())
                     .service(Server::get_filters_webscope())
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
-                    .service(Server::get_user_role_webscope())
+                    .service(Self::get_user_role_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
             .service(Server::get_generated());
+    }
+
+    // get the role webscope
+    fn get_user_role_webscope() -> Scope {
+        web::scope("/role")
+            // GET Role List
+            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+            .service(
+                // PUT and GET Default Role
+                resource("/default")
+                    .route(web::put().to(role::put_default).authorize(Action::PutRole))
+                    .route(web::get().to(role::get_default).authorize(Action::GetRole)),
+            )
+            .service(
+                // PUT, GET, DELETE Roles
+                resource("/{name}")
+                    .route(web::put().to(querier_role::put).authorize(Action::PutRole))
+                    .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
+                    .route(web::get().to(role::get).authorize(Action::GetRole)),
+            )
+    }
+
+    // get the user webscope
+    fn get_user_webscope() -> Scope {
+        web::scope("/user")
+            .service(
+                web::resource("")
+                    // GET /user => List all users
+                    .route(
+                        web::get()
+                            .to(http::rbac::list_users)
+                            .authorize(Action::ListUser),
+                    ),
+            )
+            .service(
+                web::resource("/{username}")
+                    // PUT /user/{username} => Create a new user
+                    .route(
+                        web::post()
+                            .to(querier_rbac::post_user)
+                            .authorize(Action::PutUser),
+                    )
+                    // DELETE /user/{username} => Delete a user
+                    .route(
+                        web::delete()
+                            .to(querier_rbac::delete_user)
+                            .authorize(Action::DeleteUser),
+                    )
+                    .wrap(DisAllowRootUser),
+            )
+            .service(
+                web::resource("/{username}/role")
+                    // PUT /user/{username}/roles => Put roles for user
+                    .route(
+                        web::put()
+                            .to(querier_rbac::put_role)
+                            .authorize(Action::PutUserRoles)
+                            .wrap(DisAllowRootUser),
+                    )
+                    .route(
+                        web::get()
+                            .to(http::rbac::get_role)
+                            .authorize_for_user(Action::GetUserRoles),
+                    ),
+            )
+            .service(
+                web::resource("/{username}/generate-new-password")
+                    // POST /user/{username}/generate-new-password => reset password for this user
+                    .route(
+                        web::post()
+                            .to(querier_rbac::post_gen_password)
+                            .authorize(Action::PutUser)
+                            .wrap(DisAllowRootUser),
+                    ),
+            )
+    }
+
+    // get the logstream web scope
+    fn get_logstream_webscope() -> Scope {
+        web::scope("/logstream")
+            .service(
+                // GET "/logstream" ==> Get list of all Log Streams on the server
+                web::resource("")
+                    .route(web::get().to(logstream::list).authorize(Action::ListStream)),
+            )
+            .service(
+                web::scope("/{logstream}")
+                    .service(
+                        web::resource("")
+                            // PUT "/logstream/{logstream}" ==> Create log stream
+                            .route(
+                                web::put()
+                                    .to(querier_logstream::put_stream)
+                                    .authorize_for_stream(Action::CreateStream),
+                            )
+                            // POST "/logstream/{logstream}" ==> Post logs to given log stream
+                            .route(
+                                web::post()
+                                    .to(querier_ingest::post_event)
+                                    .authorize_for_stream(Action::Ingest),
+                            )
+                            // DELETE "/logstream/{logstream}" ==> Delete log stream
+                            .route(
+                                web::delete()
+                                    .to(querier_logstream::delete)
+                                    .authorize_for_stream(Action::DeleteStream),
+                            )
+                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    )
+                    .service(
+                        // GET "/logstream/{logstream}/info" ==> Get info for given log stream
+                        web::resource("/info").route(
+                            web::get()
+                                .to(logstream::get_stream_info)
+                                .authorize_for_stream(Action::GetStreamInfo),
+                        ),
+                    )
+                    .service(
+                        web::resource("/alert")
+                            // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_alert)
+                                    .authorize_for_stream(Action::PutAlert),
+                            )
+                            // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
+                            .route(
+                                web::get()
+                                    .to(logstream::get_alert)
+                                    .authorize_for_stream(Action::GetAlert),
+                            ),
+                    )
+                    .service(
+                        // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
+                        web::resource("/schema").route(
+                            web::get()
+                                .to(logstream::schema)
+                                .authorize_for_stream(Action::GetSchema),
+                        ),
+                    )
+                    .service(
+                        // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
+                        web::resource("/stats").route(
+                            web::get()
+                                .to(querier_logstream::get_stats)
+                                .authorize_for_stream(Action::GetStats),
+                        ),
+                    )
+                    .service(
+                        web::resource("/retention")
+                            // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
+                            .route(
+                                web::put()
+                                    .to(logstream::put_retention)
+                                    .authorize_for_stream(Action::PutRetention),
+                            )
+                            // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
+                            .route(
+                                web::get()
+                                    .to(logstream::get_retention)
+                                    .authorize_for_stream(Action::GetRetention),
+                            ),
+                    )
+                    .service(
+                        web::resource("/cache")
+                            // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
+                            .route(
+                                web::put()
+                                    .to(querier_logstream::put_enable_cache)
+                                    .authorize_for_stream(Action::PutCacheEnabled),
+                            )
+                            // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
+                            .route(
+                                web::get()
+                                    .to(querier_logstream::get_cache_enabled)
+                                    .authorize_for_stream(Action::GetCacheEnabled),
+                            ),
+                    )
+                    .service(
+                        web::resource("/hottier")
+                            // PUT "/logstream/{logstream}/hottier" ==> Set hottier for given logstream
+                            .route(
+                                web::put()
+                                    .to(querier_logstream::put_stream_hot_tier)
+                                    .authorize_for_stream(Action::PutHotTierEnabled),
+                            )
+                            .route(
+                                web::get()
+                                    .to(querier_logstream::get_stream_hot_tier)
+                                    .authorize_for_stream(Action::GetHotTierEnabled),
+                            )
+                            .route(
+                                web::delete()
+                                    .to(querier_logstream::delete_stream_hot_tier)
+                                    .authorize_for_stream(Action::DeleteHotTierEnabled),
+                            ),
+                    ),
+            )
     }
 
     fn get_cluster_web_scope() -> actix_web::Scope {

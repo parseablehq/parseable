@@ -383,25 +383,6 @@ impl Server {
                                     .to(logstream::get_cache_enabled)
                                     .authorize_for_stream(Action::GetCacheEnabled),
                             ),
-                    )
-                    .service(
-                        web::resource("/hottier")
-                            // PUT "/logstream/{logstream}/hottier" ==> Set hottier for given logstream
-                            .route(
-                                web::put()
-                                    .to(logstream::put_stream_hot_tier)
-                                    .authorize_for_stream(Action::PutHotTierEnabled),
-                            )
-                            .route(
-                                web::get()
-                                    .to(logstream::get_stream_hot_tier)
-                                    .authorize_for_stream(Action::GetHotTierEnabled),
-                            )
-                            .route(
-                                web::delete()
-                                    .to(logstream::delete_stream_hot_tier)
-                                    .authorize_for_stream(Action::DeleteHotTierEnabled),
-                            ),
                     ),
             )
     }
@@ -463,7 +444,7 @@ impl Server {
     }
 
     // get the user webscope
-    pub fn get_user_webscope() -> Scope {
+    fn get_user_webscope() -> Scope {
         web::scope("/user")
             .service(
                 web::resource("")
