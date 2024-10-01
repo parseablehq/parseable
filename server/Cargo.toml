@@ -19,7 +19,7 @@ datafusion = { git = "https://github.com/apache/datafusion.git", rev = "a64df835
 object_store = { version = "0.10.2", features = ["cloud", "aws"] }  # cannot update object_store as datafusion has not caught up
 parquet = "52.1.0"
 arrow-flight = { version = "52.1.0", features = [ "tls" ] }
-tonic = {version = "0.11.0", features = ["tls", "transport", "gzip", "zstd"] }
+tonic = {version = "0.12.3", features = ["tls", "transport", "gzip", "zstd"] }
 tonic-web = "0.11.0"
 tower-http = { version = "0.4.4", features = ["cors"] }
 
