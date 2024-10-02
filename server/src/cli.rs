@@ -426,7 +426,7 @@ impl Cli {
                      .env("P_PARQUET_ROW_GROUP_SIZE")
                      .value_name("NUMBER")
                      .required(false)
-                     .default_value("16384")
+                     .default_value("1048576")
                      .value_parser(value_parser!(usize))
                      .help("Number of rows in a row group"),
              ).arg(
