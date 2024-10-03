@@ -25,7 +25,7 @@ use datafusion::{
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
     error::DataFusionError,
-    logical_expr::{col, Expr},
+    logical_expr::{col, SortExpr},
 };
 use futures_util::{future, stream::FuturesUnordered, Future, TryStreamExt};
 use itertools::Itertools;
@@ -188,7 +188,7 @@ impl ListingTableBuilder {
         if self.listing.is_empty() {
             return Ok(None);
         }
-        let file_sort_order: Vec<Vec<Expr>>;
+        let file_sort_order: Vec<Vec<SortExpr>>;
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         if let Some(time_partition) = time_partition {
             file_sort_order = vec![vec![col(time_partition).sort(true, false)]];

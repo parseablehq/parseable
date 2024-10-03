@@ -421,12 +421,15 @@ impl Cli {
                      .help("Set a fixed memory limit for query"),
              )
              .arg(
+                 // RowGroupSize controls the number of rows present in one row group
+                 // More rows = better compression but HIGHER Memory consumption during read/write
+                 // 1048576 is the default value for DataFusion 
                  Arg::new(Self::ROW_GROUP_SIZE)
                      .long(Self::ROW_GROUP_SIZE)
                      .env("P_PARQUET_ROW_GROUP_SIZE")
                      .value_name("NUMBER")
                      .required(false)
-                     .default_value("16384")
+                     .default_value("1048576")
                      .value_parser(value_parser!(usize))
                      .help("Number of rows in a row group"),
              ).arg(

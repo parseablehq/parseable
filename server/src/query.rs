@@ -26,9 +26,9 @@ use datafusion::arrow::record_batch::RecordBatch;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
-use datafusion::execution::context::SessionState;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::{Explain, Filter, LogicalPlan, PlanType, ToStringifiedPlan};
 use datafusion::prelude::*;
 use itertools::Itertools;
@@ -81,12 +81,37 @@ impl Query {
         let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
         let runtime = Arc::new(RuntimeEnv::new(runtime_config).unwrap());
 
-        let config = SessionConfig::default()
+        let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
             .with_round_robin_repartition(true);
 
-        let state = SessionState::new_with_config_rt(config, runtime);
+        // For more details refer https://datafusion.apache.org/user-guide/configs.html
+
+        // Reduce the number of rows read (if possible)
+        config.options_mut().execution.parquet.enable_page_index = true;
+
+        // Pushdown filters allows DF to push the filters as far down in the plan as possible
+        // and thus, reducing the number of rows decoded
+        config.options_mut().execution.parquet.pushdown_filters = true;
+
+        // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
+        config.options_mut().execution.parquet.reorder_filters = true;
+
+        // Enable StringViewArray
+        // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
+        config
+            .options_mut()
+            .execution
+            .parquet
+            .schema_force_view_types = true;
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config)
+            .with_runtime_env(runtime)
+            .build();
+
         let schema_provider = Arc::new(GlobalSchemaProvider {
             storage: storage.get_object_store(),
         });

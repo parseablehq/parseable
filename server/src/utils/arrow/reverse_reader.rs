@@ -139,7 +139,7 @@ pub fn get_reverse_reader<T: Read + Seek>(
     // reset reader
     reader.rewind()?;
 
-    Ok(StreamReader::try_new(OffsetReader::new(reader, messages), None).unwrap())
+    Ok(StreamReader::try_new(BufReader::new(OffsetReader::new(reader, messages)), None).unwrap())
 }
 
 pub fn reverse(rb: &RecordBatch) -> RecordBatch {

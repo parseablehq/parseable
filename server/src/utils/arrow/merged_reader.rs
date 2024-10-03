@@ -49,8 +49,8 @@ impl MergedRecordReader {
                 log::error!("Invalid file detected, removing it: {:?}", file);
                 fs::remove_file(file).unwrap();
             } else {
-                let reader =
-                    StreamReader::try_new(File::open(file).unwrap(), None).map_err(|_| ())?;
+                let reader = StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None)
+                    .map_err(|_| ())?;
                 readers.push(reader);
             }
         }
