@@ -25,6 +25,7 @@ use crate::{
 };
 use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
+use rand::distributions::DistString;
 
 use chrono::Utc;
 use http::StatusCode;
@@ -61,7 +62,14 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Dashb
 
     dashboard.user_id = Some(user_id.clone());
     for tile in dashboard.tiles.iter_mut() {
-        tile.tile_id = Some(get_hash(Utc::now().timestamp_micros().to_string().as_str()));
+        tile.tile_id = Some(get_hash(
+            format!(
+                "{}{}",
+                rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
+                Utc::now().timestamp_micros()
+            )
+            .as_str(),
+        ));
     }
     DASHBOARDS.update(&dashboard);
 
