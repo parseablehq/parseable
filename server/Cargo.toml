@@ -15,13 +15,12 @@ arrow-array = { version = "53.0.0" }
 arrow-json = "53.0.0"
 arrow-ipc = { version = "53.0.0", features = ["zstd"] }
 arrow-select = "53.0.0"
-# datafusion = { git = "https://github.com/apache/datafusion.git", rev = "a64df83502821f18067fb4ff65dd217815b305c9" }
 datafusion = "42.0.0"
-object_store = { version = "0.11.0", features = ["cloud", "aws"] }  # cannot update object_store as datafusion has not caught up
+object_store = { version = "0.11.0", features = ["cloud", "aws"] }
 parquet = "53.0.0"
 arrow-flight = { version = "53.0.0", features = [ "tls" ] }
-tonic = {version = "0.12.1", features = ["tls", "transport", "gzip", "zstd"] }
-tonic-web = "0.12.1"
+tonic = {version = "0.12.3", features = ["tls", "transport", "gzip", "zstd"] }
+tonic-web = "0.12.3"
 tower-http = { version = "0.6.1", features = ["cors"] }
 
 ### actix dependencies

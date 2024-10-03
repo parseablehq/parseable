@@ -217,8 +217,8 @@ async fn collect_from_snapshot(
 fn partitioned_files(
     manifest_files: Vec<catalog::manifest::File>,
     table_schema: &Schema,
-    target_partition: usize,
 ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
+    let target_partition = num_cpus::get();
     let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
     let mut column_statistics = HashMap::<String, Option<catalog::column::TypedStatistics>>::new();
     let mut count = 0;
@@ -436,7 +436,7 @@ impl TableProvider for StandardTableProvider {
             );
         }
 
-        let (partitioned_files, statistics) = partitioned_files(manifest_files, &self.schema, 1);
+        let (partitioned_files, statistics) = partitioned_files(manifest_files, &self.schema);
         let remote_exec = create_parquet_physical_plan(
             ObjectStoreUrl::parse(glob_storage.store_url()).unwrap(),
             partitioned_files,
@@ -520,7 +520,7 @@ async fn get_cache_exectuion_plan(
         })
         .collect();
 
-    let (partitioned_files, statistics) = partitioned_files(cached, &schema, 1);
+    let (partitioned_files, statistics) = partitioned_files(cached, &schema);
     let plan = create_parquet_physical_plan(
         ObjectStoreUrl::parse("file:///").unwrap(),
         partitioned_files,
@@ -571,7 +571,7 @@ async fn get_hottier_exectuion_plan(
         })
         .collect();
 
-    let (partitioned_files, statistics) = partitioned_files(hot_tier_files, &schema, 1);
+    let (partitioned_files, statistics) = partitioned_files(hot_tier_files, &schema);
     let plan = create_parquet_physical_plan(
         ObjectStoreUrl::parse("file:///").unwrap(),
         partitioned_files,
