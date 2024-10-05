@@ -15,8 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-use object_store::azure::{MicrosoftAzureBuilder, MicrosoftAzure};
-use super::s3::ObjStoreClient;
+use object_store::azure::MicrosoftAzureBuilder;
+use super::s3::{ObjStoreClient, CONNECT_TIMEOUT_SECS, REQUEST_TIMEOUT_SECS};
 use super::ObjectStorageProvider;
 use datafusion::execution::runtime_env::RuntimeConfig;
 use datafusion::datasource::object_store::{
@@ -27,6 +27,9 @@ use std::sync::Arc;
 use object_store::limit::LimitStore;
 use super::metrics_layer::MetricLayer;
 use object_store::path::Path as StorePath;
+use object_store::ClientOptions;
+use std::time::Duration;
+
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -38,6 +41,10 @@ use object_store::path::Path as StorePath;
 "
 )]
 pub struct AzureBlobConfig {
+    // The Azure Storage Account ID
+    #[arg(long, env = "P_AZR_URL", value_name = "url", required = false)]
+    pub url: String,
+    
     // The Azure Storage Account ID
     #[arg(long, env = "P_AZR_ACCOUNT", value_name = "account", required = true)]
     pub account: String,
@@ -52,20 +59,25 @@ pub struct AzureBlobConfig {
 }
 
 impl AzureBlobConfig {
-    fn get_default_interface(&self) -> MicrosoftAzure {
-        let result = MicrosoftAzureBuilder::new()
+    fn get_default_builder(&self) -> MicrosoftAzureBuilder {
+        let client_options = ClientOptions::default()
+        .with_allow_http(true)
+        .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .with_timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
+
+        let builder = MicrosoftAzureBuilder::new()
+        .with_endpoint(self.url.clone())
         .with_account(self.account.clone())
         .with_access_key(self.access_key.clone())
-        .with_container_name(self.container.clone())
-        .build().expect("Failed to build Microsoft Azure interface");
+        .with_container_name(self.container.clone());
 
-        return result
+        return builder.with_client_options(client_options)
     }
 }
 
 impl ObjectStorageProvider for AzureBlobConfig {
     fn get_datafusion_runtime(&self) -> RuntimeConfig {
-        let azure = self.get_default_interface();
+        let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
         let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);
         let azure = MetricLayer::new(azure);
@@ -78,7 +90,7 @@ impl ObjectStorageProvider for AzureBlobConfig {
     }
 
     fn get_object_store(&self) -> Arc<dyn super::ObjectStorage + Send> {
-        let azure = self.get_default_interface();
+        let azure = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
         let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);
@@ -86,7 +98,7 @@ impl ObjectStorageProvider for AzureBlobConfig {
     }
 
     fn get_endpoint(&self) -> String {
-        return String::from("to be implmented")
+        return self.url.clone()
     }
 
     fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
