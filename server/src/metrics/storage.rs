@@ -86,3 +86,42 @@ pub mod s3 {
         }
     }
 }
+
+pub mod azureblob {
+    use crate::{metrics::METRICS_NAMESPACE, storage::AzureBlobConfig};
+    use once_cell::sync::Lazy;
+    use prometheus::{HistogramOpts, HistogramVec};
+
+    use super::StorageMetrics;
+
+    pub static REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new("azr_blob_response_time", "AzureBlob Request Latency")
+                .namespace(METRICS_NAMESPACE),
+            &["method", "status"],
+        )
+        .expect("metric can be created")
+    });
+
+    pub static QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new("query_azr_blob_response_time", "AzureBlob Request Latency")
+                .namespace(METRICS_NAMESPACE),
+            &["method", "status"],
+        )
+        .expect("metric can be created")
+    });
+
+    impl StorageMetrics for AzureBlobConfig {
+        fn register_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
+            handler
+                .registry
+                .register(Box::new(REQUEST_RESPONSE_TIME.clone()))
+                .expect("metric can be registered");
+            handler
+                .registry
+                .register(Box::new(QUERY_LAYER_STORAGE_REQUEST_RESPONSE_TIME.clone()))
+                .expect("metric can be registered");
+        }
+    }
+}

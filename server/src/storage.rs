@@ -24,6 +24,7 @@ use chrono::Local;
 
 use std::fmt::Debug;
 
+mod azure_blob;
 mod localfs;
 mod metrics_layer;
 pub(crate) mod object_storage;
@@ -34,6 +35,7 @@ mod store_metadata;
 
 use self::retention::Retention;
 pub use self::staging::StorageDir;
+pub use azure_blob::AzureBlobConfig;
 pub use localfs::FSConfig;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::S3Config;

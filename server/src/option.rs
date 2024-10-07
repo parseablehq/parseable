@@ -18,7 +18,9 @@
 
 use crate::cli::Cli;
 use crate::storage::object_storage::parseable_json_path;
-use crate::storage::{FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config};
+use crate::storage::{
+    AzureBlobConfig, FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config,
+};
 use bytes::Bytes;
 use clap::error::ErrorKind;
 use clap::{command, Args, Command, FromArgMatches};
@@ -105,6 +107,22 @@ Cloud Native, log analytics platform for modern applications."#,
                     storage_name: "s3",
                 }
             }
+            Some(("blob-store", m)) => {
+                let cli = match Cli::from_arg_matches(m) {
+                    Ok(cli) => cli,
+                    Err(err) => err.exit(),
+                };
+                let storage = match AzureBlobConfig::from_arg_matches(m) {
+                    Ok(storage) => storage,
+                    Err(err) => err.exit(),
+                };
+
+                Config {
+                    parseable: cli,
+                    storage: Arc::new(storage),
+                    storage_name: "blob_store",
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -163,11 +181,16 @@ Cloud Native, log analytics platform for modern applications."#,
     // returns the string representation of the storage mode
     // drive --> Local drive
     // s3 --> S3 bucket
+    // azure_blob --> Azure Blob Storage
     pub fn get_storage_mode_string(&self) -> &str {
         if self.storage_name == "drive" {
             return "Local drive";
+        } else if self.storage_name == "s3" {
+            return "S3 bucket";
+        } else if self.storage_name == "blob_store" {
+            return "Azure Blob Storage";
         }
-        "S3 bucket"
+        "Unknown"
     }
 
     pub fn get_server_mode_string(&self) -> &str {
@@ -193,6 +216,9 @@ fn create_parseable_cli_command() -> Command {
     let s3 = Cli::create_cli_command_with_clap("s3-store");
     let s3 = <S3Config as Args>::augment_args_for_update(s3);
 
+    let azureblob = Cli::create_cli_command_with_clap("blob-store");
+    let azureblob = <AzureBlobConfig as Args>::augment_args_for_update(azureblob);
+
     command!()
         .name("Parseable")
         .bin_name("parseable")
@@ -207,7 +233,7 @@ Join the community at https://logg.ing/community.
         "#,
         )
         .subcommand_required(true)
-        .subcommands([local, s3])
+        .subcommands([local, s3, azureblob])
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
