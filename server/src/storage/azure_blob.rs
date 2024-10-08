@@ -41,7 +41,7 @@ use crate::metrics::storage::azureblob::REQUEST_RESPONSE_TIME;
 use crate::metrics::storage::StorageMetrics;
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -650,8 +650,10 @@ impl ObjectStorage for BlobStore {
             .collect::<Vec<_>>())
     }
 
-    async fn get_all_dashboards(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let mut dashboards = vec![];
+    async fn get_all_dashboards(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
         let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
         let resp = self
             .client
@@ -677,13 +679,19 @@ impl ObjectStorage for BlobStore {
                     Box::new(|file_name| file_name.ends_with(".json")),
                 )
                 .await?;
-            dashboards.extend(dashboard_bytes);
+
+            dashboards
+                .entry(dashboards_path)
+                .or_default()
+                .extend(dashboard_bytes);
         }
         Ok(dashboards)
     }
 
-    async fn get_all_saved_filters(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let mut filters = vec![];
+    async fn get_all_saved_filters(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut filters: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
         let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
         let resp = self
             .client
@@ -720,7 +728,10 @@ impl ObjectStorage for BlobStore {
                         Box::new(|file_name| file_name.ends_with(".json")),
                     )
                     .await?;
-                filters.extend(filter_bytes);
+                filters
+                    .entry(filters_path)
+                    .or_default()
+                    .extend(filter_bytes);
             }
         }
         Ok(filters)

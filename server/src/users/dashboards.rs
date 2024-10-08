@@ -114,63 +114,60 @@ impl Dashboards {
     pub async fn load(&self) -> anyhow::Result<()> {
         let mut this = vec![];
         let store = CONFIG.storage().get_object_store();
-        let dashboards = store.get_all_dashboards().await.unwrap_or_default();
-        for dashboard in dashboards {
-            if dashboard.is_empty() {
-                continue;
-            }
-            let mut dashboard_value = serde_json::from_slice::<serde_json::Value>(&dashboard)?;
-            if let Some(meta) = dashboard_value.clone().as_object() {
-                let version = meta.get("version").and_then(|version| version.as_str());
-                let dashboard_id = meta
-                    .get("dashboard_id")
-                    .and_then(|dashboard_id| dashboard_id.as_str());
-                match version {
-                    Some("v1") => {
-                        dashboard_value = migrate_v1_v2(dashboard_value);
-                        dashboard_value = migrate_v2_v3(dashboard_value);
-                        let user_id = dashboard_value
-                            .as_object()
-                            .unwrap()
-                            .get("user_id")
-                            .and_then(|user_id| user_id.as_str());
-                        let path = dashboard_path(
-                            user_id.unwrap(),
-                            &format!("{}.json", dashboard_id.unwrap()),
-                        );
-                        let dashboard_bytes = to_bytes(&dashboard_value);
-                        store.put_object(&path, dashboard_bytes.clone()).await?;
-                        if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard_bytes)
-                        {
-                            this.retain(|d: &Dashboard| d.dashboard_id != dashboard.dashboard_id);
-                            this.push(dashboard);
+        let all_dashboards = store.get_all_dashboards().await.unwrap_or_default();
+        for (dashboard_relative_path, dashboards) in all_dashboards {
+            for dashboard in dashboards {
+                if dashboard.is_empty() {
+                    continue;
+                }
+                let mut dashboard_value = serde_json::from_slice::<serde_json::Value>(&dashboard)?;
+                if let Some(meta) = dashboard_value.clone().as_object() {
+                    let version = meta.get("version").and_then(|version| version.as_str());
+                    let dashboard_id = meta
+                        .get("dashboard_id")
+                        .and_then(|dashboard_id| dashboard_id.as_str());
+                    match version {
+                        Some("v1") => {
+                            //delete older version of the dashboard
+                            store.delete_object(&dashboard_relative_path).await?;
+
+                            dashboard_value = migrate_v1_v2(dashboard_value);
+                            dashboard_value = migrate_v2_v3(dashboard_value);
+                            let user_id = dashboard_value
+                                .as_object()
+                                .unwrap()
+                                .get("user_id")
+                                .and_then(|user_id| user_id.as_str());
+                            let path = dashboard_path(
+                                user_id.unwrap(),
+                                &format!("{}.json", dashboard_id.unwrap()),
+                            );
+                            let dashboard_bytes = to_bytes(&dashboard_value);
+                            store.put_object(&path, dashboard_bytes.clone()).await?;
                         }
-                    }
-                    Some("v2") => {
-                        dashboard_value = migrate_v2_v3(dashboard_value);
-                        let user_id = dashboard_value
-                            .as_object()
-                            .unwrap()
-                            .get("user_id")
-                            .and_then(|user_id| user_id.as_str());
-                        let path = dashboard_path(
-                            user_id.unwrap(),
-                            &format!("{}.json", dashboard_id.unwrap()),
-                        );
-                        let dashboard_bytes = to_bytes(&dashboard_value);
-                        store.put_object(&path, dashboard_bytes.clone()).await?;
-                        if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard_bytes)
-                        {
-                            this.retain(|d| d.dashboard_id != dashboard.dashboard_id);
-                            this.push(dashboard);
+                        Some("v2") => {
+                            //delete older version of the dashboard
+                            store.delete_object(&dashboard_relative_path).await?;
+
+                            dashboard_value = migrate_v2_v3(dashboard_value);
+                            let user_id = dashboard_value
+                                .as_object()
+                                .unwrap()
+                                .get("user_id")
+                                .and_then(|user_id| user_id.as_str());
+                            let path = dashboard_path(
+                                user_id.unwrap(),
+                                &format!("{}.json", dashboard_id.unwrap()),
+                            );
+                            let dashboard_bytes = to_bytes(&dashboard_value);
+                            store.put_object(&path, dashboard_bytes.clone()).await?;
                         }
+                        _ => {}
                     }
-                    _ => {
-                        if let Ok(dashboard) = serde_json::from_slice::<Dashboard>(&dashboard) {
-                            this.retain(|d| d.dashboard_id != dashboard.dashboard_id);
-                            this.push(dashboard);
-                        }
-                    }
+                }
+                if let Ok(dashboard) = serde_json::from_value::<Dashboard>(dashboard_value) {
+                    this.retain(|d: &Dashboard| d.dashboard_id != dashboard.dashboard_id);
+                    this.push(dashboard);
                 }
             }
         }

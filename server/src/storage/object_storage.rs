@@ -85,8 +85,12 @@ pub trait ObjectStorage: Sync + 'static {
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError>;
-    async fn get_all_saved_filters(&self) -> Result<Vec<Bytes>, ObjectStorageError>;
-    async fn get_all_dashboards(&self) -> Result<Vec<Bytes>, ObjectStorageError>;
+    async fn get_all_saved_filters(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
+    async fn get_all_dashboards(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn list_manifest_files(
         &self,
