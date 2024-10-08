@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -351,8 +351,10 @@ impl ObjectStorage for LocalFS {
         Ok(dirs)
     }
 
-    async fn get_all_dashboards(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let mut dashboards = vec![];
+    async fn get_all_dashboards(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
         let users_root_path = self.root.join(USERS_ROOT_DIR);
         let directories = ReadDirStream::new(fs::read_dir(&users_root_path).await?);
         let users: Vec<DirEntry> = directories.try_collect().await?;
@@ -364,15 +366,25 @@ impl ObjectStorage for LocalFS {
             let directories = ReadDirStream::new(fs::read_dir(&dashboards_path).await?);
             let dashboards_files: Vec<DirEntry> = directories.try_collect().await?;
             for dashboard in dashboards_files {
-                let file = fs::read(dashboard.path()).await?;
-                dashboards.push(file.into());
+                let dashboard_absolute_path = dashboard.path();
+                let file = fs::read(dashboard_absolute_path.clone()).await?;
+                let dashboard_relative_path = dashboard_absolute_path
+                    .strip_prefix(self.root.as_path())
+                    .unwrap();
+
+                dashboards
+                    .entry(RelativePathBuf::from_path(dashboard_relative_path).unwrap())
+                    .or_default()
+                    .push(file.into());
             }
         }
         Ok(dashboards)
     }
 
-    async fn get_all_saved_filters(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let mut filters = vec![];
+    async fn get_all_saved_filters(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut filters: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
         let users_root_path = self.root.join(USERS_ROOT_DIR);
         let directories = ReadDirStream::new(fs::read_dir(&users_root_path).await?);
         let users: Vec<DirEntry> = directories.try_collect().await?;
@@ -394,8 +406,16 @@ impl ObjectStorage for LocalFS {
                 let directories = ReadDirStream::new(fs::read_dir(&filters_path).await?);
                 let filters_files: Vec<DirEntry> = directories.try_collect().await?;
                 for filter in filters_files {
-                    let file = fs::read(filter.path()).await?;
-                    filters.push(file.into());
+                    let filter_absolute_path = filter.path();
+                    let file = fs::read(filter_absolute_path.clone()).await?;
+                    let filter_relative_path = filter_absolute_path
+                        .strip_prefix(self.root.as_path())
+                        .unwrap();
+
+                    filters
+                        .entry(RelativePathBuf::from_path(filter_relative_path).unwrap())
+                        .or_default()
+                        .push(file.into());
                 }
             }
         }

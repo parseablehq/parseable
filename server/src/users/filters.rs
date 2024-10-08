@@ -76,44 +76,43 @@ impl Filters {
     pub async fn load(&self) -> anyhow::Result<()> {
         let mut this = vec![];
         let store = CONFIG.storage().get_object_store();
-        let filters = store.get_all_saved_filters().await.unwrap_or_default();
+        let all_filters = store.get_all_saved_filters().await.unwrap_or_default();
 
-        for filter in filters {
-            if filter.is_empty() {
-                continue;
-            }
+        for (filter_relative_path, filters) in all_filters {
+            for filter in filters {
+                if filter.is_empty() {
+                    continue;
+                }
+                let mut filter_value = serde_json::from_slice::<serde_json::Value>(&filter)?;
+                if let Some(meta) = filter_value.clone().as_object() {
+                    let version = meta.get("version").and_then(|version| version.as_str());
 
-            let mut filter_value = serde_json::from_slice::<serde_json::Value>(&filter)?;
-            if let Some(meta) = filter_value.clone().as_object() {
-                let version = meta.get("version").and_then(|version| version.as_str());
-                let user_id = meta.get("user_id").and_then(|user_id| user_id.as_str());
-                let filter_id = meta
-                    .get("filter_id")
-                    .and_then(|filter_id| filter_id.as_str());
-                let stream_name = meta
-                    .get("stream_name")
-                    .and_then(|stream_name| stream_name.as_str());
+                    if version == Some("v1") {
+                        //delete older version of the filter
+                        store.delete_object(&filter_relative_path).await?;
 
-                if version == Some("v1") {
-                    filter_value = migrate_v1_v2(filter_value);
-                    if let (Some(user_id), Some(stream_name), Some(filter_id)) =
-                        (user_id, stream_name, filter_id)
-                    {
-                        let path = filter_path(
-                            &get_hash(user_id),
-                            stream_name,
-                            &format!("{}.json", filter_id),
-                        );
-                        let filter_bytes = to_bytes(&filter_value);
-                        store.put_object(&path, filter_bytes.clone()).await?;
-                        if let Ok(filter) = serde_json::from_slice::<Filter>(&filter_bytes) {
-                            this.retain(|f: &Filter| f.filter_id != filter.filter_id);
-                            this.push(filter);
+                        filter_value = migrate_v1_v2(filter_value);
+                        let user_id = meta.get("user_id").and_then(|user_id| user_id.as_str());
+                        let filter_id = meta
+                            .get("filter_id")
+                            .and_then(|filter_id| filter_id.as_str());
+                        let stream_name = meta
+                            .get("stream_name")
+                            .and_then(|stream_name| stream_name.as_str());
+                        if let (Some(user_id), Some(stream_name), Some(filter_id)) =
+                            (user_id, stream_name, filter_id)
+                        {
+                            let path =
+                                filter_path(user_id, stream_name, &format!("{}.json", filter_id));
+                            let filter_bytes = to_bytes(&filter_value);
+                            store.put_object(&path, filter_bytes.clone()).await?;
                         }
                     }
-                } else if let Ok(filter) = serde_json::from_slice::<Filter>(&filter) {
-                    this.retain(|f: &Filter| f.filter_id != filter.filter_id);
-                    this.push(filter);
+
+                    if let Ok(filter) = serde_json::from_value::<Filter>(filter_value) {
+                        this.retain(|f: &Filter| f.filter_id != filter.filter_id);
+                        this.push(filter);
+                    }
                 }
             }
         }

@@ -37,15 +37,15 @@ use std::path::Path as StdPath;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::handlers::http::users::USERS_ROOT_DIR;
-use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
-use crate::storage::{LogStream, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
-
 use super::metrics_layer::MetricLayer;
 use super::object_storage::parseable_json_path;
 use super::{
     ObjectStorageProvider, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
+use crate::handlers::http::users::USERS_ROOT_DIR;
+use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
+use crate::storage::{LogStream, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
+use std::collections::HashMap;
 
 #[allow(dead_code)]
 // in bytes
@@ -689,8 +689,10 @@ impl ObjectStorage for S3 {
             .collect::<Vec<_>>())
     }
 
-    async fn get_all_dashboards(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let mut dashboards = vec![];
+    async fn get_all_dashboards(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
         let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
         let resp = self
             .client
@@ -716,13 +718,19 @@ impl ObjectStorage for S3 {
                     Box::new(|file_name| file_name.ends_with(".json")),
                 )
                 .await?;
-            dashboards.extend(dashboard_bytes);
+
+            dashboards
+                .entry(dashboards_path)
+                .or_default()
+                .extend(dashboard_bytes);
         }
         Ok(dashboards)
     }
 
-    async fn get_all_saved_filters(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let mut filters = vec![];
+    async fn get_all_saved_filters(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut filters: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
         let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
         let resp = self
             .client
@@ -759,7 +767,10 @@ impl ObjectStorage for S3 {
                         Box::new(|file_name| file_name.ends_with(".json")),
                     )
                     .await?;
-                filters.extend(filter_bytes);
+                filters
+                    .entry(filters_path)
+                    .or_default()
+                    .extend(filter_bytes);
             }
         }
         Ok(filters)
