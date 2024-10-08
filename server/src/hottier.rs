@@ -73,10 +73,12 @@ impl HotTierManager {
     pub fn global() -> Option<&'static HotTierManager> {
         static INSTANCE: OnceCell<HotTierManager> = OnceCell::new();
 
-        let hot_tier_path = CONFIG.parseable.hot_tier_storage_path.as_ref()?;
-
+        let hot_tier_path = &CONFIG.parseable.hot_tier_storage_path;
+        if hot_tier_path.is_none() {
+            return None;
+        }
         Some(INSTANCE.get_or_init(|| {
-            let hot_tier_path = hot_tier_path.clone();
+            let hot_tier_path = hot_tier_path.as_ref().unwrap().clone();
             std::fs::create_dir_all(&hot_tier_path).unwrap();
             HotTierManager {
                 filesystem: LocalFileSystem::new(),

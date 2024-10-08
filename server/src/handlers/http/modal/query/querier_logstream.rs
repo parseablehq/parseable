@@ -17,12 +17,11 @@ use crate::{
         logstream::{error::StreamError, get_stats_date},
         modal::utils::logstream_utils::create_update_stream,
     },
-    hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION},
+    hottier::HotTierManager,
     metadata::{self, STREAM_INFO},
     option::CONFIG,
     stats::{self, Stats},
     storage::{StorageDir, StreamType},
-    validator,
 };
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
@@ -217,108 +216,4 @@ pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, Strea
 
     let cache_enabled = STREAM_INFO.get_cache_enabled(&stream_name)?;
     Ok((web::Json(cache_enabled), StatusCode::OK))
-}
-
-pub async fn put_stream_hot_tier(
-    req: HttpRequest,
-    body: web::Json<serde_json::Value>,
-) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
-    }
-
-    if STREAM_INFO.stream_type(&stream_name).unwrap() == Some(StreamType::Internal.to_string()) {
-        return Err(StreamError::Custom {
-            msg: "Hot tier can not be updated for internal stream".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
-        return Err(StreamError::HotTierNotEnabled(stream_name));
-    }
-
-    let body = body.into_inner();
-    let mut hottier: StreamHotTier = match serde_json::from_value(body) {
-        Ok(hottier) => hottier,
-        Err(err) => return Err(StreamError::InvalidHotTierConfig(err)),
-    };
-
-    validator::hot_tier(&hottier.size.to_string())?;
-
-    STREAM_INFO.set_hot_tier(&stream_name, true)?;
-    if let Some(hot_tier_manager) = HotTierManager::global() {
-        let existing_hot_tier_used_size = hot_tier_manager
-            .validate_hot_tier_size(&stream_name, &hottier.size)
-            .await?;
-        hottier.used_size = Some(existing_hot_tier_used_size.to_string());
-        hottier.available_size = Some(hottier.size.clone());
-        hottier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
-        hot_tier_manager
-            .put_hot_tier(&stream_name, &mut hottier)
-            .await?;
-        let storage = CONFIG.storage().get_object_store();
-        let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
-        stream_metadata.hot_tier_enabled = Some(true);
-        storage
-            .put_stream_manifest(&stream_name, &stream_metadata)
-            .await?;
-    }
-
-    Ok((
-        format!("hot tier set for stream {stream_name}"),
-        StatusCode::OK,
-    ))
-}
-
-pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
-    }
-
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
-        return Err(StreamError::HotTierNotEnabled(stream_name));
-    }
-
-    if let Some(hot_tier_manager) = HotTierManager::global() {
-        let mut hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
-        hot_tier.size = format!("{} {}", hot_tier.size, "Bytes");
-        hot_tier.used_size = Some(format!("{} {}", hot_tier.used_size.unwrap(), "Bytes"));
-        hot_tier.available_size = Some(format!("{} {}", hot_tier.available_size.unwrap(), "Bytes"));
-        Ok((web::Json(hot_tier), StatusCode::OK))
-    } else {
-        Err(StreamError::Custom {
-            msg: format!("hot tier not initialised for stream {}", stream_name),
-            status: (StatusCode::BAD_REQUEST),
-        })
-    }
-}
-
-pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
-    }
-
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
-        return Err(StreamError::HotTierNotEnabled(stream_name));
-    }
-
-    if STREAM_INFO.stream_type(&stream_name).unwrap() == Some(StreamType::Internal.to_string()) {
-        return Err(StreamError::Custom {
-            msg: "Hot tier can not be deleted for internal stream".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-
-    if let Some(hot_tier_manager) = HotTierManager::global() {
-        hot_tier_manager.delete_hot_tier(&stream_name).await?;
-    }
-    Ok((
-        format!("hot tier deleted for stream {stream_name}"),
-        StatusCode::OK,
-    ))
 }
