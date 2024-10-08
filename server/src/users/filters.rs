@@ -77,7 +77,6 @@ impl Filters {
         let mut this = vec![];
         let store = CONFIG.storage().get_object_store();
         let all_filters = store.get_all_saved_filters().await.unwrap_or_default();
-
         for (filter_relative_path, filters) in all_filters {
             for filter in filters {
                 if filter.is_empty() {
@@ -92,11 +91,19 @@ impl Filters {
                         store.delete_object(&filter_relative_path).await?;
 
                         filter_value = migrate_v1_v2(filter_value);
-                        let user_id = meta.get("user_id").and_then(|user_id| user_id.as_str());
-                        let filter_id = meta
+                        let user_id = filter_value
+                            .as_object()
+                            .unwrap()
+                            .get("user_id")
+                            .and_then(|user_id| user_id.as_str());
+                        let filter_id = filter_value
+                            .as_object()
+                            .unwrap()
                             .get("filter_id")
                             .and_then(|filter_id| filter_id.as_str());
-                        let stream_name = meta
+                        let stream_name = filter_value
+                            .as_object()
+                            .unwrap()
                             .get("stream_name")
                             .and_then(|stream_name| stream_name.as_str());
                         if let (Some(user_id), Some(stream_name), Some(filter_id)) =
