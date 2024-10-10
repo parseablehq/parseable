@@ -7,4 +7,4 @@ resolver = "2"
 # - https://github.com/apache/arrow-rs/pull/6230
 # - https://github.com/apache/arrow-rs/pull/6260
 # But a new version hasn't been published to crates.io for this yet. So, we are using this patch temporarily.
-object_store = { git = "https://github.com/parseablehq/arrow-rs.git", rev = "23b6ff9f432e8e29c08d47a315ba0b7cb8758225" }
+object_store = { git = "https://github.com/apache/arrow-rs.git", rev = "23b6ff9f432e8e29c08d47a315ba0b7cb8758225" }
