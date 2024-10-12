@@ -32,8 +32,10 @@ use object_store::{ClientOptions, ObjectStore, PutPayload};
 use relative_path::{RelativePath, RelativePathBuf};
 
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::iter::Iterator;
 use std::path::Path as StdPath;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -84,6 +86,16 @@ pub struct S3Config {
     #[arg(long, env = "P_S3_BUCKET", value_name = "bucket-name", required = true)]
     pub bucket_name: String,
 
+    /// Server side encryption to use for operations with objects.
+    /// Currently, this only supports SSE-C. Value should be
+    /// like SSE-C:AES256:<base64_encoded_encryption_key>.
+    #[arg(
+        long,
+        env = "P_S3_SSEC_ENCRYPTION_KEY",
+        value_name = "ssec-encryption-key"
+    )]
+    pub ssec_encryption_key: Option<SSECEncryptionKey>,
+
     /// Set client to send checksum header on every put request
     #[arg(
         long,
@@ -130,6 +142,72 @@ pub struct S3Config {
     pub metadata_endpoint: Option<String>,
 }
 
+/// This represents the server side encryption to be
+/// used when working with S3 objects.
+#[derive(Debug, Clone)]
+pub enum SSECEncryptionKey {
+    /// https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerSideEncryptionCustomerKeys.html
+    SseC {
+        // algorithm unused but being tracked separately to maintain
+        // consistent interface via CLI if AWS adds any new algorithms
+        // in future.
+        _algorithm: ObjectEncryptionAlgorithm,
+        base64_encryption_key: String,
+    },
+}
+
+impl FromStr for SSECEncryptionKey {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts = s.split(':').collect::<Vec<_>>();
+        if parts.len() == 3 {
+            let sse_type = parts[0];
+            if sse_type != "SSE-C" {
+                return Err("Only SSE-C is supported for object encryption for now".into());
+            }
+
+            let algorithm = parts[1];
+            let encryption_key = parts[2];
+
+            let alg = ObjectEncryptionAlgorithm::from_str(algorithm)?;
+
+            Ok(match alg {
+                ObjectEncryptionAlgorithm::Aes256 => SSECEncryptionKey::SseC {
+                    _algorithm: alg,
+                    base64_encryption_key: encryption_key.to_owned(),
+                },
+            })
+        } else {
+            Err("Expected SSE-C:AES256:<base64_encryption_key>".into())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ObjectEncryptionAlgorithm {
+    Aes256,
+}
+
+impl FromStr for ObjectEncryptionAlgorithm {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "AES256" => Ok(ObjectEncryptionAlgorithm::Aes256),
+            _ => Err("Invalid SSE algorithm. Following are supported: AES256".into()),
+        }
+    }
+}
+
+impl Display for ObjectEncryptionAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ObjectEncryptionAlgorithm::Aes256 => write!(f, "AES256"),
+        }
+    }
+}
+
 impl S3Config {
     fn get_default_builder(&self) -> AmazonS3Builder {
         let mut client_options = ClientOptions::default()
@@ -158,6 +236,17 @@ impl S3Config {
             builder = builder
                 .with_access_key_id(access_key)
                 .with_secret_access_key(secret_key);
+        }
+
+        if let Some(ssec_encryption_key) = &self.ssec_encryption_key {
+            match ssec_encryption_key {
+                SSECEncryptionKey::SseC {
+                    _algorithm,
+                    base64_encryption_key,
+                } => {
+                    builder = builder.with_ssec_encryption(base64_encryption_key);
+                }
+            }
         }
 
         if let Ok(relative_uri) = std::env::var(AWS_CONTAINER_CREDENTIALS_RELATIVE_URI) {
