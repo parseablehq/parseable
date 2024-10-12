@@ -89,8 +89,12 @@ pub struct S3Config {
     /// Server side encryption to use for operations with objects.
     /// Currently, this only supports SSE-C. Value should be
     /// like SSE-C:AES256:<base64_encoded_encryption_key>.
-    #[arg(long, env = "P_OBJECT_SSE", value_name = "object-sse")]
-    pub object_sse: Option<ObjectSse>,
+    #[arg(
+        long,
+        env = "P_S3_SSEC_ENCRYPTION_KEY",
+        value_name = "ssec-encryption-key"
+    )]
+    pub ssec_encryption_key: Option<SSECEncryptionKey>,
 
     /// Set client to send checksum header on every put request
     #[arg(
@@ -141,7 +145,7 @@ pub struct S3Config {
 /// This represents the server side encryption to be
 /// used when working with S3 objects.
 #[derive(Debug, Clone)]
-pub enum ObjectSse {
+pub enum SSECEncryptionKey {
     /// https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerSideEncryptionCustomerKeys.html
     SseC {
         // algorithm unused but being tracked separately to maintain
@@ -152,7 +156,7 @@ pub enum ObjectSse {
     },
 }
 
-impl FromStr for ObjectSse {
+impl FromStr for SSECEncryptionKey {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -169,7 +173,7 @@ impl FromStr for ObjectSse {
             let alg = ObjectEncryptionAlgorithm::from_str(algorithm)?;
 
             Ok(match alg {
-                ObjectEncryptionAlgorithm::Aes256 => ObjectSse::SseC {
+                ObjectEncryptionAlgorithm::Aes256 => SSECEncryptionKey::SseC {
                     _algorithm: alg,
                     base64_encryption_key: encryption_key.to_owned(),
                 },
@@ -234,9 +238,9 @@ impl S3Config {
                 .with_secret_access_key(secret_key);
         }
 
-        if let Some(object_sse) = &self.object_sse {
-            match object_sse {
-                ObjectSse::SseC {
+        if let Some(ssec_encryption_key) = &self.ssec_encryption_key {
+            match ssec_encryption_key {
+                SSECEncryptionKey::SseC {
                     _algorithm,
                     base64_encryption_key,
                 } => {
