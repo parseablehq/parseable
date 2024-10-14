@@ -72,9 +72,9 @@ pub struct AzureBlobConfig {
         long,
         env = "P_AZR_ACCESS_KEY",
         value_name = "access-key",
-        required = true
+        required = false
     )]
-    pub access_key: String,
+    pub access_key: Option<String>,
 
     ///Client ID
     #[arg(
@@ -123,8 +123,11 @@ impl AzureBlobConfig {
         let mut builder = MicrosoftAzureBuilder::new()
             .with_endpoint(self.endpoint_url.clone())
             .with_account(&self.account)
-            .with_access_key(&self.access_key)
             .with_container_name(&self.container);
+
+        if let Some(access_key) = self.access_key.clone() {
+            builder = builder.with_access_key(access_key)
+        }
 
         if let (Some(client_id), Some(client_secret), Some(tenant_id)) = (
             self.client_id.clone(),
