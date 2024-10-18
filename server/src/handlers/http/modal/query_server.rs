@@ -22,7 +22,7 @@ use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{self, role};
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
-use crate::handlers::http::{health_check, logstream, MAX_EVENT_PAYLOAD_SIZE};
+use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::sync;
@@ -34,7 +34,6 @@ use actix_web::{web, Scope};
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
 
 use crate::option::CONFIG;
 
@@ -79,18 +78,6 @@ impl ParseableServer for QueryServer {
                 .wrap(cross_origin_config())
         };
 
-        // Create a channel to trigger server shutdown
-        let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
-        let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
-
-        // Clone the shutdown signal for the signal handler
-        let shutdown_signal = server_shutdown_signal.clone();
-
-        // Spawn the signal handler task
-        tokio::spawn(async move {
-            health_check::handle_signals(shutdown_signal).await;
-        });
-
         // Create the HTTP server
         let http_server = HttpServer::new(create_app_fn)
             .workers(num_cpus::get())
@@ -105,17 +92,36 @@ impl ParseableServer for QueryServer {
             http_server.bind(&CONFIG.parseable.address)?.run()
         };
 
-        // Graceful shutdown handling
-        let srv_handle = srv.handle();
+        // SIGTERM handler (in tokio) exists only for unix based OS
+        #[cfg(unix)]
+        {
+            use crate::handlers::http::health_check;
+            use tokio::sync::{oneshot, Mutex};
 
-        tokio::spawn(async move {
-            // Wait for the shutdown signal
-            shutdown_rx.await.ok();
+            // Create a channel to trigger server shutdown
+            let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
+            let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
 
-            // Initiate graceful shutdown
-            log::info!("Graceful shutdown of HTTP server triggered");
-            srv_handle.stop(true).await;
-        });
+            // Clone the shutdown signal for the signal handler
+            let shutdown_signal = server_shutdown_signal.clone();
+
+            // Spawn the signal handler task
+            tokio::spawn(async move {
+                health_check::handle_signals(shutdown_signal).await;
+            });
+
+            // Graceful shutdown handling
+            let srv_handle = srv.handle();
+
+            tokio::spawn(async move {
+                // Wait for the shutdown signal
+                shutdown_rx.await.ok();
+
+                // Initiate graceful shutdown
+                log::info!("Graceful shutdown of HTTP server triggered");
+                srv_handle.stop(true).await;
+            });
+        }
 
         // Await the server to run and handle shutdown
         srv.await?;

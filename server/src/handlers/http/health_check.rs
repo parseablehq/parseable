@@ -21,9 +21,9 @@ use actix_web::http::StatusCode;
 use actix_web::HttpResponse;
 use lazy_static::lazy_static;
 use std::sync::Arc;
-use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::{oneshot, Mutex};
-use tokio::time::{sleep, Duration};
+#[allow(unused_imports)]
+use tokio::sync::oneshot;
+use tokio::sync::Mutex;
 
 // Create a global variable to store signal status
 lazy_static! {
@@ -34,7 +34,13 @@ pub async fn liveness() -> HttpResponse {
     HttpResponse::new(StatusCode::OK)
 }
 
+// This configuration option specifies that handle_signal() will only be compiled in case of the OS kind being unix
+// We are doing this because tokio::signal::Windows lacks a handler for SIGTERM (which is what kubelet sends while scaling down)
+#[cfg(unix)]
 pub async fn handle_signals(shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()>>>>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::time::{sleep, Duration};
+
     let signal_received = SIGNAL_RECEIVED.clone();
 
     let mut sigterm =
