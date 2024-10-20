@@ -45,7 +45,7 @@ spec:
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
         args: 
         - /usr/bin/parseable
-        - {{ .Values.parseable.objectStore }}
+        - {{ .Values.parseable.store }}
         env:
           - name: HOSTNAME
             valueFrom:

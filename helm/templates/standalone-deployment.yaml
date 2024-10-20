@@ -36,11 +36,7 @@ spec:
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
           # Uncomment to debug
           # command: [ "/bin/sh", "-c", "sleep 1000000" ]
-          {{- if .Values.parseable.local }}
-          args: ["/usr/bin/parseable", "local-store"]
-          {{- else }}
-          args: ["/usr/bin/parseable", {{ .Values.parseable.objectStore | quote }}]
-          {{- end }}
+          args: ["/usr/bin/parseable", {{ .Values.parseable.store | quote }}]
           env:
             - name: HOSTNAME
               valueFrom:

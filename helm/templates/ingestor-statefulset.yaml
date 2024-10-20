@@ -42,7 +42,7 @@ spec:
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
         args:
           - /usr/bin/parseable
-          - {{ .Values.parseable.objectStore }}
+          - {{ .Values.parseable.store }}
           - --ingestor-endpoint=$(HOSTNAME).{{ include "parseable.fullname" . }}-ingestor-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.parseable.highAvailability.ingestor.port }}
         env:
           {{- range $key, $value :=  .Values.parseable.highAvailability.ingestor.env }}
