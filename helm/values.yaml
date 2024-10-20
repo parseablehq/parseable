@@ -6,6 +6,9 @@ parseable:
   ## Set to true if you want to deploy Parseable in local mode (store logs
   ## on local mount point instead of S3 bucket)
   local: false
+  ## object store can be s3, blob
+  ## local needs to be false if set to object store.
+  objectStore: s3-store
   ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors)
   ## Please note that highAvailability is not supported in local mode
   highAvailability:
@@ -82,6 +85,18 @@ parseable:
       - password
       - staging.dir
       - fs.dir
+  # blobModeSecret:
+  #   - type: env
+  #     name: parseable-env-secret
+  #     prefix: p_
+  #     keys:
+  #     - addr
+  #     - username
+  #     - password
+  #     - azr.access_key
+  #     - azr.account
+  #     - azr.container
+  #     - azr.url
   s3ModeSecret:
     - type: env
       name: parseable-env-secret

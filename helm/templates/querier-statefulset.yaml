@@ -45,8 +45,13 @@ spec:
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
         args: 
         - /usr/bin/parseable
-        - s3-store
+        - {{ .Values.parseable.objectStore }}
         env:
+          - name: HOSTNAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
           {{- range $key, $value :=  .Values.parseable.env }}
           - name: {{ $key }}
             value: {{ tpl $value $ | quote }}
@@ -60,11 +65,6 @@ spec:
               secretKeyRef:
                 name: {{ $secret.name }}
                 key: {{ $key }}
-          - name: HOSTNAME
-            valueFrom:
-              fieldRef:
-                apiVersion: v1
-                fieldPath: metadata.name
           {{- end }}
           {{- end }}
           - name: P_MODE
@@ -72,6 +72,17 @@ spec:
           {{- if .Values.parseable.persistence.querier.enabled }}
           - name: P_HOT_TIER_DIR
             value: "/parseable/hot-tier"
+          {{- end }}
+          {{- range $secret := .Values.parseable.blobModeSecret }}
+          {{- range $key := $secret.keys }}
+          {{- $envPrefix := $secret.prefix | default "" | upper }}
+          {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+          - name: {{ $envPrefix }}{{ $envKey }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $secret.name }}
+                key: {{ $key }}
+          {{- end }}
           {{- end }}
         ports:
           - containerPort: 8000
