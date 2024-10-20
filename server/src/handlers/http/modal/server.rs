@@ -40,6 +40,7 @@ use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
+use tokio::time::{sleep, Duration};
 
 use actix_web::web::resource;
 use actix_web::Resource;
@@ -64,7 +65,6 @@ use super::generate;
 use super::ssl_acceptor::get_ssl_acceptor;
 use super::OpenIdClient;
 use super::ParseableServer;
-
 #[derive(Default)]
 pub struct Server;
 
@@ -108,9 +108,9 @@ impl ParseableServer for Server {
         let shutdown_signal = server_shutdown_signal.clone();
 
         // Spawn the signal handler task
-        tokio::spawn(async move {
+        let signal_task = tokio::spawn(async move {
             health_check::handle_signals(shutdown_signal).await;
-            println!("Received shutdown signal, notifying server to shut down...");
+            log::info!("Received shutdown signal, notifying server to shut down...");
         });
 
         // Create the HTTP server
@@ -129,18 +129,41 @@ impl ParseableServer for Server {
 
         // Graceful shutdown handling
         let srv_handle = srv.handle();
-
-        tokio::spawn(async move {
+        
+        let sync_task = tokio::spawn(async move {
             // Wait for the shutdown signal
-            shutdown_rx.await.ok();
+            let _ = shutdown_rx.await;
+
+            // Perform S3 sync and wait for completion
+            log::info!("Starting data sync to S3...");
+            if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
+                log::warn!("Failed to sync local data with object store. {:?}", e);
+            } else {
+                log::info!("Successfully synced all data to S3.");
+            }
 
             // Initiate graceful shutdown
             log::info!("Graceful shutdown of HTTP server triggered");
             srv_handle.stop(true).await;
         });
 
-        // Await the server to run and handle shutdown
-        srv.await?;
+        // Await the HTTP server to run
+        let server_result = srv.await;
+
+        // Await the signal handler to ensure proper cleanup
+        if let Err(e) = signal_task.await {
+            log::error!("Error in signal handler: {:?}", e);
+        }
+
+        // Wait for the sync task to complete before exiting
+        if let Err(e) = sync_task.await {
+            log::error!("Error in sync task: {:?}", e);
+        } else {
+            log::info!("Sync task completed successfully.");
+        }
+
+        // Return the result of the server
+        server_result?;
 
         Ok(())
     }
