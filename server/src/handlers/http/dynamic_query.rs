@@ -1,4 +1,3 @@
-use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::query::QueryError;
 use crate::query::{Query, QUERY_SESSION};
 use crate::response::QueryResponse;
@@ -69,7 +68,7 @@ lazy_static! {
     static ref RESULTS_BY_UUID: Mutex<BTreeMap<Uuid, QueryResponse>> = Mutex::new(BTreeMap::new());
 }
 
-pub async fn dynamic_query(_req: HttpRequest, res: DynamicQuery) -> Result<String, QueryError> {
+pub async fn dynamic_query(req: HttpRequest, res: DynamicQuery) -> Result<String, QueryError> {
     let duration = res.cache_duration;
     let uuid = Uuid::new_v4();
     let plan = res.plan;
@@ -87,11 +86,7 @@ pub async fn dynamic_query(_req: HttpRequest, res: DynamicQuery) -> Result<Strin
             let table_name = query
                 .first_table_name()
                 .expect("No table name found in query");
-
             let (records, fields) = query.execute(table_name.clone()).await.unwrap();
-
-            println!("Results total: {:?}", records[0].num_rows());
-
             let response = QueryResponse {
                 records,
                 fields,
@@ -105,7 +100,7 @@ pub async fn dynamic_query(_req: HttpRequest, res: DynamicQuery) -> Result<Strin
             tokio::time::sleep(duration).await;
         }
     });
-    Ok(uuid.to_string())
+    Ok(format!("{}/{}", req.uri(), uuid))
 }
 pub async fn dynamic_lookup(req: HttpRequest) -> Result<impl Responder, QueryError> {
     let uuid_txt = req
