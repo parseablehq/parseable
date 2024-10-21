@@ -4,12 +4,16 @@ use actix_web::web::Json;
 use actix_web::{FromRequest, HttpRequest};
 use clokwerk::AsyncScheduler;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::prelude::*;
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
-
+use tokio::sync::Mutex;
+use uuid::Uuid;
 /// Query Request through http endpoint.
 #[derive(Debug)]
 pub struct DynamicQuery {
@@ -55,33 +59,56 @@ impl FromRequest for DynamicQuery {
     fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
         let query = Json::<RawDynamicQuery>::from_request(req, payload);
         let fut = async move {
-            let query = query.await?.into_inner();
-            let res = from_raw_query(&query).await;
-
-            let mut scheduler = AsyncScheduler::new();
-            let interval = clokwerk::Interval::Seconds(res.cache_duration.as_secs() as u32);
-            scheduler.every(interval).run(move || async {
-                println!("TODO: Refresh cache");
-            });
-
-            tokio::spawn(async move {
-                loop {
-                    scheduler.run_pending().await;
-                    tokio::time::sleep(res.cache_duration).await;
-                }
-            });
-            println!("query: {:?}", res);
-
-            Ok(res)
+            let query_res = query.await?.into_inner();
+            Ok(from_raw_query(&query_res).await)
         };
-
         Box::pin(fut)
     }
 }
 
-pub async fn dynamic_query(
-    _req: HttpRequest,
-    query_request: DynamicQuery,
-) -> Result<String, QueryError> {
-    Ok(format!("{:?}", query_request))
+pub fn background_run_scheduler() {
+    tokio::spawn(async move {
+        loop {
+            let mut scheduler = ASYNC_SCHEDULER.lock().await;
+            scheduler.run_pending().await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+}
+lazy_static! {
+    static ref ASYNC_SCHEDULER: Mutex<AsyncScheduler> = Mutex::new(AsyncScheduler::new());
+    static ref PLANS_BY_UUID: Mutex<BTreeMap<Uuid, LogicalPlan>> = Mutex::new(BTreeMap::new());
+    static ref RESULTS_BY_UUID: Mutex<BTreeMap<Uuid, DataFrame>> = Mutex::new(BTreeMap::new());
+}
+
+pub async fn dynamic_query(_req: HttpRequest, res: DynamicQuery) -> Result<String, QueryError> {
+    let duration = res.cache_duration;
+    let uuid = Uuid::new_v4();
+    let interval = clokwerk::Interval::Seconds(duration.as_secs() as u32);
+    {
+        let mut plans = PLANS_BY_UUID.lock().await;
+        (&mut *plans).insert(uuid, res.plan);
+    }
+    let mut scheduler = ASYNC_SCHEDULER.lock().await;
+    let my_id = uuid.clone();
+
+    scheduler.every(interval).run( || async {
+        let id = my_id.clone();
+        let mut curr: LogicalPlan;
+        {
+            let plans = PLANS_BY_UUID.lock().await;
+            curr = plans.get(&id).cloned().unwrap();
+        }
+        println!("TODO: Refresh cache for query: {}", curr.display());
+
+        /*
+        let session_ctx = &*QUERY_SESSION;
+        let frame = session_ctx.execute_logical_plan(curr.clone()).await;
+        println!("Result: {:?}", frame);
+
+        let mut results = RESULTS_BY_UUID.lock().await;
+        results.insert(uuid, frame.unwrap());*/
+    });
+
+    Ok(String::new())
 }

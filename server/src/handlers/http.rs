@@ -28,7 +28,7 @@ use self::{cluster::get_ingestor_info, query::Query};
 pub(crate) mod about;
 mod cache;
 pub mod cluster;
-mod dynamic_query;
+pub(crate) mod dynamic_query;
 pub(crate) mod health_check;
 pub(crate) mod ingest;
 mod kinesis;
