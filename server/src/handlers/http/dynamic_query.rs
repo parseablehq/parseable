@@ -1,8 +1,10 @@
+use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::query::QueryError;
 use crate::query::{Query, QUERY_SESSION};
 use crate::response::QueryResponse;
 use actix_web::web::Json;
-use actix_web::{FromRequest, HttpRequest};
+use actix_web::{FromRequest, HttpRequest, Responder};
+use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use datafusion::logical_expr::LogicalPlan;
 use lazy_static::lazy_static;
@@ -86,7 +88,7 @@ pub async fn dynamic_query(_req: HttpRequest, res: DynamicQuery) -> Result<Strin
                 .first_table_name()
                 .expect("No table name found in query");
 
-            let (records, fields) = query.execute(table_name.clone()).await?;
+            let (records, fields) = query.execute(table_name.clone()).await.unwrap();
 
             println!("Results total: {:?}", records[0].num_rows());
 
@@ -95,13 +97,27 @@ pub async fn dynamic_query(_req: HttpRequest, res: DynamicQuery) -> Result<Strin
                 fields,
                 fill_null: false,
                 with_fields: true,
+            };
+            {
+                let mut results = RESULTS_BY_UUID.lock().await;
+                results.insert(uuid, response);
             }
-            .to_http()?;
-
-            let mut results = RESULTS_BY_UUID.lock().await;
-            results.insert(uuid, response);
             tokio::time::sleep(duration).await;
         }
     });
-    Ok(String::new())
+    Ok(uuid.to_string())
+}
+pub async fn dynamic_lookup(req: HttpRequest) -> Result<impl Responder, QueryError> {
+    let uuid_txt = req
+        .match_info()
+        .get("uuid")
+        .ok_or_else(|| QueryError::Anyhow(anyhow!("Missing UUID")))?;
+    let uuid =
+        Uuid::parse_str(uuid_txt).map_err(|_| QueryError::Anyhow(anyhow!("Invalid UUID")))?;
+    let results = RESULTS_BY_UUID.lock().await;
+    let raw = results
+        .get(&uuid)
+        .ok_or_else(|| QueryError::Anyhow(anyhow!("UUID not found")))?;
+
+    raw.to_http()
 }

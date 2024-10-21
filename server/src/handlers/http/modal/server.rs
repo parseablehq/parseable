@@ -274,11 +274,21 @@ impl Server {
     }
 
     // get the query factory
-    pub fn get_dynamic_query_factory() -> Resource {
-        web::resource("/query/dynamic").route(
-            web::post()
-                .to(dynamic_query::dynamic_query)
-                .authorize(Action::Query),
+    pub fn get_dynamic_query_factory() -> Scope {
+        web::scope("/query/dynamic").service(
+            web::scope("")
+                .route(
+                    "",
+                    web::post()
+                        .to(dynamic_query::dynamic_query)
+                        .authorize(Action::Query),
+                )
+                .route(
+                    "/{uuid}",
+                    web::get()
+                        .to(dynamic_query::dynamic_lookup)
+                        .authorize(Action::Query),
+                ),
         )
     }
 
