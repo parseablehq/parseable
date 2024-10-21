@@ -19,7 +19,6 @@
 use crate::analytics;
 use crate::banner;
 use crate::handlers;
-use crate::handlers::http::{about, dynamic_query};
 use crate::handlers::http::base_path;
 use crate::handlers::http::cache;
 use crate::handlers::http::health_check;
@@ -29,6 +28,7 @@ use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
+use crate::handlers::http::{about, dynamic_query};
 use crate::hottier::HotTierManager;
 use crate::localcache::LocalCacheManager;
 use crate::metrics;
@@ -275,7 +275,11 @@ impl Server {
 
     // get the query factory
     pub fn get_dynamic_query_factory() -> Resource {
-        web::resource("/query/dynamic").route(web::post().to(dynamic_query::dynamic_query).authorize(Action::Query))
+        web::resource("/query/dynamic").route(
+            web::post()
+                .to(dynamic_query::dynamic_query)
+                .authorize(Action::Query),
+        )
     }
 
     pub fn get_cache_webscope() -> Scope {

@@ -28,6 +28,7 @@ use self::{cluster::get_ingestor_info, query::Query};
 pub(crate) mod about;
 mod cache;
 pub mod cluster;
+mod dynamic_query;
 pub(crate) mod health_check;
 pub(crate) mod ingest;
 mod kinesis;
@@ -42,7 +43,6 @@ pub(crate) mod rbac;
 pub(crate) mod role;
 pub(crate) mod trino;
 pub mod users;
-mod dynamic_query;
 
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "api";
