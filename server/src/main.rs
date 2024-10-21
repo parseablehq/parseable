@@ -43,6 +43,7 @@ mod sync;
 mod users;
 mod utils;
 mod validator;
+mod kafka;
 
 use std::sync::Arc;
 
@@ -56,6 +57,7 @@ pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
+    kafka::setup_integration()?;
     env_logger::init();
 
     // these are empty ptrs so mem footprint should be minimal
