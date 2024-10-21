@@ -32,12 +32,7 @@ spec:
         {{- .Values.parseable.highAvailability.ingestor.labels | toYaml | nindent 8 }}
         {{- include "parseable.ingestorLabelsSelector" . | nindent 8 }}
     spec:
-      terminationGracePeriodSeconds: 10 
-      tolerations:
-      - key: "kubernetes.azure.com/scalesetpriority"
-        operator: "Equal"
-        value: "spot"
-        effect: "NoSchedule"
+      terminationGracePeriodSeconds: 10
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
       containers:
       - name: {{ .Chart.Name }}
