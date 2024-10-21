@@ -56,22 +56,22 @@ parseable:
       enabled: false
       storageClass: ""
       accessMode: ReadWriteOnce
-      size: 10Gi
+      size: 1Gi
     ingestor:
       enabled: false
       storageClass: ""
       accessMode: ReadWriteOnce
-      size: 10Gi
+      size: 1Gi
     data:
       enabled: false
       storageClass: ""
       accessMode: ReadWriteOnce
-      size: 10Gi
+      size: 1Gi
     querier:
       enabled: false
       storageClass: ""
       accessMode: ReadWriteOnce
-      size: 10Gi
+      size: 1Gi
   ## comment out the secrets depending upon deployment option
   ## localModeSecret if store is set to local
   ## blobModeSecret if store is set to blob-store
