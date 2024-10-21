@@ -1,18 +1,16 @@
 use crate::handlers::http::query::QueryError;
-use crate::query::QUERY_SESSION;
+use crate::query::{Query, QUERY_SESSION};
+use crate::response::QueryResponse;
 use actix_web::web::Json;
 use actix_web::{FromRequest, HttpRequest};
-use clokwerk::AsyncScheduler;
+use chrono::{DateTime, Utc};
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::prelude::*;
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::collections::BTreeMap;
-use std::future::Future;
-use std::pin::Pin;
-use std::time::Duration;
+use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
 /// Query Request through http endpoint.
 #[derive(Debug)]
 pub struct DynamicQuery {
@@ -66,24 +64,42 @@ impl FromRequest for DynamicQuery {
 }
 
 lazy_static! {
-    static ref RESULTS_BY_UUID: Mutex<BTreeMap<Uuid, DataFrame>> = Mutex::new(BTreeMap::new());
+    static ref RESULTS_BY_UUID: Mutex<BTreeMap<Uuid, QueryResponse>> = Mutex::new(BTreeMap::new());
 }
 
 pub async fn dynamic_query(_req: HttpRequest, res: DynamicQuery) -> Result<String, QueryError> {
     let duration = res.cache_duration;
     let uuid = Uuid::new_v4();
     let plan = res.plan;
+    let chrono_duration = chrono::Duration::from_std(duration)?;
+    let mut last_query_time: DateTime<Utc> = Utc::now() - chrono_duration;
     tokio::spawn(async move {
         loop {
-            println!("TODO: Refresh cache for query: {}", plan.display());
+            let query = Query {
+                start: last_query_time,
+                end: last_query_time + chrono_duration,
+                raw_logical_plan: plan.clone(),
+                filter_tag: None,
+            };
+            last_query_time = Utc::now();
+            let table_name = query
+                .first_table_name()
+                .expect("No table name found in query");
 
-            let session_ctx = &*QUERY_SESSION;
-            let frame = session_ctx.execute_logical_plan(plan.clone()).await;
-            println!("Result: {:?}", frame);
+            let (records, fields) = query.execute(table_name.clone()).await?;
+
+            println!("Results total: {:?}", records[0].num_rows());
+
+            let response = QueryResponse {
+                records,
+                fields,
+                fill_null: false,
+                with_fields: true,
+            }
+            .to_http()?;
 
             let mut results = RESULTS_BY_UUID.lock().await;
-            results.insert(uuid, frame.unwrap());
-
+            results.insert(uuid, response);
             tokio::time::sleep(duration).await;
         }
     });
