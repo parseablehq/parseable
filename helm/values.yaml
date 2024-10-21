@@ -5,11 +5,11 @@ parseable:
     pullPolicy: Always
   ## object store can be local, s3 or blob.
   ## local needs to be false if set to object store.
-  store: local
+  store: blob-store
   ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors)
   ## Please note that highAvailability is not supported in local mode
   highAvailability:
-    enabled: false
+    enabled: true
     ingestor: 
       port: 8000
       podAnnotations: {}
@@ -53,51 +53,51 @@ parseable:
   ## Note that Data directory is needed only for local mode
   persistence:
     staging:
-      enabled: false
-      storageClass: ""
+      enabled: true
+      storageClass: "managed"
       accessMode: ReadWriteOnce
-      size: 1Gi
+      size: 10Gi
     ingestor:
-      enabled: false
-      storageClass: ""
+      enabled: true
+      storageClass: "managed"
       accessMode: ReadWriteOnce
-      size: 1Gi
+      size: 10Gi
     data:
-      enabled: false
-      storageClass: ""
+      enabled: true
+      storageClass: "managed"
       accessMode: ReadWriteOnce
-      size: 1Gi
+      size: 10Gi
     querier:
-      enabled: false
-      storageClass: ""
+      enabled: true
+      storageClass: "managed"
       accessMode: ReadWriteOnce
-      size: 1Gi
+      size: 10Gi
   ## comment out the secrets depending upon deployment option
   ## localModeSecret if store is set to local
   ## blobModeSecret if store is set to blob-store
   ## s3ModeSecret if store is set to s3-store
-  localModeSecret:
-    - type: env
-      name: parseable-env-secret
-      prefix: P_
-      keys:
-      - addr
-      - username
-      - password
-      - staging.dir
-      - fs.dir
-  # blobModeSecret:
+  # localModeSecret:
   #   - type: env
   #     name: parseable-env-secret
-  #     prefix: p_
+  #     prefix: P_
   #     keys:
   #     - addr
   #     - username
   #     - password
-  #     - azr.access_key
-  #     - azr.account
-  #     - azr.container
-  #     - azr.url
+  #     - staging.dir
+  #     - fs.dir
+  blobModeSecret:
+    - type: env
+      name: parseable-env-secret
+      prefix: p_
+      keys:
+      - addr
+      - username
+      - password
+      - azr.access_key
+      - azr.account
+      - azr.container
+      - azr.url
   # s3ModeSecret:
   #   - type: env
   #     name: parseable-env-secret

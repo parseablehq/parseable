@@ -35,7 +35,12 @@ spec:
         {{- .Values.parseable.podLabels | toYaml | nindent 8 }}
         {{- include "parseable.querierLabelsSelector" . | nindent 8 }}
     spec:
-      terminationGracePeriodSeconds: 10 
+      terminationGracePeriodSeconds: 10
+      tolerations:
+      - key: "kubernetes.azure.com/scalesetpriority"
+        operator: "Equal"
+        value: "spot"
+        effect: "NoSchedule"
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
       containers:
       - name: {{ .Chart.Name }}
