@@ -58,8 +58,6 @@ pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    handlers::http::dynamic_query::background_run_scheduler();
-
     // these are empty ptrs so mem footprint should be minimal
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
         Mode::Query => Arc::new(QueryServer),

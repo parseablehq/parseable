@@ -10,7 +10,6 @@ use regex::Regex;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -66,49 +65,27 @@ impl FromRequest for DynamicQuery {
     }
 }
 
-pub fn background_run_scheduler() {
-    tokio::spawn(async move {
-        loop {
-            let mut scheduler = ASYNC_SCHEDULER.lock().await;
-            scheduler.run_pending().await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    });
-}
 lazy_static! {
-    static ref ASYNC_SCHEDULER: Mutex<AsyncScheduler> = Mutex::new(AsyncScheduler::new());
-    static ref PLANS_BY_UUID: Mutex<BTreeMap<Uuid, LogicalPlan>> = Mutex::new(BTreeMap::new());
     static ref RESULTS_BY_UUID: Mutex<BTreeMap<Uuid, DataFrame>> = Mutex::new(BTreeMap::new());
 }
 
 pub async fn dynamic_query(_req: HttpRequest, res: DynamicQuery) -> Result<String, QueryError> {
     let duration = res.cache_duration;
     let uuid = Uuid::new_v4();
-    let interval = clokwerk::Interval::Seconds(duration.as_secs() as u32);
-    {
-        let mut plans = PLANS_BY_UUID.lock().await;
-        (&mut *plans).insert(uuid, res.plan);
-    }
-    let mut scheduler = ASYNC_SCHEDULER.lock().await;
-    let my_id = uuid.clone();
+    let plan = res.plan;
+    tokio::spawn(async move {
+        loop {
+            println!("TODO: Refresh cache for query: {}", plan.display());
 
-    scheduler.every(interval).run( || async {
-        let id = my_id.clone();
-        let mut curr: LogicalPlan;
-        {
-            let plans = PLANS_BY_UUID.lock().await;
-            curr = plans.get(&id).cloned().unwrap();
+            let session_ctx = &*QUERY_SESSION;
+            let frame = session_ctx.execute_logical_plan(plan.clone()).await;
+            println!("Result: {:?}", frame);
+
+            let mut results = RESULTS_BY_UUID.lock().await;
+            results.insert(uuid, frame.unwrap());
+
+            tokio::time::sleep(duration).await;
         }
-        println!("TODO: Refresh cache for query: {}", curr.display());
-
-        /*
-        let session_ctx = &*QUERY_SESSION;
-        let frame = session_ctx.execute_logical_plan(curr.clone()).await;
-        println!("Result: {:?}", frame);
-
-        let mut results = RESULTS_BY_UUID.lock().await;
-        results.insert(uuid, frame.unwrap());*/
     });
-
     Ok(String::new())
 }
