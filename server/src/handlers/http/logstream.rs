@@ -22,6 +22,7 @@ use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::ingest::create_stream_if_not_exists;
 use super::modal::utils::logstream_utils::create_update_stream;
 use crate::alerts::Alerts;
+use crate::event::format::update_data_type_to_datetime;
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::STREAM_INFO;
@@ -36,6 +37,7 @@ use crate::{metadata, validator};
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, Responder};
+use arrow_json::reader::infer_json_schema_from_iterator;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
@@ -87,6 +89,25 @@ pub async fn list(_: HttpRequest) -> impl Responder {
         .collect();
 
     web::Json(res)
+}
+
+pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
+    let body_val: Value = serde_json::from_slice(&body)?;
+    let value_arr: Vec<Value> = match body_val {
+        value @ Value::Object(_) => vec![value],
+        _ => {
+            return Err(StreamError::Custom {
+                msg: "please send one json event as part of the request".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            })
+        }
+    };
+
+    let mut schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok)).unwrap();
+    for value in value_arr {
+        schema = update_data_type_to_datetime(schema, value);
+    }
+    Ok((web::Json(schema), StatusCode::OK))
 }
 
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
