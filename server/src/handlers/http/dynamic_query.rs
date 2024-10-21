@@ -2,6 +2,7 @@ use crate::handlers::http::query::QueryError;
 use crate::query::QUERY_SESSION;
 use actix_web::web::Json;
 use actix_web::{FromRequest, HttpRequest};
+use clokwerk::AsyncScheduler;
 use datafusion::logical_expr::LogicalPlan;
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -22,14 +23,13 @@ pub struct RawDynamicQuery {
     pub cache_duration: String,
 }
 lazy_static! {
-    static ref DURATION_REGEX: Regex = Regex::new(r"^([0-9]+)(d|h|m|s|ms)$").unwrap();
+    static ref DURATION_REGEX: Regex = Regex::new(r"^([0-9]+)([dhms])$").unwrap();
 }
 fn parse_duration(s: &str) -> Option<Duration> {
     DURATION_REGEX.captures(s).and_then(|cap| {
         let value = cap[1].parse::<u64>().unwrap();
         let unit = &cap[2];
         match unit {
-            "ms" => Duration::from_secs(value).into(),
             "s" => Duration::from_secs(value).into(),
             "m" => Duration::from_secs(value * 60).into(),
             "h" => Duration::from_secs(value * 60 * 60).into(),
@@ -57,7 +57,21 @@ impl FromRequest for DynamicQuery {
         let fut = async move {
             let query = query.await?.into_inner();
             let res = from_raw_query(&query).await;
+
+            let mut scheduler = AsyncScheduler::new();
+            let interval = clokwerk::Interval::Seconds(res.cache_duration.as_secs() as u32);
+            scheduler.every(interval).run(move || async {
+                println!("TODO: Refresh cache");
+            });
+
+            tokio::spawn(async move {
+                loop {
+                    scheduler.run_pending().await;
+                    tokio::time::sleep(res.cache_duration).await;
+                }
+            });
             println!("query: {:?}", res);
+
             Ok(res)
         };
 
