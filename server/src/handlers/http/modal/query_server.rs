@@ -110,7 +110,7 @@ impl ParseableServer for QueryServer {
 
         // Graceful shutdown handling
         let srv_handle = srv.handle();
-        
+
         let sync_task = tokio::spawn(async move {
             // Wait for the shutdown signal
             let _ = shutdown_rx.await;

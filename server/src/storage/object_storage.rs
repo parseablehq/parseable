@@ -430,12 +430,12 @@ pub trait ObjectStorage: Sync + 'static {
         if !Path::new(&CONFIG.staging_dir()).exists() {
             return Ok(());
         }
-    
+
         let streams = STREAM_INFO.list_streams();
-    
+
         let cache_manager = LocalCacheManager::global();
         let mut cache_updates: HashMap<&String, Vec<_>> = HashMap::new();
-    
+
         for stream in &streams {
             let cache_enabled = STREAM_INFO
                 .get_cache_enabled(stream)
@@ -455,7 +455,7 @@ pub trait ObjectStorage: Sync + 'static {
                 shutdown_signal,
             )
             .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-    
+
             if let Some(schema) = schema {
                 let static_schema_flag = STREAM_INFO
                     .get_static_schema_flag(stream)
@@ -464,7 +464,7 @@ pub trait ObjectStorage: Sync + 'static {
                     commit_schema_to_storage(stream, schema).await?;
                 }
             }
-    
+
             let parquet_files = dir.parquet_files();
             for file in parquet_files {
                 let filename = file
@@ -472,10 +472,10 @@ pub trait ObjectStorage: Sync + 'static {
                     .expect("only parquet files are returned by iterator")
                     .to_str()
                     .expect("filename is valid string");
-    
+
                 // Log the filename being processed
                 log::debug!("Processing file: {}", filename);
-    
+
                 let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
                 file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
                 let compressed_size = file.metadata().map_or(0, |meta| meta.len());
@@ -489,7 +489,7 @@ pub trait ObjectStorage: Sync + 'static {
                     .with_label_values(&["data", stream, "parquet"])
                     .add(compressed_size as i64);
                 let mut file_suffix = str::replacen(filename, ".", "/", 3);
-    
+
                 let custom_partition_clone = custom_partition.clone();
                 if custom_partition_clone.is_some() {
                     let custom_partition_fields = custom_partition_clone.unwrap();
@@ -498,15 +498,15 @@ pub trait ObjectStorage: Sync + 'static {
                     file_suffix =
                         str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
                 }
-    
+
                 let stream_relative_path = format!("{stream}/{file_suffix}");
-    
+
                 // Try uploading the file, handle potential errors without breaking the loop
                 if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
                     log::error!("Failed to upload file {}: {:?}", filename, e);
                     continue; // Skip to the next file
                 }
-    
+
                 let absolute_path = self
                     .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
                     .to_string();
@@ -524,30 +524,31 @@ pub trait ObjectStorage: Sync + 'static {
                 }
             }
         }
-    
+
         // Cache management logic
         if let Some(manager) = cache_manager {
             let cache_updates = cache_updates
                 .into_iter()
                 .map(|(key, value)| (key.to_owned(), value))
                 .collect_vec();
-    
+
             tokio::spawn(async move {
                 for (stream, files) in cache_updates {
                     for (storage_path, file) in files {
                         if let Err(e) = manager
                             .move_to_cache(&stream, storage_path, file.to_owned())
-                            .await {
+                            .await
+                        {
                             log::error!("Failed to move file to cache: {:?}", e);
                         }
                     }
                 }
             });
         }
-    
+
         Ok(())
     }
-    
+
     // pick a better name
     fn get_bucket_name(&self) -> String;
 }
