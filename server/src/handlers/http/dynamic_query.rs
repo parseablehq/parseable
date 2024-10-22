@@ -10,7 +10,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
 use tokio::sync::Mutex;
-use uuid::Uuid;
+use ulid::Ulid;
 
 /// Query Request through http endpoint.
 #[derive(Debug)]
@@ -65,12 +65,12 @@ impl FromRequest for DynamicQuery {
 }
 
 lazy_static! {
-    static ref RESULTS_BY_UUID: Mutex<BTreeMap<Uuid, QueryResponse>> = Mutex::new(BTreeMap::new());
+    static ref RESULTS_BY_UUID: Mutex<BTreeMap<Ulid, QueryResponse>> = Mutex::new(BTreeMap::new());
 }
 
 pub async fn dynamic_query(req: HttpRequest, res: DynamicQuery) -> Result<String, QueryError> {
     let duration = res.cache_duration;
-    let uuid = Uuid::new_v4();
+    let uuid = Ulid::new();
     let plan = res.plan;
     let chrono_duration = chrono::Duration::from_std(duration)?;
     let mut last_query_time: DateTime<Utc> = Utc::now() - chrono_duration;
@@ -108,7 +108,7 @@ pub async fn dynamic_lookup(req: HttpRequest) -> Result<impl Responder, QueryErr
         .get("uuid")
         .ok_or_else(|| QueryError::Anyhow(anyhow!("Missing UUID")))?;
     let uuid =
-        Uuid::parse_str(uuid_txt).map_err(|_| QueryError::Anyhow(anyhow!("Invalid UUID")))?;
+        Ulid::from_string(uuid_txt).map_err(|_| QueryError::Anyhow(anyhow!("Invalid UUID")))?;
     let results = RESULTS_BY_UUID.lock().await;
     let raw = results
         .get(&uuid)
