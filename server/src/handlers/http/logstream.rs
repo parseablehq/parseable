@@ -94,10 +94,11 @@ pub async fn list(_: HttpRequest) -> impl Responder {
 pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
     let body_val: Value = serde_json::from_slice(&body)?;
     let value_arr: Vec<Value> = match body_val {
+        Value::Array(arr) => arr,
         value @ Value::Object(_) => vec![value],
         _ => {
             return Err(StreamError::Custom {
-                msg: "please send one json event as part of the request".to_string(),
+                msg: "please send json events as part of the request".to_string(),
                 status: StatusCode::BAD_REQUEST,
             })
         }
