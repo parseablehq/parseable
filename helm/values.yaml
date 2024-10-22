@@ -3,9 +3,9 @@ parseable:
     repository: containers.parseable.com/parseable/parseable
     tag: v1.5.5
     pullPolicy: Always
-  ## Set to true if you want to deploy Parseable in local mode (store logs
-  ## on local mount point instead of S3 bucket)
-  local: false
+  ## object store can be local, s3 or blob.
+  ## local needs to be false if set to object store.
+  store: local-store
   ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors)
   ## Please note that highAvailability is not supported in local mode
   highAvailability:
@@ -72,6 +72,10 @@ parseable:
       storageClass: ""
       accessMode: ReadWriteOnce
       size: 1Gi
+  ## comment out the secrets depending upon deployment option
+  ## localModeSecret if store is set to local
+  ## blobModeSecret if store is set to blob-store
+  ## s3ModeSecret if store is set to s3-store
   localModeSecret:
     - type: env
       name: parseable-env-secret
@@ -82,25 +86,37 @@ parseable:
       - password
       - staging.dir
       - fs.dir
-  s3ModeSecret:
-    - type: env
-      name: parseable-env-secret
-      prefix: P_
-      keys:
-      ## Comment / uncomment the following lines as required
-      # - tls.cert.path
-      # - tls.key.path
-      # - storage.upload.interval
-      - addr
-      - username
-      - password
-      - staging.dir
-      - fs.dir
-      - s3.url
-      - s3.access.key
-      - s3.secret.key
-      - s3.bucket
-      - s3.region
+  # blobModeSecret:
+  #   - type: env
+  #     name: parseable-env-secret
+  #     prefix: p_
+  #     keys:
+  #     - addr
+  #     - username
+  #     - password
+  #     - azr.access_key
+  #     - azr.account
+  #     - azr.container
+  #     - azr.url
+  # s3ModeSecret:
+  #   - type: env
+  #     name: parseable-env-secret
+  #     prefix: P_
+  #     keys:
+  #     ## Comment / uncomment the following lines as required
+  #     # - tls.cert.path
+  #     # - tls.key.path
+  #     # - storage.upload.interval
+  #     - addr
+  #     - username
+  #     - password
+  #     - staging.dir
+  #     - fs.dir
+  #     - s3.url
+  #     - s3.access.key
+  #     - s3.secret.key
+  #     - s3.bucket
+  #     - s3.region
   serviceAccount:
     create: true
     name: "parseable"

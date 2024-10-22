@@ -32,7 +32,7 @@ spec:
         {{- .Values.parseable.highAvailability.ingestor.labels | toYaml | nindent 8 }}
         {{- include "parseable.ingestorLabelsSelector" . | nindent 8 }}
     spec:
-      terminationGracePeriodSeconds: 10 
+      terminationGracePeriodSeconds: 10
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
       containers:
       - name: {{ .Chart.Name }}
@@ -42,7 +42,7 @@ spec:
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
         args:
           - /usr/bin/parseable
-          - s3-store 
+          - {{ .Values.parseable.store }}
           - --ingestor-endpoint=$(HOSTNAME).{{ include "parseable.fullname" . }}-ingestor-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.parseable.highAvailability.ingestor.port }}
         env:
           {{- range $key, $value :=  .Values.parseable.highAvailability.ingestor.env }}
@@ -55,6 +55,17 @@ spec:
                 fieldPath: metadata.name
           {{- end }}
           {{- range $secret := .Values.parseable.s3ModeSecret }}
+          {{- range $key := $secret.keys }}
+          {{- $envPrefix := $secret.prefix | default "" | upper }}
+          {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+          - name: {{ $envPrefix }}{{ $envKey }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $secret.name }}
+                key: {{ $key }}
+          {{- end }}
+          {{- end }}
+          {{- range $secret := .Values.parseable.blobModeSecret }}
           {{- range $key := $secret.keys }}
           {{- $envPrefix := $secret.prefix | default "" | upper }}
           {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
