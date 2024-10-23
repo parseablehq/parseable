@@ -47,7 +47,7 @@ use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::querycache::QueryCacheManager;
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
-    send_to_ingester,
+    send_to_ingestor,
 };
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
@@ -205,7 +205,7 @@ impl FlightService for AirServiceImpl {
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
         let event =
-            if send_to_ingester(query.start.timestamp_millis(), query.end.timestamp_millis()) {
+            if send_to_ingestor(query.start.timestamp_millis(), query.end.timestamp_millis()) {
                 let sql = format!("select * from {}", &stream_name);
                 let start_time = ticket.start_time.clone();
                 let end_time = ticket.end_time.clone();
@@ -216,12 +216,12 @@ impl FlightService for AirServiceImpl {
                 })
                 .to_string();
 
-                let ingester_metadatas = get_ingestor_info()
+                let ingestor_metadatas = get_ingestor_info()
                     .await
                     .map_err(|err| Status::failed_precondition(err.to_string()))?;
                 let mut minute_result: Vec<RecordBatch> = vec![];
 
-                for im in ingester_metadatas {
+                for im in ingestor_metadatas {
                     if let Ok(mut batches) = run_do_get_rpc(im, out_ticket.clone()).await {
                         minute_result.append(&mut batches);
                     }

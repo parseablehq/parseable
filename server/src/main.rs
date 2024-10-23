@@ -50,7 +50,7 @@ use handlers::http::modal::ParseableServer;
 use option::{Mode, CONFIG};
 
 use crate::handlers::http::modal::{
-    ingest_server::IngestServer, query_server::QueryServer, server::Server,
+    ingest_server::IngestServer, query_server::QueryServer, server::Server, coordinator_server::CoordinatorServer
 };
 pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 
@@ -63,6 +63,8 @@ async fn main() -> anyhow::Result<()> {
         Mode::Query => Arc::new(QueryServer),
 
         Mode::Ingest => Arc::new(IngestServer),
+
+        Mode::Coordinator => Arc::new(CoordinatorServer),
 
         Mode::All => Arc::new(Server),
     };
