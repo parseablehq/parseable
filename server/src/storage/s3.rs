@@ -28,7 +28,7 @@ use futures::{StreamExt, TryStreamExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
-use object_store::{ClientOptions, ObjectStore, PutPayload};
+use object_store::{BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig};
 use relative_path::{RelativePath, RelativePathBuf};
 
 use std::collections::BTreeMap;
@@ -218,13 +218,19 @@ impl S3Config {
         if self.skip_tls {
             client_options = client_options.with_allow_invalid_certificates(true)
         }
+        let retry_config = RetryConfig {
+            max_retries: 5,
+            retry_timeout: Duration::from_secs(30),
+            backoff: BackoffConfig::default(),
+        };
 
         let mut builder = AmazonS3Builder::new()
             .with_region(&self.region)
             .with_endpoint(&self.endpoint_url)
             .with_bucket_name(&self.bucket_name)
             .with_virtual_hosted_style_request(!self.use_path_style)
-            .with_allow_http(true);
+            .with_allow_http(true)
+            .with_retry(retry_config);
 
         if self.set_checksum {
             builder = builder.with_checksum_algorithm(Checksum::SHA256)
