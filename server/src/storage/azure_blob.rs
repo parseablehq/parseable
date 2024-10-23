@@ -30,7 +30,7 @@ use datafusion::datasource::object_store::{
 };
 use datafusion::execution::runtime_env::RuntimeConfig;
 use object_store::azure::{MicrosoftAzure, MicrosoftAzureBuilder};
-use object_store::{ClientOptions, ObjectStore, PutPayload};
+use object_store::{BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig};
 use relative_path::{RelativePath, RelativePathBuf};
 use std::path::Path as StdPath;
 use url::Url;
@@ -120,10 +120,17 @@ impl AzureBlobConfig {
             .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .with_timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
 
+        let retry_config = RetryConfig {
+            max_retries: 5,
+            retry_timeout: Duration::from_secs(120),
+            backoff: BackoffConfig::default(),
+        };
+
         let mut builder = MicrosoftAzureBuilder::new()
             .with_endpoint(self.endpoint_url.clone())
             .with_account(&self.account)
-            .with_container_name(&self.container);
+            .with_container_name(&self.container)
+            .with_retry(retry_config);
 
         if let Some(access_key) = self.access_key.clone() {
             builder = builder.with_access_key(access_key)
