@@ -25,6 +25,7 @@ pub enum Action {
     CreateStream,
     ListStream,
     GetStreamInfo,
+    DetectSchema,
     GetSchema,
     GetStats,
     DeleteStream,
@@ -140,6 +141,7 @@ impl RoleBuilder {
                 | Action::GetAnalytics => Permission::Unit(action),
                 Action::Ingest
                 | Action::GetSchema
+                | Action::DetectSchema
                 | Action::GetStats
                 | Action::GetRetention
                 | Action::PutRetention
@@ -214,6 +216,7 @@ pub mod model {
                 Action::DeleteStream,
                 Action::ListStream,
                 Action::GetStreamInfo,
+                Action::DetectSchema,
                 Action::GetSchema,
                 Action::GetStats,
                 Action::GetRetention,
