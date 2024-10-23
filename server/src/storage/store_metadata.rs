@@ -63,10 +63,16 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
+    pub coordinator_endpoint: Option<String>
 }
 
 impl StorageMetadata {
     pub fn new() -> Self {
+        let endpoint = match CONFIG.parseable.mode {
+            // for Query and Ingest are we to assume that Coordinator Node already exists?
+            Mode::Coordinator => Some(CONFIG.parseable.address.clone()),
+            _ => None,
+        };
         Self {
             version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
             mode: CONFIG.storage_name.to_owned(),
@@ -78,6 +84,7 @@ impl StorageMetadata {
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
+            coordinator_endpoint: endpoint
         }
     }
 
@@ -131,13 +138,13 @@ pub async fn resolve_parseable_metadata(
             Err("Could not start the server because staging directory indicates stale data from previous deployment, please choose an empty staging directory and restart the server")
         }
         EnvChange::NewStaging(mut metadata) => {
-            // if server is started in ingest mode,we need to make sure that query mode has been started
-            // i.e the metadata is updated to reflect the server mode = Query
+            // if server is started in ingest mode,we need to make sure that coordinator mode has been started
+            // i.e the metadata is updated to reflect the server mode = Coordinator
             if Mode::from_string(&metadata.server_mode)
             .map_err(ObjectStorageError::Custom)
             ?
-             == Mode::All && CONFIG.parseable.mode == Mode::Ingest {
-                Err("Starting Ingest Mode is not allowed, Since Query Server has not been started yet")
+             == Mode::All && CONFIG.parseable.mode == Mode::Ingest || CONFIG.parseable.mode == Mode::Query {
+                Err("Please make sure that Coodinator server starts up first")
             } else {
                 create_dir_all(CONFIG.staging_dir())?;
                 metadata.staging = CONFIG.staging_dir().canonicalize()?;
@@ -153,8 +160,14 @@ pub async fn resolve_parseable_metadata(
                             })?;
                             overwrite_remote = true;
                     },
-                    Mode::Query => {
+                    Mode::Coordinator => {
                         overwrite_remote = true;
+                        metadata.server_mode = CONFIG.parseable.mode.to_string();
+                        metadata.staging = CONFIG.staging_dir().to_path_buf();
+                    },
+                    Mode::Query => {
+                        // if query server is started fetch the metadata from remote
+                        // update the server mode for local metadata
                         metadata.server_mode = CONFIG.parseable.mode.to_string();
                         metadata.staging = CONFIG.staging_dir().to_path_buf();
                     },
@@ -172,9 +185,9 @@ pub async fn resolve_parseable_metadata(
             create_dir_all(CONFIG.staging_dir())?;
             let metadata = StorageMetadata::new();
             // new metadata needs to be set
-            // if mode is query or all then both staging and remote
+            // if mode is coordinator or all then both staging and remote
             match CONFIG.parseable.mode {
-                Mode::All | Mode::Query => overwrite_remote = true,
+                Mode::All | Mode::Coordinator => overwrite_remote = true,
                 _ => (),
             }
             // else only staging
@@ -211,7 +224,7 @@ fn determine_environment(
                 EnvChange::None(remote)
             } else if Mode::from_string(&remote.server_mode).expect("server mode is valid here")
                 == Mode::All
-                && (CONFIG.parseable.mode == Mode::Query || CONFIG.parseable.mode == Mode::Ingest)
+                && (CONFIG.parseable.mode == Mode::Query || CONFIG.parseable.mode == Mode::Ingest || CONFIG.parseable.mode == Mode::Coordinator)
             {
                 // if you are switching to distributed mode from standalone mode
                 // it will create a new staging rather than a new remote
@@ -242,9 +255,9 @@ pub enum EnvChange {
 }
 
 fn standalone_after_distributed(remote_server_mode: Mode) -> Result<(), MetadataError> {
-    // standalone -> query | ingest allowed
-    // but query | ingest -> standalone not allowed
-    if remote_server_mode == Mode::Query {
+    // standalone -> coordinator | query | ingest allowed
+    // but coordinator | query | ingest -> standalone not allowed
+    if remote_server_mode == Mode::Coordinator {
         return Err(MetadataError::StandaloneWithDistributed("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.".to_string()));
     }
 

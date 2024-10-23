@@ -23,6 +23,8 @@ pub mod query_server;
 pub mod server;
 pub mod ssl_acceptor;
 pub mod utils;
+pub mod coordinator;
+pub mod coordinator_server;
 
 use std::sync::Arc;
 
@@ -55,6 +57,50 @@ pub trait ParseableServer {
     async fn init(&self) -> anyhow::Result<()>;
 
     fn validate(&self) -> anyhow::Result<()>;
+}
+
+
+#[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq)]
+pub struct QuerierMetadata {
+    pub version: String,
+    pub port: String,
+    pub domain_name: String,
+    pub bucket_name: String,
+    pub token: String,
+    pub querier_id: String,
+    pub flight_port: String,
+}
+
+impl QuerierMetadata {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        port: String,
+        domain_name: String,
+        version: String,
+        bucket_name: String,
+        username: &str,
+        password: &str,
+        querier_id: String,
+        flight_port: String,
+    ) -> Self {
+        let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
+
+        let token = format!("Basic {}", token);
+
+        Self {
+            port,
+            domain_name,
+            version,
+            bucket_name,
+            token,
+            querier_id,
+            flight_port,
+        }
+    }
+
+    pub fn get_querier_id(&self) -> String {
+        self.querier_id.clone()
+    }
 }
 
 #[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq)]

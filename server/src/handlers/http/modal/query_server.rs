@@ -17,31 +17,42 @@
  */
 
 use crate::handlers::airplane;
-use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
+use crate::handlers::http::cluster::{self, init_cluster_metrics_scheduler};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{self, role};
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
 use crate::handlers::http::{health_check, logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
+use crate::migration::metadata_migration::migrate_querier_metadata;
 use crate::rbac::role::Action;
+use crate::storage::object_storage::querier_metadata_path;
+use crate::storage::staging;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metrics, migration, rbac, storage};
+use actix_web::body::MessageBody;
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
+use anyhow::anyhow;
 
 use crate::option::CONFIG;
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
-use super::{OpenIdClient, ParseableServer};
+use super::{OpenIdClient, ParseableServer, QuerierMetadata};
+
+/// ! have to use a guard before using it
+pub static QUERIER_META: Lazy<QuerierMetadata> =
+    Lazy::new(|| staging::get_querier_info().expect("Should Be valid Json"));
+
 
 #[derive(Default, Debug)]
 pub struct QueryServer;
@@ -126,6 +137,8 @@ impl ParseableServer for QueryServer {
     /// implementation of init should just invoke a call to initialize
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
+
+        // Check if coordinator is present
         migration::run_file_migration(&CONFIG).await?;
         let parseable_json = CONFIG.validate_storage().await?;
         migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
@@ -403,6 +416,48 @@ impl QueryServer {
             )
     }
 
+    // create the querier metadata and put the .querier.json file in the object store
+    async fn set_querier_metadata(&self) -> anyhow::Result<()> {
+        let storage_querier_metadata = migrate_querier_metadata().await?;
+        let store = CONFIG.storage().get_object_store();
+
+        // find the meta file in staging if not generate new metadata
+        let resource = QUERIER_META.clone();
+        // use the id that was generated/found in the staging and
+        // generate the path for the object store
+        let path = querier_metadata_path(None);
+
+        // we are considering that we can always get from object store
+        if storage_querier_metadata.is_some() {
+            let mut store_data = storage_querier_metadata.unwrap();
+
+            if store_data.domain_name != QUERIER_META.domain_name {
+                store_data
+                    .domain_name
+                    .clone_from(&QUERIER_META.domain_name);
+                store_data.port.clone_from(&QUERIER_META.port);
+
+                let resource = serde_json::to_string(&store_data)?
+                    .try_into_bytes()
+                    .map_err(|err| anyhow!(err))?;
+
+                // if pushing to object store fails propagate the error
+                return store
+                    .put_object(&path, resource)
+                    .await
+                    .map_err(|err| anyhow!(err));
+            }
+        } else {
+            let resource = serde_json::to_string(&resource)?
+                .try_into_bytes()
+                .map_err(|err| anyhow!(err))?;
+
+            store.put_object(&path, resource).await?;
+        }
+
+        Ok(())
+    }
+
     /// initialize the server, run migrations as needed and start the server
     async fn initialize(&self) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
@@ -424,7 +479,7 @@ impl QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
-        if matches!(init_cluster_metrics_schedular(), Ok(())) {
+        if matches!(init_cluster_metrics_scheduler(), Ok(())) {
             log::info!("Cluster metrics scheduler started successfully");
         }
         if let Some(hot_tier_manager) = HotTierManager::global() {

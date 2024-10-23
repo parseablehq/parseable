@@ -27,7 +27,7 @@ use crate::handlers::http::role;
 use crate::localcache::LocalCacheManager;
 use crate::metrics;
 use crate::migration;
-use crate::migration::metadata_migration::migrate_ingester_metadata;
+use crate::migration::metadata_migration::migrate_ingestor_metadata;
 use crate::rbac;
 use crate::rbac::role::Action;
 use crate::storage;
@@ -40,9 +40,9 @@ use crate::sync;
 
 use std::sync::Arc;
 
-use super::ingest::ingester_logstream;
-use super::ingest::ingester_rbac;
-use super::ingest::ingester_role;
+use super::ingest::ingestor_logstream;
+use super::ingest::ingestor_rbac;
+use super::ingest::ingestor_role;
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
 use super::IngestorMetadata;
@@ -226,7 +226,7 @@ impl IngestServer {
             )
             .service(
                 resource("/{name}/sync")
-                    .route(web::put().to(ingester_role::put).authorize(Action::PutRole)),
+                    .route(web::put().to(ingestor_role::put).authorize(Action::PutRole)),
             )
     }
     // get the user webscope
@@ -237,13 +237,13 @@ impl IngestServer {
                     // PUT /user/{username}/sync => Sync creation of a new user
                     .route(
                         web::post()
-                            .to(ingester_rbac::post_user)
+                            .to(ingestor_rbac::post_user)
                             .authorize(Action::PutUser),
                     )
                     // DELETE /user/{username} => Sync deletion of a user
                     .route(
                         web::delete()
-                            .to(ingester_rbac::delete_user)
+                            .to(ingestor_rbac::delete_user)
                             .authorize(Action::DeleteUser),
                     )
                     .wrap(DisAllowRootUser),
@@ -253,7 +253,7 @@ impl IngestServer {
                     // PUT /user/{username}/roles => Put roles for user
                     .route(
                         web::put()
-                            .to(ingester_rbac::put_role)
+                            .to(ingestor_rbac::put_role)
                             .authorize(Action::PutUserRoles)
                             .wrap(DisAllowRootUser),
                     ),
@@ -263,7 +263,7 @@ impl IngestServer {
                     // POST /user/{username}/generate-new-password => reset password for this user
                     .route(
                         web::post()
-                            .to(ingester_rbac::post_gen_password)
+                            .to(ingestor_rbac::post_gen_password)
                             .authorize(Action::PutUser)
                             .wrap(DisAllowRootUser),
                     ),
@@ -286,13 +286,13 @@ impl IngestServer {
                         // DELETE "/logstream/{logstream}/sync" ==> Sync deletion of a log stream
                         .route(
                             web::delete()
-                                .to(ingester_logstream::delete)
+                                .to(ingestor_logstream::delete)
                                 .authorize(Action::DeleteStream),
                         )
                         // PUT "/logstream/{logstream}/sync" ==> Sync creation of a new log stream
                         .route(
                             web::put()
-                                .to(ingester_logstream::put_stream)
+                                .to(ingestor_logstream::put_stream)
                                 .authorize_for_stream(Action::CreateStream),
                         ),
                 )
@@ -317,13 +317,13 @@ impl IngestServer {
                         // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
                         .route(
                             web::put()
-                                .to(ingester_logstream::put_enable_cache)
+                                .to(ingestor_logstream::put_enable_cache)
                                 .authorize_for_stream(Action::PutCacheEnabled),
                         )
                         // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
                         .route(
                             web::get()
-                                .to(ingester_logstream::get_cache_enabled)
+                                .to(ingestor_logstream::get_cache_enabled)
                                 .authorize_for_stream(Action::GetCacheEnabled),
                         ),
                 )
@@ -331,7 +331,7 @@ impl IngestServer {
                     web::scope("/retention").service(
                         web::resource("/cleanup").route(
                             web::post()
-                                .to(ingester_logstream::retention_cleanup)
+                                .to(ingestor_logstream::retention_cleanup)
                                 .authorize_for_stream(Action::PutRetention),
                         ),
                     ),
@@ -341,7 +341,7 @@ impl IngestServer {
 
     // create the ingestor metadata and put the .ingestor.json file in the object store
     async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
-        let storage_ingestor_metadata = migrate_ingester_metadata().await?;
+        let storage_ingestor_metadata = migrate_ingestor_metadata().await?;
         let store = CONFIG.storage().get_object_store();
 
         // find the meta file in staging if not generate new metadata
