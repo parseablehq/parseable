@@ -16,7 +16,7 @@
  *
  */
 
-use actix_web::{http::header::ContentType, web, HttpResponse, Responder};
+use actix_web::{http::header::{ContentType, HeaderMap}, web, HttpResponse, Responder};
 use bytes::Bytes;
 use http::StatusCode;
 
@@ -28,6 +28,8 @@ use crate::{
     },
     storage::{self, ObjectStorageError, StorageMetadata},
 };
+
+use super::{cluster::sync_with_queriers, modal::{coordinator::Method, LEADER}};
 
 // Handler for PUT /api/v1/role/{name}
 // Creates a new role or update existing one
@@ -69,8 +71,12 @@ pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError
         return Err(RoleError::RoleInUse);
     }
     metadata.roles.remove(&name);
-    put_metadata(&metadata).await?;
     mut_roles().remove(&name);
+
+    if LEADER.lock().is_leader() {
+        put_metadata(&metadata).await?;
+        sync_with_queriers(HeaderMap::new(), None, &format!("{name}"), Method::DELETE).await?;
+    }
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -81,7 +87,12 @@ pub async fn put_default(name: web::Json<String>) -> Result<impl Responder, Role
     let mut metadata = get_metadata().await?;
     metadata.default_role = Some(name.clone());
     *DEFAULT_ROLE.lock().unwrap() = Some(name);
-    put_metadata(&metadata).await?;
+
+    if LEADER.lock().is_leader() {
+        put_metadata(&metadata).await?;
+        sync_with_queriers(HeaderMap::new(), None, &format!("role/default"), Method::PUT).await?;
+    }
+    
     Ok(HttpResponse::Ok().finish())
 }
 

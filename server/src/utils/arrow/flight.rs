@@ -57,13 +57,13 @@ pub async fn run_do_get_rpc(
         .domain_name
         .rsplit_once(':')
         .ok_or(Status::failed_precondition(
-            "Ingester metadata is courupted",
+            "Ingestor metadata is courupted",
         ))?
         .0;
     let url = format!("{}:{}", url, im.flight_port);
     let url = url
         .parse::<Uri>()
-        .map_err(|_| Status::failed_precondition("Ingester metadata is courupted"))?;
+        .map_err(|_| Status::failed_precondition("Ingestor metadata is courupted"))?;
     let channel = Channel::builder(url)
         .connect()
         .await
@@ -89,7 +89,7 @@ pub async fn run_do_get_rpc(
     Ok(response.try_collect().await?)
 }
 
-/// all the records from the ingesters are concatinated into one event and pushed to memory
+/// all the records from the ingestors are concatinated into one event and pushed to memory
 pub async fn append_temporary_events(
     stream_name: &str,
     minute_result: Vec<&RecordBatch>,
@@ -110,7 +110,7 @@ pub async fn append_temporary_events(
     Ok(event)
 }
 
-pub fn send_to_ingester(start: i64, end: i64) -> bool {
+pub fn send_to_ingestor(start: i64, end: i64) -> bool {
     let filter_start = lit_timestamp_milli(
         start, //query.start.timestamp_millis()
     );

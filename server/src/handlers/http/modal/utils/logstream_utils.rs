@@ -3,11 +3,12 @@ use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 use actix_web::{http::header::HeaderMap, HttpRequest};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
+use chrono::Local;
 use http::StatusCode;
 
 use crate::{
     handlers::{
-        http::logstream::error::{CreateStreamError, StreamError},
+        http::{logstream::error::{CreateStreamError, StreamError}, modal::LEADER},
         CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
         TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
     },
@@ -233,13 +234,16 @@ pub async fn update_time_partition_limit_in_stream(
     stream_name: String,
     time_partition_limit: &str,
 ) -> Result<(), CreateStreamError> {
-    let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage
-        .update_time_partition_limit_in_stream(&stream_name, time_partition_limit)
-        .await
-    {
-        return Err(CreateStreamError::Storage { stream_name, err });
+    if LEADER.lock().is_leader() {
+        let storage = CONFIG.storage().get_object_store();
+        if let Err(err) = storage
+            .update_time_partition_limit_in_stream(&stream_name, time_partition_limit)
+            .await
+        {
+            return Err(CreateStreamError::Storage { stream_name, err });
+        }
     }
+    
 
     if metadata::STREAM_INFO
         .update_time_partition_limit(&stream_name, time_partition_limit.to_string())
@@ -301,13 +305,16 @@ pub async fn update_custom_partition_in_stream(
         }
     }
 
-    let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage
-        .update_custom_partition_in_stream(&stream_name, custom_partition)
-        .await
-    {
-        return Err(CreateStreamError::Storage { stream_name, err });
+    if LEADER.lock().is_leader() {
+        let storage = CONFIG.storage().get_object_store();
+        if let Err(err) = storage
+            .update_custom_partition_in_stream(&stream_name, custom_partition)
+            .await
+        {
+            return Err(CreateStreamError::Storage { stream_name, err });
+        }
     }
+    
 
     if metadata::STREAM_INFO
         .update_custom_partition(&stream_name, custom_partition.to_string())

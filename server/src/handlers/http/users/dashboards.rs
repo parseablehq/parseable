@@ -17,7 +17,7 @@
  */
 
 use crate::{
-    handlers::http::rbac::RBACError,
+    handlers::http::{cluster::sync_with_queriers, modal::{coordinator::Method, LEADER}, rbac::RBACError},
     option::CONFIG,
     storage::{object_storage::dashboard_path, ObjectStorageError},
     users::dashboards::{Dashboard, CURRENT_DASHBOARD_VERSION, DASHBOARDS},
@@ -75,11 +75,16 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Dashb
 
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
 
-    let store = CONFIG.storage().get_object_store();
-    let dashboard_bytes = serde_json::to_vec(&dashboard)?;
-    store
-        .put_object(&path, Bytes::from(dashboard_bytes))
-        .await?;
+    if LEADER.lock().is_leader() {
+        let store = CONFIG.storage().get_object_store();
+        let dashboard_bytes = serde_json::to_vec(&dashboard)?;
+        store
+            .put_object(&path, Bytes::from(dashboard_bytes))
+            .await?;
+
+        sync_with_queriers(req.headers().clone(), Some(body), &format!("dashboards"), Method::POST).await?;
+    }
+
 
     Ok((web::Json(dashboard), StatusCode::OK))
 }
@@ -106,13 +111,17 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, Das
     }
     DASHBOARDS.update(&dashboard);
 
-    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
+    if LEADER.lock().is_leader() {
+        let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
+        let store = CONFIG.storage().get_object_store();
+        let dashboard_bytes = serde_json::to_vec(&dashboard)?;
+        store
+            .put_object(&path, Bytes::from(dashboard_bytes))
+            .await?;
 
-    let store = CONFIG.storage().get_object_store();
-    let dashboard_bytes = serde_json::to_vec(&dashboard)?;
-    store
-        .put_object(&path, Bytes::from(dashboard_bytes))
-        .await?;
+            sync_with_queriers(req.headers().clone(), Some(body), &format!("{dashboard_id}"), Method::PUT).await?;
+    }
+
 
     Ok((web::Json(dashboard), StatusCode::OK))
 }
@@ -127,9 +136,14 @@ pub async fn delete(req: HttpRequest) -> Result<HttpResponse, DashboardError> {
     if DASHBOARDS.get_dashboard(dashboard_id, &user_id).is_none() {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
-    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
-    let store = CONFIG.storage().get_object_store();
-    store.delete_object(&path).await?;
+
+    if LEADER.lock().is_leader() {
+        let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
+        let store = CONFIG.storage().get_object_store();
+        store.delete_object(&path).await?;
+
+        sync_with_queriers(req.headers().clone(), None, &format!("{dashboard_id}"), Method::DELETE).await?;
+    }
 
     DASHBOARDS.delete_dashboard(dashboard_id);
 
@@ -146,6 +160,10 @@ pub enum DashboardError {
     Metadata(&'static str),
     #[error("User does not exist")]
     UserDoesNotExist(#[from] RBACError),
+    #[error("Network Error: {0}")]
+    Network(#[from] reqwest::Error),
+    #[error("Error: {0}")]
+    Anyhow(#[from] anyhow::Error),
 }
 
 impl actix_web::ResponseError for DashboardError {
@@ -155,6 +173,8 @@ impl actix_web::ResponseError for DashboardError {
             Self::Serde(_) => StatusCode::BAD_REQUEST,
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
+            Self::Network(err) => err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

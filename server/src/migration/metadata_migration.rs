@@ -20,9 +20,9 @@ use rand::distributions::DistString;
 use serde_json::{Map, Value as JsonValue};
 
 use crate::{
-    handlers::http::modal::IngestorMetadata,
+    handlers::http::modal::{IngestorMetadata, QuerierMetadata},
     option::CONFIG,
-    storage::{object_storage::ingestor_metadata_path, staging},
+    storage::{object_storage::{ingestor_metadata_path, querier_metadata_path}, staging},
 };
 use actix_web::body::MessageBody;
 
@@ -148,7 +148,7 @@ pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
     storage_metadata
 }
 
-pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetadata>> {
+pub async fn migrate_ingestor_metadata() -> anyhow::Result<Option<IngestorMetadata>> {
     let imp = ingestor_metadata_path(None);
     let bytes = match CONFIG.storage().get_object_store().get_object(&imp).await {
         Ok(bytes) => bytes,
@@ -159,7 +159,7 @@ pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetada
     let mut json = serde_json::from_slice::<JsonValue>(&bytes)?;
     let meta = json
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingester Metadata"))?;
+        .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingestor Metadata"))?;
     let fp = meta.get("flight_port");
 
     if fp.is_none() {
@@ -173,7 +173,43 @@ pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetada
         .map_err(|err| anyhow::anyhow!(err))?;
 
     let resource: IngestorMetadata = serde_json::from_value(json)?;
-    staging::put_ingestor_info(resource.clone())?;
+    staging::put_ingestor_info_staging(resource.clone())?;
+
+    CONFIG
+        .storage()
+        .get_object_store()
+        .put_object(&imp, bytes)
+        .await?;
+
+    Ok(Some(resource))
+}
+
+pub async fn migrate_querier_metadata() -> anyhow::Result<Option<QuerierMetadata>> {
+    let imp = querier_metadata_path(None);
+    let bytes = match CONFIG.storage().get_object_store().get_object(&imp).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Ok(None);
+        }
+    };
+    let mut json = serde_json::from_slice::<JsonValue>(&bytes)?;
+    let meta = json
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Unable to parse Querier Metadata"))?;
+    let fp = meta.get("flight_port");
+
+    if fp.is_none() {
+        meta.insert(
+            "flight_port".to_owned(),
+            JsonValue::String(CONFIG.parseable.flight_port.to_string()),
+        );
+    }
+    let bytes = serde_json::to_string(&json)?
+        .try_into_bytes()
+        .map_err(|err| anyhow::anyhow!(err))?;
+
+    let resource: QuerierMetadata = serde_json::from_value(json)?;
+    staging::put_querier_info_staging(resource.clone())?;
 
     CONFIG
         .storage()

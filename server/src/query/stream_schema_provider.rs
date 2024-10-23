@@ -352,6 +352,8 @@ impl TableProvider for StandardTableProvider {
             merged_snapshot = object_store_format.snapshot;
         }
 
+        // log::warn!("merged_snapshot- {merged_snapshot:?}");
+
         // Is query timerange is overlapping with older data.
         // if true, then get listing table time filters and execution plan separately
         if is_overlapping_query(&merged_snapshot.manifest_list, &time_filters) {
@@ -393,6 +395,8 @@ impl TableProvider for StandardTableProvider {
                 self.schema.clone(),
             );
         }
+
+        // log::warn!("manifest_files- {manifest_files:?}");
 
         // Based on entries in the manifest files, find them in the cache and create a physical plan.
         if let Some(cache_manager) = LocalCacheManager::global() {
@@ -439,7 +443,7 @@ impl TableProvider for StandardTableProvider {
         let (partitioned_files, statistics) = partitioned_files(manifest_files, &self.schema);
         let remote_exec = create_parquet_physical_plan(
             ObjectStoreUrl::parse(glob_storage.store_url()).unwrap(),
-            partitioned_files,
+            partitioned_files.clone(),
             statistics,
             self.schema.clone(),
             projection,
@@ -449,6 +453,14 @@ impl TableProvider for StandardTableProvider {
             time_partition.clone(),
         )
         .await?;
+
+        // log::warn!("partitioned_files- {partitioned_files:?}");
+
+        // log::warn!("listing_exec- {listing_exec:?}");
+        // log::warn!("memory_exec- {memory_exec:?}");
+        // log::warn!("cache_exec- {cache_exec:?}");
+        // log::warn!("hot_tier_exec- {hot_tier_exec:?}");
+        // log::warn!("remote_exec- {remote_exec:?}");
 
         Ok(final_plan(
             vec![

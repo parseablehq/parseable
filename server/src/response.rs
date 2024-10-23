@@ -29,6 +29,7 @@ use itertools::Itertools;
 use serde_json::{json, Value};
 use tonic::{Response, Status};
 
+#[derive(Debug)]
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
     pub fields: Vec<String>,
@@ -69,3 +70,11 @@ impl QueryResponse {
         into_flight_data(self.records)
     }
 }
+
+// impl Responder for QueryResponse {
+//     type Body;
+
+//     fn respond_to(self, req: &actix_web::HttpRequest) -> actix_web::HttpResponse<Self::Body> {
+//         todo!()
+//     }
+// }

@@ -147,6 +147,8 @@ pub enum LLMError {
     APIError(String),
     #[error("{0}")]
     StreamDoesNotExist(#[from] MetadataError),
+    #[error("Error: {0}")]
+    Anyhow(#[from] anyhow::Error),
 }
 
 impl actix_web::ResponseError for LLMError {
@@ -156,6 +158,7 @@ impl actix_web::ResponseError for LLMError {
             Self::FailedRequest(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::APIError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::StreamDoesNotExist(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

@@ -440,6 +440,7 @@ impl Cli {
                      .required(false)
                      .default_value("all")
                      .value_parser([
+                         "coordinator",
                          "query",
                          "ingest",
                          "all"])
@@ -635,6 +636,7 @@ impl FromArgMatches for Cli {
             .expect("Mode not set")
             .as_str()
         {
+            "coordinator" => Mode::Coordinator,
             "query" => Mode::Query,
             "ingest" => Mode::Ingest,
             "all" => Mode::All,

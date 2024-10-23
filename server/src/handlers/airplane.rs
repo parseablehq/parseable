@@ -18,12 +18,17 @@
 
 use arrow_array::RecordBatch;
 use arrow_flight::flight_service_server::FlightServiceServer;
-use arrow_flight::PollInfo;
+use arrow_flight::{FlightEndpoint, PollInfo};
 use arrow_schema::ArrowError;
 
 use datafusion::common::tree_node::TreeNode;
+use parking_lot::Mutex;
 use serde_json::json;
+use tokio::join;
+use tokio::task::JoinHandle;
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Instant;
 use tonic::codec::CompressionEncoding;
 
@@ -32,7 +37,7 @@ use futures_util::{Future, TryFutureExt};
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
-use crate::handlers::http::cluster::get_ingestor_info;
+use crate::handlers::http::cluster::get_ingestor_info_storage;
 
 use crate::handlers::{CACHE_RESULTS_HEADER_KEY, CACHE_VIEW_HEADER_KEY, USER_ID_HEADER_KEY};
 use crate::metrics::QUERY_EXECUTE_TIME;
@@ -45,9 +50,11 @@ use crate::handlers::http::query::{
 };
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::querycache::QueryCacheManager;
+use crate::rbac::map::SessionKey;
+use crate::response::QueryResponse;
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
-    send_to_ingester,
+    send_to_ingestor,
 };
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
@@ -55,7 +62,7 @@ use arrow_flight::{
     SchemaResult, Ticket,
 };
 use arrow_ipc::writer::IpcWriteOptions;
-use futures::stream;
+use futures::stream::{self, FuturesUnordered};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::handlers::livetail::extract_session_key;
@@ -63,10 +70,21 @@ use crate::metadata::STREAM_INFO;
 use crate::rbac;
 use crate::rbac::Users;
 
-use super::http::query::get_results_from_cache;
+use super::http::modal::query::querier_query::querier_query_helper;
+use super::http::query::{get_results_from_cache, Query, QueryError};
 
-#[derive(Clone, Debug)]
-pub struct AirServiceImpl {}
+#[derive(Debug, Default)]
+pub struct QueryStatus {
+    pub query_id: String,
+    pub completed: bool,
+    pub response: Option<QueryResponse>,
+    pub error: Option<anyhow::Error>
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AirServiceImpl {
+    queries: Arc<Mutex<HashMap<String, JoinHandle<Result<QueryResponse, anyhow::Error>>>>>
+}
 
 #[tonic::async_trait]
 impl FlightService for AirServiceImpl {
@@ -99,8 +117,133 @@ impl FlightService for AirServiceImpl {
 
     async fn poll_flight_info(
         &self,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> Result<Response<PollInfo>, Status> {
+        // let descriptor = request.into_inner();
+        // let query_id = descriptor.path[0].clone();
+        
+        // // If "flight_descriptor" is not specified, the query is complete
+        // // and "info" specifies all results. Otherwise, "info" contains
+        // // partial query results.
+        
+        // // check for running queries
+        // let mut queries = self.queries.lock();
+        // let poll_info = match queries.get(&query_id) {
+        //     Some(data) => {
+        //         let d = *data.to_owned();
+        //         if d.is_finished() {
+        //             let res = d.await;
+        //             match res.unwrap() {
+        //                 Ok(query_response) => {
+        //                     let schema = query_response.records.get(0).unwrap().schema().clone();
+
+        //                     PollInfo {
+        //                         info: Some(
+        //                             FlightInfo {
+        //                                 flight_descriptor: None,
+        //                                 endpoint: vec![FlightEndpoint {
+        //                                     ticket: Some(Ticket { ticket: descriptor.cmd }),
+        //                                     ..Default::default()
+        //                                 }],
+        //                                 total_records: query_response.records.len() as i64,
+        //                                 total_bytes: -1,
+        //                                 ordered: true,
+        //                                 ..Default::default()
+        //                             }
+        //                             .try_with_schema(&schema)
+        //                             .map_err(|err| Status::failed_precondition(err.to_string()))?
+        //                         ),
+        //                         flight_descriptor: None, // since query is complete!!
+        //                         progress: None,
+        //                         expiration_time: None
+        //                     }
+        //                 }
+        //                 Err(err) => {
+        //                     return Err(Status::internal(err.to_string()))
+        //                 }
+        //             }
+        //         } else {
+        //             PollInfo {
+        //                 info: None,
+        //                 flight_descriptor: Some(descriptor.clone()),
+        //                 progress: None,
+        //                 expiration_time: None
+        //             }
+        //         }
+
+        //     },
+        //     None => {
+        //         // init query
+        //         let jh = tokio::spawn(async move {
+        //             self.init_query(descriptor.clone()).await
+        //         });
+                
+        //         queries.insert(query_id.clone(), jh);
+                
+        //         PollInfo {
+        //             info: None,
+        //             flight_descriptor: Some(descriptor.clone()),
+        //             progress: None,
+        //             expiration_time: None
+        //         }
+        //     }
+        // };
+        // // let poll_info = if let Some(batches) = queries.get(query_id) {
+        // //     // Return flight info since query is complete!!
+        // //     if let Some(response) = &batches {
+        // //         let schema = response.records.get(0).unwrap().schema().clone();
+
+        // //         PollInfo {
+        // //             info: Some(
+        // //                 FlightInfo {
+        // //                     flight_descriptor: None,
+        // //                     endpoint: vec![FlightEndpoint {
+        // //                         ticket: Some(Ticket { ticket: descriptor.cmd }),
+        // //                         ..Default::default()
+        // //                     }],
+        // //                     total_records: response.records.len() as i64,
+        // //                     total_bytes: -1,
+        // //                     ordered: true,
+        // //                     ..Default::default()
+        // //                 }
+        // //                 .try_with_schema(&schema)
+        // //                 .map_err(|err| Status::failed_precondition(err.to_string()))?
+        // //             ),
+        // //             flight_descriptor: None, // since query is complete!!
+        // //             progress: None,
+        // //             expiration_time: None
+        // //         }
+        // //     } else {
+        // //         PollInfo {
+        // //             info: Some(
+        // //                 FlightInfo {
+        // //                     flight_descriptor: None,
+        // //                     endpoint: vec![FlightEndpoint {
+        // //                         ticket: Some(Ticket { ticket: descriptor.cmd }),
+        // //                         ..Default::default()
+        // //                     }],
+        // //                     total_records: -1,
+        // //                     total_bytes: -1,
+        // //                     ordered: true,
+        // //                     ..Default::default()
+        // //                 }
+        // //             ),
+        // //             flight_descriptor: None, // since query is complete!!
+        // //             progress: None,
+        // //             expiration_time: None
+        // //         }
+        // //     }
+                
+        // // } else {
+        // //     // query is incomplete, return flight descriptor
+        // //     PollInfo {
+        // //         info: None,
+        // //         flight_descriptor: Some(descriptor.clone()),
+        // //         progress: None,
+        // //         expiration_time: None
+        // //     }
+        // // };
+        // Ok(Response::new(poll_info))
         Err(Status::unimplemented("Implement poll_flight_info"))
     }
 
@@ -154,6 +297,7 @@ impl FlightService for AirServiceImpl {
         let _ = raw_logical_plan.visit(&mut visitor);
 
         let streams = visitor.into_inner();
+        // log::warn!("visitor got these streams- {streams:?}");
 
         let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
             .await
@@ -205,7 +349,7 @@ impl FlightService for AirServiceImpl {
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
         let event =
-            if send_to_ingester(query.start.timestamp_millis(), query.end.timestamp_millis()) {
+            if send_to_ingestor(query.start.timestamp_millis(), query.end.timestamp_millis()) {
                 let sql = format!("select * from {}", &stream_name);
                 let start_time = ticket.start_time.clone();
                 let end_time = ticket.end_time.clone();
@@ -216,12 +360,12 @@ impl FlightService for AirServiceImpl {
                 })
                 .to_string();
 
-                let ingester_metadatas = get_ingestor_info()
+                let ingestor_metadatas = get_ingestor_info_storage()
                     .await
                     .map_err(|err| Status::failed_precondition(err.to_string()))?;
                 let mut minute_result: Vec<RecordBatch> = vec![];
 
-                for im in ingester_metadatas {
+                for im in ingestor_metadatas {
                     if let Ok(mut batches) = run_do_get_rpc(im, out_ticket.clone()).await {
                         minute_result.append(&mut batches);
                     }
@@ -233,6 +377,7 @@ impl FlightService for AirServiceImpl {
                 None
             };
 
+        // log::warn!("event- {event:?}");
         // try authorize
         match Users.authorize(key.clone(), rbac::role::Action::Query, None, None) {
             rbac::Response::Authorized => (),
@@ -256,6 +401,8 @@ impl FlightService for AirServiceImpl {
             .execute(stream_name.clone())
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
+
+        // log::warn!("records- {records:?}");
 
         if let Err(err) = put_results_in_cache(
             cache_results,
@@ -343,7 +490,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 CONFIG.parseable.address, err));
     addr.set_port(CONFIG.parseable.flight_port);
 
-    let service = AirServiceImpl {};
+    let service = AirServiceImpl::default();
 
     let svc = FlightServiceServer::new(service)
         .max_encoding_message_size(usize::MAX)
@@ -399,5 +546,24 @@ CONFIG.parseable.address, err));
             .add_service(svc)
             .serve(addr)
             .map_err(err_map_fn),
+    }
+}
+
+impl AirServiceImpl {
+    async fn init_query(&self, descriptor: FlightDescriptor) -> Result<QueryResponse, anyhow::Error> {
+        // let out_ticket = String::from_utf8(descriptor.cmd.to_vec()).unwrap();
+
+        // for now just convert out_ticket to Query
+        let query_request = serde_json::from_slice::<Query>(&descriptor.cmd)
+            .map_err(|err| Status::internal(err.to_string())).unwrap();
+
+        querier_query_helper(
+            query_request,
+            None,
+            None,
+            None,
+            SessionKey::BasicAuth { username: "admin".into(), password: "admin".into() }
+        ).await
+        .map_err(|err| anyhow::Error::msg(err.to_string()))
     }
 }

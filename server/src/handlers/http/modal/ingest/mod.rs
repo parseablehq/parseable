@@ -1,3 +1,3 @@
-pub mod ingester_logstream;
-pub mod ingester_rbac;
-pub mod ingester_role;
+pub mod ingestor_logstream;
+pub mod ingestor_rbac;
+pub mod ingestor_role;

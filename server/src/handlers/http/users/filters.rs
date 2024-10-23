@@ -17,7 +17,7 @@
  */
 
 use crate::{
-    handlers::http::rbac::RBACError,
+    handlers::http::{cluster::sync_with_queriers, modal::{coordinator::Method, LEADER}, rbac::RBACError},
     option::CONFIG,
     storage::{object_storage::filter_path, ObjectStorageError},
     users::filters::{Filter, CURRENT_FILTER_VERSION, FILTERS},
@@ -59,15 +59,20 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Filte
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
     FILTERS.update(&filter);
 
-    let path = filter_path(
-        &user_id,
-        &filter.stream_name,
-        &format!("{}.json", filter_id),
-    );
+    if LEADER.lock().is_leader() {
+        let path = filter_path(
+            &user_id,
+            &filter.stream_name,
+            &format!("{}.json", filter_id),
+        );
+    
+        let store = CONFIG.storage().get_object_store();
+        let filter_bytes = serde_json::to_vec(&filter)?;
+        store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
-    let store = CONFIG.storage().get_object_store();
-    let filter_bytes = serde_json::to_vec(&filter)?;
-    store.put_object(&path, Bytes::from(filter_bytes)).await?;
+        sync_with_queriers(req.headers().clone(), Some(body), &format!("filters"), Method::POST).await?;
+    }
+    
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -88,15 +93,20 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, Fil
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
     FILTERS.update(&filter);
 
-    let path = filter_path(
-        &user_id,
-        &filter.stream_name,
-        &format!("{}.json", filter_id),
-    );
+    if LEADER.lock().is_leader() {
+        let path = filter_path(
+            &user_id,
+            &filter.stream_name,
+            &format!("{}.json", filter_id),
+        );
+    
+        let store = CONFIG.storage().get_object_store();
+        let filter_bytes = serde_json::to_vec(&filter)?;
+        store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
-    let store = CONFIG.storage().get_object_store();
-    let filter_bytes = serde_json::to_vec(&filter)?;
-    store.put_object(&path, Bytes::from(filter_bytes)).await?;
+        sync_with_queriers(req.headers().clone(), Some(body), &format!("{filter_id}"), Method::PUT).await?;
+    }
+    
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -112,13 +122,18 @@ pub async fn delete(req: HttpRequest) -> Result<HttpResponse, FiltersError> {
         .get_filter(filter_id, &user_id)
         .ok_or(FiltersError::Metadata("Filter does not exist"))?;
 
-    let path = filter_path(
-        &user_id,
-        &filter.stream_name,
-        &format!("{}.json", filter_id),
-    );
-    let store = CONFIG.storage().get_object_store();
-    store.delete_object(&path).await?;
+    if LEADER.lock().is_leader() {
+        let path = filter_path(
+            &user_id,
+            &filter.stream_name,
+            &format!("{}.json", filter_id),
+        );
+        let store = CONFIG.storage().get_object_store();
+        store.delete_object(&path).await?;
+
+        sync_with_queriers(req.headers().clone(), None, &format!("{filter_id}"), Method::DELETE).await?;
+    }
+    
 
     FILTERS.delete_filter(filter_id);
 
@@ -135,6 +150,10 @@ pub enum FiltersError {
     Metadata(&'static str),
     #[error("User does not exist")]
     UserDoesNotExist(#[from] RBACError),
+    #[error("Network Error: {0}")]
+    Network(#[from] reqwest::Error),
+    #[error("Error: {0}")]
+    Anyhow(#[from] anyhow::Error),
 }
 
 impl actix_web::ResponseError for FiltersError {
@@ -144,6 +163,8 @@ impl actix_web::ResponseError for FiltersError {
             Self::Serde(_) => StatusCode::BAD_REQUEST,
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
+            Self::Network(err) => err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

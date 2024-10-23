@@ -10,12 +10,10 @@ use crate::{
     handlers::http::{
         base_path_without_preceding_slash,
         cluster::{
-            self, fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors,
-            sync_streams_with_ingestors,
-            utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
+            self, fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors, sync_streams_with_ingestors, sync_with_queriers, utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats}
         },
         logstream::{error::StreamError, get_stats_date},
-        modal::utils::logstream_utils::create_update_stream,
+        modal::{coordinator::Method, utils::logstream_utils::create_update_stream, LEADER},
     },
     hottier::HotTierManager,
     metadata::{self, STREAM_INFO},
@@ -30,9 +28,11 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
         return Err(StreamError::StreamNotFound(stream_name));
     }
 
-    let objectstore = CONFIG.storage().get_object_store();
+    if LEADER.lock().is_leader(){
+        let objectstore = CONFIG.storage().get_object_store();
+        objectstore.delete_stream(&stream_name).await?;
+    }
 
-    objectstore.delete_stream(&stream_name).await?;
     let stream_dir = StorageDir::new(&stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
         log::warn!(
@@ -48,21 +48,26 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
         }
     }
 
-    let ingestor_metadata = cluster::get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
-        StreamError::from(err)
-    })?;
+    // if leader, sync with other queriers and ingestors
+    if LEADER.lock().is_leader() {
+        let ingestor_metadata = cluster::get_ingestor_info_storage().await.map_err(|err| {
+            log::error!("Fatal: failed to get ingestor info: {:?}", err);
+            StreamError::from(err)
+        })?;
+    
+        for ingestor in ingestor_metadata {
+            let url = format!(
+                "{}{}/logstream/{}/sync",
+                ingestor.domain_name,
+                base_path_without_preceding_slash(),
+                stream_name
+            );
+    
+            // delete the stream
+            cluster::send_stream_delete_request(&url, ingestor.clone()).await?;
+        }
 
-    for ingestor in ingestor_metadata {
-        let url = format!(
-            "{}{}/logstream/{}/sync",
-            ingestor.domain_name,
-            base_path_without_preceding_slash(),
-            stream_name
-        );
-
-        // delete the stream
-        cluster::send_stream_delete_request(&url, ingestor.clone()).await?;
+        sync_with_queriers(req.headers().clone(), None, &format!("logstream/{stream_name}"), Method::DELETE).await?;
     }
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
@@ -75,11 +80,18 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 }
 
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
+    log::warn!("req- {req:?}");
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     let headers = create_update_stream(&req, &body, &stream_name).await?;
-    sync_streams_with_ingestors(headers, body, &stream_name).await?;
-
+    log::warn!("headers- {headers:?}");
+    
+    if LEADER.lock().is_leader() {
+        sync_with_queriers(headers.clone(), Some(body.clone()), &format!("logstream/{stream_name}"), Method::PUT).await?;
+        sync_streams_with_ingestors(headers, body, &stream_name).await?;
+        log::warn!("synced streams with ingestors and queriers");
+    }
+    
     Ok(("Log stream created", StatusCode::OK))
 }
 

@@ -305,12 +305,18 @@ pub mod error {
     pub enum MetricsError {
         #[error("{0}")]
         Custom(String, StatusCode),
+        #[error("Error: {0}")]
+        Anyhow(#[from] anyhow::Error),
+        #[error("Network Error: {0}")]
+        Network(#[from] reqwest::Error),
     }
 
     impl actix_web::ResponseError for MetricsError {
         fn status_code(&self) -> http::StatusCode {
             match self {
                 Self::Custom(_, _) => StatusCode::INTERNAL_SERVER_ERROR,
+                Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                Self::Network(err) => err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             }
         }
 

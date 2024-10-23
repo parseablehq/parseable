@@ -23,12 +23,17 @@ pub mod query_server;
 pub mod server;
 pub mod ssl_acceptor;
 pub mod utils;
+pub mod coordinator;
+pub mod coordinator_server;
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
 use openid::Discovered;
+use parking_lot::Mutex;
 
 use crate::oidc;
 use base64::Engine;
@@ -38,6 +43,8 @@ pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
 
 // to be decided on what the Default version should be
 pub const DEFAULT_VERSION: &str = "v3";
+
+pub static LEADER: Lazy<Mutex<Leader>> = Lazy::new(|| Mutex::new(Leader::new()));
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -55,6 +62,54 @@ pub trait ParseableServer {
     async fn init(&self) -> anyhow::Result<()>;
 
     fn validate(&self) -> anyhow::Result<()>;
+}
+
+
+#[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq)]
+pub struct QuerierMetadata {
+    pub version: String,
+    pub port: String,
+    pub domain_name: String,
+    pub bucket_name: String,
+    pub token: String,
+    pub querier_id: String,
+    pub flight_port: String,
+    pub start_time: u128 // timestamp to select leader
+}
+
+impl QuerierMetadata {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        port: String,
+        domain_name: String,
+        version: String,
+        bucket_name: String,
+        username: &str,
+        password: &str,
+        querier_id: String,
+        flight_port: String,
+    ) -> Self {
+        let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
+
+        let token = format!("Basic {}", token);
+
+        let start_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+
+        Self {
+            port,
+            domain_name,
+            version,
+            bucket_name,
+            token,
+            querier_id,
+            flight_port,
+            start_time
+        }
+    }
+
+    pub fn get_querier_id(&self) -> String {
+        self.querier_id.clone()
+    }
 }
 
 #[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq)]
@@ -97,6 +152,26 @@ impl IngestorMetadata {
 
     pub fn get_ingestor_id(&self) -> String {
         self.ingestor_id.clone()
+    }
+}
+
+
+#[derive(Debug)]
+pub struct Leader {
+    pub state: bool
+}
+
+impl Leader {
+    fn new() -> Self {
+        Leader{state: false}
+    }
+
+    pub fn make_leader(&mut self) {
+        self.state = true;
+    }
+
+    pub fn is_leader(&self) -> bool {
+        self.state
     }
 }
 

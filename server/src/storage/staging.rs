@@ -19,13 +19,12 @@
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
-    handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, DEFAULT_VERSION},
+    handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, QuerierMetadata, DEFAULT_VERSION},
     metrics,
     option::{Mode, CONFIG},
     storage::OBJECT_STORE_DATA_GRANULARITY,
     utils::{
-        self, arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url,
-        hostname_unchecked,
+        self, arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_querier_id, get_url, hostname_unchecked
     },
 };
 use anyhow::anyhow;
@@ -351,7 +350,100 @@ pub fn parquet_writer_props(
     props
 }
 
-pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
+pub fn get_querier_info_staging() -> anyhow::Result<QuerierMetadata> {
+    let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
+
+    // all the files should be in the staging directory root
+    let entries = std::fs::read_dir(path)?;
+
+    // get_url() should work just fine here because for query nodes we are not going to set P_INGESTOR_ENDPOINT
+    let url = get_url();
+    let port = url.port().expect("here port should be defined").to_string();
+    let url = url.to_string();
+
+    for entry in entries {
+        // cause the staging directory will have only one file with querier in the name
+        // so the JSON Parse should not error unless the file is corrupted
+        let path = entry?.path();
+        let flag = path
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or_default()
+            .contains("querier");
+
+        if flag {
+            // get the querier metadata from staging
+            let mut meta: JsonValue = serde_json::from_slice(&std::fs::read(path)?)?;
+
+            // migrate the staging meta
+            let obj = meta
+                .as_object_mut()
+                .ok_or_else(|| anyhow!("Could Not parse Querier Metadata Json"))?;
+
+            if obj.get("flight_port").is_none() {
+                obj.insert(
+                    "flight_port".to_owned(),
+                    JsonValue::String(CONFIG.parseable.flight_port.to_string()),
+                );
+            }
+
+            let mut meta: QuerierMetadata = serde_json::from_value(meta)?;
+
+            // compare url endpoint and port
+            if meta.domain_name != url {
+                log::info!(
+                    "Domain Name was Updated. Old: {} New: {}",
+                    meta.domain_name,
+                    url
+                );
+                meta.domain_name = url;
+            }
+
+            if meta.port != port {
+                log::info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                meta.port = port;
+            }
+
+            let token = base64::prelude::BASE64_STANDARD.encode(format!(
+                "{}:{}",
+                CONFIG.parseable.username, CONFIG.parseable.password
+            ));
+
+            let token = format!("Basic {}", token);
+
+            if meta.token != token {
+                // TODO: Update the message to be more informative with username and password
+                log::info!(
+                    "Credentials were Updated. Old: {} New: {}",
+                    meta.token,
+                    token
+                );
+                meta.token = token;
+            }
+
+            put_querier_info_staging(meta.clone())?;
+            return Ok(meta);
+        }
+    }
+
+    let store = CONFIG.storage().get_object_store();
+    let out = QuerierMetadata::new(
+        port,
+        url,
+        DEFAULT_VERSION.to_string(),
+        store.get_bucket_name(),
+        &CONFIG.parseable.username,
+        &CONFIG.parseable.password,
+        get_querier_id(),
+        CONFIG.parseable.flight_port.to_string(),
+    );
+
+    put_querier_info_staging(out.clone())?;
+    Ok(out)
+}
+
+pub fn get_ingestor_info_staging() -> anyhow::Result<IngestorMetadata> {
     let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
 
     // all the files should be in the staging directory root
@@ -421,7 +513,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
                 meta.token = token;
             }
 
-            put_ingestor_info(meta.clone())?;
+            put_ingestor_info_staging(meta.clone())?;
             return Ok(meta);
         }
     }
@@ -438,7 +530,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
         CONFIG.parseable.flight_port.to_string(),
     );
 
-    put_ingestor_info(out.clone())?;
+    put_ingestor_info_staging(out.clone())?;
     Ok(out)
 }
 
@@ -448,9 +540,25 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 /// # Parameters
 ///
 /// * `ingestor_info`: The ingestor info to be stored.
-pub fn put_ingestor_info(info: IngestorMetadata) -> anyhow::Result<()> {
+pub fn put_ingestor_info_staging(info: IngestorMetadata) -> anyhow::Result<()> {
     let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
     let file_name = format!("ingestor.{}.json", info.ingestor_id);
+    let file_path = path.join(file_name);
+
+    std::fs::write(file_path, serde_json::to_string(&info)?)?;
+
+    Ok(())
+}
+
+/// Puts the querier info into the staging.
+///
+/// This function takes the querier info as a parameter and stores it in staging.
+/// # Parameters
+///
+/// * `querier_info`: The querier info to be stored.
+pub fn put_querier_info_staging(info: QuerierMetadata) -> anyhow::Result<()> {
+    let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
+    let file_name = format!("querier.{}.json", info.querier_id);
     let file_path = path.join(file_name);
 
     std::fs::write(file_path, serde_json::to_string(&info)?)?;

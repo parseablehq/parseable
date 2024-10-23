@@ -17,31 +17,163 @@
  */
 
 use crate::handlers::airplane;
-use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
+use crate::handlers::http::cluster::utils::check_liveness;
+use crate::handlers::http::cluster::{self, get_querier_info_storage, init_cluster_metrics_scheduler};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{self, role};
 use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
 use crate::handlers::http::{health_check, logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
+use crate::migration::metadata_migration::migrate_querier_metadata;
 use crate::rbac::role::Action;
+use crate::storage::object_storage::{parseable_json_path, querier_metadata_path};
+use crate::storage::{staging, ObjectStorageError};
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metrics, migration, rbac, storage};
+use actix_web::body::MessageBody;
 use actix_web::web::{resource, ServiceConfig};
-use actix_web::{web, Scope};
+use actix_web::{web, Resource, Scope};
 use actix_web::{App, HttpServer};
 use async_trait::async_trait;
+use bytes::Bytes;
+use chrono::{DateTime, Utc};
+use once_cell::sync::Lazy;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
+use anyhow::anyhow;
 
 use crate::option::CONFIG;
 
-use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
+use super::query::{self, querier_ingest, querier_logstream, querier_query, querier_rbac, querier_role};
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
-use super::{OpenIdClient, ParseableServer};
+use super::{OpenIdClient, ParseableServer, QuerierMetadata};
+
+/// ! have to use a guard before using it
+pub static QUERIER_META: Lazy<QuerierMetadata> =
+    Lazy::new(|| staging::get_querier_info_staging().expect("Should Be valid Json"));
+
+pub static QUERY_ROUTING: Lazy<Mutex<QueryRouting>> = Lazy::new(|| Mutex::new(QueryRouting::default()));
+
+#[derive(Debug, Clone, Default)]
+pub struct QueryNodeStats {
+    pub ticket: String,
+    pub start_time: u128,
+    pub hottier_info: Option<Vec<String>>
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct QueryRouting {
+    pub available_nodes: HashSet<String>,
+    pub stats: HashMap<String, QueryNodeStats>,
+    pub info: HashMap<String, QuerierMetadata>,
+}
+
+impl QueryRouting {
+    /// this function will be called when a query node is made the leader
+    /// for now it will start without any information about what the other nodes are doing
+    pub async fn new(&mut self) {
+        let querier_metas = get_querier_info_storage().await.unwrap();
+        let mut available_nodes = HashSet::new();
+        let mut stats: HashMap<String, QueryNodeStats> = HashMap::new();
+        let mut info: HashMap<String, QuerierMetadata> = HashMap::new();
+        for qm in querier_metas {
+            if qm.eq(&QUERIER_META) {
+                // don't append self to the list
+                // using self is an edge case
+                continue;
+            }
+
+            if !check_liveness(&qm.domain_name).await {
+                // only append if node is live
+                continue;
+            }
+
+            available_nodes.insert(qm.querier_id.clone());
+            
+            stats.insert(qm.querier_id.clone(), QueryNodeStats{
+                start_time: qm.start_time,
+                ..Default::default()
+            });
+
+            info.insert(qm.querier_id.clone(),qm);
+        }
+        self.available_nodes = available_nodes;
+        self.info = info;
+        self.stats = stats;
+    }
+
+    /// This function is supposed to look at all available query nodes
+    /// in `available_nodes` and return one.
+    /// If none is available, it will return one at random from `query_map`.
+    /// if info is also empty, it will re-read metas from storage and try to recreate itself
+    /// as a last resort, it will answer the query itself
+    /// It can later be augmented to accept the stream name(s)
+    /// to figure out which Query Nodes have those streams in their hottier
+    pub async fn get_query_node(&mut self) -> QuerierMetadata {
+
+        log::warn!("available_nodes- {:?}",self.available_nodes);
+        // get node from query coodinator
+        if self.available_nodes.len() > 0 {
+            let mut drain = self.available_nodes.drain();
+            let node_id = drain.next().unwrap();
+            self.available_nodes = HashSet::from_iter(drain);
+            log::warn!("updated available_nodes- {:?}",self.available_nodes);
+            self.info.get(&node_id).unwrap().to_owned()
+        } else if self.info.len() > 0 {
+            self.info.values().next().unwrap().to_owned()
+        } else {
+            // no nodes available, send query request to self?
+            // first check if any new query nodes are available
+            self.new().await;
+
+            if self.available_nodes.len() > 0 {
+                let mut drain = self.available_nodes.drain();
+                let node_id = drain.next().unwrap();
+                self.available_nodes = HashSet::from_iter(drain);
+                log::warn!("updated available_nodes- {:?}",self.available_nodes);
+                self.info.get(&node_id).unwrap().to_owned()
+            } else {
+                QUERIER_META.clone()
+            }
+        }
+    }
+
+    pub fn append_querier_info(&mut self, node: QuerierMetadata) {
+        // append the incoming metadata info to info
+        let node_id = node.querier_id.clone();
+
+        self.info.insert(node_id.clone(), node);
+        self.available_nodes.insert(node_id);
+        
+        log::warn!("QUERY_COORDINATION- {:?}",self);
+    }
+
+    pub fn reinstate_node(&mut self, node: QuerierMetadata) {
+        // make this node available again
+        self.available_nodes.insert(node.querier_id);
+    }
+
+    pub async fn check_liveness(&mut self) {
+        let mut to_remove: Vec<String> = Vec::new();
+        for (node_id,node) in self.info.iter() {
+            if !check_liveness(&node.domain_name).await {
+                to_remove.push(node_id.clone());
+            }
+        }
+
+        for node_id in to_remove {
+            log::warn!("Removing node_id- {node_id}");
+            self.info.remove(&node_id);
+            self.available_nodes.remove(&node_id);
+            self.stats.remove(&node_id);
+        }
+    }
+}
 
 #[derive(Default, Debug)]
 pub struct QueryServer;
@@ -63,6 +195,8 @@ impl ParseableServer for QueryServer {
 
             None => None,
         };
+
+        self.set_querier_metadata().await?;
 
         let ssl = get_ssl_acceptor(
             &CONFIG.parseable.tls_cert_path,
@@ -126,9 +260,13 @@ impl ParseableServer for QueryServer {
     /// implementation of init should just invoke a call to initialize
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
-        migration::run_file_migration(&CONFIG).await?;
-        let parseable_json = CONFIG.validate_storage().await?;
-        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+
+        // Check if coordinator is present
+        let parseable_json = self.check_coordinator_state().await?;
+        // migration::run_file_migration(&CONFIG).await?;
+        
+        // migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+        
         let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
         banner::print(&CONFIG, &metadata).await;
         // initialize the rbac map
@@ -156,7 +294,8 @@ impl QueryServer {
             .service(
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body
-                    .service(Server::get_query_factory())
+                    .service(Self::get_query_factory())
+                    .service(Self::get_query_coordinator_factory())
                     .service(Server::get_trino_factory())
                     .service(Server::get_cache_webscope())
                     .service(Server::get_liveness_factory())
@@ -170,9 +309,22 @@ impl QueryServer {
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_metrics_webscope())
-                    .service(Self::get_cluster_web_scope()),
+                    .service(Self::get_cluster_web_scope())
+                    .service(Self::get_leader_factory()),
             )
             .service(Server::get_generated());
+    }
+
+    fn get_leader_factory() -> Resource {
+        web::resource("/leader").post(query::make_leader)
+    }
+
+    fn get_query_factory() -> Resource {
+        web::resource("/query").route(web::post().to(http::query::query).authorize(Action::Query))
+    }
+
+    fn get_query_coordinator_factory() -> Resource {
+        web::resource("/query_coordinator").route(web::post().to(querier_query::query_coordinator).authorize(Action::Query))
     }
 
     // get the role webscope
@@ -225,7 +377,7 @@ impl QueryServer {
             )
             .service(
                 web::resource("/{username}/role")
-                    // PUT /user/{username}/roles => Put roles for user
+                    // PUT /user/{username}/role => Put roles for user
                     .route(
                         web::put()
                             .to(querier_rbac::put_role)
@@ -403,6 +555,48 @@ impl QueryServer {
             )
     }
 
+    // create the querier metadata and put the .querier.json file in the object store
+    async fn set_querier_metadata(&self) -> anyhow::Result<()> {
+        let storage_querier_metadata = migrate_querier_metadata().await?;
+        let store = CONFIG.storage().get_object_store();
+
+        // find the meta file in staging if not generate new metadata
+        let resource = QUERIER_META.clone();
+        // use the id that was generated/found in the staging and
+        // generate the path for the object store
+        let path = querier_metadata_path(None);
+
+        // we are considering that we can always get from object store
+        if storage_querier_metadata.is_some() {
+            let mut store_data = storage_querier_metadata.unwrap();
+
+            if store_data.domain_name != QUERIER_META.domain_name {
+                store_data
+                    .domain_name
+                    .clone_from(&QUERIER_META.domain_name);
+                store_data.port.clone_from(&QUERIER_META.port);
+
+                let resource = serde_json::to_string(&store_data)?
+                    .try_into_bytes()
+                    .map_err(|err| anyhow!(err))?;
+
+                // if pushing to object store fails propagate the error
+                return store
+                    .put_object(&path, resource)
+                    .await
+                    .map_err(|err| anyhow!(err));
+            }
+        } else {
+            let resource = serde_json::to_string(&resource)?
+                .try_into_bytes()
+                .map_err(|err| anyhow!(err))?;
+
+            store.put_object(&path, resource).await?;
+        }
+
+        Ok(())
+    }
+
     /// initialize the server, run migrations as needed and start the server
     async fn initialize(&self) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
@@ -424,7 +618,7 @@ impl QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
-        if matches!(init_cluster_metrics_schedular(), Ok(())) {
+        if matches!(init_cluster_metrics_scheduler(), Ok(())) {
             log::info!("Cluster metrics scheduler started successfully");
         }
         if let Some(hot_tier_manager) = HotTierManager::global() {
@@ -440,6 +634,7 @@ impl QueryServer {
         let app = self.start(prometheus, CONFIG.parseable.openid.clone());
 
         tokio::pin!(app);
+
         loop {
             tokio::select! {
                 e = &mut app => {
@@ -468,6 +663,27 @@ impl QueryServer {
                 }
 
             };
+        }
+    }
+
+    // check for coordinator state. Is it there, or was it there in the past
+    // this should happen before the set the querier metadata
+    async fn check_coordinator_state(&self) -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
+        // how do we check for coordinator state?
+        // based on the work flow of the system, the coordinator will always need to start first
+        // i.e the coordinator will create the `.parseable.json` file
+        // if the file already exists, it might need to be migrated
+
+        let store = CONFIG.storage().get_object_store();
+        let path = parseable_json_path();
+
+        let parseable_json = store.get_object(&path).await;
+        match parseable_json {
+            Ok(_) => Ok(Some(parseable_json.unwrap())),
+            Err(_) => Err(ObjectStorageError::Custom(
+                "Coordinator Server has not been started yet. Please start the coordinator server first."
+                    .to_string(),
+            )),
         }
     }
 }

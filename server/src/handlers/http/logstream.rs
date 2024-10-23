@@ -21,6 +21,7 @@ use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, St
 use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::ingest::create_stream_if_not_exists;
 use super::modal::utils::logstream_utils::create_update_stream;
+use super::modal::LEADER;
 use crate::alerts::Alerts;
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
@@ -177,11 +178,14 @@ pub async fn put_alert(
         }
     }
 
-    CONFIG
-        .storage()
-        .get_object_store()
-        .put_alerts(&stream_name, &alerts)
-        .await?;
+    if LEADER.lock().is_leader() {
+        CONFIG
+            .storage()
+            .get_object_store()
+            .put_alerts(&stream_name, &alerts)
+            .await?;
+    }
+    
 
     metadata::STREAM_INFO
         .set_alert(&stream_name, alerts)
@@ -224,11 +228,14 @@ pub async fn put_retention(
         Err(err) => return Err(StreamError::InvalidRetentionConfig(err)),
     };
 
-    CONFIG
-        .storage()
-        .get_object_store()
-        .put_retention(&stream_name, &retention)
-        .await?;
+    if LEADER.lock().is_leader() {
+        CONFIG
+            .storage()
+            .get_object_store()
+            .put_retention(&stream_name, &retention)
+            .await?;
+    }
+    
 
     metadata::STREAM_INFO
         .set_retention(&stream_name, retention)

@@ -20,19 +20,30 @@ use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, Responder};
 use anyhow::anyhow;
+use arrow_flight::{FlightClient, Ticket};
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
+use futures::TryStreamExt;
 use futures_util::Future;
-use http::StatusCode;
+use http::{header, StatusCode};
+use itertools::Itertools;
+use rand::seq::SliceRandom;
+use reqwest::Client;
+use serde_json::{json, Value};
+use tonic::transport::{Channel, Uri};
+use tonic::Status;
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
+use crate::rbac::map::SessionKey;
 use arrow_array::RecordBatch;
 
 use crate::event::commit_schema;
@@ -50,6 +61,11 @@ use crate::response::QueryResponse;
 use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
+
+use super::base_path;
+use super::cluster::get_querier_info_storage;
+use super::modal::query_server::QUERY_ROUTING;
+use super::modal::{QuerierMetadata, LEADER};
 
 /// Query Request through http endpoint.
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

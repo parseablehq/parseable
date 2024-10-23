@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use crate::option::CONFIG;
 
-use self::{cluster::get_ingestor_info, query::Query};
+use self::{cluster::get_ingestor_info_storage, query::Query};
 
 pub(crate) mod about;
 mod cache;
@@ -99,7 +99,7 @@ pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Sch
 pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec<Value>> {
     // send the query request to the ingestor
     let mut res = vec![];
-    let ima = get_ingestor_info().await?;
+    let ima = get_ingestor_info_storage().await?;
 
     for im in ima.iter() {
         let uri = format!(

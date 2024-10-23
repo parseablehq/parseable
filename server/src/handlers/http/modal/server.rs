@@ -23,6 +23,7 @@ use crate::handlers::http::about;
 use crate::handlers::http::base_path;
 use crate::handlers::http::cache;
 use crate::handlers::http::health_check;
+use crate::handlers::http::modal::LEADER;
 use crate::handlers::http::query;
 use crate::handlers::http::trino;
 use crate::handlers::http::users::dashboards;
@@ -147,6 +148,10 @@ impl ParseableServer for Server {
 
     /// implementation of init should just invoke a call to initialize
     async fn init(&self) -> anyhow::Result<()> {
+        // since this is standalone, leader flag will be true for it
+        // we are including this flag here because some API functions are shared
+        // between standalone and distributed mode
+        LEADER.lock().make_leader();
         self.validate()?;
         migration::run_file_migration(&CONFIG).await?;
         let parseable_json = CONFIG.validate_storage().await?;

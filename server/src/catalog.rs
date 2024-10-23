@@ -317,6 +317,7 @@ async fn create_manifest(
     Ok(())
 }
 
+// TODO: test
 pub async fn remove_manifest_from_snapshot(
     storage: Arc<dyn ObjectStorage + Send>,
     stream_name: &str,
@@ -335,13 +336,14 @@ pub async fn remove_manifest_from_snapshot(
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
     match CONFIG.parseable.mode {
-        Mode::All | Mode::Ingest => {
+        Mode::All | Mode::Ingest | Mode::Query => {
             Ok(get_first_event(storage.clone(), stream_name, Vec::new()).await?)
         }
-        Mode::Query => Ok(get_first_event(storage, stream_name, dates).await?),
+        Mode::Coordinator => Ok(get_first_event(storage, stream_name, dates).await?),
     }
 }
 
+// TODO: test
 pub async fn get_first_event(
     storage: Arc<dyn ObjectStorage + Send>,
     stream_name: &str,
@@ -349,7 +351,7 @@ pub async fn get_first_event(
 ) -> Result<Option<String>, ObjectStorageError> {
     let mut first_event_at: String = String::default();
     match CONFIG.parseable.mode {
-        Mode::All | Mode::Ingest => {
+        Mode::All | Mode::Ingest | Mode::Query => {
             // get current snapshot
             let stream_first_event = STREAM_INFO.get_first_event(stream_name)?;
             if stream_first_event.is_some() {
@@ -395,9 +397,9 @@ pub async fn get_first_event(
                 }
             }
         }
-        Mode::Query => {
+        Mode::Coordinator => {
             let ingestor_metadata =
-                handlers::http::cluster::get_ingestor_info()
+                handlers::http::cluster::get_ingestor_info_storage()
                     .await
                     .map_err(|err| {
                         log::error!("Fatal: failed to get ingestor info: {:?}", err);

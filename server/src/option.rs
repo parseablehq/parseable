@@ -206,6 +206,7 @@ Cloud Native, log analytics platform for modern applications."#,
         match self.parseable.mode {
             Mode::Query => "Distributed (Query)",
             Mode::Ingest => "Distributed (Ingest)",
+            Mode::Coordinator => "Distributed (Coordinator)",
             Mode::All => "Standalone",
         }
     }
@@ -249,6 +250,7 @@ Join the community at https://logg.ing/community.
 pub enum Mode {
     Query,
     Ingest,
+    Coordinator,
     #[default]
     All,
 }
@@ -258,6 +260,7 @@ impl Mode {
         match self {
             Mode::Query => "Query",
             Mode::Ingest => "Ingest",
+            Mode::Coordinator => "Coordinator",
             Mode::All => "All",
         }
     }
@@ -266,6 +269,7 @@ impl Mode {
         match mode {
             "Query" => Ok(Mode::Query),
             "Ingest" => Ok(Mode::Ingest),
+            "Coordinator" => Ok(Mode::Coordinator),
             "All" => Ok(Mode::All),
             x => Err(format!("Trying to Parse Invalid mode: {}", x)),
         }

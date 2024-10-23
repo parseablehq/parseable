@@ -23,6 +23,7 @@ use crate::handlers::http::cluster::utils::{
 };
 use crate::handlers::http::ingest::{ingest_internal_stream, PostError};
 use crate::handlers::http::logstream::error::StreamError;
+use crate::handlers::http::modal::LEADER;
 use crate::handlers::http::role::RoleError;
 use crate::option::CONFIG;
 
@@ -40,6 +41,7 @@ use chrono::Utc;
 use http::{header as http_header, StatusCode};
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
+use reqwest::RequestBuilder;
 use serde::de::Error;
 use serde_json::error::Error as SerdeError;
 use serde_json::{to_vec, Value as JsonValue};
@@ -48,16 +50,94 @@ type IngestorMetadataArr = Vec<IngestorMetadata>;
 
 use self::utils::StorageStats;
 
-use super::base_path_without_preceding_slash;
+use super::{base_path, base_path_without_preceding_slash};
+use super::modal::coordinator::Method;
+use super::modal::query_server::QUERIER_META;
 use super::rbac::RBACError;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use super::modal::IngestorMetadata;
+use super::modal::{IngestorMetadata, QuerierMetadata};
 use clokwerk::{AsyncScheduler, Interval};
 pub const INTERNAL_STREAM_NAME: &str = "pmeta";
 
 const CLUSTER_METRICS_INTERVAL_SECONDS: Interval = clokwerk::Interval::Minutes(1);
+
+pub async fn sync_with_queriers(
+    headers: HeaderMap,
+    body: Option<Bytes>,
+    endpoint: &str, // this is the URL without the domain_name of the querier (shouldn't start with `/`)
+    method: Method
+) -> anyhow::Result<()> {
+    let mut reqwest_headers = http_header::HeaderMap::new();
+
+    for (key, value) in headers.iter() {
+        reqwest_headers.insert(key.clone(), value.clone());
+    }
+
+    let querier_infos = get_querier_info_storage().await?;
+    log::warn!("querier_infos- {querier_infos:?}");
+
+    let client = reqwest::Client::new();
+    for querier in querier_infos.iter() {
+        if querier.eq(&QUERIER_META) {
+            log::warn!("Skipping syncing with self");
+            log::warn!("querier- {querier:?}");
+            log::warn!("self- {QUERIER_META:?}");
+            continue;
+        }
+
+        if !utils::check_liveness(&querier.domain_name).await {
+            log::warn!("Querier {} is not live", querier.domain_name);
+            continue;
+        }
+
+        let domain = if let Some(domain) = querier.domain_name.strip_suffix("/") {
+            domain.to_string()
+        } else {
+            querier.domain_name.to_string()
+        };
+
+        // URL is domain_name + base_path + endpoint
+        let url = format!("{domain}{}/{}",base_path(),endpoint);
+
+        let request_builder = match method {
+            Method::GET => client.get(url),
+            Method::POST => client.post(url),
+            Method::PUT => client.put(url),
+            Method::DELETE => client.delete(url),
+        };
+        
+        let request_builder = match body.clone() {
+            Some(body) => request_builder.body(body),
+            None => request_builder,
+        };
+        
+        let res = request_builder
+            .headers(reqwest_headers.clone())
+            .header(header::AUTHORIZATION, &querier.token)
+            .send()
+            .await
+            .map_err(|err| {
+                log::error!(
+                    "Fatal: failed to forward request to querier: {}\n Error: {:?}",
+                    querier.domain_name,
+                    err
+                );
+                StreamError::Network(err)
+            })?;
+
+        if !res.status().is_success() {
+            log::error!(
+                "failed to forward request to querier: {}\nResponse Returned: {:?}",
+                querier.domain_name,
+                res.text().await
+            );
+        }
+    }
+
+    Ok(())
+}
 
 // forward the create/update stream request to all ingestors to keep them in sync
 pub async fn sync_streams_with_ingestors(
@@ -70,7 +150,7 @@ pub async fn sync_streams_with_ingestors(
     for (key, value) in headers.iter() {
         reqwest_headers.insert(key.clone(), value.clone());
     }
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
@@ -120,7 +200,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     username: &String,
     role: &HashSet<String>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -172,7 +252,7 @@ pub async fn sync_users_with_roles_with_ingestors(
 
 // forward the delete user request to all ingestors to keep them in sync
 pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -221,7 +301,7 @@ pub async fn sync_user_creation_with_ingestors(
     user: User,
     role: &Option<HashSet<String>>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -281,7 +361,7 @@ pub async fn sync_user_creation_with_ingestors(
 
 // forward the password reset request to all ingestors to keep them in sync
 pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -331,7 +411,7 @@ pub async fn sync_role_update_with_ingestors(
     name: String,
     body: Vec<DefaultPrivilege>,
 ) -> Result<(), RoleError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RoleError::Anyhow(err)
     })?;
@@ -391,7 +471,7 @@ pub async fn fetch_daily_stats_from_ingestors(
     let mut total_ingestion_size: u64 = 0;
     let mut total_storage_size: u64 = 0;
 
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
@@ -594,7 +674,7 @@ pub async fn send_retention_cleanup_request(
 }
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
@@ -672,7 +752,7 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
 }
 
 // update the .query.json file and return the new ingestorMetadataArr
-pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
+pub async fn get_ingestor_info_storage() -> anyhow::Result<IngestorMetadataArr> {
     let store = CONFIG.storage().get_object_store();
 
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
@@ -685,6 +765,24 @@ pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
         .iter()
         // this unwrap will most definateley shoot me in the foot later
         .map(|x| serde_json::from_slice::<IngestorMetadata>(x).unwrap_or_default())
+        .collect_vec();
+
+    Ok(arr)
+}
+
+pub async fn get_querier_info_storage() -> anyhow::Result<Vec<QuerierMetadata>> {
+    let store = CONFIG.storage().get_object_store();
+
+    let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
+    let arr = store
+        .get_objects(
+            Some(&root_path),
+            Box::new(|file_name| file_name.starts_with("querier")),
+        )
+        .await?
+        .iter()
+        // this unwrap will most definateley shoot me in the foot later
+        .map(|x| serde_json::from_slice::<QuerierMetadata>(x).unwrap_or_default())
         .collect_vec();
 
     Ok(arr)
@@ -718,22 +816,28 @@ pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostErr
         .filter(|elem| elem.domain_name == domain_name)
         .collect_vec();
 
-    let ingestor_meta_filename =
+    let msg = if LEADER.lock().is_leader() {
+        let ingestor_meta_filename =
         ingestor_metadata_path(Some(&ingestor_metadata[0].ingestor_id)).to_string();
-    let msg = match object_store
-        .try_delete_ingestor_meta(ingestor_meta_filename)
-        .await
-    {
-        Ok(_) => {
-            format!("Ingestor {} removed successfully", domain_name)
-        }
-        Err(err) => {
-            if matches!(err, ObjectStorageError::IoError(_)) {
-                format!("Ingestor {} is not found", domain_name)
-            } else {
-                format!("Error removing ingestor {}\n Reason: {}", domain_name, err)
+
+        match object_store
+            .try_delete_ingestor_meta(ingestor_meta_filename)
+            .await
+        {
+            Ok(_) => {
+                sync_with_queriers(req.headers().clone(), None, &format!("cluster/{domain_name}"), Method::POST).await?;
+                format!("Ingestor {} removed successfully", domain_name)
+            }
+            Err(err) => {
+                if matches!(err, ObjectStorageError::IoError(_)) {
+                    format!("Ingestor {} is not found", domain_name)
+                } else {
+                    format!("Error removing ingestor {}\n Reason: {}", domain_name, err)
+                }
             }
         }
+    } else {
+        "Deleted Ingestor from memory".into()
     };
 
     log::info!("{}", &msg);
@@ -741,7 +845,7 @@ pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostErr
 }
 
 async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
-    let ingestor_metadata = get_ingestor_info().await.map_err(|err| {
+    let ingestor_metadata = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         PostError::Invalid(err)
     })?;
@@ -790,7 +894,7 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     Ok(dresses)
 }
 
-pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
+pub fn init_cluster_metrics_scheduler() -> Result<(), PostError> {
     log::info!("Setting up schedular for cluster metrics ingestion");
     let mut scheduler = AsyncScheduler::new();
     scheduler

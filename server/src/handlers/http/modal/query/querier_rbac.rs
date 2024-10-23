@@ -1,15 +1,17 @@
 use std::collections::HashSet;
 
-use actix_web::{web, Responder};
+use actix_web::{http::header::HeaderMap, web, Responder};
+use bytes::Bytes;
+use itertools::Itertools;
 use tokio::sync::Mutex;
 
 use crate::{
     handlers::http::{
         cluster::{
             sync_password_reset_with_ingestors, sync_user_creation_with_ingestors,
-            sync_user_deletion_with_ingestors, sync_users_with_roles_with_ingestors,
+            sync_user_deletion_with_ingestors, sync_users_with_roles_with_ingestors, sync_with_queriers,
         },
-        modal::utils::rbac_utils::{get_metadata, put_metadata},
+        modal::{coordinator::Method, utils::rbac_utils::{get_metadata, put_metadata}, LEADER},
         rbac::RBACError,
     },
     rbac::{user, Users},
@@ -52,12 +54,17 @@ pub async fn post_user(
     let (user, password) = user::User::new_basic(username.clone());
 
     metadata.users.push(user.clone());
-
-    put_metadata(&metadata).await?;
+    
     let created_role = roles.clone();
     Users.put_user(user.clone());
 
-    sync_user_creation_with_ingestors(user, &Some(roles)).await?;
+    if LEADER.lock().is_leader() {
+        put_metadata(&metadata).await?;
+        sync_user_creation_with_ingestors(user, &Some(roles)).await?;
+        sync_with_queriers(HeaderMap::new(), None, &format!("user/{username}"), Method::POST).await?;
+    }
+
+    
 
     put_role(
         web::Path::<String>::from(username.clone()),
@@ -68,7 +75,7 @@ pub async fn post_user(
     Ok(password)
 }
 
-// Handler for DELETE /api/v1/user/delete/{username}
+// Handler for DELETE /api/v1/user/{username}
 pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
@@ -80,16 +87,19 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     let mut metadata = get_metadata().await?;
     metadata.users.retain(|user| user.username() != username);
 
-    put_metadata(&metadata).await?;
+    if LEADER.lock().is_leader() {
+        put_metadata(&metadata).await?;
+        sync_user_deletion_with_ingestors(&username).await?;
+        sync_with_queriers(HeaderMap::new(), None, &format!("user/{username}"), Method::DELETE).await?;
+    }
 
-    sync_user_deletion_with_ingestors(&username).await?;
 
     // update in mem table
     Users.delete_user(&username);
     Ok(format!("deleted user: {username}"))
 }
 
-// Handler PUT /user/{username}/roles => Put roles for user
+// Handler PUT /user/{username}/role => Put roles for user
 // Put roles for given user
 pub async fn put_role(
     username: web::Path<String>,
@@ -113,12 +123,21 @@ pub async fn put_role(
         // should be unreachable given state is always consistent
         return Err(RBACError::UserDoesNotExist);
     }
-
-    put_metadata(&metadata).await?;
+    
     // update in mem table
     Users.put_role(&username.clone(), role.clone());
 
-    sync_users_with_roles_with_ingestors(&username, &role).await?;
+    if LEADER.lock().is_leader() {
+        put_metadata(&metadata).await?;
+        sync_users_with_roles_with_ingestors(&username, &role).await?;
+
+        let body = role.into_iter().fold(Vec::new(), |mut acc, v| {
+                acc.extend_from_slice(v.as_bytes());
+                acc
+            });
+        sync_with_queriers(HeaderMap::new(), Some(body.into()), &format!("user/{username}/role"), Method::PUT).await?;
+    }
+
 
     Ok(format!("Roles updated successfully for {username}"))
 }
@@ -148,10 +167,14 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     } else {
         return Err(RBACError::UserDoesNotExist);
     }
-    put_metadata(&metadata).await?;
+
     Users.change_password_hash(&username, &new_hash);
 
-    sync_password_reset_with_ingestors(&username).await?;
+    if LEADER.lock().is_leader() {
+        put_metadata(&metadata).await?;
+        sync_password_reset_with_ingestors(&username).await?;
+        sync_with_queriers(HeaderMap::new(), None, &format!("{username}/generate-new-password"), Method::POST).await?;
+    }
 
     Ok(new_password)
 }

@@ -190,7 +190,7 @@ pub async fn create_stream_if_not_exists(
         return Ok(stream_exists);
     }
     match &CONFIG.parseable.mode {
-        Mode::All | Mode::Query => {
+        Mode::All | Mode::Query | Mode::Coordinator => {
             super::logstream::create_stream(
                 stream_name.to_string(),
                 "",

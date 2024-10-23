@@ -310,6 +310,14 @@ where
         let mode = &CONFIG.parseable.mode;
         // change error messages based on mode
         match mode {
+            Mode::Coordinator => {
+                let fut = self.service.call(req);
+
+                Box::pin(async move {
+                    let res = fut.await?;
+                    Ok(res)
+                })
+            }
             Mode::Query => {
                 // In Query mode, only allows /ingest endpoint, and /logstream endpoint with GET method
                 let base_cond = path.split('/').any(|x| x == "ingest");

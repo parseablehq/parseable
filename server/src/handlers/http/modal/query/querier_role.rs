@@ -1,10 +1,10 @@
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{http::header::HeaderMap, web, HttpResponse, Responder};
 use bytes::Bytes;
 
 use crate::{
     handlers::http::{
-        cluster::sync_role_update_with_ingestors,
-        modal::utils::rbac_utils::{get_metadata, put_metadata},
+        cluster::{sync_role_update_with_ingestors, sync_with_queriers},
+        modal::{coordinator::Method, utils::rbac_utils::{get_metadata, put_metadata}, LEADER},
         role::RoleError,
     },
     rbac::{map::mut_roles, role::model::DefaultPrivilege},
@@ -18,10 +18,14 @@ pub async fn put(name: web::Path<String>, body: Bytes) -> Result<impl Responder,
     let mut metadata = get_metadata().await?;
     metadata.roles.insert(name.clone(), privileges.clone());
 
-    put_metadata(&metadata).await?;
     mut_roles().insert(name.clone(), privileges.clone());
 
-    sync_role_update_with_ingestors(name.clone(), privileges.clone()).await?;
+    if LEADER.lock().is_leader() {
+        put_metadata(&metadata).await?;
+        sync_role_update_with_ingestors(name.clone(), privileges.clone()).await?;
+        sync_with_queriers(HeaderMap::new(), Some(body), &format!("{name}"), Method::PUT).await?;
+    }
+    
 
     Ok(HttpResponse::Ok().finish())
 }
