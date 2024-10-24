@@ -40,7 +40,6 @@ use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
-use tokio::time::{sleep, Duration};
 
 use actix_web::web::resource;
 use actix_web::Resource;
