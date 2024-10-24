@@ -22,6 +22,8 @@ use std::{collections::HashMap, sync::Arc};
 use anyhow::{anyhow, Error as AnyError};
 use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use chrono::DateTime;
+use serde_json::Value;
 
 use crate::utils::{self, arrow::get_field};
 
@@ -170,4 +172,31 @@ pub fn update_field_type_in_schema(
         })
         .collect();
     Arc::new(Schema::new(new_schema))
+}
+
+pub fn update_data_type_to_datetime(schema: Schema, value: Value) -> Schema {
+    let new_schema: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.data_type() == &DataType::Utf8 {
+                if let Value::Object(map) = &value {
+                    if let Some(Value::String(s)) = map.get(field.name()) {
+                        if DateTime::parse_from_rfc3339(s).is_ok() {
+                            // Update the field's data type to Timestamp
+                            return Field::new(
+                                field.name().clone(),
+                                DataType::Timestamp(TimeUnit::Millisecond, None),
+                                true,
+                            );
+                        }
+                    }
+                }
+            }
+            // Return the original field if no update is needed
+            Field::new(field.name(), field.data_type().clone(), true)
+        })
+        .collect();
+
+    Schema::new(new_schema)
 }
