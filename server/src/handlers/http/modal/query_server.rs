@@ -260,6 +260,17 @@ impl QueryServer {
                     .route(web::get().to(logstream::list).authorize(Action::ListStream)),
             )
             .service(
+                web::scope("/schema/detect").service(
+                    web::resource("")
+                        // PUT "/logstream/{logstream}" ==> Create log stream
+                        .route(
+                            web::post()
+                                .to(logstream::detect_schema)
+                                .authorize(Action::DetectSchema),
+                        ),
+                ),
+            )
+            .service(
                 web::scope("/{logstream}")
                     .service(
                         web::resource("")
