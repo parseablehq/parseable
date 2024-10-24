@@ -36,17 +36,18 @@ spec:
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
           # Uncomment to debug
           # command: [ "/bin/sh", "-c", "sleep 1000000" ]
-          {{- if .Values.parseable.local }}
-          args: ["/usr/bin/parseable", "local-store"]
-          {{- else }}
-          args: ["/usr/bin/parseable", "s3-store"]
-          {{- end }}
+          args: ["/usr/bin/parseable", {{ .Values.parseable.store | quote }}]
           env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
             {{- range $key, $value :=  .Values.parseable.env }}
             - name: {{ $key }}
               value: {{ tpl $value $ | quote }}
             {{- end }}
-            {{- if .Values.parseable.local }}
+            {{- if .Values.parseable.localModeSecret }}
             {{- range $secret := .Values.parseable.localModeSecret }}
             {{- range $key := $secret.keys }}
             {{- $envPrefix := $secret.prefix | default "" | upper }}
@@ -56,14 +57,9 @@ spec:
                 secretKeyRef:
                   name: {{ $secret.name }}
                   key: {{ $key }}
-            - name: HOSTNAME
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: metadata.name
             {{- end }}
             {{- end }}
-            {{- else}}
+            {{- else }}
             {{- range $secret := .Values.parseable.s3ModeSecret }}
             {{- range $key := $secret.keys }}
             {{- $envPrefix := $secret.prefix | default "" | upper }}
@@ -74,6 +70,17 @@ spec:
                   name: {{ $secret.name }}
                   key: {{ $key }}
             {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- range $secret := .Values.parseable.blobModeSecret }}
+            {{- range $key := $secret.keys }}
+            {{- $envPrefix := $secret.prefix | default "" | upper }}
+            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+            - name: {{ $envPrefix }}{{ $envKey }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret.name }}
+                  key: {{ $key }}
             {{- end }}
             {{- end }}
           ports:
@@ -118,4 +125,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-{{- end }}
+{{- end }}  # Closing for "if eq .Values.parseable.highAvailability.enabled false"
