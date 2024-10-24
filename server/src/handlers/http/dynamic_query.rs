@@ -32,6 +32,7 @@ use ulid::Ulid;
 
 const MAX_CACHE_DURATION: Duration = Duration::from_secs(60 * 60);
 const MAX_SERVER_URL_STORES: u32 = 10;
+const DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV: &str = "DYNAMIC_QUERY_RESULTS_CACHE_PATH";
 
 /// Query Request through http endpoint.
 #[derive(Debug)]
