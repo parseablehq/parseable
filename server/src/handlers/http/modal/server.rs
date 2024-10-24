@@ -19,7 +19,6 @@
 use crate::analytics;
 use crate::banner;
 use crate::handlers;
-use crate::handlers::http::about;
 use crate::handlers::http::base_path;
 use crate::handlers::http::cache;
 use crate::handlers::http::health_check;
@@ -29,6 +28,7 @@ use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
 use crate::handlers::http::API_BASE_PATH;
 use crate::handlers::http::API_VERSION;
+use crate::handlers::http::{about, dynamic_query};
 use crate::hottier::HotTierManager;
 use crate::localcache::LocalCacheManager;
 use crate::metrics;
@@ -172,6 +172,7 @@ impl Server {
                 web::scope(&base_path())
                     // POST "/query" ==> Get results of the SQL query passed in request body
                     .service(Self::get_query_factory())
+                    .service(Self::get_dynamic_query_factory())
                     .service(Self::get_trino_factory())
                     .service(Self::get_cache_webscope())
                     .service(Self::get_ingest_factory())
@@ -270,6 +271,25 @@ impl Server {
     // get the query factory
     pub fn get_query_factory() -> Resource {
         web::resource("/query").route(web::post().to(query::query).authorize(Action::Query))
+    }
+
+    // get the query factory
+    pub fn get_dynamic_query_factory() -> Scope {
+        web::scope("/query/dynamic").service(
+            web::scope("")
+                .route(
+                    "",
+                    web::post()
+                        .to(dynamic_query::dynamic_query)
+                        .authorize(Action::Query),
+                )
+                .route(
+                    "/{uuid}",
+                    web::get()
+                        .to(dynamic_query::dynamic_lookup)
+                        .authorize(Action::Query),
+                ),
+        )
     }
 
     pub fn get_cache_webscope() -> Scope {
