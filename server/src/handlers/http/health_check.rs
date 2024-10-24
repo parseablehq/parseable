@@ -27,11 +27,10 @@ use lazy_static::lazy_static;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{oneshot, Mutex};
-use tokio::time::{sleep, Duration};
 
 // Create a global variable to store signal status
 lazy_static! {
-    static ref SIGNAL_RECEIVED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    pub static ref SIGNAL_RECEIVED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
 }
 
 pub async fn liveness() -> HttpResponse {

@@ -16,6 +16,7 @@
  *
  */
 
+use super::health_check::SIGNAL_RECEIVED;
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
 use super::otel;
@@ -47,6 +48,13 @@ use std::sync::Arc;
 // ingests events by extracting stream name from header
 // creates if stream does not exist
 pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+    // Check if the application has received a shutdown signal
+    let shutdown_flag = SIGNAL_RECEIVED.lock().await;
+    if *shutdown_flag {
+        return Err(PostError::CustomError(
+            "Server is shutting down".to_string(),
+        ));
+    }
     if let Some((_, stream_name)) = req
         .headers()
         .iter()
@@ -107,6 +115,13 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
 // ingests events by extracting stream name from header
 // creates if stream does not exist
 pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+    // Check if the application has received a shutdown signal
+    let shutdown_flag = SIGNAL_RECEIVED.lock().await;
+    if *shutdown_flag {
+        return Err(PostError::CustomError(
+            "Server is shutting down".to_string(),
+        ));
+    }
     if let Some((_, stream_name)) = req
         .headers()
         .iter()
@@ -143,6 +158,13 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
 // only ingests events into the specified logstream
 // fails if the logstream does not exist
 pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+    // Check if the application has received a shutdown signal
+    let shutdown_flag = SIGNAL_RECEIVED.lock().await;
+    if *shutdown_flag {
+        return Err(PostError::CustomError(
+            "Server is shutting down".to_string(),
+        ));
+    }
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let internal_stream_names = STREAM_INFO.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {

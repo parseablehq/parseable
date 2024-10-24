@@ -162,7 +162,8 @@ impl StorageDir {
 
         if !shutdown_signal {
             arrow_files.retain(|path| {
-                path.file_name()
+                !path
+                    .file_name()
                     .unwrap()
                     .to_str()
                     .unwrap()
