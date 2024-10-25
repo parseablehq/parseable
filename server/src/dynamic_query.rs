@@ -6,7 +6,7 @@ use datafusion::logical_expr::LogicalPlan;
 use futures::TryStreamExt;
 use itertools::Itertools;
 use lazy_static::lazy_static;
-use parquet::arrow::ParquetRecordBatchStreamBuilder;
+use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
 use std::time::Duration;
 use std::{
     collections::BTreeMap,
@@ -57,7 +57,8 @@ fn resolve_uuid_cache_path(uuid: Ulid) -> PathBuf {
     DYNAMIC_QUERY_RESULTS_CACHE_PATH.join(format!("{}.parquet", uuid))
 }
 
-pub async fn register_query(uuid: Ulid, query: DynamicQuery) {
+pub async fn register_query(uuid: Ulid, query: DynamicQuery) -> anyhow::Result<()> {
+    AsyncFs::create_dir_all(DYNAMIC_QUERY_RESULTS_CACHE_PATH.as_path()).await?;
     let mut queries = QUERIES_BY_UUID.lock().await;
     queries.insert(uuid, query.clone());
     process_dynamic_query(uuid, &query).await
@@ -110,7 +111,7 @@ async fn load_query(cache_duration: chrono::Duration, plan: LogicalPlan) -> Quer
     }
 }
 
-async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) {
+async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) -> anyhow::Result<()> {
     log::info!("Reloading dynamic query {uuid}: {:?}", query);
     let curr = load_query(
         chrono::Duration::from_std(query.cache_duration).unwrap(),
@@ -118,7 +119,26 @@ async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) {
     )
     .await;
 
+    let parquet_file = AsyncFs::File::create(resolve_uuid_cache_path(uuid)).await?;
+
+    let sch = if let Some(record) = curr.records.first() {
+        record.schema()
+    } else {
+        // the record batch is empty, do not cache and return early
+        return Ok(());
+    };
+
+    let mut arrow_writer = AsyncArrowWriter::try_new(parquet_file, sch, None)?;
+
+    for record in curr.records.iter().as_ref() {
+        if let Err(e) = arrow_writer.write(record).await {
+            log::error!("Error While Writing to Query Cache: {}", e);
+        }
+    }
+
+    arrow_writer.close().await?;
     log::info!("Reloaded dynamic query {uuid}: {}", curr.records.len());
+    Ok(())
 }
 
 pub fn init_dynamic_query_scheduler() -> anyhow::Result<()> {
@@ -130,7 +150,7 @@ pub fn init_dynamic_query_scheduler() -> anyhow::Result<()> {
         .run(move || async {
             let queries = QUERIES_BY_UUID.lock().await;
             for (uuid, query) in queries.iter() {
-                process_dynamic_query(*uuid, query).await;
+                process_dynamic_query(*uuid, query).await.unwrap();
             }
         });
 

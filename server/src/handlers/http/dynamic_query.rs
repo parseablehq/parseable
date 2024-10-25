@@ -77,7 +77,7 @@ impl FromRequest for DynamicQuery {
 }
 pub async fn dynamic_query(req: HttpRequest, query: DynamicQuery) -> Result<String, QueryError> {
     let uuid = Ulid::new();
-    crate::dynamic_query::register_query(uuid, query).await;
+    crate::dynamic_query::register_query(uuid, query).await?;
     Ok(format!("{}/{}", req.uri(), uuid))
 }
 pub async fn dynamic_lookup(req: HttpRequest) -> Result<impl Responder, QueryError> {
