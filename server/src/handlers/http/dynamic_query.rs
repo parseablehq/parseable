@@ -75,6 +75,12 @@ impl FromRequest for DynamicQuery {
     }
 }
 pub async fn dynamic_query(req: HttpRequest, query: DynamicQuery) -> Result<String, QueryError> {
+    if query.cache_duration > MAX_CACHE_DURATION {
+        return Err(QueryError::Anyhow(anyhow!(
+            "Cache duration is over limit: {} mins",
+            MAX_CACHE_DURATION.as_secs() / 60u64
+        )));
+    }
     let uuid = Ulid::new();
     crate::dynamic_query::register_query(uuid, query).await?;
     Ok(format!("{}/{}", req.uri(), uuid))
