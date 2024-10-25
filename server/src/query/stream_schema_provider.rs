@@ -233,7 +233,18 @@ fn partitioned_files(
             columns,
             ..
         } = file;
-        partitioned_files[index].push(PartitionedFile::new(file_path, file.file_size));
+
+        // object_store::path::Path doesn't automatically deal with Windows path separators
+        // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
+        // before sending the file path to PartitionedFile
+        let pf = if CONFIG.storage_name.eq("drive") {
+            let file_path = object_store::path::Path::from_absolute_path(file_path).unwrap();
+            PartitionedFile::new(file_path, file.file_size)
+        } else {
+            PartitionedFile::new(file_path, file.file_size)
+        };
+
+        partitioned_files[index].push(pf);
         columns.into_iter().for_each(|col| {
             column_statistics
                 .entry(col.name)
