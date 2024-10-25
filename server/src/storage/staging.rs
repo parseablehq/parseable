@@ -155,17 +155,22 @@ impl StorageDir {
         &self,
         exclude: NaiveDateTime,
         stream: &str,
+        shutdown_signal: bool,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let mut arrow_files = self.arrow_files();
-        arrow_files.retain(|path| {
-            !path
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with(&exclude.format("%Y%m%dT%H%M").to_string())
-        });
+
+        if !shutdown_signal {
+            arrow_files.retain(|path| {
+                !path
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with(&exclude.format("%Y%m%dT%H%M").to_string())
+            });
+        }
+
         let random_string =
             rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
         for arrow_file_path in arrow_files {
@@ -223,11 +228,12 @@ pub fn convert_disk_files_to_parquet(
     dir: &StorageDir,
     time_partition: Option<String>,
     custom_partition: Option<String>,
+    shutdown_signal: bool,
 ) -> Result<Option<Schema>, MoveDataError> {
     let mut schemas = Vec::new();
 
     let time = chrono::Utc::now().naive_utc();
-    let staging_files = dir.arrow_files_grouped_exclude_time(time, stream);
+    let staging_files = dir.arrow_files_grouped_exclude_time(time, stream, shutdown_signal);
     if staging_files.is_empty() {
         metrics::STAGING_FILES.with_label_values(&[stream]).set(0);
         metrics::STORAGE_SIZE
