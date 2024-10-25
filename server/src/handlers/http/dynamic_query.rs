@@ -26,6 +26,8 @@ use chrono::{DateTime, Utc};
 use datafusion::logical_expr::LogicalPlan;
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::env;
+use std::path::{Path, PathBuf};
 use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
 use tokio::sync::Mutex;
 use ulid::Ulid;
@@ -48,6 +50,12 @@ pub struct RawDynamicQuery {
 }
 lazy_static! {
     static ref DURATION_REGEX: Regex = Regex::new(r"^([0-9]+)([dhms])$").unwrap();
+    static ref DYNAMIC_QUERY_RESULTS_CACHE_PATH: PathBuf = Path::new(
+        &env::var(DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV).expect(&format!(
+            "Missing environment variable: {DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV}"
+        ))
+    )
+    .to_owned();
 }
 fn parse_duration(s: &str) -> Option<Duration> {
     DURATION_REGEX.captures(s).and_then(|cap| {
@@ -91,6 +99,7 @@ lazy_static! {
 }
 
 pub async fn dynamic_query(req: HttpRequest, res: DynamicQuery) -> Result<String, QueryError> {
+    println!("Path: {:?} ", &*DYNAMIC_QUERY_RESULTS_CACHE_PATH);
     let duration = res.cache_duration;
     let uuid = Ulid::new();
     let plan = res.plan;
