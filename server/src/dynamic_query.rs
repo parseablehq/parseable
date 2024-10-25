@@ -7,6 +7,7 @@ use futures::TryStreamExt;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
+use std::ffi::OsStr;
 use std::time::Duration;
 use std::{
     collections::BTreeMap,
@@ -43,7 +44,7 @@ pub async fn clear() -> std::io::Result<()> {
     let mut dirs = AsyncFs::read_dir(DYNAMIC_QUERY_RESULTS_CACHE_PATH.as_path()).await?;
     while let Some(entry) = dirs.next_entry().await? {
         let path = entry.path();
-        if !path.ends_with(".parquet") {
+        if path.extension() != Some(OsStr::new("parquet")) {
             continue;
         }
         total += 1;
