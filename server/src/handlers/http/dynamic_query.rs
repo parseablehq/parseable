@@ -38,28 +38,30 @@ pub struct RawDynamicQuery {
 lazy_static! {
     static ref DURATION_REGEX: Regex = Regex::new(r"^([0-9]+)([dhms])$").unwrap();
 }
-fn parse_duration(s: &str) -> Option<Duration> {
-    DURATION_REGEX.captures(s).and_then(|cap| {
-        let value = cap[1].parse::<u64>().unwrap();
-        let unit = &cap[2];
-        match unit {
-            "s" => Duration::from_secs(value).into(),
-            "m" => Duration::from_secs(value * 60).into(),
-            "h" => Duration::from_secs(value * 60 * 60).into(),
-            "d" => Duration::from_secs(value * 60 * 60 * 24).into(),
-            _ => None,
-        }
-    })
+fn parse_duration(s: &str) -> Result<Duration, QueryError> {
+    let cap = DURATION_REGEX
+        .captures(s)
+        .ok_or(QueryError::Anyhow(anyhow!("Invalid format")))?;
+    let value = cap[1].parse::<u64>().unwrap();
+    let unit = &cap[2];
+    match unit {
+        "m" => Ok(Duration::from_secs(value * 60)),
+        _ => Err(QueryError::Anyhow(anyhow!(
+            "Unrecognised duration unit: '{}'",
+            unit
+        ))),
+    }
 }
-async fn from_raw_query(raw: &RawDynamicQuery) -> DynamicQuery {
+async fn from_raw_query(raw: &RawDynamicQuery) -> Result<DynamicQuery, QueryError> {
     let session_state = QUERY_SESSION.state();
 
     // get the logical plan and extract the table name
     let raw_logical_plan = session_state.create_logical_plan(&raw.query).await.unwrap();
-    DynamicQuery {
-        cache_duration: parse_duration(&raw.cache_duration).expect("Invalid duration"),
+    let cache_duration = parse_duration(&raw.cache_duration)?;
+    Ok(DynamicQuery {
+        cache_duration,
         plan: raw_logical_plan,
-    }
+    })
 }
 impl FromRequest for DynamicQuery {
     type Error = actix_web::Error;
@@ -69,7 +71,7 @@ impl FromRequest for DynamicQuery {
         let query = Json::<RawDynamicQuery>::from_request(req, payload);
         let fut = async move {
             let query_res = query.await?.into_inner();
-            Ok(from_raw_query(&query_res).await)
+            Ok(from_raw_query(&query_res).await?)
         };
         Box::pin(fut)
     }
