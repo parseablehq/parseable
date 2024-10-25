@@ -28,7 +28,6 @@ use std::{future::Future, pin::Pin, time::Duration};
 use ulid::Ulid;
 
 const MAX_CACHE_DURATION: Duration = Duration::from_secs(60 * 60);
-const MAX_SERVER_URL_STORES: u32 = 10;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]

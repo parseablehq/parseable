@@ -1,4 +1,5 @@
 use crate::{localcache::CacheError, query::Query, response::QueryResponse};
+use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use chrono::Utc;
 use clokwerk::AsyncScheduler;
@@ -19,6 +20,7 @@ use tokio::fs as AsyncFs;
 use tokio::sync::Mutex;
 use ulid::Ulid;
 
+const MAX_SERVER_URL_STORES: usize = 10;
 const DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV: &str = "DYNAMIC_QUERY_RESULTS_CACHE_PATH";
 
 /// Query Request through http endpoint.
@@ -61,6 +63,12 @@ fn resolve_uuid_cache_path(uuid: Ulid) -> PathBuf {
 pub async fn register_query(uuid: Ulid, query: DynamicQuery) -> anyhow::Result<()> {
     AsyncFs::create_dir_all(DYNAMIC_QUERY_RESULTS_CACHE_PATH.as_path()).await?;
     let mut queries = QUERIES_BY_UUID.lock().await;
+    if queries.len() == MAX_SERVER_URL_STORES {
+        return Err(anyhow!(
+            "Total dynamic queries is over limit: {}",
+            MAX_SERVER_URL_STORES
+        ));
+    }
     queries.insert(uuid, query.clone());
     process_dynamic_query(uuid, &query).await
 }
