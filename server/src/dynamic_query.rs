@@ -32,7 +32,7 @@ lazy_static! {
     .to_owned();
 }
 
-async fn clear() -> std::io::Result<()> {
+pub async fn clear() -> std::io::Result<()> {
     log::info!("Clearing old dynamic cache files");
     let mut total: u32 = 0;
     let mut dirs = AsyncFs::read_dir(DYNAMIC_QUERY_RESULTS_CACHE_PATH.as_path()).await?;
@@ -54,7 +54,8 @@ fn resolve_uuid_cache_path(uuid: Ulid) -> PathBuf {
 
 pub async fn register_query(uuid: Ulid, query: DynamicQuery) {
     let mut queries = QUERIES_BY_UUID.lock().await;
-    queries.insert(uuid, query);
+    queries.insert(uuid, query.clone());
+    process_dynamic_query(uuid, &query).await
 }
 
 pub async fn load(uuid: Ulid) -> Result<QueryResponse, CacheError> {
@@ -104,6 +105,18 @@ async fn load_query(cache_duration: chrono::Duration, plan: LogicalPlan) -> Quer
     }
 }
 
+async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) {
+
+    log::info!("Reloading dynamic query {uuid}: {:?}", query);
+    let curr = load_query(
+        chrono::Duration::from_std(query.cache_duration).unwrap(),
+        query.plan.clone(),
+    )
+    .await;
+
+    log::info!("Reloaded dynamic query {uuid}: {}", curr.records.len());
+}
+
 pub fn init_dynamic_query_scheduler() -> anyhow::Result<()> {
     log::info!("Setting up schedular for dynamic query");
 
@@ -113,14 +126,7 @@ pub fn init_dynamic_query_scheduler() -> anyhow::Result<()> {
         .run(move || async {
             let queries = QUERIES_BY_UUID.lock().await;
             for (uuid, query) in queries.iter() {
-                log::info!("Refreshing dynamic query {uuid}: {:?}", query);
-                let curr = load_query(
-                    chrono::Duration::from_std(query.cache_duration).unwrap(),
-                    query.plan.clone(),
-                )
-                .await;
-
-                log::info!("Reloaded dynamic query {uuid}: {:?}", query);
+                process_dynamic_query(*uuid, query)  .await;
             }
         });
 

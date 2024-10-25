@@ -31,7 +31,7 @@ const MAX_CACHE_DURATION: Duration = Duration::from_secs(60 * 60);
 const MAX_SERVER_URL_STORES: u32 = 10;
 
 /// Query Request through http endpoint.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DynamicQuery {
     pub plan: LogicalPlan,
     pub cache_duration: Duration,
