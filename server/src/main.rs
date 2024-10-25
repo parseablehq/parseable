@@ -22,6 +22,7 @@ mod analytics;
 mod banner;
 mod catalog;
 mod cli;
+mod dynamic_query;
 mod event;
 mod handlers;
 mod hottier;

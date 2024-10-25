@@ -17,19 +17,16 @@
  */
 
 use crate::handlers::http::query::QueryError;
-use crate::query::{Query, QUERY_SESSION};
-use crate::response::QueryResponse;
+use crate::query::QUERY_SESSION;
 use actix_web::web::Json;
 use actix_web::{FromRequest, HttpRequest, Responder};
 use anyhow::anyhow;
-use chrono::{DateTime, Utc};
 use datafusion::logical_expr::LogicalPlan;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
-use tokio::sync::Mutex;
+use std::{future::Future, pin::Pin, time::Duration};
 use ulid::Ulid;
 
 const MAX_CACHE_DURATION: Duration = Duration::from_secs(60 * 60);
@@ -93,44 +90,9 @@ impl FromRequest for DynamicQuery {
         Box::pin(fut)
     }
 }
-
-lazy_static! {
-    static ref RESULTS_BY_UUID: Mutex<BTreeMap<Ulid, QueryResponse>> = Mutex::new(BTreeMap::new());
-}
-
-pub async fn dynamic_query(req: HttpRequest, res: DynamicQuery) -> Result<String, QueryError> {
-    println!("Path: {:?} ", &*DYNAMIC_QUERY_RESULTS_CACHE_PATH);
-    let duration = res.cache_duration;
+pub async fn dynamic_query(req: HttpRequest, query: DynamicQuery) -> Result<String, QueryError> {
     let uuid = Ulid::new();
-    let plan = res.plan;
-    let chrono_duration = chrono::Duration::from_std(duration)?;
-    let mut last_query_time: DateTime<Utc> = Utc::now() - chrono_duration;
-    tokio::spawn(async move {
-        loop {
-            let query = Query {
-                start: last_query_time,
-                end: last_query_time + chrono_duration,
-                raw_logical_plan: plan.clone(),
-                filter_tag: None,
-            };
-            last_query_time = Utc::now();
-            let table_name = query
-                .first_table_name()
-                .expect("No table name found in query");
-            let (records, fields) = query.execute(table_name.clone()).await.unwrap();
-            let response = QueryResponse {
-                records,
-                fields,
-                fill_null: false,
-                with_fields: true,
-            };
-            {
-                let mut results = RESULTS_BY_UUID.lock().await;
-                results.insert(uuid, response);
-            }
-            tokio::time::sleep(duration).await;
-        }
-    });
+    crate::dynamic_query::register_query(uuid, query).await;
     Ok(format!("{}/{}", req.uri(), uuid))
 }
 pub async fn dynamic_lookup(req: HttpRequest) -> Result<impl Responder, QueryError> {
@@ -140,10 +102,6 @@ pub async fn dynamic_lookup(req: HttpRequest) -> Result<impl Responder, QueryErr
         .ok_or_else(|| QueryError::Anyhow(anyhow!("Missing UUID")))?;
     let uuid =
         Ulid::from_string(uuid_txt).map_err(|_| QueryError::Anyhow(anyhow!("Invalid UUID")))?;
-    let results = RESULTS_BY_UUID.lock().await;
-    let raw = results
-        .get(&uuid)
-        .ok_or_else(|| QueryError::Anyhow(anyhow!("UUID not found")))?;
-
-    raw.to_http()
+    let res = crate::dynamic_query::load(uuid).await;
+    res.to_http()
 }
