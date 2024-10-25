@@ -1,7 +1,4 @@
-use crate::{
-    handlers::http::dynamic_query::DynamicQuery, localcache::CacheError, query::Query,
-    response::QueryResponse,
-};
+use crate::{localcache::CacheError, query::Query, response::QueryResponse};
 use arrow_array::RecordBatch;
 use chrono::Utc;
 use clokwerk::AsyncScheduler;
@@ -22,6 +19,14 @@ use tokio::sync::Mutex;
 use ulid::Ulid;
 
 const DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV: &str = "DYNAMIC_QUERY_RESULTS_CACHE_PATH";
+
+/// Query Request through http endpoint.
+#[derive(Debug, Clone)]
+pub struct DynamicQuery {
+    pub plan: LogicalPlan,
+    pub cache_duration: Duration,
+}
+
 lazy_static! {
     static ref QUERIES_BY_UUID: Mutex<BTreeMap<Ulid, DynamicQuery>> = Mutex::new(BTreeMap::new());
     static ref DYNAMIC_QUERY_RESULTS_CACHE_PATH: PathBuf = Path::new(
@@ -106,7 +111,6 @@ async fn load_query(cache_duration: chrono::Duration, plan: LogicalPlan) -> Quer
 }
 
 async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) {
-
     log::info!("Reloading dynamic query {uuid}: {:?}", query);
     let curr = load_query(
         chrono::Duration::from_std(query.cache_duration).unwrap(),
@@ -126,7 +130,7 @@ pub fn init_dynamic_query_scheduler() -> anyhow::Result<()> {
         .run(move || async {
             let queries = QUERIES_BY_UUID.lock().await;
             for (uuid, query) in queries.iter() {
-                process_dynamic_query(*uuid, query)  .await;
+                process_dynamic_query(*uuid, query).await;
             }
         });
 

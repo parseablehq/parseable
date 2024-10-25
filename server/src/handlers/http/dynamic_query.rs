@@ -16,12 +16,12 @@
  *
  */
 
+use crate::dynamic_query::DynamicQuery;
 use crate::handlers::http::query::QueryError;
 use crate::query::QUERY_SESSION;
 use actix_web::web::Json;
 use actix_web::{FromRequest, HttpRequest, Responder};
 use anyhow::anyhow;
-use datafusion::logical_expr::LogicalPlan;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::{future::Future, pin::Pin, time::Duration};
@@ -30,12 +30,6 @@ use ulid::Ulid;
 const MAX_CACHE_DURATION: Duration = Duration::from_secs(60 * 60);
 const MAX_SERVER_URL_STORES: u32 = 10;
 
-/// Query Request through http endpoint.
-#[derive(Debug, Clone)]
-pub struct DynamicQuery {
-    pub plan: LogicalPlan,
-    pub cache_duration: Duration,
-}
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct RawDynamicQuery {
