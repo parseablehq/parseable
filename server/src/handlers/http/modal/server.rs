@@ -589,6 +589,7 @@ impl Server {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
+        crate::dynamic_query::clear().await?;
         crate::dynamic_query::init_dynamic_query_scheduler()?;
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
