@@ -29,6 +29,7 @@ use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metrics, migration, rbac, storage};
+use actix_web::middleware::from_fn;
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use actix_web::{App, HttpServer};
@@ -74,6 +75,7 @@ impl ParseableServer for QueryServer {
             App::new()
                 .wrap(prometheus.clone())
                 .configure(|config| QueryServer::configure_routes(config, oidc_client.clone()))
+                .wrap(from_fn(health_check::check_shutdown_middleware))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())
                 .wrap(cross_origin_config())

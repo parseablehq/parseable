@@ -54,6 +54,7 @@ use crate::{
     option::CONFIG,
 };
 use actix_web::body::MessageBody;
+use actix_web::middleware::from_fn;
 use actix_web::web::resource;
 use actix_web::Scope;
 use actix_web::{web, App, HttpServer};
@@ -97,6 +98,7 @@ impl ParseableServer for IngestServer {
             App::new()
                 .wrap(prometheus.clone())
                 .configure(|config| IngestServer::configure_routes(config, None))
+                .wrap(from_fn(health_check::check_shutdown_middleware))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())
                 .wrap(cross_origin_config())
