@@ -38,6 +38,7 @@ use crate::storage;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
+use actix_web::middleware::from_fn;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
@@ -89,6 +90,7 @@ impl ParseableServer for Server {
             App::new()
                 .wrap(prometheus.clone())
                 .configure(|cfg| Server::configure_routes(cfg, oidc_client.clone()))
+                .wrap(from_fn(health_check::check_shutdown_middleware))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())
                 .wrap(cross_origin_config())
