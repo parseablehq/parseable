@@ -24,14 +24,11 @@ use anyhow::anyhow;
 use datafusion::logical_expr::LogicalPlan;
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::env;
-use std::path::{Path, PathBuf};
 use std::{future::Future, pin::Pin, time::Duration};
 use ulid::Ulid;
 
 const MAX_CACHE_DURATION: Duration = Duration::from_secs(60 * 60);
 const MAX_SERVER_URL_STORES: u32 = 10;
-const DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV: &str = "DYNAMIC_QUERY_RESULTS_CACHE_PATH";
 
 /// Query Request through http endpoint.
 #[derive(Debug)]
@@ -47,12 +44,6 @@ pub struct RawDynamicQuery {
 }
 lazy_static! {
     static ref DURATION_REGEX: Regex = Regex::new(r"^([0-9]+)([dhms])$").unwrap();
-    static ref DYNAMIC_QUERY_RESULTS_CACHE_PATH: PathBuf = Path::new(
-        &env::var(DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV).expect(&format!(
-            "Missing environment variable: {DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV}"
-        ))
-    )
-    .to_owned();
 }
 fn parse_duration(s: &str) -> Option<Duration> {
     DURATION_REGEX.captures(s).and_then(|cap| {
@@ -102,6 +93,6 @@ pub async fn dynamic_lookup(req: HttpRequest) -> Result<impl Responder, QueryErr
         .ok_or_else(|| QueryError::Anyhow(anyhow!("Missing UUID")))?;
     let uuid =
         Ulid::from_string(uuid_txt).map_err(|_| QueryError::Anyhow(anyhow!("Invalid UUID")))?;
-    let res = crate::dynamic_query::load(uuid).await;
+    let res = crate::dynamic_query::load(uuid).await?;
     res.to_http()
 }
