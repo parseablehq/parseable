@@ -27,11 +27,10 @@ use lazy_static::lazy_static;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{oneshot, Mutex};
-use tokio::time::{sleep, Duration};
 
 // Create a global variable to store signal status
 lazy_static! {
-    static ref SIGNAL_RECEIVED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    pub static ref SIGNAL_RECEIVED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
 }
 
 pub async fn liveness() -> HttpResponse {
@@ -66,23 +65,13 @@ pub async fn handle_signals(shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()
             let mut shutdown_flag = SIGNAL_RECEIVED.lock().await;
             *shutdown_flag = true;
 
+            // Sync to local
+            crate::event::STREAM_WRITERS.unset_all();
+
             // Trigger graceful shutdown
             if let Some(shutdown_sender) = shutdown_signal.lock().await.take() {
                 let _ = shutdown_sender.send(());
             }
-
-            // Delay to allow readiness probe to return SERVICE_UNAVAILABLE
-            let _ = sleep(Duration::from_secs(20)).await;
-
-            // Sync to local
-            crate::event::STREAM_WRITERS.unset_all();
-
-            // Sync to S3
-            if let Err(e) = CONFIG.storage().get_object_store().sync().await {
-                log::warn!("Failed to sync local data with object store. {:?}", e);
-            }
-
-            log::info!("Local and S3 Sync done, handler SIGTERM completed.");
         }
         None => {
             log::info!("Signal handler received None, indicating an error or end of stream");

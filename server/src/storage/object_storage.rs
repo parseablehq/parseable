@@ -426,7 +426,7 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
-    async fn sync(&self) -> Result<(), ObjectStorageError> {
+    async fn sync(&self, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
         if !Path::new(&CONFIG.staging_dir()).exists() {
             return Ok(());
         }
@@ -452,6 +452,7 @@ pub trait ObjectStorage: Sync + 'static {
                 &dir,
                 time_partition,
                 custom_partition.clone(),
+                shutdown_signal,
             )
             .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
@@ -463,14 +464,15 @@ pub trait ObjectStorage: Sync + 'static {
                     commit_schema_to_storage(stream, schema).await?;
                 }
             }
-            let parquet_files = dir.parquet_files();
 
+            let parquet_files = dir.parquet_files();
             for file in parquet_files {
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")
                     .to_str()
                     .expect("filename is valid string");
+
                 let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
                 file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
                 let compressed_size = file.metadata().map_or(0, |meta| meta.len());
@@ -493,8 +495,15 @@ pub trait ObjectStorage: Sync + 'static {
                     file_suffix =
                         str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
                 }
+
                 let stream_relative_path = format!("{stream}/{file_suffix}");
-                self.upload_file(&stream_relative_path, &file).await?;
+
+                // Try uploading the file, handle potential errors without breaking the loop
+                if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
+                    log::error!("Failed to upload file {}: {:?}", filename, e);
+                    continue; // Skip to the next file
+                }
+
                 let absolute_path = self
                     .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
                     .to_string();
@@ -513,6 +522,7 @@ pub trait ObjectStorage: Sync + 'static {
             }
         }
 
+        // Cache management logic
         if let Some(manager) = cache_manager {
             let cache_updates = cache_updates
                 .into_iter()
@@ -522,10 +532,12 @@ pub trait ObjectStorage: Sync + 'static {
             tokio::spawn(async move {
                 for (stream, files) in cache_updates {
                     for (storage_path, file) in files {
-                        manager
+                        if let Err(e) = manager
                             .move_to_cache(&stream, storage_path, file.to_owned())
                             .await
-                            .unwrap()
+                        {
+                            log::error!("Failed to move file to cache: {:?}", e);
+                        }
                     }
                 }
             });
