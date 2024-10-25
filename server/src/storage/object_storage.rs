@@ -473,9 +473,6 @@ pub trait ObjectStorage: Sync + 'static {
                     .to_str()
                     .expect("filename is valid string");
 
-                // Log the filename being processed
-                log::debug!("Processing file: {}", filename);
-
                 let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
                 file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
                 let compressed_size = file.metadata().map_or(0, |meta| meta.len());
