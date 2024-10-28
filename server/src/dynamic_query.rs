@@ -1,4 +1,5 @@
-use crate::{localcache::CacheError, query::Query, response::QueryResponse};
+use crate::handlers::http::query::QueryError;
+use crate::{query::Query, response::QueryResponse};
 use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use chrono::Utc;
@@ -8,14 +9,12 @@ use futures::TryStreamExt;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
+use parquet::errors::ParquetError;
 use std::ffi::OsStr;
+use std::io;
+use std::str::FromStr;
 use std::time::Duration;
-use std::{
-    collections::BTreeMap,
-    env,
-    path::{Path, PathBuf},
-    u32,
-};
+use std::{collections::BTreeMap, env, path::PathBuf, u32};
 use tokio::fs as AsyncFs;
 use tokio::sync::Mutex;
 use ulid::Ulid;
@@ -29,59 +28,80 @@ pub struct DynamicQuery {
     pub plan: LogicalPlan,
     pub cache_duration: Duration,
 }
-
-lazy_static! {
-    static ref QUERIES_BY_UUID: Mutex<BTreeMap<Ulid, DynamicQuery>> = Mutex::new(BTreeMap::new());
-    static ref DYNAMIC_QUERY_RESULTS_CACHE_PATH: PathBuf = Path::new(
-        &env::var(DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV).expect(&format!(
-            "Missing environment variable: {DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV}"
-        ))
-    )
-    .to_owned();
+fn load_env(name: &str) -> Result<String, QueryError> {
+    env::var(name).map_err(|_| QueryError::Anyhow(anyhow!("Missing environment variable: {name}")))
 }
 
-pub async fn clear() -> std::io::Result<()> {
-    log::info!("Clearing old dynamic cache files");
-    let mut total: u32 = 0;
-    let mut dirs = AsyncFs::read_dir(DYNAMIC_QUERY_RESULTS_CACHE_PATH.as_path()).await?;
-    while let Some(entry) = dirs.next_entry().await? {
-        let path = entry.path();
-        if path.extension() != Some(OsStr::new("parquet")) {
-            continue;
+fn parquet_to_err(err: ParquetError) -> QueryError {
+    QueryError::Anyhow(anyhow!("Parquet error: {err}"))
+}
+fn io_to_err(err: io::Error) -> QueryError {
+    QueryError::Anyhow(anyhow!("IO error: {err}"))
+}
+fn load_env_path(name: &str) -> Result<PathBuf, QueryError> {
+    let txt = load_env(name)?;
+    PathBuf::from_str(txt.as_str())
+        .map_err(|path_err| QueryError::Anyhow(anyhow!("Path parse error: {path_err}")))
+}
+lazy_static! {
+    static ref QUERIES_BY_UUID: Mutex<BTreeMap<Ulid, DynamicQuery>> = Mutex::new(BTreeMap::new());
+}
+
+pub async fn clear() -> anyhow::Result<()> {
+    if let Ok(cache_path) = load_env_path(DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV) {
+        log::info!("Clearing old dynamic cache files");
+        let mut total: u32 = 0;
+        let mut dirs = AsyncFs::read_dir(cache_path).await?;
+        while let Some(entry) = dirs.next_entry().await? {
+            let path = entry.path();
+            if path.extension() != Some(OsStr::new("parquet")) {
+                continue;
+            }
+            total += 1;
+            AsyncFs::remove_file(path).await?;
         }
-        total += 1;
-        AsyncFs::remove_file(path).await?;
+        log::info!("Cleared old dynamic cache files: {}", total);
+    } else {
+        log::warn!("No env var found for {DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV}");
     }
-    log::info!("Cleared old dynamic cache files: {}", total);
     Ok(())
 }
 
-fn resolve_uuid_cache_path(uuid: Ulid) -> PathBuf {
-    DYNAMIC_QUERY_RESULTS_CACHE_PATH.join(format!("{}.parquet", uuid))
+fn resolve_uuid_cache_path(uuid: Ulid) -> Result<PathBuf, QueryError> {
+    let curr = load_env_path(DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV)?;
+    Ok(curr.join(format!("{}.parquet", uuid)))
 }
 
-pub async fn register_query(uuid: Ulid, query: DynamicQuery) -> anyhow::Result<()> {
-    AsyncFs::create_dir_all(DYNAMIC_QUERY_RESULTS_CACHE_PATH.as_path()).await?;
+pub async fn register_query(uuid: Ulid, query: DynamicQuery) -> Result<(), QueryError> {
+    let cache_path = load_env_path(DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV)?;
+    AsyncFs::create_dir_all(cache_path)
+        .await
+        .map_err(io_to_err)?;
     let mut queries = QUERIES_BY_UUID.lock().await;
     if queries.len() == MAX_SERVER_URL_STORES {
-        return Err(anyhow!(
+        return Err(QueryError::Anyhow(anyhow!(
             "Total dynamic queries is over limit: {}",
             MAX_SERVER_URL_STORES
-        ));
+        )));
     }
     queries.insert(uuid, query.clone());
     process_dynamic_query(uuid, &query).await
 }
 
-pub async fn load(uuid: Ulid) -> Result<QueryResponse, CacheError> {
-    let path = resolve_uuid_cache_path(uuid);
+pub async fn load(uuid: Ulid) -> anyhow::Result<QueryResponse, QueryError> {
+    let path = resolve_uuid_cache_path(uuid)?;
 
-    let file = AsyncFs::File::open(path).await?;
-    let builder = ParquetRecordBatchStreamBuilder::new(file).await?;
+    let file = AsyncFs::File::open(path).await.map_err(io_to_err)?;
+    let builder = ParquetRecordBatchStreamBuilder::new(file)
+        .await
+        .map_err(parquet_to_err)?;
     // Build a async parquet reader.
-    let stream = builder.build()?;
+    let stream = builder.build().map_err(parquet_to_err)?;
 
-    let records = stream.try_collect::<Vec<RecordBatch>>().await?;
+    let records = stream
+        .try_collect::<Vec<RecordBatch>>()
+        .await
+        .map_err(parquet_to_err)?;
     let fields = records.first().map_or_else(Vec::new, |record| {
         record
             .schema()
@@ -120,7 +140,7 @@ async fn load_query(cache_duration: chrono::Duration, plan: LogicalPlan) -> Quer
     }
 }
 
-async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) -> anyhow::Result<()> {
+async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) -> Result<(), QueryError> {
     log::info!("Reloading dynamic query {uuid}: {:?}", query);
     let curr = load_query(
         chrono::Duration::from_std(query.cache_duration).unwrap(),
@@ -128,7 +148,10 @@ async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) -> anyhow::Resu
     )
     .await;
 
-    let parquet_file = AsyncFs::File::create(resolve_uuid_cache_path(uuid)).await?;
+    let cached_path = resolve_uuid_cache_path(uuid)?;
+    let parquet_file = AsyncFs::File::create(cached_path)
+        .await
+        .map_err(io_to_err)?;
 
     let sch = if let Some(record) = curr.records.first() {
         record.schema()
@@ -137,7 +160,8 @@ async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) -> anyhow::Resu
         return Ok(());
     };
 
-    let mut arrow_writer = AsyncArrowWriter::try_new(parquet_file, sch, None)?;
+    let mut arrow_writer =
+        AsyncArrowWriter::try_new(parquet_file, sch, None).map_err(parquet_to_err)?;
 
     for record in curr.records.iter().as_ref() {
         if let Err(e) = arrow_writer.write(record).await {
@@ -145,7 +169,7 @@ async fn process_dynamic_query(uuid: Ulid, query: &DynamicQuery) -> anyhow::Resu
         }
     }
 
-    arrow_writer.close().await?;
+    arrow_writer.close().await.map_err(parquet_to_err)?;
     log::info!("Reloaded dynamic query {uuid}: {}", curr.records.len());
     Ok(())
 }
