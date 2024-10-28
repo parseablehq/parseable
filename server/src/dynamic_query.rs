@@ -17,6 +17,7 @@ use std::time::Duration;
 use std::{collections::BTreeMap, env, path::PathBuf, u32};
 use tokio::fs as AsyncFs;
 use tokio::sync::Mutex;
+use tokio::task;
 use ulid::Ulid;
 
 const MAX_SERVER_URL_STORES: usize = 10;
@@ -85,7 +86,13 @@ pub async fn register_query(uuid: Ulid, query: DynamicQuery) -> Result<(), Query
         )));
     }
     queries.insert(uuid, query.clone());
-    process_dynamic_query(uuid, &query).await
+
+    task::spawn(async move {
+        log::info!("Fetching initial dynamic query: {uuid}");
+        process_dynamic_query(uuid, &query).await.unwrap();
+        log::info!("Fetched initial dynamic query: {uuid}");
+    });
+    Ok(())
 }
 
 pub async fn load(uuid: Ulid) -> anyhow::Result<QueryResponse, QueryError> {
