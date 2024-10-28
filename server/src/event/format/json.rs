@@ -71,9 +71,7 @@ impl EventFormat for Event {
                 Ok(mut infer_schema) => {
                     let new_infer_schema = super::super::format::update_field_type_in_schema(
                         Arc::new(infer_schema),
-                        Some(&stream_schema),
                         time_partition,
-                        Some(&value_arr),
                     );
                     infer_schema = Schema::new(new_infer_schema.fields().clone());
                     if let Err(err) = Schema::try_merge(vec![
