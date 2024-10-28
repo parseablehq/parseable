@@ -93,7 +93,7 @@ pub async fn list(_: HttpRequest) -> impl Responder {
 
 pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
     let body_val: Value = serde_json::from_slice(&body)?;
-    let value_arr: Vec<Value> = match body_val {
+    let log_records: Vec<Value> = match body_val {
         Value::Array(arr) => arr,
         value @ Value::Object(_) => vec![value],
         _ => {
@@ -104,9 +104,9 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
         }
     };
 
-    let mut schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok)).unwrap();
-    for value in value_arr {
-        schema = update_data_type_to_datetime(schema, value);
+    let mut schema = infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap();
+    for log_record in log_records {
+        schema = update_data_type_to_datetime(schema, log_record, Vec::new());
     }
     Ok((web::Json(schema), StatusCode::OK))
 }

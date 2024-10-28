@@ -104,7 +104,7 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 - [Alerts ↗︎](https://www.parseable.io/docs/alerts)
 - [Role based access control ↗︎](https://www.parseable.io/docs/rbac)
 - [OAuth2 support ↗︎](https://www.parseable.io/docs/oidc)
-- [LLM integration ↗︎](https://www.parseable.io/docs/llm)
+- [LLM integration ↗︎](https://www.parseable.com/docs/integrations/llm-based-sql-generation)
 - [OpenTelemetry support ↗︎](https://www.parseable.com/docs/opentelemetry)
 
 ## How do people use Parseable :bulb:
