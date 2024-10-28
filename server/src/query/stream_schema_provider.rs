@@ -237,12 +237,24 @@ fn partitioned_files(
         // object_store::path::Path doesn't automatically deal with Windows path separators
         // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
         // before sending the file path to PartitionedFile
-        let pf = if CONFIG.storage_name.eq("drive") {
-            let file_path = object_store::path::Path::from_absolute_path(file_path).unwrap();
-            PartitionedFile::new(file_path, file.file_size)
-        } else {
-            PartitionedFile::new(file_path, file.file_size)
-        };
+        // the github issue- https://github.com/parseablehq/parseable/issues/824
+        // For some reason, the `from_absolute_path()` doesn't work for macos, hence the ugly solution
+        // TODO: figure out an elegant solution to this
+        let pf;
+
+        #[cfg(unix)]
+        {
+            pf = PartitionedFile::new(file_path, file.file_size);
+        }
+        #[cfg(windows)]
+        {
+            pf = if CONFIG.storage_name.eq("drive") {
+                let file_path = object_store::path::Path::from_absolute_path(file_path).unwrap();
+                PartitionedFile::new(file_path, file.file_size)
+            } else {
+                PartitionedFile::new(file_path, file.file_size)
+            };
+        }
 
         partitioned_files[index].push(pf);
         columns.into_iter().for_each(|col| {
