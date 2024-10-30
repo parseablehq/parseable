@@ -9,7 +9,8 @@ use clokwerk::AsyncScheduler;
 use datafusion::arrow::datatypes::ToByteSlice;
 use datafusion::common::{Column, DFSchema};
 use datafusion::logical_expr::{
-    Aggregate, CrossJoin, Join, Limit, LogicalPlan, Projection, RecursiveQuery, Subquery, SubqueryAlias, TableScan, Union, Unnest,
+    Aggregate, CrossJoin, Join, Limit, LogicalPlan, Projection, RecursiveQuery, Subquery,
+    SubqueryAlias, TableScan, Union, Unnest,
 };
 use datafusion::prelude::Expr;
 use datafusion_proto::bytes::{logical_plan_from_bytes, logical_plan_to_bytes, Serializeable};
@@ -19,7 +20,9 @@ use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
 use parquet::errors::ParquetError;
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -81,189 +84,194 @@ where
 
     Ok(())
 }
-async fn write_logical_plan<W>(plan: &LogicalPlan, writer: &mut W) -> io::Result<()>
+fn write_logical_plan<'a, W>(
+    plan: &'a LogicalPlan,
+    writer: &'a mut W,
+) -> Pin<Box<dyn Future<Output = io::Result<()>> + 'a>>
 where
     W: AsyncIo::AsyncWrite + AsyncIo::AsyncWriteExt + Unpin,
 {
-    match plan {
-        LogicalPlan::Aggregate(Aggregate {
-            aggr_expr,
-            group_expr,
-            input,
-            schema,
-            ..
-        }) => {
-            writer.write_u8(0).await?;
-            write_exprs(&aggr_expr, writer).await?;
-            write_exprs(&group_expr, writer).await?;
-            Box::pin(write_logical_plan(input, writer)).await?;
-            write_schema(&schema, writer).await?;
-        }
-        LogicalPlan::Analyze(_) => unimplemented!(),
-        LogicalPlan::Copy(_) => unimplemented!(),
-        LogicalPlan::CrossJoin(CrossJoin {
-            left,
-            right,
-            schema,
-        }) => {
-            writer.write_u8(3).await?;
-            Box::pin(write_logical_plan(&left, writer)).await?;
-            Box::pin(write_logical_plan(&right, writer)).await?;
-        }
-        LogicalPlan::Ddl(_) => unimplemented!(),
-        LogicalPlan::DescribeTable(_) => unimplemented!(),
-        LogicalPlan::Distinct(d) => {
-            writer.write_u8(6).await?;
-            Box::pin(write_logical_plan(d.input(), writer)).await?;
-        }
-        LogicalPlan::Dml(_) => unimplemented!(),
-        LogicalPlan::EmptyRelation(v) => writer.write_u8(8).await?,
-        LogicalPlan::Explain(_) => unimplemented!(),
-        LogicalPlan::Extension(_) => unimplemented!(),
-        LogicalPlan::Filter(f) => {
-            writer.write_u8(11).await?;
-            Box::pin(write_logical_plan(&f.input, writer)).await?;
-            writer.write(&f.predicate.to_bytes().unwrap()).await?;
-        }
-        LogicalPlan::Join(Join {
-            filter,
-            join_constraint,
-            join_type,
-            left,
-            right,
-            null_equals_null,
-            on,
-            schema,
-            ..
-        }) => {
-            writer.write_u8(12).await?;
-            write_schema(schema, writer).await?;
-            write_opt_exprs(filter.as_ref(), writer).await?;
-            write_bool(*null_equals_null, writer).await?;
-
-            Box::pin(write_logical_plan(&left, writer)).await?;
-            Box::pin(write_logical_plan(&right, writer)).await?;
-
-            writer.write_u8(on.len() as u8).await?;
-            for (a, b) in on {
-                write_expr_refs(&[a, b], writer).await?;
+    Box::pin(async move {
+        match plan {
+            LogicalPlan::Aggregate(Aggregate {
+                aggr_expr,
+                group_expr,
+                input,
+                schema,
+                ..
+            }) => {
+                writer.write_u8(0).await?;
+                write_exprs(&aggr_expr, writer).await?;
+                write_exprs(&group_expr, writer).await?;
+                write_logical_plan(input, writer).await?;
+                write_schema(&schema, writer).await?;
             }
-        }
-        LogicalPlan::Limit(Limit { fetch, input, skip }) => {
-            writer.write_u8(13).await?;
-            match fetch {
-                None => writer.write_u8(0).await?,
-                Some(v) => {
-                    writer.write_u8(1).await?;
-                    writer.write_u64(*v as u64).await?;
+            LogicalPlan::Analyze(_) => unimplemented!(),
+            LogicalPlan::Copy(_) => unimplemented!(),
+            LogicalPlan::CrossJoin(CrossJoin {
+                left,
+                right,
+                schema,
+            }) => {
+                writer.write_u8(3).await?;
+                write_logical_plan(&left, writer).await?;
+                write_logical_plan(&right, writer).await?;
+            }
+            LogicalPlan::Ddl(_) => unimplemented!(),
+            LogicalPlan::DescribeTable(_) => unimplemented!(),
+            LogicalPlan::Distinct(d) => {
+                writer.write_u8(6).await?;
+                write_logical_plan(d.input(), writer).await?;
+            }
+            LogicalPlan::Dml(_) => unimplemented!(),
+            LogicalPlan::EmptyRelation(v) => writer.write_u8(8).await?,
+            LogicalPlan::Explain(_) => unimplemented!(),
+            LogicalPlan::Extension(_) => unimplemented!(),
+            LogicalPlan::Filter(f) => {
+                writer.write_u8(11).await?;
+                write_logical_plan(&f.input, writer).await?;
+                writer.write(&f.predicate.to_bytes().unwrap()).await?;
+            }
+            LogicalPlan::Join(Join {
+                filter,
+                join_constraint,
+                join_type,
+                left,
+                right,
+                null_equals_null,
+                on,
+                schema,
+                ..
+            }) => {
+                writer.write_u8(12).await?;
+                write_schema(schema, writer).await?;
+                write_opt_exprs(filter.as_ref(), writer).await?;
+                write_bool(*null_equals_null, writer).await?;
+
+                write_logical_plan(&left, writer).await?;
+                write_logical_plan(&right, writer).await?;
+
+                writer.write_u8(on.len() as u8).await?;
+                for (a, b) in on {
+                    write_expr_refs(&[a, b], writer).await?;
                 }
             }
-            Box::pin(write_logical_plan(&input, writer)).await?;
-            writer.write_u64(*skip as u64).await?;
-        }
-        LogicalPlan::Prepare(_) => unimplemented!(),
-        LogicalPlan::Projection(Projection {
-            expr,
-            input,
-            schema,
-            ..
-        }) => {
-            writer.write_u8(14).await?;
-            write_expr_refs(&expr.iter().collect::<Vec<&Expr>>(), writer).await?;
-            Box::pin(write_logical_plan(&input, writer)).await?;
-            write_schema(&schema, writer).await?;
-        }
-        LogicalPlan::RecursiveQuery(RecursiveQuery {
-            is_distinct,
-            name,
-            recursive_term,
-            static_term,
-        }) => {
-            writer.write_u8(15).await?;
-
-            write_bool(*is_distinct, writer).await?;
-            write_str(&name, writer).await?;
-            Box::pin(write_logical_plan(&recursive_term, writer)).await?;
-            Box::pin(write_logical_plan(&static_term, writer)).await?;
-        }
-        LogicalPlan::Repartition(_) => unimplemented!(),
-        LogicalPlan::Sort(s) => {
-            writer.write_u8(17).await?;
-            Box::pin(write_logical_plan(&s.input, writer)).await?;
-            match s.fetch {
-                None => writer.write_u8(0).await?,
-                Some(v) => {
-                    writer.write_u8(1).await?;
-                    writer.write_u64(v as u64).await?;
+            LogicalPlan::Limit(Limit { fetch, input, skip }) => {
+                writer.write_u8(13).await?;
+                match fetch {
+                    None => writer.write_u8(0).await?,
+                    Some(v) => {
+                        writer.write_u8(1).await?;
+                        writer.write_u64(*v as u64).await?;
+                    }
                 }
-            };
-        }
-        LogicalPlan::Statement(stmt) => {
-            writer.write_u8(18).await?;
-            write_str(stmt.name(), writer).await?;
-            write_schema(stmt.schema(), writer).await?;
-        }
-        LogicalPlan::Subquery(Subquery {
-            outer_ref_columns,
-            subquery,
-        }) => {
-            writer.write_u8(19).await?;
-            Box::pin(write_logical_plan(&subquery, writer).await?);
-            write_expr_refs(&outer_ref_columns.iter().collect::<Vec<&Expr>>(), writer).await?;
-        }
-        LogicalPlan::SubqueryAlias(SubqueryAlias {
-            alias,
-            input,
-            schema,
-            ..
-        }) => {
-            writer.write_u8(20).await?;
-            Box::pin(write_logical_plan(&input, writer).await?);
-            write_schema(&schema, writer).await?;
-            write_str(alias.table(), writer).await?;
-        }
-        LogicalPlan::TableScan(TableScan {
-            fetch,
-            filters,
-            projected_schema,
-            projection,
-            source,
-            table_name,
-        }) => {
-            writer.write_u8(21).await?;
-        }
-        LogicalPlan::Union(Union { inputs, schema }) => {
-            writer.write_u8(22).await?;
-            writer.write_u32(inputs.len() as u32).await?;
-            for input in inputs {
-                Box::pin(write_logical_plan(input, writer)).await?;
+                write_logical_plan(&input, writer).await?;
+                writer.write_u64(*skip as u64).await?;
             }
-            write_schema(schema, writer).await?;
-        }
-        LogicalPlan::Unnest(Unnest {
-            struct_type_columns,
-            dependency_indices,
-            exec_columns,
-            input,
-            list_type_columns,
-            options,
-            schema,
-        }) => {
-            writer.write_u8(23).await?;
-            write_schema(schema, writer).await?;
-        }
-        LogicalPlan::Values(vals) => {
-            writer.write_u8(24).await?;
-            write_schema(&vals.schema, writer).await?;
-        }
-        LogicalPlan::Window(w) => {
-            writer.write_u8(25).await?;
-            Box::pin(write_logical_plan(&w.input, writer)).await?;
-            write_exprs(&w.window_expr, writer).await?;
-            write_schema(&w.schema, writer).await?;
-        }
-    };
-    Ok(())
+            LogicalPlan::Prepare(_) => unimplemented!(),
+            LogicalPlan::Projection(Projection {
+                expr,
+                input,
+                schema,
+                ..
+            }) => {
+                writer.write_u8(14).await?;
+                write_expr_refs(&expr.iter().collect::<Vec<&Expr>>(), writer).await?;
+                write_logical_plan(&input, writer).await?;
+                write_schema(&schema, writer).await?;
+            }
+            LogicalPlan::RecursiveQuery(RecursiveQuery {
+                is_distinct,
+                name,
+                recursive_term,
+                static_term,
+            }) => {
+                writer.write_u8(15).await?;
+
+                write_bool(*is_distinct, writer).await?;
+                write_str(&name, writer).await?;
+                write_logical_plan(&recursive_term, writer).await?;
+                write_logical_plan(&static_term, writer).await?;
+            }
+            LogicalPlan::Repartition(_) => unimplemented!(),
+            LogicalPlan::Sort(s) => {
+                writer.write_u8(17).await?;
+                write_logical_plan(&s.input, writer).await?;
+                match s.fetch {
+                    None => writer.write_u8(0).await?,
+                    Some(v) => {
+                        writer.write_u8(1).await?;
+                        writer.write_u64(v as u64).await?;
+                    }
+                };
+            }
+            LogicalPlan::Statement(stmt) => {
+                writer.write_u8(18).await?;
+                write_str(stmt.name(), writer).await?;
+                write_schema(stmt.schema(), writer).await?;
+            }
+            LogicalPlan::Subquery(Subquery {
+                outer_ref_columns,
+                subquery,
+            }) => {
+                writer.write_u8(19).await?;
+                write_logical_plan(&subquery, writer).await?;
+                write_expr_refs(&outer_ref_columns.iter().collect::<Vec<&Expr>>(), writer).await?;
+            }
+            LogicalPlan::SubqueryAlias(SubqueryAlias {
+                alias,
+                input,
+                schema,
+                ..
+            }) => {
+                writer.write_u8(20).await?;
+                write_logical_plan(&input, writer).await?;
+                write_schema(&schema, writer).await?;
+                write_str(alias.table(), writer).await?;
+            }
+            LogicalPlan::TableScan(TableScan {
+                fetch,
+                filters,
+                projected_schema,
+                projection,
+                source,
+                table_name,
+            }) => {
+                writer.write_u8(21).await?;
+            }
+            LogicalPlan::Union(Union { inputs, schema }) => {
+                writer.write_u8(22).await?;
+                writer.write_u32(inputs.len() as u32).await?;
+                for input in inputs {
+                    write_logical_plan(input, writer).await?;
+                }
+                write_schema(schema, writer).await?;
+            }
+            LogicalPlan::Unnest(Unnest {
+                struct_type_columns,
+                dependency_indices,
+                exec_columns,
+                input,
+                list_type_columns,
+                options,
+                schema,
+            }) => {
+                writer.write_u8(23).await?;
+                write_schema(schema, writer).await?;
+            }
+            LogicalPlan::Values(vals) => {
+                writer.write_u8(24).await?;
+                write_schema(&vals.schema, writer).await?;
+            }
+            LogicalPlan::Window(w) => {
+                writer.write_u8(25).await?;
+                write_logical_plan(&w.input, writer).await?;
+                write_exprs(&w.window_expr, writer).await?;
+                write_schema(&w.schema, writer).await?;
+            }
+        };
+        Ok(())
+    })
 }
 const MAX_SERVER_URL_STORES: usize = 10;
 const DYNAMIC_QUERY_RESULTS_CACHE_PATH_ENV: &str = "DYNAMIC_QUERY_RESULTS_CACHE_PATH";
