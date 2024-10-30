@@ -94,6 +94,24 @@ async fn logical_plan_to_bytes(plan: &LogicalPlan) -> io::Result<Bytes> {
 
     Ok(cursor.get_ref().to_vec().into())
 }
+
+async fn write_opt<T, W, F>(
+    opt: Option<&T>,
+    writer: &mut W,
+    write_some: impl Fn(&T) -> F,
+) -> io::Result<()>
+where
+    W: AsyncIo::AsyncWrite + AsyncIo::AsyncWriteExt + Unpin,
+    F: Future<Output = io::Result<()>>,
+{
+    if let Some(val) = opt {
+        writer.write_u8(1).await?;
+        write_some(val).await?;
+    } else {
+        writer.write_u8(0).await?;
+    };
+    Ok(())
+}
 fn write_logical_plan<'a, W>(
     plan: &'a LogicalPlan,
     writer: &'a mut W,
@@ -126,6 +144,7 @@ where
                 writer.write_u8(3).await?;
                 write_logical_plan(&left, writer).await?;
                 write_logical_plan(&right, writer).await?;
+                write_schema(&schema, writer).await?;
             }
             LogicalPlan::Ddl(_) => unimplemented!(),
             LogicalPlan::DescribeTable(_) => unimplemented!(),
@@ -261,6 +280,10 @@ where
                 table_name,
             }) => {
                 writer.write_u8(21).await?;
+                write_opt(fetch.as_ref(), writer, |f| writer.write_u64(*f as u64));
+                write_str(&table_name.table(), writer).await?;
+                write_exprs(filters.as_ref(), writer).await?;
+                write_schema(&projected_schema, writer).await?;
             }
             LogicalPlan::Union(Union { inputs, schema }) => {
                 writer.write_u8(22).await?;
