@@ -4,6 +4,7 @@ use crate::{query::Query, response::QueryResponse};
 use anyhow::anyhow;
 use arrow_array::{ArrayRef, RecordBatch, StringArray, UInt32Array};
 use arrow_schema::{Field, Fields, Schema};
+use bytes::Bytes;
 use chrono::Utc;
 use clokwerk::AsyncScheduler;
 use datafusion::arrow::datatypes::ToByteSlice;
@@ -13,7 +14,7 @@ use datafusion::logical_expr::{
     SubqueryAlias, TableScan, Union, Unnest,
 };
 use datafusion::prelude::Expr;
-use datafusion_proto::bytes::{logical_plan_from_bytes, logical_plan_to_bytes, Serializeable};
+use datafusion_proto::bytes::{logical_plan_from_bytes, Serializeable};
 use futures::{TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use parquet::arrow::{AsyncArrowWriter, ParquetRecordBatchStreamBuilder};
@@ -21,6 +22,7 @@ use parquet::errors::ParquetError;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::future::Future;
+use std::io::Cursor;
 use std::path::Path;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -83,6 +85,14 @@ where
     }
 
     Ok(())
+}
+
+async fn logical_plan_to_bytes(plan: &LogicalPlan) -> io::Result<Bytes> {
+    let bytes = Vec::<u8>::with_capacity(8);
+    let mut cursor = Cursor::new(bytes);
+    write_logical_plan(plan, &mut cursor).await?;
+
+    Ok(cursor.get_ref().to_vec().into())
 }
 fn write_logical_plan<'a, W>(
     plan: &'a LogicalPlan,
@@ -357,7 +367,10 @@ pub async fn register_query(uuid: Ulid, query: DynamicQuery) -> Result<(), Query
             MAX_SERVER_URL_STORES
         )));
     }
-    let plan_bytes = logical_plan_to_bytes(&query.plan)?;
+
+    let plan_bytes = logical_plan_to_bytes(&query.plan)
+        .await
+        .map_err(io_to_err)?;
     let plan_parquet_file = AsyncFs::File::create(&curr_plan_path)
         .await
         .map_err(io_to_err)?;
