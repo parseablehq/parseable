@@ -8,7 +8,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use clokwerk::AsyncScheduler;
 use datafusion::arrow::datatypes::ToByteSlice;
-use datafusion::common::{Column, DFSchema};
+use datafusion::common::{Column, DFSchema, JoinConstraint, JoinType};
 use datafusion::logical_expr::{
     Aggregate, CrossJoin, Join, Limit, LogicalPlan, Projection, RecursiveQuery, Subquery,
     SubqueryAlias, TableScan, Union, Unnest,
@@ -154,6 +154,19 @@ where
                 ..
             }) => {
                 writer.write_u8(12).await?;
+                write_bool(*join_constraint == JoinConstraint::On, writer).await?;
+                writer
+                    .write_u8(match *join_type {
+                        JoinType::Full => 0,
+                        JoinType::Inner => 1,
+                        JoinType::Left => 2,
+                        JoinType::LeftAnti => 3,
+                        JoinType::LeftSemi => 4,
+                        JoinType::Right => 5,
+                        JoinType::RightAnti => 6,
+                        JoinType::RightSemi => 7,
+                    })
+                    .await?;
                 write_schema(schema, writer).await?;
                 write_opt_exprs(filter.as_ref(), writer).await?;
                 write_bool(*null_equals_null, writer).await?;
@@ -391,9 +404,7 @@ pub async fn register_query(uuid: Ulid, query: DynamicQuery) -> Result<(), Query
 
     let mut arrow_writer =
         AsyncArrowWriter::try_new(plan_parquet_file, sch, None).map_err(parquet_to_err)?;
-    let a: ArrayRef = Arc::new(UInt8Array::from(vec![
-        query.cache_duration.as_secs() as u8
-    ]));
+    let a: ArrayRef = Arc::new(UInt8Array::from(vec![query.cache_duration.as_secs() as u8]));
     let b: ArrayRef = Arc::new(BinaryArray::from(vec![&*plan_bytes]));
 
     let record_batch = RecordBatch::try_from_iter(vec![("bytes", b), ("cache_duration_mins", a)])
