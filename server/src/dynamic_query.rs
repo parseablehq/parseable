@@ -98,7 +98,7 @@ async fn logical_plan_to_bytes(plan: &LogicalPlan) -> io::Result<Bytes> {
 async fn write_opt<T, W, F>(
     opt: Option<&T>,
     writer: &mut W,
-    write_some: impl Fn(&T) -> F,
+    write_some: impl Fn(&T, &mut W) -> F,
 ) -> io::Result<()>
 where
     W: AsyncIo::AsyncWrite + AsyncIo::AsyncWriteExt + Unpin,
@@ -106,10 +106,40 @@ where
 {
     if let Some(val) = opt {
         writer.write_u8(1).await?;
-        write_some(val).await?;
+        write_some(val, writer).await?;
     } else {
         writer.write_u8(0).await?;
     };
+    Ok(())
+}
+async fn write_array_ref<T, W, F>(
+    arr: &[&T],
+    writer: &mut W,
+    write_item: impl Fn(&T, &mut W) -> F,
+) -> io::Result<()>
+where
+    W: AsyncIo::AsyncWrite + AsyncIo::AsyncWriteExt + Unpin,
+    F: Future<Output = io::Result<()>>,
+{
+    writer.write_u64(arr.len() as u64).await?;
+    for item in arr {
+        write_item(*item, writer).await?;
+    }
+    Ok(())
+}
+async fn write_array_val<T, W, F>(
+    arr: &[T],
+    writer: &mut W,
+    write_item: impl Fn(&T, &mut W) -> F,
+) -> io::Result<()>
+where
+    W: AsyncIo::AsyncWrite + AsyncIo::AsyncWriteExt + Unpin,
+    F: Future<Output = io::Result<()>>,
+{
+    writer.write_u64(arr.len() as u64).await?;
+    for item in arr {
+        write_item(item, writer).await?;
+    }
     Ok(())
 }
 fn write_logical_plan<'a, W>(
@@ -280,17 +310,15 @@ where
                 table_name,
             }) => {
                 writer.write_u8(21).await?;
-                write_opt(fetch.as_ref(), writer, |f| writer.write_u64(*f as u64));
+                write_opt(fetch.as_ref(), writer, |f, w| w.write_u64(*f as u64));
                 write_str(&table_name.table(), writer).await?;
                 write_exprs(filters.as_ref(), writer).await?;
                 write_schema(&projected_schema, writer).await?;
             }
             LogicalPlan::Union(Union { inputs, schema }) => {
                 writer.write_u8(22).await?;
-                writer.write_u32(inputs.len() as u32).await?;
-                for input in inputs {
-                    write_logical_plan(input, writer).await?;
-                }
+
+                write_array_val(inputs, writer, write_logical_plan).await?;
                 write_schema(schema, writer).await?;
             }
             LogicalPlan::Unnest(Unnest {
@@ -303,6 +331,8 @@ where
                 schema,
             }) => {
                 writer.write_u8(23).await?;
+                write_array_val(struct_type_columns, writer, |c, w| w.write_u64(*c as u64)).await?;
+                write_array_val(dependency_indices, writer, |c, w| w.write_u64(*c as u64)).await?;
                 write_schema(schema, writer).await?;
             }
             LogicalPlan::Values(vals) => {
