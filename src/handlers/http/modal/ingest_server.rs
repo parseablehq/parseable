@@ -377,8 +377,7 @@ impl IngestServer {
         // set the ingestor metadata
         self.set_ingestor_metadata().await?;
 
-        // TODO: figure out why we don't need this
-        // > we dont need oidc client here its just here to satisfy the trait
+        // Ingestors shouldn't have to deal with OpenId auth flow
         let app = self.start(prometheus, None);
 
         tokio::pin!(app);
