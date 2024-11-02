@@ -1,5 +1,5 @@
 use kafka::{client::FetchPartition, consumer::Consumer};
-use std::{env, fmt::Debug, str::FromStr};
+use std::{env, fmt::Debug, str::FromStr, time::Duration};
 use tokio::task::JoinHandle;
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaError {
@@ -8,6 +8,9 @@ pub enum KafkaError {
 
     #[error("Kafka error {0}")]
     NativeError(#[from] kafka::Error),
+
+    #[error("Error parsing int {0}")]
+    ParseIntError(#[from] std::num::ParseIntError),
 }
 
 fn load_env_or_err(key: &'static str) -> Result<String, KafkaError> {
@@ -22,6 +25,17 @@ where
         Some(val.parse::<T>().unwrap())
     } else {
         None
+    }
+}
+fn handle_duration_env_prefix(
+    key: &'static str,
+) -> Result<Option<Duration>, std::num::ParseIntError> {
+    if let Ok(raw_secs) = env::var(format!("{key}_S")) {
+        Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)?)))
+    } else if let Ok(raw_secs) = env::var(format!("{key}_M")) {
+        Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)? * 60)))
+    } else {
+        Ok(None)
     }
 }
 fn setup_consumer() -> Result<Consumer, KafkaError> {
@@ -46,6 +60,13 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
         cb = cb.with_retry_max_bytes_limit(val)
     }
 
+    if let Some(val) = handle_duration_env_prefix("KAFKA_CONNECTION_IDLE_TIMEOUT")? {
+        cb = cb.with_connection_idle_timeout(val)
+    }
+
+    if let Some(val) = handle_duration_env_prefix("KAFKA_FETCH_MAX_WAIT_TIME")? {
+        cb = cb.with_fetch_max_wait_time(val)
+    }
     let res = cb.create()?;
     Ok(res)
 }
