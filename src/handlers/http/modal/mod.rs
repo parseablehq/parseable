@@ -26,14 +26,26 @@ pub mod utils;
 
 use std::sync::Arc;
 
+use actix_web::middleware::from_fn;
+use actix_web::web::ServiceConfig;
+use actix_web::App;
+use actix_web::HttpServer;
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
-use openid::Discovered;
-
-use crate::oidc;
 use base64::Engine;
+use openid::Discovered;
 use serde::Deserialize;
 use serde::Serialize;
+use ssl_acceptor::get_ssl_acceptor;
+use tokio::sync::{oneshot, Mutex};
+
+use super::cross_origin_config;
+use super::API_BASE_PATH;
+use super::API_VERSION;
+use crate::handlers::http::health_check;
+use crate::oidc;
+use crate::option::CONFIG;
+
 pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
 
 // to be decided on what the Default version should be
@@ -41,16 +53,118 @@ pub const DEFAULT_VERSION: &str = "v3";
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
-#[async_trait(?Send)]
+#[async_trait]
 pub trait ParseableServer {
-    // async fn validate(&self) -> Result<(), ObjectStorageError>;
+    /// configure the router
+    fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>)
+    where
+        Self: Sized;
 
     /// configure the server
     async fn start(
         &self,
         prometheus: PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
-    ) -> anyhow::Result<()>;
+    ) -> anyhow::Result<()>
+    where
+        Self: Sized,
+    {
+        let oidc_client = match oidc_client {
+            Some(config) => {
+                let client = config
+                    .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
+                    .await?;
+                Some(Arc::new(client))
+            }
+
+            None => None,
+        };
+
+        // get the ssl stuff
+        let ssl = get_ssl_acceptor(
+            &CONFIG.parseable.tls_cert_path,
+            &CONFIG.parseable.tls_key_path,
+            &CONFIG.parseable.trusted_ca_certs_path,
+        )?;
+
+        // fn that creates the app
+        let create_app_fn = move || {
+            App::new()
+                .wrap(prometheus.clone())
+                .configure(|config| Self::configure_routes(config, oidc_client.clone()))
+                .wrap(from_fn(health_check::check_shutdown_middleware))
+                .wrap(actix_web::middleware::Logger::default())
+                .wrap(actix_web::middleware::Compress::default())
+                .wrap(cross_origin_config())
+        };
+
+        // Create a channel to trigger server shutdown
+        let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
+        let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
+
+        // Clone the shutdown signal for the signal handler
+        let shutdown_signal = server_shutdown_signal.clone();
+
+        // Spawn the signal handler task
+        let signal_task = tokio::spawn(async move {
+            health_check::handle_signals(shutdown_signal).await;
+            println!("Received shutdown signal, notifying server to shut down...");
+        });
+
+        // Create the HTTP server
+        let http_server = HttpServer::new(create_app_fn)
+            .workers(num_cpus::get())
+            .shutdown_timeout(60);
+
+        // Start the server with or without TLS
+        let srv = if let Some(config) = ssl {
+            http_server
+                .bind_rustls_0_22(&CONFIG.parseable.address, config)?
+                .run()
+        } else {
+            http_server.bind(&CONFIG.parseable.address)?.run()
+        };
+
+        // Graceful shutdown handling
+        let srv_handle = srv.handle();
+
+        let sync_task = tokio::spawn(async move {
+            // Wait for the shutdown signal
+            let _ = shutdown_rx.await;
+
+            // Perform S3 sync and wait for completion
+            log::info!("Starting data sync to S3...");
+            if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
+                log::warn!("Failed to sync local data with object store. {:?}", e);
+            } else {
+                log::info!("Successfully synced all data to S3.");
+            }
+
+            // Initiate graceful shutdown
+            log::info!("Graceful shutdown of HTTP server triggered");
+            srv_handle.stop(true).await;
+        });
+
+        // Await the HTTP server to run
+        let server_result = srv.await;
+
+        // Await the signal handler to ensure proper cleanup
+        if let Err(e) = signal_task.await {
+            log::error!("Error in signal handler: {:?}", e);
+        }
+
+        // Wait for the sync task to complete before exiting
+        if let Err(e) = sync_task.await {
+            log::error!("Error in sync task: {:?}", e);
+        } else {
+            log::info!("Sync task completed successfully.");
+        }
+
+        // Return the result of the server
+        server_result?;
+
+        Ok(())
+    }
 
     async fn init(&self) -> anyhow::Result<()>;
 

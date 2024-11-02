@@ -17,136 +17,55 @@
  */
 
 use crate::handlers::airplane;
+use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{self, role};
-use crate::handlers::http::{base_path, cross_origin_config, API_BASE_PATH, API_VERSION};
-use crate::handlers::http::{health_check, logstream, MAX_EVENT_PAYLOAD_SIZE};
+use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metrics, migration, rbac, storage};
-use actix_web::middleware::from_fn;
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
-use actix_web::{App, HttpServer};
 use async_trait::async_trait;
-use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
 
 use crate::{option::CONFIG, ParseableServer};
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
 use super::server::Server;
-use super::ssl_acceptor::get_ssl_acceptor;
 use super::OpenIdClient;
 
-#[derive(Default, Debug)]
 pub struct QueryServer;
 
-#[async_trait(?Send)]
+#[async_trait]
 impl ParseableServer for QueryServer {
-    async fn start(
-        &self,
-        prometheus: actix_web_prometheus::PrometheusMetrics,
-        oidc_client: Option<crate::oidc::OpenidConfig>,
-    ) -> anyhow::Result<()> {
-        let oidc_client = match oidc_client {
-            Some(config) => {
-                let client = config
-                    .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
-                    .await?;
-                Some(Arc::new(client))
-            }
-
-            None => None,
-        };
-
-        let ssl = get_ssl_acceptor(
-            &CONFIG.parseable.tls_cert_path,
-            &CONFIG.parseable.tls_key_path,
-            &CONFIG.parseable.trusted_ca_certs_path,
-        )?;
-
-        let create_app_fn = move || {
-            App::new()
-                .wrap(prometheus.clone())
-                .configure(|config| QueryServer::configure_routes(config, oidc_client.clone()))
-                .wrap(from_fn(health_check::check_shutdown_middleware))
-                .wrap(actix_web::middleware::Logger::default())
-                .wrap(actix_web::middleware::Compress::default())
-                .wrap(cross_origin_config())
-        };
-
-        // Create a channel to trigger server shutdown
-        let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
-        let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
-
-        // Clone the shutdown signal for the signal handler
-        let shutdown_signal = server_shutdown_signal.clone();
-
-        // Spawn the signal handler task
-        let signal_task = tokio::spawn(async move {
-            health_check::handle_signals(shutdown_signal).await;
-            log::info!("Received shutdown signal, notifying server to shut down...");
-        });
-
-        // Create the HTTP server
-        let http_server = HttpServer::new(create_app_fn)
-            .workers(num_cpus::get())
-            .shutdown_timeout(120);
-
-        // Start the server with or without TLS
-        let srv = if let Some(config) = ssl {
-            http_server
-                .bind_rustls_0_22(&CONFIG.parseable.address, config)?
-                .run()
-        } else {
-            http_server.bind(&CONFIG.parseable.address)?.run()
-        };
-
-        // Graceful shutdown handling
-        let srv_handle = srv.handle();
-
-        let sync_task = tokio::spawn(async move {
-            // Wait for the shutdown signal
-            let _ = shutdown_rx.await;
-
-            // Perform S3 sync and wait for completion
-            log::info!("Starting data sync to S3...");
-            if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
-                log::warn!("Failed to sync local data with object store. {:?}", e);
-            } else {
-                log::info!("Successfully synced all data to S3.");
-            }
-
-            // Initiate graceful shutdown
-            log::info!("Graceful shutdown of HTTP server triggered");
-            srv_handle.stop(true).await;
-        });
-
-        // Await the HTTP server to run
-        let server_result = srv.await;
-
-        // Await the signal handler to ensure proper cleanup
-        if let Err(e) = signal_task.await {
-            log::error!("Error in signal handler: {:?}", e);
-        }
-
-        // Wait for the sync task to complete before exiting
-        if let Err(e) = sync_task.await {
-            log::error!("Error in sync task: {:?}", e);
-        } else {
-            log::info!("Sync task completed successfully.");
-        }
-
-        // Return the result of the server
-        server_result?;
-
-        Ok(())
+    // configure the api routes
+    fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>) {
+        config
+            .service(
+                web::scope(&base_path())
+                    // POST "/query" ==> Get results of the SQL query passed in request body
+                    .service(Server::get_query_factory())
+                    .service(Server::get_trino_factory())
+                    .service(Server::get_cache_webscope())
+                    .service(Server::get_liveness_factory())
+                    .service(Server::get_readiness_factory())
+                    .service(Server::get_about_factory())
+                    .service(Self::get_logstream_webscope())
+                    .service(Self::get_user_webscope())
+                    .service(Server::get_dashboards_webscope())
+                    .service(Server::get_filters_webscope())
+                    .service(Server::get_llm_webscope())
+                    .service(Server::get_oauth_webscope(oidc_client))
+                    .service(Self::get_user_role_webscope())
+                    .service(Server::get_metrics_webscope())
+                    .service(Self::get_cluster_web_scope()),
+            )
+            .service(Server::get_generated());
     }
 
     /// implementation of init should just invoke a call to initialize
@@ -176,31 +95,6 @@ impl ParseableServer for QueryServer {
 }
 
 impl QueryServer {
-    // configure the api routes
-    fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>) {
-        config
-            .service(
-                web::scope(&base_path())
-                    // POST "/query" ==> Get results of the SQL query passed in request body
-                    .service(Server::get_query_factory())
-                    .service(Server::get_trino_factory())
-                    .service(Server::get_cache_webscope())
-                    .service(Server::get_liveness_factory())
-                    .service(Server::get_readiness_factory())
-                    .service(Server::get_about_factory())
-                    .service(Self::get_logstream_webscope())
-                    .service(Self::get_user_webscope())
-                    .service(Server::get_dashboards_webscope())
-                    .service(Server::get_filters_webscope())
-                    .service(Server::get_llm_webscope())
-                    .service(Server::get_oauth_webscope(oidc_client))
-                    .service(Self::get_user_role_webscope())
-                    .service(Server::get_metrics_webscope())
-                    .service(Self::get_cluster_web_scope()),
-            )
-            .service(Server::get_generated());
-    }
-
     // get the role webscope
     fn get_user_role_webscope() -> Scope {
         web::scope("/role")

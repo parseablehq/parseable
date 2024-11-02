@@ -27,8 +27,6 @@ use crate::handlers::http::query;
 use crate::handlers::http::trino;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
-use crate::handlers::http::API_BASE_PATH;
-use crate::handlers::http::API_VERSION;
 use crate::hottier::HotTierManager;
 use crate::localcache::LocalCacheManager;
 use crate::metrics;
@@ -38,21 +36,17 @@ use crate::storage;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
-use actix_web::middleware::from_fn;
-use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
 
+use actix_web::web;
 use actix_web::web::resource;
 use actix_web::Resource;
 use actix_web::Scope;
-use actix_web::{web, App, HttpServer};
-use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 
 use crate::{
     handlers::http::{
-        self, cross_origin_config, ingest, llm, logstream,
+        self, ingest, llm, logstream,
         middleware::{DisAllowRootUser, RouteExt},
         oidc, role, MAX_EVENT_PAYLOAD_SIZE,
     },
@@ -62,133 +56,13 @@ use crate::{
 
 // use super::generate;
 use super::generate;
-use super::ssl_acceptor::get_ssl_acceptor;
 use super::OpenIdClient;
 use super::ParseableServer;
-#[derive(Default)]
+
 pub struct Server;
 
-#[async_trait(?Send)]
+#[async_trait]
 impl ParseableServer for Server {
-    async fn start(
-        &self,
-        prometheus: PrometheusMetrics,
-        oidc_client: Option<crate::oidc::OpenidConfig>,
-    ) -> anyhow::Result<()> {
-        let oidc_client = match oidc_client {
-            Some(config) => {
-                let client = config
-                    .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
-                    .await?;
-                Some(Arc::new(client))
-            }
-            None => None,
-        };
-
-        let create_app_fn = move || {
-            App::new()
-                .wrap(prometheus.clone())
-                .configure(|cfg| Server::configure_routes(cfg, oidc_client.clone()))
-                .wrap(from_fn(health_check::check_shutdown_middleware))
-                .wrap(actix_web::middleware::Logger::default())
-                .wrap(actix_web::middleware::Compress::default())
-                .wrap(cross_origin_config())
-        };
-
-        let ssl = get_ssl_acceptor(
-            &CONFIG.parseable.tls_cert_path,
-            &CONFIG.parseable.tls_key_path,
-            &CONFIG.parseable.trusted_ca_certs_path,
-        )?;
-
-        // Create a channel to trigger server shutdown
-        let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
-        let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
-
-        // Clone the shutdown signal for the signal handler
-        let shutdown_signal = server_shutdown_signal.clone();
-
-        // Spawn the signal handler task
-        let signal_task = tokio::spawn(async move {
-            health_check::handle_signals(shutdown_signal).await;
-            log::info!("Received shutdown signal, notifying server to shut down...");
-        });
-
-        // Create the HTTP server
-        let http_server = HttpServer::new(create_app_fn)
-            .workers(num_cpus::get())
-            .shutdown_timeout(60);
-
-        // Start the server with or without TLS
-        let srv = if let Some(config) = ssl {
-            http_server
-                .bind_rustls_0_22(&CONFIG.parseable.address, config)?
-                .run()
-        } else {
-            http_server.bind(&CONFIG.parseable.address)?.run()
-        };
-
-        // Graceful shutdown handling
-        let srv_handle = srv.handle();
-
-        let sync_task = tokio::spawn(async move {
-            // Wait for the shutdown signal
-            let _ = shutdown_rx.await;
-
-            // Perform S3 sync and wait for completion
-            log::info!("Starting data sync to S3...");
-            if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
-                log::warn!("Failed to sync local data with object store. {:?}", e);
-            } else {
-                log::info!("Successfully synced all data to S3.");
-            }
-
-            // Initiate graceful shutdown
-            log::info!("Graceful shutdown of HTTP server triggered");
-            srv_handle.stop(true).await;
-        });
-
-        // Await the HTTP server to run
-        let server_result = srv.await;
-
-        // Await the signal handler to ensure proper cleanup
-        if let Err(e) = signal_task.await {
-            log::error!("Error in signal handler: {:?}", e);
-        }
-
-        // Wait for the sync task to complete before exiting
-        if let Err(e) = sync_task.await {
-            log::error!("Error in sync task: {:?}", e);
-        } else {
-            log::info!("Sync task completed successfully.");
-        }
-
-        // Return the result of the server
-        server_result?;
-
-        Ok(())
-    }
-
-    /// implementation of init should just invoke a call to initialize
-    async fn init(&self) -> anyhow::Result<()> {
-        self.validate()?;
-        migration::run_file_migration(&CONFIG).await?;
-        let parseable_json = CONFIG.validate_storage().await?;
-        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
-        let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
-        banner::print(&CONFIG, &metadata).await;
-        rbac::map::init(&metadata);
-        metadata.set_global();
-        self.initialize().await?;
-        Ok(())
-    }
-
-    fn validate(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl Server {
     fn configure_routes(config: &mut web::ServiceConfig, oidc_client: Option<OpenIdClient>) {
         // there might be a bug in the configure routes method
         config
@@ -215,6 +89,26 @@ impl Server {
             .service(Self::get_generated());
     }
 
+    /// implementation of init should just invoke a call to initialize
+    async fn init(&self) -> anyhow::Result<()> {
+        self.validate()?;
+        migration::run_file_migration(&CONFIG).await?;
+        let parseable_json = CONFIG.validate_storage().await?;
+        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+        let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
+        banner::print(&CONFIG, &metadata).await;
+        rbac::map::init(&metadata);
+        metadata.set_global();
+        self.initialize().await?;
+        Ok(())
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl Server {
     // get the trino factory
     pub fn get_trino_factory() -> Resource {
         web::resource("/trinoquery")
