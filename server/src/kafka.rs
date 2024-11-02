@@ -16,16 +16,15 @@ pub enum KafkaError {
 fn load_env_or_err(key: &'static str) -> Result<String, KafkaError> {
     env::var(key).map_err(|_| KafkaError::NoVarError(key))
 }
-fn parse_auto_env<T>(key: &'static str) -> Option<T>
+fn parse_auto_env<T>(key: &'static str) -> Result<Option<T>, <T as FromStr>::Err>
 where
     T: FromStr,
-    <T as FromStr>::Err: Debug,
 {
-    if let Ok(val) = env::var(key) {
-        Some(val.parse::<T>().unwrap())
+    Ok(if let Ok(val) = env::var(key) {
+        Some(val.parse::<T>()?)
     } else {
         None
-    }
+    })
 }
 fn handle_duration_env_prefix(
     key: &'static str,
@@ -48,15 +47,15 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
     if let Ok(val) = env::var("KAFKA_CLIENT_ID") {
         cb = cb.with_client_id(val)
     }
-    if let Some(val) = parse_auto_env::<i32>("KAFKA_FETCH_MAX_BYTES_PER_PARTITION") {
+    if let Some(val) = parse_auto_env::<i32>("KAFKA_FETCH_MAX_BYTES_PER_PARTITION")? {
         cb = cb.with_fetch_max_bytes_per_partition(val)
     }
 
-    if let Some(val) = parse_auto_env::<i32>("KAFKA_FETCH_MIN_BYTES") {
+    if let Some(val) = parse_auto_env::<i32>("KAFKA_FETCH_MIN_BYTES")? {
         cb = cb.with_fetch_min_bytes(val)
     }
 
-    if let Some(val) = parse_auto_env::<i32>("KAFKA_RETRY_MAX_BYTES_LIMIT") {
+    if let Some(val) = parse_auto_env::<i32>("KAFKA_RETRY_MAX_BYTES_LIMIT")? {
         cb = cb.with_retry_max_bytes_limit(val)
     }
 
@@ -70,6 +69,7 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
     let res = cb.create()?;
     Ok(res)
 }
+
 pub fn setup_integration() -> Result<JoinHandle<()>, KafkaError> {
     log::info!("Setup kafka integration");
     let mut c = setup_consumer()?;
