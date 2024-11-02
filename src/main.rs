@@ -16,8 +16,6 @@
  *
  */
 
-use std::sync::Arc;
-
 use parseable::{
     option::{Mode, CONFIG},
     IngestServer, ParseableServer, QueryServer, Server,
@@ -28,12 +26,10 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     // these are empty ptrs so mem footprint should be minimal
-    let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
-        Mode::Query => Arc::new(QueryServer),
-
-        Mode::Ingest => Arc::new(IngestServer),
-
-        Mode::All => Arc::new(Server),
+    let server: Box<dyn ParseableServer> = match CONFIG.parseable.mode {
+        Mode::Query => Box::new(QueryServer),
+        Mode::Ingest => Box::new(IngestServer),
+        Mode::All => Box::new(Server),
     };
 
     server.init().await?;
