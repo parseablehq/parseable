@@ -25,6 +25,7 @@ mod cli;
 mod event;
 mod handlers;
 mod hottier;
+mod kafka;
 mod livetail;
 mod localcache;
 mod metadata;
@@ -43,7 +44,6 @@ mod sync;
 mod users;
 mod utils;
 mod validator;
-mod kafka;
 
 use std::sync::Arc;
 
@@ -57,9 +57,9 @@ pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
-    kafka::setup_integration()?;
     env_logger::init();
 
+    let kafka = kafka::setup_integration()?;
     // these are empty ptrs so mem footprint should be minimal
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
         Mode::Query => Arc::new(QueryServer),
@@ -70,6 +70,6 @@ async fn main() -> anyhow::Result<()> {
     };
 
     server.init().await?;
-
+    kafka.await?;
     Ok(())
 }
