@@ -4,6 +4,9 @@ use actix_web::{web, HttpRequest, Responder};
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
+use tokio::sync::Mutex;
+
+static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 use crate::{
     event,
@@ -77,6 +80,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
+    let _ = CREATE_STREAM_LOCK.lock().await;
     let headers = create_update_stream(&req, &body, &stream_name).await?;
     sync_streams_with_ingestors(headers, body, &stream_name).await?;
 

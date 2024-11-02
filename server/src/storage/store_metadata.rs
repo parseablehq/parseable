@@ -63,6 +63,8 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
+    pub querier_endpoint: Option<String>,
+    pub querier_auth_token: Option<String>,
 }
 
 impl StorageMetadata {
@@ -78,6 +80,8 @@ impl StorageMetadata {
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
+            querier_endpoint: None,
+            querier_auth_token: None,
         }
     }
 

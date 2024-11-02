@@ -78,6 +78,10 @@ pub async fn run_metadata_migration(
                 let metadata = metadata_migration::v3_v4(storage_metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
+            Some("v4") => {
+                let metadata = metadata_migration::v4_v5(storage_metadata);
+                put_remote_metadata(&*object_store, &metadata).await?;
+            }
             _ => (),
         }
     }
