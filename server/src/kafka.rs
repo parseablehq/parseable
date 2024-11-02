@@ -18,9 +18,13 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
     let hosts = load_env_or_err("KAFKA_HOSTS")?;
     let topic = load_env_or_err("KAFKA_TOPIC")?;
     let mapped_hosts = hosts.split(",").map(|s| s.to_string()).collect();
-    let res = Consumer::from_hosts(mapped_hosts)
-        .with_topic(topic)
-        .create()?;
+
+    let mut cb = Consumer::from_hosts(mapped_hosts).with_topic(topic);
+
+    if let Ok(val) = env::var("KAFKA_CLIENT_ID") {
+        cb = cb.with_client_id(val);
+    }
+    let res = cb.create()?;
     Ok(res)
 }
 pub fn setup_integration() -> Result<JoinHandle<()>, KafkaError> {
