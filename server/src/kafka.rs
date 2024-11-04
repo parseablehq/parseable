@@ -1,6 +1,21 @@
-use kafka::{client::FetchPartition, consumer::Consumer};
-use std::{env, fmt::Debug, str::FromStr, time::Duration};
-use tokio::task::JoinHandle;
+use chrono::Local;
+use kafka::consumer::{Consumer, Message};
+use std::{collections::HashMap, env, fmt::Debug, str::FromStr, time::Duration};
+use tokio::task::{self, JoinHandle};
+
+use crate::{
+    event::{
+        self,
+        error::EventError,
+        format::{self, EventFormat},
+    },
+    handlers::http::{
+        ingest::{create_stream_if_not_exists, PostError},
+        modal::utils::ingest_utils::push_logs,
+    },
+    metadata::{error::stream_info::MetadataError, STREAM_INFO},
+    storage::StreamType,
+};
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaError {
     #[error("Error loading environment variable {0}")]
@@ -13,6 +28,17 @@ pub enum KafkaError {
     ParseIntError(&'static str, std::num::ParseIntError),
     #[error("Error parsing duration int {1} for environment variable {0}")]
     ParseDurationError(&'static str, std::num::ParseIntError),
+
+    #[error("Stream not found: #{0}")]
+    StreamNotFound(String),
+    #[error("Post error: #{0}")]
+    PostError(#[from] PostError),
+    #[error("Metadta error: #{0}")]
+    MetadataError(#[from] MetadataError),
+    #[error("Event error: #{0}")]
+    EventError(#[from] EventError),
+    #[error("JSON error: #{0}")]
+    JsonError(#[from] serde_json::Error),
 }
 
 fn load_env_or_err(key: &'static str) -> Result<String, KafkaError> {
@@ -80,18 +106,62 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
     Ok(res)
 }
 
-pub fn setup_integration() -> Result<JoinHandle<()>, KafkaError> {
-    log::info!("Setup kafka integration");
-    let mut c = setup_consumer()?;
-    let parts: &[FetchPartition] = &[];
-    println!("Messages: {:?}", c.client_mut().fetch_messages(parts));
-    let res = tokio::task::spawn_blocking(move || loop {
-        for ev in c.poll().unwrap().iter() {
-            for msg in ev.messages() {
-                log::info!("Message: {:?}", msg)
+fn ingest_message<'a>(stream_name: &str, msg: &Message<'a>) -> Result<(), KafkaError> {
+    log::info!("Message: {:?}", msg);
+    let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name).unwrap();
+    let hash_map = STREAM_INFO.read().unwrap();
+    let schema = hash_map
+        .get(stream_name)
+        .ok_or(KafkaError::StreamNotFound(stream_name.to_owned()))?
+        .schema
+        .clone();
+
+    let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
+    let txt = String::from_utf8(msg.value.into_iter().copied().collect());
+    log::debug!("Message text: {}", txt.unwrap());
+    let event = format::json::Event {
+        data: serde_json::from_slice(&msg.value)?,
+        tags: String::default(),
+        metadata: String::default(),
+    };
+    let (rb, is_first) = event
+        .into_recordbatch(schema, static_schema_flag, time_partition.clone())
+        .unwrap();
+
+    event::Event {
+        rb,
+        stream_name: stream_name.to_string(),
+        origin_format: "json",
+        origin_size: msg.value.len() as u64,
+        is_first_event: is_first,
+        parsed_timestamp: Local::now().naive_utc(),
+        time_partition: time_partition.clone(),
+        custom_partition_values: HashMap::new(),
+        stream_type: StreamType::UserDefined,
+    }
+    .process_unchecked()?;
+    Ok(())
+}
+
+pub async fn setup_integration() -> Result<JoinHandle<()>, KafkaError> {
+    let my_res = if let Ok(stream_name) = env::var("KAFKA_TOPIC") {
+        log::info!("Setup kafka integration for {stream_name}");
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+
+        let res = task::spawn_blocking(move || {
+            let mut c = setup_consumer().unwrap();
+            loop {
+                for ev in c.poll().unwrap().iter() {
+                    for msg in ev.messages() {
+                        ingest_message(&stream_name, msg).unwrap();
+                    }
+                }
             }
-        }
-    });
-    log::info!("Done Setup kafka integration");
-    Ok(res)
+        });
+        log::info!("Done Setup kafka integration");
+        res
+    } else {
+        task::spawn_blocking(|| {})
+    };
+    Ok(my_res)
 }
