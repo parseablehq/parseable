@@ -9,10 +9,8 @@ use crate::{
         error::EventError,
         format::{self, EventFormat},
     },
-    handlers::http::{
-        ingest::{create_stream_if_not_exists, PostError},
-        modal::utils::ingest_utils::push_logs,
-    },
+    handlers::http::ingest::{create_stream_if_not_exists, PostError},
+    metadata::{error::stream_info::MetadataError, STREAM_INFO},
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
     storage::StreamType,
 };
