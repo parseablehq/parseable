@@ -9,8 +9,10 @@ pub enum KafkaError {
     #[error("Kafka error {0}")]
     NativeError(#[from] kafka::Error),
 
-    #[error("Error parsing int {0}")]
-    ParseIntError(#[from] std::num::ParseIntError),
+    #[error("Error parsing int {1} for environment variable {0}")]
+    ParseIntError(&'static str, std::num::ParseIntError),
+    #[error("Error parsing duration int {1} for environment variable {0}")]
+    ParseDurationError(&'static str, std::num::ParseIntError),
 }
 
 fn load_env_or_err(key: &'static str) -> Result<String, KafkaError> {
@@ -37,6 +39,14 @@ fn handle_duration_env_prefix(
         Ok(None)
     }
 }
+fn parse_i32_env(key: &'static str) -> Result<Option<i32>, KafkaError> {
+    parse_auto_env::<i32>(key).map_err(|raw| KafkaError::ParseIntError(key, raw))
+}
+
+fn parse_duration_env_prefixed(key_prefix: &'static str) -> Result<Option<Duration>, KafkaError> {
+    handle_duration_env_prefix(key_prefix)
+        .map_err(|raw| KafkaError::ParseDurationError(key_prefix, raw))
+}
 fn setup_consumer() -> Result<Consumer, KafkaError> {
     let hosts = load_env_or_err("KAFKA_HOSTS")?;
     let topic = load_env_or_err("KAFKA_TOPIC")?;
@@ -47,23 +57,23 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
     if let Ok(val) = env::var("KAFKA_CLIENT_ID") {
         cb = cb.with_client_id(val)
     }
-    if let Some(val) = parse_auto_env::<i32>("KAFKA_FETCH_MAX_BYTES_PER_PARTITION")? {
+    if let Some(val) = parse_i32_env("KAFKA_FETCH_MAX_BYTES_PER_PARTITION")? {
         cb = cb.with_fetch_max_bytes_per_partition(val)
     }
 
-    if let Some(val) = parse_auto_env::<i32>("KAFKA_FETCH_MIN_BYTES")? {
+    if let Some(val) = parse_i32_env("KAFKA_FETCH_MIN_BYTES")? {
         cb = cb.with_fetch_min_bytes(val)
     }
 
-    if let Some(val) = parse_auto_env::<i32>("KAFKA_RETRY_MAX_BYTES_LIMIT")? {
+    if let Some(val) = parse_i32_env("KAFKA_RETRY_MAX_BYTES_LIMIT")? {
         cb = cb.with_retry_max_bytes_limit(val)
     }
 
-    if let Some(val) = handle_duration_env_prefix("KAFKA_CONNECTION_IDLE_TIMEOUT")? {
+    if let Some(val) = parse_duration_env_prefixed("KAFKA_CONNECTION_IDLE_TIMEOUT")? {
         cb = cb.with_connection_idle_timeout(val)
     }
 
-    if let Some(val) = handle_duration_env_prefix("KAFKA_FETCH_MAX_WAIT_TIME")? {
+    if let Some(val) = parse_duration_env_prefixed("KAFKA_FETCH_MAX_WAIT_TIME")? {
         cb = cb.with_fetch_max_wait_time(val)
     }
     let res = cb.create()?;
