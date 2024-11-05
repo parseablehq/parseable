@@ -849,8 +849,8 @@ pub async fn forward_create_stream_request(stream_name: &str) -> Result<(), Stre
     let staging_metadata = get_staging_metadata().unwrap().ok_or_else(|| {
         StreamError::Anyhow(anyhow::anyhow!("Failed to retrieve staging metadata"))
     })?;
-    let querier_endpoint = to_url_string(staging_metadata.querier_endpoint.unwrap());
-    let token = staging_metadata.querier_auth_token.unwrap();
+    let querier_endpoint = to_url_string(staging_metadata.querier_endpoint);
+    let token = staging_metadata.querier_auth_token;
 
     if !check_liveness(&querier_endpoint).await {
         log::warn!("Querier {} is not live", querier_endpoint);

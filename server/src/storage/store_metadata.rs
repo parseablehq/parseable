@@ -22,6 +22,7 @@ use std::{
     path::PathBuf,
 };
 
+use base64::Engine;
 use bytes::Bytes;
 use once_cell::sync::OnceCell;
 use relative_path::RelativePathBuf;
@@ -63,12 +64,25 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
-    pub querier_endpoint: Option<String>,
-    pub querier_auth_token: Option<String>,
+    pub querier_endpoint: String,
+    pub querier_auth_token: String,
 }
 
 impl StorageMetadata {
     pub fn new() -> Self {
+        let querier_auth_token = format!(
+            "Basic {}",
+            base64::prelude::BASE64_STANDARD.encode(format!(
+                "{}:{}",
+                CONFIG.parseable.username, CONFIG.parseable.password
+            ))
+        );
+
+        let (querier_endpoint, querier_auth_token) = match CONFIG.parseable.mode {
+            Mode::All | Mode::Query => (CONFIG.parseable.address.clone(), querier_auth_token),
+            Mode::Ingest => (String::new(), String::new()),
+        };
+
         Self {
             version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
             mode: CONFIG.storage_name.to_owned(),
@@ -80,11 +94,10 @@ impl StorageMetadata {
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
-            querier_endpoint: None,
-            querier_auth_token: None,
+            querier_endpoint,
+            querier_auth_token,
         }
     }
-
     pub fn global() -> &'static StaticStorageMetadata {
         STORAGE_METADATA
             .get()
