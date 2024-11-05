@@ -106,13 +106,10 @@ pub async fn resolve_parseable_metadata(
     parseable_metadata: &Option<Bytes>,
 ) -> Result<StorageMetadata, ObjectStorageError> {
     let staging_metadata = get_staging_metadata()?;
-    let mut remote_metadata: Option<StorageMetadata> = None;
-    if parseable_metadata.is_some() {
-        remote_metadata = Some(
-            serde_json::from_slice(parseable_metadata.as_ref().unwrap())
-                .expect("parseable config is valid json"),
-        );
-    }
+    let remote_metadata = parseable_metadata
+        .as_ref()
+        .map(|meta| serde_json::from_slice(&meta).expect("parseable config is valid json"));
+
     // Env Change needs to be updated
     let check = determine_environment(staging_metadata, remote_metadata);
     // flags for if metadata needs to be synced
