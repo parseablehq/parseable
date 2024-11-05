@@ -80,7 +80,7 @@ impl StorageMetadata {
 
         let (querier_endpoint, querier_auth_token) = match CONFIG.parseable.mode {
             Mode::All | Mode::Query => (CONFIG.parseable.address.clone(), querier_auth_token),
-            Mode::Ingest => (String::new(), String::new()),
+            Mode::Ingest => (String::default(), String::default()),
         };
 
         Self {
