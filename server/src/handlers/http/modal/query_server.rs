@@ -29,6 +29,7 @@ use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
 use crate::{analytics, banner, metrics, migration, rbac, storage};
+use actix_web::middleware::from_fn;
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use actix_web::{App, HttpServer};
@@ -74,6 +75,7 @@ impl ParseableServer for QueryServer {
             App::new()
                 .wrap(prometheus.clone())
                 .configure(|config| QueryServer::configure_routes(config, oidc_client.clone()))
+                .wrap(from_fn(health_check::check_shutdown_middleware))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())
                 .wrap(cross_origin_config())
@@ -87,8 +89,9 @@ impl ParseableServer for QueryServer {
         let shutdown_signal = server_shutdown_signal.clone();
 
         // Spawn the signal handler task
-        tokio::spawn(async move {
+        let signal_task = tokio::spawn(async move {
             health_check::handle_signals(shutdown_signal).await;
+            log::info!("Received shutdown signal, notifying server to shut down...");
         });
 
         // Create the HTTP server
@@ -108,17 +111,40 @@ impl ParseableServer for QueryServer {
         // Graceful shutdown handling
         let srv_handle = srv.handle();
 
-        tokio::spawn(async move {
+        let sync_task = tokio::spawn(async move {
             // Wait for the shutdown signal
-            shutdown_rx.await.ok();
+            let _ = shutdown_rx.await;
+
+            // Perform S3 sync and wait for completion
+            log::info!("Starting data sync to S3...");
+            if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
+                log::warn!("Failed to sync local data with object store. {:?}", e);
+            } else {
+                log::info!("Successfully synced all data to S3.");
+            }
 
             // Initiate graceful shutdown
             log::info!("Graceful shutdown of HTTP server triggered");
             srv_handle.stop(true).await;
         });
 
-        // Await the server to run and handle shutdown
-        srv.await?;
+        // Await the HTTP server to run
+        let server_result = srv.await;
+
+        // Await the signal handler to ensure proper cleanup
+        if let Err(e) = signal_task.await {
+            log::error!("Error in signal handler: {:?}", e);
+        }
+
+        // Wait for the sync task to complete before exiting
+        if let Err(e) = sync_task.await {
+            log::error!("Error in sync task: {:?}", e);
+        } else {
+            log::info!("Sync task completed successfully.");
+        }
+
+        // Return the result of the server
+        server_result?;
 
         Ok(())
     }
@@ -257,6 +283,17 @@ impl QueryServer {
                 // GET "/logstream" ==> Get list of all Log Streams on the server
                 web::resource("")
                     .route(web::get().to(logstream::list).authorize(Action::ListStream)),
+            )
+            .service(
+                web::scope("/schema/detect").service(
+                    web::resource("")
+                        // PUT "/logstream/{logstream}" ==> Create log stream
+                        .route(
+                            web::post()
+                                .to(logstream::detect_schema)
+                                .authorize(Action::DetectSchema),
+                        ),
+                ),
             )
             .service(
                 web::scope("/{logstream}")

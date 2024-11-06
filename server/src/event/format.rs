@@ -22,6 +22,8 @@ use std::{collections::HashMap, sync::Arc};
 use anyhow::{anyhow, Error as AnyError};
 use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use chrono::DateTime;
+use serde_json::Value;
 
 use crate::utils::{self, arrow::get_field};
 
@@ -100,7 +102,7 @@ pub trait EventFormat: Sized {
         if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
         }
-        new_schema = update_field_type_in_schema(new_schema, time_partition);
+        new_schema = update_field_type_in_schema(new_schema, None, time_partition, None);
         let rb = Self::decode(data, new_schema.clone())?;
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
         let metadata_arr =
@@ -145,19 +147,101 @@ pub trait EventFormat: Sized {
     }
 }
 
-pub fn update_field_type_in_schema(
-    schema: Arc<Schema>,
-    time_partition: Option<String>,
-) -> Arc<Schema> {
-    if time_partition.is_none() {
-        return schema;
+pub fn get_existing_fields(
+    inferred_schema: Arc<Schema>,
+    existing_schema: Option<&HashMap<String, Arc<Field>>>,
+) -> Vec<Arc<Field>> {
+    let mut existing_fields = Vec::new();
+
+    for field in inferred_schema.fields.iter() {
+        if existing_schema.map_or(false, |schema| schema.contains_key(field.name())) {
+            existing_fields.push(field.clone());
+        }
     }
-    let field_name = time_partition.unwrap();
-    let new_schema: Vec<Field> = schema
+
+    existing_fields
+}
+
+pub fn get_existing_timestamp_fields(
+    existing_schema: &HashMap<String, Arc<Field>>,
+) -> Vec<Arc<Field>> {
+    let mut timestamp_fields = Vec::new();
+
+    for field in existing_schema.values() {
+        if let DataType::Timestamp(TimeUnit::Millisecond, None) = field.data_type() {
+            timestamp_fields.push(field.clone());
+        }
+    }
+
+    timestamp_fields
+}
+
+pub fn override_timestamp_fields(
+    inferred_schema: Arc<Schema>,
+    existing_timestamp_fields: &[Arc<Field>],
+) -> Arc<Schema> {
+    let timestamp_field_names: Vec<&str> = existing_timestamp_fields
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect();
+
+    let updated_fields: Vec<Arc<Field>> = inferred_schema
         .fields()
         .iter()
         .map(|field| {
-            if *field.name() == field_name {
+            if timestamp_field_names.contains(&field.name().as_str()) {
+                Arc::new(Field::new(
+                    field.name(),
+                    DataType::Timestamp(TimeUnit::Millisecond, None),
+                    field.is_nullable(),
+                ))
+            } else {
+                field.clone()
+            }
+        })
+        .collect();
+
+    Arc::new(Schema::new(updated_fields))
+}
+
+pub fn update_field_type_in_schema(
+    inferred_schema: Arc<Schema>,
+    existing_schema: Option<&HashMap<String, Arc<Field>>>,
+    time_partition: Option<String>,
+    log_records: Option<&Vec<Value>>,
+) -> Arc<Schema> {
+    let mut updated_schema = inferred_schema.clone();
+
+    if let Some(existing_schema) = existing_schema {
+        let existing_fields = get_existing_fields(inferred_schema.clone(), Some(existing_schema));
+        let existing_timestamp_fields = get_existing_timestamp_fields(existing_schema);
+        // overriding known timestamp fields which were inferred as string fields
+        updated_schema = override_timestamp_fields(updated_schema, &existing_timestamp_fields);
+        let existing_field_names: Vec<String> = existing_fields
+            .iter()
+            .map(|field| field.name().clone())
+            .collect();
+
+        if let Some(log_records) = log_records {
+            for log_record in log_records {
+                updated_schema = Arc::new(update_data_type_to_datetime(
+                    (*updated_schema).clone(),
+                    log_record.clone(),
+                    existing_field_names.clone(),
+                ));
+            }
+        }
+    }
+
+    if time_partition.is_none() {
+        return updated_schema;
+    }
+    let time_partition_field_name = time_partition.unwrap();
+    let new_schema: Vec<Field> = updated_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if *field.name() == time_partition_field_name {
                 if field.data_type() == &DataType::Utf8 {
                     let new_data_type = DataType::Timestamp(TimeUnit::Millisecond, None);
                     Field::new(field.name().clone(), new_data_type, true)
@@ -170,4 +254,35 @@ pub fn update_field_type_in_schema(
         })
         .collect();
     Arc::new(Schema::new(new_schema))
+}
+
+pub fn update_data_type_to_datetime(
+    schema: Schema,
+    value: Value,
+    ignore_field_names: Vec<String>,
+) -> Schema {
+    let new_schema: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.data_type() == &DataType::Utf8 && !ignore_field_names.contains(field.name()) {
+                if let Value::Object(map) = &value {
+                    if let Some(Value::String(s)) = map.get(field.name()) {
+                        if DateTime::parse_from_rfc3339(s).is_ok() {
+                            // Update the field's data type to Timestamp
+                            return Field::new(
+                                field.name().clone(),
+                                DataType::Timestamp(TimeUnit::Millisecond, None),
+                                true,
+                            );
+                        }
+                    }
+                }
+            }
+            // Return the original field if no update is needed
+            Field::new(field.name(), field.data_type().clone(), true)
+        })
+        .collect();
+
+    Schema::new(new_schema)
 }
