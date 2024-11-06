@@ -108,7 +108,7 @@ pub async fn resolve_parseable_metadata(
     let staging_metadata = get_staging_metadata()?;
     let remote_metadata = parseable_metadata
         .as_ref()
-        .map(|meta| serde_json::from_slice(&meta).expect("parseable config is valid json"));
+        .map(|meta| serde_json::from_slice(meta).expect("parseable config is valid json"));
 
     // Env Change needs to be updated
     let check = determine_environment(staging_metadata, remote_metadata);

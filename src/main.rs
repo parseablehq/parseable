@@ -17,8 +17,9 @@
  */
 
 use parseable::{
+    banner,
     option::{Mode, CONFIG},
-    IngestServer, ParseableServer, QueryServer, Server,
+    rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
 
 #[actix_web::main]
@@ -31,6 +32,15 @@ async fn main() -> anyhow::Result<()> {
         Mode::Ingest => Box::new(IngestServer),
         Mode::All => Box::new(Server),
     };
+
+    // load metadata from persistence
+    let parseable_json = server.load_metadata().await?;
+    let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
+    banner::print(&CONFIG, &metadata).await;
+    // initialize the rbac map
+    rbac::map::init(&metadata);
+    // keep metadata info in mem
+    metadata.set_global();
 
     server.init().await?;
 

@@ -17,7 +17,6 @@
  */
 
 use crate::analytics;
-use crate::banner;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
@@ -31,7 +30,6 @@ use crate::hottier::HotTierManager;
 use crate::localcache::LocalCacheManager;
 use crate::metrics;
 use crate::migration;
-use crate::rbac;
 use crate::storage;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
@@ -43,6 +41,7 @@ use actix_web::Resource;
 use actix_web::Scope;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
+use bytes::Bytes;
 
 use crate::{
     handlers::http::{
@@ -88,17 +87,16 @@ impl ParseableServer for Server {
             .service(Self::get_generated());
     }
 
-    /// configure the server and start an instance of the single server setup
-    async fn init(&self) -> anyhow::Result<()> {
-        self.validate()?;
+    async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
         migration::run_file_migration(&CONFIG).await?;
         let parseable_json = CONFIG.validate_storage().await?;
         migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
-        let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
-        banner::print(&CONFIG, &metadata).await;
-        rbac::map::init(&metadata);
-        metadata.set_global();
 
+        Ok(parseable_json)
+    }
+
+    // configure the server and start an instance of the single server setup
+    async fn init(&self) -> anyhow::Result<()> {
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
                 .validate(CONFIG.parseable.local_cache_size)
@@ -164,10 +162,6 @@ impl ParseableServer for Server {
 
             };
         }
-    }
-
-    fn validate(&self) -> anyhow::Result<()> {
-        Ok(())
     }
 }
 

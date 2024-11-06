@@ -28,10 +28,11 @@ use crate::rbac::role::Action;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
-use crate::{analytics, banner, metrics, migration, rbac, storage};
+use crate::{analytics, metrics, migration, storage};
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use async_trait::async_trait;
+use bytes::Bytes;
 
 use crate::{option::CONFIG, ParseableServer};
 
@@ -67,19 +68,23 @@ impl ParseableServer for QueryServer {
             .service(Server::get_generated());
     }
 
-    /// initialize the server, run migrations as needed and start an instance
-    async fn init(&self) -> anyhow::Result<()> {
-        self.validate()?;
+    async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
+        // parseable can't use local storage for persistence when running a distributed setup
+        if CONFIG.get_storage_mode_string() == "Local drive" {
+            return Err(anyhow::anyhow!(
+                 "Query Server cannot be started in local storage mode. Please start the server in a supported storage mode.",
+             ));
+        }
+
         migration::run_file_migration(&CONFIG).await?;
         let parseable_json = CONFIG.validate_storage().await?;
         migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
-        let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
-        banner::print(&CONFIG, &metadata).await;
-        // initialize the rbac map
-        rbac::map::init(&metadata);
-        // keep metadata info in mem
-        metadata.set_global();
 
+        Ok(parseable_json)
+    }
+
+    /// initialize the server, run migrations as needed and start an instance
+    async fn init(&self) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -144,16 +149,6 @@ impl ParseableServer for QueryServer {
 
             };
         }
-    }
-
-    fn validate(&self) -> anyhow::Result<()> {
-        if CONFIG.get_storage_mode_string() == "Local drive" {
-            return Err(anyhow::anyhow!(
-                 "Query Server cannot be started in local storage mode. Please start the server in a supported storage mode.",
-             ));
-        }
-
-        Ok(())
     }
 }
 

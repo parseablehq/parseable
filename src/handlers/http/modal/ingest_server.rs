@@ -24,7 +24,6 @@ use super::IngestorMetadata;
 use super::OpenIdClient;
 use super::ParseableServer;
 use crate::analytics;
-use crate::banner;
 use crate::handlers::airplane;
 use crate::handlers::http::ingest;
 use crate::handlers::http::logstream;
@@ -35,9 +34,7 @@ use crate::localcache::LocalCacheManager;
 use crate::metrics;
 use crate::migration;
 use crate::migration::metadata_migration::migrate_ingester_metadata;
-use crate::rbac;
 use crate::rbac::role::Action;
-use crate::storage;
 use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::staging;
@@ -85,21 +82,25 @@ impl ParseableServer for IngestServer {
             .service(Server::get_ingest_otel_factory());
     }
 
-    /// configure the server and start an instance to ingest data
-    async fn init(&self) -> anyhow::Result<()> {
-        self.validate()?;
+    async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
+        // parseable can't use local storage for persistence when running a distributed setup
+        if CONFIG.get_storage_mode_string() == "Local drive" {
+            return Err(anyhow::Error::msg(
+                // Error Message can be better
+                "Ingest Server cannot be started in local storage mode. Please start the server in a supported storage mode.",
+            ));
+        }
 
         // check for querier state. Is it there, or was it there in the past
         let parseable_json = self.check_querier_state().await?;
         // to get the .parseable.json file in staging
         self.validate_credentials().await?;
-        let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
 
-        banner::print(&CONFIG, &metadata).await;
-        rbac::map::init(&metadata);
-        // set the info in the global metadata
-        metadata.set_global();
+        Ok(parseable_json)
+    }
 
+    /// configure the server and start an instance to ingest data
+    async fn init(&self) -> anyhow::Result<()> {
         // ! Undefined and Untested behaviour
         if let Some(cache_manager) = LocalCacheManager::global() {
             cache_manager
@@ -155,17 +156,6 @@ impl ParseableServer for IngestServer {
 
             };
         }
-    }
-
-    fn validate(&self) -> anyhow::Result<()> {
-        if CONFIG.get_storage_mode_string() == "Local drive" {
-            return Err(anyhow::Error::msg(
-                // Error Message can be better
-                "Ingest Server cannot be started in local storage mode. Please start the server in a supported storage mode.",
-            ));
-        }
-
-        Ok(())
     }
 }
 

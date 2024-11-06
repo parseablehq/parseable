@@ -33,6 +33,7 @@ use actix_web::HttpServer;
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
+use bytes::Bytes;
 use openid::Discovered;
 use serde::Deserialize;
 use serde::Serialize;
@@ -59,6 +60,12 @@ pub trait ParseableServer {
     fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>)
     where
         Self: Sized;
+
+    /// load metadata/configuration from persistence for previous sessions of parseable
+    async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>>;
+
+    /// code that describes starting and setup procedures for each type of server
+    async fn init(&self) -> anyhow::Result<()>;
 
     /// configure the server
     async fn start(
@@ -165,10 +172,6 @@ pub trait ParseableServer {
 
         Ok(())
     }
-
-    async fn init(&self) -> anyhow::Result<()>;
-
-    fn validate(&self) -> anyhow::Result<()>;
 }
 
 #[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq)]
