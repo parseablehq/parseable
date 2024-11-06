@@ -11,7 +11,6 @@ use crate::{
     },
     handlers::http::ingest::{create_stream_if_not_exists, PostError},
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
-    metadata::{error::stream_info::MetadataError, STREAM_INFO},
     storage::StreamType,
 };
 #[derive(Debug, thiserror::Error)]
