@@ -88,7 +88,7 @@ impl ParseableServer for Server {
             .service(Self::get_generated());
     }
 
-    /// implementation of init should just invoke a call to initialize
+    /// configure the server and start an instance of the single server setup
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
         migration::run_file_migration(&CONFIG).await?;
@@ -98,8 +98,72 @@ impl ParseableServer for Server {
         banner::print(&CONFIG, &metadata).await;
         rbac::map::init(&metadata);
         metadata.set_global();
-        self.initialize().await?;
-        Ok(())
+
+        if let Some(cache_manager) = LocalCacheManager::global() {
+            cache_manager
+                .validate(CONFIG.parseable.local_cache_size)
+                .await?;
+        };
+
+        let prometheus = metrics::build_metrics_handler();
+        CONFIG.storage().register_store_metrics(&prometheus);
+
+        migration::run_migration(&CONFIG).await?;
+
+        FILTERS.load().await?;
+        DASHBOARDS.load().await?;
+
+        storage::retention::load_retention_from_global();
+
+        if let Some(hot_tier_manager) = HotTierManager::global() {
+            hot_tier_manager.download_from_s3()?;
+        };
+
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
+            sync::run_local_sync().await;
+        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
+            sync::object_store_sync().await;
+
+        if CONFIG.parseable.send_analytics {
+            analytics::init_analytics_scheduler()?;
+        }
+
+        tokio::spawn(handlers::livetail::server());
+        tokio::spawn(handlers::airplane::server());
+
+        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+
+        tokio::pin!(app);
+
+        loop {
+            tokio::select! {
+                e = &mut app => {
+                    // actix server finished .. stop other threads and stop the server
+                    remote_sync_inbox.send(()).unwrap_or(());
+                    localsync_inbox.send(()).unwrap_or(());
+                    if let Err(e) = localsync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    return e
+                },
+                _ = &mut localsync_outbox => {
+                    // crash the server if localsync fails for any reason
+                    // panic!("Local Sync thread died. Server will fail now!")
+                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
+                },
+                _ = &mut remote_sync_outbox => {
+                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
+                }
+
+            };
+        }
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -484,73 +548,5 @@ impl Server {
     // GET "/" ==> Serve the static frontend directory
     pub fn get_generated() -> ResourceFiles {
         ResourceFiles::new("/", generate()).resolve_not_found_to_root()
-    }
-
-    async fn initialize(&self) -> anyhow::Result<()> {
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            cache_manager
-                .validate(CONFIG.parseable.local_cache_size)
-                .await?;
-        };
-
-        let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
-
-        migration::run_migration(&CONFIG).await?;
-
-        FILTERS.load().await?;
-        DASHBOARDS.load().await?;
-
-        storage::retention::load_retention_from_global();
-
-        if let Some(hot_tier_manager) = HotTierManager::global() {
-            hot_tier_manager.download_from_s3()?;
-        };
-
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
-        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync().await;
-
-        if CONFIG.parseable.send_analytics {
-            analytics::init_analytics_scheduler()?;
-        }
-
-        tokio::spawn(handlers::livetail::server());
-        tokio::spawn(handlers::airplane::server());
-
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
-
-        tokio::pin!(app);
-
-        loop {
-            tokio::select! {
-                e = &mut app => {
-                    // actix server finished .. stop other threads and stop the server
-                    remote_sync_inbox.send(()).unwrap_or(());
-                    localsync_inbox.send(()).unwrap_or(());
-                    if let Err(e) = localsync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    return e
-                },
-                _ = &mut localsync_outbox => {
-                    // crash the server if localsync fails for any reason
-                    // panic!("Local Sync thread died. Server will fail now!")
-                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
-                },
-                _ = &mut remote_sync_outbox => {
-                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
-                }
-
-            };
-        }
     }
 }

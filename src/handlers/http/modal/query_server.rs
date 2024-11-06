@@ -67,7 +67,7 @@ impl ParseableServer for QueryServer {
             .service(Server::get_generated());
     }
 
-    /// implementation of init should just invoke a call to initialize
+    /// initialize the server, run migrations as needed and start an instance
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
         migration::run_file_migration(&CONFIG).await?;
@@ -79,7 +79,71 @@ impl ParseableServer for QueryServer {
         rbac::map::init(&metadata);
         // keep metadata info in mem
         metadata.set_global();
-        self.initialize().await
+
+        let prometheus = metrics::build_metrics_handler();
+        CONFIG.storage().register_store_metrics(&prometheus);
+
+        migration::run_migration(&CONFIG).await?;
+
+        //create internal stream at server start
+        create_internal_stream_if_not_exists().await?;
+
+        FILTERS.load().await?;
+        DASHBOARDS.load().await?;
+        // track all parquet files already in the data directory
+        storage::retention::load_retention_from_global();
+
+        // all internal data structures populated now.
+        // start the analytics scheduler if enabled
+        if CONFIG.parseable.send_analytics {
+            analytics::init_analytics_scheduler()?;
+        }
+
+        if matches!(init_cluster_metrics_schedular(), Ok(())) {
+            log::info!("Cluster metrics scheduler started successfully");
+        }
+        if let Some(hot_tier_manager) = HotTierManager::global() {
+            hot_tier_manager.put_internal_stream_hot_tier().await?;
+            hot_tier_manager.download_from_s3()?;
+        };
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
+            sync::run_local_sync().await;
+        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
+            sync::object_store_sync().await;
+
+        tokio::spawn(airplane::server());
+        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+
+        tokio::pin!(app);
+        loop {
+            tokio::select! {
+                e = &mut app => {
+                    // actix server finished .. stop other threads and stop the server
+                    remote_sync_inbox.send(()).unwrap_or(());
+                    localsync_inbox.send(()).unwrap_or(());
+                    if let Err(e) = localsync_handler.await {
+                        log::error!("Error joining localsync_handler: {:?}", e);
+                    }
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    return e
+                },
+                _ = &mut localsync_outbox => {
+                    // crash the server if localsync fails for any reason
+                    // panic!("Local Sync thread died. Server will fail now!")
+                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
+                },
+                _ = &mut remote_sync_outbox => {
+                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
+                }
+
+            };
+        }
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -331,73 +395,5 @@ impl QueryServer {
                     ),
                 ),
             )
-    }
-
-    /// initialize the server, run migrations as needed and start the server
-    async fn initialize(&self) -> anyhow::Result<()> {
-        let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
-
-        migration::run_migration(&CONFIG).await?;
-
-        //create internal stream at server start
-        create_internal_stream_if_not_exists().await?;
-
-        FILTERS.load().await?;
-        DASHBOARDS.load().await?;
-        // track all parquet files already in the data directory
-        storage::retention::load_retention_from_global();
-
-        // all internal data structures populated now.
-        // start the analytics scheduler if enabled
-        if CONFIG.parseable.send_analytics {
-            analytics::init_analytics_scheduler()?;
-        }
-
-        if matches!(init_cluster_metrics_schedular(), Ok(())) {
-            log::info!("Cluster metrics scheduler started successfully");
-        }
-        if let Some(hot_tier_manager) = HotTierManager::global() {
-            hot_tier_manager.put_internal_stream_hot_tier().await?;
-            hot_tier_manager.download_from_s3()?;
-        };
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
-        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync().await;
-
-        tokio::spawn(airplane::server());
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
-
-        tokio::pin!(app);
-        loop {
-            tokio::select! {
-                e = &mut app => {
-                    // actix server finished .. stop other threads and stop the server
-                    remote_sync_inbox.send(()).unwrap_or(());
-                    localsync_inbox.send(()).unwrap_or(());
-                    if let Err(e) = localsync_handler.await {
-                        log::error!("Error joining localsync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    return e
-                },
-                _ = &mut localsync_outbox => {
-                    // crash the server if localsync fails for any reason
-                    // panic!("Local Sync thread died. Server will fail now!")
-                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
-                },
-                _ = &mut remote_sync_outbox => {
-                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
-                }
-
-            };
-        }
     }
 }

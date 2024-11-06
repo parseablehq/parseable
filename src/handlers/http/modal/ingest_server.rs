@@ -85,7 +85,7 @@ impl ParseableServer for IngestServer {
             .service(Server::get_ingest_otel_factory());
     }
 
-    /// implement the init method will just invoke the initialize method
+    /// configure the server and start an instance to ingest data
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
 
@@ -99,7 +99,62 @@ impl ParseableServer for IngestServer {
         rbac::map::init(&metadata);
         // set the info in the global metadata
         metadata.set_global();
-        self.initialize().await
+
+        // ! Undefined and Untested behaviour
+        if let Some(cache_manager) = LocalCacheManager::global() {
+            cache_manager
+                .validate(CONFIG.parseable.local_cache_size)
+                .await?;
+        };
+
+        let prometheus = metrics::build_metrics_handler();
+        CONFIG.storage().register_store_metrics(&prometheus);
+
+        migration::run_migration(&CONFIG).await?;
+
+        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
+            sync::run_local_sync().await;
+        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
+            sync::object_store_sync().await;
+
+        tokio::spawn(airplane::server());
+
+        // set the ingestor metadata
+        self.set_ingestor_metadata().await?;
+
+        // Ingestors shouldn't have to deal with OpenId auth flow
+        let app = self.start(prometheus, None);
+
+        tokio::pin!(app);
+        loop {
+            tokio::select! {
+                e = &mut app => {
+                    // actix server finished .. stop other threads and stop the server
+                    remote_sync_inbox.send(()).unwrap_or(());
+                    localsync_inbox.send(()).unwrap_or(());
+                    if let Err(e) = localsync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    return e
+                },
+                _ = &mut localsync_outbox => {
+                    // crash the server if localsync fails for any reason
+                    // panic!("Local Sync thread died. Server will fail now!")
+                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
+                },
+                _ = &mut remote_sync_outbox => {
+                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
+                    if let Err(e) = remote_sync_handler.await {
+                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
+                }
+
+            };
+        }
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -352,63 +407,5 @@ impl IngestServer {
         }
 
         Ok(())
-    }
-
-    async fn initialize(&self) -> anyhow::Result<()> {
-        // ! Undefined and Untested behaviour
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            cache_manager
-                .validate(CONFIG.parseable.local_cache_size)
-                .await?;
-        };
-
-        let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
-
-        migration::run_migration(&CONFIG).await?;
-
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
-        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync().await;
-
-        tokio::spawn(airplane::server());
-
-        // set the ingestor metadata
-        self.set_ingestor_metadata().await?;
-
-        // Ingestors shouldn't have to deal with OpenId auth flow
-        let app = self.start(prometheus, None);
-
-        tokio::pin!(app);
-        loop {
-            tokio::select! {
-                e = &mut app => {
-                    // actix server finished .. stop other threads and stop the server
-                    remote_sync_inbox.send(()).unwrap_or(());
-                    localsync_inbox.send(()).unwrap_or(());
-                    if let Err(e) = localsync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    return e
-                },
-                _ = &mut localsync_outbox => {
-                    // crash the server if localsync fails for any reason
-                    // panic!("Local Sync thread died. Server will fail now!")
-                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
-                },
-                _ = &mut remote_sync_outbox => {
-                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
-                }
-
-            };
-        }
     }
 }
