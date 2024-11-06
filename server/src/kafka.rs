@@ -30,7 +30,7 @@ pub enum KafkaError {
     StreamNotFound(String),
     #[error("Post error: #{0}")]
     PostError(#[from] PostError),
-    #[error("Metadta error: #{0}")]
+    #[error("Metadata error: #{0}")]
     MetadataError(#[from] MetadataError),
     #[error("Event error: #{0}")]
     EventError(#[from] EventError),
