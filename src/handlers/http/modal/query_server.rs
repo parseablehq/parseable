@@ -48,7 +48,6 @@ impl ParseableServer for QueryServer {
         config
             .service(
                 web::scope(&base_path())
-                    // POST "/query" ==> Get results of the SQL query passed in request body
                     .service(Server::get_query_factory())
                     .service(Server::get_trino_factory())
                     .service(Server::get_cache_webscope())

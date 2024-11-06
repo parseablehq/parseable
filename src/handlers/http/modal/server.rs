@@ -68,7 +68,6 @@ impl ParseableServer for Server {
         config
             .service(
                 web::scope(&base_path())
-                    // POST "/query" ==> Get results of the SQL query passed in request body
                     .service(Self::get_query_factory())
                     .service(Self::get_trino_factory())
                     .service(Self::get_cache_webscope())
@@ -186,6 +185,7 @@ impl Server {
     }
 
     // get the query factory
+    // POST "/query" ==> Get results of the SQL query passed in request body
     pub fn get_query_factory() -> Resource {
         web::resource("/query").route(web::post().to(query::query).authorize(Action::Query))
     }
