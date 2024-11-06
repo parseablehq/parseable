@@ -72,7 +72,7 @@ impl ParseableServer for QueryServer {
         // parseable can't use local storage for persistence when running a distributed setup
         if CONFIG.get_storage_mode_string() == "Local drive" {
             return Err(anyhow::anyhow!(
-                 "Query Server cannot be started in local storage mode. Please start the server in a supported storage mode.",
+                 "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
              ));
         }
 
