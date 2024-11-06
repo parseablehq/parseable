@@ -1,4 +1,4 @@
-use chrono::Local;
+use chrono::Utc;
 use kafka::consumer::{Consumer, Message};
 use std::{collections::HashMap, env, fmt::Debug, str::FromStr, time::Duration};
 use tokio::task::{self, JoinHandle};
@@ -105,7 +105,6 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
 
 fn ingest_message<'a>(stream_name: &str, msg: &Message<'a>) -> Result<(), KafkaError> {
     log::info!("Message: {:?}", msg);
-    let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name).unwrap();
     let hash_map = STREAM_INFO.read().unwrap();
     let schema = hash_map
         .get(stream_name)
@@ -113,7 +112,6 @@ fn ingest_message<'a>(stream_name: &str, msg: &Message<'a>) -> Result<(), KafkaE
         .schema
         .clone();
 
-    let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
     let txt = String::from_utf8(msg.value.into_iter().copied().collect());
     log::debug!("Message text: {}", txt.unwrap());
     let event = format::json::Event {
@@ -121,9 +119,8 @@ fn ingest_message<'a>(stream_name: &str, msg: &Message<'a>) -> Result<(), KafkaE
         tags: String::default(),
         metadata: String::default(),
     };
-    let (rb, is_first) = event
-        .into_recordbatch(schema, static_schema_flag, time_partition.clone())
-        .unwrap();
+    log::debug!("Parsed event: {:?}", event.data);
+    let (rb, is_first) = event.into_recordbatch(schema, None, None).unwrap();
 
     event::Event {
         rb,
@@ -131,8 +128,8 @@ fn ingest_message<'a>(stream_name: &str, msg: &Message<'a>) -> Result<(), KafkaE
         origin_format: "json",
         origin_size: msg.value.len() as u64,
         is_first_event: is_first,
-        parsed_timestamp: Local::now().naive_utc(),
-        time_partition: time_partition.clone(),
+        parsed_timestamp: Utc::now().naive_utc(),
+        time_partition: None,
         custom_partition_values: HashMap::new(),
         stream_type: StreamType::UserDefined,
     }
