@@ -64,23 +64,27 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
-    pub querier_endpoint: String,
-    pub querier_auth_token: String,
+    pub querier_endpoint: Option<String>,
+    pub querier_auth_token: Option<String>,
 }
 
 impl StorageMetadata {
     pub fn new() -> Self {
-        let querier_auth_token = format!(
-            "Basic {}",
-            base64::prelude::BASE64_STANDARD.encode(format!(
-                "{}:{}",
-                CONFIG.parseable.username, CONFIG.parseable.password
-            ))
-        );
-
         let (querier_endpoint, querier_auth_token) = match CONFIG.parseable.mode {
-            Mode::All | Mode::Query => (CONFIG.parseable.address.clone(), querier_auth_token),
-            Mode::Ingest => (String::default(), String::default()),
+            Mode::All | Mode::Query => {
+                let querier_auth_token = format!(
+                    "Basic {}",
+                    base64::prelude::BASE64_STANDARD.encode(format!(
+                        "{}:{}",
+                        CONFIG.parseable.username, CONFIG.parseable.password
+                    ))
+                );
+                (
+                    Some(CONFIG.parseable.address.clone()),
+                    Some(querier_auth_token),
+                )
+            }
+            Mode::Ingest => (None, None),
         };
 
         Self {
