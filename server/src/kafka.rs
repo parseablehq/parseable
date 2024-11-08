@@ -119,7 +119,7 @@ fn ingest_message<'a>(stream_name: &str, msg: &Message<'a>) -> Result<(), KafkaE
         tags: String::default(),
         metadata: String::default(),
     };
-    log::debug!("Parsed event: {:?}", event.data);
+    log::debug!("Generated event: {:?}", event.data);
     let (rb, is_first) = event.into_recordbatch(schema, None, None).unwrap();
 
     event::Event {
