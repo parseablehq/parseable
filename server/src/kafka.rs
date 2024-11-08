@@ -1,6 +1,7 @@
 use chrono::Utc;
-use kafka::client::GroupOffsetStorage;
+use kafka::client::{GroupOffsetStorage, SecurityConfig};
 use kafka::consumer::{Consumer, Message};
+use openssl::ssl::{SslConnector, SslMethod};
 use std::num::ParseIntError;
 use std::{collections::HashMap, env, fmt::Debug, str::FromStr, time::Duration};
 use tokio::task::{self, JoinHandle};
@@ -72,6 +73,13 @@ fn parse_duration_env_prefixed(key_prefix: &'static str) -> Result<Option<Durati
     handle_duration_env_prefix(key_prefix)
         .map_err(|raw| KafkaError::ParseDurationError(key_prefix, raw))
 }
+
+fn get_flag_env_val(key: &'static str) -> bool {
+    env::var(key)
+        .map(|val| val != "0" && val != "false")
+        .unwrap_or(true)
+}
+
 fn setup_consumer() -> Result<Consumer, KafkaError> {
     let hosts = load_env_or_err("KAFKA_HOSTS")?;
     let topic = load_env_or_err("KAFKA_TOPIC")?;
@@ -83,9 +91,7 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
         cb = cb.with_client_id(val)
     }
 
-    if let Ok(val) = env::var("KAFKA_FETCH_CRC_VALIDATION") {
-        cb = cb.with_fetch_crc_validation(val != "0" && val != "true");
-    }
+    cb = cb.with_fetch_crc_validation(get_flag_env_val("KAFKA_FETCH_CRC_VALIDATION"));
 
     if let Some(val) = parse_i32_env("KAFKA_FETCH_MAX_BYTES_PER_PARTITION")? {
         cb = cb.with_fetch_max_bytes_per_partition(val)
@@ -128,6 +134,13 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
             _ => Err(KafkaError::InvalidGroupOffsetStorage(val)),
         }?))
     }
+    if get_flag_env_val("KAFKA_USE_SECURITY") {
+        let connector = SslConnector::builder(SslMethod::tls()).unwrap().build();
+        let sec = SecurityConfig::new(connector)
+            .with_hostname_verification(get_flag_env_val("KAFKA_SECURITY_VERIFY_HOSTNAME"));
+        cb = cb.with_security(sec);
+    }
+
     let res = cb.create()?;
     Ok(res)
 }

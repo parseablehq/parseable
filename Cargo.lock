@@ -3227,6 +3227,7 @@ dependencies = [
  "object_store",
  "once_cell",
  "openid",
+ "openssl",
  "parquet",
  "path-clean",
  "prometheus",
