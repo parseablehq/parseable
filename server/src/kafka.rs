@@ -52,9 +52,7 @@ where
         None
     })
 }
-fn handle_duration_env_prefix(
-    key: &'static str,
-) -> Result<Option<Duration>, ParseIntError> {
+fn handle_duration_env_prefix(key: &'static str) -> Result<Option<Duration>, ParseIntError> {
     if let Ok(raw_secs) = env::var(format!("{key}_S")) {
         Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)?)))
     } else if let Ok(raw_secs) = env::var(format!("{key}_M")) {
@@ -81,6 +79,11 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
     if let Ok(val) = env::var("KAFKA_CLIENT_ID") {
         cb = cb.with_client_id(val)
     }
+
+    if let Ok(val) = env::var("KAFKA_FETCH_CRC_VALIDATION") {
+        cb = cb.with_fetch_crc_validation(val != "0" && val != "true");
+    }
+
     if let Some(val) = parse_i32_env("KAFKA_FETCH_MAX_BYTES_PER_PARTITION")? {
         cb = cb.with_fetch_max_bytes_per_partition(val)
     }
