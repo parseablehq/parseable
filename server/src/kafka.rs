@@ -1,5 +1,5 @@
 use chrono::Utc;
-use kafka::client::{GroupOffsetStorage, SecurityConfig};
+use kafka::client::{FetchOffset, GroupOffsetStorage, SecurityConfig};
 use kafka::consumer::{Consumer, Message};
 use openssl::ssl::{SslConnector, SslMethod};
 use std::num::ParseIntError;
@@ -139,6 +139,17 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
         let sec = SecurityConfig::new(connector)
             .with_hostname_verification(get_flag_env_val("KAFKA_SECURITY_VERIFY_HOSTNAME"));
         cb = cb.with_security(sec);
+    }
+    if let Ok(val) = env::var("KAFKA_FALLBACK_OFFSET") {
+        cb = cb.with_fallback_offset(match val.to_lowercase().as_str() {
+            "earliest" => Ok(FetchOffset::Earliest),
+            "latest" => Ok(FetchOffset::Latest),
+            val if val.starts_with("by:") => Ok(FetchOffset::ByTime(
+                i64::from_str(&val[3..])
+                    .map_err(|raw| KafkaError::ParseIntError("KAFKA_FALLBACK_OFFSET", raw))?,
+            )),
+            _ => Err(KafkaError::InvalidGroupOffsetStorage(val)),
+        }?)
     }
 
     let res = cb.create()?;
