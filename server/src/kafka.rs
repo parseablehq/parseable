@@ -1,4 +1,5 @@
 use chrono::Utc;
+use kafka::client::GroupOffsetStorage;
 use kafka::consumer::{Consumer, Message};
 use std::num::ParseIntError;
 use std::{collections::HashMap, env, fmt::Debug, str::FromStr, time::Duration};
@@ -37,6 +38,8 @@ pub enum KafkaError {
     EventError(#[from] EventError),
     #[error("JSON error: #{0}")]
     JsonError(#[from] serde_json::Error),
+    #[error("Invalid group offset storage: #{0}")]
+    InvalidGroupOffsetStorage(String),
 }
 
 fn load_env_or_err(key: &'static str) -> Result<String, KafkaError> {
@@ -118,6 +121,13 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
         );
     }
 
+    if let Ok(val) = env::var("KAFKA_OFFSET_STORAGE") {
+        cb = cb.with_offset_storage(Some(match val.to_lowercase().as_str() {
+            "kafka" => Ok(GroupOffsetStorage::Kafka),
+            "zookeeper" => Ok(GroupOffsetStorage::Zookeeper),
+            _ => Err(KafkaError::InvalidGroupOffsetStorage(val)),
+        }?))
+    }
     let res = cb.create()?;
     Ok(res)
 }
