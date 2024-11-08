@@ -74,10 +74,10 @@ fn parse_duration_env_prefixed(key_prefix: &'static str) -> Result<Option<Durati
         .map_err(|raw| KafkaError::ParseDurationError(key_prefix, raw))
 }
 
-fn get_flag_env_val(key: &'static str) -> bool {
+fn get_flag_env_val(key: &'static str, default: bool) -> bool {
     env::var(key)
         .map(|val| val != "0" && val != "false")
-        .unwrap_or(true)
+        .unwrap_or(default)
 }
 
 fn setup_consumer() -> Result<Consumer, KafkaError> {
@@ -91,7 +91,7 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
         cb = cb.with_client_id(val)
     }
 
-    cb = cb.with_fetch_crc_validation(get_flag_env_val("KAFKA_FETCH_CRC_VALIDATION"));
+    cb = cb.with_fetch_crc_validation(get_flag_env_val("KAFKA_FETCH_CRC_VALIDATION", true));
 
     if let Some(val) = parse_i32_env("KAFKA_FETCH_MAX_BYTES_PER_PARTITION")? {
         cb = cb.with_fetch_max_bytes_per_partition(val)
@@ -134,10 +134,10 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
             _ => Err(KafkaError::InvalidGroupOffsetStorage(val)),
         }?))
     }
-    if get_flag_env_val("KAFKA_USE_SECURITY") {
+    if get_flag_env_val("KAFKA_USE_SECURITY", false) {
         let connector = SslConnector::builder(SslMethod::tls()).unwrap().build();
         let sec = SecurityConfig::new(connector)
-            .with_hostname_verification(get_flag_env_val("KAFKA_SECURITY_VERIFY_HOSTNAME"));
+            .with_hostname_verification(get_flag_env_val("KAFKA_SECURITY_VERIFY_HOSTNAME", true));
         cb = cb.with_security(sec);
     }
     if let Ok(val) = env::var("KAFKA_FALLBACK_OFFSET") {
