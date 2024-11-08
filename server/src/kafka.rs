@@ -1,5 +1,6 @@
 use chrono::Utc;
 use kafka::consumer::{Consumer, Message};
+use std::num::ParseIntError;
 use std::{collections::HashMap, env, fmt::Debug, str::FromStr, time::Duration};
 use tokio::task::{self, JoinHandle};
 
@@ -22,7 +23,7 @@ pub enum KafkaError {
     NativeError(#[from] kafka::Error),
 
     #[error("Error parsing int {1} for environment variable {0}")]
-    ParseIntError(&'static str, std::num::ParseIntError),
+    ParseIntError(&'static str, ParseIntError),
     #[error("Error parsing duration int {1} for environment variable {0}")]
     ParseDurationError(&'static str, std::num::ParseIntError),
 
@@ -53,7 +54,7 @@ where
 }
 fn handle_duration_env_prefix(
     key: &'static str,
-) -> Result<Option<Duration>, std::num::ParseIntError> {
+) -> Result<Option<Duration>, ParseIntError> {
     if let Ok(raw_secs) = env::var(format!("{key}_S")) {
         Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)?)))
     } else if let Ok(raw_secs) = env::var(format!("{key}_M")) {
@@ -75,7 +76,7 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
     let topic = load_env_or_err("KAFKA_TOPIC")?;
     let mapped_hosts = hosts.split(",").map(|s| s.to_string()).collect();
 
-    let mut cb = Consumer::from_hosts(mapped_hosts).with_topic(topic);
+    let mut cb = Consumer::from_hosts(mapped_hosts).with_topic(topic.clone());
 
     if let Ok(val) = env::var("KAFKA_CLIENT_ID") {
         cb = cb.with_client_id(val)
@@ -99,12 +100,27 @@ fn setup_consumer() -> Result<Consumer, KafkaError> {
     if let Some(val) = parse_duration_env_prefixed("KAFKA_FETCH_MAX_WAIT_TIME")? {
         cb = cb.with_fetch_max_wait_time(val)
     }
+
+    if let Ok(val) = env::var("KAFKA_GROUP") {
+        cb = cb.with_group(val)
+    }
+    if let Ok(vals_raw) = env::var("KAFKA_PARTITIONS") {
+        let vals = vals_raw
+            .split(',')
+            .map(i32::from_str)
+            .collect::<Result<Vec<i32>, ParseIntError>>();
+        cb = cb.with_topic_partitions(
+            topic,
+            &vals.map_err(|raw| KafkaError::ParseIntError("KAFKA_PARTITIONS", raw))?,
+        );
+    }
+
     let res = cb.create()?;
     Ok(res)
 }
 
 fn ingest_message<'a>(stream_name: &str, msg: &Message<'a>) -> Result<(), KafkaError> {
-    log::info!("Message: {:?}", msg);
+    log::debug!("Message: {:?}", msg);
     let hash_map = STREAM_INFO.read().unwrap();
     let schema = hash_map
         .get(stream_name)
