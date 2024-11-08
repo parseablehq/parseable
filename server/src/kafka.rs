@@ -25,7 +25,7 @@ pub enum KafkaError {
     #[error("Error parsing int {1} for environment variable {0}")]
     ParseIntError(&'static str, ParseIntError),
     #[error("Error parsing duration int {1} for environment variable {0}")]
-    ParseDurationError(&'static str, std::num::ParseIntError),
+    ParseDurationError(&'static str, ParseIntError),
 
     #[error("Stream not found: #{0}")]
     StreamNotFound(String),
