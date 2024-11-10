@@ -20,6 +20,7 @@
 use crate::about::{current, platform};
 use crate::handlers::http::cluster::utils::check_liveness;
 use crate::handlers::http::{base_path_without_preceding_slash, cluster};
+use crate::handlers::STREAM_NAME_HEADER_KEY;
 use crate::option::{Mode, CONFIG};
 use crate::storage;
 use crate::{metadata, stats};
@@ -134,7 +135,7 @@ impl Report {
 
         let _ = client
             .post(ANALYTICS_SERVER_URL)
-            .header("X-P-Stream", "serverusageevent")
+            .header(STREAM_NAME_HEADER_KEY, "serverusageevent")
             .json(&self)
             .send()
             .await;
