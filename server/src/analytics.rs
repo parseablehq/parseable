@@ -131,7 +131,13 @@ impl Report {
 
     pub async fn send(&self) {
         let client = reqwest::Client::new();
-        let _ = client.post(ANALYTICS_SERVER_URL).json(&self).send().await;
+
+        let _ = client
+            .post(ANALYTICS_SERVER_URL)
+            .header("X-P-Stream", "serverusageevent")
+            .json(&self)
+            .send()
+            .await;
     }
 }
 

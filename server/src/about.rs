@@ -17,19 +17,20 @@
  *
  */
 
+use crate::analytics;
+use crate::option::Config;
+use crate::storage::StorageMetadata;
+use crate::utils::update::{self, LatestRelease};
 use chrono::Duration;
 use chrono_humanize::{Accuracy, Tense};
 use crossterm::style::Stylize;
+use once_cell::sync::OnceCell;
 use std::env;
 use std::path::Path;
 use sysinfo::System;
 use ulid::Ulid;
-
-use crate::analytics;
-use crate::option::Config;
-use crate::storage::StorageMetadata;
-use crate::utils::update;
-
+// Expose some static variables for internal usage
+pub static LATEST_RELEASE: OnceCell<Option<LatestRelease>> = OnceCell::new();
 static K8S_ENV_TO_CHECK: &str = "KUBERNETES_SERVICE_HOST";
 
 fn is_docker() -> bool {
@@ -48,6 +49,18 @@ pub fn platform() -> &'static str {
     } else {
         "Native"
     }
+}
+
+pub fn set_latest_release(latest_release: Option<LatestRelease>) {
+    LATEST_RELEASE
+        .set(latest_release.clone())
+        .expect("only set once")
+}
+
+pub fn get_latest_release() -> &'static Option<LatestRelease> {
+    LATEST_RELEASE
+        .get()
+        .expect("latest release is fetched from global state")
 }
 
 // User Agent for Download API call
@@ -122,7 +135,7 @@ pub async fn print(config: &Config, meta: &StorageMetadata) {
     } else {
         None
     };
-
+    set_latest_release(latest_release.clone());
     print_about(
         current.released_version,
         latest_release,
