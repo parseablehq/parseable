@@ -65,6 +65,7 @@ pub async fn sync_streams_with_ingestors(
     headers: HeaderMap,
     body: Bytes,
     stream_name: &str,
+    skip_ingestor: Option<String>,
 ) -> Result<(), StreamError> {
     let mut reqwest_headers = http_header::HeaderMap::new();
 
@@ -77,7 +78,16 @@ pub async fn sync_streams_with_ingestors(
     })?;
 
     let client = reqwest::Client::new();
-    for ingestor in ingestor_infos.iter() {
+
+    let final_ingestor_infos = match skip_ingestor {
+        None => ingestor_infos,
+        Some(skip_ingestor) => ingestor_infos
+            .into_iter()
+            .filter(|ingestor| ingestor.domain_name != to_url_string(skip_ingestor.clone()))
+            .collect::<Vec<IngestorMetadata>>(),
+    };
+
+    for ingestor in final_ingestor_infos {
         if !utils::check_liveness(&ingestor.domain_name).await {
             log::warn!("Ingestor {} is not live", ingestor.domain_name);
             continue;
@@ -858,10 +868,11 @@ pub async fn forward_create_stream_request(stream_name: &str) -> Result<(), Stre
     }
 
     let url = format!(
-        "{}{}/logstream/{}",
+        "{}{}/logstream/{}?skip_ingestors={}",
         querier_endpoint,
         base_path_without_preceding_slash(),
-        stream_name
+        stream_name,
+        CONFIG.parseable.ingestor_endpoint,
     );
 
     let response = client
