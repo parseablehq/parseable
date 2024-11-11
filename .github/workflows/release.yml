@@ -14,6 +14,10 @@ jobs:
   build-linux:
     name: Build for ${{matrix.target}}
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +43,11 @@ jobs:
         run: |
           mv target/${{ matrix.target }}/release/parseable Parseable_OSS_${{ matrix.target }}
 
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: Parseable_OSS_${{ matrix.target }}
+
       - name: Create Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -56,6 +65,10 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v1
@@ -75,6 +88,11 @@ jobs:
         run: |
           mv target/x86_64-pc-windows-msvc/release/PARSEABLE.exe Parseable_OSS_x86_64-pc-windows-msvc.exe
 
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: Parseable_OSS_x86_64-pc-windows-msvc.exe
+
       - name: Create artifact for Windows
         uses: actions/upload-artifact@v4
         with:
@@ -92,6 +110,10 @@ jobs:
 
   build-mac:
     runs-on: macos-latest
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
     strategy:
       matrix:
         target:
@@ -119,6 +141,11 @@ jobs:
       - name: Rename binary
         run: |
           mv target/${{ matrix.target }}/release/Parseable Parseable_OSS_${{ matrix.target }}
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: Parseable_OSS_${{ matrix.target }}
 
       - name: Create artifact
         uses: actions/upload-artifact@v4
