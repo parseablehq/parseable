@@ -151,7 +151,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Parseable_OSS_${{ matrix.target }}
-          path: Parseable_OSS_${{ matrix.targ`et }}
+          path: Parseable_OSS_${{ matrix.target }}
 
       - name: Publish Archive to Release Page
         uses: softprops/action-gh-release@v0.1.15
