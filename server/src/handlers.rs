@@ -22,7 +22,7 @@ pub mod livetail;
 
 const PREFIX_TAGS: &str = "x-p-tag-";
 const PREFIX_META: &str = "x-p-meta-";
-const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
+pub const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const CACHE_RESULTS_HEADER_KEY: &str = "x-p-cache-results";
 const CACHE_VIEW_HEADER_KEY: &str = "x-p-show-cached";
 const USER_ID_HEADER_KEY: &str = "x-p-user-id";
