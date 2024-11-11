@@ -20,10 +20,9 @@ use actix_web::web::Json;
 use serde_json::json;
 
 use crate::{
-    about,
+    about::{self, get_latest_release},
     option::{Mode, CONFIG},
     storage::StorageMetadata,
-    utils::update,
 };
 use std::path::PathBuf;
 
@@ -51,14 +50,13 @@ pub async fn about() -> Json<serde_json::Value> {
     let meta = StorageMetadata::global();
 
     let current_release = about::current();
-    let latest_release = update::get_latest(&meta.deployment_id).await;
-
+    let latest_release = get_latest_release();
     let (update_available, latest_release) = match latest_release {
-        Ok(latest_release) => (
+        Some(latest_release) => (
             latest_release.version > current_release.released_version,
             Some(format!("v{}", latest_release.version)),
         ),
-        Err(_) => (false, None),
+        None => (false, None),
     };
 
     let current_version = format!("v{}", current_release.released_version);

@@ -25,7 +25,7 @@ use crate::about;
 
 use super::uid;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LatestRelease {
     pub version: semver::Version,
     pub date: DateTime<Utc>,
@@ -37,20 +37,17 @@ pub async fn get_latest(deployment_id: &uid::Uid) -> Result<LatestRelease, anyho
         .timeout(Duration::from_secs(8))
         .build()
         .expect("client can be built on this system");
-
     let json: serde_json::Value = agent
         .get("https://download.parseable.io/latest-version")
         .send()
         .await?
         .json()
         .await?;
-
     let version = json["tag_name"]
         .as_str()
         .and_then(|ver| ver.strip_prefix('v'))
         .and_then(|ver| semver::Version::parse(ver).ok())
         .ok_or_else(|| anyhow!("Failed parsing version"))?;
-
     let date = json["published_at"]
         .as_str()
         .ok_or_else(|| anyhow!("Failed parsing published date"))?;
