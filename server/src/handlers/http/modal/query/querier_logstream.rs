@@ -1,9 +1,14 @@
+use core::str;
 use std::fs;
 
 use actix_web::{web, HttpRequest, Responder};
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
+use serde::Deserialize;
+use tokio::sync::Mutex;
+
+static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 use crate::{
     event,
@@ -74,11 +79,22 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
-pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
+#[derive(Deserialize)]
+pub struct PutStreamQuery {
+    skip_ingestors: Option<String>,
+}
+
+pub async fn put_stream(
+    req: HttpRequest,
+    body: Bytes,
+    info: web::Query<PutStreamQuery>,
+) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
+    let _ = CREATE_STREAM_LOCK.lock().await;
     let headers = create_update_stream(&req, &body, &stream_name).await?;
-    sync_streams_with_ingestors(headers, body, &stream_name).await?;
+
+    sync_streams_with_ingestors(headers, body, &stream_name, info.skip_ingestors.clone()).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }

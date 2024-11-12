@@ -16,6 +16,7 @@
  *
  */
 
+use base64::Engine;
 use rand::distributions::DistString;
 use serde_json::{Map, Value as JsonValue};
 
@@ -145,6 +146,55 @@ pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
             }
         }
     }
+    storage_metadata
+}
+
+// maybe rename
+pub fn v4_v5(mut storage_metadata: JsonValue) -> JsonValue {
+    let metadata = storage_metadata.as_object_mut().unwrap();
+    metadata.remove_entry("version");
+    metadata.insert("version".to_string(), JsonValue::String("v5".to_string()));
+
+    match metadata.get("server_mode") {
+        None => {
+            metadata.insert(
+                "server_mode".to_string(),
+                JsonValue::String(CONFIG.parseable.mode.to_string()),
+            );
+        }
+        Some(JsonValue::String(mode)) => match mode.as_str() {
+            "Query" => {
+                metadata.insert(
+                    "querier_endpoint".to_string(),
+                    JsonValue::String(CONFIG.parseable.address.clone()),
+                );
+            }
+            "All" => {
+                metadata.insert(
+                    "server_mode".to_string(),
+                    JsonValue::String(CONFIG.parseable.mode.to_string()),
+                );
+                metadata.insert(
+                    "querier_endpoint".to_string(),
+                    JsonValue::String(CONFIG.parseable.address.clone()),
+                );
+            }
+            _ => (),
+        },
+        _ => (),
+    }
+
+    metadata.insert(
+        "querier_auth_token".to_string(),
+        JsonValue::String(format!(
+            "Basic {}",
+            base64::prelude::BASE64_STANDARD.encode(format!(
+                "{}:{}",
+                CONFIG.parseable.username, CONFIG.parseable.password
+            ))
+        )),
+    );
+
     storage_metadata
 }
 

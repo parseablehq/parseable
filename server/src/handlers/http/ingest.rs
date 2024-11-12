@@ -26,6 +26,7 @@ use crate::event::{
     error::EventError,
     format::{self, EventFormat},
 };
+use crate::handlers::http::cluster::forward_create_stream_request;
 use crate::handlers::{LOG_SOURCE_KEY, LOG_SOURCE_OTEL, STREAM_NAME_HEADER_KEY};
 use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
@@ -210,11 +211,16 @@ pub async fn create_stream_if_not_exists(
             if !streams.contains(&LogStream {
                 name: stream_name.to_owned(),
             }) {
-                log::error!("Stream {} not found", stream_name);
-                return Err(PostError::Invalid(anyhow::anyhow!(
-                    "Stream `{}` not found. Please create it using the Query server.",
-                    stream_name
-                )));
+                match forward_create_stream_request(stream_name).await {
+                    Ok(()) => log::info!("Stream {} created", stream_name),
+                    Err(e) => {
+                        return Err(PostError::Invalid(anyhow::anyhow!(
+                            "Unable to create stream: {} using query server. Error: {}",
+                            stream_name,
+                            e.to_string(),
+                        )))
+                    }
+                };
             }
             metadata::STREAM_INFO
                 .upsert_stream_info(
