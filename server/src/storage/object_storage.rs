@@ -26,6 +26,7 @@ use super::{
 };
 
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
+use crate::handlers::http::modal::query_server::QUERIER_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
@@ -660,5 +661,20 @@ pub fn ingestor_metadata_path(id: Option<&str>) -> RelativePathBuf {
     RelativePathBuf::from_iter([
         PARSEABLE_ROOT_DIRECTORY,
         &format!("ingestor.{}.json", INGESTOR_META.get_ingestor_id()),
+    ])
+}
+
+#[inline(always)]
+pub fn querier_metadata_path(id: Option<&str>) -> RelativePathBuf {
+    if let Some(id) = id {
+        return RelativePathBuf::from_iter([
+            PARSEABLE_ROOT_DIRECTORY,
+            &format!("querier.{}.json", id),
+        ]);
+    }
+
+    RelativePathBuf::from_iter([
+        PARSEABLE_ROOT_DIRECTORY,
+        &format!("querier.{}.json", QUERIER_META.get_querier_id()),
     ])
 }

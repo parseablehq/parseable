@@ -48,6 +48,7 @@ use super::ssl_acceptor::get_ssl_acceptor;
 use super::IngestorMetadata;
 use super::OpenIdClient;
 use super::ParseableServer;
+use super::LEADER;
 
 use crate::{
     handlers::http::{base_path, cross_origin_config},
@@ -175,6 +176,9 @@ impl ParseableServer for IngestServer {
     /// implement the init method will just invoke the initialize method
     async fn init(&self) -> anyhow::Result<()> {
         self.validate()?;
+
+        // ingestors should start as leader because they want write access (for put stream, etc)
+        LEADER.lock().await.make_leader();
 
         // check for querier state. Is it there, or was it there in the past
         let parseable_json = self.check_querier_state().await?;

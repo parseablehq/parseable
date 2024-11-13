@@ -396,13 +396,12 @@ pub async fn get_first_event(
             }
         }
         Mode::Query => {
-            let ingestor_metadata =
-                handlers::http::cluster::get_ingestor_info()
-                    .await
-                    .map_err(|err| {
-                        log::error!("Fatal: failed to get ingestor info: {:?}", err);
-                        ObjectStorageError::from(err)
-                    })?;
+            let ingestor_metadata = handlers::http::cluster::get_ingestor_info_storage()
+                .await
+                .map_err(|err| {
+                    log::error!("Fatal: failed to get ingestor info: {:?}", err);
+                    ObjectStorageError::from(err)
+                })?;
             let mut ingestors_first_event_at: Vec<String> = Vec::new();
             for ingestor in ingestor_metadata {
                 let url = format!(

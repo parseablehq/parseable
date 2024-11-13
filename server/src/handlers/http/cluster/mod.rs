@@ -18,11 +18,14 @@
 
 pub mod utils;
 
+use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::utils::{
     check_liveness, to_url_string, IngestionStats, QueriedStats,
 };
 use crate::handlers::http::ingest::{ingest_internal_stream, PostError};
 use crate::handlers::http::logstream::error::StreamError;
+use crate::handlers::http::modal::query::Method;
+use crate::handlers::http::modal::query_server::QUERIER_META;
 use crate::handlers::http::role::RoleError;
 use crate::option::CONFIG;
 
@@ -54,7 +57,7 @@ use super::rbac::RBACError;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use super::modal::IngestorMetadata;
+use super::modal::{IngestorMetadata, QuerierMetadata};
 use clokwerk::{AsyncScheduler, Interval};
 pub const INTERNAL_STREAM_NAME: &str = "pmeta";
 
@@ -72,7 +75,7 @@ pub async fn sync_streams_with_ingestors(
     for (key, value) in headers.iter() {
         reqwest_headers.insert(key.clone(), value.clone());
     }
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
@@ -131,7 +134,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     username: &String,
     role: &HashSet<String>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -183,7 +186,7 @@ pub async fn sync_users_with_roles_with_ingestors(
 
 // forward the delete user request to all ingestors to keep them in sync
 pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -232,7 +235,7 @@ pub async fn sync_user_creation_with_ingestors(
     user: User,
     role: &Option<HashSet<String>>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -292,7 +295,7 @@ pub async fn sync_user_creation_with_ingestors(
 
 // forward the password reset request to all ingestors to keep them in sync
 pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -342,7 +345,7 @@ pub async fn sync_role_update_with_ingestors(
     name: String,
     body: Vec<DefaultPrivilege>,
 ) -> Result<(), RoleError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         RoleError::Anyhow(err)
     })?;
@@ -402,7 +405,7 @@ pub async fn fetch_daily_stats_from_ingestors(
     let mut total_ingestion_size: u64 = 0;
     let mut total_storage_size: u64 = 0;
 
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
@@ -605,7 +608,7 @@ pub async fn send_retention_cleanup_request(
 }
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
@@ -683,7 +686,7 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
 }
 
 // update the .query.json file and return the new ingestorMetadataArr
-pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
+pub async fn get_ingestor_info_storage() -> anyhow::Result<IngestorMetadataArr> {
     let store = CONFIG.storage().get_object_store();
 
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
@@ -701,6 +704,25 @@ pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
     Ok(arr)
 }
 
+pub async fn get_querier_info_storage() -> anyhow::Result<Vec<QuerierMetadata>> {
+    let store = CONFIG.storage().get_object_store();
+
+    let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
+    let arr = store
+        .get_objects(
+            Some(&root_path),
+            Box::new(|file_name| file_name.starts_with("querier")),
+        )
+        .await?
+        .iter()
+        // this unwrap will most definateley shoot me in the foot later
+        .map(|x| serde_json::from_slice::<QuerierMetadata>(x).unwrap_or_default())
+        .collect_vec();
+
+    Ok(arr)
+}
+
+#[allow(unused)]
 pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostError> {
     let domain_name: String = req.match_info().get("ingestor").unwrap().parse().unwrap();
     let domain_name = to_url_string(domain_name);
@@ -752,7 +774,7 @@ pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostErr
 }
 
 async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
-    let ingestor_metadata = get_ingestor_info().await.map_err(|err| {
+    let ingestor_metadata = get_ingestor_info_storage().await.map_err(|err| {
         log::error!("Fatal: failed to get ingestor info: {:?}", err);
         PostError::Invalid(err)
     })?;
@@ -859,11 +881,41 @@ pub async fn forward_create_stream_request(stream_name: &str) -> Result<(), Stre
     let staging_metadata = get_staging_metadata().unwrap().ok_or_else(|| {
         StreamError::Anyhow(anyhow::anyhow!("Failed to retrieve staging metadata"))
     })?;
+
+    // // TODO
+    // // ensure that this querier endpoint belongs to the leader
+    // let mut qmetas = get_querier_info_storage().await?;
+    // qmetas.sort_by_key(|item| item.start_time);
+
+    // let client = reqwest::Client::new();
+    // let querier_endpoint = for qm in qmetas.iter() {
+    //     let domain = if let Some(domain) = qm.domain_name.strip_suffix("/") {
+    //         domain.to_string()
+    //     } else {
+    //         qm.domain_name.to_string()
+    //     };
+
+    //     let target_url = format!("{domain}{}/leader", base_path());
+
+    //     let endpoint = match client.get(target_url)
+    //         .header(header::AUTHORIZATION, &qm.token)
+    //         .send()
+    //         .await?
+    //         .status() {
+    //             StatusCode::OK => {
+    //                 qm.domain_name.clone()
+    //             },
+    //             _ => {
+    //                 continue;
+    //             }
+    //         };
+    //     Some(endpoint)
+    // };
+
     let querier_endpoint = to_url_string(staging_metadata.querier_endpoint.unwrap());
     let token = staging_metadata.querier_auth_token.unwrap();
 
     if !check_liveness(&querier_endpoint).await {
-        log::warn!("Querier {} is not live", querier_endpoint);
         return Err(StreamError::Anyhow(anyhow::anyhow!("Querier is not live")));
     }
 
@@ -908,6 +960,99 @@ pub async fn forward_create_stream_request(stream_name: &str) -> Result<(), Stre
             status,
         )));
     }
+
+    Ok(())
+}
+
+/// Sync the incoming API call with all queriers
+/// - Read queriers from storage
+/// - Check liveness
+/// - build client and send request
+pub async fn sync_with_queriers(
+    headers: HeaderMap,
+    body: Option<Bytes>,
+    endpoint: &str, // this is the URL without the domain_name of the querier (shouldn't start with `/`)
+    method: Method,
+) -> anyhow::Result<()> {
+    let mut reqwest_headers = http_header::HeaderMap::new();
+
+    for (key, value) in headers.iter() {
+        reqwest_headers.insert(key.clone(), value.clone());
+    }
+
+    let querier_infos = get_querier_info_storage().await?;
+
+    // let mut handles = JoinSet::new();
+
+    let client = reqwest::Client::new();
+    for querier in querier_infos.iter() {
+        if querier.eq(&QUERIER_META) {
+            log::info!("Skipping syncing with self");
+            continue;
+        }
+
+        if !utils::check_liveness(&querier.domain_name).await {
+            continue;
+        }
+
+        let domain = if let Some(domain) = querier.domain_name.strip_suffix("/") {
+            domain.to_string()
+        } else {
+            querier.domain_name.to_string()
+        };
+
+        // URL is domain_name + base_path + endpoint
+        let url = format!("{domain}{}/{}", base_path(), endpoint);
+
+        let request_builder = match method {
+            Method::Post => client.post(url),
+            Method::Put => client.put(url),
+            Method::Delete => client.delete(url),
+        };
+
+        let request_builder = match body.clone() {
+            Some(body) => request_builder.body(body),
+            None => request_builder,
+        };
+
+        request_builder
+            .headers(reqwest_headers.clone())
+            .send()
+            .await?;
+        // handles.spawn( {
+        //     request_builder
+        //     .headers(reqwest_headers.clone())
+        //     .send()
+        // });
+    }
+
+    // while let Some(handle) = handles.join_next().await {
+    //     match handle {
+    //         Ok(h) => {
+    //             match h {
+    //                 Ok(res) => {
+    //                     if !res.status().is_success() {
+    //                         log::error!(
+    //                             "querier: {:?} failed\nResponse Returned: {:?}",
+    //                             res.url().clone(),
+    //                             res.text().await
+    //                         );
+    //                     }
+    //                 },
+    //                 Err(err) => {
+    //                     log::error!(
+    //                         "Fatal: failed to forward request to querier: {:?}\n Error: {:?}",
+    //                         err.url(),
+    //                         err
+    //                     );
+    //                 },
+    //             }
+    //         },
+    //         Err(err) => {
+    //             log::error!("Unable to join handle with error- {err:?}");
+    //         },
+    //     }
+    // }
 
     Ok(())
 }

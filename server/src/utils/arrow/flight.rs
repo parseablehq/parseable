@@ -89,6 +89,7 @@ pub async fn run_do_get_rpc(
     Ok(response.try_collect().await?)
 }
 
+#[allow(unused)]
 /// all the records from the ingesters are concatinated into one event and pushed to memory
 pub async fn append_temporary_events(
     stream_name: &str,
