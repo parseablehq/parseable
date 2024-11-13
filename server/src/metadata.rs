@@ -410,9 +410,12 @@ impl StreamInfo {
 
 fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Schema {
     let staging_files = StorageDir::new(stream_name).arrow_files();
-    let schema = MergedRecordReader::try_new(&staging_files)
-        .unwrap()
-        .merged_schema();
+    let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
+    if record_reader.readers.is_empty() {
+        return current_schema;
+    }
+
+    let schema = record_reader.merged_schema();
 
     Schema::try_merge(vec![schema, current_schema]).unwrap()
 }
