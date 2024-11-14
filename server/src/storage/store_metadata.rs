@@ -204,12 +204,13 @@ pub async fn resolve_parseable_metadata(
         }
     };
 
-    let metadata = res.map_err(|err| {
+    let mut metadata = res.map_err(|err| {
         let err = format!("{}. {}", err, JOIN_COMMUNITY);
         let err: Box<dyn std::error::Error + Send + Sync + 'static> = err.into();
         ObjectStorageError::UnhandledError(err)
     })?;
 
+    metadata.server_mode = CONFIG.parseable.mode.to_string();
     if overwrite_remote {
         put_remote_metadata(&metadata).await?;
     }
@@ -227,19 +228,19 @@ fn determine_environment(
 ) -> EnvChange {
     match (staging_metadata, remote_metadata) {
         (Some(staging), Some(remote)) => {
-            // if both staging and remote have same deployment id
-            if staging.deployment_id == remote.deployment_id {
-                EnvChange::None(remote)
-            } else if Mode::from_string(&remote.server_mode).expect("server mode is valid here")
-                == Mode::All
+            // if both staging and remote have same deployment id but different server modes
+            if staging.deployment_id == remote.deployment_id
+                && Mode::from_string(&remote.server_mode).expect("server mode is valid here")
+                    == Mode::All
                 && (CONFIG.parseable.mode == Mode::Query || CONFIG.parseable.mode == Mode::Ingest)
             {
-                // if you are switching to distributed mode from standalone mode
-                // it will create a new staging rather than a new remote
                 EnvChange::NewStaging(remote)
-            } else {
-                // it is a new remote
+            } else if staging.deployment_id != remote.deployment_id {
+                // if deployment id is different
                 EnvChange::NewRemote
+            } else {
+                // if deployment id is same
+                EnvChange::None(remote)
             }
         }
         (None, Some(remote)) => EnvChange::NewStaging(remote),
