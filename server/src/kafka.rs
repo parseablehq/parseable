@@ -1,3 +1,4 @@
+use arrow_schema::Field;
 use chrono::Utc;
 use futures_util::StreamExt;
 use rdkafka::config::ClientConfig;
@@ -10,6 +11,7 @@ use rdkafka::{Message, TopicPartitionList};
 use std::env::VarError;
 use std::fmt::Display;
 use std::num::ParseIntError;
+use std::sync::Arc;
 use std::{collections::HashMap, env, fmt::Debug, str::FromStr, time::Duration};
 use tokio::task::{self, JoinHandle};
 
@@ -167,16 +169,17 @@ fn setup_consumer() -> Result<StreamConsumer, KafkaError> {
     Ok(consumer)
 }
 
-fn ingest_message<'a>(stream_name: &str, msg: BorrowedMessage<'a>) -> Result<(), KafkaError> {
+fn resolve_schema(stream_name: &str) -> Result<HashMap<String, Arc<Field>>, KafkaError> {
+    let hash_map = STREAM_INFO.read().unwrap();
+    let raw = hash_map
+        .get(stream_name)
+        .ok_or_else(|| KafkaError::StreamNotFound(stream_name.to_owned()))?;
+    Ok(raw.schema.clone())
+}
+async fn ingest_message<'a>(stream_name: &str, msg: BorrowedMessage<'a>) -> Result<(), KafkaError> {
     log::debug!("{}: Message: {:?}", stream_name, msg);
     if let Some(payload) = msg.payload() {
-        let hash_map = STREAM_INFO.read().unwrap();
-        let schema = hash_map
-            .get(stream_name)
-            .ok_or(KafkaError::StreamNotFound(stream_name.to_owned()))?
-            .schema
-            .clone();
-
+        let schema = resolve_schema(stream_name)?;
         let event = format::json::Event {
             data: serde_json::from_slice(payload)?,
             tags: String::default(),
@@ -196,7 +199,8 @@ fn ingest_message<'a>(stream_name: &str, msg: BorrowedMessage<'a>) -> Result<(),
             custom_partition_values: HashMap::new(),
             stream_type: StreamType::UserDefined,
         }
-        .process_unchecked()?;
+        .process()
+        .await?;
     } else {
         log::debug!("{} No payload for stream", stream_name);
     }
@@ -214,7 +218,7 @@ pub async fn setup_integration() -> Result<JoinHandle<()>, KafkaError> {
             loop {
                 while let Some(curr) = stream.next().await {
                     let msg = curr.unwrap();
-                    ingest_message(&stream_name, msg).unwrap();
+                    ingest_message(&stream_name, msg).await.unwrap();
                 }
             }
         });
