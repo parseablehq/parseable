@@ -1,7 +1,14 @@
 use chrono::Utc;
-use kafka::client::{FetchOffset, GroupOffsetStorage, SecurityConfig};
-use kafka::consumer::{Consumer, Message};
-use openssl::ssl::{SslConnector, SslMethod};
+use futures_util::StreamExt;
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::stream_consumer::StreamConsumer;
+use rdkafka::consumer::Consumer;
+use rdkafka::error::{KafkaError as NativeKafkaError, RDKafkaError};
+use rdkafka::message::BorrowedMessage;
+use rdkafka::util::Timeout;
+use rdkafka::{Message, TopicPartitionList};
+use std::env::VarError;
+use std::fmt::Display;
 use std::num::ParseIntError;
 use std::{collections::HashMap, env, fmt::Debug, str::FromStr, time::Duration};
 use tokio::task::{self, JoinHandle};
@@ -16,13 +23,45 @@ use crate::{
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
     storage::StreamType,
 };
+
+enum SslProtocol {
+    Plaintext,
+    Ssl,
+    SaslPlaintext,
+    SaslSsl,
+}
+impl Display for SslProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SslProtocol::Plaintext => "plaintext",
+            SslProtocol::Ssl => "ssl",
+            SslProtocol::SaslPlaintext => "sasl_plaintext",
+            SslProtocol::SaslSsl => "sasl_ssl",
+        })
+    }
+}
+impl FromStr for SslProtocol {
+    type Err = KafkaError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "plaintext" => Ok(SslProtocol::Plaintext),
+            "ssl" => Ok(SslProtocol::Ssl),
+            "sasl_plaintext" => Ok(SslProtocol::SaslPlaintext),
+            "sasl_ssl" => Ok(SslProtocol::SaslSsl),
+            _ => Err(KafkaError::InvalidSslProtocolError(s.to_string())),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaError {
     #[error("Error loading environment variable {0}")]
     NoVarError(&'static str),
 
     #[error("Kafka error {0}")]
-    NativeError(#[from] kafka::Error),
+    NativeError(#[from] NativeKafkaError),
+    #[error("RDKafka error {0}")]
+    RDKError(#[from] RDKafkaError),
 
     #[error("Error parsing int {1} for environment variable {0}")]
     ParseIntError(&'static str, ParseIntError),
@@ -41,6 +80,11 @@ pub enum KafkaError {
     JsonError(#[from] serde_json::Error),
     #[error("Invalid group offset storage: #{0}")]
     InvalidGroupOffsetStorage(String),
+
+    #[error("Invalid SSL protocol: #{0}")]
+    InvalidSslProtocolError(String),
+    #[error("Invalid unicode for environment variable {0}")]
+    EnvNotUnicode(&'static str),
 }
 
 fn load_env_or_err(key: &'static str) -> Result<String, KafkaError> {
@@ -74,119 +118,88 @@ fn parse_duration_env_prefixed(key_prefix: &'static str) -> Result<Option<Durati
         .map_err(|raw| KafkaError::ParseDurationError(key_prefix, raw))
 }
 
-fn get_flag_env_val(key: &'static str, default: bool) -> bool {
-    env::var(key)
-        .map(|val| val != "0" && val != "false")
-        .unwrap_or(default)
+fn get_flag_env_val(key: &'static str) -> Result<Option<bool>, KafkaError> {
+    let raw = env::var(key);
+    match raw {
+        Ok(val) => Ok(Some(val != "0" && val != "false")),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => Err(KafkaError::EnvNotUnicode(key)),
+    }
 }
 
-fn setup_consumer() -> Result<Consumer, KafkaError> {
+fn setup_consumer() -> Result<StreamConsumer, KafkaError> {
     let hosts = load_env_or_err("KAFKA_HOSTS")?;
     let topic = load_env_or_err("KAFKA_TOPIC")?;
-    let mapped_hosts = hosts.split(",").map(|s| s.to_string()).collect();
 
-    let mut cb = Consumer::from_hosts(mapped_hosts).with_topic(topic.clone());
+    let mut conf = ClientConfig::new();
+    conf.set("bootstrap.servers", &hosts);
 
     if let Ok(val) = env::var("KAFKA_CLIENT_ID") {
-        cb = cb.with_client_id(val)
+        conf.set("client.id", &val);
     }
 
-    cb = cb.with_fetch_crc_validation(get_flag_env_val("KAFKA_FETCH_CRC_VALIDATION", true));
-
-    if let Some(val) = parse_i32_env("KAFKA_FETCH_MAX_BYTES_PER_PARTITION")? {
-        cb = cb.with_fetch_max_bytes_per_partition(val)
+    if let Some(val) = get_flag_env_val("a")? {
+        conf.set("api.version.request", val.to_string());
     }
-
-    if let Some(val) = parse_i32_env("KAFKA_FETCH_MIN_BYTES")? {
-        cb = cb.with_fetch_min_bytes(val)
-    }
-
-    if let Some(val) = parse_i32_env("KAFKA_RETRY_MAX_BYTES_LIMIT")? {
-        cb = cb.with_retry_max_bytes_limit(val)
-    }
-
-    if let Some(val) = parse_duration_env_prefixed("KAFKA_CONNECTION_IDLE_TIMEOUT")? {
-        cb = cb.with_connection_idle_timeout(val)
-    }
-
-    if let Some(val) = parse_duration_env_prefixed("KAFKA_FETCH_MAX_WAIT_TIME")? {
-        cb = cb.with_fetch_max_wait_time(val)
-    }
-
     if let Ok(val) = env::var("KAFKA_GROUP") {
-        cb = cb.with_group(val)
+        conf.set("group.id", &val);
     }
+
+    if let Ok(val) = env::var("KAFKA_SECURITY_PROTOCOL") {
+        let mapped: SslProtocol = val.parse()?;
+        conf.set("security.protocol", &mapped.to_string());
+    }
+    let consumer: StreamConsumer = conf.create()?;
+
     if let Ok(vals_raw) = env::var("KAFKA_PARTITIONS") {
         let vals = vals_raw
             .split(',')
             .map(i32::from_str)
-            .collect::<Result<Vec<i32>, ParseIntError>>();
-        cb = cb.with_topic_partitions(
-            topic,
-            &vals.map_err(|raw| KafkaError::ParseIntError("KAFKA_PARTITIONS", raw))?,
-        );
-    }
+            .collect::<Result<Vec<i32>, ParseIntError>>()
+            .map_err(|raw| KafkaError::ParseIntError("KAFKA_PARTITIONS", raw))?;
 
-    if let Ok(val) = env::var("KAFKA_OFFSET_STORAGE") {
-        cb = cb.with_offset_storage(Some(match val.to_lowercase().as_str() {
-            "kafka" => Ok(GroupOffsetStorage::Kafka),
-            "zookeeper" => Ok(GroupOffsetStorage::Zookeeper),
-            _ => Err(KafkaError::InvalidGroupOffsetStorage(val)),
-        }?))
+        let mut parts = TopicPartitionList::new();
+        for val in vals {
+            parts.add_partition(&topic, val);
+        }
+        consumer.seek_partitions(parts, Timeout::Never)?;
     }
-    if get_flag_env_val("KAFKA_USE_SECURITY", false) {
-        let connector = SslConnector::builder(SslMethod::tls()).unwrap().build();
-        let sec = SecurityConfig::new(connector)
-            .with_hostname_verification(get_flag_env_val("KAFKA_SECURITY_VERIFY_HOSTNAME", true));
-        cb = cb.with_security(sec);
-    }
-    if let Ok(val) = env::var("KAFKA_FALLBACK_OFFSET") {
-        cb = cb.with_fallback_offset(match val.to_lowercase().as_str() {
-            "earliest" => Ok(FetchOffset::Earliest),
-            "latest" => Ok(FetchOffset::Latest),
-            val if val.starts_with("by:") => Ok(FetchOffset::ByTime(
-                i64::from_str(&val[3..])
-                    .map_err(|raw| KafkaError::ParseIntError("KAFKA_FALLBACK_OFFSET", raw))?,
-            )),
-            _ => Err(KafkaError::InvalidGroupOffsetStorage(val)),
-        }?)
-    }
-
-    let res = cb.create()?;
-    Ok(res)
+    Ok(consumer)
 }
 
-fn ingest_message<'a>(stream_name: &str, msg: &Message<'a>) -> Result<(), KafkaError> {
-    log::debug!("Message: {:?}", msg);
-    let hash_map = STREAM_INFO.read().unwrap();
-    let schema = hash_map
-        .get(stream_name)
-        .ok_or(KafkaError::StreamNotFound(stream_name.to_owned()))?
-        .schema
-        .clone();
+fn ingest_message<'a>(stream_name: &str, msg: BorrowedMessage<'a>) -> Result<(), KafkaError> {
+    log::debug!("{}: Message: {:?}", stream_name, msg);
+    if let Some(payload) = msg.payload() {
+        let hash_map = STREAM_INFO.read().unwrap();
+        let schema = hash_map
+            .get(stream_name)
+            .ok_or(KafkaError::StreamNotFound(stream_name.to_owned()))?
+            .schema
+            .clone();
 
-    let txt = String::from_utf8(msg.value.into_iter().copied().collect());
-    log::debug!("Message text: {}", txt.unwrap());
-    let event = format::json::Event {
-        data: serde_json::from_slice(&msg.value)?,
-        tags: String::default(),
-        metadata: String::default(),
-    };
-    log::debug!("Generated event: {:?}", event.data);
-    let (rb, is_first) = event.into_recordbatch(schema, None, None).unwrap();
+        let event = format::json::Event {
+            data: serde_json::from_slice(payload)?,
+            tags: String::default(),
+            metadata: String::default(),
+        };
+        log::debug!("Generated event: {:?}", event.data);
+        let (rb, is_first) = event.into_recordbatch(schema, None, None).unwrap();
 
-    event::Event {
-        rb,
-        stream_name: stream_name.to_string(),
-        origin_format: "json",
-        origin_size: msg.value.len() as u64,
-        is_first_event: is_first,
-        parsed_timestamp: Utc::now().naive_utc(),
-        time_partition: None,
-        custom_partition_values: HashMap::new(),
-        stream_type: StreamType::UserDefined,
+        event::Event {
+            rb,
+            stream_name: stream_name.to_string(),
+            origin_format: "json",
+            origin_size: payload.len() as u64,
+            is_first_event: is_first,
+            parsed_timestamp: Utc::now().naive_utc(),
+            time_partition: None,
+            custom_partition_values: HashMap::new(),
+            stream_type: StreamType::UserDefined,
+        }
+        .process_unchecked()?;
+    } else {
+        log::debug!("{} No payload for stream", stream_name);
     }
-    .process_unchecked()?;
     Ok(())
 }
 
@@ -195,13 +208,13 @@ pub async fn setup_integration() -> Result<JoinHandle<()>, KafkaError> {
         log::info!("Setup kafka integration for {stream_name}");
         create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
-        let res = task::spawn_blocking(move || {
-            let mut c = setup_consumer().unwrap();
+        let res = task::spawn(async move {
+            let consumer = setup_consumer().unwrap();
+            let mut stream = consumer.stream();
             loop {
-                for ev in c.poll().unwrap().iter() {
-                    for msg in ev.messages() {
-                        ingest_message(&stream_name, msg).unwrap();
-                    }
+                while let Some(curr) = stream.next().await {
+                    let msg = curr.unwrap();
+                    ingest_message(&stream_name, msg).unwrap();
                 }
             }
         });
