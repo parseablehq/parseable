@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
+      contents: write
       attestations: write
     strategy:
       fail-fast: false
@@ -67,7 +67,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       id-token: write
-      contents: read
+      contents: write
       attestations: write
     steps:
       - name: Checkout
@@ -112,7 +112,7 @@ jobs:
     runs-on: macos-latest
     permissions:
       id-token: write
-      contents: read
+      contents: write
       attestations: write
     strategy:
       matrix:
