@@ -17,8 +17,10 @@
 *
 */
 
+use serde::Serialize;
+
 // Represents actions that corresponds to an api
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum Action {
     Ingest,
     Query,
