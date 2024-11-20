@@ -156,31 +156,40 @@ pub enum SSECEncryptionKey {
     },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("Expected SSE-C:AES256:<base64_encryption_key>")]
+    UnexpectedKey,
+    #[error("Only SSE-C is supported for object encryption for now")]
+    UnexpectedProtocol,
+    #[error("Invalid SSE algorithm. Following are supported: AES256")]
+    InvalidAlgorithm,
+}
+
 impl FromStr for SSECEncryptionKey {
-    type Err = String;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = s.split(':').collect::<Vec<_>>();
-        if parts.len() == 3 {
-            let sse_type = parts[0];
-            if sse_type != "SSE-C" {
-                return Err("Only SSE-C is supported for object encryption for now".into());
-            }
-
-            let algorithm = parts[1];
-            let encryption_key = parts[2];
-
-            let alg = ObjectEncryptionAlgorithm::from_str(algorithm)?;
-
-            Ok(match alg {
-                ObjectEncryptionAlgorithm::Aes256 => SSECEncryptionKey::SseC {
-                    _algorithm: alg,
-                    base64_encryption_key: encryption_key.to_owned(),
-                },
-            })
-        } else {
-            Err("Expected SSE-C:AES256:<base64_encryption_key>".into())
+        if parts.len() != 3 {
+            return Err(Error::UnexpectedKey);
         }
+        let sse_type = parts[0];
+        if sse_type != "SSE-C" {
+            return Err(Error::UnexpectedProtocol);
+        }
+
+        let algorithm = parts[1];
+        let encryption_key = parts[2];
+
+        let alg = ObjectEncryptionAlgorithm::from_str(algorithm)?;
+
+        Ok(match alg {
+            ObjectEncryptionAlgorithm::Aes256 => SSECEncryptionKey::SseC {
+                _algorithm: alg,
+                base64_encryption_key: encryption_key.to_owned(),
+            },
+        })
     }
 }
 
@@ -190,12 +199,12 @@ pub enum ObjectEncryptionAlgorithm {
 }
 
 impl FromStr for ObjectEncryptionAlgorithm {
-    type Err = String;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "AES256" => Ok(ObjectEncryptionAlgorithm::Aes256),
-            _ => Err("Invalid SSE algorithm. Following are supported: AES256".into()),
+            _ => Err(Error::InvalidAlgorithm),
         }
     }
 }
