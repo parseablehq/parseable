@@ -24,9 +24,9 @@ use crate::storage::{
 use bytes::Bytes;
 use clap::error::ErrorKind;
 use clap::{command, Args, Command, FromArgMatches};
-use core::fmt;
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -245,37 +245,12 @@ Join the community at https://logg.ing/community.
         .subcommands([local, s3, azureblob])
 }
 
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Mode {
     Query,
     Ingest,
     #[default]
     All,
-}
-
-impl Mode {
-    pub fn to_str(&self) -> &str {
-        match self {
-            Mode::Query => "Query",
-            Mode::Ingest => "Ingest",
-            Mode::All => "All",
-        }
-    }
-
-    pub fn from_string(mode: &str) -> Result<Self, String> {
-        match mode {
-            "Query" => Ok(Mode::Query),
-            "Ingest" => Ok(Mode::Ingest),
-            "All" => Ok(Mode::All),
-            x => Err(format!("Trying to Parse Invalid mode: {}", x)),
-        }
-    }
-}
-
-impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_str())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
