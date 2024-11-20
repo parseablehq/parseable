@@ -113,6 +113,7 @@ impl Event {
         .map_err(PostError::Event)
     }
 
+    #[allow(unused)]
     pub fn clear(&self, stream_name: &str) {
         STREAM_WRITERS.clear(stream_name);
     }

@@ -32,7 +32,7 @@ use futures_util::{Future, TryFutureExt};
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
-use crate::handlers::http::cluster::get_ingestor_info;
+use crate::handlers::http::cluster::get_ingestor_info_storage;
 
 use crate::handlers::{CACHE_RESULTS_HEADER_KEY, CACHE_VIEW_HEADER_KEY, USER_ID_HEADER_KEY};
 use crate::metrics::QUERY_EXECUTE_TIME;
@@ -46,8 +46,7 @@ use crate::handlers::http::query::{
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::querycache::QueryCacheManager;
 use crate::utils::arrow::flight::{
-    append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
-    send_to_ingester,
+    get_query_from_ticket, into_flight_data, run_do_get_rpc, send_to_ingester,
 };
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
@@ -204,6 +203,8 @@ impl FlightService for AirServiceImpl {
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
+        // this is the flow for getting staging data from Ingestors
+        // fix this (it sends double records)
         let event =
             if send_to_ingester(query.start.timestamp_millis(), query.end.timestamp_millis()) {
                 let sql = format!("select * from {}", &stream_name);
@@ -216,7 +217,7 @@ impl FlightService for AirServiceImpl {
                 })
                 .to_string();
 
-                let ingester_metadatas = get_ingestor_info()
+                let ingester_metadatas = get_ingestor_info_storage()
                     .await
                     .map_err(|err| Status::failed_precondition(err.to_string()))?;
                 let mut minute_result: Vec<RecordBatch> = vec![];
@@ -226,9 +227,10 @@ impl FlightService for AirServiceImpl {
                         minute_result.append(&mut batches);
                     }
                 }
-                let mr = minute_result.iter().collect::<Vec<_>>();
-                let event = append_temporary_events(&stream_name, mr).await?;
-                Some(event)
+
+                // log::warn!("minute_result-\n{mr:?}\n");
+                // let event = append_temporary_events(&stream_name, mr).await?;
+                Some(minute_result)
             } else {
                 None
             };
@@ -252,10 +254,14 @@ impl FlightService for AirServiceImpl {
             Status::permission_denied("User Does not have permission to access this")
         })?;
         let time = Instant::now();
-        let (records, _) = query
+        let (mut records, _) = query
             .execute(stream_name.clone())
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
+
+        // if let Some(event) = event {
+        //     records.extend(event);
+        // }
 
         if let Err(err) = put_results_in_cache(
             cache_results,
@@ -284,10 +290,6 @@ impl FlightService for AirServiceImpl {
         let schema = Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
          */
         let out = into_flight_data(records);
-
-        if let Some(event) = event {
-            event.clear(&stream_name);
-        }
 
         let time = time.elapsed().as_secs_f64();
         QUERY_EXECUTE_TIME

@@ -160,6 +160,7 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
     Ok(HttpResponse::Ok().finish())
 }
 
+#[allow(unused)]
 pub async fn push_logs_unchecked(
     batches: RecordBatch,
     stream_name: &str,

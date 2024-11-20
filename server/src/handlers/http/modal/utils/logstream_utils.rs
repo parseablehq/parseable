@@ -1,13 +1,36 @@
+/*
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 
 use actix_web::{http::header::HeaderMap, HttpRequest};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
+use chrono::Local;
 use http::StatusCode;
+use serde_json::Value;
 
 use crate::{
     handlers::{
-        http::logstream::error::{CreateStreamError, StreamError},
+        http::{
+            logstream::error::{CreateStreamError, StreamError},
+            modal::LEADER,
+        },
         CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
         TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
     },
@@ -233,12 +256,14 @@ pub async fn update_time_partition_limit_in_stream(
     stream_name: String,
     time_partition_limit: &str,
 ) -> Result<(), CreateStreamError> {
-    let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage
-        .update_time_partition_limit_in_stream(&stream_name, time_partition_limit)
-        .await
-    {
-        return Err(CreateStreamError::Storage { stream_name, err });
+    if LEADER.lock().await.is_leader() {
+        let storage = CONFIG.storage().get_object_store();
+        if let Err(err) = storage
+            .update_time_partition_limit_in_stream(&stream_name, time_partition_limit)
+            .await
+        {
+            return Err(CreateStreamError::Storage { stream_name, err });
+        }
     }
 
     if metadata::STREAM_INFO
@@ -301,12 +326,14 @@ pub async fn update_custom_partition_in_stream(
         }
     }
 
-    let storage = CONFIG.storage().get_object_store();
-    if let Err(err) = storage
-        .update_custom_partition_in_stream(&stream_name, custom_partition)
-        .await
-    {
-        return Err(CreateStreamError::Storage { stream_name, err });
+    if LEADER.lock().await.is_leader() {
+        let storage = CONFIG.storage().get_object_store();
+        if let Err(err) = storage
+            .update_custom_partition_in_stream(&stream_name, custom_partition)
+            .await
+        {
+            return Err(CreateStreamError::Storage { stream_name, err });
+        }
     }
 
     if metadata::STREAM_INFO
@@ -335,46 +362,84 @@ pub async fn create_stream(
     if stream_type != StreamType::Internal.to_string() {
         validator::stream_name(&stream_name, stream_type)?;
     }
-    // Proceed to create log stream if it doesn't exist
-    let storage = CONFIG.storage().get_object_store();
 
-    match storage
-        .create_stream(
-            &stream_name,
-            time_partition,
-            time_partition_limit,
-            custom_partition,
-            static_schema_flag,
-            schema.clone(),
-            stream_type,
-        )
-        .await
-    {
-        Ok(created_at) => {
-            let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
+    if LEADER.lock().await.is_leader() {
+        // Proceed to create log stream if it doesn't exist
+        let storage = CONFIG.storage().get_object_store();
 
-            for (field_name, field) in schema
-                .fields()
-                .iter()
-                .map(|field| (field.name().to_string(), field.clone()))
-            {
-                static_schema.insert(field_name, field);
-            }
-
-            metadata::STREAM_INFO.add_stream(
-                stream_name.to_string(),
-                created_at,
-                time_partition.to_string(),
-                time_partition_limit.to_string(),
-                custom_partition.to_string(),
-                static_schema_flag.to_string(),
-                static_schema,
+        match storage
+            .create_stream(
+                &stream_name,
+                time_partition,
+                time_partition_limit,
+                custom_partition,
+                static_schema_flag,
+                schema.clone(),
                 stream_type,
-            );
+            )
+            .await
+        {
+            Ok(created_at) => {
+                let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
+
+                for (field_name, field) in schema
+                    .fields()
+                    .iter()
+                    .map(|field| (field.name().to_string(), field.clone()))
+                {
+                    static_schema.insert(field_name, field);
+                }
+
+                metadata::STREAM_INFO.add_stream(
+                    stream_name.to_string(),
+                    created_at,
+                    time_partition.to_string(),
+                    time_partition_limit.to_string(),
+                    custom_partition.to_string(),
+                    static_schema_flag.to_string(),
+                    static_schema,
+                    stream_type,
+                );
+            }
+            Err(err) => {
+                return Err(CreateStreamError::Storage { stream_name, err });
+            }
         }
-        Err(err) => {
-            return Err(CreateStreamError::Storage { stream_name, err });
+    } else {
+        let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
+
+        for (field_name, field) in schema
+            .fields()
+            .iter()
+            .map(|field| (field.name().to_string(), field.clone()))
+        {
+            static_schema.insert(field_name, field);
         }
+
+        let created_at = Local::now().to_rfc3339();
+
+        metadata::STREAM_INFO.add_stream(
+            stream_name.to_string(),
+            created_at,
+            time_partition.to_string(),
+            time_partition_limit.to_string(),
+            custom_partition.to_string(),
+            static_schema_flag.to_string(),
+            static_schema,
+            stream_type,
+        );
     }
+
     Ok(())
+}
+
+pub fn remove_id_from_alerts(value: &mut Value) {
+    if let Some(Value::Array(alerts)) = value.get_mut("alerts") {
+        alerts
+            .iter_mut()
+            .map_while(|alert| alert.as_object_mut())
+            .for_each(|map| {
+                map.remove("id");
+            });
+    }
 }

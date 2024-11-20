@@ -16,23 +16,27 @@
  *
  */
 
+use actix_web::{web, HttpRequest, Responder};
+use serde_json::json;
+
 use crate::{
-    option::CONFIG,
-    storage::{self, ObjectStorageError, StorageMetadata},
+    handlers::http::logstream::error::StreamError, hottier::get_disk_usage, option::CONFIG,
 };
 
-pub async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
-    let metadata = CONFIG
-        .storage()
-        .get_object_store()
-        .get_metadata()
-        .await?
-        .expect("metadata is initialized");
-    Ok(metadata)
-}
+/// This endpoint will fetch hottier info for the query node
+pub async fn hottier_info(_req: HttpRequest) -> Result<impl Responder, StreamError> {
+    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+        return Err(StreamError::Anyhow(anyhow::Error::msg(
+            "HotTier is not enabled for this server",
+        )));
+    }
 
-pub async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
-    storage::put_remote_metadata(metadata).await?;
-    storage::put_staging_metadata(metadata)?;
-    Ok(())
+    // if hottier is enabled, send back disk usage info
+    let (total, available, used) = get_disk_usage();
+
+    Ok(web::Json(json!({
+        "total": total,
+        "available": available,
+        "used": used
+    })))
 }

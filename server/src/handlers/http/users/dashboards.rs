@@ -146,6 +146,10 @@ pub enum DashboardError {
     Metadata(&'static str),
     #[error("User does not exist")]
     UserDoesNotExist(#[from] RBACError),
+    #[error("Network Error: {0}")]
+    Network(#[from] reqwest::Error),
+    #[error("Error: {0}")]
+    Anyhow(#[from] anyhow::Error),
 }
 
 impl actix_web::ResponseError for DashboardError {
@@ -155,6 +159,8 @@ impl actix_web::ResponseError for DashboardError {
             Self::Serde(_) => StatusCode::BAD_REQUEST,
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
+            Self::Network(err) => err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

@@ -25,21 +25,59 @@ pub mod ssl_acceptor;
 pub mod utils;
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
+use actix_web::http::header::HeaderMap;
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
 use openid::Discovered;
+use tokio::sync::Mutex;
 
 use crate::oidc;
+use crate::option::CONFIG;
 use base64::Engine;
 use serde::Deserialize;
 use serde::Serialize;
+
+use super::cluster::sync_with_queriers;
 pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
 
 // to be decided on what the Default version should be
 pub const DEFAULT_VERSION: &str = "v3";
 
+pub static LEADER: Lazy<Mutex<Leader>> = Lazy::new(|| Mutex::new(Leader::new()));
+
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+
+#[derive(Debug)]
+pub struct Leader {
+    pub state: bool,
+}
+
+impl Leader {
+    fn new() -> Self {
+        Leader { state: false }
+    }
+
+    pub fn make_leader(&mut self) {
+        self.state = true;
+    }
+
+    pub fn is_leader(&self) -> bool {
+        self.state
+    }
+
+    pub fn remove_leader(&mut self) {
+        self.state = false;
+    }
+
+    pub async fn remove_other_leaders(&self) {
+        sync_with_queriers(HeaderMap::new(), None, "leader", query::Method::Delete)
+            .await
+            .unwrap();
+    }
+}
 
 #[async_trait(?Send)]
 pub trait ParseableServer {
@@ -97,6 +135,64 @@ impl IngestorMetadata {
 
     pub fn get_ingestor_id(&self) -> String {
         self.ingestor_id.clone()
+    }
+}
+
+#[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq, Hash)]
+pub struct QuerierMetadata {
+    pub version: String,
+    pub port: String,
+    pub domain_name: String,
+    pub bucket_name: String,
+    pub token: String,
+    pub querier_id: String,
+    pub flight_port: String,
+    pub start_time: u128,                      // timestamp to select leader
+    pub hot_tier_storage_path: Option<String>, // this is to verify whether hottier is present or not
+}
+
+impl QuerierMetadata {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        port: String,
+        domain_name: String,
+        version: String,
+        bucket_name: String,
+        username: &str,
+        password: &str,
+        querier_id: String,
+        flight_port: String,
+    ) -> Self {
+        let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
+
+        let token = format!("Basic {}", token);
+
+        let start_time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        let hot_tier_storage_path = CONFIG
+            .parseable
+            .hot_tier_storage_path
+            .as_ref()
+            .map(|path| path.to_str().unwrap().to_string());
+
+        Self {
+            port,
+            domain_name,
+            version,
+            bucket_name,
+            token,
+            querier_id,
+            flight_port,
+            start_time,
+            hot_tier_storage_path,
+        }
+    }
+
+    pub fn get_querier_id(&self) -> String {
+        self.querier_id.clone()
     }
 }
 

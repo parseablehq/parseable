@@ -202,6 +202,7 @@ impl WriterTable {
         Ok(())
     }
 
+    #[allow(unused)]
     pub fn clear(&self, stream_name: &str) {
         let map = self.write().unwrap();
         if let Some(writer) = map.get(stream_name) {
