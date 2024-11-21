@@ -59,7 +59,6 @@ pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
         .compact()
         .init();
 
