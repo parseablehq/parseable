@@ -24,13 +24,15 @@ mod stream_metadata_migration;
 use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{
+    catalog::snapshot::Snapshot,
     hottier::{HotTierManager, CURRENT_HOT_TIER_VERSION},
     metadata::load_stream_metadata_on_server_start,
     option::{validation::human_size_to_bytes, Config, Mode, CONFIG},
+    stats::FullStats,
     storage::{
-        object_storage::{parseable_json_path, stream_json_path},
-        ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-        SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        object_storage::{parseable_json_path, schema_path, stream_json_path},
+        ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
+        PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
     },
 };
 use arrow_schema::Schema;
@@ -82,7 +84,10 @@ pub async fn run_metadata_migration(
                 let metadata = metadata_migration::v4_v5(storage_metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
-            _ => (),
+            _ => {
+                let metadata = metadata_migration::remove_querier_metadata(storage_metadata);
+                put_remote_metadata(&*object_store, &metadata).await?;
+            }
         }
     }
 
@@ -114,7 +119,6 @@ pub async fn run_metadata_migration(
 pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
     let storage = config.storage().get_object_store();
     let streams = storage.list_streams().await?;
-
     for stream in streams {
         migration_stream(&stream.name, &*storage).await?;
         if CONFIG.parseable.hot_tier_storage_path.is_some() {
@@ -156,11 +160,74 @@ async fn migration_hot_tier(stream: &str) -> anyhow::Result<()> {
 
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
     let mut arrow_schema: Schema = Schema::empty();
-    let schema_path = RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
-    let schema = storage.get_object(&schema_path).await?;
+    let query_schema_path =
+        RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
+    let schema = if let Ok(schema) = storage.get_object(&query_schema_path).await {
+        schema
+    } else {
+        let path = RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY]);
+        let schema_obs = storage
+            .get_objects(
+                Some(&path),
+                Box::new(|file_name| {
+                    file_name.starts_with(".ingestor") && file_name.ends_with("schema")
+                }),
+            )
+            .await
+            .into_iter()
+            .next();
+        if let Some(schema_obs) = schema_obs {
+            let schema_ob = &schema_obs[0];
+            storage
+                .put_object(&schema_path(stream), schema_ob.clone())
+                .await?;
+            schema_ob.clone()
+        } else {
+            Bytes::new()
+        }
+    };
 
     let path = stream_json_path(stream);
-    let stream_metadata = storage.get_object(&path).await.unwrap_or_default();
+    let stream_metadata = if let Ok(stream_metadata) = storage.get_object(&path).await {
+        stream_metadata
+    } else if CONFIG.parseable.mode != Mode::All {
+        let path = RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY]);
+        let stream_metadata_obs = storage
+            .get_objects(
+                Some(&path),
+                Box::new(|file_name| {
+                    file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
+                }),
+            )
+            .await
+            .into_iter()
+            .next();
+        if let Some(stream_metadata_obs) = stream_metadata_obs {
+            if !stream_metadata_obs.is_empty() {
+                let stream_metadata_bytes = &stream_metadata_obs[0];
+                let stream_ob_metdata =
+                    serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
+                let stream_metadata = ObjectStoreFormat {
+                    stats: FullStats::default(),
+                    snapshot: Snapshot::default(),
+                    ..stream_ob_metdata
+                };
+
+                let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
+                storage
+                    .put_object(&stream_json_path(stream), stream_metadata_bytes.clone())
+                    .await?;
+
+                stream_metadata_bytes
+            } else {
+                Bytes::new()
+            }
+        } else {
+            Bytes::new()
+        }
+    } else {
+        Bytes::new()
+    };
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
         if CONFIG.parseable.mode != Mode::Ingest {
@@ -172,7 +239,6 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
     if stream_meta_found {
         stream_metadata_value =
             serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
-
         let version = stream_metadata_value
             .as_object()
             .and_then(|meta| meta.get("version"))
@@ -189,7 +255,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 let schema = serde_json::from_slice(&schema).ok();
                 arrow_schema = schema_migration::v1_v4(schema)?;
                 storage
-                    .put_object(&schema_path, to_bytes(&arrow_schema))
+                    .put_object(&query_schema_path, to_bytes(&arrow_schema))
                     .await?;
             }
             Some("v2") => {
@@ -203,7 +269,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 let schema = serde_json::from_slice(&schema)?;
                 arrow_schema = schema_migration::v2_v4(schema)?;
                 storage
-                    .put_object(&schema_path, to_bytes(&arrow_schema))
+                    .put_object(&query_schema_path, to_bytes(&arrow_schema))
                     .await?;
             }
             Some("v3") => {

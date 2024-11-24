@@ -567,8 +567,7 @@ pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
         .expect("serialize cannot fail")
 }
 
-#[inline(always)]
-fn schema_path(stream_name: &str) -> RelativePathBuf {
+pub fn schema_path(stream_name: &str) -> RelativePathBuf {
     match CONFIG.parseable.mode {
         Mode::Ingest => {
             let file_name = format!(

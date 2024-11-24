@@ -21,7 +21,6 @@ use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{Local, NaiveDateTime};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use relative_path::RelativePathBuf;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -33,12 +32,8 @@ use crate::metrics::{
     EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED,
     LIFETIME_EVENTS_INGESTED_SIZE,
 };
-use crate::option::{Mode, CONFIG};
 use crate::storage::retention::Retention;
-use crate::storage::{
-    LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, StreamType, STREAM_METADATA_FILE_NAME,
-    STREAM_ROOT_DIRECTORY,
-};
+use crate::storage::{LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, StreamType};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
 
@@ -467,43 +462,6 @@ pub async fn load_stream_metadata_on_server_start(
     }
     let schema =
         update_data_type_time_partition(storage, stream_name, schema, meta.clone()).await?;
-    let mut retention = meta.retention.clone();
-    let mut time_partition = meta.time_partition.clone();
-    let mut time_partition_limit = meta.time_partition_limit.clone();
-    let mut custom_partition = meta.custom_partition.clone();
-    let mut cache_enabled = meta.cache_enabled;
-    let mut static_schema_flag = meta.static_schema_flag.clone();
-    let mut stream_type = meta.stream_type.clone();
-    if CONFIG.parseable.mode == Mode::Ingest {
-        storage.put_schema(stream_name, &schema).await?;
-        // get the base stream metadata
-        let bytes = storage
-            .get_object(&RelativePathBuf::from_iter([
-                stream_name,
-                STREAM_ROOT_DIRECTORY,
-                STREAM_METADATA_FILE_NAME,
-            ]))
-            .await?;
-        let querier_meta: ObjectStoreFormat = serde_json::from_slice(&bytes).unwrap();
-        retention.clone_from(&querier_meta.retention);
-        time_partition.clone_from(&querier_meta.time_partition);
-        time_partition_limit.clone_from(&querier_meta.time_partition_limit);
-        custom_partition.clone_from(&querier_meta.custom_partition);
-        cache_enabled.clone_from(&querier_meta.cache_enabled);
-        static_schema_flag.clone_from(&querier_meta.static_schema_flag);
-        stream_type.clone_from(&querier_meta.stream_type);
-        meta = ObjectStoreFormat {
-            retention: retention.clone(),
-            cache_enabled,
-            time_partition: time_partition.clone(),
-            time_partition_limit: time_partition_limit.clone(),
-            custom_partition: custom_partition.clone(),
-            static_schema_flag: static_schema_flag.clone(),
-            stream_type: stream_type.clone(),
-            ..meta.clone()
-        };
-        storage.put_stream_manifest(stream_name, &meta).await?;
-    }
 
     //load stats from storage
     let stats = meta.stats;
@@ -522,14 +480,14 @@ pub async fn load_stream_metadata_on_server_start(
     let metadata = LogStreamMetadata {
         schema,
         alerts,
-        retention,
-        cache_enabled,
-        created_at: meta.created_at.clone(),
-        first_event_at: meta.first_event_at.clone(),
-        time_partition: meta.time_partition.clone(),
-        time_partition_limit,
-        custom_partition,
-        static_schema_flag: meta.static_schema_flag.clone(),
+        retention: meta.retention,
+        cache_enabled: meta.cache_enabled,
+        created_at: meta.created_at,
+        first_event_at: meta.first_event_at,
+        time_partition: meta.time_partition,
+        time_partition_limit: meta.time_partition_limit,
+        custom_partition: meta.custom_partition,
+        static_schema_flag: meta.static_schema_flag,
         hot_tier_enabled: meta.hot_tier_enabled,
         stream_type: meta.stream_type,
     };

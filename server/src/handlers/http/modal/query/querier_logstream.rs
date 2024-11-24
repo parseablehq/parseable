@@ -5,7 +5,6 @@ use actix_web::{web, HttpRequest, Responder};
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
-use serde::Deserialize;
 use tokio::sync::Mutex;
 
 static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
@@ -20,7 +19,9 @@ use crate::{
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
         logstream::{error::StreamError, get_stats_date},
-        modal::utils::logstream_utils::create_update_stream,
+        modal::utils::logstream_utils::{
+            create_stream_and_schema_from_storage, create_update_stream,
+        },
     },
     hottier::HotTierManager,
     metadata::{self, STREAM_INFO},
@@ -32,7 +33,7 @@ use crate::{
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+        create_stream_and_schema_from_storage(&stream_name).await?;
     }
 
     let objectstore = CONFIG.storage().get_object_store();
@@ -79,22 +80,13 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
-#[derive(Deserialize)]
-pub struct PutStreamQuery {
-    skip_ingestors: Option<String>,
-}
-
-pub async fn put_stream(
-    req: HttpRequest,
-    body: Bytes,
-    info: web::Query<PutStreamQuery>,
-) -> Result<impl Responder, StreamError> {
+pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     let _ = CREATE_STREAM_LOCK.lock().await;
     let headers = create_update_stream(&req, &body, &stream_name).await?;
 
-    sync_streams_with_ingestors(headers, body, &stream_name, info.skip_ingestors.clone()).await?;
+    sync_streams_with_ingestors(headers, body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
@@ -103,7 +95,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+        create_stream_and_schema_from_storage(&stream_name).await?;
     }
 
     let query_string = req.query_string();

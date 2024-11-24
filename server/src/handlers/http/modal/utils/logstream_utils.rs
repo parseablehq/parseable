@@ -4,17 +4,23 @@ use actix_web::{http::header::HeaderMap, HttpRequest};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use http::StatusCode;
+use relative_path::RelativePathBuf;
 
 use crate::{
+    catalog::snapshot::Snapshot,
     handlers::{
         http::logstream::error::{CreateStreamError, StreamError},
         CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
         TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
     },
     metadata::{self, STREAM_INFO},
-    option::CONFIG,
+    option::{Mode, CONFIG},
     static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
-    storage::StreamType,
+    stats::FullStats,
+    storage::{
+        object_storage::{schema_path, stream_json_path},
+        LogStream, ObjectStoreFormat, StreamType, STREAM_ROOT_DIRECTORY,
+    },
     validator,
 };
 
@@ -39,6 +45,16 @@ pub async fn create_update_stream(
             ),
             status: StatusCode::BAD_REQUEST,
         });
+    }
+
+    if CONFIG.parseable.mode == Mode::Query {
+        create_stream_and_schema_from_storage(stream_name).await?;
+        return Err(StreamError::Custom {
+                    msg: format!(
+                        "Logstream {stream_name} already exists, please create a new log stream with unique name"
+                    ),
+                    status: StatusCode::BAD_REQUEST,
+                });
     }
 
     if update_stream == "true" {
@@ -376,5 +392,111 @@ pub async fn create_stream(
             return Err(CreateStreamError::Storage { stream_name, err });
         }
     }
+    Ok(())
+}
+
+pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<(), StreamError> {
+    // Proceed to create log stream if it doesn't exist
+    let storage = CONFIG.storage().get_object_store();
+    let streams = storage.list_streams().await?;
+    if streams.contains(&LogStream {
+        name: stream_name.to_owned(),
+    }) {
+        let mut stream_metadata = ObjectStoreFormat::default();
+        let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
+        let stream_obs = storage
+            .get_objects(
+                Some(&path),
+                Box::new(|file_name| {
+                    file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
+                }),
+            )
+            .await
+            .into_iter()
+            .next();
+        if let Some(stream_obs) = stream_obs {
+            let stream_ob = &stream_obs[0];
+            let stream_ob_metdata = serde_json::from_slice::<ObjectStoreFormat>(stream_ob)?;
+            stream_metadata = ObjectStoreFormat {
+                stats: FullStats::default(),
+                snapshot: Snapshot::default(),
+                ..stream_ob_metdata
+            };
+
+            let stream_metadata_bytes = serde_json::to_vec(&stream_metadata)?.into();
+            storage
+                .put_object(&stream_json_path(stream_name), stream_metadata_bytes)
+                .await?;
+        }
+
+        let mut schema = Arc::new(Schema::empty());
+        let schema_obs = storage
+            .get_objects(
+                Some(&path),
+                Box::new(|file_name| {
+                    file_name.starts_with(".ingestor") && file_name.ends_with("schema")
+                }),
+            )
+            .await
+            .into_iter()
+            .next();
+        if let Some(schema_obs) = schema_obs {
+            let schema_ob = &schema_obs[0];
+            storage
+                .put_object(&schema_path(stream_name), schema_ob.clone())
+                .await?;
+            schema = serde_json::from_slice::<Arc<Schema>>(schema_ob)?;
+        }
+
+        let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
+
+        for (field_name, field) in schema
+            .fields()
+            .iter()
+            .map(|field| (field.name().to_string(), field.clone()))
+        {
+            static_schema.insert(field_name, field);
+        }
+
+        let time_partition = if stream_metadata.time_partition.is_some() {
+            stream_metadata.time_partition.as_ref().unwrap()
+        } else {
+            ""
+        };
+        let time_partition_limit = if stream_metadata.time_partition_limit.is_some() {
+            stream_metadata.time_partition_limit.as_ref().unwrap()
+        } else {
+            ""
+        };
+        let custom_partition = if stream_metadata.custom_partition.is_some() {
+            stream_metadata.custom_partition.as_ref().unwrap()
+        } else {
+            ""
+        };
+        let static_schema_flag = if stream_metadata.static_schema_flag.is_some() {
+            stream_metadata.static_schema_flag.as_ref().unwrap()
+        } else {
+            ""
+        };
+        let stream_type = if stream_metadata.stream_type.is_some() {
+            stream_metadata.stream_type.as_ref().unwrap()
+        } else {
+            ""
+        };
+
+        metadata::STREAM_INFO.add_stream(
+            stream_name.to_string(),
+            stream_metadata.created_at,
+            time_partition.to_string(),
+            time_partition_limit.to_string(),
+            custom_partition.to_string(),
+            static_schema_flag.to_string(),
+            static_schema,
+            stream_type,
+        );
+    } else {
+        return Err(StreamError::StreamNotFound(stream_name.to_string()));
+    }
+
     Ok(())
 }

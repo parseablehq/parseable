@@ -393,33 +393,32 @@ impl S3 {
     }
 
     async fn _list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+        let mut result_file_list: Vec<LogStream> = Vec::new();
         let resp = self.client.list_with_delimiter(None).await?;
 
-        let common_prefixes = resp.common_prefixes; // get all dirs
-
-        // return prefixes at the root level
-        let dirs: Vec<_> = common_prefixes
+        let streams = resp
+            .common_prefixes
             .iter()
-            .filter_map(|path| path.parts().next())
+            .flat_map(|path| path.parts())
             .map(|name| name.as_ref().to_string())
-            .filter(|x| x != PARSEABLE_ROOT_DIRECTORY)
-            .filter(|x| x != USERS_ROOT_DIR)
-            .collect();
-
-        let stream_json_check = FuturesUnordered::new();
-
-        for dir in &dirs {
-            let key = format!(
-                "{}/{}/{}",
-                dir, STREAM_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME
-            );
-            let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
-            stream_json_check.push(task);
+            .filter(|name| name != PARSEABLE_ROOT_DIRECTORY)
+            .filter(|name| name != USERS_ROOT_DIR)
+            .collect::<Vec<_>>();
+        for stream in streams {
+            let stream_path =
+                object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY));
+            let resp = self.client.list_with_delimiter(Some(&stream_path)).await?;
+            let stream_files: Vec<String> = resp
+                .objects
+                .iter()
+                .filter(|name| name.location.filename().unwrap().ends_with("stream.json"))
+                .map(|name| name.location.to_string())
+                .collect();
+            if !stream_files.is_empty() {
+                result_file_list.push(LogStream { name: stream });
+            }
         }
-
-        stream_json_check.try_collect::<()>().await?;
-
-        Ok(dirs.into_iter().map(|name| LogStream { name }).collect())
+        Ok(result_file_list)
     }
 
     async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {

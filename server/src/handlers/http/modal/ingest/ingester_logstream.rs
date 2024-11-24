@@ -7,7 +7,10 @@ use crate::{
     catalog::remove_manifest_from_snapshot,
     event,
     handlers::http::{
-        logstream::error::StreamError, modal::utils::logstream_utils::create_update_stream,
+        logstream::error::StreamError,
+        modal::utils::logstream_utils::{
+            create_stream_and_schema_from_storage, create_update_stream,
+        },
     },
     metadata::{self, STREAM_INFO},
     option::CONFIG,
@@ -22,8 +25,7 @@ pub async fn retention_cleanup(
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let storage = CONFIG.storage().get_object_store();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        log::error!("Stream {} not found", stream_name.clone());
-        return Err(StreamError::StreamNotFound(stream_name.clone()));
+        create_stream_and_schema_from_storage(&stream_name).await?;
     }
     let date_list: Vec<String> = serde_json::from_slice(&body).unwrap();
     let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
@@ -40,7 +42,7 @@ pub async fn retention_cleanup(
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+        create_stream_and_schema_from_storage(&stream_name).await?;
     }
 
     metadata::STREAM_INFO.delete_stream(&stream_name);

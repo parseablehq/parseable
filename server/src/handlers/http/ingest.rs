@@ -26,11 +26,11 @@ use crate::event::{
     error::EventError,
     format::{self, EventFormat},
 };
-use crate::handlers::http::cluster::forward_create_stream_request;
+use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 use crate::handlers::{LOG_SOURCE_KEY, LOG_SOURCE_OTEL, STREAM_NAME_HEADER_KEY};
 use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
-use crate::metadata::{self, STREAM_INFO};
+use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
 use crate::storage::{LogStream, ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
@@ -153,7 +153,7 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
         )));
     }
     if !STREAM_INFO.stream_exists(&stream_name) {
-        return Err(PostError::StreamNotFound(stream_name));
+        create_stream_and_schema_from_storage(&stream_name).await?;
     }
 
     flatten_and_push_logs(req, body, stream_name).await?;
@@ -190,49 +190,29 @@ pub async fn create_stream_if_not_exists(
         stream_exists = true;
         return Ok(stream_exists);
     }
-    match &CONFIG.parseable.mode {
-        Mode::All | Mode::Query => {
-            super::logstream::create_stream(
-                stream_name.to_string(),
-                "",
-                "",
-                "",
-                "",
-                Arc::new(Schema::empty()),
-                stream_type,
-            )
-            .await?;
-        }
-        Mode::Ingest => {
-            // here the ingest server has not found the stream
-            // so it should check if the stream exists in storage
-            let store = CONFIG.storage().get_object_store();
-            let streams = store.list_streams().await?;
-            if !streams.contains(&LogStream {
-                name: stream_name.to_owned(),
-            }) {
-                match forward_create_stream_request(stream_name).await {
-                    Ok(()) => log::info!("Stream {} created", stream_name),
-                    Err(e) => {
-                        return Err(PostError::Invalid(anyhow::anyhow!(
-                            "Unable to create stream: {} using query server. Error: {}",
-                            stream_name,
-                            e.to_string(),
-                        )))
-                    }
-                };
-            }
-            metadata::STREAM_INFO
-                .upsert_stream_info(
-                    &*store,
-                    LogStream {
-                        name: stream_name.to_owned(),
-                    },
-                )
-                .await
-                .map_err(|_| PostError::StreamNotFound(stream_name.to_owned()))?;
+
+    if CONFIG.parseable.mode != Mode::All {
+        let store = CONFIG.storage().get_object_store();
+        let streams = store.list_streams().await?;
+        if streams.contains(&LogStream {
+            name: stream_name.to_owned(),
+        }) {
+            create_stream_and_schema_from_storage(stream_name).await?;
+            return Ok(stream_exists);
         }
     }
+
+    super::logstream::create_stream(
+        stream_name.to_string(),
+        "",
+        "",
+        "",
+        "",
+        Arc::new(Schema::empty()),
+        stream_type,
+    )
+    .await?;
+
     Ok(stream_exists)
 }
 

@@ -33,6 +33,7 @@ use std::time::Instant;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
+use crate::metadata::STREAM_INFO;
 use arrow_array::RecordBatch;
 
 use crate::event::commit_schema;
@@ -51,6 +52,8 @@ use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 
+use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
+
 /// Query Request through http endpoint.
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,12 +71,18 @@ pub struct Query {
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
     let session_state = QUERY_SESSION.state();
-
-    // get the logical plan and extract the table name
-    let raw_logical_plan = session_state
+    let raw_logical_plan = match session_state
         .create_logical_plan(&query_request.query)
-        .await?;
-
+        .await
+    {
+        Ok(raw_logical_plan) => raw_logical_plan,
+        Err(_) => {
+            create_streams_for_querier().await;
+            session_state
+                .create_logical_plan(&query_request.query)
+                .await?
+        }
+    };
     // create a visitor to extract the table name
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
@@ -176,6 +185,19 @@ pub async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), Q
     }
 
     Ok(())
+}
+
+pub async fn create_streams_for_querier() {
+    let querier_streams = STREAM_INFO.list_streams();
+    let store = CONFIG.storage().get_object_store();
+    let storage_streams = store.list_streams().await.unwrap();
+    for stream in storage_streams {
+        let stream_name = stream.name;
+
+        if !querier_streams.contains(&stream_name) {
+            let _ = create_stream_and_schema_from_storage(&stream_name).await;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
