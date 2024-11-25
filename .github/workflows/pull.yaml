@@ -3,9 +3,10 @@ name: Integration
 on:
   pull_request:
     paths-ignore:
+      - "assets/**"
       - "docs/**"
       - "helm/**"
-      - "assets/**"
+      - "scripts/**"
       - "**.md"
 
 jobs:
