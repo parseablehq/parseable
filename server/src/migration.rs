@@ -28,9 +28,9 @@ use crate::{
     metadata::load_stream_metadata_on_server_start,
     option::{validation::human_size_to_bytes, Config, Mode, CONFIG},
     storage::{
-        object_storage::{parseable_json_path, stream_json_path},
+        object_storage::{parseable_json_path, schema_path, stream_json_path},
         ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-        SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        STREAM_ROOT_DIRECTORY,
     },
 };
 use arrow_schema::Schema;
@@ -166,15 +166,22 @@ async fn migration_hot_tier(stream: &str) -> anyhow::Result<()> {
 
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
     let mut arrow_schema: Schema = Schema::empty();
-    let query_schema_path =
-        RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
-    let schema = if let Ok(schema) = storage.get_object(&query_schema_path).await {
+    let schema_path = schema_path(stream);
+    let schema = if let Ok(schema) = storage.get_object(&schema_path).await {
         schema
     } else {
-        storage
-            .create_schema_from_ingestor(stream)
+        let querier_schema = storage
+            .create_schema_from_querier(stream)
             .await
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if !querier_schema.is_empty() {
+            querier_schema
+        } else {
+            storage
+                .create_schema_from_ingestor(stream)
+                .await
+                .unwrap_or_default()
+        }
     };
 
     let path = stream_json_path(stream);
@@ -222,7 +229,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 let schema = serde_json::from_slice(&schema).ok();
                 arrow_schema = schema_migration::v1_v4(schema)?;
                 storage
-                    .put_object(&query_schema_path, to_bytes(&arrow_schema))
+                    .put_object(&schema_path, to_bytes(&arrow_schema))
                     .await?;
             }
             Some("v2") => {
@@ -236,7 +243,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
                 let schema = serde_json::from_slice(&schema)?;
                 arrow_schema = schema_migration::v2_v4(schema)?;
                 storage
-                    .put_object(&query_schema_path, to_bytes(&arrow_schema))
+                    .put_object(&schema_path, to_bytes(&arrow_schema))
                     .await?;
             }
             Some("v3") => {

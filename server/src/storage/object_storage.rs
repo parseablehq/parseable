@@ -493,6 +493,20 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(Bytes::new())
     }
 
+    async fn create_schema_from_querier(
+        &self,
+        stream_name: &str,
+    ) -> Result<Bytes, ObjectStorageError> {
+        let path =
+            RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
+        if let Ok(querier_schema_bytes) = self.get_object(&path).await {
+            self.put_object(&schema_path(stream_name), querier_schema_bytes.clone())
+                .await?;
+            return Ok(querier_schema_bytes);
+        }
+        Ok(Bytes::new())
+    }
+
     async fn create_schema_from_ingestor(
         &self,
         stream_name: &str,
