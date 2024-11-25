@@ -25,16 +25,15 @@ pub async fn retention_cleanup(
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let storage = CONFIG.storage().get_object_store();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        create_stream_and_schema_from_storage(&stream_name).await?;
+        if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
+            if !stream_found {
+                return Err(StreamError::StreamNotFound(stream_name.clone()));
+            }
+        }
     }
     let date_list: Vec<String> = serde_json::from_slice(&body).unwrap();
     let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
-    let mut first_event_at: Option<String> = None;
-    if let Err(err) = res {
-        log::error!("Failed to update manifest list in the snapshot {err:?}")
-    } else {
-        first_event_at = res.unwrap();
-    }
+    let first_event_at: Option<String> = res.unwrap_or_default();
 
     Ok((first_event_at, StatusCode::OK))
 }
@@ -42,7 +41,11 @@ pub async fn retention_cleanup(
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        create_stream_and_schema_from_storage(&stream_name).await?;
+        if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
+            if !stream_found {
+                return Err(StreamError::StreamNotFound(stream_name.clone()));
+            }
+        }
     }
 
     metadata::STREAM_INFO.delete_stream(&stream_name);

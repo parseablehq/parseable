@@ -24,15 +24,13 @@ mod stream_metadata_migration;
 use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{
-    catalog::snapshot::Snapshot,
     hottier::{HotTierManager, CURRENT_HOT_TIER_VERSION},
     metadata::load_stream_metadata_on_server_start,
     option::{validation::human_size_to_bytes, Config, Mode, CONFIG},
-    stats::FullStats,
     storage::{
-        object_storage::{parseable_json_path, schema_path, stream_json_path},
-        ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
-        PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        object_storage::{parseable_json_path, stream_json_path},
+        ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
+        SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
     },
 };
 use arrow_schema::Schema;
@@ -165,69 +163,30 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
     let schema = if let Ok(schema) = storage.get_object(&query_schema_path).await {
         schema
     } else {
-        let path = RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY]);
-        let schema_obs = storage
-            .get_objects(
-                Some(&path),
-                Box::new(|file_name| {
-                    file_name.starts_with(".ingestor") && file_name.ends_with("schema")
-                }),
-            )
+        storage
+            .create_schema_from_ingestor(stream)
             .await
-            .into_iter()
-            .next();
-        if let Some(schema_obs) = schema_obs {
-            let schema_ob = &schema_obs[0];
-            storage
-                .put_object(&schema_path(stream), schema_ob.clone())
-                .await?;
-            schema_ob.clone()
-        } else {
-            Bytes::new()
-        }
+            .unwrap_or_default()
     };
 
     let path = stream_json_path(stream);
     let stream_metadata = if let Ok(stream_metadata) = storage.get_object(&path).await {
         stream_metadata
-    } else if CONFIG.parseable.mode != Mode::All {
-        let path = RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY]);
-        let stream_metadata_obs = storage
-            .get_objects(
-                Some(&path),
-                Box::new(|file_name| {
-                    file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
-                }),
-            )
-            .await
-            .into_iter()
-            .next();
-        if let Some(stream_metadata_obs) = stream_metadata_obs {
-            if !stream_metadata_obs.is_empty() {
-                let stream_metadata_bytes = &stream_metadata_obs[0];
-                let stream_ob_metdata =
-                    serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
-                let stream_metadata = ObjectStoreFormat {
-                    stats: FullStats::default(),
-                    snapshot: Snapshot::default(),
-                    ..stream_ob_metdata
-                };
-
-                let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
-                storage
-                    .put_object(&stream_json_path(stream), stream_metadata_bytes.clone())
-                    .await?;
-
-                stream_metadata_bytes
-            } else {
-                Bytes::new()
-            }
-        } else {
-            Bytes::new()
-        }
     } else {
-        Bytes::new()
+        let querier_stream = storage
+            .create_stream_from_querier(stream)
+            .await
+            .unwrap_or_default();
+        if !querier_stream.is_empty() {
+            querier_stream
+        } else {
+            storage
+                .create_stream_from_ingestor(stream)
+                .await
+                .unwrap_or_default()
+        }
     };
+
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
         if CONFIG.parseable.mode != Mode::Ingest {

@@ -32,6 +32,7 @@ use crate::metrics::{
     EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED,
     LIFETIME_EVENTS_INGESTED_SIZE,
 };
+use crate::option::{Mode, CONFIG};
 use crate::storage::retention::Retention;
 use crate::storage::{LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, StreamType};
 use crate::utils::arrow::MergedRecordReader;
@@ -462,7 +463,9 @@ pub async fn load_stream_metadata_on_server_start(
     }
     let schema =
         update_data_type_time_partition(storage, stream_name, schema, meta.clone()).await?;
-
+    if CONFIG.parseable.mode == Mode::Ingest {
+        storage.put_schema(stream_name, &schema).await?;
+    }
     //load stats from storage
     let stats = meta.stats;
     fetch_stats_from_storage(stream_name, stats).await;

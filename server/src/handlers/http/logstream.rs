@@ -184,7 +184,13 @@ pub async fn put_alert(
 
     if !STREAM_INFO.stream_initialized(&stream_name)? {
         if CONFIG.parseable.mode == Mode::Query {
-            create_stream_and_schema_from_storage(&stream_name).await?;
+            if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
+                if !stream_found {
+                    return Err(StreamError::StreamNotFound(stream_name.clone()));
+                }
+            } else {
+                return Err(StreamError::StreamNotFound(stream_name.clone()));
+            }
         } else {
             return Err(StreamError::UninitializedLogstream);
         }
@@ -226,7 +232,13 @@ pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamErr
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !STREAM_INFO.stream_exists(&stream_name) {
         if CONFIG.parseable.mode == Mode::Query {
-            create_stream_and_schema_from_storage(&stream_name).await?;
+            if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
+                if !stream_found {
+                    return Err(StreamError::StreamNotFound(stream_name.clone()));
+                }
+            } else {
+                return Err(StreamError::StreamNotFound(stream_name.clone()));
+            }
         } else {
             return Err(StreamError::StreamNotFound(stream_name));
         }
@@ -339,8 +351,14 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        if CONFIG.parseable.mode == Mode::Query {
-            create_stream_and_schema_from_storage(&stream_name).await?;
+        if CONFIG.parseable.mode != Mode::All {
+            if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
+                if !stream_found {
+                    return Err(StreamError::StreamNotFound(stream_name.clone()));
+                }
+            } else {
+                return Err(StreamError::StreamNotFound(stream_name.clone()));
+            }
         } else {
             return Err(StreamError::StreamNotFound(stream_name));
         }
@@ -513,7 +531,11 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         if CONFIG.parseable.mode == Mode::Query {
-            create_stream_and_schema_from_storage(&stream_name).await?;
+            if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
+                if !stream_found {
+                    return Err(StreamError::StreamNotFound(stream_name.clone()));
+                }
+            }
         } else {
             return Err(StreamError::StreamNotFound(stream_name));
         }
@@ -560,7 +582,11 @@ pub async fn put_stream_hot_tier(
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         if CONFIG.parseable.mode == Mode::Query {
-            create_stream_and_schema_from_storage(&stream_name).await?;
+            if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
+                if !stream_found {
+                    return Err(StreamError::StreamNotFound(stream_name.clone()));
+                }
+            }
         } else {
             return Err(StreamError::StreamNotFound(stream_name));
         }
@@ -614,7 +640,11 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
 
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         if CONFIG.parseable.mode == Mode::Query {
-            create_stream_and_schema_from_storage(&stream_name).await?;
+            if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
+                if !stream_found {
+                    return Err(StreamError::StreamNotFound(stream_name.clone()));
+                }
+            }
         } else {
             return Err(StreamError::StreamNotFound(stream_name));
         }
@@ -643,7 +673,11 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
 
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         if CONFIG.parseable.mode == Mode::Query {
-            create_stream_and_schema_from_storage(&stream_name).await?;
+            if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
+                if !stream_found {
+                    return Err(StreamError::StreamNotFound(stream_name.clone()));
+                }
+            }
         } else {
             return Err(StreamError::StreamNotFound(stream_name));
         }

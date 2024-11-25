@@ -47,14 +47,16 @@ pub async fn create_update_stream(
         });
     }
 
-    if CONFIG.parseable.mode == Mode::Query {
-        create_stream_and_schema_from_storage(stream_name).await?;
+    if !metadata::STREAM_INFO.stream_exists(stream_name)
+        && CONFIG.parseable.mode == Mode::Query
+        && create_stream_and_schema_from_storage(stream_name).await?
+    {
         return Err(StreamError::Custom {
-                    msg: format!(
-                        "Logstream {stream_name} already exists, please create a new log stream with unique name"
-                    ),
-                    status: StatusCode::BAD_REQUEST,
-                });
+                msg: format!(
+                    "Logstream {stream_name} already exists, please create a new log stream with unique name"
+                ),
+                status: StatusCode::BAD_REQUEST,
+            });
     }
 
     if update_stream == "true" {
@@ -316,7 +318,6 @@ pub async fn update_custom_partition_in_stream(
             }
         }
     }
-
     let storage = CONFIG.storage().get_object_store();
     if let Err(err) = storage
         .update_custom_partition_in_stream(&stream_name, custom_partition)
@@ -395,7 +396,7 @@ pub async fn create_stream(
     Ok(())
 }
 
-pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<(), StreamError> {
+pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<bool, StreamError> {
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
     let streams = storage.list_streams().await?;
@@ -495,8 +496,8 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             stream_type,
         );
     } else {
-        return Err(StreamError::StreamNotFound(stream_name.to_string()));
+        return Ok(false);
     }
 
-    Ok(())
+    Ok(true)
 }
