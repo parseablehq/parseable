@@ -1064,7 +1064,7 @@ mod tests {
     fn datetime_max(year: i32, month: u32, day: u32) -> DateTime<Utc> {
         NaiveDate::from_ymd_opt(year, month, day)
             .unwrap()
-            .and_hms_milli_opt(23, 59, 59, 99)
+            .and_hms_milli_opt(23, 59, 59, 999)
             .unwrap()
             .and_utc()
     }
