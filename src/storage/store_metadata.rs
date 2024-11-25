@@ -65,8 +65,8 @@ pub struct StorageMetadata {
     pub default_role: Option<String>,
 }
 
-impl StorageMetadata {
-    pub fn new() -> Self {
+impl Default for StorageMetadata {
+    fn default() -> Self {
         Self {
             version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
             mode: CONFIG.storage_name.to_owned(),
@@ -80,6 +80,9 @@ impl StorageMetadata {
             default_role: None,
         }
     }
+}
+
+impl StorageMetadata {
     pub fn global() -> &'static StaticStorageMetadata {
         STORAGE_METADATA
             .get()
@@ -169,7 +172,7 @@ pub async fn resolve_parseable_metadata(
         }
         EnvChange::CreateBoth => {
             create_dir_all(CONFIG.staging_dir())?;
-            let metadata = StorageMetadata::new();
+            let metadata = StorageMetadata::default();
             // new metadata needs to be set
             // if mode is query or all then both staging and remote
             match CONFIG.parseable.mode {
