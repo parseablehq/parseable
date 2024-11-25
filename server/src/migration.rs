@@ -67,19 +67,27 @@ pub async fn run_metadata_migration(
             Some("v1") => {
                 let mut metadata = metadata_migration::v1_v3(storage_metadata);
                 metadata = metadata_migration::v3_v4(metadata);
+                metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v2") => {
                 let mut metadata = metadata_migration::v2_v3(storage_metadata);
                 metadata = metadata_migration::v3_v4(metadata);
+                metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v3") => {
-                let metadata = metadata_migration::v3_v4(storage_metadata);
+                let mut metadata = metadata_migration::v3_v4(storage_metadata);
+                metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v4") => {
-                let metadata = metadata_migration::v4_v5(storage_metadata);
+                let mut metadata = metadata_migration::v4_v5(storage_metadata);
+                metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             _ => {
