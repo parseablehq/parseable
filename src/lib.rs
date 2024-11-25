@@ -31,7 +31,7 @@ mod metadata;
 mod metrics;
 mod migration;
 mod oidc;
-mod option;
+pub mod option;
 mod query;
 mod querycache;
 mod rbac;
@@ -44,34 +44,8 @@ mod users;
 mod utils;
 mod validator;
 
-use std::sync::Arc;
-
-use handlers::http::modal::ParseableServer;
-use option::{Mode, CONFIG};
-use tracing_subscriber::EnvFilter;
-
-use crate::handlers::http::modal::{
-    ingest_server::IngestServer, query_server::QueryServer, server::Server,
+pub use handlers::http::modal::{
+    ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
 };
+
 pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
-
-#[actix_web::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .compact()
-        .init();
-
-    // these are empty ptrs so mem footprint should be minimal
-    let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
-        Mode::Query => Arc::new(QueryServer),
-
-        Mode::Ingest => Arc::new(IngestServer),
-
-        Mode::All => Arc::new(Server),
-    };
-
-    server.init().await?;
-
-    Ok(())
-}

@@ -31,9 +31,9 @@ pub mod rule;
 pub mod target;
 
 use crate::metrics::ALERTS_STATES;
+use crate::option::CONFIG;
 use crate::utils::arrow::get_field;
 use crate::utils::uid;
-use crate::CONFIG;
 use crate::{storage, utils};
 
 pub use self::rule::Rule;

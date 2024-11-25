@@ -37,12 +37,12 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
-use crate::option::CONFIG;
+use crate::{option::CONFIG, ParseableServer};
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
 use super::server::Server;
 use super::ssl_acceptor::get_ssl_acceptor;
-use super::{OpenIdClient, ParseableServer};
+use super::OpenIdClient;
 
 #[derive(Default, Debug)]
 pub struct QueryServer;

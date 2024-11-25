@@ -19,10 +19,11 @@
 use std::{io::ErrorKind, sync::Arc};
 
 use self::{column::Column, snapshot::ManifestItem};
+use crate::handlers;
 use crate::handlers::http::base_path_without_preceding_slash;
 use crate::metadata::STREAM_INFO;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::option::CONFIG;
+use crate::option::{Mode, CONFIG};
 use crate::stats::{
     event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats,
 };
@@ -32,7 +33,6 @@ use crate::{
     query::PartialTimeFilter,
     storage::{object_storage::manifest_path, ObjectStorage, ObjectStorageError},
 };
-use crate::{handlers, Mode};
 use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveTime, Utc};
 use relative_path::RelativePathBuf;

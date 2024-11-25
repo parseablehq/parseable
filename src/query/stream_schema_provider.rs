@@ -18,7 +18,7 @@
 
 use crate::catalog::manifest::File;
 use crate::hottier::HotTierManager;
-use crate::Mode;
+use crate::option::Mode;
 use crate::{
     catalog::snapshot::{self, Snapshot},
     storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
