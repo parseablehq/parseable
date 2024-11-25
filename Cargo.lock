@@ -3097,6 +3097,7 @@ dependencies = [
  "actix-web-static-files",
  "anyhow",
  "argon2",
+ "arrow",
  "arrow-array",
  "arrow-flight",
  "arrow-ipc",

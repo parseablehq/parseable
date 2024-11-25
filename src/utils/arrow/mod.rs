@@ -34,8 +34,9 @@ pub use merged_reader::MergedRecordReader;
 use serde_json::{Map, Value};
 
 /// example function for concat recordbatch(may not work)
-/// use arrow::record_batch::RecordBatch;
-/// use arrow::error::Result;
+/// ```rust
+/// # use arrow::record_batch::RecordBatch;
+/// # use arrow::error::Result;
 ///
 /// fn concat_batches(batch1: RecordBatch, batch2: RecordBatch) -> Result<RecordBatch> {
 ///     let schema = batch1.schema();
@@ -53,6 +54,7 @@ use serde_json::{Map, Value};
 ///
 ///     RecordBatch::try_new(schema.clone(), columns)
 /// }
+/// ```
 ///
 
 /// Replaces columns in a record batch with new arrays.

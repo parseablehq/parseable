@@ -9,7 +9,6 @@ build = "build.rs"
 
 [dependencies]
 ### apache arrow/datafusion dependencies
-# arrow = "51.0.0"
 arrow-schema = { version = "53.0.0", features = ["serde"] }
 arrow-array = { version = "53.0.0" }
 arrow-json = "53.0.0"
@@ -18,8 +17,8 @@ arrow-select = "53.0.0"
 datafusion = "42.0.0"
 object_store = { version = "0.11.1", features = ["cloud", "aws", "azure"] }
 parquet = "53.0.0"
-arrow-flight = { version = "53.0.0", features = [ "tls" ] }
-tonic = {version = "0.12.3", features = ["tls", "transport", "gzip", "zstd"] }
+arrow-flight = { version = "53.0.0", features = ["tls"] }
+tonic = { version = "0.12.3", features = ["tls", "transport", "gzip", "zstd"] }
 tonic-web = "0.12.3"
 tower-http = { version = "0.6.1", features = ["cors"] }
 
@@ -44,13 +43,13 @@ cookie = "0.18.1"
 chrono = "0.4"
 chrono-humanize = "0.2"
 clap = { version = "4.1", default-features = false, features = [
-  "std",
-  "color",
-  "help",
-  "derive",
-  "env",
-  "cargo",
-  "error-context",
+    "std",
+    "color",
+    "help",
+    "derive",
+    "env",
+    "cargo",
+    "error-context",
 ] }
 clokwerk = "0.4"
 crossterm = "0.28.1"
@@ -72,10 +71,10 @@ rand = "0.8.5"
 regex = "1.7.3"
 relative-path = { version = "1.7", features = ["serde"] }
 reqwest = { version = "0.11.27", default-features = false, features = [
-  "rustls-tls",
-  "json",
-] }         # cannot update cause rustls is not latest `see rustls`
-rustls = "0.22.4"       # cannot update to 0.23 actix has not caught up yet
+    "rustls-tls",
+    "json",
+] } # cannot update cause rustls is not latest `see rustls`
+rustls = "0.22.4" # cannot update to 0.23 actix has not caught up yet
 rustls-pemfile = "2.1.2"
 semver = "1.0"
 serde = { version = "1.0", features = ["rc", "derive"] }
@@ -85,9 +84,9 @@ sysinfo = "0.31.4"
 thiserror = "1.0.64"
 thread-priority = "1.0.0"
 tokio = { version = "1.28", default-features = false, features = [
-  "sync",
-  "macros",
-  "fs",
+    "sync",
+    "macros",
+    "fs",
 ] }
 tokio-stream = { version = "0.1", features = ["fs"] }
 ulid = { version = "1.0", features = ["serde"] }
@@ -120,6 +119,7 @@ prost-build = "0.13.3"
 [dev-dependencies]
 maplit = "1.0"
 rstest = "0.23.0"
+arrow = "53.0.0"
 
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.11/build.zip"
