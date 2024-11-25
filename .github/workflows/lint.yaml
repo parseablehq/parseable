@@ -3,17 +3,16 @@ name: Linter
 on:
   pull_request:
     paths-ignore:
-      - 'docs/**'
-      - 'helm/**'
-      - 'assets/**'
-      - '**.md'
+      - "docs/**"
+      - "helm/**"
+      - "assets/**"
+      - "**.md"
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-
   unit-tests:
     name: Unit tests
     runs-on: ubuntu-latest
@@ -24,6 +23,9 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "target-cache"
       - uses: actions-rs/cargo@v1
         with:
           command: test
@@ -38,6 +40,9 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "target-cache"
       - run: rustup component add rustfmt
       - uses: actions-rs/cargo@v1
         with:
@@ -54,6 +59,9 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "target-cache"
       - run: rustup component add clippy
       - uses: actions-rs/cargo@v1
         with:
