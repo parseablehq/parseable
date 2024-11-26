@@ -16,8 +16,8 @@
  *
  */
 
-use clap::{value_parser, Arg, ArgGroup, Command, FromArgMatches};
-use std::path::PathBuf;
+use clap::{builder::ValueParser, value_parser, Arg, ArgGroup, Command, FromArgMatches};
+use std::{collections::HashMap, path::PathBuf};
 
 use url::Url;
 
@@ -119,8 +119,28 @@ pub struct Cli {
     pub trino_auth: Option<String>,
     pub trino_schema: Option<String>,
     pub trino_catalog: Option<String>,
+
+    // audit log vars
+    pub audit_log_target: Option<String>,
+    pub audit_log_target_username: Option<String>,
+    pub audit_log_target_password: Option<String>,
+    pub audit_log_target_tls_verify: bool,
+    pub audit_log_target_headers: HashMap<String, String>,
 }
 
+fn parse_header(header: &str) -> Result<HashMap<String, String>, String> {
+    let mut map = HashMap::new();
+
+    for pair in header.split(',') {
+        if let Some((key, value)) = pair.split_once(':') {
+            map.insert(key.trim().to_string(), value.trim().to_string());
+        } else {
+            return Err(format!("Invalid header format: {}", pair));
+        }
+    }
+
+    Ok(map)
+}
 impl Cli {
     // identifiers for arguments
     pub const TLS_CERT: &'static str = "tls-cert-path";
@@ -163,6 +183,13 @@ impl Cli {
     pub const TRINO_USER_NAME: &'static str = "p-trino-user-name";
     pub const TRINO_AUTHORIZATION: &'static str = "p-trino-authorization";
     pub const TRINO_SCHEMA: &'static str = "p-trino-schema";
+
+    // audit log env vars
+    pub const P_AUDIT_LOG_TARGET: &'static str = "p-audit-log-target";
+    pub const P_AUDIT_LOG_TARGET_USERNAME: &'static str = "p-audit-log-target-username";
+    pub const P_AUDIT_LOG_TARGET_PASSWORD: &'static str = "p-audit-log-target-password";
+    pub const P_AUDIT_LOG_TARGET_TLS_VERIFY: &'static str = "p-audit-log-target-tls-verify";
+    pub const P_AUDIT_LOG_TARGET_HEADERS: &'static str = "p-audit-log-target-headers";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -501,8 +528,50 @@ impl Cli {
                  ArgGroup::new("oidc")
                      .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
                      .requires_all([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
-                     .multiple(true)
-         )
+                     .multiple(true))
+             .arg(
+                 Arg::new(Self::P_AUDIT_LOG_TARGET)
+                     .long(Self::P_AUDIT_LOG_TARGET)
+                     .env("P_AUDIT_LOG_TARGET")
+                     .value_name("STRING")
+                     .required(false)
+                     .help("Full endpoint for the audit log target"),
+             )
+             .arg(
+                 Arg::new(Self::P_AUDIT_LOG_TARGET_USERNAME)
+                     .long(Self::P_AUDIT_LOG_TARGET_USERNAME)
+                     .env("P_AUDIT_LOG_TARGET_USERNAME")
+                     .value_name("STRING")
+                     .required(false)
+                     .help("Username for the audit log target"),
+             )
+             .arg(
+                 Arg::new(Self::P_AUDIT_LOG_TARGET_PASSWORD)
+                     .long(Self::P_AUDIT_LOG_TARGET_PASSWORD)
+                     .env("P_AUDIT_LOG_TARGET_PASSWORD")
+                     .value_name("STRING")
+                     .required(false)
+                     .help("Password for the audit log target"),
+             )
+             .arg(
+                 Arg::new(Self::P_AUDIT_LOG_TARGET_TLS_VERIFY)
+                     .long(Self::P_AUDIT_LOG_TARGET_TLS_VERIFY)
+                     .env("P_AUDIT_LOG_TARGET_TLS_VERIFY")
+                     .value_name("BOOL")
+                     .required(false)
+                     .default_value("false")
+                     .value_parser(clap::value_parser!(bool))
+                     .help("Enable/Disable TLS verification for the audit log target"),
+             )
+             .arg(
+                 Arg::new(Self::P_AUDIT_LOG_TARGET_HEADERS)
+                     .long(Self::P_AUDIT_LOG_TARGET_HEADERS)
+                     .env("P_AUDIT_LOG_TARGET_HEADERS")
+                     .value_name("HEADER")
+                     .required(false)
+                     .value_parser(ValueParser::new(parse_header))
+                     .help("Comma-separated list of headers for the audit log target"),
+             )
     }
 }
 
@@ -648,6 +717,22 @@ impl FromArgMatches for Cli {
             .expect("default for max disk usage");
 
         self.ms_clarity_tag = m.get_one::<String>(Self::MS_CLARITY_TAG).cloned();
+
+        self.audit_log_target = m.get_one::<String>(Self::P_AUDIT_LOG_TARGET).cloned();
+        self.audit_log_target_username = m
+            .get_one::<String>(Self::P_AUDIT_LOG_TARGET_USERNAME)
+            .cloned();
+        self.audit_log_target_password = m
+            .get_one::<String>(Self::P_AUDIT_LOG_TARGET_PASSWORD)
+            .cloned();
+        self.audit_log_target_tls_verify = m
+            .get_one::<bool>(Self::P_AUDIT_LOG_TARGET_TLS_VERIFY)
+            .cloned()
+            .expect("default for P_AUDIT_LOG_TARGET_TLS_VERIFY");
+        self.audit_log_target_headers = m
+            .get_one::<HashMap<String, String>>(Self::P_AUDIT_LOG_TARGET_HEADERS)
+            .cloned()
+            .unwrap_or_default();
 
         Ok(())
     }

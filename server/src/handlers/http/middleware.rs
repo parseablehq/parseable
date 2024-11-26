@@ -25,7 +25,14 @@ use actix_web::{
     http::header::{self, HeaderName},
     Error, Route,
 };
+use base64::Engine;
+use chrono::Utc;
 use futures_util::future::LocalBoxFuture;
+
+use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::Client;
+use serde_json::json;
+use std::collections::HashMap;
 
 use crate::{
     handlers::{
@@ -164,6 +171,31 @@ where
         /* ## Section end */
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
+        let body = json!([
+            {
+                "version": "1.0",
+                "user-agent":&req
+                .headers()
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("unknown"),
+                "datetime": Utc::now(),
+                "action":self.action,
+                "Actor":{
+                    "type": &req
+                    .headers()
+                    .get("user-agent")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("unknown"),
+                    "id": "user123"
+                },
+                  "ip-address":&req
+                  .headers()
+                  .get("host")
+                  .and_then(|value| value.to_str().ok())
+                  .unwrap_or("unknown"),
+            }
+        ]);
         let fut = self.service.call(req);
         Box::pin(async move {
             match auth_result? {
@@ -175,8 +207,58 @@ where
                 ),
                 _ => {}
             }
+            if let Err(err) = send_post_request(body).await {
+                eprintln!("Error sending POST request: {}", err);
+            }
             fut.await
         })
+    }
+}
+fn to_header_map(headers: &HashMap<String, String>) -> Result<HeaderMap, String> {
+    let mut header_map = HeaderMap::new();
+    for (key, value) in headers {
+        let header_name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+            .map_err(|_| format!("Invalid header name: {}", key))?;
+        let header_value = HeaderValue::from_str(value)
+            .map_err(|_| format!("Invalid header value for {}: {}", key, value))?;
+        header_map.insert(header_name, header_value);
+    }
+    Ok(header_map)
+}
+async fn send_post_request(body: serde_json::Value) -> Result<(), reqwest::Error> {
+    let client = Client::new();
+    match CONFIG.parseable.audit_log_target.as_deref() {
+        Some(_target) => {
+            let audit_log_auth_token = format!(
+                "Basic {}",
+                base64::prelude::BASE64_STANDARD.encode(format!(
+                    "{}:{}",
+                    CONFIG
+                        .parseable
+                        .audit_log_target_username
+                        .as_deref()
+                        .unwrap(),
+                    CONFIG
+                        .parseable
+                        .audit_log_target_password
+                        .as_deref()
+                        .unwrap()
+                ))
+            );
+            let headers = to_header_map(&CONFIG.parseable.audit_log_target_headers)
+                .expect("Failed to convert audit_log_target_headers to HeaderMap");
+            let body = body;
+            let target_url = CONFIG.parseable.audit_log_target.as_ref().unwrap();
+            let _response = client
+                .post(target_url)
+                .headers(headers)
+                .header(reqwest::header::AUTHORIZATION, &audit_log_auth_token)
+                .json(&body)
+                .send()
+                .await?;
+            Ok(())
+        }
+        None => Ok(()),
     }
 }
 
