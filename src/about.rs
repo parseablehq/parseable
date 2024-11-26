@@ -24,24 +24,26 @@ use crate::utils::update::{self, LatestRelease};
 use chrono::Duration;
 use chrono_humanize::{Accuracy, Tense};
 use crossterm::style::Stylize;
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
 use std::env;
 use std::path::Path;
 use sysinfo::System;
 use ulid::Ulid;
+
 // Expose some static variables for internal usage
 pub static LATEST_RELEASE: OnceCell<Option<LatestRelease>> = OnceCell::new();
+
 static K8S_ENV_TO_CHECK: &str = "KUBERNETES_SERVICE_HOST";
-
-fn is_docker() -> bool {
-    Path::new("/.dockerenv").exists()
-}
-
 fn is_k8s() -> bool {
     env::var(K8S_ENV_TO_CHECK).is_ok()
 }
 
-pub fn platform() -> &'static str {
+static DOCKERENV_FILE: &str = "/.dockerenv";
+fn is_docker() -> bool {
+    Path::new(DOCKERENV_FILE).exists()
+}
+
+static PLATFORM: Lazy<&'static str> = Lazy::new(|| {
     if is_k8s() {
         "Kubernetes"
     } else if is_docker() {
@@ -49,6 +51,10 @@ pub fn platform() -> &'static str {
     } else {
         "Native"
     }
+});
+
+pub fn platform() -> &'static str {
+    PLATFORM.as_ref()
 }
 
 pub fn set_latest_release(latest_release: Option<LatestRelease>) {
