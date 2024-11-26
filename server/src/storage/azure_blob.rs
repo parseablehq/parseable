@@ -273,23 +273,22 @@ impl BlobStore {
             .iter()
             .flat_map(|path| path.parts())
             .map(|name| name.as_ref().to_string())
-            .filter(|name| name != PARSEABLE_ROOT_DIRECTORY)
-            .filter(|name| name != USERS_ROOT_DIR)
+            .filter(|name| name != PARSEABLE_ROOT_DIRECTORY && name != USERS_ROOT_DIR)
             .collect::<Vec<_>>();
+
         for stream in streams {
             let stream_path =
                 object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY));
             let resp = self.client.list_with_delimiter(Some(&stream_path)).await?;
-            let stream_files: Vec<String> = resp
+            if resp
                 .objects
                 .iter()
-                .filter(|name| name.location.filename().unwrap().ends_with("stream.json"))
-                .map(|name| name.location.to_string())
-                .collect();
-            if !stream_files.is_empty() {
+                .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
+            {
                 result_file_list.push(LogStream { name: stream });
             }
         }
+
         Ok(result_file_list)
     }
 

@@ -32,12 +32,12 @@ use crate::{
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
-            if !stream_found {
-                return Err(StreamError::StreamNotFound(stream_name.clone()));
-            }
-        }
+    if !metadata::STREAM_INFO.stream_exists(&stream_name)
+        && !create_stream_and_schema_from_storage(&stream_name)
+            .await
+            .unwrap_or(false)
+    {
+        return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
 
     let objectstore = CONFIG.storage().get_object_store();
@@ -98,14 +98,12 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
-            if !stream_found {
-                return Err(StreamError::StreamNotFound(stream_name));
-            }
-        } else {
-            return Err(StreamError::StreamNotFound(stream_name));
-        }
+    if !metadata::STREAM_INFO.stream_exists(&stream_name)
+        && !create_stream_and_schema_from_storage(&stream_name)
+            .await
+            .unwrap_or(false)
+    {
+        return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
 
     let query_string = req.query_string();

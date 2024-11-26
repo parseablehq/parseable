@@ -4,10 +4,8 @@ use actix_web::{http::header::HeaderMap, HttpRequest};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use http::StatusCode;
-use relative_path::RelativePathBuf;
 
 use crate::{
-    catalog::snapshot::Snapshot,
     handlers::{
         http::logstream::error::{CreateStreamError, StreamError},
         CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
@@ -16,11 +14,7 @@ use crate::{
     metadata::{self, STREAM_INFO},
     option::{Mode, CONFIG},
     static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
-    stats::FullStats,
-    storage::{
-        object_storage::{schema_path, stream_json_path},
-        LogStream, ObjectStoreFormat, StreamType, STREAM_ROOT_DIRECTORY,
-    },
+    storage::{LogStream, ObjectStoreFormat, StreamType},
     validator,
 };
 
@@ -404,49 +398,15 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
         name: stream_name.to_owned(),
     }) {
         let mut stream_metadata = ObjectStoreFormat::default();
-        let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
-        let stream_obs = storage
-            .get_objects(
-                Some(&path),
-                Box::new(|file_name| {
-                    file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
-                }),
-            )
-            .await
-            .into_iter()
-            .next();
-        if let Some(stream_obs) = stream_obs {
-            let stream_ob = &stream_obs[0];
-            let stream_ob_metdata = serde_json::from_slice::<ObjectStoreFormat>(stream_ob)?;
-            stream_metadata = ObjectStoreFormat {
-                stats: FullStats::default(),
-                snapshot: Snapshot::default(),
-                ..stream_ob_metdata
-            };
-
-            let stream_metadata_bytes = serde_json::to_vec(&stream_metadata)?.into();
-            storage
-                .put_object(&stream_json_path(stream_name), stream_metadata_bytes)
-                .await?;
+        let stream_metadata_bytes = storage.create_stream_from_ingestor(stream_name).await?;
+        if !stream_metadata_bytes.is_empty() {
+            stream_metadata = serde_json::from_slice::<ObjectStoreFormat>(&stream_metadata_bytes)?;
         }
 
         let mut schema = Arc::new(Schema::empty());
-        let schema_obs = storage
-            .get_objects(
-                Some(&path),
-                Box::new(|file_name| {
-                    file_name.starts_with(".ingestor") && file_name.ends_with("schema")
-                }),
-            )
-            .await
-            .into_iter()
-            .next();
-        if let Some(schema_obs) = schema_obs {
-            let schema_ob = &schema_obs[0];
-            storage
-                .put_object(&schema_path(stream_name), schema_ob.clone())
-                .await?;
-            schema = serde_json::from_slice::<Arc<Schema>>(schema_ob)?;
+        let schema_bytes = storage.create_schema_from_ingestor(stream_name).await?;
+        if !schema_bytes.is_empty() {
+            schema = serde_json::from_slice::<Arc<Schema>>(&schema_bytes)?;
         }
 
         let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
@@ -459,31 +419,14 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             static_schema.insert(field_name, field);
         }
 
-        let time_partition = if stream_metadata.time_partition.is_some() {
-            stream_metadata.time_partition.as_ref().unwrap()
-        } else {
-            ""
-        };
-        let time_partition_limit = if stream_metadata.time_partition_limit.is_some() {
-            stream_metadata.time_partition_limit.as_ref().unwrap()
-        } else {
-            ""
-        };
-        let custom_partition = if stream_metadata.custom_partition.is_some() {
-            stream_metadata.custom_partition.as_ref().unwrap()
-        } else {
-            ""
-        };
-        let static_schema_flag = if stream_metadata.static_schema_flag.is_some() {
-            stream_metadata.static_schema_flag.as_ref().unwrap()
-        } else {
-            ""
-        };
-        let stream_type = if stream_metadata.stream_type.is_some() {
-            stream_metadata.stream_type.as_ref().unwrap()
-        } else {
-            ""
-        };
+        let time_partition = stream_metadata.time_partition.as_deref().unwrap_or("");
+        let time_partition_limit = stream_metadata
+            .time_partition_limit
+            .as_deref()
+            .unwrap_or("");
+        let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
+        let static_schema_flag = stream_metadata.static_schema_flag.as_deref().unwrap_or("");
+        let stream_type = stream_metadata.stream_type.as_deref().unwrap_or("");
 
         metadata::STREAM_INFO.add_stream(
             stream_name.to_string(),

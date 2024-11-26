@@ -435,6 +435,7 @@ pub trait ObjectStorage: Sync + 'static {
             STREAM_ROOT_DIRECTORY,
             STREAM_METADATA_FILE_NAME,
         ]);
+
         if let Ok(querier_stream_json_bytes) = self.get_object(&stream_path).await {
             let querier_stream_metadata =
                 serde_json::from_slice::<ObjectStoreFormat>(&querier_stream_json_bytes)?;
@@ -451,6 +452,7 @@ pub trait ObjectStorage: Sync + 'static {
             .await?;
             return Ok(stream_metadata_bytes);
         }
+
         Ok(Bytes::new())
     }
 
@@ -459,7 +461,7 @@ pub trait ObjectStorage: Sync + 'static {
         stream_name: &str,
     ) -> Result<Bytes, ObjectStorageError> {
         let stream_path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
-        let stream_metadata_obs = self
+        if let Some(stream_metadata_obs) = self
             .get_objects(
                 Some(&stream_path),
                 Box::new(|file_name| {
@@ -468,16 +470,16 @@ pub trait ObjectStorage: Sync + 'static {
             )
             .await
             .into_iter()
-            .next();
-        if let Some(stream_metadata_obs) = stream_metadata_obs {
+            .next()
+        {
             if !stream_metadata_obs.is_empty() {
                 let stream_metadata_bytes = &stream_metadata_obs[0];
-                let stream_ob_metdata =
+                let stream_ob_metadata =
                     serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
                 let stream_metadata = ObjectStoreFormat {
                     stats: FullStats::default(),
                     snapshot: Snapshot::default(),
-                    ..stream_ob_metdata
+                    ..stream_ob_metadata
                 };
 
                 let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
@@ -512,7 +514,7 @@ pub trait ObjectStorage: Sync + 'static {
         stream_name: &str,
     ) -> Result<Bytes, ObjectStorageError> {
         let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
-        let schema_obs = self
+        if let Some(schema_obs) = self
             .get_objects(
                 Some(&path),
                 Box::new(|file_name| {
@@ -521,8 +523,8 @@ pub trait ObjectStorage: Sync + 'static {
             )
             .await
             .into_iter()
-            .next();
-        if let Some(schema_obs) = schema_obs {
+            .next()
+        {
             let schema_ob = &schema_obs[0];
             self.put_object(&schema_path(stream_name), schema_ob.clone())
                 .await?;

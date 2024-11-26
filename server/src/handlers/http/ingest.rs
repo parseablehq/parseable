@@ -154,12 +154,9 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
     }
     if !STREAM_INFO.stream_exists(&stream_name) {
         if CONFIG.parseable.mode != Mode::All {
-            if let Ok(stream_found) = create_stream_and_schema_from_storage(&stream_name).await {
-                if !stream_found {
-                    return Err(PostError::StreamNotFound(stream_name.clone()));
-                }
-            } else {
-                return Err(PostError::StreamNotFound(stream_name.clone()));
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(PostError::StreamNotFound(stream_name.clone())),
             }
         } else {
             return Err(PostError::StreamNotFound(stream_name.clone()));
