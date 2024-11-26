@@ -181,6 +181,7 @@ pub fn v4_v5(mut storage_metadata: JsonValue) -> JsonValue {
     storage_metadata
 }
 
+/// Remove the querier endpoint and auth token from the storage metadata
 pub fn remove_querier_metadata(mut storage_metadata: JsonValue) -> JsonValue {
     let metadata = storage_metadata.as_object_mut().unwrap();
     metadata.remove("querier_endpoint");

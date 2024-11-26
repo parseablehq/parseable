@@ -65,6 +65,8 @@ pub async fn run_metadata_migration(
     if let Some(storage_metadata) = storage_metadata {
         match get_version(&storage_metadata) {
             Some("v1") => {
+                //migrate to latest version
+                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v1_v3(storage_metadata);
                 metadata = metadata_migration::v3_v4(metadata);
                 metadata = metadata_migration::v4_v5(metadata);
@@ -72,6 +74,8 @@ pub async fn run_metadata_migration(
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v2") => {
+                //migrate to latest version
+                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v2_v3(storage_metadata);
                 metadata = metadata_migration::v3_v4(metadata);
                 metadata = metadata_migration::v4_v5(metadata);
@@ -79,18 +83,23 @@ pub async fn run_metadata_migration(
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v3") => {
+                //migrate to latest version
+                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v3_v4(storage_metadata);
                 metadata = metadata_migration::v4_v5(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v4") => {
+                //migrate to latest version
+                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v4_v5(storage_metadata);
                 metadata = metadata_migration::v4_v5(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             _ => {
+                //remove querier endpooint and token from storage metadata
                 let metadata = metadata_migration::remove_querier_metadata(storage_metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
@@ -166,6 +175,10 @@ async fn migration_hot_tier(stream: &str) -> anyhow::Result<()> {
 
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
     let mut arrow_schema: Schema = Schema::empty();
+
+    //check if schema exists for the node
+    //if not, create schema from querier schema from storage
+    //if not present with querier, create schema from ingestor schema from storage
     let schema_path = schema_path(stream);
     let schema = if let Ok(schema) = storage.get_object(&schema_path).await {
         schema
@@ -184,6 +197,9 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         }
     };
 
+    //check if stream.json exists for the node
+    //if not, create stream.json from querier stream.json from storage
+    //if not present with querier, create from ingestor stream.json from storage
     let path = stream_json_path(stream);
     let stream_metadata = if let Ok(stream_metadata) = storage.get_object(&path).await {
         stream_metadata

@@ -426,6 +426,7 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
+    ///create stream from querier stream.json from storage
     async fn create_stream_from_querier(
         &self,
         stream_name: &str,
@@ -456,6 +457,7 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(Bytes::new())
     }
 
+    ///create stream from ingestor stream.json from storage
     async fn create_stream_from_ingestor(
         &self,
         stream_name: &str,
@@ -495,6 +497,7 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(Bytes::new())
     }
 
+    ///create schema from querier schema from storage
     async fn create_schema_from_querier(
         &self,
         stream_name: &str,
@@ -509,6 +512,7 @@ pub trait ObjectStorage: Sync + 'static {
         Ok(Bytes::new())
     }
 
+    ///create schema from ingestor schema from storage
     async fn create_schema_from_ingestor(
         &self,
         stream_name: &str,

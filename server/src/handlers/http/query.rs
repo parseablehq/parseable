@@ -77,6 +77,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     {
         Ok(raw_logical_plan) => raw_logical_plan,
         Err(_) => {
+            //if logical plan creation fails, create streams and try again
             create_streams_for_querier().await;
             session_state
                 .create_logical_plan(&query_request.query)
@@ -187,6 +188,9 @@ pub async fn update_schema_when_distributed(tables: Vec<String>) -> Result<(), Q
     Ok(())
 }
 
+/// Create streams for querier if they do not exist
+/// get list of streams from memory and storage
+/// create streams for memory from storage if they do not exist
 pub async fn create_streams_for_querier() {
     let querier_streams = STREAM_INFO.list_streams();
     let store = CONFIG.storage().get_object_store();

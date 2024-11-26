@@ -84,6 +84,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 }
 
 pub async fn list(_: HttpRequest) -> impl Responder {
+    //list all streams from storage
     let res = CONFIG
         .storage()
         .get_object_store()
@@ -118,6 +119,10 @@ pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let schema = match STREAM_INFO.schema(&stream_name) {
         Ok(schema) => schema,
+
+        //if schema not found in memory map
+        //create stream and schema from storage and memory
+        //return from memory map
         Err(_) if CONFIG.parseable.mode == Mode::Query => {
             if create_stream_and_schema_from_storage(&stream_name).await? {
                 STREAM_INFO.schema(&stream_name)?
@@ -194,6 +199,9 @@ pub async fn put_alert(
     validator::alert(&alerts)?;
 
     if !STREAM_INFO.stream_initialized(&stream_name)? {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
         if CONFIG.parseable.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
@@ -239,6 +247,9 @@ pub async fn put_alert(
 pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
         if CONFIG.parseable.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
@@ -267,6 +278,21 @@ pub async fn put_retention(
     body: web::Json<serde_json::Value>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
+        if CONFIG.parseable.mode == Mode::Query {
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
+            }
+        } else {
+            return Err(StreamError::StreamNotFound(stream_name));
+        }
+    }
+
     let body = body.into_inner();
 
     let retention: Retention = match serde_json::from_value(body) {
@@ -356,6 +382,9 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
         if CONFIG.parseable.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
@@ -582,6 +611,9 @@ pub async fn put_stream_hot_tier(
 ) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
         if CONFIG.parseable.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
@@ -639,6 +671,9 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
         if CONFIG.parseable.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
@@ -671,6 +706,9 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
         if CONFIG.parseable.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}

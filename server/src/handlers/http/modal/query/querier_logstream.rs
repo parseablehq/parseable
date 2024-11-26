@@ -1,3 +1,21 @@
+/*
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use core::str;
 use std::fs;
 
@@ -32,6 +50,10 @@ use crate::{
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    // if the stream not found in memory map,
+    //check if it exists in the storage
+    //create stream and schema from storage
     if !metadata::STREAM_INFO.stream_exists(&stream_name)
         && !create_stream_and_schema_from_storage(&stream_name)
             .await
@@ -98,6 +120,9 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
+    // if the stream not found in memory map,
+    //check if it exists in the storage
+    //create stream and schema from storage
     if !metadata::STREAM_INFO.stream_exists(&stream_name)
         && !create_stream_and_schema_from_storage(&stream_name)
             .await

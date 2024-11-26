@@ -32,7 +32,7 @@ use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
-use crate::storage::{LogStream, ObjectStorageError, StreamType};
+use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
@@ -153,6 +153,9 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
         )));
     }
     if !STREAM_INFO.stream_exists(&stream_name) {
+        // For distributed deployments, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
         if CONFIG.parseable.mode != Mode::All {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
@@ -198,15 +201,11 @@ pub async fn create_stream_if_not_exists(
         return Ok(stream_exists);
     }
 
+    // For distributed deployments, if the stream not found in memory map,
+    //check if it exists in the storage
+    //create stream and schema from storage
     if CONFIG.parseable.mode != Mode::All {
-        let store = CONFIG.storage().get_object_store();
-        let streams = store.list_streams().await?;
-        if streams.contains(&LogStream {
-            name: stream_name.to_owned(),
-        }) {
-            create_stream_and_schema_from_storage(stream_name).await?;
-            return Ok(stream_exists);
-        }
+        return Ok(create_stream_and_schema_from_storage(stream_name).await?);
     }
 
     super::logstream::create_stream(
