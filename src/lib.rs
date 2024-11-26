@@ -18,18 +18,18 @@
 
 mod about;
 mod alerts;
-mod analytics;
+pub mod analytics;
 pub mod banner;
 mod catalog;
 mod cli;
 mod event;
-mod handlers;
-mod hottier;
+pub mod handlers;
+pub mod hottier;
 mod livetail;
-mod localcache;
+pub mod localcache;
 mod metadata;
-mod metrics;
-mod migration;
+pub mod metrics;
+pub mod migration;
 mod oidc;
 pub mod option;
 mod query;
@@ -39,8 +39,8 @@ mod response;
 mod static_schema;
 mod stats;
 pub mod storage;
-mod sync;
-mod users;
+pub mod sync;
+pub mod users;
 mod utils;
 mod validator;
 
