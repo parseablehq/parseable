@@ -357,7 +357,7 @@ pub async fn run_file_migration(config: &Config) -> anyhow::Result<()> {
 }
 
 async fn run_meta_file_migration(
-    object_store: &Arc<dyn ObjectStorage + Send>,
+    object_store: &Arc<dyn ObjectStorage>,
     old_meta_file_path: RelativePathBuf,
 ) -> anyhow::Result<()> {
     // get the list of all meta files
@@ -388,9 +388,7 @@ async fn run_meta_file_migration(
     Ok(())
 }
 
-async fn run_stream_files_migration(
-    object_store: &Arc<dyn ObjectStorage + Send>,
-) -> anyhow::Result<()> {
+async fn run_stream_files_migration(object_store: &Arc<dyn ObjectStorage>) -> anyhow::Result<()> {
     let streams = object_store
         .list_old_streams()
         .await?

@@ -75,7 +75,7 @@ use crate::catalog::Snapshot as CatalogSnapshot;
 
 // schema provider for stream based on global data
 pub struct GlobalSchemaProvider {
-    pub storage: Arc<dyn ObjectStorage + Send>,
+    pub storage: Arc<dyn ObjectStorage>,
 }
 
 #[async_trait::async_trait]
@@ -614,7 +614,7 @@ async fn get_hottier_exectuion_plan(
 #[allow(clippy::too_many_arguments)]
 async fn legacy_listing_table(
     stream: String,
-    glob_storage: Arc<dyn ObjectStorage + Send>,
+    glob_storage: Arc<dyn ObjectStorage>,
     object_store: Arc<dyn ObjectStore>,
     time_filters: &[PartialTimeFilter],
     schema: Arc<Schema>,

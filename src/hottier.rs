@@ -289,7 +289,7 @@ impl HotTierManager {
         stream: &str,
         manifest_files_to_download: &mut BTreeMap<String, Vec<String>>,
         parquet_file_size: &mut u64,
-        object_store: Arc<dyn ObjectStorage + Send>,
+        object_store: Arc<dyn ObjectStorage>,
     ) -> Result<(), HotTierError> {
         if manifest_files_to_download.is_empty() {
             return Ok(());

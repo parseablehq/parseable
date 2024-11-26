@@ -58,15 +58,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug {
+pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
     fn get_datafusion_runtime(&self) -> RuntimeConfig;
-    fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send>;
+    fn get_object_store(&self) -> Arc<dyn ObjectStorage>;
     fn get_endpoint(&self) -> String;
     fn register_store_metrics(&self, handler: &PrometheusMetrics);
 }
 
 #[async_trait]
-pub trait ObjectStorage: Sync + 'static {
+pub trait ObjectStorage: Send + Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(

@@ -289,7 +289,7 @@ impl ObjectStorageProvider for S3Config {
         RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry))
     }
 
-    fn get_object_store(&self) -> Arc<dyn ObjectStorage + Send> {
+    fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
         let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit

@@ -101,7 +101,7 @@ fn get_file_bounds(
 }
 
 pub async fn update_snapshot(
-    storage: Arc<dyn ObjectStorage + Send>,
+    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     change: manifest::File,
 ) -> Result<(), ObjectStorageError> {
@@ -239,7 +239,7 @@ pub async fn update_snapshot(
 async fn create_manifest(
     lower_bound: DateTime<Utc>,
     change: manifest::File,
-    storage: Arc<dyn ObjectStorage + Send>,
+    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     update_snapshot: bool,
     mut meta: ObjectStoreFormat,
@@ -318,7 +318,7 @@ async fn create_manifest(
 }
 
 pub async fn remove_manifest_from_snapshot(
-    storage: Arc<dyn ObjectStorage + Send>,
+    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     dates: Vec<String>,
 ) -> Result<Option<String>, ObjectStorageError> {
@@ -343,7 +343,7 @@ pub async fn remove_manifest_from_snapshot(
 }
 
 pub async fn get_first_event(
-    storage: Arc<dyn ObjectStorage + Send>,
+    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     dates: Vec<String>,
 ) -> Result<Option<String>, ObjectStorageError> {

@@ -56,7 +56,7 @@ impl ListingTableBuilder {
 
     pub async fn populate_via_listing(
         self,
-        storage: Arc<dyn ObjectStorage + Send>,
+        storage: Arc<dyn ObjectStorage>,
         client: Arc<dyn ObjectStore>,
         time_filters: &[PartialTimeFilter],
     ) -> Result<Self, DataFusionError> {

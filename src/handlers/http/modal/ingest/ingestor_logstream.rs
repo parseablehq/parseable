@@ -115,7 +115,7 @@ pub async fn put_enable_cache(
     }
     metadata::STREAM_INFO
         .upsert_stream_info(
-            &*storage,
+            storage.as_ref(),
             LogStream {
                 name: stream_name.clone().to_owned(),
             },

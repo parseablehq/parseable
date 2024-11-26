@@ -39,7 +39,7 @@ pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
 #[derive(Debug)]
 pub struct Config {
     pub parseable: Cli,
-    storage: Arc<dyn ObjectStorageProvider + Send + Sync>,
+    storage: Arc<dyn ObjectStorageProvider>,
     pub storage_name: &'static str,
 }
 

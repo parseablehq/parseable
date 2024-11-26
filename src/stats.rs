@@ -100,7 +100,7 @@ pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<Full
 }
 
 pub async fn update_deleted_stats(
-    storage: Arc<dyn ObjectStorage + Send>,
+    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     meta: ObjectStoreFormat,
     dates: Vec<String>,
