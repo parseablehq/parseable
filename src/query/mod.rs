@@ -61,9 +61,7 @@ pub struct Query {
 
 impl Query {
     // create session context for this query
-    pub fn create_session_context(
-        storage: Arc<dyn ObjectStorageProvider + Send>,
-    ) -> SessionContext {
+    pub fn create_session_context(storage: Arc<dyn ObjectStorageProvider>) -> SessionContext {
         let runtime_config = storage
             .get_datafusion_runtime()
             .with_disk_manager(DiskManagerConfig::NewOs);

@@ -170,7 +170,7 @@ Cloud Native, log analytics platform for modern applications."#,
         Err(ObjectStorageError::Custom(format!("Could not start the server because bucket '{}' contains stale data, please use an empty bucket and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)))
     }
 
-    pub fn storage(&self) -> Arc<dyn ObjectStorageProvider + Send + Sync> {
+    pub fn storage(&self) -> Arc<dyn ObjectStorageProvider> {
         self.storage.clone()
     }
 
