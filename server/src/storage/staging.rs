@@ -363,7 +363,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
     // all the files should be in the staging directory root
     let entries = std::fs::read_dir(path)?;
     let url = get_url();
-    let port = url.port().expect("here port should be defined").to_string();
+    let port = url.port().unwrap_or(80).to_string();
     let url = url.to_string();
 
     for entry in entries {
