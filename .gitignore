@@ -1,6 +1,6 @@
 target
 data*
-staging*
+staging/
 limitcache
 examples
 cert.pem
@@ -14,4 +14,3 @@ parseable
 parseable_*
 parseable-env-secret
 cache
-
