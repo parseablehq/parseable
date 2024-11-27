@@ -260,6 +260,9 @@ pub fn convert_disk_files_to_parquet(
         }
 
         let record_reader = MergedReverseRecordReader::try_new(&files).unwrap();
+        if record_reader.readers.is_empty() {
+            continue;
+        }
         let merged_schema = record_reader.merged_schema();
         let mut index_time_partition: usize = 0;
         if let Some(time_partition) = time_partition.as_ref() {
