@@ -40,8 +40,7 @@ pub use localfs::FSConfig;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::S3Config;
 pub use store_metadata::{
-    get_staging_metadata, put_remote_metadata, put_staging_metadata, resolve_parseable_metadata,
-    StorageMetadata,
+    put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
 };
 
 // metadata file names in a Stream prefix

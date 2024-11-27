@@ -20,17 +20,19 @@ use self::error::{CreateStreamError, StreamError};
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::ingest::create_stream_if_not_exists;
-use super::modal::utils::logstream_utils::create_update_stream;
+use super::modal::utils::logstream_utils::{
+    create_stream_and_schema_from_storage, create_update_stream,
+};
 use crate::alerts::Alerts;
 use crate::event::format::update_data_type_to_datetime;
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::STREAM_INFO;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::option::CONFIG;
+use crate::option::{Mode, CONFIG};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::StreamType;
-use crate::storage::{retention::Retention, LogStream, StorageDir, StreamInfo};
+use crate::storage::{retention::Retention, StorageDir, StreamInfo};
 use crate::{catalog, event, stats};
 
 use crate::{metadata, validator};
@@ -82,11 +84,13 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 }
 
 pub async fn list(_: HttpRequest) -> impl Responder {
-    let res: Vec<LogStream> = STREAM_INFO
+    //list all streams from storage
+    let res = CONFIG
+        .storage()
+        .get_object_store()
         .list_streams()
-        .into_iter()
-        .map(|stream| LogStream { name: stream })
-        .collect();
+        .await
+        .unwrap();
 
     web::Json(res)
 }
@@ -113,7 +117,22 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
 
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let schema = STREAM_INFO.schema(&stream_name)?;
+    let schema = match STREAM_INFO.schema(&stream_name) {
+        Ok(schema) => schema,
+
+        //if schema not found in memory map
+        //create stream and schema from storage and memory
+        //return from memory map
+        Err(_) if CONFIG.parseable.mode == Mode::Query => {
+            if create_stream_and_schema_from_storage(&stream_name).await? {
+                STREAM_INFO.schema(&stream_name)?
+            } else {
+                return Err(StreamError::StreamNotFound(stream_name.clone()));
+            }
+        }
+        Err(_) => return Err(StreamError::StreamNotFound(stream_name)),
+    };
+
     Ok((web::Json(schema), StatusCode::OK))
 }
 
@@ -180,7 +199,17 @@ pub async fn put_alert(
     validator::alert(&alerts)?;
 
     if !STREAM_INFO.stream_initialized(&stream_name)? {
-        return Err(StreamError::UninitializedLogstream);
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
+        if CONFIG.parseable.mode == Mode::Query {
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
+            }
+        } else {
+            return Err(StreamError::UninitializedLogstream);
+        }
     }
 
     let schema = STREAM_INFO.schema(&stream_name)?;
@@ -218,7 +247,17 @@ pub async fn put_alert(
 pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name.to_string()));
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
+        if CONFIG.parseable.mode == Mode::Query {
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
+            }
+        } else {
+            return Err(StreamError::StreamNotFound(stream_name));
+        }
     }
     let retention = STREAM_INFO.get_retention(&stream_name);
 
@@ -239,6 +278,21 @@ pub async fn put_retention(
     body: web::Json<serde_json::Value>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
+        if CONFIG.parseable.mode == Mode::Query {
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
+            }
+        } else {
+            return Err(StreamError::StreamNotFound(stream_name));
+        }
+    }
+
     let body = body.into_inner();
 
     let retention: Retention = match serde_json::from_value(body) {
@@ -327,8 +381,18 @@ pub async fn get_stats_date(stream_name: &str, date: &str) -> Result<Stats, Stre
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+    if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
+        if cfg!(not(test)) && CONFIG.parseable.mode == Mode::Query {
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
+            }
+        } else {
+            return Err(StreamError::StreamNotFound(stream_name));
+        }
     }
 
     let query_string = req.query_string();
@@ -496,8 +560,15 @@ pub async fn create_stream(
 
 pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+    if !STREAM_INFO.stream_exists(&stream_name) {
+        if CONFIG.parseable.mode == Mode::Query {
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
+            }
+        } else {
+            return Err(StreamError::StreamNotFound(stream_name));
+        }
     }
 
     let store = CONFIG.storage().get_object_store();
@@ -539,8 +610,18 @@ pub async fn put_stream_hot_tier(
     body: web::Json<serde_json::Value>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+    if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
+        if CONFIG.parseable.mode == Mode::Query {
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
+            }
+        } else {
+            return Err(StreamError::StreamNotFound(stream_name));
+        }
     }
 
     if STREAM_INFO.stream_type(&stream_name).unwrap() == Some(StreamType::Internal.to_string()) {
@@ -589,8 +670,18 @@ pub async fn put_stream_hot_tier(
 pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+    if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
+        if CONFIG.parseable.mode == Mode::Query {
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
+            }
+        } else {
+            return Err(StreamError::StreamNotFound(stream_name));
+        }
     }
 
     if CONFIG.parseable.hot_tier_storage_path.is_none() {
@@ -614,8 +705,18 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
 pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+    if !STREAM_INFO.stream_exists(&stream_name) {
+        // For query mode, if the stream not found in memory map,
+        //check if it exists in the storage
+        //create stream and schema from storage
+        if CONFIG.parseable.mode == Mode::Query {
+            match create_stream_and_schema_from_storage(&stream_name).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
+            }
+        } else {
+            return Err(StreamError::StreamNotFound(stream_name));
+        }
     }
 
     if CONFIG.parseable.hot_tier_storage_path.is_none() {
@@ -654,7 +755,7 @@ pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
-        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME, None).await?;
+        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME).await?;
     }
     Ok(())
 }

@@ -1,3 +1,21 @@
+/*
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use core::str;
 use std::fs;
 
@@ -5,7 +23,6 @@ use actix_web::{web, HttpRequest, Responder};
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
-use serde::Deserialize;
 use tokio::sync::Mutex;
 
 static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
@@ -20,7 +37,9 @@ use crate::{
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
         logstream::{error::StreamError, get_stats_date},
-        modal::utils::logstream_utils::create_update_stream,
+        modal::utils::logstream_utils::{
+            create_stream_and_schema_from_storage, create_update_stream,
+        },
     },
     hottier::HotTierManager,
     metadata::{self, STREAM_INFO},
@@ -31,8 +50,16 @@ use crate::{
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+
+    // if the stream not found in memory map,
+    //check if it exists in the storage
+    //create stream and schema from storage
+    if !metadata::STREAM_INFO.stream_exists(&stream_name)
+        && !create_stream_and_schema_from_storage(&stream_name)
+            .await
+            .unwrap_or(false)
+    {
+        return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
 
     let objectstore = CONFIG.storage().get_object_store();
@@ -79,22 +106,13 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
-#[derive(Deserialize)]
-pub struct PutStreamQuery {
-    skip_ingestors: Option<String>,
-}
-
-pub async fn put_stream(
-    req: HttpRequest,
-    body: Bytes,
-    info: web::Query<PutStreamQuery>,
-) -> Result<impl Responder, StreamError> {
+pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     let _ = CREATE_STREAM_LOCK.lock().await;
     let headers = create_update_stream(&req, &body, &stream_name).await?;
 
-    sync_streams_with_ingestors(headers, body, &stream_name, info.skip_ingestors.clone()).await?;
+    sync_streams_with_ingestors(headers, body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
@@ -102,8 +120,15 @@ pub async fn put_stream(
 pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
+    // if the stream not found in memory map,
+    //check if it exists in the storage
+    //create stream and schema from storage
+    if !metadata::STREAM_INFO.stream_exists(&stream_name)
+        && !create_stream_and_schema_from_storage(&stream_name)
+            .await
+            .unwrap_or(false)
+    {
+        return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
 
     let query_string = req.query_string();

@@ -28,9 +28,9 @@ use crate::{
     metadata::load_stream_metadata_on_server_start,
     option::{validation::human_size_to_bytes, Config, Mode, CONFIG},
     storage::{
-        object_storage::{parseable_json_path, stream_json_path},
+        object_storage::{parseable_json_path, schema_path, stream_json_path},
         ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-        SCHEMA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        STREAM_ROOT_DIRECTORY,
     },
 };
 use arrow_schema::Schema;
@@ -65,24 +65,44 @@ pub async fn run_metadata_migration(
     if let Some(storage_metadata) = storage_metadata {
         match get_version(&storage_metadata) {
             Some("v1") => {
+                //migrate to latest version
+                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v1_v3(storage_metadata);
                 metadata = metadata_migration::v3_v4(metadata);
+                metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v2") => {
+                //migrate to latest version
+                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v2_v3(storage_metadata);
                 metadata = metadata_migration::v3_v4(metadata);
+                metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v3") => {
-                let metadata = metadata_migration::v3_v4(storage_metadata);
+                //migrate to latest version
+                //remove querier endpooint and token from storage metadata
+                let mut metadata = metadata_migration::v3_v4(storage_metadata);
+                metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v4") => {
-                let metadata = metadata_migration::v4_v5(storage_metadata);
+                //migrate to latest version
+                //remove querier endpooint and token from storage metadata
+                let mut metadata = metadata_migration::v4_v5(storage_metadata);
+                metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::remove_querier_metadata(metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
-            _ => (),
+            _ => {
+                //remove querier endpooint and token from storage metadata
+                let metadata = metadata_migration::remove_querier_metadata(storage_metadata);
+                put_remote_metadata(&*object_store, &metadata).await?;
+            }
         }
     }
 
@@ -114,7 +134,6 @@ pub async fn run_metadata_migration(
 pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
     let storage = config.storage().get_object_store();
     let streams = storage.list_streams().await?;
-
     for stream in streams {
         migration_stream(&stream.name, &*storage).await?;
         if CONFIG.parseable.hot_tier_storage_path.is_some() {
@@ -156,11 +175,49 @@ async fn migration_hot_tier(stream: &str) -> anyhow::Result<()> {
 
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
     let mut arrow_schema: Schema = Schema::empty();
-    let schema_path = RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
-    let schema = storage.get_object(&schema_path).await?;
 
+    //check if schema exists for the node
+    //if not, create schema from querier schema from storage
+    //if not present with querier, create schema from ingestor schema from storage
+    let schema_path = schema_path(stream);
+    let schema = if let Ok(schema) = storage.get_object(&schema_path).await {
+        schema
+    } else {
+        let querier_schema = storage
+            .create_schema_from_querier(stream)
+            .await
+            .unwrap_or_default();
+        if !querier_schema.is_empty() {
+            querier_schema
+        } else {
+            storage
+                .create_schema_from_ingestor(stream)
+                .await
+                .unwrap_or_default()
+        }
+    };
+
+    //check if stream.json exists for the node
+    //if not, create stream.json from querier stream.json from storage
+    //if not present with querier, create from ingestor stream.json from storage
     let path = stream_json_path(stream);
-    let stream_metadata = storage.get_object(&path).await.unwrap_or_default();
+    let stream_metadata = if let Ok(stream_metadata) = storage.get_object(&path).await {
+        stream_metadata
+    } else {
+        let querier_stream = storage
+            .create_stream_from_querier(stream)
+            .await
+            .unwrap_or_default();
+        if !querier_stream.is_empty() {
+            querier_stream
+        } else {
+            storage
+                .create_stream_from_ingestor(stream)
+                .await
+                .unwrap_or_default()
+        }
+    };
+
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
         if CONFIG.parseable.mode != Mode::Ingest {
@@ -172,7 +229,6 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
     if stream_meta_found {
         stream_metadata_value =
             serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
-
         let version = stream_metadata_value
             .as_object()
             .and_then(|meta| meta.get("version"))

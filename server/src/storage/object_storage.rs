@@ -426,6 +426,117 @@ pub trait ObjectStorage: Sync + 'static {
             .await
     }
 
+    ///create stream from querier stream.json from storage
+    async fn create_stream_from_querier(
+        &self,
+        stream_name: &str,
+    ) -> Result<Bytes, ObjectStorageError> {
+        let stream_path = RelativePathBuf::from_iter([
+            stream_name,
+            STREAM_ROOT_DIRECTORY,
+            STREAM_METADATA_FILE_NAME,
+        ]);
+
+        if let Ok(querier_stream_json_bytes) = self.get_object(&stream_path).await {
+            let querier_stream_metadata =
+                serde_json::from_slice::<ObjectStoreFormat>(&querier_stream_json_bytes)?;
+            let stream_metadata = ObjectStoreFormat {
+                stats: FullStats::default(),
+                snapshot: Snapshot::default(),
+                ..querier_stream_metadata
+            };
+            let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
+            self.put_object(
+                &stream_json_path(stream_name),
+                stream_metadata_bytes.clone(),
+            )
+            .await?;
+            return Ok(stream_metadata_bytes);
+        }
+
+        Ok(Bytes::new())
+    }
+
+    ///create stream from ingestor stream.json from storage
+    async fn create_stream_from_ingestor(
+        &self,
+        stream_name: &str,
+    ) -> Result<Bytes, ObjectStorageError> {
+        let stream_path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
+        if let Some(stream_metadata_obs) = self
+            .get_objects(
+                Some(&stream_path),
+                Box::new(|file_name| {
+                    file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
+                }),
+            )
+            .await
+            .into_iter()
+            .next()
+        {
+            if !stream_metadata_obs.is_empty() {
+                let stream_metadata_bytes = &stream_metadata_obs[0];
+                let stream_ob_metadata =
+                    serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
+                let stream_metadata = ObjectStoreFormat {
+                    stats: FullStats::default(),
+                    snapshot: Snapshot::default(),
+                    ..stream_ob_metadata
+                };
+
+                let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
+                self.put_object(
+                    &stream_json_path(stream_name),
+                    stream_metadata_bytes.clone(),
+                )
+                .await?;
+
+                return Ok(stream_metadata_bytes);
+            }
+        }
+        Ok(Bytes::new())
+    }
+
+    ///create schema from querier schema from storage
+    async fn create_schema_from_querier(
+        &self,
+        stream_name: &str,
+    ) -> Result<Bytes, ObjectStorageError> {
+        let path =
+            RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
+        if let Ok(querier_schema_bytes) = self.get_object(&path).await {
+            self.put_object(&schema_path(stream_name), querier_schema_bytes.clone())
+                .await?;
+            return Ok(querier_schema_bytes);
+        }
+        Ok(Bytes::new())
+    }
+
+    ///create schema from ingestor schema from storage
+    async fn create_schema_from_ingestor(
+        &self,
+        stream_name: &str,
+    ) -> Result<Bytes, ObjectStorageError> {
+        let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
+        if let Some(schema_obs) = self
+            .get_objects(
+                Some(&path),
+                Box::new(|file_name| {
+                    file_name.starts_with(".ingestor") && file_name.ends_with("schema")
+                }),
+            )
+            .await
+            .into_iter()
+            .next()
+        {
+            let schema_ob = &schema_obs[0];
+            self.put_object(&schema_path(stream_name), schema_ob.clone())
+                .await?;
+            return Ok(schema_ob.clone());
+        }
+        Ok(Bytes::new())
+    }
+
     async fn sync(&self, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
         if !Path::new(&CONFIG.staging_dir()).exists() {
             return Ok(());
@@ -567,8 +678,7 @@ pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
         .expect("serialize cannot fail")
 }
 
-#[inline(always)]
-fn schema_path(stream_name: &str) -> RelativePathBuf {
+pub fn schema_path(stream_name: &str) -> RelativePathBuf {
     match CONFIG.parseable.mode {
         Mode::Ingest => {
             let file_name = format!(
