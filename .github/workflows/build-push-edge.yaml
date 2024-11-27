@@ -3,12 +3,13 @@ name: Build and push edge tag
 on:
   push:
     branches:
-      - 'main'
+      - "main"
     paths-ignore:
-      - 'docs/**'
-      - 'helm/**'
-      - 'assets/**'
-      - '**.md'
+      - "assets/**"
+      - "docs/**"
+      - "helm/**"
+      - "scripts/**"
+      - "**.md"
 
 jobs:
   docker:
