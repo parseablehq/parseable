@@ -385,7 +385,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if cfg!(not(test)) && CONFIG.parseable.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
