@@ -25,28 +25,28 @@ use crate::option::CONFIG;
 
 use self::{cluster::get_ingestor_info, query::Query};
 
-pub(crate) mod about;
-mod cache;
+pub mod about;
+pub mod cache;
 pub mod cluster;
-pub(crate) mod health_check;
-pub(crate) mod ingest;
+pub mod health_check;
+pub mod ingest;
 mod kinesis;
-pub(crate) mod llm;
-pub(crate) mod logstream;
-pub(crate) mod middleware;
+pub mod llm;
+pub mod logstream;
+pub mod middleware;
 pub mod modal;
-pub(crate) mod oidc;
+pub mod oidc;
 mod otel;
-pub(crate) mod query;
-pub(crate) mod rbac;
-pub(crate) mod role;
-pub(crate) mod trino;
+pub mod query;
+pub mod rbac;
+pub mod role;
+pub mod trino;
 pub mod users;
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "api";
 pub const API_VERSION: &str = "v1";
 
-pub(crate) fn base_path() -> String {
+pub fn base_path() -> String {
     format!("/{API_BASE_PATH}/{API_VERSION}")
 }
 
