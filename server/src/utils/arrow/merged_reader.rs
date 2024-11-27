@@ -49,14 +49,12 @@ impl MergedRecordReader {
                 log::error!("Invalid file detected, removing it: {:?}", file);
                 fs::remove_file(file).unwrap();
             } else {
-                match StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None) {
-                    Ok(reader) => {
-                        readers.push(reader);
-                    }
-                    Err(_) => {
-                        log::error!("Invalid file detected, ignoring it: {:?}", file);
-                    }
-                }
+                let Ok(reader) = StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None) else {
+                    log::error!("Invalid file detected, ignoring it: {:?}", file);
+                    continue;
+                };
+                
+                readers.push(reader);
             }
         }
 
@@ -82,14 +80,12 @@ impl MergedReverseRecordReader {
     pub fn try_new(files: &[PathBuf]) -> Result<Self, ()> {
         let mut readers = Vec::new();
         for file in files {
-            match utils::arrow::reverse_reader::get_reverse_reader(File::open(file).unwrap()) {
-                Ok(reader) => {
-                    readers.push(reader);
-                }
-                Err(_) => {
-                    log::error!("Invalid file detected, ignoring it: {:?}", file);
-                }
-            }
+            let Ok(reader) = match utils::arrow::reverse_reader::get_reverse_reader(File::open(file).unwrap()) else {
+                log::error!("Invalid file detected, ignoring it: {:?}", file);
+                continue;
+            };
+            
+            readers.push(reader);
         }
 
         Ok(Self { readers })
