@@ -9,5 +9,4 @@ If you're using Parseable in your organization, please add your company name to 
 | Organization | Contact | Description of Use |
 | ------------ | ------- | ------------------ |
 | [HireXL](https://www.hirexl.in/) | [@A4abs](https://github.com/A4abs) | Frontend application logging |
-| [ChistaDATA](https://chistadata.io/) | [Adheip Singh](mailto:adheip.singh@chistadata.com) | Centralized Kubernetes Logging |
 | [Elfsquad](https://elfsquad.io) | [Stan van Rooy](https://github.com/stanvanrooy) | Centralized application/infrastructure logging |

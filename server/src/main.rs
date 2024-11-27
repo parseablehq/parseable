@@ -48,6 +48,7 @@ use std::sync::Arc;
 
 use handlers::http::modal::ParseableServer;
 use option::{Mode, CONFIG};
+use tracing_subscriber::EnvFilter;
 
 use crate::handlers::http::modal::{
     ingest_server::IngestServer, query_server::QueryServer, server::Server,
@@ -56,7 +57,10 @@ pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .compact()
+        .init();
 
     // these are empty ptrs so mem footprint should be minimal
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
