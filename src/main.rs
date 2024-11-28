@@ -21,10 +21,14 @@ use parseable::{
     option::{Mode, CONFIG},
     rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
+use tracing_subscriber::EnvFilter;
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .compact()
+        .init();
 
     // these are empty ptrs so mem footprint should be minimal
     let server: Box<dyn ParseableServer> = match CONFIG.parseable.mode {
