@@ -54,9 +54,9 @@ parseable:
   persistence:
     staging:
       enabled: false
-      storageClass: ""
+      storageClass: "do-block-storage"
       accessMode: ReadWriteOnce
-      size: 1Gi
+      size: 10Gi
     ingestor:
       enabled: false
       storageClass: ""
@@ -64,9 +64,9 @@ parseable:
       size: 1Gi
     data:
       enabled: false
-      storageClass: ""
+      storageClass: "do-block-storage"
       accessMode: ReadWriteOnce
-      size: 1Gi
+      size: 10Gi
     querier:
       enabled: false
       storageClass: ""
@@ -295,12 +295,12 @@ vector:
 # See fluent-bit helm documentation to learn more:
 # https://github.com/fluent/helm-charts/tree/main/charts/fluent-bit
 fluent-bit:
-  enabled: false
+  enabled: true
   kind: DaemonSet
   replicaCount: 1
   image:
-    repository: cr.fluentbit.io/fluent/fluent-bit
-    tag: ""
+    repository: parseable/fluent-bit
+    tag: "v1"
     pullPolicy: Always
   testFramework:
     enabled: true
@@ -315,6 +315,7 @@ fluent-bit:
   rbac:
     create: true
     nodeAccess: false
+    eventsAccess: true
   dnsPolicy: ClusterFirst
   service:
     type: ClusterIP
@@ -356,6 +357,16 @@ fluent-bit:
           Mem_Buf_Limit 5MB
           Skip_Long_Lines On
 
+      [INPUT]
+          name kubernetes_events
+          tag k8s_events
+
+      [INPUT]
+          Name systemd
+          Tag host.*
+          Systemd_Filter _SYSTEMD_UNIT=kubelet.service
+          Read_From_Tail On
+
     ## https://docs.fluentbit.io/manual/pipeline/filters
     filters: |
       [FILTER]
@@ -369,17 +380,24 @@ fluent-bit:
     ## https://docs.fluentbit.io/manual/pipeline/outputs
     outputs: |
       [OUTPUT]
-          Name http
+          Name parseable
           Match kube.*
+          P_Server parseable.parseable.svc.cluster.local
+          P_Port 80
+          P_Username admin
+          P_Password admin
+          P_Stream $NAMESPACE 
+
+      [OUTPUT]
+          Name http
+          Match k8s_events
           host parseable.parseable.svc.cluster.local
           http_User admin
           http_Passwd admin
           format json
           port 80
           header Content-Type application/json
-          header X-P-META-meta1 value1
-          header X-P-TAG-tag1 value1
-          header X-P-Stream fluentbitdemo
+          header X-P-Stream k8s-events
           uri /api/v1/ingest
           json_date_key timestamp
           json_date_format iso8601
