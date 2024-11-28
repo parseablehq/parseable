@@ -23,6 +23,7 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 WORKDIR /parseable
 COPY . .
+
 RUN cargo build --release
 
 # final stage
@@ -32,5 +33,6 @@ WORKDIR /parseable
 
 # Copy the static shell into base image.
 COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
+COPY --from=builder /parseable/src/event/known-formats /parseable/src/event/known-formats
 
 CMD ["/usr/bin/parseable"]

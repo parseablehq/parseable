@@ -49,10 +49,10 @@ pub async fn flatten_and_push_logs(
         req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
     {
         header_log_source.to_str().unwrap().to_owned()
-    } else if let Some(schema_type) = STREAM_INFO.get_schema_type(&stream_name)? {
-        schema_type
     } else {
-        String::default()
+        STREAM_INFO
+            .get_schema_type(&stream_name)?
+            .unwrap_or_default()
     };
     match log_source.as_str() {
         LOG_SOURCE_KINESIS => {
