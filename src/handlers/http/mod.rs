@@ -21,7 +21,7 @@ use arrow_schema::Schema;
 use itertools::Itertools;
 use serde_json::Value;
 
-use crate::option::CONFIG;
+use crate::{option::CONFIG, storage::STREAM_ROOT_DIRECTORY};
 
 use self::{cluster::get_ingestor_info, query::Query};
 
@@ -77,7 +77,7 @@ pub fn base_path_without_preceding_slash() -> String {
 /// An `anyhow::Result` containing the `arrow_schema::Schema` for the specified stream.
 pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
     let path_prefix =
-        relative_path::RelativePathBuf::from(format!("{}/{}", stream_name, ".stream"));
+        relative_path::RelativePathBuf::from(format!("{}/{}", stream_name, STREAM_ROOT_DIRECTORY));
     let store = CONFIG.storage().get_object_store();
     let res: Vec<Schema> = store
         .get_objects(

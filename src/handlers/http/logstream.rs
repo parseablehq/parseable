@@ -23,6 +23,7 @@ use super::ingest::create_stream_if_not_exists;
 use super::modal::utils::logstream_utils::{
     create_stream_and_schema_from_storage, create_update_stream,
 };
+use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
 use crate::event::format::update_data_type_to_datetime;
 use crate::handlers::STREAM_TYPE_KEY;
@@ -117,23 +118,16 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
 
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let schema = match STREAM_INFO.schema(&stream_name) {
-        Ok(schema) => schema,
-
-        //if schema not found in memory map
-        //create stream and schema from storage and memory
-        //return from memory map
-        Err(_) if CONFIG.parseable.mode == Mode::Query => {
-            if create_stream_and_schema_from_storage(&stream_name).await? {
-                STREAM_INFO.schema(&stream_name)?
-            } else {
-                return Err(StreamError::StreamNotFound(stream_name.clone()));
-            }
+    match update_schema_when_distributed(vec![stream_name.clone()]).await {
+        Ok(_) => {
+            let schema = STREAM_INFO.schema(&stream_name)?;
+            Ok((web::Json(schema), StatusCode::OK))
         }
-        Err(_) => return Err(StreamError::StreamNotFound(stream_name)),
-    };
-
-    Ok((web::Json(schema), StatusCode::OK))
+        Err(err) => Err(StreamError::Custom {
+            msg: err.to_string(),
+            status: StatusCode::EXPECTATION_FAILED,
+        }),
+    }
 }
 
 pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> {
