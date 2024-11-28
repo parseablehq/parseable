@@ -31,5 +31,6 @@ FROM docker.io/debian:bookworm-slim
 WORKDIR /parseable
 
 COPY --from=builder /parseable/target/debug/parseable /usr/bin/parseable
+COPY --from=builder /parseable/src/event/known-formats /parseable/src/event/known-formats
 
 CMD ["/usr/bin/parseable"]
