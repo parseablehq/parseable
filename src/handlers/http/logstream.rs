@@ -118,6 +118,16 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
 
 pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+
+    match STREAM_INFO.schema(&stream_name) {
+        Ok(_) => {}
+        Err(_) if CONFIG.parseable.mode == Mode::Query => {
+            if !create_stream_and_schema_from_storage(&stream_name).await? {
+                return Err(StreamError::StreamNotFound(stream_name.clone()));
+            }
+        }
+        Err(err) => return Err(StreamError::from(err)),
+    };
     match update_schema_when_distributed(vec![stream_name.clone()]).await {
         Ok(_) => {
             let schema = STREAM_INFO.schema(&stream_name)?;
