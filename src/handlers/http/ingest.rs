@@ -204,8 +204,10 @@ pub async fn create_stream_if_not_exists(
     // For distributed deployments, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if CONFIG.parseable.mode != Mode::All {
-        return Ok(create_stream_and_schema_from_storage(stream_name).await?);
+    if CONFIG.parseable.mode != Mode::All
+        && create_stream_and_schema_from_storage(stream_name).await?
+    {
+        return Ok(stream_exists);
     }
 
     super::logstream::create_stream(
