@@ -621,10 +621,10 @@ mod tests {
             {
                 "a": 1,
                 "b": "hello",
-                "c": 1
+                "c": 1          // All numbers can be cast into float: #989
             },
             {
-                "a": 1,
+                "a": 1.24,      // But not the other way round
                 "b": "hello",
                 "c": null
             },
