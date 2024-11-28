@@ -15,6 +15,6 @@ dependencies:
   repository: https://helm.vector.dev
   condition: vector.enabled
 - name: fluent-bit
-  version: 0.25.0
+  version: 0.48.0
   repository: https://fluent.github.io/helm-charts
   condition: fluent-bit.enabled
