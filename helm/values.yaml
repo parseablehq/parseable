@@ -54,9 +54,9 @@ parseable:
   persistence:
     staging:
       enabled: false
-      storageClass: "do-block-storage"
+      storageClass: ""
       accessMode: ReadWriteOnce
-      size: 10Gi
+      size: 1Gi
     ingestor:
       enabled: false
       storageClass: ""
@@ -64,9 +64,9 @@ parseable:
       size: 1Gi
     data:
       enabled: false
-      storageClass: "do-block-storage"
+      storageClass: ""
       accessMode: ReadWriteOnce
-      size: 10Gi
+      size: 1Gi
     querier:
       enabled: false
       storageClass: ""
