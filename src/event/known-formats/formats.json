@@ -1,0 +1,7 @@
+[
+    {
+        "name": "kubernetes",
+        "schema_type": "kubernetes-events",
+        "sample_json_path": "src/event/known-formats/kubernetes-events-sample/kubernetes-events-sample.json"
+    }
+]

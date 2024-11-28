@@ -56,6 +56,28 @@ pub struct Fields {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 
 pub struct Metadata {}
+
+impl ParsedSchema {
+    pub fn from(schema: Schema) -> Self {
+        let fields = schema
+            .fields()
+            .iter()
+            .map(|field| Fields {
+                name: field.name().clone(),
+                data_type: field.data_type().clone(),
+                nullable: default_nullable(),
+                dict_id: default_dict_id(),
+                dict_is_ordered: default_dict_is_ordered(),
+                metadata: HashMap::new(),
+            })
+            .collect();
+        ParsedSchema {
+            fields,
+            metadata: HashMap::new(),
+        }
+    }
+}
+
 pub fn convert_static_schema_to_arrow_schema(
     static_schema: StaticSchema,
     time_partition: &str,
@@ -136,7 +158,7 @@ pub fn convert_static_schema_to_arrow_schema(
     add_parseable_fields_to_static_schema(parsed_schema)
 }
 
-fn add_parseable_fields_to_static_schema(
+pub fn add_parseable_fields_to_static_schema(
     parsed_schema: ParsedSchema,
 ) -> Result<Arc<Schema>, AnyError> {
     let mut schema: Vec<Arc<Field>> = Vec::new();

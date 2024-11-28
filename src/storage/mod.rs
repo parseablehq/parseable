@@ -104,7 +104,10 @@ pub struct ObjectStoreFormat {
     pub static_schema_flag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hot_tier_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -124,7 +127,10 @@ pub struct StreamInfo {
     pub custom_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_schema_flag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -191,6 +197,7 @@ impl Default for ObjectStoreFormat {
             custom_partition: None,
             static_schema_flag: None,
             hot_tier_enabled: None,
+            schema_type: None,
         }
     }
 }

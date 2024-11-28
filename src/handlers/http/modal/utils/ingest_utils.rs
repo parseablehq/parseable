@@ -28,10 +28,12 @@ use crate::{
     event::{
         self,
         format::{self, EventFormat},
+        kubernetes_events,
     },
     handlers::{
         http::{ingest::PostError, kinesis},
-        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_KUBERNETES_EVENTS,
+        PREFIX_META, PREFIX_TAGS, SEPARATOR,
     },
     metadata::STREAM_INFO,
     storage::StreamType,
@@ -43,20 +45,36 @@ pub async fn flatten_and_push_logs(
     body: Bytes,
     stream_name: String,
 ) -> Result<(), PostError> {
-    let log_source = req
-        .headers()
-        .get(LOG_SOURCE_KEY)
-        .map(|header| header.to_str().unwrap_or_default())
-        .unwrap_or_default();
-    if log_source == LOG_SOURCE_KINESIS {
-        let json = kinesis::flatten_kinesis_logs(&body);
-        for record in json.iter() {
-            let body: Bytes = serde_json::to_vec(record).unwrap().into();
-            push_logs(stream_name.clone(), req.clone(), body.clone()).await?;
-        }
+    let log_source = if let Some((_, header_log_source)) =
+        req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
+    {
+        header_log_source.to_str().unwrap().to_owned()
+    } else if let Some(schema_type) = STREAM_INFO.get_schema_type(&stream_name)? {
+        schema_type
     } else {
-        push_logs(stream_name, req, body).await?;
+        String::default()
+    };
+    match log_source.as_str() {
+        LOG_SOURCE_KINESIS => {
+            let json = kinesis::flatten_kinesis_logs(&body);
+            for record in json.iter() {
+                let body: Bytes = serde_json::to_vec(record).unwrap().into();
+                push_logs(stream_name.to_string(), req.clone(), body).await?;
+            }
+        }
+        LOG_SOURCE_KUBERNETES_EVENTS => {
+            let kubernetes_log_records =
+                kubernetes_events::flatten_kubernetes_events_log(&body).await?;
+            let body: Bytes = serde_json::to_vec(&kubernetes_log_records).unwrap().into();
+            push_logs(stream_name.to_string(), req.clone(), body).await?;
+        }
+
+        _ => {
+            log::warn!("Unknown log source: {}", log_source);
+            push_logs(stream_name.to_string(), req.clone(), body).await?;
+        }
     }
+    
     Ok(())
 }
 

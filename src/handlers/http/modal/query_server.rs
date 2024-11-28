@@ -16,6 +16,7 @@
  *
  */
 
+use crate::event::detect_schema::detect_schema;
 use crate::handlers::airplane;
 use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
@@ -95,6 +96,7 @@ impl ParseableServer for QueryServer {
 
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
+        detect_schema();
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
 

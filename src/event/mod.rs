@@ -17,7 +17,9 @@
 *
 */
 
+pub mod detect_schema;
 pub mod format;
+pub mod kubernetes_events;
 mod writer;
 
 use arrow_array::RecordBatch;
