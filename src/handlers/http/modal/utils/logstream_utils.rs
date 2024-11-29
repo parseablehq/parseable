@@ -150,7 +150,6 @@ async fn update_stream(
         return Ok(req.headers().clone());
     }
     validate_and_update_custom_partition(stream_name, custom_partition).await?;
-
     Ok(req.headers().clone())
 }
 
