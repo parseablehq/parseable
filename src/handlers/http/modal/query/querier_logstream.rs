@@ -24,6 +24,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
 use tokio::sync::Mutex;
+use tracing::{error, warn};
 
 static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
@@ -67,7 +68,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     objectstore.delete_stream(&stream_name).await?;
     let stream_dir = StorageDir::new(&stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
-        log::warn!(
+        warn!(
             "failed to delete local data for stream {}. Clean {} manually",
             stream_name,
             stream_dir.data_path.to_string_lossy()
@@ -81,7 +82,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     }
 
     let ingestor_metadata = cluster::get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::from(err)
     })?;
 
@@ -99,9 +100,8 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
     event::STREAM_WRITERS.delete_stream(&stream_name);
-    stats::delete_stats(&stream_name, "json").unwrap_or_else(|e| {
-        log::warn!("failed to delete stats for stream {}: {:?}", stream_name, e)
-    });
+    stats::delete_stats(&stream_name, "json")
+        .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }

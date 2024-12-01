@@ -26,6 +26,7 @@ use arrow_schema::Field;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
+use tracing::warn;
 
 use crate::{
     event::{
@@ -56,7 +57,7 @@ pub async fn flatten_and_push_logs(
                 json = otel::flatten_otel_logs(&body);
             }
             _ => {
-                log::warn!("Unknown log source: {}", log_source);
+                warn!("Unknown log source: {}", log_source);
                 push_logs(stream_name.to_string(), req.clone(), body).await?;
             }
         }

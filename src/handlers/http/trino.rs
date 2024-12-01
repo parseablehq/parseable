@@ -24,6 +24,7 @@ use actix_web::{
 };
 use http::HeaderMap;
 use serde_json::Value;
+use tracing::warn;
 use trino_response::QueryResponse;
 
 use crate::{
@@ -197,7 +198,7 @@ pub async fn trino_get(
                         break;
                     }
                     _ => {
-                        log::warn!("state '{state}' not covered");
+                        warn!("state '{state}' not covered");
                         break;
                     }
                 }
@@ -258,6 +259,7 @@ mod trino_response {
     use actix_web::{web, Responder};
     use itertools::Itertools;
     use serde_json::{json, Map, Value};
+    use tracing::info;
 
     use crate::handlers::http::query::QueryError;
 
@@ -269,7 +271,7 @@ mod trino_response {
 
     impl QueryResponse {
         pub fn to_http(&self) -> Result<impl Responder, QueryError> {
-            log::info!("{}", "Returning query results");
+            info!("{}", "Returning query results");
             let values = if let Some(trino_records) = self.trino_records.clone() {
                 // trino_records = Vec<Array[Value]>
                 let mut json_records: Vec<Map<String, Value>> = Vec::new();
