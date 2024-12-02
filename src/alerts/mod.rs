@@ -136,7 +136,7 @@ pub struct Message {
 impl Message {
     // checks if message (with a column name) is valid (i.e. the column name is present in the schema)
     pub fn valid(&self, schema: &Schema, column: &str) -> bool {
-        return get_field(&schema.fields, column).is_some();
+        get_field(&schema.fields, column).is_some()
     }
 
     pub fn extract_column_names(&self) -> Vec<&str> {
