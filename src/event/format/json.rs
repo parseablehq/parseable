@@ -86,6 +86,7 @@ impl EventFormat for Event {
                     infer_schema
                         .fields
                         .iter()
+                        .filter(|field| *field.data_type() != DataType::Null)
                         .cloned()
                         .sorted_by(|a, b| a.name().cmp(b.name()))
                         .collect()
