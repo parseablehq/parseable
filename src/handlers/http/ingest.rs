@@ -384,7 +384,7 @@ mod tests {
         let (rb, _) = into_event_batch(req, json, HashMap::default(), None, None).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
-        assert_eq!(rb.num_columns(), 6);
+        assert_eq!(rb.num_columns(), 5);
         assert_eq!(
             rb.column_by_name("a").unwrap().as_int64_arr(),
             &Int64Array::from_iter([1])
