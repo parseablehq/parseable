@@ -304,6 +304,63 @@ pub fn flatten_array_objects(
     Ok(())
 }
 
+pub fn flatten_json(value: &Value) -> Vec<Value> {
+    match value {
+        Value::Array(arr) => {
+            let mut results = Vec::new();
+            for item in arr {
+                results.extend(flatten_json(item));
+            }
+            results
+        }
+        Value::Object(map) => {
+            let mut results = vec![map.clone()];
+            for (key, val) in map {
+                if matches!(val, Value::Array(_)) {
+                    if let Value::Array(arr) = val {
+                        let mut new_results = Vec::new();
+                        for item in arr {
+                            let flattened_items = flatten_json(item);
+                            for flattened_item in flattened_items {
+                                for result in &results {
+                                    let mut new_obj = result.clone();
+                                    new_obj.insert(key.clone(), flattened_item.clone());
+                                    new_results.push(new_obj);
+                                }
+                            }
+                        }
+                        results = new_results;
+                    }
+                } else if matches!(val, Value::Object(_)) {
+                    let nested_results = flatten_json(val);
+                    let mut new_results = Vec::new();
+                    for nested_result in nested_results {
+                        for result in &results {
+                            let mut new_obj = result.clone();
+                            new_obj.insert(key.clone(), nested_result.clone());
+                            new_results.push(new_obj);
+                        }
+                    }
+                    results = new_results;
+                }
+            }
+            results.into_iter().map(Value::Object).collect()
+        }
+        _ => vec![value.clone()],
+    }
+}
+
+pub fn convert_to_array(flatterned: Vec<Value>) -> Value {
+    let mut result = Vec::new();
+    for item in flatterned {
+        let mut map = Map::new();
+        for (key, value) in item.as_object().unwrap() {
+            map.insert(key.clone(), value.clone());
+        }
+        result.push(Value::Object(map));
+    }
+    Value::Array(result)
+}
 #[cfg(test)]
 mod tests {
     use crate::utils::json::flatten::flatten_array_objects;

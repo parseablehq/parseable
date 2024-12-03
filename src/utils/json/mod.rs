@@ -28,8 +28,9 @@ pub fn flatten_json_body(
     custom_partition: Option<String>,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
+    let nested_value = flatten::convert_to_array(flatten::flatten_json(&body));
     flatten::flatten(
-        body,
+        nested_value,
         "_",
         time_partition,
         time_partition_limit,
