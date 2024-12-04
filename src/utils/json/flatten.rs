@@ -350,16 +350,20 @@ pub fn flatten_json(value: &Value) -> Vec<Value> {
     }
 }
 
-pub fn convert_to_array(flatterned: Vec<Value>) -> Value {
+pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, anyhow::Error> {
     let mut result = Vec::new();
-    for item in flatterned {
+    for item in flattened {
         let mut map = Map::new();
-        for (key, value) in item.as_object().unwrap() {
-            map.insert(key.clone(), value.clone());
+        if let Some(item) = item.as_object() {
+            for (key, value) in item {
+                map.insert(key.clone(), value.clone());
+            }
+            result.push(Value::Object(map));
+        } else {
+            return Err(anyhow!("Expected object in array of objects"));
         }
-        result.push(Value::Object(map));
     }
-    Value::Array(result)
+    Ok(Value::Array(result))
 }
 #[cfg(test)]
 mod tests {
