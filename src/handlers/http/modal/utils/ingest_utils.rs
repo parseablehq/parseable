@@ -46,8 +46,7 @@ pub async fn flatten_and_push_logs(
     let log_source = req
         .headers()
         .get(LOG_SOURCE_KEY)
-        .unwrap()
-        .to_str()
+        .map(|header| header.to_str().unwrap_or_default())
         .unwrap_or_default();
     if log_source == LOG_SOURCE_KINESIS {
         let json = kinesis::flatten_kinesis_logs(&body);
