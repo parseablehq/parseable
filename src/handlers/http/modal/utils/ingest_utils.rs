@@ -33,8 +33,8 @@ use crate::{
         format::{self, EventFormat},
     },
     handlers::{
-        http::{ingest::PostError, kinesis, otel},
-        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+        http::{ingest::PostError, kinesis},
+        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     },
     metadata::STREAM_INFO,
     storage::StreamType,
@@ -52,9 +52,6 @@ pub async fn flatten_and_push_logs(
         let log_source: String = log_source.to_str().unwrap().to_owned();
         match log_source.as_str() {
             LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
-            LOG_SOURCE_OTEL => {
-                json = otel::flatten_otel_logs(&body);
-            }
             _ => {
                 log::warn!("Unknown log source: {}", log_source);
                 push_logs(stream_name.to_string(), req.clone(), body).await?;
