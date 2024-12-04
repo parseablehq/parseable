@@ -16,10 +16,7 @@
  *
  */
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use actix_web::HttpRequest;
 use arrow_schema::Field;
@@ -46,23 +43,20 @@ pub async fn flatten_and_push_logs(
     body: Bytes,
     stream_name: String,
 ) -> Result<(), PostError> {
-    //flatten logs
-    if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY) {
-        let mut json: Vec<BTreeMap<String, Value>> = Vec::new();
-        let log_source: String = log_source.to_str().unwrap().to_owned();
-        match log_source.as_str() {
-            LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
-            _ => {
-                log::warn!("Unknown log source: {}", log_source);
-                push_logs(stream_name.to_string(), req.clone(), body).await?;
-            }
-        }
-        for record in json.iter_mut() {
+    let log_source = req
+        .headers()
+        .get(LOG_SOURCE_KEY)
+        .unwrap()
+        .to_str()
+        .unwrap_or_default();
+    if log_source == LOG_SOURCE_KINESIS {
+        let json = kinesis::flatten_kinesis_logs(&body);
+        for record in json.iter() {
             let body: Bytes = serde_json::to_vec(record).unwrap().into();
-            push_logs(stream_name.to_string(), req.clone(), body).await?;
+            push_logs(stream_name.clone(), req.clone(), body.clone()).await?;
         }
     } else {
-        push_logs(stream_name.to_string(), req, body).await?;
+        push_logs(stream_name, req, body).await?;
     }
     Ok(())
 }
