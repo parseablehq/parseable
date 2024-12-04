@@ -8,13 +8,13 @@ use rdkafka::error::{KafkaError as NativeKafkaError, RDKafkaError};
 use rdkafka::message::BorrowedMessage;
 use rdkafka::util::Timeout;
 use rdkafka::{Message, TopicPartitionList};
-use std::env::VarError;
 use std::fmt::Display;
 use std::num::ParseIntError;
 use std::sync::Arc;
-use std::{collections::HashMap, env, fmt::Debug, str::FromStr, time::Duration};
-use tokio::task::{self, JoinHandle};
+use std::{collections::HashMap, fmt::Debug, str::FromStr};
+use tokio::task::{self};
 
+use crate::option::CONFIG;
 use crate::{
     event::{
         self,
@@ -55,6 +55,7 @@ impl FromStr for SslProtocol {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaError {
     #[error("Error loading environment variable {0}")]
@@ -87,86 +88,96 @@ pub enum KafkaError {
     InvalidSslProtocolError(String),
     #[error("Invalid unicode for environment variable {0}")]
     EnvNotUnicode(&'static str),
+    #[error("")]
+    DoNotPrintError
 }
 
-fn load_env_or_err(key: &'static str) -> Result<String, KafkaError> {
-    env::var(key).map_err(|_| KafkaError::NoVarError(key))
-}
-fn parse_auto_env<T>(key: &'static str) -> Result<Option<T>, <T as FromStr>::Err>
-where
-    T: FromStr,
-{
-    Ok(if let Ok(val) = env::var(key) {
-        Some(val.parse::<T>()?)
-    } else {
-        None
-    })
-}
-fn handle_duration_env_prefix(key: &'static str) -> Result<Option<Duration>, ParseIntError> {
-    if let Ok(raw_secs) = env::var(format!("{key}_S")) {
-        Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)?)))
-    } else if let Ok(raw_secs) = env::var(format!("{key}_M")) {
-        Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)? * 60)))
-    } else {
-        Ok(None)
-    }
-}
-fn parse_i32_env(key: &'static str) -> Result<Option<i32>, KafkaError> {
-    parse_auto_env::<i32>(key).map_err(|raw| KafkaError::ParseIntError(key, raw))
-}
+// // Commented out functions
+// // Might come in handy later
+// fn parse_auto_env<T>(key: &'static str) -> Result<Option<T>, <T as FromStr>::Err>
+// where
+//     T: FromStr,
+// {
+//     Ok(if let Ok(val) = env::var(key) {
+//         Some(val.parse::<T>()?)
+//     } else {
+//         None
+//     })
+// }
 
-fn parse_duration_env_prefixed(key_prefix: &'static str) -> Result<Option<Duration>, KafkaError> {
-    handle_duration_env_prefix(key_prefix)
-        .map_err(|raw| KafkaError::ParseDurationError(key_prefix, raw))
-}
+// fn handle_duration_env_prefix(key: &'static str) -> Result<Option<Duration>, ParseIntError> {
+//     if let Ok(raw_secs) = env::var(format!("{key}_S")) {
+//         Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)?)))
+//     } else if let Ok(raw_secs) = env::var(format!("{key}_M")) {
+//         Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)? * 60)))
+//     } else {
+//         Ok(None)
+//     }
+// }
 
-fn get_flag_env_val(key: &'static str) -> Result<Option<bool>, KafkaError> {
-    let raw = env::var(key);
-    match raw {
-        Ok(val) => Ok(Some(val != "0" && val != "false")),
-        Err(VarError::NotPresent) => Ok(None),
-        Err(VarError::NotUnicode(_)) => Err(KafkaError::EnvNotUnicode(key)),
-    }
-}
+// fn parse_i32_env(key: &'static str) -> Result<Option<i32>, KafkaError> {
+//     parse_auto_env::<i32>(key).map_err(|raw| KafkaError::ParseIntError(key, raw))
+// }
 
-fn setup_consumer() -> Result<StreamConsumer, KafkaError> {
-    let hosts = load_env_or_err("KAFKA_HOSTS")?;
-    let topic = load_env_or_err("KAFKA_TOPIC")?;
+// fn parse_duration_env_prefixed(key_prefix: &'static str) -> Result<Option<Duration>, KafkaError> {
+//     handle_duration_env_prefix(key_prefix)
+//         .map_err(|raw| KafkaError::ParseDurationError(key_prefix, raw))
+// }
 
-    let mut conf = ClientConfig::new();
-    conf.set("bootstrap.servers", &hosts);
+fn setup_consumer() -> Result<(StreamConsumer, String), KafkaError> {
+    if let Some(topic) = &CONFIG.parseable.kafka_topic {
+        let host = if let Some(_) = &CONFIG.parseable.kafka_host {
+            CONFIG.parseable.kafka_host.as_ref()
+        } else {
+            return Err(KafkaError::NoVarError("Please set P_KAKFA_HOST env var (To use Kafka integration env vars P_KAFKA_TOPIC, P_KAFKA_HOST, and P_KAFKA_GROUP are mandatory)"));
+        };
 
-    if let Ok(val) = env::var("KAFKA_CLIENT_ID") {
-        conf.set("client.id", &val);
-    }
+        let group = if let Some(_) = &CONFIG.parseable.kafka_group {
+            CONFIG.parseable.kafka_group.as_ref()
+        } else {
+            return Err(KafkaError::NoVarError("Please set P_KAKFA_GROUP env var (To use Kafka integration env vars P_KAFKA_TOPIC, P_KAFKA_HOST, and P_KAFKA_GROUP are mandatory)"));
+        };
 
-    if let Some(val) = get_flag_env_val("a")? {
-        conf.set("api.version.request", val.to_string());
-    }
-    if let Ok(val) = env::var("KAFKA_GROUP") {
-        conf.set("group.id", &val);
-    }
-
-    if let Ok(val) = env::var("KAFKA_SECURITY_PROTOCOL") {
-        let mapped: SslProtocol = val.parse()?;
-        conf.set("security.protocol", &mapped.to_string());
-    }
-    let consumer: StreamConsumer = conf.create()?;
-
-    if let Ok(vals_raw) = env::var("KAFKA_PARTITIONS") {
-        let vals = vals_raw
-            .split(',')
-            .map(i32::from_str)
-            .collect::<Result<Vec<i32>, ParseIntError>>()
-            .map_err(|raw| KafkaError::ParseIntError("KAFKA_PARTITIONS", raw))?;
-
-        let mut parts = TopicPartitionList::new();
-        for val in vals {
-            parts.add_partition(&topic, val);
+        let mut conf = ClientConfig::new();
+        conf.set("bootstrap.servers", host.unwrap());
+        conf.set("group.id", group.unwrap());
+    
+        if let Some(val) = CONFIG.parseable.kafka_client_id.as_ref() {
+            conf.set("client.id", val);
         }
-        consumer.seek_partitions(parts, Timeout::Never)?;
+    
+        // if let Some(val) = get_flag_env_val("a")? {
+        //     conf.set("api.version.request", val.to_string());
+        // }
+    
+        if let Some(val) = CONFIG.parseable.kafka_security_protocol.as_ref() {
+            let mapped: SslProtocol = val.parse()?;
+            conf.set("security.protocol", &mapped.to_string());
+        }
+    
+        let consumer: StreamConsumer = conf.create()?;
+        consumer.subscribe(&[topic.as_str()])?;
+    
+        if let Some(vals_raw) = CONFIG.parseable.kafka_partitions.as_ref() {
+            let vals = vals_raw
+                .split(',')
+                .map(i32::from_str)
+                .collect::<Result<Vec<i32>, ParseIntError>>()
+                .map_err(|raw| KafkaError::ParseIntError("P_KAFKA_PARTITIONS", raw))?;
+    
+            let mut parts = TopicPartitionList::new();
+            for val in vals {
+                parts.add_partition(&topic, val);
+            }
+            consumer.seek_partitions(parts, Timeout::Never)?;
+        }
+        Ok((consumer,topic.clone()))
+    } else {
+        // if the user hasn't even set KAFKA_TOPIC
+        // then they probably don't want to use the integration
+        // send back the DoNotPrint error
+        return Err(KafkaError::DoNotPrintError)
     }
-    Ok(consumer)
 }
 
 fn resolve_schema(stream_name: &str) -> Result<HashMap<String, Arc<Field>>, KafkaError> {
@@ -176,17 +187,27 @@ fn resolve_schema(stream_name: &str) -> Result<HashMap<String, Arc<Field>>, Kafk
         .ok_or_else(|| KafkaError::StreamNotFound(stream_name.to_owned()))?;
     Ok(raw.schema.clone())
 }
+
 async fn ingest_message<'a>(stream_name: &str, msg: BorrowedMessage<'a>) -> Result<(), KafkaError> {
-    log::debug!("{}: Message: {:?}", stream_name, msg);
+
     if let Some(payload) = msg.payload() {
+        // stream should get created only if there is an incoming event, not before that
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+
         let schema = resolve_schema(stream_name)?;
         let event = format::json::Event {
             data: serde_json::from_slice(payload)?,
             tags: String::default(),
             metadata: String::default(),
         };
-        log::debug!("Generated event: {:?}", event.data);
-        let (rb, is_first) = event.into_recordbatch(schema, None, None).unwrap();
+
+        let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
+        let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name)?;
+
+        let (rb, is_first) = event.into_recordbatch(schema, static_schema_flag, time_partition)
+            .map_err(|err|{
+                KafkaError::PostError(PostError::CustomError(err.to_string()))
+            })?;
 
         event::Event {
             rb,
@@ -207,25 +228,42 @@ async fn ingest_message<'a>(stream_name: &str, msg: BorrowedMessage<'a>) -> Resu
     Ok(())
 }
 
-pub async fn setup_integration() -> Result<JoinHandle<()>, KafkaError> {
-    let my_res = if let Ok(stream_name) = env::var("KAFKA_TOPIC") {
-        log::info!("Setup kafka integration for {stream_name}");
-        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+pub async fn setup_integration() {
+    task::spawn(async move {
+        // check if this is standalone or ingest, should not work on query
+        match CONFIG.parseable.mode {
+            crate::option::Mode::Ingest|
+            crate::option::Mode::All => {},
+            _ => {
+                log::error!("Kafka integration is only allowed on modes `ingest` or `all`");
+                return
+            },
+        }
 
-        let res = task::spawn(async move {
-            let consumer = setup_consumer().unwrap();
-            let mut stream = consumer.stream();
-            loop {
-                while let Some(curr) = stream.next().await {
-                    let msg = curr.unwrap();
-                    ingest_message(&stream_name, msg).await.unwrap();
+        // if this is error then print and error message and return
+        let (consumer,stream_name) = match setup_consumer() {
+            Ok(c) => c,
+            Err(err) => {
+                match err {
+                    KafkaError::DoNotPrintError => {
+                        log::debug!("P_KAFKA_TOPIC not set, skipping kafka integration");
+                    },
+                    _ => {
+                        log::error!("{err}");
+                    }
                 }
-            }
-        });
-        log::info!("Done Setup kafka integration");
-        res
-    } else {
-        task::spawn_blocking(|| {})
-    };
-    Ok(my_res)
+                return
+            },
+        };
+        
+        log::info!("Setup kafka integration for {stream_name}");
+        let mut stream = consumer.stream();
+
+        while let Ok(curr) = stream.next().await.unwrap() {
+            match ingest_message(&stream_name, curr).await {
+                Ok(_) => {},
+                Err(err) => log::error!("Unable to ingest incoming kafka message- {err}"),
+            };
+        }
+    });
 }

@@ -59,7 +59,7 @@ pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    kafka::setup_integration().await?;
+    kafka::setup_integration().await;
     // these are empty ptrs so mem footprint should be minimal
     let server: Arc<dyn ParseableServer> = match CONFIG.parseable.mode {
         Mode::Query => Arc::new(QueryServer),
