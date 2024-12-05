@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "1.6.2"
+version = "1.6.3"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2021"
 rust-version = "1.77.1"
@@ -54,7 +54,6 @@ clap = { version = "4.1", default-features = false, features = [
 clokwerk = "0.4"
 crossterm = "0.28.1"
 derive_more = "0.99.18"
-env_logger = "0.11.3"
 fs_extra = "1.3"
 futures = "0.3"
 futures-util = "0.3.28"
@@ -89,6 +88,7 @@ tokio = { version = "1.28", default-features = false, features = [
     "fs",
 ] }
 tokio-stream = { version = "0.1", features = ["fs"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 ulid = { version = "1.0", features = ["serde"] }
 uptime_lib = "0.3.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -122,8 +122,8 @@ rstest = "0.23.0"
 arrow = "53.0.0"
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.11/build.zip"
-assets-sha1 = "3f0c0f0e9fe23c6a01f0eb45115da4bfe29f9c3f"
+assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.12/build.zip"
+assets-sha1 = "9d5a45f204d709a2dd96f6a5e0b21b3834ee0e36"
 
 [features]
 debug = []
