@@ -17,7 +17,7 @@
  */
 
 use parseable::{
-    banner,
+    banner, kafka,
     option::{Mode, CONFIG},
     rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
@@ -45,6 +45,11 @@ async fn main() -> anyhow::Result<()> {
     rbac::map::init(&metadata);
     // keep metadata info in mem
     metadata.set_global();
+
+    // load kafka server
+    if CONFIG.parseable.mode.ne(&Mode::Query) {
+        kafka::setup_integration().await;
+    }
 
     server.init().await?;
 
