@@ -408,9 +408,8 @@ impl HotTierManager {
         );
         self.put_hot_tier(stream, &mut stream_hot_tier).await?;
         file_processed = true;
-        let mut hot_tier_manifest = self
-            .get_stream_hot_tier_manifest_for_date(stream, &date)
-            .await?;
+        let path = self.get_stream_path_for_date(stream, &date);
+        let mut hot_tier_manifest = HotTierManager::get_hot_tier_manifest_from_path(path).await?;
         hot_tier_manifest.files.push(parquet_file.clone());
         hot_tier_manifest
             .files
@@ -465,34 +464,38 @@ impl HotTierManager {
         Ok(date_list)
     }
 
-    ///get hot tier manifest for the stream and date
-    pub async fn get_stream_hot_tier_manifest_for_date(
-        &self,
-        stream: &str,
-        date: &NaiveDate,
-    ) -> Result<Manifest, HotTierError> {
-        let mut hot_tier_manifest = Manifest::default();
-        let path = self
-            .hot_tier_path
-            .join(stream)
-            .join(format!("date={}", date));
-        if path.exists() {
-            let date_dirs = ReadDirStream::new(fs::read_dir(&path).await?);
-            let manifest_files: Vec<DirEntry> = date_dirs.try_collect().await?;
-            for manifest in manifest_files {
-                if !manifest
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".manifest.json")
-                {
-                    continue;
-                }
-                let file = fs::read(manifest.path()).await?;
-                let manifest: Manifest = serde_json::from_slice(&file)?;
-                hot_tier_manifest.files.extend(manifest.files);
-            }
+    ///get hot tier manifest on path
+    pub async fn get_hot_tier_manifest_from_path(path: PathBuf) -> Result<Manifest, HotTierError> {
+        if !path.exists() {
+            return Ok(Manifest::default());
         }
+
+        // List the directories and prepare the hot tier manifest
+        let mut date_dirs = fs::read_dir(&path).await?;
+        let mut hot_tier_manifest = Manifest::default();
+
+        // Avoid unnecessary checks and keep only valid manifest files
+        while let Some(manifest) = date_dirs.next_entry().await? {
+            if !manifest
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".manifest.json")
+            {
+                continue;
+            }
+            // Deserialize each manifest file and extend the hot tier manifest with its files
+            let file = fs::read(manifest.path()).await?;
+            let manifest: Manifest = serde_json::from_slice(&file)?;
+            hot_tier_manifest.files.extend(manifest.files);
+        }
+
         Ok(hot_tier_manifest)
+    }
+
+    pub fn get_stream_path_for_date(&self, stream: &str, date: &NaiveDate) -> PathBuf {
+        self.hot_tier_path
+            .join(stream)
+            .join(format!("date={}", date))
     }
 
     ///get the list of files from all the manifests present in hot tier directory for the stream
@@ -527,17 +530,29 @@ impl HotTierManager {
         &self,
         stream: &str,
     ) -> Result<Vec<File>, HotTierError> {
-        let mut hot_tier_parquet_files: Vec<File> = Vec::new();
+        // Fetch list of dates for the given stream
         let date_list = self.fetch_hot_tier_dates(stream).await?;
-        for date in date_list {
-            let manifest = self
-                .get_stream_hot_tier_manifest_for_date(stream, &date)
-                .await?;
 
-            for parquet_file in manifest.files {
-                hot_tier_parquet_files.push(parquet_file.clone());
-            }
+        // Create an unordered iter of futures to async collect files
+        let mut tasks = FuturesUnordered::new();
+
+        // For each date, fetch the manifest and extract parquet files
+        for date in date_list {
+            let path = self.get_stream_path_for_date(stream, &date);
+            tasks.push(async move {
+                HotTierManager::get_hot_tier_manifest_from_path(path)
+                    .await
+                    .map(|manifest| manifest.files.clone())
+                    .unwrap_or_default() // If fetching manifest fails, return an empty vector
+            });
         }
+
+        // Collect parquet files for all dates
+        let mut hot_tier_parquet_files: Vec<File> = vec![];
+        while let Some(files) = tasks.next().await {
+            hot_tier_parquet_files.extend(files);
+        }
+
         Ok(hot_tier_parquet_files)
     }
 
