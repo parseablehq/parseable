@@ -388,7 +388,7 @@ fluent-bit:
           Password admin
           Server_Port 80
           Stream $NAMESPACE
-          Exclude_Namespaces kube-system, pb-db
+          Exclude_Namespaces kube-system, default
 
       [OUTPUT]
           Name parseable
