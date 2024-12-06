@@ -687,7 +687,7 @@ impl PartialTimeFilter {
         let Expr::BinaryExpr(binexpr) = expr else {
             return None;
         };
-        let (op, time) = extract_timestamp_bound(binexpr.clone(), time_partition)?;
+        let (op, time) = extract_timestamp_bound(binexpr, time_partition)?;
         let value = match op {
             Operator::Gt => PartialTimeFilter::Low(Bound::Excluded(time)),
             Operator::GtEq => PartialTimeFilter::Low(Bound::Included(time)),
@@ -846,7 +846,7 @@ fn expr_in_boundary(filter: &Expr) -> bool {
     let Expr::BinaryExpr(binexpr) = filter else {
         return false;
     };
-    let Some((op, time)) = extract_timestamp_bound(binexpr.clone(), None) else {
+    let Some((op, time)) = extract_timestamp_bound(binexpr, None) else {
         return false;
     };
 
@@ -860,39 +860,33 @@ fn expr_in_boundary(filter: &Expr) -> bool {
         )
 }
 
-fn extract_from_lit(expr: BinaryExpr, time_partition: Option<String>) -> Option<NaiveDateTime> {
-    let mut column_name: String = String::default();
-    if let Expr::Column(column) = *expr.left {
-        column_name = column.name;
-    }
-    if let Expr::Literal(value) = *expr.right {
-        match value {
-            ScalarValue::TimestampMillisecond(Some(value), _) => {
-                Some(DateTime::from_timestamp_millis(value).unwrap().naive_utc())
-            }
-            ScalarValue::TimestampNanosecond(Some(value), _) => {
-                Some(DateTime::from_timestamp_nanos(value).naive_utc())
-            }
-            ScalarValue::Utf8(Some(str_value)) => {
-                if time_partition.is_some() && column_name == time_partition.unwrap() {
-                    Some(str_value.parse::<NaiveDateTime>().unwrap())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    } else {
-        None
-    }
-}
-
-/* `BinaryExp` doesn't implement `Copy` */
 fn extract_timestamp_bound(
-    binexpr: BinaryExpr,
+    binexpr: &BinaryExpr,
     time_partition: Option<String>,
 ) -> Option<(Operator, NaiveDateTime)> {
-    Some((binexpr.op, extract_from_lit(binexpr, time_partition)?))
+    let Expr::Literal(value) = binexpr.right.as_ref() else {
+        return None;
+    };
+
+    let is_time_partition = match (binexpr.left.as_ref(), time_partition) {
+        (Expr::Column(column), Some(time_partition)) => column.name == time_partition,
+        _ => false,
+    };
+
+    match value {
+        ScalarValue::TimestampMillisecond(Some(value), _) => Some((
+            binexpr.op,
+            DateTime::from_timestamp_millis(*value).unwrap().naive_utc(),
+        )),
+        ScalarValue::TimestampNanosecond(Some(value), _) => Some((
+            binexpr.op,
+            DateTime::from_timestamp_nanos(*value).naive_utc(),
+        )),
+        ScalarValue::Utf8(Some(str_value)) if is_time_partition => {
+            Some((binexpr.op, str_value.parse::<NaiveDateTime>().unwrap()))
+        }
+        _ => None,
+    }
 }
 
 async fn collect_manifest_files(
