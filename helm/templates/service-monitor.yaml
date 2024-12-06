@@ -4,7 +4,10 @@ kind: ServiceMonitor
 metadata:
   name: {{ include "parseable.fullname" . }}
   namespace: {{ default .Release.Namespace .Values.parseable.metrics.serviceMonitor.namespace | quote }}
-  labels: 
+  labels:
+    {{- with .Values.parseable.metrics.serviceMonitor.labels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
     {{- include "parseable.labels" . | nindent 4 }}
 spec:
   {{ if .Values.parseable.metrics.serviceMonitor.spec.jobLabel }}
