@@ -24,7 +24,7 @@ use crate::{
     storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
 };
 use arrow_array::RecordBatch;
-use arrow_schema::{SchemaRef, SortOptions};
+use arrow_schema::{Schema, SchemaRef, SortOptions};
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use datafusion::catalog::Session;
@@ -921,7 +921,7 @@ fn extract_primary_filter(
         .filter_map(|expr| {
             let mut time_filter = None;
             let _ = expr.apply(&mut |expr| {
-                if let Some(time) = PartialTimeFilter::try_from_expr(expr, &time_partition) {
+                if let Some(time) = PartialTimeFilter::try_from_expr(expr, time_partition) {
                     time_filter = Some(time);
                     Ok(TreeNodeRecursion::Stop) // Stop further traversal
                 } else {

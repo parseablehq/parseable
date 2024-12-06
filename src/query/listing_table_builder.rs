@@ -174,9 +174,9 @@ impl ListingTableBuilder {
             return Ok(None);
         }
 
-        let file_sort_order = time_partition
-            .map(|time_partition| vec![vec![col(time_partition).sort(true, false)]])
-            .unwrap_or_else(|| vec![vec![col(DEFAULT_TIMESTAMP_KEY).sort(true, false)]]);
+        let file_sort_order = vec![vec![time_partition
+            .map_or_else(|| col(DEFAULT_TIMESTAMP_KEY), col)
+            .sort(true, false)]];
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options = ListingOptions::new(Arc::new(file_format))
             .with_file_extension(".parquet")
