@@ -41,7 +41,7 @@ use once_cell::sync::OnceCell;
 use parquet::errors::ParquetError;
 use relative_path::RelativePathBuf;
 use std::time::Duration;
-use sysinfo::{Disks, System};
+use sysinfo::Disks;
 use tokio::fs::{self, DirEntry};
 use tokio::io::AsyncWriteExt;
 use tokio_stream::wrappers::ReadDirStream;
@@ -135,24 +135,24 @@ impl HotTierManager {
             }
         }
 
-        let (total_disk_space, available_disk_space, used_disk_space) = get_disk_usage();
-
-        if let (Some(total_disk_space), _, Some(used_disk_space)) =
-            (total_disk_space, available_disk_space, used_disk_space)
+        if let Some(DiskUtil {
+            total_space,
+            used_space,
+            ..
+        }) = get_disk_usage()
         {
             let (total_hot_tier_size, total_hot_tier_used_size) =
                 self.get_hot_tiers_size(stream).await?;
-            let disk_threshold =
-                (CONFIG.parseable.max_disk_usage * total_disk_space as f64) / 100.0;
+            let disk_threshold = (CONFIG.parseable.max_disk_usage * total_space as f64) / 100.0;
             let max_allowed_hot_tier_size = disk_threshold
                 - total_hot_tier_size as f64
-                - (used_disk_space as f64
+                - (used_space as f64
                     - total_hot_tier_used_size as f64
                     - existing_hot_tier_used_size as f64);
 
             if stream_hot_tier_size as f64 > max_allowed_hot_tier_size {
                 log::error!("disk_threshold: {}, used_disk_space: {}, total_hot_tier_used_size: {}, existing_hot_tier_used_size: {}, total_hot_tier_size: {}",
-                    bytes_to_human_size(disk_threshold as u64), bytes_to_human_size(used_disk_space), bytes_to_human_size(total_hot_tier_used_size), bytes_to_human_size(existing_hot_tier_used_size), bytes_to_human_size(total_hot_tier_size));
+                    bytes_to_human_size(disk_threshold as u64), bytes_to_human_size(used_space), bytes_to_human_size(total_hot_tier_used_size), bytes_to_human_size(existing_hot_tier_used_size), bytes_to_human_size(total_hot_tier_size));
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
                     "{} is the total usable disk space for hot tier, cannot set a bigger value.", bytes_to_human_size(max_allowed_hot_tier_size as u64)
                 ))));
@@ -407,9 +407,8 @@ impl HotTierManager {
         );
         self.put_hot_tier(stream, &mut stream_hot_tier).await?;
         file_processed = true;
-        let mut hot_tier_manifest = self
-            .get_stream_hot_tier_manifest_for_date(stream, &date)
-            .await?;
+        let path = self.get_stream_path_for_date(stream, &date);
+        let mut hot_tier_manifest = HotTierManager::get_hot_tier_manifest_from_path(path).await?;
         hot_tier_manifest.files.push(parquet_file.clone());
         hot_tier_manifest
             .files
@@ -464,34 +463,38 @@ impl HotTierManager {
         Ok(date_list)
     }
 
-    ///get hot tier manifest for the stream and date
-    pub async fn get_stream_hot_tier_manifest_for_date(
-        &self,
-        stream: &str,
-        date: &NaiveDate,
-    ) -> Result<Manifest, HotTierError> {
-        let mut hot_tier_manifest = Manifest::default();
-        let path = self
-            .hot_tier_path
-            .join(stream)
-            .join(format!("date={}", date));
-        if path.exists() {
-            let date_dirs = ReadDirStream::new(fs::read_dir(&path).await?);
-            let manifest_files: Vec<DirEntry> = date_dirs.try_collect().await?;
-            for manifest in manifest_files {
-                if !manifest
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".manifest.json")
-                {
-                    continue;
-                }
-                let file = fs::read(manifest.path()).await?;
-                let manifest: Manifest = serde_json::from_slice(&file)?;
-                hot_tier_manifest.files.extend(manifest.files);
-            }
+    ///get hot tier manifest on path
+    pub async fn get_hot_tier_manifest_from_path(path: PathBuf) -> Result<Manifest, HotTierError> {
+        if !path.exists() {
+            return Ok(Manifest::default());
         }
+
+        // List the directories and prepare the hot tier manifest
+        let mut date_dirs = fs::read_dir(&path).await?;
+        let mut hot_tier_manifest = Manifest::default();
+
+        // Avoid unnecessary checks and keep only valid manifest files
+        while let Some(manifest) = date_dirs.next_entry().await? {
+            if !manifest
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".manifest.json")
+            {
+                continue;
+            }
+            // Deserialize each manifest file and extend the hot tier manifest with its files
+            let file = fs::read(manifest.path()).await?;
+            let manifest: Manifest = serde_json::from_slice(&file)?;
+            hot_tier_manifest.files.extend(manifest.files);
+        }
+
         Ok(hot_tier_manifest)
+    }
+
+    pub fn get_stream_path_for_date(&self, stream: &str, date: &NaiveDate) -> PathBuf {
+        self.hot_tier_path
+            .join(stream)
+            .join(format!("date={}", date))
     }
 
     ///get the list of files from all the manifests present in hot tier directory for the stream
@@ -526,17 +529,29 @@ impl HotTierManager {
         &self,
         stream: &str,
     ) -> Result<Vec<File>, HotTierError> {
-        let mut hot_tier_parquet_files: Vec<File> = Vec::new();
+        // Fetch list of dates for the given stream
         let date_list = self.fetch_hot_tier_dates(stream).await?;
-        for date in date_list {
-            let manifest = self
-                .get_stream_hot_tier_manifest_for_date(stream, &date)
-                .await?;
 
-            for parquet_file in manifest.files {
-                hot_tier_parquet_files.push(parquet_file.clone());
-            }
+        // Create an unordered iter of futures to async collect files
+        let mut tasks = FuturesUnordered::new();
+
+        // For each date, fetch the manifest and extract parquet files
+        for date in date_list {
+            let path = self.get_stream_path_for_date(stream, &date);
+            tasks.push(async move {
+                HotTierManager::get_hot_tier_manifest_from_path(path)
+                    .await
+                    .map(|manifest| manifest.files.clone())
+                    .unwrap_or_default() // If fetching manifest fails, return an empty vector
+            });
         }
+
+        // Collect parquet files for all dates
+        let mut hot_tier_parquet_files: Vec<File> = vec![];
+        while let Some(files) = tasks.next().await {
+            hot_tier_parquet_files.extend(files);
+        }
+
         Ok(hot_tier_parquet_files)
     }
 
@@ -662,16 +677,17 @@ impl HotTierManager {
     ///check if the disk is available to download the parquet file
     /// check if the disk usage is above the threshold
     pub async fn is_disk_available(&self, size_to_download: u64) -> Result<bool, HotTierError> {
-        let (total_disk_space, available_disk_space, used_disk_space) = get_disk_usage();
-
-        if let (Some(total_disk_space), Some(available_disk_space), Some(used_disk_space)) =
-            (total_disk_space, available_disk_space, used_disk_space)
+        if let Some(DiskUtil {
+            total_space,
+            available_space,
+            used_space,
+        }) = get_disk_usage()
         {
-            if available_disk_space < size_to_download {
+            if available_space < size_to_download {
                 return Ok(false);
             }
 
-            if ((used_disk_space + size_to_download) as f64 * 100.0 / total_disk_space as f64)
+            if ((used_space + size_to_download) as f64 * 100.0 / total_space as f64)
                 > CONFIG.parseable.max_disk_usage
             {
                 return Ok(false);
@@ -760,30 +776,31 @@ pub fn hot_tier_file_path(
     object_store::path::Path::from_absolute_path(path)
 }
 
-///get the disk usage for the hot tier storage path
-pub fn get_disk_usage() -> (Option<u64>, Option<u64>, Option<u64>) {
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    let path = CONFIG.parseable.hot_tier_storage_path.as_ref().unwrap();
+struct DiskUtil {
+    total_space: u64,
+    available_space: u64,
+    used_space: u64,
+}
 
+///get the disk usage for the hot tier storage path
+fn get_disk_usage() -> Option<DiskUtil> {
+    let path = CONFIG.parseable.hot_tier_storage_path.as_ref()?;
     let mut disks = Disks::new_with_refreshed_list();
+    // TODO: figure out why we sort
     disks.sort_by_key(|disk| disk.mount_point().to_str().unwrap().len());
     disks.reverse();
 
     for disk in disks.iter() {
         if path.starts_with(disk.mount_point().to_str().unwrap()) {
-            let total_disk_space = disk.total_space();
-            let available_disk_space = disk.available_space();
-            let used_disk_space = total_disk_space - available_disk_space;
-            return (
-                Some(total_disk_space),
-                Some(available_disk_space),
-                Some(used_disk_space),
-            );
+            return Some(DiskUtil {
+                total_space: disk.total_space(),
+                available_space: disk.available_space(),
+                used_space: disk.total_space() - disk.available_space(),
+            });
         }
     }
 
-    (None, None, None)
+    None
 }
 
 async fn delete_empty_directory_hot_tier(path: &Path) -> io::Result<()> {
