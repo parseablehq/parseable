@@ -916,19 +916,21 @@ fn extract_primary_filter(
     filters: &[Expr],
     time_partition: &Option<String>,
 ) -> Vec<PartialTimeFilter> {
-    let mut time_filters = Vec::new();
-    filters.iter().for_each(|expr| {
-        let _ = expr.apply(&mut |expr| {
-            let time = PartialTimeFilter::try_from_expr(expr, time_partition);
-            if let Some(time) = time {
-                time_filters.push(time);
-                Ok(TreeNodeRecursion::Stop)
-            } else {
-                Ok(TreeNodeRecursion::Jump)
-            }
-        });
-    });
-    time_filters
+    filters
+        .iter()
+        .filter_map(|expr| {
+            let mut time_filter = None;
+            let _ = expr.apply(&mut |expr| {
+                if let Some(time) = PartialTimeFilter::try_from_expr(expr, &time_partition) {
+                    time_filter = Some(time);
+                    Ok(TreeNodeRecursion::Stop) // Stop further traversal
+                } else {
+                    Ok(TreeNodeRecursion::Jump) // Skip this node
+                }
+            });
+            time_filter
+        })
+        .collect()
 }
 
 trait ManifestExt: ManifestFile {
