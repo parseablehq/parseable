@@ -28,14 +28,17 @@ pub fn flatten_json_body(
     custom_partition: Option<String>,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
-    flatten::flatten(
-        body,
-        "_",
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        validation_required,
-    )
+    match flatten::convert_to_array(flatten::flatten_json(&body)) {
+        Ok(nested_value) => flatten::flatten(
+            nested_value,
+            "_",
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+            validation_required,
+        ),
+        Err(err) => Err(err),
+    }
 }
 
 pub fn convert_array_to_object(

@@ -18,7 +18,6 @@
 
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
-use super::otel;
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 use crate::event::{
@@ -27,7 +26,7 @@ use crate::event::{
     format::{self, EventFormat},
 };
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
-use crate::handlers::{LOG_SOURCE_KEY, LOG_SOURCE_OTEL, STREAM_NAME_HEADER_KEY};
+use crate::handlers::STREAM_NAME_HEADER_KEY;
 use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::STREAM_INFO;
@@ -115,25 +114,7 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
         create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
-
-        //flatten logs
-        if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
-        {
-            let log_source: String = log_source.to_str().unwrap().to_owned();
-            if log_source == LOG_SOURCE_OTEL {
-                let mut json = otel::flatten_otel_logs(&body);
-                for record in json.iter_mut() {
-                    let body: Bytes = serde_json::to_vec(record).unwrap().into();
-                    push_logs(stream_name.to_string(), req.clone(), body).await?;
-                }
-            } else {
-                return Err(PostError::CustomError("Unknown log source".to_string()));
-            }
-        } else {
-            return Err(PostError::CustomError(
-                "log source key header is missing".to_string(),
-            ));
-        }
+        push_logs(stream_name.to_string(), req.clone(), body).await?;
     } else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     }
@@ -293,9 +274,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use actix_web::test::TestRequest;
-    use arrow_array::{
-        types::Int64Type, ArrayRef, Float64Array, Int64Array, ListArray, StringArray,
-    };
+    use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
     use arrow_schema::{DataType, Field};
     use serde_json::json;
 
@@ -689,25 +668,14 @@ mod tests {
             ])
         );
 
-        let c_a = vec![None, None, Some(vec![Some(1i64)]), Some(vec![Some(1)])];
-        let c_b = vec![None, None, None, Some(vec![Some(2i64)])];
-
         assert_eq!(
-            rb.column_by_name("c_a")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap(),
-            &ListArray::from_iter_primitive::<Int64Type, _, _>(c_a)
+            rb.column_by_name("c_a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, None, Some(1), Some(1)])
         );
 
         assert_eq!(
-            rb.column_by_name("c_b")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap(),
-            &ListArray::from_iter_primitive::<Int64Type, _, _>(c_b)
+            rb.column_by_name("c_b").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, None, None, Some(2)])
         );
     }
 }

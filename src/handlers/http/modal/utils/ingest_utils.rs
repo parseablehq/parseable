@@ -16,10 +16,7 @@
  *
  */
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use actix_web::HttpRequest;
 use arrow_schema::Field;
@@ -34,8 +31,8 @@ use crate::{
         format::{self, EventFormat},
     },
     handlers::{
-        http::{ingest::PostError, kinesis, otel},
-        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+        http::{ingest::PostError, kinesis},
+        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     },
     metadata::STREAM_INFO,
     storage::StreamType,
@@ -47,26 +44,19 @@ pub async fn flatten_and_push_logs(
     body: Bytes,
     stream_name: String,
 ) -> Result<(), PostError> {
-    //flatten logs
-    if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY) {
-        let mut json: Vec<BTreeMap<String, Value>> = Vec::new();
-        let log_source: String = log_source.to_str().unwrap().to_owned();
-        match log_source.as_str() {
-            LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
-            LOG_SOURCE_OTEL => {
-                json = otel::flatten_otel_logs(&body);
-            }
-            _ => {
-                warn!("Unknown log source: {}", log_source);
-                push_logs(stream_name.to_string(), req.clone(), body).await?;
-            }
-        }
-        for record in json.iter_mut() {
+    let log_source = req
+        .headers()
+        .get(LOG_SOURCE_KEY)
+        .map(|header| header.to_str().unwrap_or_default())
+        .unwrap_or_default();
+    if log_source == LOG_SOURCE_KINESIS {
+        let json = kinesis::flatten_kinesis_logs(&body);
+        for record in json.iter() {
             let body: Bytes = serde_json::to_vec(record).unwrap().into();
-            push_logs(stream_name.to_string(), req.clone(), body).await?;
+            push_logs(stream_name.clone(), req.clone(), body.clone()).await?;
         }
     } else {
-        push_logs(stream_name.to_string(), req, body).await?;
+        push_logs(stream_name, req, body).await?;
     }
     Ok(())
 }
