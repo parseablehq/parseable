@@ -45,6 +45,7 @@ pub use self::stream_schema_provider::PartialTimeFilter;
 use crate::event;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
+use crate::rbac::role::{Action, Permission};
 use crate::storage::{ObjectStorageProvider, StorageDir};
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
@@ -197,7 +198,51 @@ impl Query {
         let _ = self.raw_logical_plan.visit(&mut visitor);
         visitor.into_inner().pop()
     }
+
+    pub fn authorize_and_set_filter_tags(
+        &mut self,
+        permissions: Vec<Permission>,
+        table_name: &str,
+    ) -> Result<(), Unauthorized> {
+        // check authorization of this query if it references physical table;
+        let mut authorized = false;
+        let mut tags = Vec::new();
+
+        // in permission check if user can run query on the stream.
+        // also while iterating add any filter tags for this stream
+        for permission in permissions {
+            match permission {
+                Permission::Stream(Action::All, _) => {
+                    authorized = true;
+                    break;
+                }
+                Permission::StreamWithTag(Action::Query, ref stream, tag)
+                    if stream == table_name || stream == "*" =>
+                {
+                    authorized = true;
+                    if let Some(tag) = tag {
+                        tags.push(tag)
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        if !authorized {
+            return Err(Unauthorized);
+        }
+
+        if !tags.is_empty() {
+            self.filter_tag = Some(tags)
+        }
+
+        Ok(())
+    }
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("Unauthorized Access")]
+pub struct Unauthorized;
 
 #[derive(Debug, Default)]
 pub(crate) struct TableScanVisitor {

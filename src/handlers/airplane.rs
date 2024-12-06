@@ -41,7 +41,7 @@ use crate::option::CONFIG;
 use crate::handlers::livetail::cross_origin_config;
 
 use crate::handlers::http::query::{
-    authorize_and_set_filter_tags, into_query, put_results_in_cache, update_schema_when_distributed,
+    into_query, put_results_in_cache, update_schema_when_distributed,
 };
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::querycache::QueryCacheManager;
@@ -248,9 +248,11 @@ impl FlightService for AirServiceImpl {
 
         let permissions = Users.get_permissions(&key);
 
-        authorize_and_set_filter_tags(&mut query, permissions, &stream_name).map_err(|_| {
-            Status::permission_denied("User Does not have permission to access this")
-        })?;
+        query
+            .authorize_and_set_filter_tags(permissions, &stream_name)
+            .map_err(|_| {
+                Status::permission_denied("User Does not have permission to access this")
+            })?;
         let time = Instant::now();
         let (records, _) = query
             .execute(stream_name.clone())

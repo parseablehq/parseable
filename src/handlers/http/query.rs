@@ -42,10 +42,9 @@ use crate::localcache::CacheError;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::Query as LogicalQuery;
+use crate::query::{Query as LogicalQuery, Unauthorized};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::querycache::{CacheMetadata, QueryCacheManager};
-use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::object_storage::commit_schema_to_storage;
@@ -136,7 +135,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         .first_table_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
 
-    authorize_and_set_filter_tags(&mut query, permissions, &table_name)?;
+    query.authorize_and_set_filter_tags(permissions, &table_name)?;
 
     let time = Instant::now();
     let (records, fields) = query.execute(table_name.clone()).await?;
@@ -320,47 +319,6 @@ pub async fn get_results_from_cache(
     }
     .map_or_else(|| Err(QueryError::CacheMiss), |ret_val| ret_val)
 }
-
-pub fn authorize_and_set_filter_tags(
-    query: &mut LogicalQuery,
-    permissions: Vec<Permission>,
-    table_name: &str,
-) -> Result<(), QueryError> {
-    // check authorization of this query if it references physical table;
-    let mut authorized = false;
-    let mut tags = Vec::new();
-
-    // in permission check if user can run query on the stream.
-    // also while iterating add any filter tags for this stream
-    for permission in permissions {
-        match permission {
-            Permission::Stream(Action::All, _) => {
-                authorized = true;
-                break;
-            }
-            Permission::StreamWithTag(Action::Query, ref stream, tag)
-                if stream == table_name || stream == "*" =>
-            {
-                authorized = true;
-                if let Some(tag) = tag {
-                    tags.push(tag)
-                }
-            }
-            _ => (),
-        }
-    }
-
-    if !authorized {
-        return Err(QueryError::Unauthorized);
-    }
-
-    if !tags.is_empty() {
-        query.filter_tag = Some(tags)
-    }
-
-    Ok(())
-}
-
 impl FromRequest for Query {
     type Error = actix_web::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
@@ -410,7 +368,7 @@ pub async fn into_query(
         return Err(QueryError::StartTimeAfterEndTime);
     }
 
-    Ok(crate::query::Query {
+    Ok(LogicalQuery {
         raw_logical_plan: session_state.create_logical_plan(&query.query).await?,
         start,
         end,
@@ -496,7 +454,7 @@ pub enum QueryError {
     #[error("Start time cannot be greater than the end time")]
     StartTimeAfterEndTime,
     #[error("Unauthorized")]
-    Unauthorized,
+    Unauthorized(#[from] Unauthorized),
     #[error("Datafusion Error: {0}")]
     Datafusion(#[from] DataFusionError),
     #[error("Execution Error: {0}")]
