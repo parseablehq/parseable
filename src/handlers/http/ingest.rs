@@ -293,9 +293,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use actix_web::test::TestRequest;
-    use arrow_array::{
-        types::Int64Type, ArrayRef, Float64Array, Int64Array, ListArray, StringArray,
-    };
+    use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
     use arrow_schema::{DataType, Field};
     use serde_json::json;
 
@@ -689,25 +687,14 @@ mod tests {
             ])
         );
 
-        let c_a = vec![None, None, Some(vec![Some(1i64)]), Some(vec![Some(1)])];
-        let c_b = vec![None, None, None, Some(vec![Some(2i64)])];
-
         assert_eq!(
-            rb.column_by_name("c_a")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap(),
-            &ListArray::from_iter_primitive::<Int64Type, _, _>(c_a)
+            rb.column_by_name("c_a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, None, Some(1), Some(1)])
         );
 
         assert_eq!(
-            rb.column_by_name("c_b")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap(),
-            &ListArray::from_iter_primitive::<Int64Type, _, _>(c_b)
+            rb.column_by_name("c_b").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, None, None, Some(2)])
         );
     }
 }
