@@ -23,7 +23,6 @@ use arrow_schema::Field;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
-use tracing::warn;
 
 use crate::{
     event::{
