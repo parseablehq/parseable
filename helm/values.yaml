@@ -3,7 +3,7 @@ parseable:
     repository: containers.parseable.com/parseable/parseable
     tag: v1.6.3
     pullPolicy: Always
-  ## object store can be local, s3 or blob.
+  ## object store can be local-store, s3-store or blob-store.
   ## local needs to be false if set to object store.
   store: local-store
   ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors)
@@ -192,6 +192,7 @@ parseable:
   metrics:
     serviceMonitor:
       enabled: false
+      labels: {}
       namespace: ""
       spec:
         jobLabel: ""
@@ -300,7 +301,7 @@ fluent-bit:
   replicaCount: 1
   image:
     repository: parseable/fluent-bit
-    tag: "v1"
+    tag: "v2"
     pullPolicy: Always
   testFramework:
     enabled: true
@@ -382,25 +383,21 @@ fluent-bit:
       [OUTPUT]
           Name parseable
           Match kube.*
-          P_Server parseable.parseable.svc.cluster.local
-          P_Port 80
-          P_Username admin
-          P_Password admin
-          P_Stream $NAMESPACE 
+          Server_Host parseable.parseable.svc.cluster.local
+          Username admin
+          Password admin
+          Server_Port 80
+          Stream $NAMESPACE
+          Exclude_Namespaces kube-system, default
 
       [OUTPUT]
-          Name http
+          Name parseable
           Match k8s_events
-          host parseable.parseable.svc.cluster.local
-          http_User admin
-          http_Passwd admin
-          format json
-          port 80
-          header Content-Type application/json
-          header X-P-Stream k8s-events
-          uri /api/v1/ingest
-          json_date_key timestamp
-          json_date_format iso8601
+          Server_Host parseable.parseable.svc.cluster.local
+          Server_Port 80
+          Username admin
+          Password admin
+          Stream k8s-events 
 
     upstream: {}
 
