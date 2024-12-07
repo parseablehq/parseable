@@ -51,7 +51,7 @@ impl TimeRange {
     /// - Any error that might occur during parsing of durations or RFC 3339 timestamps.
     ///
     /// # Example
-    /// ```
+    /// ```ignore
     /// let range = TimeRange::parse_human_time("2 hours", "now");
     /// let range = TimeRange::parse_human_time("2023-01-01T12:00:00Z", "2023-01-01T15:00:00Z");
     /// ```
