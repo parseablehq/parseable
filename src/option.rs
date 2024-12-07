@@ -254,7 +254,7 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum Compression {
     Uncompressed,
     Snappy,

@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::str;
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename = "camelCase")]
+#[serde(rename_all = "camelCase")]
 struct Message {
     records: Vec<Data>,
     request_id: String,
