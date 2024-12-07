@@ -1,0 +1,236 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2024-11-08T10:17:18Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{vantage-kubernetes-agent}",
+                "kind": "Pod",
+                "name": "vka-vantage-kubernetes-agent-0",
+                "namespace": "vantage",
+                "resourceVersion": "15629581",
+                "uid": "3fa579b0-0c6f-4f44-a320-69389c8f607a"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2024-11-08T10:17:18Z",
+            "message": "Stopping container vantage-kubernetes-agent",
+            "metadata": {
+                "creationTimestamp": "2024-11-08T10:17:18Z",
+                "name": "vka-vantage-kubernetes-agent-0.1805f6d7de4bc710",
+                "namespace": "vantage",
+                "resourceVersion": "25741805",
+                "uid": "629a5864-06de-414d-8ad7-b7637b8cbfa0"
+            },
+            "reason": "Killing",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-2-170.ec2.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-2-170.ec2.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2024-11-08T10:17:19Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "vka-vantage-kubernetes-agent-0",
+                "namespace": "vantage",
+                "resourceVersion": "25741822",
+                "uid": "0118c8be-55df-40bf-96ed-41bb11b5a771"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2024-11-08T10:17:19Z",
+            "message": "Successfully assigned vantage/vka-vantage-kubernetes-agent-0 to ip-10-0-2-170.ec2.internal",
+            "metadata": {
+                "creationTimestamp": "2024-11-08T10:17:19Z",
+                "name": "vka-vantage-kubernetes-agent-0.1805f6d80c652af1",
+                "namespace": "vantage",
+                "resourceVersion": "25741826",
+                "uid": "e1dab7eb-ab65-44be-9b75-2f400cd70275"
+            },
+            "reason": "Scheduled",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "",
+            "source": {
+                "component": "default-scheduler"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2024-11-08T10:17:22Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{vantage-kubernetes-agent}",
+                "kind": "Pod",
+                "name": "vka-vantage-kubernetes-agent-0",
+                "namespace": "vantage",
+                "resourceVersion": "25741823",
+                "uid": "0118c8be-55df-40bf-96ed-41bb11b5a771"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2024-11-08T10:17:22Z",
+            "message": "Container image \"quay.io/vantage-sh/kubernetes-agent:1.0.26\" already present on machine",
+            "metadata": {
+                "creationTimestamp": "2024-11-08T10:17:22Z",
+                "name": "vka-vantage-kubernetes-agent-0.1805f6d8d0c1d741",
+                "namespace": "vantage",
+                "resourceVersion": "25741846",
+                "uid": "6c9c24bb-4ff3-486f-8151-91d1dad159ee"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-2-170.ec2.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-2-170.ec2.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2024-11-08T10:17:22Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{vantage-kubernetes-agent}",
+                "kind": "Pod",
+                "name": "vka-vantage-kubernetes-agent-0",
+                "namespace": "vantage",
+                "resourceVersion": "25741823",
+                "uid": "0118c8be-55df-40bf-96ed-41bb11b5a771"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2024-11-08T10:17:22Z",
+            "message": "Created container vantage-kubernetes-agent",
+            "metadata": {
+                "creationTimestamp": "2024-11-08T10:17:22Z",
+                "name": "vka-vantage-kubernetes-agent-0.1805f6d8d271c600",
+                "namespace": "vantage",
+                "resourceVersion": "25741847",
+                "uid": "d23e308a-b17e-42ba-a5ed-3a55c3d9e0d2"
+            },
+            "reason": "Created",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-2-170.ec2.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-2-170.ec2.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2024-11-08T10:17:22Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{vantage-kubernetes-agent}",
+                "kind": "Pod",
+                "name": "vka-vantage-kubernetes-agent-0",
+                "namespace": "vantage",
+                "resourceVersion": "25741823",
+                "uid": "0118c8be-55df-40bf-96ed-41bb11b5a771"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2024-11-08T10:17:22Z",
+            "message": "Started container vantage-kubernetes-agent",
+            "metadata": {
+                "creationTimestamp": "2024-11-08T10:17:23Z",
+                "name": "vka-vantage-kubernetes-agent-0.1805f6d8d87a3795",
+                "namespace": "vantage",
+                "resourceVersion": "25741848",
+                "uid": "e48c06da-3fbf-41a1-8685-6224854f0391"
+            },
+            "reason": "Started",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-2-170.ec2.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-2-170.ec2.internal"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2024-11-08T10:17:23Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{vantage-kubernetes-agent}",
+                "kind": "Pod",
+                "name": "vka-vantage-kubernetes-agent-0",
+                "namespace": "vantage",
+                "resourceVersion": "25741823",
+                "uid": "0118c8be-55df-40bf-96ed-41bb11b5a771"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2024-11-08T10:17:23Z",
+            "message": "Readiness probe failed: Get \"http://10.0.2.143:9010/healthz\": dial tcp 10.0.2.143:9010: connect: connection refused",
+            "metadata": {
+                "creationTimestamp": "2024-11-08T10:17:23Z",
+                "name": "vka-vantage-kubernetes-agent-0.1805f6d8f61959d7",
+                "namespace": "vantage",
+                "resourceVersion": "25741851",
+                "uid": "6199c62b-9ca5-4c46-abcb-53137ed24c47"
+            },
+            "reason": "Unhealthy",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "ip-10-0-2-170.ec2.internal",
+            "source": {
+                "component": "kubelet",
+                "host": "ip-10-0-2-170.ec2.internal"
+            },
+            "type": "Warning"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2024-11-08T10:17:19Z",
+            "involvedObject": {
+                "apiVersion": "apps/v1",
+                "kind": "StatefulSet",
+                "name": "vka-vantage-kubernetes-agent",
+                "namespace": "vantage",
+                "resourceVersion": "25741814",
+                "uid": "3f91d728-f31f-4582-8639-df259d97ac55"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2024-11-08T10:17:19Z",
+            "message": "create Pod vka-vantage-kubernetes-agent-0 in StatefulSet vka-vantage-kubernetes-agent successful",
+            "metadata": {
+                "creationTimestamp": "2024-11-08T10:17:19Z",
+                "name": "vka-vantage-kubernetes-agent.1805f6d80bd97994",
+                "namespace": "vantage",
+                "resourceVersion": "25741827",
+                "uid": "c5bf4dee-649f-48ba-b6da-c6ccf4e9262c"
+            },
+            "reason": "SuccessfulCreate",
+            "reportingComponent": "statefulset-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "statefulset-controller"
+            },
+            "type": "Normal"
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

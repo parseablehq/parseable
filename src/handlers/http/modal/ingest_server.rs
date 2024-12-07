@@ -24,6 +24,7 @@ use super::IngestorMetadata;
 use super::OpenIdClient;
 use super::ParseableServer;
 use crate::analytics;
+use crate::event::detect_schema::detect_schema;
 use crate::handlers::airplane;
 use crate::handlers::http::ingest;
 use crate::handlers::http::logstream;
@@ -121,7 +122,7 @@ impl ParseableServer for IngestServer {
 
         // set the ingestor metadata
         self.set_ingestor_metadata().await?;
-
+        detect_schema();
         // Ingestors shouldn't have to deal with OpenId auth flow
         let app = self.start(prometheus, None);
 

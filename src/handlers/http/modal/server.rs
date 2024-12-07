@@ -17,6 +17,8 @@
  */
 
 use crate::analytics;
+use crate::event::detect_schema::detect_schema;
+
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
@@ -110,7 +112,7 @@ impl ParseableServer for Server {
 
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
-
+        detect_schema();
         storage::retention::load_retention_from_global();
 
         if let Some(hot_tier_manager) = HotTierManager::global() {
