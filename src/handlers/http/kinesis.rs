@@ -24,16 +24,14 @@ use std::collections::BTreeMap;
 use std::str;
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename = "camelCase")]
 struct Message {
-    #[serde(rename = "records")]
     records: Vec<Data>,
-    #[serde(rename = "requestId")]
     request_id: String,
     timestamp: u64,
 }
 #[derive(Serialize, Deserialize, Debug)]
 struct Data {
-    #[serde(rename = "data")]
     data: String,
 }
 
