@@ -652,7 +652,7 @@ pub async fn put_stream_hot_tier(
             .validate_hot_tier_size(&stream_name, &hottier.size)
             .await?;
         hottier.used_size = existing_hot_tier_used_size.to_string();
-        hottier.available_size = hottier.size.clone();
+        hottier.available_size = hottier.size.to_string();
         hottier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
         hot_tier_manager
             .put_hot_tier(&stream_name, &mut hottier)
