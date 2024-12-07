@@ -462,7 +462,7 @@ pub fn put_ingestor_info(info: IngestorMetadata) -> anyhow::Result<()> {
     let file_name = format!("ingestor.{}.json", info.ingestor_id);
     let file_path = path.join(file_name);
 
-    std::fs::write(file_path, serde_json::to_string(&info)?)?;
+    std::fs::write(file_path, serde_json::to_vec(&info)?)?;
 
     Ok(())
 }

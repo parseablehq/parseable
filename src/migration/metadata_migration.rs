@@ -16,6 +16,7 @@
  *
  */
 
+use bytes::Bytes;
 use rand::distributions::DistString;
 use serde_json::{json, Map, Value as JsonValue};
 
@@ -24,7 +25,6 @@ use crate::{
     option::CONFIG,
     storage::{object_storage::ingestor_metadata_path, staging},
 };
-use actix_web::body::MessageBody;
 
 /*
 v1
@@ -194,9 +194,7 @@ pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetada
             JsonValue::String(CONFIG.parseable.flight_port.to_string()),
         );
     }
-    let bytes = serde_json::to_string(&json)?
-        .try_into_bytes()
-        .map_err(|err| anyhow::anyhow!(err))?;
+    let bytes = Bytes::from(serde_json::to_vec(&json)?);
 
     let resource: IngestorMetadata = serde_json::from_value(json)?;
     staging::put_ingestor_info(resource.clone())?;

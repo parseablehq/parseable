@@ -220,6 +220,7 @@ impl IngestorMetadata {
 #[cfg(test)]
 mod test {
     use actix_web::body::MessageBody;
+    use bytes::Bytes;
     use rstest::rstest;
 
     use super::{IngestorMetadata, DEFAULT_VERSION};
@@ -255,10 +256,7 @@ mod test {
             "8002".to_string(),
         );
 
-        let lhs = serde_json::to_string(&im)
-            .unwrap()
-            .try_into_bytes()
-            .unwrap();
+        let lhs = Bytes::from(serde_json::to_vec(&im).unwrap());
         let rhs = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"8002"}"#
                 .try_into_bytes()
                 .unwrap();
