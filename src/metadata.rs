@@ -58,6 +58,7 @@ pub struct LogStreamMetadata {
     pub static_schema_flag: Option<String>,
     pub hot_tier_enabled: Option<bool>,
     pub stream_type: Option<String>,
+    pub schema_type: Option<String>,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -137,6 +138,14 @@ impl StreamInfo {
             .map(|metadata| metadata.static_schema_flag.clone())
     }
 
+    #[allow(dead_code)]
+    pub fn get_schema_type(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.schema_type.clone())
+    }
+
     pub fn get_retention(&self, stream_name: &str) -> Result<Option<Retention>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         map.get(stream_name)
@@ -196,6 +205,20 @@ impl StreamInfo {
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
                 metadata.first_event_at = first_event_at;
+            })
+    }
+
+    #[allow(dead_code)]
+    pub fn set_schema_type(
+        &self,
+        stream_name: &str,
+        schema_type: Option<String>,
+    ) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        map.get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.schema_type = schema_type;
             })
     }
 
@@ -265,40 +288,24 @@ impl StreamInfo {
         static_schema_flag: String,
         static_schema: HashMap<String, Arc<Field>>,
         stream_type: &str,
+        schema_type: &str,
     ) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
-            created_at: if created_at.is_empty() {
-                Local::now().to_rfc3339()
-            } else {
-                created_at
-            },
-            time_partition: if time_partition.is_empty() {
-                None
-            } else {
-                Some(time_partition)
-            },
-            time_partition_limit: if time_partition_limit.is_empty() {
-                None
-            } else {
-                Some(time_partition_limit)
-            },
-            custom_partition: if custom_partition.is_empty() {
-                None
-            } else {
-                Some(custom_partition)
-            },
-            static_schema_flag: if static_schema_flag != "true" {
-                None
-            } else {
-                Some(static_schema_flag)
-            },
-            schema: if static_schema.is_empty() {
-                HashMap::new()
-            } else {
-                static_schema
-            },
+            created_at: created_at
+                .is_empty()
+                .then(|| Local::now().to_rfc3339())
+                .unwrap_or(created_at),
+            time_partition: (!time_partition.is_empty()).then_some(time_partition),
+            time_partition_limit: (!time_partition_limit.is_empty())
+                .then_some(time_partition_limit),
+            custom_partition: (!custom_partition.is_empty()).then_some(custom_partition),
+            static_schema_flag: (static_schema_flag == "true").then_some(static_schema_flag),
+            schema: (!static_schema.is_empty())
+                .then_some(static_schema)
+                .unwrap_or_default(),
             stream_type: Some(stream_type.to_string()),
+            schema_type: (!schema_type.is_empty()).then(|| schema_type.to_string()),
             ..Default::default()
         };
         map.insert(stream_name, metadata);
@@ -340,6 +347,7 @@ impl StreamInfo {
             static_schema_flag: meta.static_schema_flag,
             hot_tier_enabled: meta.hot_tier_enabled,
             stream_type: meta.stream_type,
+            schema_type: meta.schema_type,
         };
 
         let mut map = self.write().expect(LOCK_EXPECT);
@@ -493,6 +501,7 @@ pub async fn load_stream_metadata_on_server_start(
         static_schema_flag: meta.static_schema_flag,
         hot_tier_enabled: meta.hot_tier_enabled,
         stream_type: meta.stream_type,
+        schema_type: meta.schema_type,
     };
 
     let mut map = STREAM_INFO.write().expect(LOCK_EXPECT);

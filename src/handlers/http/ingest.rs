@@ -60,9 +60,9 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
                 stream_name
             )));
         }
-        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string(), "").await?;
 
-        flatten_and_push_logs(req, body, stream_name).await?;
+        flatten_and_push_logs(req, body, &stream_name).await?;
         Ok(HttpResponse::Ok().finish())
     } else {
         Err(PostError::Header(ParseHeaderError::MissingStreamName))
@@ -116,8 +116,9 @@ pub async fn handle_otel_ingestion(
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
-        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
-        push_logs(stream_name.to_string(), req.clone(), body).await?;
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string(), "otel")
+            .await?;
+        push_logs(&stream_name, req.clone(), body).await?;
     } else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     }
@@ -150,7 +151,7 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
         }
     }
 
-    flatten_and_push_logs(req, body, stream_name).await?;
+    flatten_and_push_logs(req, body, &stream_name).await?;
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -178,6 +179,7 @@ pub async fn push_logs_unchecked(
 pub async fn create_stream_if_not_exists(
     stream_name: &str,
     stream_type: &str,
+    schema_type: &str,
 ) -> Result<bool, PostError> {
     let mut stream_exists = false;
     if STREAM_INFO.stream_exists(stream_name) {
@@ -202,6 +204,7 @@ pub async fn create_stream_if_not_exists(
         "",
         Arc::new(Schema::empty()),
         stream_type,
+        schema_type,
     )
     .await?;
 

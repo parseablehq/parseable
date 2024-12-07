@@ -31,7 +31,7 @@ use crate::{
     },
     handlers::{
         http::{ingest::PostError, kinesis},
-        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     },
     metadata::STREAM_INFO,
     storage::StreamType,
@@ -41,34 +41,36 @@ use crate::{
 pub async fn flatten_and_push_logs(
     req: HttpRequest,
     body: Bytes,
-    stream_name: String,
+    stream_name: &str,
 ) -> Result<(), PostError> {
     let log_source = req
         .headers()
         .get(LOG_SOURCE_KEY)
         .map(|header| header.to_str().unwrap_or_default())
         .unwrap_or_default();
-    if log_source == LOG_SOURCE_KINESIS {
-        let json = kinesis::flatten_kinesis_logs(&body);
-        for record in json.iter() {
-            let body: Bytes = serde_json::to_vec(record).unwrap().into();
-            push_logs(stream_name.clone(), req.clone(), body.clone()).await?;
+    match log_source {
+        LOG_SOURCE_KINESIS => {
+            let json = kinesis::flatten_kinesis_logs(&body);
+            for record in json.iter() {
+                let body: Bytes = serde_json::to_vec(record).unwrap().into();
+                push_logs(stream_name, req.clone(), body.clone()).await?;
+            }
+            return Ok(());
         }
-    } else {
-        push_logs(stream_name, req, body).await?;
+        LOG_SOURCE_OTEL => {
+            STREAM_INFO.set_schema_type(stream_name, Some(LOG_SOURCE_OTEL.to_string()))?
+        }
+        _ => {}
     }
+    push_logs(stream_name, req.clone(), body.clone()).await?;
     Ok(())
 }
 
-pub async fn push_logs(
-    stream_name: String,
-    req: HttpRequest,
-    body: Bytes,
-) -> Result<(), PostError> {
-    let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
-    let time_partition_limit = STREAM_INFO.get_time_partition_limit(&stream_name)?;
-    let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name)?;
-    let custom_partition = STREAM_INFO.get_custom_partition(&stream_name)?;
+pub async fn push_logs(stream_name: &str, req: HttpRequest, body: Bytes) -> Result<(), PostError> {
+    let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
+    let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
+    let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
+    let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
     let body_val: Value = serde_json::from_slice(&body)?;
     let size: usize = body.len();
     let mut parsed_timestamp = Utc::now().naive_utc();
@@ -76,7 +78,7 @@ pub async fn push_logs(
         if custom_partition.is_none() {
             let size = size as u64;
             create_process_record_batch(
-                stream_name.clone(),
+                stream_name,
                 req.clone(),
                 body_val.clone(),
                 static_schema_flag.clone(),
@@ -98,7 +100,7 @@ pub async fn push_logs(
 
                 let size = value.to_string().into_bytes().len() as u64;
                 create_process_record_batch(
-                    stream_name.clone(),
+                    stream_name,
                     req.clone(),
                     value.clone(),
                     static_schema_flag.clone(),
@@ -121,7 +123,7 @@ pub async fn push_logs(
             parsed_timestamp = get_parsed_timestamp(&value, &time_partition);
             let size = value.to_string().into_bytes().len() as u64;
             create_process_record_batch(
-                stream_name.clone(),
+                stream_name,
                 req.clone(),
                 value.clone(),
                 static_schema_flag.clone(),
@@ -149,7 +151,7 @@ pub async fn push_logs(
             parsed_timestamp = get_parsed_timestamp(&value, &time_partition);
             let size = value.to_string().into_bytes().len() as u64;
             create_process_record_batch(
-                stream_name.clone(),
+                stream_name,
                 req.clone(),
                 value.clone(),
                 static_schema_flag.clone(),
@@ -167,7 +169,7 @@ pub async fn push_logs(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn create_process_record_batch(
-    stream_name: String,
+    stream_name: &str,
     req: HttpRequest,
     value: Value,
     static_schema_flag: Option<String>,
@@ -177,7 +179,7 @@ pub async fn create_process_record_batch(
     origin_size: u64,
 ) -> Result<(), PostError> {
     let (rb, is_first_event) = get_stream_schema(
-        stream_name.clone(),
+        stream_name,
         req.clone(),
         value.clone(),
         static_schema_flag.clone(),
@@ -185,7 +187,7 @@ pub async fn create_process_record_batch(
     )?;
     event::Event {
         rb,
-        stream_name: stream_name.clone(),
+        stream_name: stream_name.to_string(),
         origin_format: "json",
         origin_size,
         is_first_event,
@@ -201,7 +203,7 @@ pub async fn create_process_record_batch(
 }
 
 pub fn get_stream_schema(
-    stream_name: String,
+    stream_name: &str,
     req: HttpRequest,
     body: Value,
     static_schema_flag: Option<String>,
@@ -209,8 +211,8 @@ pub fn get_stream_schema(
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let hash_map = STREAM_INFO.read().unwrap();
     let schema = hash_map
-        .get(&stream_name)
-        .ok_or(PostError::StreamNotFound(stream_name))?
+        .get(stream_name)
+        .ok_or(PostError::StreamNotFound(stream_name.to_string()))?
         .schema
         .clone();
     into_event_batch(req, body, schema, static_schema_flag, time_partition)

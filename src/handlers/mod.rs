@@ -35,6 +35,7 @@ const AUTHORIZATION_KEY: &str = "authorization";
 const SEPARATOR: char = '^';
 const UPDATE_STREAM_KEY: &str = "x-p-update-stream";
 const STREAM_TYPE_KEY: &str = "x-p-stream-type";
+const SCHEMA_TYPE_KEY: &str = "x-p-schema-type";
 const OIDC_SCOPE: &str = "openid profile email";
 const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";
@@ -47,6 +48,6 @@ const TRINO_USER: &str = "x-trino-user";
 
 // constants for log Source values for known sources and formats
 const LOG_SOURCE_KINESIS: &str = "kinesis";
-
+const LOG_SOURCE_OTEL: &str = "otel";
 // AWS Kinesis constants
 const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";
