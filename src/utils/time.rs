@@ -30,6 +30,7 @@ pub enum TimeParseError {
     StartTimeAfterEndTime,
 }
 
+/// Represents a range of time with a start and end point.
 #[derive(Debug)]
 pub struct TimeRange {
     pub start: DateTime<Utc>,
@@ -37,6 +38,23 @@ pub struct TimeRange {
 }
 
 impl TimeRange {
+    /// Parses human-readable time strings into a `TimeRange` object.
+    ///
+    /// # Arguments
+    /// - `start_time`: A string representing the start of the time range. This can either be
+    ///   a human-readable duration (e.g., `"2 hours"`) or an RFC 3339 formatted timestamp.
+    /// - `end_time`: A string representing the end of the time range. This can either be
+    ///   the keyword `"now"` (to represent the current time) or an RFC 3339 formatted timestamp.
+    ///
+    /// # Errors
+    /// - `TimeParseError::StartTimeAfterEndTime`: Returned when the parsed start time is later than the end time.
+    /// - Any error that might occur during parsing of durations or RFC 3339 timestamps.
+    ///
+    /// # Example
+    /// ```
+    /// let range = TimeRange::parse_human_time("2 hours", "now");
+    /// let range = TimeRange::parse_human_time("2023-01-01T12:00:00Z", "2023-01-01T15:00:00Z");
+    /// ```
     pub fn parse_human_time(start_time: &str, end_time: &str) -> Result<Self, TimeParseError> {
         let start: DateTime<Utc>;
         let end: DateTime<Utc>;
