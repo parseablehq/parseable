@@ -157,7 +157,7 @@ pub enum SSECEncryptionKey {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum SSEError {
     #[error("Expected SSE-C:AES256:<base64_encryption_key>")]
     UnexpectedKey,
     #[error("Only SSE-C is supported for object encryption for now")]
@@ -167,16 +167,16 @@ pub enum Error {
 }
 
 impl FromStr for SSECEncryptionKey {
-    type Err = Error;
+    type Err = SSEError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = s.split(':').collect::<Vec<_>>();
         if parts.len() != 3 {
-            return Err(Error::UnexpectedKey);
+            return Err(SSEError::UnexpectedKey);
         }
         let sse_type = parts[0];
         if sse_type != "SSE-C" {
-            return Err(Error::UnexpectedProtocol);
+            return Err(SSEError::UnexpectedProtocol);
         }
 
         let algorithm = parts[1];
@@ -199,12 +199,12 @@ pub enum ObjectEncryptionAlgorithm {
 }
 
 impl FromStr for ObjectEncryptionAlgorithm {
-    type Err = Error;
+    type Err = SSEError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "AES256" => Ok(ObjectEncryptionAlgorithm::Aes256),
-            _ => Err(Error::InvalidAlgorithm),
+            _ => Err(SSEError::InvalidAlgorithm),
         }
     }
 }
