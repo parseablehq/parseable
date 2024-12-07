@@ -253,29 +253,28 @@ pub enum Mode {
     All,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub enum Compression {
-    UNCOMPRESSED,
-    SNAPPY,
-    GZIP,
-    LZO,
-    BROTLI,
+    Uncompressed,
+    Snappy,
+    Gzip,
+    Lzo,
+    Brotli,
     #[default]
-    LZ4,
-    ZSTD,
+    Lz4,
+    Zstd,
 }
 
 impl From<Compression> for parquet::basic::Compression {
     fn from(value: Compression) -> Self {
         match value {
-            Compression::UNCOMPRESSED => parquet::basic::Compression::UNCOMPRESSED,
-            Compression::SNAPPY => parquet::basic::Compression::SNAPPY,
-            Compression::GZIP => parquet::basic::Compression::GZIP(GzipLevel::default()),
-            Compression::LZO => parquet::basic::Compression::LZO,
-            Compression::BROTLI => parquet::basic::Compression::BROTLI(BrotliLevel::default()),
-            Compression::LZ4 => parquet::basic::Compression::LZ4,
-            Compression::ZSTD => parquet::basic::Compression::ZSTD(ZstdLevel::default()),
+            Compression::Uncompressed => parquet::basic::Compression::UNCOMPRESSED,
+            Compression::Snappy => parquet::basic::Compression::SNAPPY,
+            Compression::Gzip => parquet::basic::Compression::GZIP(GzipLevel::default()),
+            Compression::Lzo => parquet::basic::Compression::LZO,
+            Compression::Brotli => parquet::basic::Compression::BROTLI(BrotliLevel::default()),
+            Compression::Lz4 => parquet::basic::Compression::LZ4,
+            Compression::Zstd => parquet::basic::Compression::ZSTD(ZstdLevel::default()),
         }
     }
 }

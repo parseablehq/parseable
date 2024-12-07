@@ -423,7 +423,7 @@ impl Cli {
              .arg(
                  // RowGroupSize controls the number of rows present in one row group
                  // More rows = better compression but HIGHER Memory consumption during read/write
-                 // 1048576 is the default value for DataFusion 
+                 // 1048576 is the default value for DataFusion
                  Arg::new(Self::ROW_GROUP_SIZE)
                      .long(Self::ROW_GROUP_SIZE)
                      .env("P_PARQUET_ROW_GROUP_SIZE")
@@ -591,20 +591,12 @@ impl FromArgMatches for Cli {
             .get_one::<usize>(Self::ROW_GROUP_SIZE)
             .cloned()
             .expect("default for row_group size");
-        self.parquet_compression = match m
-            .get_one::<String>(Self::PARQUET_COMPRESSION_ALGO)
-            .expect("default for compression algo")
-            .as_str()
-        {
-            "uncompressed" => Compression::UNCOMPRESSED,
-            "snappy" => Compression::SNAPPY,
-            "gzip" => Compression::GZIP,
-            "lzo" => Compression::LZO,
-            "brotli" => Compression::BROTLI,
-            "lz4" => Compression::LZ4,
-            "zstd" => Compression::ZSTD,
-            _ => unreachable!(),
-        };
+        self.parquet_compression = serde_json::from_str(
+            m.get_one::<String>(Self::PARQUET_COMPRESSION_ALGO)
+                .expect("default for compression algo")
+                .as_str(),
+        )
+        .expect("unexpected compression algo");
 
         let openid_client_id = m.get_one::<String>(Self::OPENID_CLIENT_ID).cloned();
         let openid_client_secret = m.get_one::<String>(Self::OPENID_CLIENT_SECRET).cloned();
