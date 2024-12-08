@@ -28,6 +28,8 @@ use prometheus_parse::Value as PromValue;
 use serde::Serialize;
 use serde_json::Error as JsonError;
 use serde_json::Value as JsonValue;
+use tracing::error;
+use tracing::warn;
 use url::Url;
 
 #[derive(Debug, Serialize, Clone)]
@@ -207,7 +209,7 @@ impl Metrics {
         let (commit_id, staging, cache) = Self::from_about_api_response(ingestor_metadata.clone())
             .await
             .map_err(|err| {
-                log::error!("Fatal: failed to get ingestor info: {:?}", err);
+                error!("Fatal: failed to get ingestor info: {:?}", err);
                 PostError::Invalid(err.into())
             })?;
 
@@ -257,7 +259,7 @@ impl Metrics {
                 cache.to_string(),
             ))
         } else {
-            log::warn!(
+            warn!(
                 "Failed to fetch about API response from ingestor: {}\n",
                 &ingestor_metadata.domain_name,
             );

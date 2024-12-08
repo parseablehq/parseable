@@ -24,6 +24,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
 use itertools::Itertools;
 use std::sync::Arc;
+use tracing::error;
 
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
@@ -93,7 +94,7 @@ impl Event {
             .check_alerts(&self.stream_name, &self.rb)
             .await
         {
-            log::error!("Error checking for alerts. {:?}", e);
+            error!("Error checking for alerts. {:?}", e);
         }
 
         Ok(())

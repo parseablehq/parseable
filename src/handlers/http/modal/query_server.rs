@@ -33,6 +33,7 @@ use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use async_trait::async_trait;
 use bytes::Bytes;
+use tracing::{error, info};
 
 use crate::{option::CONFIG, ParseableServer};
 
@@ -105,7 +106,7 @@ impl ParseableServer for QueryServer {
         }
 
         if matches!(init_cluster_metrics_schedular(), Ok(())) {
-            log::info!("Cluster metrics scheduler started successfully");
+            info!("Cluster metrics scheduler started successfully");
         }
         if let Some(hot_tier_manager) = HotTierManager::global() {
             hot_tier_manager.put_internal_stream_hot_tier().await?;
@@ -127,10 +128,10 @@ impl ParseableServer for QueryServer {
                     remote_sync_inbox.send(()).unwrap_or(());
                     localsync_inbox.send(()).unwrap_or(());
                     if let Err(e) = localsync_handler.await {
-                        log::error!("Error joining localsync_handler: {:?}", e);
+                        error!("Error joining localsync_handler: {:?}", e);
                     }
                     if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                        error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     return e
                 },
@@ -142,7 +143,7 @@ impl ParseableServer for QueryServer {
                 _ = &mut remote_sync_outbox => {
                     // remote_sync failed, this is recoverable by just starting remote_sync thread again
                     if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                        error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
                 }

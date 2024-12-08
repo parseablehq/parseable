@@ -27,6 +27,7 @@ use clokwerk::TimeUnits;
 use derive_more::Display;
 use once_cell::sync::Lazy;
 use tokio::task::JoinHandle;
+use tracing::{info, warn};
 
 use crate::metadata::STREAM_INFO;
 
@@ -35,12 +36,12 @@ type SchedulerHandle = JoinHandle<()>;
 static SCHEDULER_HANDLER: Lazy<Mutex<Option<SchedulerHandle>>> = Lazy::new(|| Mutex::new(None));
 
 pub fn load_retention_from_global() {
-    log::info!("loading retention for all streams");
+    info!("loading retention for all streams");
     init_scheduler();
 }
 
 pub fn init_scheduler() {
-    log::info!("Setting up scheduler");
+    info!("Setting up scheduler");
     let mut scheduler = AsyncScheduler::new();
     let func = move || async {
         //get retention every day at 12 am
@@ -63,7 +64,7 @@ pub fn init_scheduler() {
                     }
                 }
                 Err(err) => {
-                    log::warn!("failed to load retention config for {stream} due to {err:?}")
+                    warn!("failed to load retention config for {stream} due to {err:?}")
                 }
             };
         }
@@ -84,7 +85,7 @@ pub fn init_scheduler() {
     });
 
     *SCHEDULER_HANDLER.lock().unwrap() = Some(scheduler_handler);
-    log::info!("Scheduler is initialized")
+    info!("Scheduler is initialized")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -176,9 +177,10 @@ mod action {
     use futures::{stream::FuturesUnordered, StreamExt};
     use itertools::Itertools;
     use relative_path::RelativePathBuf;
+    use tracing::{error, info};
 
     pub(super) async fn delete(stream_name: String, days: u32) {
-        log::info!("running retention task - delete for stream={stream_name}");
+        info!("running retention task - delete for stream={stream_name}");
         let store = CONFIG.storage().get_object_store();
 
         let retain_until = get_retain_until(Utc::now().date_naive(), days as u64);
@@ -212,7 +214,7 @@ mod action {
 
             for res in res {
                 if let Err(err) = res {
-                    log::error!("Failed to run delete task {err:?}");
+                    error!("Failed to run delete task {err:?}");
                     return;
                 }
             }
@@ -220,7 +222,7 @@ mod action {
                 if let Err(err) =
                     metadata::STREAM_INFO.set_first_event_at(&stream_name, first_event_at)
                 {
-                    log::error!(
+                    error!(
                         "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
                         stream_name
                     );

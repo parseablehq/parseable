@@ -43,6 +43,7 @@ use relative_path::RelativePathBuf;
 use serde::de::Error;
 use serde_json::error::Error as SerdeError;
 use serde_json::{to_vec, Value as JsonValue};
+use tracing::{error, info, warn};
 use url::Url;
 type IngestorMetadataArr = Vec<IngestorMetadata>;
 
@@ -71,7 +72,7 @@ pub async fn sync_streams_with_ingestors(
         reqwest_headers.insert(key.clone(), value.clone());
     }
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
 
@@ -79,7 +80,7 @@ pub async fn sync_streams_with_ingestors(
 
     for ingestor in ingestor_infos {
         if !utils::check_liveness(&ingestor.domain_name).await {
-            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            warn!("Ingestor {} is not live", ingestor.domain_name);
             continue;
         }
         let url = format!(
@@ -96,16 +97,15 @@ pub async fn sync_streams_with_ingestors(
             .send()
             .await
             .map_err(|err| {
-                log::error!(
+                error!(
                     "Fatal: failed to forward upsert stream request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name,
-                    err
+                    ingestor.domain_name, err
                 );
                 StreamError::Network(err)
             })?;
 
         if !res.status().is_success() {
-            log::error!(
+            error!(
                 "failed to forward upsert stream request to ingestor: {}\nResponse Returned: {:?}",
                 ingestor.domain_name,
                 res.text().await
@@ -122,18 +122,18 @@ pub async fn sync_users_with_roles_with_ingestors(
     role: &HashSet<String>,
 ) -> Result<(), RBACError> {
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
 
     let client = reqwest::Client::new();
     let role = to_vec(&role.clone()).map_err(|err| {
-        log::error!("Fatal: failed to serialize role: {:?}", err);
+        error!("Fatal: failed to serialize role: {:?}", err);
         RBACError::SerdeError(err)
     })?;
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
-            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            warn!("Ingestor {} is not live", ingestor.domain_name);
             continue;
         }
         let url = format!(
@@ -151,16 +151,15 @@ pub async fn sync_users_with_roles_with_ingestors(
             .send()
             .await
             .map_err(|err| {
-                log::error!(
+                error!(
                     "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name,
-                    err
+                    ingestor.domain_name, err
                 );
                 RBACError::Network(err)
             })?;
 
         if !res.status().is_success() {
-            log::error!(
+            error!(
                 "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
                 ingestor.domain_name,
                 res.text().await
@@ -174,14 +173,14 @@ pub async fn sync_users_with_roles_with_ingestors(
 // forward the delete user request to all ingestors to keep them in sync
 pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), RBACError> {
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
 
     let client = reqwest::Client::new();
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
-            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            warn!("Ingestor {} is not live", ingestor.domain_name);
             continue;
         }
         let url = format!(
@@ -197,16 +196,15 @@ pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), 
             .send()
             .await
             .map_err(|err| {
-                log::error!(
+                error!(
                     "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name,
-                    err
+                    ingestor.domain_name, err
                 );
                 RBACError::Network(err)
             })?;
 
         if !res.status().is_success() {
-            log::error!(
+            error!(
                 "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
                 ingestor.domain_name,
                 res.text().await
@@ -223,7 +221,7 @@ pub async fn sync_user_creation_with_ingestors(
     role: &Option<HashSet<String>>,
 ) -> Result<(), RBACError> {
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
 
@@ -236,13 +234,13 @@ pub async fn sync_user_creation_with_ingestors(
     let client = reqwest::Client::new();
 
     let user = to_vec(&user).map_err(|err| {
-        log::error!("Fatal: failed to serialize user: {:?}", err);
+        error!("Fatal: failed to serialize user: {:?}", err);
         RBACError::SerdeError(err)
     })?;
 
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
-            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            warn!("Ingestor {} is not live", ingestor.domain_name);
             continue;
         }
         let url = format!(
@@ -260,16 +258,15 @@ pub async fn sync_user_creation_with_ingestors(
             .send()
             .await
             .map_err(|err| {
-                log::error!(
+                error!(
                     "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name,
-                    err
+                    ingestor.domain_name, err
                 );
                 RBACError::Network(err)
             })?;
 
         if !res.status().is_success() {
-            log::error!(
+            error!(
                 "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
                 ingestor.domain_name,
                 res.text().await
@@ -283,14 +280,14 @@ pub async fn sync_user_creation_with_ingestors(
 // forward the password reset request to all ingestors to keep them in sync
 pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(), RBACError> {
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
     let client = reqwest::Client::new();
 
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
-            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            warn!("Ingestor {} is not live", ingestor.domain_name);
             continue;
         }
         let url = format!(
@@ -307,16 +304,15 @@ pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(),
             .send()
             .await
             .map_err(|err| {
-                log::error!(
+                error!(
                     "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name,
-                    err
+                    ingestor.domain_name, err
                 );
                 RBACError::Network(err)
             })?;
 
         if !res.status().is_success() {
-            log::error!(
+            error!(
                 "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
                 ingestor.domain_name,
                 res.text().await
@@ -333,12 +329,12 @@ pub async fn sync_role_update_with_ingestors(
     body: Vec<DefaultPrivilege>,
 ) -> Result<(), RoleError> {
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         RoleError::Anyhow(err)
     })?;
 
     let roles = to_vec(&body).map_err(|err| {
-        log::error!("Fatal: failed to serialize roles: {:?}", err);
+        error!("Fatal: failed to serialize roles: {:?}", err);
         RoleError::SerdeError(err)
     })?;
     let roles = Bytes::from(roles);
@@ -346,7 +342,7 @@ pub async fn sync_role_update_with_ingestors(
 
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
-            log::warn!("Ingestor {} is not live", ingestor.domain_name);
+            warn!("Ingestor {} is not live", ingestor.domain_name);
             continue;
         }
         let url = format!(
@@ -364,16 +360,15 @@ pub async fn sync_role_update_with_ingestors(
             .send()
             .await
             .map_err(|err| {
-                log::error!(
+                error!(
                     "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name,
-                    err
+                    ingestor.domain_name, err
                 );
                 RoleError::Network(err)
             })?;
 
         if !res.status().is_success() {
-            log::error!(
+            error!(
                 "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
                 ingestor.domain_name,
                 res.text().await
@@ -393,7 +388,7 @@ pub async fn fetch_daily_stats_from_ingestors(
     let mut total_storage_size: u64 = 0;
 
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
     for ingestor in ingestor_infos.iter() {
@@ -526,10 +521,9 @@ pub async fn send_stream_delete_request(
         .await
         .map_err(|err| {
             // log the error and return a custom error
-            log::error!(
+            error!(
                 "Fatal: failed to delete stream: {}\n Error: {:?}",
-                ingestor.domain_name,
-                err
+                ingestor.domain_name, err
             );
             StreamError::Network(err)
         })?;
@@ -537,7 +531,7 @@ pub async fn send_stream_delete_request(
     // if the response is not successful, log the error and return a custom error
     // this could be a bit too much, but we need to be sure it covers all cases
     if !resp.status().is_success() {
-        log::error!(
+        error!(
             "failed to delete stream: {}\nResponse Returned: {:?}",
             ingestor.domain_name,
             resp.text().await
@@ -567,10 +561,9 @@ pub async fn send_retention_cleanup_request(
         .await
         .map_err(|err| {
             // log the error and return a custom error
-            log::error!(
+            error!(
                 "Fatal: failed to perform cleanup on retention: {}\n Error: {:?}",
-                ingestor.domain_name,
-                err
+                ingestor.domain_name, err
             );
             ObjectStorageError::Custom(err.to_string())
         })?;
@@ -578,7 +571,7 @@ pub async fn send_retention_cleanup_request(
     // if the response is not successful, log the error and return a custom error
     // this could be a bit too much, but we need to be sure it covers all cases
     if !resp.status().is_success() {
-        log::error!(
+        error!(
             "failed to perform cleanup on retention: {}\nResponse Returned: {:?}",
             ingestor.domain_name,
             resp.status()
@@ -586,7 +579,7 @@ pub async fn send_retention_cleanup_request(
     }
 
     let resp_data = resp.bytes().await.map_err(|err| {
-        log::error!("Fatal: failed to parse response to bytes: {:?}", err);
+        error!("Fatal: failed to parse response to bytes: {:?}", err);
         ObjectStorageError::Custom(err.to_string())
     })?;
 
@@ -596,7 +589,7 @@ pub async fn send_retention_cleanup_request(
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
 
@@ -621,13 +614,13 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
             let status = Some(resp.status().to_string());
 
             let resp_data = resp.bytes().await.map_err(|err| {
-                log::error!("Fatal: failed to parse ingestor info to bytes: {:?}", err);
+                error!("Fatal: failed to parse ingestor info to bytes: {:?}", err);
                 StreamError::Network(err)
             })?;
 
             let sp = serde_json::from_slice::<JsonValue>(&resp_data)
                 .map_err(|err| {
-                    log::error!("Fatal: failed to parse ingestor info: {:?}", err);
+                    error!("Fatal: failed to parse ingestor info: {:?}", err);
                     StreamError::SerdeError(err)
                 })?
                 .get("staging")
@@ -665,7 +658,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
 
 pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
     let dresses = fetch_cluster_metrics().await.map_err(|err| {
-        log::error!("Fatal: failed to fetch cluster metrics: {:?}", err);
+        error!("Fatal: failed to fetch cluster metrics: {:?}", err);
         PostError::Invalid(err.into())
     })?;
 
@@ -737,13 +730,13 @@ pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostErr
         }
     };
 
-    log::info!("{}", &msg);
+    info!("{}", &msg);
     Ok((msg, StatusCode::OK))
 }
 
 async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     let ingestor_metadata = get_ingestor_info().await.map_err(|err| {
-        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+        error!("Fatal: failed to get ingestor info: {:?}", err);
         PostError::Invalid(err)
     })?;
 
@@ -777,12 +770,12 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
             let ingestor_metrics = Metrics::from_prometheus_samples(sample, &ingestor)
                 .await
                 .map_err(|err| {
-                    log::error!("Fatal: failed to get ingestor metrics: {:?}", err);
+                    error!("Fatal: failed to get ingestor metrics: {:?}", err);
                     PostError::Invalid(err.into())
                 })?;
             dresses.push(ingestor_metrics);
         } else {
-            log::warn!(
+            warn!(
                 "Failed to fetch metrics from ingestor: {}\n",
                 &ingestor.domain_name,
             );
@@ -792,7 +785,7 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
 }
 
 pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
-    log::info!("Setting up schedular for cluster metrics ingestion");
+    info!("Setting up schedular for cluster metrics ingestion");
     let mut scheduler = AsyncScheduler::new();
     scheduler
         .every(CLUSTER_METRICS_INTERVAL_SECONDS)
@@ -801,7 +794,7 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
                 let cluster_metrics = fetch_cluster_metrics().await;
                 if let Ok(metrics) = cluster_metrics {
                     if !metrics.is_empty() {
-                        log::info!("Cluster metrics fetched successfully from all ingestors");
+                        info!("Cluster metrics fetched successfully from all ingestors");
                         if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
                             if matches!(
                                 ingest_internal_stream(
@@ -811,16 +804,12 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
                                 .await,
                                 Ok(())
                             ) {
-                                log::info!(
-                                    "Cluster metrics successfully ingested into internal stream"
-                                );
+                                info!("Cluster metrics successfully ingested into internal stream");
                             } else {
-                                log::error!(
-                                    "Failed to ingest cluster metrics into internal stream"
-                                );
+                                error!("Failed to ingest cluster metrics into internal stream");
                             }
                         } else {
-                            log::error!("Failed to serialize cluster metrics");
+                            error!("Failed to serialize cluster metrics");
                         }
                     }
                 }
@@ -829,7 +818,7 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
             .await;
 
             if let Err(err) = result {
-                log::error!("Error in cluster metrics scheduler: {:?}", err);
+                error!("Error in cluster metrics scheduler: {:?}", err);
             }
         });
 

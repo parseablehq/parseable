@@ -42,6 +42,7 @@ use actix_web::Scope;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 use bytes::Bytes;
+use tracing::error;
 
 use crate::{
     handlers::http::{
@@ -140,10 +141,10 @@ impl ParseableServer for Server {
                     remote_sync_inbox.send(()).unwrap_or(());
                     localsync_inbox.send(()).unwrap_or(());
                     if let Err(e) = localsync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                        error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                        error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     return e
                 },
@@ -155,7 +156,7 @@ impl ParseableServer for Server {
                 _ = &mut remote_sync_outbox => {
                     // remote_sync failed, this is recoverable by just starting remote_sync thread again
                     if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                        error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
                 }

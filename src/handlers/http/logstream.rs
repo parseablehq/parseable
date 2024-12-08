@@ -25,6 +25,7 @@ use super::modal::utils::logstream_utils::{
 };
 use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
+use crate::catalog::get_first_event;
 use crate::event::format::update_data_type_to_datetime;
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
@@ -34,7 +35,7 @@ use crate::option::{Mode, CONFIG};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::StreamType;
 use crate::storage::{retention::Retention, StorageDir, StreamInfo};
-use crate::{catalog, event, stats};
+use crate::{event, stats};
 
 use crate::{metadata, validator};
 use actix_web::http::header::{self, HeaderMap};
@@ -50,6 +51,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::str::FromStr;
 use std::sync::Arc;
+use tracing::{error, warn};
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
@@ -62,7 +64,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     objectstore.delete_stream(&stream_name).await?;
     let stream_dir = StorageDir::new(&stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
-        log::warn!(
+        warn!(
             "failed to delete local data for stream {}. Clean {} manually",
             stream_name,
             stream_dir.data_path.to_string_lossy()
@@ -77,9 +79,8 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
     event::STREAM_WRITERS.delete_stream(&stream_name);
-    stats::delete_stats(&stream_name, "json").unwrap_or_else(|e| {
-        log::warn!("failed to delete stats for stream {}: {:?}", stream_name, e)
-    });
+    stats::delete_stats(&stream_name, "json")
+        .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
@@ -577,11 +578,11 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
 
     let store = CONFIG.storage().get_object_store();
     let dates: Vec<String> = Vec::new();
-    if let Ok(Some(first_event_at)) = catalog::get_first_event(store, &stream_name, dates).await {
+    if let Ok(Some(first_event_at)) = get_first_event(store, &stream_name, dates).await {
         if let Err(err) =
             metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
         {
-            log::error!(
+            error!(
                 "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
                 stream_name
             );

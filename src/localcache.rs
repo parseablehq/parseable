@@ -27,6 +27,7 @@ use object_store::{local::LocalFileSystem, ObjectStore};
 use once_cell::sync::OnceCell;
 use parquet::errors::ParquetError;
 use tokio::{fs, sync::Mutex};
+use tracing::{error, info, warn};
 
 use crate::{metadata::error::stream_info::MetadataError, option::CONFIG};
 
@@ -121,10 +122,9 @@ impl LocalCacheManager {
                         SpecificSize::new(meta.size_capacity as f64, Byte)
                             .unwrap()
                             .into();
-                    log::warn!(
+                    warn!(
                         "Cache size is updated from {} to {}",
-                        current_size_human,
-                        configured_size_human
+                        current_size_human, configured_size_human
                     );
                     meta.size_capacity = config_capacity;
                     Some(meta)
@@ -145,7 +145,7 @@ impl LocalCacheManager {
                 .filesystem
                 .put(&path, serde_json::to_vec(&updated_cache)?.into())
                 .await?;
-            log::info!("Cache meta file updated: {:?}", result);
+            info!("Cache meta file updated: {:?}", result);
         }
 
         Ok(())
@@ -170,7 +170,7 @@ impl LocalCacheManager {
         let path = cache_file_path(&self.cache_path, stream).unwrap();
         let bytes = serde_json::to_vec(cache)?.into();
         let result = self.filesystem.put(&path, bytes).await?;
-        log::info!("Cache file updated: {:?}", result);
+        info!("Cache file updated: {:?}", result);
         Ok(())
     }
 
@@ -192,10 +192,10 @@ impl LocalCacheManager {
             if let Some((_, file_for_removal)) = cache.files.pop_lru() {
                 let lru_file_size = std::fs::metadata(&file_for_removal)?.len();
                 cache.current_size = cache.current_size.saturating_sub(lru_file_size);
-                log::info!("removing cache entry");
+                info!("removing cache entry");
                 tokio::spawn(fs::remove_file(file_for_removal));
             } else {
-                log::error!("Cache size too small");
+                error!("Cache size too small");
                 break;
             }
         }

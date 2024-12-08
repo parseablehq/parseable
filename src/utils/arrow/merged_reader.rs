@@ -27,6 +27,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
+use tracing::error;
 
 use super::{
     adapt_batch,
@@ -46,13 +47,13 @@ impl MergedRecordReader {
         for file in files {
             //remove empty files before reading
             if file.metadata().unwrap().len() == 0 {
-                log::error!("Invalid file detected, removing it: {:?}", file);
+                error!("Invalid file detected, removing it: {:?}", file);
                 fs::remove_file(file).unwrap();
             } else {
                 let Ok(reader) =
                     StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None)
                 else {
-                    log::error!("Invalid file detected, ignoring it: {:?}", file);
+                    error!("Invalid file detected, ignoring it: {:?}", file);
                     continue;
                 };
 
@@ -85,7 +86,7 @@ impl MergedReverseRecordReader {
             let Ok(reader) =
                 utils::arrow::reverse_reader::get_reverse_reader(File::open(file).unwrap())
             else {
-                log::error!("Invalid file detected, ignoring it: {:?}", file);
+                error!("Invalid file detected, ignoring it: {:?}", file);
                 continue;
             };
 

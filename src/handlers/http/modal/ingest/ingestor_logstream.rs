@@ -20,6 +20,7 @@ use actix_web::{web, HttpRequest, Responder};
 use bytes::Bytes;
 use http::StatusCode;
 use itertools::Itertools;
+use tracing::{error, warn};
 
 use crate::{
     catalog::remove_manifest_from_snapshot,
@@ -75,9 +76,8 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
     event::STREAM_WRITERS.delete_stream(&stream_name);
-    stats::delete_stats(&stream_name, "json").unwrap_or_else(|e| {
-        log::warn!("failed to delete stats for stream {}: {:?}", stream_name, e)
-    });
+    stats::delete_stats(&stream_name, "json")
+        .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
@@ -110,7 +110,7 @@ pub async fn put_enable_cache(
         .contains(&stream_name);
 
     if !check {
-        log::error!("Stream {} not found", stream_name.clone());
+        error!("Stream {} not found", stream_name.clone());
         return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
     metadata::STREAM_INFO
