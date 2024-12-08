@@ -46,6 +46,7 @@ use bytes::Bytes;
 use chrono::Local;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
 use itertools::Itertools;
+use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 
@@ -60,7 +61,12 @@ use std::{
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
     fn get_datafusion_runtime(&self) -> RuntimeConfig;
-    fn get_object_store(&self) -> Arc<dyn ObjectStorage>;
+    fn construct_client(&self) -> Arc<dyn ObjectStorage>;
+    fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
+        static STORE: OnceCell<Arc<dyn ObjectStorage>> = OnceCell::new();
+
+        STORE.get_or_init(|| self.construct_client()).clone()
+    }
     fn get_endpoint(&self) -> String;
     fn register_store_metrics(&self, handler: &PrometheusMetrics);
 }
