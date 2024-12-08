@@ -43,7 +43,6 @@ use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::sync;
 
 use crate::{handlers::http::base_path, option::CONFIG};
-use actix_web::body::MessageBody;
 use actix_web::web;
 use actix_web::web::resource;
 use actix_web::Scope;
@@ -323,9 +322,7 @@ impl IngestServer {
                     .clone_from(&INGESTOR_META.domain_name);
                 store_data.port.clone_from(&INGESTOR_META.port);
 
-                let resource = serde_json::to_string(&store_data)?
-                    .try_into_bytes()
-                    .map_err(|err| anyhow!(err))?;
+                let resource = Bytes::from(serde_json::to_vec(&store_data)?);
 
                 // if pushing to object store fails propagate the error
                 return store
@@ -334,9 +331,7 @@ impl IngestServer {
                     .map_err(|err| anyhow!(err));
             }
         } else {
-            let resource = serde_json::to_string(&resource)?
-                .try_into_bytes()
-                .map_err(|err| anyhow!(err))?;
+            let resource = Bytes::from(serde_json::to_vec(&resource)?);
 
             store.put_object(&path, resource).await?;
         }

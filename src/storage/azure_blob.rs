@@ -163,7 +163,7 @@ impl ObjectStorageProvider for AzureBlobConfig {
         RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry))
     }
 
-    fn get_object_store(&self) -> Arc<dyn super::ObjectStorage> {
+    fn construct_client(&self) -> Arc<dyn super::ObjectStorage> {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
         let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);

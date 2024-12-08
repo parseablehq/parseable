@@ -67,7 +67,7 @@ impl ObjectStorageProvider for FSConfig {
         RuntimeConfig::new()
     }
 
-    fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
+    fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         Arc::new(LocalFS::new(self.root.clone()))
     }
 
