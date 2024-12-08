@@ -204,6 +204,33 @@ pub fn override_timestamp_fields(
     Arc::new(Schema::new(updated_fields))
 }
 
+pub fn override_num_fields_from_schema(schema: Arc<Schema>) -> Arc<Schema> {
+    Arc::new(Schema::new(
+        schema
+            .fields()
+            .iter()
+            .map(|field| {
+                if field.data_type() == &DataType::Int64
+                    || field.data_type() == &DataType::Int32
+                    || field.data_type() == &DataType::Int16
+                    || field.data_type() == &DataType::Int8
+                    || field.data_type() == &DataType::Float64
+                    || field.data_type() == &DataType::Float32
+                    || field.data_type() == &DataType::Float16
+                {
+                    Arc::new(Field::new(
+                        field.name(),
+                        DataType::Float64,
+                        field.is_nullable(),
+                    ))
+                } else {
+                    field.clone()
+                }
+            })
+            .collect::<Vec<Arc<Field>>>(),
+    ))
+}
+
 pub fn update_field_type_in_schema(
     inferred_schema: Arc<Schema>,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
@@ -211,6 +238,7 @@ pub fn update_field_type_in_schema(
     log_records: Option<&Vec<Value>>,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
+    updated_schema = override_num_fields_from_schema(updated_schema);
 
     if let Some(existing_schema) = existing_schema {
         let existing_fields = get_existing_fields(inferred_schema.clone(), Some(existing_schema));
