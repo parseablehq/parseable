@@ -118,6 +118,7 @@ impl StandardTableProvider {
     #[allow(clippy::too_many_arguments)]
     async fn create_parquet_physical_plan(
         &self,
+        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
         object_store_url: ObjectStoreUrl,
         partitions: Vec<Vec<PartitionedFile>>,
         statistics: Statistics,
@@ -126,7 +127,7 @@ impl StandardTableProvider {
         limit: Option<usize>,
         state: &dyn Session,
         time_partition: Option<String>,
-    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    ) -> Result<(), DataFusionError> {
         let filters = if let Some(expr) = conjunction(filters.to_vec()) {
             let table_df_schema = self.schema.as_ref().clone().to_dfschema()?;
             let filters = create_physical_expr(&expr, &table_df_schema, state.execution_props())?;
@@ -165,12 +166,15 @@ impl StandardTableProvider {
                 filters.as_ref(),
             )
             .await?;
-        Ok(plan)
+        execution_plans.push(plan);
+
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn get_cache_exectuion_plan(
         &self,
+        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
         cache_manager: &LocalCacheManager,
         manifest_files: &mut Vec<File>,
         projection: Option<&Vec<usize>>,
@@ -178,7 +182,7 @@ impl StandardTableProvider {
         limit: Option<usize>,
         state: &dyn Session,
         time_partition: Option<String>,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
+    ) -> Result<(), DataFusionError> {
         let (cached, remainder) = cache_manager
             .partition_on_cached(&self.stream, manifest_files.clone(), |file: &File| {
                 &file.file_path
@@ -200,25 +204,26 @@ impl StandardTableProvider {
             .collect();
 
         let (partitioned_files, statistics) = self.partitioned_files(cached);
-        let plan = self
-            .create_parquet_physical_plan(
-                ObjectStoreUrl::parse("file:///").unwrap(),
-                partitioned_files,
-                statistics,
-                projection,
-                filters,
-                limit,
-                state,
-                time_partition.clone(),
-            )
-            .await?;
+        self.create_parquet_physical_plan(
+            execution_plans,
+            ObjectStoreUrl::parse("file:///").unwrap(),
+            partitioned_files,
+            statistics,
+            projection,
+            filters,
+            limit,
+            state,
+            time_partition.clone(),
+        )
+        .await?;
 
-        Ok(Some(plan))
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn get_hottier_exectuion_plan(
         &self,
+        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
         hot_tier_manager: &HotTierManager,
         manifest_files: &mut Vec<File>,
         projection: Option<&Vec<usize>>,
@@ -226,7 +231,7 @@ impl StandardTableProvider {
         limit: Option<usize>,
         state: &dyn Session,
         time_partition: Option<String>,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
+    ) -> Result<(), DataFusionError> {
         let hot_tier_files = hot_tier_manager
             .get_hot_tier_manifest_files(&self.stream, manifest_files)
             .await
@@ -247,25 +252,26 @@ impl StandardTableProvider {
             .collect();
 
         let (partitioned_files, statistics) = self.partitioned_files(hot_tier_files);
-        let plan = self
-            .create_parquet_physical_plan(
-                ObjectStoreUrl::parse("file:///").unwrap(),
-                partitioned_files,
-                statistics,
-                projection,
-                filters,
-                limit,
-                state,
-                time_partition.clone(),
-            )
-            .await?;
+        self.create_parquet_physical_plan(
+            execution_plans,
+            ObjectStoreUrl::parse("file:///").unwrap(),
+            partitioned_files,
+            statistics,
+            projection,
+            filters,
+            limit,
+            state,
+            time_partition.clone(),
+        )
+        .await?;
 
-        Ok(Some(plan))
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn legacy_listing_table(
         &self,
+        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
         glob_storage: Arc<dyn ObjectStorage>,
         object_store: Arc<dyn ObjectStore>,
         time_filters: &[PartialTimeFilter],
@@ -274,8 +280,8 @@ impl StandardTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
         time_partition: Option<String>,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
-        let remote_table = ListingTableBuilder::new(self.stream.to_owned())
+    ) -> Result<(), DataFusionError> {
+        ListingTableBuilder::new(self.stream.to_owned())
             .populate_via_listing(glob_storage.clone(), object_store, time_filters)
             .and_then(|builder| async {
                 let table = builder.build(
@@ -283,24 +289,23 @@ impl StandardTableProvider {
                     |x| glob_storage.query_prefixes(x),
                     time_partition,
                 )?;
-                let res = match table {
-                    Some(table) => Some(table.scan(state, projection, filters, limit).await?),
-                    _ => None,
-                };
-                Ok(res)
+                if let Some(table) = table {
+                    let plan = table.scan(state, projection, filters, limit).await?;
+                    execution_plans.push(plan);
+                }
+
+                Ok(())
             })
             .await?;
 
-        Ok(remote_table)
+        Ok(())
     }
 
     fn final_plan(
         &self,
-        execution_plans: Vec<Option<Arc<dyn ExecutionPlan>>>,
+        mut execution_plans: Vec<Arc<dyn ExecutionPlan>>,
         projection: Option<&Vec<usize>>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let mut execution_plans = execution_plans.into_iter().flatten().collect_vec();
-
         let exec: Arc<dyn ExecutionPlan> = if execution_plans.is_empty() {
             let schema = match projection {
                 Some(projection) => Arc::new(self.schema.project(projection)?),
@@ -462,10 +467,7 @@ impl TableProvider for StandardTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let mut memory_exec = None;
-        let mut cache_exec = None;
-        let mut hot_tier_exec = None;
-        let mut listing_exec = None;
+        let mut execution_plans = vec![];
         let object_store = state
             .runtime_env()
             .object_store_registry
@@ -488,11 +490,11 @@ impl TableProvider for StandardTableProvider {
                 event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
             {
                 let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
-                memory_exec = Some(
-                    reversed_mem_table
-                        .scan(state, projection, filters, limit)
-                        .await?,
-                );
+
+                let memory_exec = reversed_mem_table
+                    .scan(state, projection, filters, limit)
+                    .await?;
+                execution_plans.push(memory_exec);
             }
         };
         let mut merged_snapshot: snapshot::Snapshot = Snapshot::default();
@@ -526,8 +528,9 @@ impl TableProvider for StandardTableProvider {
             let listing_time_fiters =
                 return_listing_time_filters(&merged_snapshot.manifest_list, &mut time_filters);
 
-            listing_exec = if let Some(listing_time_filter) = listing_time_fiters {
+            if let Some(listing_time_filter) = listing_time_fiters {
                 self.legacy_listing_table(
+                    &mut execution_plans,
                     glob_storage.clone(),
                     object_store.clone(),
                     &listing_time_filter,
@@ -537,10 +540,8 @@ impl TableProvider for StandardTableProvider {
                     limit,
                     time_partition.clone(),
                 )
-                .await?
-            } else {
-                None
-            };
+                .await?;
+            }
         }
 
         let mut manifest_files = collect_from_snapshot(
@@ -553,14 +554,30 @@ impl TableProvider for StandardTableProvider {
         .await?;
 
         if manifest_files.is_empty() {
-            return self.final_plan(vec![listing_exec, memory_exec], projection);
+            return self.final_plan(execution_plans, projection);
         }
 
         // Based on entries in the manifest files, find them in the cache and create a physical plan.
         if let Some(cache_manager) = LocalCacheManager::global() {
-            cache_exec = self
-                .get_cache_exectuion_plan(
-                    cache_manager,
+            self.get_cache_exectuion_plan(
+                &mut execution_plans,
+                cache_manager,
+                &mut manifest_files,
+                projection,
+                filters,
+                limit,
+                state,
+                time_partition.clone(),
+            )
+            .await?;
+        }
+
+        // Hot tier data fetch
+        if let Some(hot_tier_manager) = HotTierManager::global() {
+            if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
+                self.get_hottier_exectuion_plan(
+                    &mut execution_plans,
+                    hot_tier_manager,
                     &mut manifest_files,
                     projection,
                     filters,
@@ -569,56 +586,28 @@ impl TableProvider for StandardTableProvider {
                     time_partition.clone(),
                 )
                 .await?;
-        }
-
-        // Hot tier data fetch
-        if let Some(hot_tier_manager) = HotTierManager::global() {
-            if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
-                hot_tier_exec = self
-                    .get_hottier_exectuion_plan(
-                        hot_tier_manager,
-                        &mut manifest_files,
-                        projection,
-                        filters,
-                        limit,
-                        state,
-                        time_partition.clone(),
-                    )
-                    .await?;
             }
         }
         if manifest_files.is_empty() {
             QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
-            return self.final_plan(
-                vec![listing_exec, memory_exec, cache_exec, hot_tier_exec],
-                projection,
-            );
+            return self.final_plan(execution_plans, projection);
         }
 
         let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
-        let remote_exec = self
-            .create_parquet_physical_plan(
-                ObjectStoreUrl::parse(glob_storage.store_url()).unwrap(),
-                partitioned_files,
-                statistics,
-                projection,
-                filters,
-                limit,
-                state,
-                time_partition.clone(),
-            )
-            .await?;
-
-        Ok(self.final_plan(
-            vec![
-                listing_exec,
-                memory_exec,
-                cache_exec,
-                hot_tier_exec,
-                Some(remote_exec),
-            ],
+        self.create_parquet_physical_plan(
+            &mut execution_plans,
+            ObjectStoreUrl::parse(glob_storage.store_url()).unwrap(),
+            partitioned_files,
+            statistics,
             projection,
-        )?)
+            filters,
+            limit,
+            state,
+            time_partition.clone(),
+        )
+        .await?;
+
+        Ok(self.final_plan(execution_plans, projection)?)
     }
 
     /*
