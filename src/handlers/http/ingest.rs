@@ -106,7 +106,10 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
 // Handler for POST /v1/logs to ingest OTEL logs
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
+pub async fn handle_otel_ingestion(
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<HttpResponse, PostError> {
     if let Some((_, stream_name)) = req
         .headers()
         .iter()

@@ -406,14 +406,35 @@ impl Server {
     }
 
     // /v1/logs endpoint to be used for OTEL log ingestion only
-    pub fn get_ingest_otel_factory() -> Resource {
-        web::resource("/v1/logs")
-            .route(
-                web::post()
-                    .to(ingest::ingest_otel_logs)
-                    .authorize_for_stream(Action::Ingest),
+    pub fn get_ingest_otel_factory() -> Scope {
+        web::scope("/v1")
+            .service(
+                web::resource("/logs")
+                    .route(
+                        web::post()
+                            .to(ingest::handle_otel_ingestion)
+                            .authorize_for_stream(Action::Ingest),
+                    )
+                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
-            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
+            .service(
+                web::resource("/metrics")
+                    .route(
+                        web::post()
+                            .to(ingest::handle_otel_ingestion)
+                            .authorize_for_stream(Action::Ingest),
+                    )
+                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+            )
+            .service(
+                web::resource("/traces")
+                    .route(
+                        web::post()
+                            .to(ingest::handle_otel_ingestion)
+                            .authorize_for_stream(Action::Ingest),
+                    )
+                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+            )
     }
 
     // get the oauth webscope
