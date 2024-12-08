@@ -145,6 +145,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
         static_schema_flag: &str,
         schema: Arc<Schema>,
         stream_type: &str,
+        schema_type: &str,
     ) -> Result<String, ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
         format.set_id(CONFIG.parseable.username.clone());
@@ -171,6 +172,11 @@ pub trait ObjectStorage: Send + Sync + 'static {
             format.static_schema_flag = None;
         } else {
             format.static_schema_flag = Some(static_schema_flag.to_string());
+        }
+        if schema_type.is_empty() {
+            format.schema_type = None;
+        } else {
+            format.schema_type = Some(schema_type.to_string());
         }
         let format_json = to_bytes(&format);
         self.put_object(&schema_path(stream_name), to_bytes(&schema))

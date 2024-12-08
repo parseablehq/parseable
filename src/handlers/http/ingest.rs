@@ -26,7 +26,7 @@ use crate::event::{
     format::{self, EventFormat},
 };
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
-use crate::handlers::STREAM_NAME_HEADER_KEY;
+use crate::handlers::{LOG_SOURCE_KEY, LOG_SOURCE_OTEL, STREAM_NAME_HEADER_KEY};
 use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::STREAM_INFO;
@@ -60,9 +60,9 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
                 stream_name
             )));
         }
-        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string(), "").await?;
 
-        flatten_and_push_logs(req, body, stream_name).await?;
+        flatten_and_push_logs(req, body, &stream_name).await?;
         Ok(HttpResponse::Ok().finish())
     } else {
         Err(PostError::Header(ParseHeaderError::MissingStreamName))
@@ -116,8 +116,21 @@ pub async fn handle_otel_ingestion(
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
-        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
-        push_logs(stream_name.to_string(), req.clone(), body).await?;
+        if req
+            .headers()
+            .iter()
+            .any(|(key, value)| key == LOG_SOURCE_KEY && value == LOG_SOURCE_OTEL)
+        {
+            create_stream_if_not_exists(
+                &stream_name,
+                &StreamType::UserDefined.to_string(),
+                LOG_SOURCE_OTEL,
+            )
+            .await?;
+            push_logs(&stream_name, req.clone(), body).await?;
+        } else {
+            return Err(PostError::CustomError("Unknown log source".to_string()));
+        }
     } else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     }
@@ -150,7 +163,7 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
         }
     }
 
-    flatten_and_push_logs(req, body, stream_name).await?;
+    flatten_and_push_logs(req, body, &stream_name).await?;
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -178,6 +191,7 @@ pub async fn push_logs_unchecked(
 pub async fn create_stream_if_not_exists(
     stream_name: &str,
     stream_type: &str,
+    schema_type: &str,
 ) -> Result<bool, PostError> {
     let mut stream_exists = false;
     if STREAM_INFO.stream_exists(stream_name) {
@@ -202,6 +216,7 @@ pub async fn create_stream_if_not_exists(
         "",
         Arc::new(Schema::empty()),
         stream_type,
+        schema_type,
     )
     .await?;
 

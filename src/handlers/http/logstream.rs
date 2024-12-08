@@ -505,6 +505,7 @@ fn remove_id_from_alerts(value: &mut Value) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
@@ -513,6 +514,7 @@ pub async fn create_stream(
     static_schema_flag: &str,
     schema: Arc<Schema>,
     stream_type: &str,
+    schema_type: &str,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     if stream_type != StreamType::Internal.to_string() {
@@ -530,6 +532,7 @@ pub async fn create_stream(
             static_schema_flag,
             schema.clone(),
             stream_type,
+            schema_type,
         )
         .await
     {
@@ -553,6 +556,7 @@ pub async fn create_stream(
                 static_schema_flag.to_string(),
                 static_schema,
                 stream_type,
+                schema_type,
             );
         }
         Err(err) => {
@@ -602,6 +606,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         custom_partition: stream_meta.custom_partition.clone(),
         cache_enabled: stream_meta.cache_enabled,
         static_schema_flag: stream_meta.static_schema_flag.clone(),
+        schema_type: stream_meta.schema_type.clone(),
     };
 
     // get the other info from
@@ -744,8 +749,12 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
 }
 
 pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
-    if let Ok(stream_exists) =
-        create_stream_if_not_exists(INTERNAL_STREAM_NAME, &StreamType::Internal.to_string()).await
+    if let Ok(stream_exists) = create_stream_if_not_exists(
+        INTERNAL_STREAM_NAME,
+        &StreamType::Internal.to_string(),
+        INTERNAL_STREAM_NAME,
+    )
+    .await
     {
         if stream_exists {
             return Ok(());
