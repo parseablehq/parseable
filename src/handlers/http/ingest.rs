@@ -26,7 +26,7 @@ use crate::event::{
     format::{self, EventFormat},
 };
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
-use crate::handlers::STREAM_NAME_HEADER_KEY;
+use crate::handlers::{LOG_SOURCE_KEY, LOG_SOURCE_OTEL, STREAM_NAME_HEADER_KEY};
 use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::STREAM_INFO;
@@ -116,9 +116,21 @@ pub async fn handle_otel_ingestion(
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
-        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string(), "otel")
+        if req
+            .headers()
+            .iter()
+            .any(|(key, value)| key == LOG_SOURCE_KEY && value == LOG_SOURCE_OTEL)
+        {
+            create_stream_if_not_exists(
+                &stream_name,
+                &StreamType::UserDefined.to_string(),
+                LOG_SOURCE_OTEL,
+            )
             .await?;
-        push_logs(&stream_name, req.clone(), body).await?;
+            push_logs(&stream_name, req.clone(), body).await?;
+        } else {
+            return Err(PostError::CustomError("Unknown log source".to_string()));
+        }
     } else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     }

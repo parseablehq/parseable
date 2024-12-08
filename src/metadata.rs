@@ -208,7 +208,6 @@ impl StreamInfo {
             })
     }
 
-    #[allow(dead_code)]
     pub fn set_schema_type(
         &self,
         stream_name: &str,
