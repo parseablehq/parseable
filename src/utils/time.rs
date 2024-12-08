@@ -74,3 +74,84 @@ impl TimeRange {
         Ok(Self { start, end })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, SecondsFormat, Utc};
+
+    #[test]
+    fn valid_rfc3339_timestamps() {
+        let start_time = "2023-01-01T12:00:00Z";
+        let end_time = "2023-01-01T13:00:00Z";
+
+        let result = TimeRange::parse_human_time(start_time, end_time);
+        let parsed = result.unwrap();
+
+        assert_eq!(
+            parsed.start.to_rfc3339_opts(SecondsFormat::Secs, true),
+            start_time
+        );
+        assert_eq!(
+            parsed.end.to_rfc3339_opts(SecondsFormat::Secs, true),
+            end_time
+        );
+    }
+
+    #[test]
+    fn end_time_now_with_valid_duration() {
+        let start_time = "1h";
+        let end_time = "now";
+
+        let result = TimeRange::parse_human_time(start_time, end_time);
+        let parsed = result.unwrap();
+
+        assert!(parsed.end <= Utc::now());
+        assert_eq!(parsed.end - parsed.start, Duration::hours(1));
+
+        let start_time = "30 minutes";
+        let end_time = "now";
+
+        let result = TimeRange::parse_human_time(start_time, end_time);
+        let parsed = result.unwrap();
+
+        assert!(parsed.end <= Utc::now());
+        assert_eq!(parsed.end - parsed.start, Duration::minutes(30));
+    }
+
+    #[test]
+    fn start_time_after_end_time() {
+        let start_time = "2023-01-01T14:00:00Z";
+        let end_time = "2023-01-01T13:00:00Z";
+
+        let result = TimeRange::parse_human_time(start_time, end_time);
+        assert!(matches!(result, Err(TimeParseError::StartTimeAfterEndTime)));
+    }
+
+    #[test]
+    fn invalid_start_time_format() {
+        let start_time = "not-a-valid-time";
+        let end_time = "2023-01-01T13:00:00Z";
+
+        let result = TimeRange::parse_human_time(start_time, end_time);
+        assert!(matches!(result, Err(TimeParseError::Chrono(_))));
+    }
+
+    #[test]
+    fn invalid_end_time_format() {
+        let start_time = "2023-01-01T12:00:00Z";
+        let end_time = "not-a-valid-time";
+
+        let result = TimeRange::parse_human_time(start_time, end_time);
+        assert!(matches!(result, Err(TimeParseError::Chrono(_))));
+    }
+
+    #[test]
+    fn invalid_duration_with_end_time_now() {
+        let start_time = "not-a-duration";
+        let end_time = "now";
+
+        let result = TimeRange::parse_human_time(start_time, end_time);
+        assert!(matches!(result, Err(TimeParseError::HumanTime(_))));
+    }
+}
