@@ -135,7 +135,7 @@ pub fn send_to_ingester(start: i64, end: i64) -> bool {
     );
     let ex = [Expr::BinaryExpr(ex1), Expr::BinaryExpr(ex2)];
 
-    CONFIG.parseable.mode == Mode::Query && include_now(&ex, None)
+    CONFIG.parseable.mode == Mode::Query && include_now(&ex, &None)
 }
 
 fn lit_timestamp_milli(time: i64) -> Expr {
