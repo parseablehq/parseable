@@ -227,13 +227,10 @@ impl StandardTableProvider {
         state: &dyn Session,
         time_partition: Option<String>,
     ) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
-        let (hot_tier_files, remainder) = hot_tier_manager
-            .get_hot_tier_manifest_files(&self.stream, manifest_files.clone())
+        let hot_tier_files = hot_tier_manager
+            .get_hot_tier_manifest_files(&self.stream, manifest_files)
             .await
             .map_err(|err| DataFusionError::External(Box::new(err)))?;
-        // Assign remaining entries back to manifest list
-        // This is to be used for remote query
-        *manifest_files = remainder;
 
         let hot_tier_files = hot_tier_files
             .into_iter()
