@@ -1044,11 +1044,16 @@ fn satisfy_constraints(value: CastRes, op: Operator, stats: &TypedStatistics) ->
 mod tests {
     use std::ops::Add;
 
-    use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
+    use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+    use datafusion::{
+        logical_expr::{BinaryExpr, Operator},
+        prelude::Expr,
+        scalar::ScalarValue,
+    };
 
     use crate::catalog::snapshot::ManifestItem;
 
-    use super::{is_overlapping_query, PartialTimeFilter};
+    use super::{extract_timestamp_bound, is_overlapping_query, PartialTimeFilter};
 
     fn datetime_min(year: i32, month: u32, day: u32) -> DateTime<Utc> {
         NaiveDate::from_ymd_opt(year, month, day)
@@ -1130,5 +1135,145 @@ mod tests {
         );
 
         assert!(!res)
+    }
+
+    #[test]
+    fn timestamp_in_milliseconds() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
+                Some(1672531200000),
+                None,
+            ))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        let expected = Some((
+            Operator::Eq,
+            NaiveDateTime::parse_from_str("2023-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn timestamp_in_nanoseconds() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Gt,
+            right: Box::new(Expr::Literal(ScalarValue::TimestampNanosecond(
+                Some(1672531200000000000),
+                None,
+            ))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        let expected = Some((
+            Operator::Gt,
+            NaiveDateTime::parse_from_str("2023-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn string_timestamp() {
+        let timestamp = "2023-01-01T00:00:00";
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Lt,
+            right: Box::new(Expr::Literal(ScalarValue::Utf8(Some(timestamp.to_owned())))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        let expected = Some((
+            Operator::Lt,
+            NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S").unwrap(),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn unexpected_utf8_column() {
+        let timestamp = "2023-01-01T00:00:00";
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("other_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::Utf8(Some(timestamp.to_owned())))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn unsupported_literal_type() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::Int32(Some(42)))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn no_literal_on_right() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Column("other_column".into())),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn non_time_partition_timestamps() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
+                Some(1672531200000),
+                None,
+            ))),
+        };
+
+        let time_partition = None;
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+        let expected = Some((
+            Operator::Eq,
+            NaiveDateTime::parse_from_str("2023-01-01T00:00:00", "%Y-%m-%dT%H:%M:%S").unwrap(),
+        ));
+
+        assert_eq!(result, expected);
+
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::TimestampNanosecond(
+                Some(1672531200000000000),
+                None,
+            ))),
+        };
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        assert_eq!(result, expected);
     }
 }
