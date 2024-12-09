@@ -1,0 +1,57 @@
+on:
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "helm/**"
+      - "assets/**"
+      - "**.md"
+  push:
+    branches:
+      - main
+
+name: Lint, Test and Coverage Report
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-cargo
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack, cargo-llvm-cov, nextest
+
+      - name: Check with clippy
+        run: cargo hack clippy --verbose --each-feature --no-dev-deps -- -D warnings
+
+      - name: Check docs
+        run: cargo hack doc --verbose --no-deps --each-feature --no-dev-deps
+
+      - name: Doctests
+        run: cargo hack --each-feature test --doc
+
+      - name: Tests
+        run: cargo hack --each-feature llvm-cov --no-report nextest
+
+      - name: Genrate coverage report
+        run: cargo llvm-cov report --lcov --output-path coverage.lcov
+
+      - name: Upload Coverage Report
+        uses: coverallsapp/github-action@v2.2.3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          file: ./coverage.lcov
+          parallel: true
+          flag-name: run-${{ matrix.os }}-cargo
+
+      - name: Finish Coverage Report
+        uses: coverallsapp/github-action@v2.2.3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          parallel-finished: true
