@@ -21,6 +21,7 @@ use std::panic::AssertUnwindSafe;
 use tokio::sync::oneshot;
 use tokio::task;
 use tokio::time::{interval, sleep, Duration};
+use tracing::{error, info, warn};
 
 use crate::option::CONFIG;
 use crate::{storage, STORAGE_UPLOAD_INTERVAL};
@@ -41,7 +42,7 @@ pub async fn object_store_sync() -> (
                 .plus(5u32.seconds())
                 .run(|| async {
                     if let Err(e) = CONFIG.storage().get_object_store().sync(false).await {
-                        log::warn!("failed to sync local data with object store. {:?}", e);
+                        warn!("failed to sync local data with object store. {:?}", e);
                     }
                 });
 
@@ -56,7 +57,7 @@ pub async fn object_store_sync() -> (
                     Ok(_) => break,
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
                     Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        log::warn!("Inbox channel closed unexpectedly");
+                        warn!("Inbox channel closed unexpectedly");
                         break;
                     }
                 }
@@ -68,12 +69,12 @@ pub async fn object_store_sync() -> (
                 future.await;
             }
             Err(panic_error) => {
-                log::error!("Panic in object store sync task: {:?}", panic_error);
+                error!("Panic in object store sync task: {:?}", panic_error);
                 let _ = outbox_tx.send(());
             }
         }
 
-        log::info!("Object store sync task ended");
+        info!("Object store sync task ended");
     });
 
     (handle, outbox_rx, inbox_tx)
@@ -88,7 +89,7 @@ pub async fn run_local_sync() -> (
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
 
     let handle = task::spawn(async move {
-        log::info!("Local sync task started");
+        info!("Local sync task started");
         let mut inbox_rx = inbox_rx;
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
@@ -111,7 +112,7 @@ pub async fn run_local_sync() -> (
                     Ok(_) => break,
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
                     Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        log::warn!("Inbox channel closed unexpectedly");
+                        warn!("Inbox channel closed unexpectedly");
                         break;
                     }
                 }
@@ -123,12 +124,12 @@ pub async fn run_local_sync() -> (
                 future.await;
             }
             Err(panic_error) => {
-                log::error!("Panic in local sync task: {:?}", panic_error);
+                error!("Panic in local sync task: {:?}", panic_error);
             }
         }
 
         let _ = outbox_tx.send(());
-        log::info!("Local sync task ended");
+        info!("Local sync task ended");
     });
 
     (handle, outbox_rx, inbox_tx)
