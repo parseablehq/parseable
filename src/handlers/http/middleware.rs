@@ -44,8 +44,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct Message {
-    #[serde(rename = "commonAttributes")]
     common_attributes: CommonAttributes,
 }
 
