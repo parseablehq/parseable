@@ -28,6 +28,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use itertools::Itertools;
 use serde_json::{json, Value};
 use tonic::{Response, Status};
+use tracing::info;
 
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
@@ -38,7 +39,7 @@ pub struct QueryResponse {
 
 impl QueryResponse {
     pub fn to_http(&self) -> Result<impl Responder, QueryError> {
-        log::info!("{}", "Returning query results");
+        info!("{}", "Returning query results");
         let records: Vec<&RecordBatch> = self.records.iter().collect();
         let mut json_records = record_batches_to_json(&records)?;
 
