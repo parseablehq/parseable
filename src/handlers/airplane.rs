@@ -26,6 +26,7 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::time::Instant;
 use tonic::codec::CompressionEncoding;
+use tracing::{error, info};
 
 use futures_util::{Future, TryFutureExt};
 
@@ -136,7 +137,7 @@ impl FlightService for AirServiceImpl {
 
         let ticket = get_query_from_ticket(&req)?;
 
-        log::info!("query requested to airplane: {:?}", ticket);
+        info!("query requested to airplane: {:?}", ticket);
 
         // get the query session_state
         let session_state = QUERY_SESSION.state();
@@ -146,7 +147,7 @@ impl FlightService for AirServiceImpl {
             .create_logical_plan(&ticket.query)
             .await
             .map_err(|err| {
-                log::error!("Datafusion Error: Failed to create logical plan: {}", err);
+                error!("Datafusion Error: Failed to create logical plan: {}", err);
                 Status::internal("Failed to create logical plan")
             })?;
 
@@ -273,7 +274,7 @@ impl FlightService for AirServiceImpl {
         )
         .await
         {
-            log::error!("{}", err);
+            error!("{}", err);
         };
 
         /*

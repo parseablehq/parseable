@@ -37,6 +37,7 @@ use arrow_flight::{
 };
 use tonic_web::GrpcWebLayer;
 use tower_http::cors::CorsLayer;
+use tracing::{info, warn};
 
 use crate::livetail::{Message, LIVETAIL};
 use crate::metadata::STREAM_INFO;
@@ -102,7 +103,7 @@ impl FlightService for FlightServiceImpl {
         let ticket: serde_json::Value = serde_json::from_slice(&req.into_inner().ticket)
             .map_err(|err| Status::internal(err.to_string()))?;
         let stream = extract_stream(&ticket)?;
-        log::info!("livetail requested for stream {}", stream);
+        info!("livetail requested for stream {}", stream);
         match Users.authorize(key, rbac::role::Action::Query, Some(stream), None) {
             rbac::Response::Authorized => (),
             rbac::Response::UnAuthorized => {
@@ -128,7 +129,7 @@ impl FlightService for FlightServiceImpl {
         let rx = rx.map(move |x| match x {
             Message::Record(t) => Ok(utils::arrow::adapt_batch(&adapter_schema, &t)),
             Message::Skipped(_) => {
-                log::warn!("livetail channel capacity is full.");
+                warn!("livetail channel capacity is full.");
                 Ok(RecordBatch::new_empty(adapter_schema.clone()))
             }
         });

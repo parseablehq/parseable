@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::{error, info, warn};
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
@@ -157,7 +158,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     )
     .await
     {
-        log::error!("{}", err);
+        error!("{}", err);
     };
 
     let response = QueryResponse {
@@ -221,16 +222,14 @@ pub async fn put_results_in_cache(
 ) -> Result<(), QueryError> {
     match (cache_results, query_cache_manager) {
         (Some(_), None) => {
-            log::warn!(
-                "Instructed to cache query results but Query Caching is not Enabled in Server"
-            );
+            warn!("Instructed to cache query results but Query Caching is not Enabled in Server");
 
             Ok(())
         }
         // do cache
         (Some(should_cache), Some(query_cache_manager)) => {
             if should_cache != "true" {
-                log::error!("value of cache results header is false");
+                error!("value of cache results header is false");
                 return Err(QueryError::CacheError(CacheError::Other(
                     "should not cache results",
                 )));
@@ -243,7 +242,7 @@ pub async fn put_results_in_cache(
 
             // guard to stop multiple caching of the same content
             if let Some(path) = cache.get_file(&cache_key) {
-                log::info!("File already exists in cache, Removing old file");
+                info!("File already exists in cache, Removing old file");
                 cache.delete(&cache_key, path).await?;
             }
 
@@ -251,13 +250,13 @@ pub async fn put_results_in_cache(
                 .create_parquet_cache(stream, records, user_id, start, end, query)
                 .await
             {
-                log::error!("Error occured while caching query results: {:?}", err);
+                error!("Error occured while caching query results: {:?}", err);
                 if query_cache_manager
                     .clear_cache(stream, user_id)
                     .await
                     .is_err()
                 {
-                    log::error!("Error Clearing Unwanted files from cache dir");
+                    error!("Error Clearing Unwanted files from cache dir");
                 }
             }
             // fallthrough
@@ -280,14 +279,12 @@ pub async fn get_results_from_cache(
 ) -> Result<QueryResponse, QueryError> {
     match (show_cached, query_cache_manager) {
         (Some(_), None) => {
-            log::warn!(
-                "Instructed to show cached results but Query Caching is not Enabled on Server"
-            );
+            warn!("Instructed to show cached results but Query Caching is not Enabled on Server");
             None
         }
         (Some(should_show), Some(query_cache_manager)) => {
             if should_show != "true" {
-                log::error!("value of show cached header is false");
+                error!("value of show cached header is false");
                 return Err(QueryError::CacheError(CacheError::Other(
                     "should not return cached results",
                 )));

@@ -37,6 +37,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveTime, Utc};
 use relative_path::RelativePathBuf;
 use std::io::Error as IOError;
+use tracing::{error, info};
 pub mod column;
 pub mod manifest;
 pub mod snapshot;
@@ -280,7 +281,7 @@ async fn create_manifest(
             };
             first_event_at = Some(lower_bound.with_timezone(&Local).to_rfc3339());
             if let Err(err) = STREAM_INFO.set_first_event_at(stream_name, first_event_at.clone()) {
-                log::error!(
+                error!(
                     "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
                     stream_name
                 );
@@ -360,7 +361,7 @@ pub async fn get_first_event(
                 let manifests = meta_clone.snapshot.manifest_list;
                 let time_partition = meta_clone.time_partition;
                 if manifests.is_empty() {
-                    log::info!("No manifest found for stream {stream_name}");
+                    info!("No manifest found for stream {stream_name}");
                     return Err(ObjectStorageError::Custom("No manifest found".to_string()));
                 }
                 let manifest = &manifests[0];
@@ -400,7 +401,7 @@ pub async fn get_first_event(
                 handlers::http::cluster::get_ingestor_info()
                     .await
                     .map_err(|err| {
-                        log::error!("Fatal: failed to get ingestor info: {:?}", err);
+                        error!("Fatal: failed to get ingestor info: {:?}", err);
                         ObjectStorageError::from(err)
                     })?;
             let mut ingestors_first_event_at: Vec<String> = Vec::new();
