@@ -27,6 +27,7 @@ use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
+use tracing::error;
 
 use super::{EventFormat, Metadata, Tags};
 use crate::utils::{arrow::get_field, json::flatten_json_body};
@@ -225,7 +226,7 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
         }
         DataType::Timestamp(_, _) => value.is_string() || value.is_number(),
         _ => {
-            log::error!("Unsupported datatype {:?}, value {:?}", data_type, value);
+            error!("Unsupported datatype {:?}, value {:?}", data_type, value);
             unreachable!()
         }
     }

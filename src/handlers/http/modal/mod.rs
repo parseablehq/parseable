@@ -39,6 +39,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use ssl_acceptor::get_ssl_acceptor;
 use tokio::sync::{oneshot, Mutex};
+use tracing::{error, info, warn};
 
 use super::cross_origin_config;
 use super::API_BASE_PATH;
@@ -140,15 +141,15 @@ pub trait ParseableServer {
             let _ = shutdown_rx.await;
 
             // Perform S3 sync and wait for completion
-            log::info!("Starting data sync to S3...");
+            info!("Starting data sync to S3...");
             if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
-                log::warn!("Failed to sync local data with object store. {:?}", e);
+                warn!("Failed to sync local data with object store. {:?}", e);
             } else {
-                log::info!("Successfully synced all data to S3.");
+                info!("Successfully synced all data to S3.");
             }
 
             // Initiate graceful shutdown
-            log::info!("Graceful shutdown of HTTP server triggered");
+            info!("Graceful shutdown of HTTP server triggered");
             srv_handle.stop(true).await;
         });
 
@@ -157,14 +158,14 @@ pub trait ParseableServer {
 
         // Await the signal handler to ensure proper cleanup
         if let Err(e) = signal_task.await {
-            log::error!("Error in signal handler: {:?}", e);
+            error!("Error in signal handler: {:?}", e);
         }
 
         // Wait for the sync task to complete before exiting
         if let Err(e) = sync_task.await {
-            log::error!("Error in sync task: {:?}", e);
+            error!("Error in sync task: {:?}", e);
         } else {
-            log::info!("Sync task completed successfully.");
+            info!("Sync task completed successfully.");
         }
 
         // Return the result of the server

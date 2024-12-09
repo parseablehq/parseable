@@ -48,6 +48,7 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use itertools::Itertools;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
+use tracing::error;
 
 use std::collections::BTreeMap;
 use std::{
@@ -306,7 +307,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 if let Ok(alerts) = serde_json::from_slice(&alerts) {
                     Ok(alerts)
                 } else {
-                    log::error!("Incompatible alerts found for stream - {stream_name}. Refer https://www.parseable.io/docs/alerts for correct alert config.");
+                    error!("Incompatible alerts found for stream - {stream_name}. Refer https://www.parseable.io/docs/alerts for correct alert config.");
                     Ok(Alerts::default())
                 }
             }
@@ -611,7 +612,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
 
                 // Try uploading the file, handle potential errors without breaking the loop
                 if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
-                    log::error!("Failed to upload file {}: {:?}", filename, e);
+                    error!("Failed to upload file {}: {:?}", filename, e);
                     continue; // Skip to the next file
                 }
 
@@ -647,7 +648,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
                             .move_to_cache(&stream, storage_path, file.to_owned())
                             .await
                         {
-                            log::error!("Failed to move file to cache: {:?}", e);
+                            error!("Failed to move file to cache: {:?}", e);
                         }
                     }
                 }

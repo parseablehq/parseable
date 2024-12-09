@@ -26,6 +26,7 @@ use actix_web::{Error, HttpResponse};
 use lazy_static::lazy_static;
 use std::sync::Arc;
 use tokio::signal::ctrl_c;
+use tracing::info;
 
 use tokio::sync::{oneshot, Mutex};
 
@@ -68,11 +69,11 @@ pub async fn handle_signals(shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()
         let mut sigterm = signal(SignalKind::terminate()).unwrap();
         tokio::select! {
             _ = ctrl_c() => {
-                log::info!("Received SIGINT signal at Readiness Probe Handler");
+                info!("Received SIGINT signal at Readiness Probe Handler");
                 shutdown(shutdown_signal).await;
             },
             _ = sigterm.recv() => {
-                log::info!("Received SIGTERM signal at Readiness Probe Handler");
+                info!("Received SIGTERM signal at Readiness Probe Handler");
                 shutdown(shutdown_signal).await;
             }
         }

@@ -1,3 +1,5 @@
+use tracing::warn;
+
 /*
  * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
@@ -153,7 +155,7 @@ pub async fn update_deleted_stats(
     let stats = get_current_stats(stream_name, "json");
     if let Some(stats) = stats {
         if let Err(e) = storage.put_stats(stream_name, &stats).await {
-            log::warn!("Error updating stats to objectstore due to error [{}]", e);
+            warn!("Error updating stats to objectstore due to error [{}]", e);
         }
     }
 
