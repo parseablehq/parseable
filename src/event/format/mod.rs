@@ -103,6 +103,9 @@ pub trait EventFormat: Sized {
             return Err(anyhow!("Schema mismatch"));
         }
         new_schema = update_field_type_in_schema(new_schema, None, time_partition, None);
+        new_schema = Arc::new(Schema::new(override_num_fields_from_schema(
+            new_schema.fields().to_vec(),
+        )));
         let rb = Self::decode(data, new_schema.clone())?;
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
         let metadata_arr =
@@ -205,24 +208,21 @@ pub fn override_timestamp_fields(
 }
 
 /// All number fields from inferred schema are forced into Float64
-pub fn override_num_fields_from_schema(schema: Arc<Schema>) -> Arc<Schema> {
-    Arc::new(Schema::new(
-        schema
-            .fields()
-            .iter()
-            .map(|field| {
-                if field.data_type().is_numeric() {
-                    Arc::new(Field::new(
-                        field.name(),
-                        DataType::Float64,
-                        field.is_nullable(),
-                    ))
-                } else {
-                    field.clone()
-                }
-            })
-            .collect::<Vec<Arc<Field>>>(),
-    ))
+pub fn override_num_fields_from_schema(schema: Vec<Arc<Field>>) -> Vec<Arc<Field>> {
+    schema
+        .iter()
+        .map(|field| {
+            if field.data_type().is_numeric() && field.data_type() != &DataType::Float64 {
+                Arc::new(Field::new(
+                    field.name(),
+                    DataType::Float64,
+                    field.is_nullable(),
+                ))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<Arc<Field>>>()
 }
 
 pub fn update_field_type_in_schema(
@@ -232,8 +232,6 @@ pub fn update_field_type_in_schema(
     log_records: Option<&Vec<Value>>,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
-    updated_schema = override_num_fields_from_schema(updated_schema);
-
     if let Some(existing_schema) = existing_schema {
         let existing_fields = get_existing_fields(inferred_schema.clone(), Some(existing_schema));
         let existing_timestamp_fields = get_existing_timestamp_fields(existing_schema);

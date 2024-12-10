@@ -66,6 +66,14 @@ impl TypedStatistics {
                     max: max(this.max, other.max),
                 })
             }
+
+            // Ints are casted to Float if self is Float and other in Int
+            (TypedStatistics::Float(this), TypedStatistics::Int(other)) => {
+                TypedStatistics::Float(Float64Type {
+                    min: this.min.min(other.min as f64),
+                    max: this.max.max(other.max as f64),
+                })
+            }
             (TypedStatistics::Float(this), TypedStatistics::Float(other)) => {
                 TypedStatistics::Float(Float64Type {
                     min: this.min.min(other.min),
