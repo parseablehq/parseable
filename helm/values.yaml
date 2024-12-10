@@ -77,46 +77,45 @@ parseable:
   ## blobModeSecret if store is set to blob-store
   ## s3ModeSecret if store is set to s3-store
   localModeSecret:
-    - type: env
-      name: parseable-env-secret
-      prefix: P_
-      keys:
-      - addr
-      - username
-      - password
-      - staging.dir
-      - fs.dir
-  # blobModeSecret:
-  #   - type: env
-  #     name: parseable-env-secret
-  #     prefix: p_
-  #     keys:
-  #     - addr
-  #     - username
-  #     - password
-  #     - azr.access_key
-  #     - azr.account
-  #     - azr.container
-  #     - azr.url
-  # s3ModeSecret:
-  #   - type: env
-  #     name: parseable-env-secret
-  #     prefix: P_
-  #     keys:
-  #     ## Comment / uncomment the following lines as required
-  #     # - tls.cert.path
-  #     # - tls.key.path
-  #     # - storage.upload.interval
-  #     - addr
-  #     - username
-  #     - password
-  #     - staging.dir
-  #     - fs.dir
-  #     - s3.url
-  #     - s3.access.key
-  #     - s3.secret.key
-  #     - s3.bucket
-  #     - s3.region
+    enabled: false
+    secrets:
+      - name: parseable-env-secret
+        prefix: P_
+        keys:
+          - addr
+          - username
+          - password
+          - staging.dir
+          - fs.dir
+  blobModeSecret:
+    enabled: false
+    secrets:
+      - name: parseable-env-secret
+        prefix: P_
+        keys:
+          - addr
+          - username
+          - password
+          - azr.access_key
+          - azr.account
+          - azr.container
+          - azr.url
+  s3ModeSecret:
+    enabled: false
+    secrets:
+      - name: parseable-env-secret
+        prefix: P_
+        keys:
+          - addr
+          - username
+          - password
+          - staging.dir
+          - fs.dir
+          - s3.url
+          - s3.access.key
+          - s3.secret.key
+          - s3.bucket
+          - s3.region
   serviceAccount:
     create: true
     name: "parseable"
