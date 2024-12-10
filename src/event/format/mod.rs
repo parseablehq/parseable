@@ -103,9 +103,6 @@ pub trait EventFormat: Sized {
             return Err(anyhow!("Schema mismatch"));
         }
         new_schema = update_field_type_in_schema(new_schema, None, time_partition, None);
-        new_schema = Arc::new(Schema::new(override_num_fields_from_schema(
-            new_schema.fields().to_vec(),
-        )));
         let rb = Self::decode(data, new_schema.clone())?;
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
         let metadata_arr =
@@ -232,6 +229,11 @@ pub fn update_field_type_in_schema(
     log_records: Option<&Vec<Value>>,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
+
+    // All number fields from inferred schema are forced into Float64
+    updated_schema = Arc::new(Schema::new(override_num_fields_from_schema(
+        updated_schema.fields().to_vec(),
+    )));
     if let Some(existing_schema) = existing_schema {
         let existing_fields = get_existing_fields(inferred_schema.clone(), Some(existing_schema));
         let existing_timestamp_fields = get_existing_timestamp_fields(existing_schema);
