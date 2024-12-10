@@ -204,20 +204,14 @@ pub fn override_timestamp_fields(
     Arc::new(Schema::new(updated_fields))
 }
 
+/// All number fields from inferred schema are forced into Float64
 pub fn override_num_fields_from_schema(schema: Arc<Schema>) -> Arc<Schema> {
     Arc::new(Schema::new(
         schema
             .fields()
             .iter()
             .map(|field| {
-                if field.data_type() == &DataType::Int64
-                    || field.data_type() == &DataType::Int32
-                    || field.data_type() == &DataType::Int16
-                    || field.data_type() == &DataType::Int8
-                    || field.data_type() == &DataType::Float64
-                    || field.data_type() == &DataType::Float32
-                    || field.data_type() == &DataType::Float16
-                {
+                if field.data_type().is_numeric() {
                     Arc::new(Field::new(
                         field.name(),
                         DataType::Float64,
