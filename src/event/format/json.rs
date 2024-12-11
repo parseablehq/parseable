@@ -185,7 +185,9 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
         DataType::Boolean => value.is_boolean(),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => value.is_i64(),
         DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => value.is_u64(),
-        DataType::Float16 | DataType::Float32 | DataType::Float64 => value.is_f64(),
+        DataType::Float16 | DataType::Float32 => value.is_f64(),
+        // NOTE: All numbers can be ingested as Float64
+        DataType::Float64 => value.is_number(),
         DataType::Utf8 => value.is_string(),
         DataType::List(field) => {
             let data_type = field.data_type();
