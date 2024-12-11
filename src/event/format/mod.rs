@@ -209,7 +209,7 @@ pub fn override_num_fields_from_schema(schema: Vec<Arc<Field>>) -> Vec<Arc<Field
     schema
         .iter()
         .map(|field| {
-            if field.data_type().is_numeric() && field.data_type() != &DataType::Float64 {
+            if field.data_type().is_numeric() {
                 Arc::new(Field::new(
                     field.name(),
                     DataType::Float64,
