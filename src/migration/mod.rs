@@ -39,6 +39,7 @@ use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
 use serde_json::Value;
+use tracing::error;
 
 /// Migrate the metdata from v1 or v2 to v3
 /// This is a one time migration
@@ -286,7 +287,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         load_stream_metadata_on_server_start(storage, stream, arrow_schema, stream_metadata_value)
             .await
     {
-        log::error!("could not populate local metadata. {:?}", err);
+        error!("could not populate local metadata. {:?}", err);
         return Err(err.into());
     }
 

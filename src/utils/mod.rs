@@ -33,6 +33,7 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
+use tracing::debug;
 use url::Url;
 #[allow(dead_code)]
 pub fn hostname() -> Option<String> {
@@ -305,7 +306,7 @@ pub fn get_ingestor_id() -> String {
     hasher.update(now);
     let result = format!("{:x}", hasher.finalize());
     let result = result.split_at(15).0.to_string();
-    log::debug!("Ingestor ID: {}", &result);
+    debug!("Ingestor ID: {}", &result);
     result
 }
 

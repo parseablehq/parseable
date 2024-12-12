@@ -50,6 +50,7 @@ use std::{
     process,
     sync::Arc,
 };
+use tracing::{error, info};
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 // const PARQUET_FILE_EXTENSION: &str = "data.parquet";
@@ -175,10 +176,9 @@ impl StorageDir {
             rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
         for arrow_file_path in arrow_files {
             if arrow_file_path.metadata().unwrap().len() == 0 {
-                log::error!(
+                error!(
                     "Invalid arrow file {:?} detected for stream {}, removing it",
-                    &arrow_file_path,
-                    stream
+                    &arrow_file_path, stream
                 );
                 fs::remove_file(&arrow_file_path).unwrap();
             } else {
@@ -244,7 +244,7 @@ pub fn convert_disk_files_to_parquet(
             .set(0);
     }
 
-    // log::warn!("staging files-\n{staging_files:?}\n");
+    // warn!("staging files-\n{staging_files:?}\n");
     for (parquet_path, files) in staging_files {
         metrics::STAGING_FILES
             .with_label_values(&[stream])
@@ -291,19 +291,18 @@ pub fn convert_disk_files_to_parquet(
 
         writer.close()?;
         if parquet_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
-            log::error!(
+            error!(
                 "Invalid parquet file {:?} detected for stream {}, removing it",
-                &parquet_path,
-                stream
+                &parquet_path, stream
             );
             fs::remove_file(parquet_path).unwrap();
         } else {
             for file in files {
-                // log::warn!("file-\n{file:?}\n");
+                // warn!("file-\n{file:?}\n");
                 let file_size = file.metadata().unwrap().len();
                 let file_type = file.extension().unwrap().to_str().unwrap();
                 if fs::remove_file(file.clone()).is_err() {
-                    log::error!("Failed to delete file. Unstable state");
+                    error!("Failed to delete file. Unstable state");
                     process::abort()
                 }
                 metrics::STORAGE_SIZE
@@ -400,16 +399,15 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 
             // compare url endpoint and port
             if meta.domain_name != url {
-                log::info!(
+                info!(
                     "Domain Name was Updated. Old: {} New: {}",
-                    meta.domain_name,
-                    url
+                    meta.domain_name, url
                 );
                 meta.domain_name = url;
             }
 
             if meta.port != port {
-                log::info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                info!("Port was Updated. Old: {} New: {}", meta.port, port);
                 meta.port = port;
             }
 
@@ -422,10 +420,9 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 
             if meta.token != token {
                 // TODO: Update the message to be more informative with username and password
-                log::info!(
+                info!(
                     "Credentials were Updated. Old: {} New: {}",
-                    meta.token,
-                    token
+                    meta.token, token
                 );
                 meta.token = token;
             }

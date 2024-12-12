@@ -45,6 +45,7 @@ use sysinfo::{Disks, System};
 use tokio::fs::{self, DirEntry};
 use tokio::io::AsyncWriteExt;
 use tokio_stream::wrappers::ReadDirStream;
+use tracing::{error, warn};
 
 pub const STREAM_HOT_TIER_FILENAME: &str = ".hot_tier.json";
 pub const MIN_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10737418240; // 10 GiB
@@ -143,7 +144,7 @@ impl HotTierManager {
                     - existing_hot_tier_used_size as f64);
 
             if stream_hot_tier_size as f64 > max_allowed_hot_tier_size {
-                log::error!("disk_threshold: {}, used_disk_space: {}, total_hot_tier_used_size: {}, existing_hot_tier_used_size: {}, total_hot_tier_size: {}",
+                error!("disk_threshold: {}, used_disk_space: {}, total_hot_tier_used_size: {}, existing_hot_tier_used_size: {}, total_hot_tier_size: {}",
                     bytes_to_human_size(disk_threshold as u64), bytes_to_human_size(used_disk_space), bytes_to_human_size(total_hot_tier_used_size), bytes_to_human_size(existing_hot_tier_used_size), bytes_to_human_size(total_hot_tier_size));
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
                     "{} is the total usable disk space for hot tier, cannot set a bigger value.", bytes_to_human_size(max_allowed_hot_tier_size as u64)
@@ -214,7 +215,7 @@ impl HotTierManager {
             .plus(Interval::Seconds(5))
             .run(move || async {
                 if let Err(err) = self.sync_hot_tier().await {
-                    log::error!("Error in hot tier scheduler: {:?}", err);
+                    error!("Error in hot tier scheduler: {:?}", err);
                 }
             });
 
@@ -241,7 +242,7 @@ impl HotTierManager {
         let res: Vec<_> = sync_hot_tier_tasks.collect().await;
         for res in res {
             if let Err(err) = res {
-                log::error!("Failed to run hot tier sync task {err:?}");
+                error!("Failed to run hot tier sync task {err:?}");
                 return Err(err);
             }
         }
@@ -318,7 +319,7 @@ impl HotTierManager {
                             break;
                         }
                     } else {
-                        log::warn!("Invalid date format: {}", str_date);
+                        warn!("Invalid date format: {}", str_date);
                     }
                 }
             }
