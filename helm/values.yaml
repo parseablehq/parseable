@@ -297,6 +297,7 @@ vector:
 fluent-bit:
   enabled: true
   kind: DaemonSet
+  serverHost: parseable.parseable.svc.cluster.local
   replicaCount: 1
   image:
     repository: parseable/fluent-bit
@@ -382,7 +383,7 @@ fluent-bit:
       [OUTPUT]
           Name parseable
           Match kube.*
-          Server_Host parseable.parseable.svc.cluster.local
+          Server_Host {{ .Values.serverHost }}
           Username admin
           Password admin
           Server_Port 80
@@ -392,7 +393,7 @@ fluent-bit:
       [OUTPUT]
           Name parseable
           Match k8s_events
-          Server_Host parseable.parseable.svc.cluster.local
+          Server_Host {{ .Values.serverHost }}
           Server_Port 80
           Username admin
           Password admin
