@@ -25,6 +25,7 @@ use http::StatusCode;
 use itertools::Itertools;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
+use tracing::error;
 use url::Url;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -229,7 +230,7 @@ pub async fn check_liveness(domain_name: &str) -> bool {
     )) {
         Ok(uri) => uri,
         Err(err) => {
-            log::error!("Node Indentifier Failed To Parse: {}", err);
+            error!("Node Indentifier Failed To Parse: {}", err);
             return false;
         }
     };
@@ -262,20 +263,18 @@ pub async fn send_stats_request(
         .send()
         .await
         .map_err(|err| {
-            log::error!(
+            error!(
                 "Fatal: failed to fetch stats from ingestor: {}\n Error: {:?}",
-                ingestor.domain_name,
-                err
+                ingestor.domain_name, err
             );
 
             StreamError::Network(err)
         })?;
 
     if !res.status().is_success() {
-        log::error!(
+        error!(
             "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
-            ingestor.domain_name,
-            res
+            ingestor.domain_name, res
         );
         return Err(StreamError::Custom {
             msg: format!(

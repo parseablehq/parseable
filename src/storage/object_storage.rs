@@ -25,6 +25,7 @@ use super::{
     SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
+use crate::event::format::override_num_fields_from_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
@@ -40,7 +41,7 @@ use crate::{
 };
 
 use actix_web_prometheus::PrometheusMetrics;
-use arrow_schema::Schema;
+use arrow_schema::{Field, Schema};
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
@@ -48,6 +49,7 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use itertools::Itertools;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
+use tracing::error;
 
 use std::collections::BTreeMap;
 use std::{
@@ -306,7 +308,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 if let Ok(alerts) = serde_json::from_slice(&alerts) {
                     Ok(alerts)
                 } else {
-                    log::error!("Incompatible alerts found for stream - {stream_name}. Refer https://www.parseable.io/docs/alerts for correct alert config.");
+                    error!("Incompatible alerts found for stream - {stream_name}. Refer https://www.parseable.io/docs/alerts for correct alert config.");
                     Ok(Alerts::default())
                 }
             }
@@ -611,7 +613,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
 
                 // Try uploading the file, handle potential errors without breaking the loop
                 if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
-                    log::error!("Failed to upload file {}: {:?}", filename, e);
+                    error!("Failed to upload file {}: {:?}", filename, e);
                     continue; // Skip to the next file
                 }
 
@@ -647,7 +649,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
                             .move_to_cache(&stream, storage_path, file.to_owned())
                             .await
                         {
-                            log::error!("Failed to move file to cache: {:?}", e);
+                            error!("Failed to move file to cache: {:?}", e);
                         }
                     }
                 }
@@ -666,8 +668,21 @@ pub async fn commit_schema_to_storage(
     schema: Schema,
 ) -> Result<(), ObjectStorageError> {
     let storage = CONFIG.storage().get_object_store();
-    let stream_schema = storage.get_schema(stream_name).await?;
+    let mut stream_schema = storage.get_schema(stream_name).await?;
+    // override the data type of all numeric fields to Float64
+    //if data type is not Float64 already
+    stream_schema = Schema::new(override_num_fields_from_schema(
+        stream_schema.fields().iter().cloned().collect(),
+    ));
     let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
+
+    //update the merged schema in the metadata and storage
+    let schema_map: HashMap<String, Arc<Field>> = new_schema
+        .fields()
+        .iter()
+        .map(|field| (field.name().clone(), Arc::clone(field)))
+        .collect();
+    let _ = STREAM_INFO.set_schema(stream_name, schema_map);
     storage.put_schema(stream_name, &new_schema).await
 }
 
