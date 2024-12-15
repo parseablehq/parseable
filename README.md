@@ -81,6 +81,15 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 
 Access the Parseable UI at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
+## Getting started :bulb:
+
+For quickstart, refer the [quickstart section ↗︎](#quickstart-zap).
+
+This section elaborates available options to run Parseable in production or development environments.
+
+- Distributed Parseable on Kubernetes: [Helm Installation](https://www.parseable.com/docs/server/installation/distributed/setup-distributed-parseable-on-kubernetes-via-helm).
+- Distributed Parseable on AWS EC2 / VMs / Linux: [Binary Installation](https://www.parseable.com/docs/server/installation/distributed/setup-systemd-service-for-distributed-parseable-server).
+
 ## Features :rocket:
 
 - [High availability & Cluster mode ↗︎](https://www.parseable.com/docs/concepts/distributed-architecture)
