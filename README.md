@@ -61,9 +61,9 @@ powershell -c "irm https://logg.ing/install-windows | iex"
 </p>
 </details>
 
-Once this runs successfully, you'll see dashboard at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
+### Ingest Data
 
-To ingest data, run the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
+Once you have Parseable running, ingest data with the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
 
 ```bash
 curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
@@ -78,6 +78,8 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
     }
 ]'
 ```
+
+Access the Parseable UI at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
 ## Features :rocket:
 
