@@ -204,6 +204,24 @@ pub fn override_timestamp_fields(
     Arc::new(Schema::new(updated_fields))
 }
 
+/// All number fields from inferred schema are forced into Float64
+pub fn override_num_fields_from_schema(schema: Vec<Arc<Field>>) -> Vec<Arc<Field>> {
+    schema
+        .iter()
+        .map(|field| {
+            if field.data_type().is_numeric() {
+                Arc::new(Field::new(
+                    field.name(),
+                    DataType::Float64,
+                    field.is_nullable(),
+                ))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<Arc<Field>>>()
+}
+
 pub fn update_field_type_in_schema(
     inferred_schema: Arc<Schema>,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
@@ -212,6 +230,10 @@ pub fn update_field_type_in_schema(
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
 
+    // All number fields from inferred schema are forced into Float64
+    updated_schema = Arc::new(Schema::new(override_num_fields_from_schema(
+        updated_schema.fields().to_vec(),
+    )));
     if let Some(existing_schema) = existing_schema {
         let existing_fields = get_existing_fields(inferred_schema.clone(), Some(existing_schema));
         let existing_timestamp_fields = get_existing_timestamp_fields(existing_schema);
