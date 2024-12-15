@@ -5,7 +5,7 @@
       <a href="https://www.parseable.com" target="_blank"><img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg" alt="Parseable logo" /></a>
     </picture>
     <br>
-    The disk <i>less</i> database for logs, observability, compliance & security.
+    The disk <i>less</i> database for logs, observability, security & compliance.
 </h2>
 
 <div align="center">
@@ -15,15 +15,15 @@
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.com%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://logg.ing/docs)
 [![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?style=flat&color=%2373DC8C&label=Checks)](https://github.com/parseablehq/parseable/actions)
 
-[Key Concepts](https://www.parseable.com/docs/concepts) | [Features](https://github.com/parseablehq/parseable#rocket-highlights) | [Documentation](https://www.parseable.com/docs) | [Demo](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9) | [Integrations](https://www.parseable.com/docs/category/integrations) | [FAQ](https://www.parseable.com/docs/faq)
+[Key Concepts](https://www.parseable.com/docs/concepts) | [Features](https://github.com/parseablehq/parseable#rocket-highlights) | [Documentation](https://www.parseable.com/docs) | [Demo](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9) | [FAQ](https://www.parseable.com/docs/faq)
 
 </div>
 
-Parseable is a disk **less**, cloud native database for Observability, Security, Log Analysis and Compliance. Parseable is built with focus on simplicity & resource efficiency. Parseable is useful for use cases where **complete data ownership, security and privacy are paramount**.
+Parseable is a disk **_less_**, cloud native database for logs, observability, security, and compliance. Parseable is built with focus on simplicity & resource efficiency. Parseable is useful for use cases where **complete data ownership, data security and privacy are paramount**.
 
 To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9).
 
-## QuickStart :zap:
+## Quickstart :zap:
 
 ### Run Parseable
 
@@ -63,7 +63,7 @@ powershell -c "irm https://logg.ing/install-windows | iex"
 </p>
 </details>
 
-### Ingest & Query Data
+### Ingestion and query
 
 Once you have Parseable running, ingest data with the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
 
@@ -107,7 +107,7 @@ Traditionally, logging has been seen as a text search problem. Log volumes were 
 
 But with log data growing exponentially, today's log data challenges involve whole lot more – Data ingestion, storage, and observation, all at scale. We are building Parseable to address these challenges.
 
-## Verify Image Build Provenance Attestation :writing_hand:
+## Verify images :writing_hand:
 
 Parseable builds are attested for build provenance and integrity using the [attest-build-provenance](https://github.com/actions/attest-build-provenance) action. The attestations can be verified by having the latest version of [GitHub CLI](https://github.com/cli/cli/releases/latest) installed in your system. Then, execute the following command:
 
