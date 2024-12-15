@@ -36,7 +36,7 @@ spec:
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
           # Uncomment to debug
           # command: [ "/bin/sh", "-c", "sleep 1000000" ]
-          args: ["/usr/bin/parseable", {{ .Values.parseable.store | quote }}]
+          args: ["/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
           env:
             - name: HOSTNAME
               valueFrom:
@@ -67,6 +67,20 @@ spec:
             {{- $envPrefix := $secret.prefix | default "" | upper }}
             {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
             - name: {{ $envPrefix }}{{ $envKey }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret.name }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+
+            {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+            {{- range $secret := .Values.parseable.gcsModeSecret.secrets }}
+            {{- range $key := $secret.keys }}
+            {{- $envPrefix := $secret.prefix | default "" | upper }}
+            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+            - name: {{ $envPrefix }}{{ $envKey | replace "GCS" "S3"}}
               valueFrom:
                 secretKeyRef:
                   name: {{ $secret.name }}

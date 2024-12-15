@@ -42,7 +42,7 @@ spec:
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
         args:
           - /usr/bin/parseable
-          - {{ .Values.parseable.store }}
+          - {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}
           - --ingestor-endpoint=$(HOSTNAME).{{ include "parseable.fullname" . }}-ingestor-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.parseable.highAvailability.ingestor.port }}
         env:
           {{- range $key, $value :=  .Values.parseable.highAvailability.ingestor.env }}
@@ -61,6 +61,20 @@ spec:
           {{- $envPrefix := $secret.prefix | default "" | upper }}
           {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
           - name: {{ $envPrefix }}{{ $envKey }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $secret.name }}
+                key: {{ $key }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+
+          {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+          {{- range $secret := .Values.parseable.gcsModeSecret.secrets }}
+          {{- range $key := $secret.keys }}
+          {{- $envPrefix := $secret.prefix | default "" | upper }}
+          {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+          - name: {{ $envPrefix }}{{ $envKey | replace "GCS" "S3"}}
             valueFrom:
               secretKeyRef:
                 name: {{ $secret.name }}
