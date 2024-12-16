@@ -225,10 +225,9 @@ pub async fn setup_integration() {
         let mut stream = consumer.stream();
 
         while let Ok(curr) = stream.next().await.unwrap() {
-            match ingest_message(&stream_name, curr).await {
-                Ok(_) => {}
-                Err(err) => error!("Unable to ingest incoming kafka message- {err}"),
-            };
+            if let Err(err) = ingest_message(&stream_name, curr).await {
+                error!("Unable to ingest incoming kafka message- {err}"),
+            }
         }
     });
 }
