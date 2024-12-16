@@ -37,7 +37,7 @@ pub enum SslProtocol {
 #[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaError {
-    #[error("Error loading environment variable {0}")]
+    #[error("Please set env var {0} (To use Kafka integration env vars P_KAFKA_TOPIC, P_KAFKA_HOST, and P_KAFKA_GROUP are mandatory)")]
     NoVarError(&'static str),
 
     #[error("Kafka error {0}")]
@@ -108,13 +108,13 @@ fn setup_consumer() -> Result<(StreamConsumer, String), KafkaError> {
         let host = if CONFIG.parseable.kafka_host.is_some() {
             CONFIG.parseable.kafka_host.as_ref()
         } else {
-            return Err(KafkaError::NoVarError("Please set P_KAKFA_HOST env var (To use Kafka integration env vars P_KAFKA_TOPIC, P_KAFKA_HOST, and P_KAFKA_GROUP are mandatory)"));
+            return Err(KafkaError::NoVarError("P_KAKFA_HOST"));
         };
 
         let group = if CONFIG.parseable.kafka_group.is_some() {
             CONFIG.parseable.kafka_group.as_ref()
         } else {
-            return Err(KafkaError::NoVarError("Please set P_KAKFA_GROUP env var (To use Kafka integration env vars P_KAFKA_TOPIC, P_KAFKA_HOST, and P_KAFKA_GROUP are mandatory)"));
+            return Err(KafkaError::NoVarError("P_KAKFA_GROUP"));
         };
 
         let mut conf = ClientConfig::new();
