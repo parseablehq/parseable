@@ -167,67 +167,67 @@ fn resolve_schema(stream_name: &str) -> Result<HashMap<String, Arc<Field>>, Kafk
 }
 
 async fn ingest_message<'a>(stream_name: &str, msg: BorrowedMessage<'a>) -> Result<(), KafkaError> {
-    if let Some(payload) = msg.payload() {
-        // stream should get created only if there is an incoming event, not before that
-        create_stream_if_not_exists(stream_name, &StreamType::UserDefined.to_string()).await?;
-
-        let schema = resolve_schema(stream_name)?;
-        let event = format::json::Event {
-            data: serde_json::from_slice(payload)?,
-            tags: String::default(),
-            metadata: String::default(),
-        };
-
-        let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
-        let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
-
-        let (rb, is_first) = event
-            .into_recordbatch(schema, static_schema_flag, time_partition)
-            .map_err(|err| KafkaError::PostError(PostError::CustomError(err.to_string())))?;
-
-        event::Event {
-            rb,
-            stream_name: stream_name.to_string(),
-            origin_format: "json",
-            origin_size: payload.len() as u64,
-            is_first_event: is_first,
-            parsed_timestamp: Utc::now().naive_utc(),
-            time_partition: None,
-            custom_partition_values: HashMap::new(),
-            stream_type: StreamType::UserDefined,
-        }
-        .process()
-        .await?;
-    } else {
+    let Some(payload) = msg.payload() else {
         debug!("{} No payload for stream", stream_name);
+        return Ok(());
+    };
+
+    // stream should get created only if there is an incoming event, not before that
+    create_stream_if_not_exists(stream_name, &StreamType::UserDefined.to_string()).await?;
+
+    let schema = resolve_schema(stream_name)?;
+    let event = format::json::Event {
+        data: serde_json::from_slice(payload)?,
+        tags: String::default(),
+        metadata: String::default(),
+    };
+
+    let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
+    let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
+
+    let (rb, is_first) = event
+        .into_recordbatch(schema, static_schema_flag, time_partition)
+        .map_err(|err| KafkaError::PostError(PostError::CustomError(err.to_string())))?;
+
+    event::Event {
+        rb,
+        stream_name: stream_name.to_string(),
+        origin_format: "json",
+        origin_size: payload.len() as u64,
+        is_first_event: is_first,
+        parsed_timestamp: Utc::now().naive_utc(),
+        time_partition: None,
+        custom_partition_values: HashMap::new(),
+        stream_type: StreamType::UserDefined,
     }
+    .process()
+    .await?;
+
     Ok(())
 }
 
 pub async fn setup_integration() {
-    tokio::task::spawn(async move {
-        let (consumer, stream_name) = match setup_consumer() {
-            Ok(c) => c,
-            Err(err) => {
-                match err {
-                    KafkaError::DoNotPrintError => {
-                        debug!("P_KAFKA_TOPIC not set, skipping kafka integration");
-                    }
-                    _ => {
-                        error!("{err}");
-                    }
+    let (consumer, stream_name) = match setup_consumer() {
+        Ok(c) => c,
+        Err(err) => {
+            match err {
+                KafkaError::DoNotPrintError => {
+                    debug!("P_KAFKA_TOPIC not set, skipping kafka integration");
                 }
-                return;
+                _ => {
+                    error!("{err}");
+                }
             }
-        };
-
-        info!("Setup kafka integration for {stream_name}");
-        let mut stream = consumer.stream();
-
-        while let Ok(curr) = stream.next().await.unwrap() {
-            if let Err(err) = ingest_message(&stream_name, curr).await {
-                error!("Unable to ingest incoming kafka message- {err}"),
-            }
+            return;
         }
-    });
+    };
+
+    info!("Setup kafka integration for {stream_name}");
+    let mut stream = consumer.stream();
+
+    while let Ok(curr) = stream.next().await.unwrap() {
+        if let Err(err) = ingest_message(&stream_name, curr).await {
+            error!("Unable to ingest incoming kafka message- {err}")
+        }
+    }
 }

@@ -47,8 +47,8 @@ async fn main() -> anyhow::Result<()> {
     metadata.set_global();
 
     // load kafka server
-    if CONFIG.parseable.mode.ne(&Mode::Query) {
-        kafka::setup_integration().await;
+    if CONFIG.parseable.mode != Mode::Query {
+        tokio::task::spawn(kafka::setup_integration());
     }
 
     server.init().await?;
