@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use url::Url;
 
 use crate::{
+    kafka::SslProtocol,
     oidc::{self, OpenidConfig},
     option::{validation, Compression, Mode},
 };
@@ -125,7 +126,7 @@ pub struct Cli {
     pub kafka_host: Option<String>,
     pub kafka_group: Option<String>,
     pub kafka_client_id: Option<String>,
-    pub kafka_security_protocol: Option<String>,
+    pub kafka_security_protocol: Option<SslProtocol>,
     pub kafka_partitions: Option<String>,
 }
 
@@ -582,7 +583,9 @@ impl FromArgMatches for Cli {
         self.kafka_host = m.get_one::<String>(Self::KAFKA_HOST).cloned();
         self.kafka_group = m.get_one::<String>(Self::KAFKA_GROUP).cloned();
         self.kafka_client_id = m.get_one::<String>(Self::KAFKA_CLIENT_ID).cloned();
-        self.kafka_security_protocol = m.get_one::<String>(Self::KAFKA_SECURITY_PROTOCOL).cloned();
+        self.kafka_security_protocol = m
+            .get_one::<SslProtocol>(Self::KAFKA_SECURITY_PROTOCOL)
+            .cloned();
         self.kafka_partitions = m.get_one::<String>(Self::KAFKA_PARTITIONS).cloned();
 
         self.local_cache_path = m.get_one::<PathBuf>(Self::CACHE).cloned();

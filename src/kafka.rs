@@ -8,7 +8,7 @@ use rdkafka::error::{KafkaError as NativeKafkaError, RDKafkaError};
 use rdkafka::message::BorrowedMessage;
 use rdkafka::util::Timeout;
 use rdkafka::{Message, TopicPartitionList};
-use std::fmt::Display;
+use serde::{Deserialize, Serialize};
 use std::num::ParseIntError;
 use std::sync::Arc;
 use std::{collections::HashMap, fmt::Debug, str::FromStr};
@@ -26,33 +26,12 @@ use crate::{
     storage::StreamType,
 };
 
-enum SslProtocol {
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+pub enum SslProtocol {
     Plaintext,
     Ssl,
     SaslPlaintext,
     SaslSsl,
-}
-impl Display for SslProtocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            SslProtocol::Plaintext => "plaintext",
-            SslProtocol::Ssl => "ssl",
-            SslProtocol::SaslPlaintext => "sasl_plaintext",
-            SslProtocol::SaslSsl => "sasl_ssl",
-        })
-    }
-}
-impl FromStr for SslProtocol {
-    type Err = KafkaError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "plaintext" => Ok(SslProtocol::Plaintext),
-            "ssl" => Ok(SslProtocol::Ssl),
-            "sasl_plaintext" => Ok(SslProtocol::SaslPlaintext),
-            "sasl_ssl" => Ok(SslProtocol::SaslSsl),
-            _ => Err(KafkaError::InvalidSslProtocolError(s.to_string())),
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -150,9 +129,8 @@ fn setup_consumer() -> Result<(StreamConsumer, String), KafkaError> {
         //     conf.set("api.version.request", val.to_string());
         // }
 
-        if let Some(val) = CONFIG.parseable.kafka_security_protocol.as_ref() {
-            let mapped: SslProtocol = val.parse()?;
-            conf.set("security.protocol", mapped.to_string());
+        if let Some(ssl_protocol) = CONFIG.parseable.kafka_security_protocol.as_ref() {
+            conf.set("security.protocol", serde_json::to_string(&ssl_protocol)?);
         }
 
         let consumer: StreamConsumer = conf.create()?;
