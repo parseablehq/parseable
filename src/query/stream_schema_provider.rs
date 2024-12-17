@@ -63,7 +63,6 @@ use crate::{
         self, column::TypedStatistics, manifest::Manifest, snapshot::ManifestItem, ManifestFile,
     },
     event::{self, DEFAULT_TIMESTAMP_KEY},
-    localcache::LocalCacheManager,
     metadata::STREAM_INFO,
     metrics::QUERY_CACHE_HIT,
     option::CONFIG,
@@ -167,55 +166,6 @@ impl StandardTableProvider {
             )
             .await?;
         execution_plans.push(plan);
-
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn get_cache_exectuion_plan(
-        &self,
-        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
-        cache_manager: &LocalCacheManager,
-        manifest_files: &mut Vec<File>,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        limit: Option<usize>,
-        state: &dyn Session,
-        time_partition: Option<String>,
-    ) -> Result<(), DataFusionError> {
-        let (cached, remainder) = cache_manager
-            .partition_on_cached(&self.stream, manifest_files.clone(), |file: &File| {
-                &file.file_path
-            })
-            .await
-            .map_err(|err| DataFusionError::External(Box::new(err)))?;
-
-        // Assign remaining entries back to manifest list
-        // This is to be used for remote query
-        *manifest_files = remainder;
-
-        let cached = cached
-            .into_iter()
-            .map(|(mut file, cache_path)| {
-                let cache_path = object_store::path::Path::from_absolute_path(cache_path).unwrap();
-                file.file_path = cache_path.to_string();
-                file
-            })
-            .collect();
-
-        let (partitioned_files, statistics) = self.partitioned_files(cached);
-        self.create_parquet_physical_plan(
-            execution_plans,
-            ObjectStoreUrl::parse("file:///").unwrap(),
-            partitioned_files,
-            statistics,
-            projection,
-            filters,
-            limit,
-            state,
-            time_partition.clone(),
-        )
-        .await?;
 
         Ok(())
     }
@@ -555,21 +505,6 @@ impl TableProvider for StandardTableProvider {
 
         if manifest_files.is_empty() {
             return self.final_plan(execution_plans, projection);
-        }
-
-        // Based on entries in the manifest files, find them in the cache and create a physical plan.
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            self.get_cache_exectuion_plan(
-                &mut execution_plans,
-                cache_manager,
-                &mut manifest_files,
-                projection,
-                filters,
-                limit,
-                state,
-                time_partition.clone(),
-            )
-            .await?;
         }
 
         // Hot tier data fetch

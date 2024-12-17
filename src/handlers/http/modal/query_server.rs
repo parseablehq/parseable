@@ -17,11 +17,11 @@
  */
 
 use crate::handlers::airplane;
-use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{self, role};
+use crate::handlers::http::{base_path, caching_removed};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
@@ -328,18 +328,10 @@ impl QueryServer {
                     )
                     .service(
                         web::resource("/cache")
-                            // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
-                            .route(
-                                web::put()
-                                    .to(querier_logstream::put_enable_cache)
-                                    .authorize_for_stream(Action::PutCacheEnabled),
-                            )
-                            // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
-                            .route(
-                                web::get()
-                                    .to(querier_logstream::get_cache_enabled)
-                                    .authorize_for_stream(Action::GetCacheEnabled),
-                            ),
+                            // PUT "/logstream/{logstream}/cache" ==> caching has been deprecated
+                            .route(web::put().to(caching_removed))
+                            // GET "/logstream/{logstream}/cache" ==> caching has been deprecated
+                            .route(web::get().to(caching_removed)),
                     )
                     .service(
                         web::resource("/hottier")

@@ -243,22 +243,6 @@ impl StreamInfo {
             })
     }
 
-    pub fn get_cache_enabled(&self, stream_name: &str) -> Result<bool, MetadataError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        map.get(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.cache_enabled)
-    }
-
-    pub fn set_cache_enabled(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
-        let mut map = self.write().expect(LOCK_EXPECT);
-        let stream = map
-            .get_mut(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?;
-        stream.cache_enabled = enable;
-        Ok(())
-    }
-
     pub fn set_hot_tier(&self, stream_name: &str, enable: bool) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         let stream = map
@@ -323,6 +307,7 @@ impl StreamInfo {
         map.remove(stream_name);
     }
 
+    #[allow(dead_code)]
     pub async fn upsert_stream_info(
         &self,
         storage: &(impl ObjectStorage + ?Sized),

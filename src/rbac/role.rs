@@ -31,8 +31,6 @@ pub enum Action {
     DeleteStream,
     GetRetention,
     PutRetention,
-    GetCacheEnabled,
-    PutCacheEnabled,
     PutHotTierEnabled,
     GetHotTierEnabled,
     DeleteHotTierEnabled,
@@ -62,8 +60,6 @@ pub enum Action {
     GetFilter,
     CreateFilter,
     DeleteFilter,
-    ListCache,
-    RemoveCache,
     Login,
     Metrics,
 }
@@ -136,8 +132,6 @@ impl RoleBuilder {
                 | Action::ListFilter
                 | Action::CreateFilter
                 | Action::DeleteFilter
-                | Action::ListCache
-                | Action::RemoveCache
                 | Action::GetAnalytics => Permission::Unit(action),
                 Action::Ingest
                 | Action::GetSchema
@@ -145,8 +139,6 @@ impl RoleBuilder {
                 | Action::GetStats
                 | Action::GetRetention
                 | Action::PutRetention
-                | Action::GetCacheEnabled
-                | Action::PutCacheEnabled
                 | Action::PutAlert
                 | Action::GetAlert
                 | Action::All => Permission::Stream(action, self.stream.clone().unwrap()),
@@ -221,8 +213,6 @@ pub mod model {
                 Action::GetStats,
                 Action::GetRetention,
                 Action::PutRetention,
-                Action::PutCacheEnabled,
-                Action::GetCacheEnabled,
                 Action::PutHotTierEnabled,
                 Action::GetHotTierEnabled,
                 Action::DeleteHotTierEnabled,
@@ -267,8 +257,6 @@ pub mod model {
                 Action::Ingest,
                 Action::QueryLLM,
                 Action::GetStreamInfo,
-                Action::GetCacheEnabled,
-                Action::PutCacheEnabled,
                 Action::GetFilter,
                 Action::ListFilter,
                 Action::CreateFilter,
