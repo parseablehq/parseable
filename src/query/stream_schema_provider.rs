@@ -63,7 +63,6 @@ use crate::{
         self, column::TypedStatistics, manifest::Manifest, snapshot::ManifestItem, ManifestFile,
     },
     event::{self, DEFAULT_TIMESTAMP_KEY},
-    localcache::LocalCacheManager,
     metadata::STREAM_INFO,
     metrics::QUERY_CACHE_HIT,
     option::CONFIG,
@@ -318,7 +317,6 @@ impl TableProvider for StandardTableProvider {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut memory_exec = None;
-        let mut cache_exec = None;
         let mut hot_tier_exec = None;
         let mut listing_exec = None;
         let object_store = state
@@ -417,22 +415,6 @@ impl TableProvider for StandardTableProvider {
             );
         }
 
-        // Based on entries in the manifest files, find them in the cache and create a physical plan.
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            cache_exec = get_cache_exectuion_plan(
-                cache_manager,
-                &self.stream,
-                &mut manifest_files,
-                self.schema.clone(),
-                projection,
-                filters,
-                limit,
-                state,
-                time_partition.clone(),
-            )
-            .await?;
-        }
-
         // Hot tier data fetch
         if let Some(hot_tier_manager) = HotTierManager::global() {
             if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
@@ -453,7 +435,7 @@ impl TableProvider for StandardTableProvider {
         if manifest_files.is_empty() {
             QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
             return final_plan(
-                vec![listing_exec, memory_exec, cache_exec, hot_tier_exec],
+                vec![listing_exec, memory_exec, hot_tier_exec],
                 projection,
                 self.schema.clone(),
             );
@@ -474,13 +456,7 @@ impl TableProvider for StandardTableProvider {
         .await?;
 
         Ok(final_plan(
-            vec![
-                listing_exec,
-                memory_exec,
-                cache_exec,
-                hot_tier_exec,
-                Some(remote_exec),
-            ],
+            vec![listing_exec, memory_exec, hot_tier_exec, Some(remote_exec)],
             projection,
             self.schema.clone(),
         )?)
@@ -509,55 +485,6 @@ impl TableProvider for StandardTableProvider {
             .collect_vec();
         Ok(res_vec)
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn get_cache_exectuion_plan(
-    cache_manager: &LocalCacheManager,
-    stream: &str,
-    manifest_files: &mut Vec<File>,
-    schema: Arc<Schema>,
-    projection: Option<&Vec<usize>>,
-    filters: &[Expr],
-    limit: Option<usize>,
-    state: &dyn Session,
-    time_partition: Option<String>,
-) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
-    let (cached, remainder) = cache_manager
-        .partition_on_cached(stream, manifest_files.clone(), |file: &File| {
-            &file.file_path
-        })
-        .await
-        .map_err(|err| DataFusionError::External(Box::new(err)))?;
-
-    // Assign remaining entries back to manifest list
-    // This is to be used for remote query
-    *manifest_files = remainder;
-
-    let cached = cached
-        .into_iter()
-        .map(|(mut file, cache_path)| {
-            let cache_path = object_store::path::Path::from_absolute_path(cache_path).unwrap();
-            file.file_path = cache_path.to_string();
-            file
-        })
-        .collect();
-
-    let (partitioned_files, statistics) = partitioned_files(cached, &schema);
-    let plan = create_parquet_physical_plan(
-        ObjectStoreUrl::parse("file:///").unwrap(),
-        partitioned_files,
-        statistics,
-        schema.clone(),
-        projection,
-        filters,
-        limit,
-        state,
-        time_partition.clone(),
-    )
-    .await?;
-
-    Ok(Some(plan))
 }
 
 #[allow(clippy::too_many_arguments)]

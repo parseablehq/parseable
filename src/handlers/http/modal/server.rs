@@ -20,14 +20,13 @@ use crate::analytics;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
-use crate::handlers::http::cache;
+use crate::handlers::http::caching_removed;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
 use crate::handlers::http::trino;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
 use crate::hottier::HotTierManager;
-use crate::localcache::LocalCacheManager;
 use crate::metrics;
 use crate::migration;
 use crate::storage;
@@ -98,12 +97,6 @@ impl ParseableServer for Server {
 
     // configure the server and start an instance of the single server setup
     async fn init(&self) -> anyhow::Result<()> {
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            cache_manager
-                .validate(CONFIG.parseable.local_cache_size)
-                .await?;
-        };
-
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -254,8 +247,8 @@ impl Server {
             web::scope("/{user_id}").service(
                 web::scope("/{stream}").service(
                     web::resource("")
-                        .route(web::get().to(cache::list).authorize(Action::ListCache))
-                        .route(web::post().to(cache::remove).authorize(Action::RemoveCache)),
+                        .route(web::get().to(caching_removed))
+                        .route(web::post().to(caching_removed)),
                 ),
             ),
         )
@@ -361,17 +354,9 @@ impl Server {
                     .service(
                         web::resource("/cache")
                             // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
-                            .route(
-                                web::put()
-                                    .to(logstream::put_enable_cache)
-                                    .authorize_for_stream(Action::PutCacheEnabled),
-                            )
+                            .route(web::put().to(caching_removed))
                             // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
-                            .route(
-                                web::get()
-                                    .to(logstream::get_cache_enabled)
-                                    .authorize_for_stream(Action::GetCacheEnabled),
-                            ),
+                            .route(web::get().to(caching_removed)),
                     )
                     .service(
                         web::resource("/hottier")
