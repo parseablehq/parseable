@@ -36,3 +36,17 @@ pub mod resource {
         include!("opentelemetry.proto.resource.v1.rs");
     }
 }
+
+/// Generated types used in metrics.
+pub mod metrics {
+    pub mod v1 {
+        include!("opentelemetry.proto.metrics.v1.rs");
+    }
+}
+
+/// Generated types used in traces.
+pub mod trace {
+    pub mod v1 {
+        include!("opentelemetry.proto.trace.v1.rs");
+    }
+}
