@@ -47,6 +47,7 @@ use crate::response::QueryResponse;
 use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
+use crate::utils::time::{TimeParseError, TimeRange};
 
 use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
@@ -80,13 +81,17 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
                 .await?
         }
     };
+
+    let time_range =
+        TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
+
     // create a visitor to extract the table name
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
 
     let tables = visitor.into_inner();
     update_schema_when_distributed(tables).await?;
-    let mut query: LogicalQuery = into_query(&query_request, &session_state).await?;
+    let mut query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
 
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
@@ -218,6 +223,7 @@ impl FromRequest for Query {
 pub async fn into_query(
     query: &Query,
     session_state: &SessionState,
+    time_range: TimeRange,
 ) -> Result<LogicalQuery, QueryError> {
     if query.query.is_empty() {
         return Err(QueryError::EmptyQuery);
@@ -231,40 +237,11 @@ pub async fn into_query(
         return Err(QueryError::EmptyEndTime);
     }
 
-    let (start, end) = parse_human_time(&query.start_time, &query.end_time)?;
-
-    if start.timestamp() > end.timestamp() {
-        return Err(QueryError::StartTimeAfterEndTime);
-    }
-
     Ok(crate::query::Query {
         raw_logical_plan: session_state.create_logical_plan(&query.query).await?,
-        start,
-        end,
+        time_range,
         filter_tag: query.filter_tags.clone(),
     })
-}
-
-fn parse_human_time(
-    start_time: &str,
-    end_time: &str,
-) -> Result<(DateTime<Utc>, DateTime<Utc>), QueryError> {
-    let start: DateTime<Utc>;
-    let end: DateTime<Utc>;
-
-    if end_time == "now" {
-        end = Utc::now();
-        start = end - chrono::Duration::from_std(humantime::parse_duration(start_time)?)?;
-    } else {
-        start = DateTime::parse_from_rfc3339(start_time)
-            .map_err(|_| QueryError::StartTimeParse)?
-            .into();
-        end = DateTime::parse_from_rfc3339(end_time)
-            .map_err(|_| QueryError::EndTimeParse)?
-            .into();
-    };
-
-    Ok((start, end))
 }
 
 /// unused for now, might need it in the future
@@ -312,16 +289,8 @@ pub enum QueryError {
     EmptyStartTime,
     #[error("End time cannot be empty")]
     EmptyEndTime,
-    #[error("Could not parse start time correctly")]
-    StartTimeParse,
-    #[error("Could not parse end time correctly")]
-    EndTimeParse,
-    #[error("While generating times for 'now' failed to parse duration")]
-    NotValidDuration(#[from] humantime::DurationError),
-    #[error("Parsed duration out of range")]
-    OutOfRange(#[from] chrono::OutOfRangeError),
-    #[error("Start time cannot be greater than the end time")]
-    StartTimeAfterEndTime,
+    #[error("Error while parsing provided time range: {0}")]
+    TimeParse(#[from] TimeParseError),
     #[error("Unauthorized")]
     Unauthorized,
     #[error("Datafusion Error: {0}")]
