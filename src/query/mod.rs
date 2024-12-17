@@ -46,6 +46,7 @@ use crate::event;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
 use crate::storage::{ObjectStorageProvider, StorageDir};
+use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(CONFIG.storage()));
@@ -54,8 +55,7 @@ pub static QUERY_SESSION: Lazy<SessionContext> =
 #[derive(Debug)]
 pub struct Query {
     pub raw_logical_plan: LogicalPlan,
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub time_range: TimeRange,
     pub filter_tag: Option<Vec<String>>,
 }
 
@@ -164,8 +164,8 @@ impl Query {
             LogicalPlan::Explain(plan) => {
                 let transformed = transform(
                     plan.plan.as_ref().clone(),
-                    self.start.naive_utc(),
-                    self.end.naive_utc(),
+                    self.time_range.start.naive_utc(),
+                    self.time_range.end.naive_utc(),
                     filters,
                     time_partition,
                 );
@@ -182,8 +182,8 @@ impl Query {
             x => {
                 transform(
                     x,
-                    self.start.naive_utc(),
-                    self.end.naive_utc(),
+                    self.time_range.start.naive_utc(),
+                    self.time_range.end.naive_utc(),
                     filters,
                     time_partition,
                 )
