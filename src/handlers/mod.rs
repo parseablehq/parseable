@@ -45,5 +45,9 @@ const TRINO_USER: &str = "x-trino-user";
 // constants for log Source values for known sources and formats
 const LOG_SOURCE_KINESIS: &str = "kinesis";
 
+// OpenTelemetry sends data in JSON format with
+// specification as explained here https://opentelemetry.io/docs/specs/otel/logs/data-model/
+const LOG_SOURCE_OTEL: &str = "otel";
+
 // AWS Kinesis constants
 const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";

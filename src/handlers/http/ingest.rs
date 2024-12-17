@@ -20,13 +20,14 @@ use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
+use super::{otel_logs, otel_metrics};
 use crate::event::{
     self,
     error::EventError,
     format::{self, EventFormat},
 };
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
-use crate::handlers::STREAM_NAME_HEADER_KEY;
+use crate::handlers::{LOG_SOURCE_KEY, LOG_SOURCE_OTEL, STREAM_NAME_HEADER_KEY};
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
@@ -106,7 +107,85 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
 // Handler for POST /v1/logs to ingest OTEL logs
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn handle_otel_ingestion(
+pub async fn handle_otel_logs_ingestion(
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<HttpResponse, PostError> {
+    if let Some((_, stream_name)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
+    {
+        let stream_name = stream_name.to_str().unwrap().to_owned();
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+
+        //flatten logs
+        if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
+        {
+            let log_source: String = log_source.to_str().unwrap().to_owned();
+            if log_source == LOG_SOURCE_OTEL {
+                let mut json = otel_logs::flatten_otel_logs(&body);
+                for record in json.iter_mut() {
+                    let body: Bytes = serde_json::to_vec(record).unwrap().into();
+                    push_logs(&stream_name, &req, &body).await?;
+                }
+            } else {
+                return Err(PostError::CustomError("Unknown log source".to_string()));
+            }
+        } else {
+            return Err(PostError::CustomError(
+                "log source key header is missing".to_string(),
+            ));
+        }
+    } else {
+        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    }
+    Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for POST /v1/metrics to ingest OTEL metrics
+// ingests events by extracting stream name from header
+// creates if stream does not exist
+pub async fn handle_otel_metrics_ingestion(
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<HttpResponse, PostError> {
+    if let Some((_, stream_name)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
+    {
+        let stream_name = stream_name.to_str().unwrap().to_owned();
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+
+        //flatten logs
+        if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY)
+        {
+            let log_source: String = log_source.to_str().unwrap().to_owned();
+            if log_source == LOG_SOURCE_OTEL {
+                let mut json = otel_metrics::flatten_otel_metrics(&body);
+                for record in json.iter_mut() {
+                    let body: Bytes = serde_json::to_vec(record).unwrap().into();
+                    push_logs(&stream_name, &req, &body).await?;
+                }
+            } else {
+                return Err(PostError::CustomError("Unknown log source".to_string()));
+            }
+        } else {
+            return Err(PostError::CustomError(
+                "log source key header is missing".to_string(),
+            ));
+        }
+    } else {
+        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    }
+    Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for POST /v1/traces to ingest OTEL traces
+// ingests events by extracting stream name from header
+// creates if stream does not exist
+pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
     body: Bytes,
 ) -> Result<HttpResponse, PostError> {
