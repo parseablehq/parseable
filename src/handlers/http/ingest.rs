@@ -27,7 +27,6 @@ use crate::event::{
 };
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 use crate::handlers::STREAM_NAME_HEADER_KEY;
-use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
@@ -236,8 +235,6 @@ pub enum PostError {
     #[error("Error: {0}")]
     DashboardError(#[from] DashboardError),
     #[error("Error: {0}")]
-    CacheError(#[from] CacheError),
-    #[error("Error: {0}")]
     StreamError(#[from] StreamError),
 }
 
@@ -259,7 +256,6 @@ impl actix_web::ResponseError for PostError {
             PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::CacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

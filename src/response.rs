@@ -66,6 +66,7 @@ impl QueryResponse {
         Ok(web::Json(response))
     }
 
+    #[allow(dead_code)]
     pub fn into_flight(self) -> Result<Response<DoGetStream>, Status> {
         into_flight_data(self.records)
     }

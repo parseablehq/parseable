@@ -34,18 +34,13 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
 use crate::handlers::http::cluster::get_ingestor_info;
-
-use crate::handlers::{CACHE_RESULTS_HEADER_KEY, CACHE_VIEW_HEADER_KEY, USER_ID_HEADER_KEY};
+use crate::handlers::http::query::{
+    authorize_and_set_filter_tags, into_query, update_schema_when_distributed,
+};
+use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::CONFIG;
-
-use crate::handlers::livetail::cross_origin_config;
-
-use crate::handlers::http::query::{
-    authorize_and_set_filter_tags, into_query, put_results_in_cache, update_schema_when_distributed,
-};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::querycache::QueryCacheManager;
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
     send_to_ingester,
@@ -64,8 +59,6 @@ use crate::handlers::livetail::extract_session_key;
 use crate::metadata::STREAM_INFO;
 use crate::rbac;
 use crate::rbac::Users;
-
-use super::http::query::get_results_from_cache;
 
 #[derive(Clone, Debug)]
 pub struct AirServiceImpl {}
@@ -159,44 +152,10 @@ impl FlightService for AirServiceImpl {
 
         let streams = visitor.into_inner();
 
-        let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
-            .await
-            .unwrap_or(None);
-
-        let cache_results = req
-            .metadata()
-            .get(CACHE_RESULTS_HEADER_KEY)
-            .and_then(|value| value.to_str().ok()); // I dont think we need to own this.
-
-        let show_cached = req
-            .metadata()
-            .get(CACHE_VIEW_HEADER_KEY)
-            .and_then(|value| value.to_str().ok());
-
-        let user_id = req
-            .metadata()
-            .get(USER_ID_HEADER_KEY)
-            .and_then(|value| value.to_str().ok());
         let stream_name = streams
             .first()
             .ok_or_else(|| Status::aborted("Malformed SQL Provided, Table Name Not Found"))?
             .to_owned();
-
-        // send the cached results
-        if let Ok(cache_results) = get_results_from_cache(
-            show_cached,
-            query_cache_manager,
-            &stream_name,
-            user_id,
-            &time_range,
-            &ticket.query,
-            ticket.send_null,
-            ticket.fields,
-        )
-        .await
-        {
-            return cache_results.into_flight();
-        }
 
         update_schema_when_distributed(streams)
             .await
@@ -261,21 +220,6 @@ impl FlightService for AirServiceImpl {
             .execute(stream_name.clone())
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
-
-        if let Err(err) = put_results_in_cache(
-            cache_results,
-            user_id,
-            query_cache_manager,
-            &stream_name,
-            &records,
-            query.time_range.start.to_rfc3339(),
-            query.time_range.end.to_rfc3339(),
-            ticket.query,
-        )
-        .await
-        {
-            error!("{}", err);
-        };
 
         /*
         * INFO: No returning the schema with the data.

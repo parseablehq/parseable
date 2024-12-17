@@ -18,7 +18,6 @@
  */
 
 use crossterm::style::Stylize;
-use human_size::SpecificSize;
 
 use crate::about;
 use crate::utils::uid::Uid;
@@ -93,7 +92,6 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
 /// Prints information about the `ObjectStorage`.
 /// - Mode (`Local drive`, `S3 bucket`)
 /// - Staging (temporary landing point for incoming events)
-/// - Cache (local cache of data)
 /// - Store (path where the data is stored and its latency)
 async fn storage_info(config: &Config) {
     let storage = config.storage();
@@ -109,20 +107,6 @@ async fn storage_info(config: &Config) {
         config.staging_dir().to_string_lossy(),
     );
 
-    if let Some(path) = &config.parseable.local_cache_path {
-        let size: SpecificSize<human_size::Gigibyte> =
-            SpecificSize::new(config.parseable.local_cache_size as f64, human_size::Byte)
-                .unwrap()
-                .into();
-
-        eprintln!(
-            "\
-        {:8}Cache:              \"{}\", (size: {})",
-            "",
-            path.display(),
-            size
-        );
-    }
     if let Some(path) = &config.parseable.hot_tier_storage_path {
         eprintln!(
             "\
