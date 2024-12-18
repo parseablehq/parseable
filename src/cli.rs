@@ -122,7 +122,7 @@ pub struct Cli {
     pub trino_catalog: Option<String>,
 
     // Kafka specific env vars
-    pub kafka_topic: Option<String>,
+    pub kafka_topics: Option<String>,
     pub kafka_host: Option<String>,
     pub kafka_group: Option<String>,
     pub kafka_client_id: Option<String>,
@@ -174,7 +174,7 @@ impl Cli {
     pub const TRINO_SCHEMA: &'static str = "p-trino-schema";
 
     // Kafka specific env vars
-    pub const KAFKA_TOPIC: &'static str = "kafka-topic";
+    pub const KAFKA_TOPICS: &'static str = "kafka-topics";
     pub const KAFKA_HOST: &'static str = "kafka-host";
     pub const KAFKA_GROUP: &'static str = "kafka-group";
     pub const KAFKA_CLIENT_ID: &'static str = "kafka-client-id";
@@ -195,9 +195,9 @@ impl Cli {
     pub fn create_cli_command_with_clap(name: &'static str) -> Command {
         Command::new(name).next_line_help(false)
         .arg(
-                 Arg::new(Self::KAFKA_TOPIC)
-                     .long(Self::KAFKA_TOPIC)
-                     .env("P_KAFKA_TOPIC")
+                 Arg::new(Self::KAFKA_TOPICS)
+                     .long(Self::KAFKA_TOPICS)
+                     .env("P_KAFKA_TOPICS")
                      .value_name("STRING")
                      .help("Kafka topic to subscribe to"),
              )
@@ -579,7 +579,7 @@ impl FromArgMatches for Cli {
         self.trino_schema = m.get_one::<String>(Self::TRINO_SCHEMA).cloned();
         self.trino_username = m.get_one::<String>(Self::TRINO_USER_NAME).cloned();
 
-        self.kafka_topic = m.get_one::<String>(Self::KAFKA_TOPIC).cloned();
+        self.kafka_topics = m.get_one::<String>(Self::KAFKA_TOPICS).cloned();
         self.kafka_host = m.get_one::<String>(Self::KAFKA_HOST).cloned();
         self.kafka_group = m.get_one::<String>(Self::KAFKA_GROUP).cloned();
         self.kafka_client_id = m.get_one::<String>(Self::KAFKA_CLIENT_ID).cloned();

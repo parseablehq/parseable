@@ -19,6 +19,7 @@
 use arrow_schema::Field;
 use chrono::Utc;
 use futures_util::StreamExt;
+use itertools::Itertools;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::Consumer;
@@ -29,8 +30,8 @@ use rdkafka::{Message, TopicPartitionList};
 use serde::{Deserialize, Serialize};
 use std::num::ParseIntError;
 use std::sync::Arc;
-use std::{collections::HashMap, fmt::Debug, str::FromStr};
-use tracing::{debug, error, info};
+use std::{collections::HashMap, fmt::Debug};
+use tracing::{debug, error, info, warn};
 
 use crate::option::CONFIG;
 use crate::{
@@ -55,7 +56,7 @@ pub enum SslProtocol {
 #[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaError {
-    #[error("Please set env var {0} (To use Kafka integration env vars P_KAFKA_TOPIC, P_KAFKA_HOST, and P_KAFKA_GROUP are mandatory)")]
+    #[error("Please set env var {0} (To use Kafka integration env vars P_KAFKA_TOPICS, P_KAFKA_HOST, and P_KAFKA_GROUP are mandatory)")]
     NoVarError(&'static str),
 
     #[error("Kafka error {0}")]
@@ -121,8 +122,11 @@ pub enum KafkaError {
 //         .map_err(|raw| KafkaError::ParseDurationError(key_prefix, raw))
 // }
 
-fn setup_consumer() -> Result<(StreamConsumer, String), KafkaError> {
-    if let Some(topic) = &CONFIG.parseable.kafka_topic {
+fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
+    if let Some(topics) = &CONFIG.parseable.kafka_topics {
+        // topics can be a comma separated list of topics to subscribe to
+        let topics = topics.split(",").map(|v| v.to_owned()).collect_vec();
+
         let host = if CONFIG.parseable.kafka_host.is_some() {
             CONFIG.parseable.kafka_host.as_ref()
         } else {
@@ -152,24 +156,41 @@ fn setup_consumer() -> Result<(StreamConsumer, String), KafkaError> {
         }
 
         let consumer: StreamConsumer = conf.create()?;
-        consumer.subscribe(&[topic.as_str()])?;
+        consumer.subscribe(&topics.iter().map(|v| v.as_str()).collect_vec())?;
 
         if let Some(vals_raw) = CONFIG.parseable.kafka_partitions.as_ref() {
-            let vals = vals_raw
-                .split(',')
-                .map(i32::from_str)
-                .collect::<Result<Vec<i32>, ParseIntError>>()
-                .map_err(|raw| KafkaError::ParseIntError("P_KAFKA_PARTITIONS", raw))?;
-
-            let mut parts = TopicPartitionList::new();
-            for val in vals {
-                parts.add_partition(topic, val);
+            // partitions is a comma separated pairs of topic:partitions
+            let mut topic_partition_pairs = Vec::new();
+            let mut set = true;
+            for vals in vals_raw.split(",") {
+                let intermediate = vals.split(":").collect_vec();
+                if intermediate.len() != 2 {
+                    warn!(
+                        "Value for P_KAFKA_PARTITIONS is incorrect! Skipping setting partitions!"
+                    );
+                    set = false;
+                    break;
+                }
+                topic_partition_pairs.push(intermediate);
             }
-            consumer.seek_partitions(parts, Timeout::Never)?;
+
+            if set {
+                let mut parts = TopicPartitionList::new();
+                for pair in topic_partition_pairs {
+                    let topic = pair[0];
+                    match pair[1].parse::<i32>() {
+                        Ok(partition) => {
+                            parts.add_partition(topic, partition);
+                        }
+                        Err(_) => warn!("Skipping setting partition for topic- {topic}"),
+                    }
+                }
+                consumer.seek_partitions(parts, Timeout::Never)?;
+            }
         }
-        Ok((consumer, topic.clone()))
+        Ok((consumer, topics.clone()))
     } else {
-        // if the user hasn't even set KAFKA_TOPIC
+        // if the user hasn't even set KAFKA_TOPICS
         // then they probably don't want to use the integration
         // send back the DoNotPrint error
         Err(KafkaError::DoNotPrintError)
@@ -184,11 +205,14 @@ fn resolve_schema(stream_name: &str) -> Result<HashMap<String, Arc<Field>>, Kafk
     Ok(raw.schema.clone())
 }
 
-async fn ingest_message<'a>(stream_name: &str, msg: BorrowedMessage<'a>) -> Result<(), KafkaError> {
+async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
     let Some(payload) = msg.payload() else {
-        debug!("{} No payload for stream", stream_name);
+        debug!("No payload received");
         return Ok(());
     };
+
+    let msg = msg.detach();
+    let stream_name = msg.topic();
 
     // stream should get created only if there is an incoming event, not before that
     create_stream_if_not_exists(stream_name, &StreamType::UserDefined.to_string()).await?;
@@ -225,12 +249,12 @@ async fn ingest_message<'a>(stream_name: &str, msg: BorrowedMessage<'a>) -> Resu
 }
 
 pub async fn setup_integration() {
-    let (consumer, stream_name) = match setup_consumer() {
+    let (consumer, stream_names) = match setup_consumer() {
         Ok(c) => c,
         Err(err) => {
             match err {
                 KafkaError::DoNotPrintError => {
-                    debug!("P_KAFKA_TOPIC not set, skipping kafka integration");
+                    debug!("P_KAFKA_TOPICS not set, skipping kafka integration");
                 }
                 _ => {
                     error!("{err}");
@@ -240,11 +264,11 @@ pub async fn setup_integration() {
         }
     };
 
-    info!("Setup kafka integration for {stream_name}");
+    info!("Setup kafka integration for {stream_names:?}");
     let mut stream = consumer.stream();
 
     while let Ok(curr) = stream.next().await.unwrap() {
-        if let Err(err) = ingest_message(&stream_name, curr).await {
+        if let Err(err) = ingest_message(curr).await {
             error!("Unable to ingest incoming kafka message- {err}")
         }
     }
