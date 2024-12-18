@@ -29,7 +29,7 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
-use super::{EventFormat, Metadata, Tags};
+use super::{override_num_fields_from_stream_schema, EventFormat, Metadata, Tags};
 use crate::utils::{arrow::get_field, json::flatten_json_body};
 
 pub struct Event {
@@ -50,8 +50,9 @@ impl EventFormat for Event {
         time_partition: Option<String>,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
         let data = flatten_json_body(self.data, None, None, None, false)?;
-        let stream_schema = schema;
-
+        let mut stream_schema = schema;
+        //override the number fields to Float64 data type in stream schema
+        stream_schema = override_num_fields_from_stream_schema(stream_schema);
         // incoming event may be a single json or a json array
         // but Data (type defined above) is a vector of json values
         // hence we need to convert the incoming event to a vector of json values

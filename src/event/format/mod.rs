@@ -222,6 +222,29 @@ pub fn override_num_fields_from_schema(schema: Vec<Arc<Field>>) -> Vec<Arc<Field
         .collect::<Vec<Arc<Field>>>()
 }
 
+///All number fields from stream schema are forced into Float64
+pub fn override_num_fields_from_stream_schema(
+    schema: HashMap<String, Arc<Field>>,
+) -> HashMap<String, Arc<Field>> {
+    schema
+        .iter()
+        .map(|(name, field)| {
+            if field.data_type().is_numeric() {
+                (
+                    name.clone(),
+                    Arc::new(Field::new(
+                        field.name(),
+                        DataType::Float64,
+                        field.is_nullable(),
+                    )),
+                )
+            } else {
+                (name.clone(), field.clone())
+            }
+        })
+        .collect::<HashMap<String, Arc<Field>>>()
+}
+
 pub fn update_field_type_in_schema(
     inferred_schema: Arc<Schema>,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,

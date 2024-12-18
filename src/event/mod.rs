@@ -22,6 +22,7 @@ mod writer;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
+use format::override_num_fields_from_schema;
 use itertools::Itertools;
 use std::sync::Arc;
 use tracing::error;
@@ -157,7 +158,11 @@ pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), Event
         .get_mut(stream_name)
         .expect("map has entry for this stream name")
         .schema;
-    let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
+    //override the number fields to Float64 data type in memory map schema before merge
+    let mut current_schema = Schema::new(map.values().cloned().collect::<Fields>());
+    current_schema = Schema::new(override_num_fields_from_schema(
+        current_schema.fields.to_vec(),
+    ));
     let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
     map.clear();
     map.extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
