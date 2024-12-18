@@ -47,7 +47,7 @@ use chrono::Local;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use tracing::error;
+use tracing::{debug, error, instrument, trace};
 
 use std::collections::BTreeMap;
 use std::{
@@ -66,7 +66,7 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
 }
 
 #[async_trait]
-pub trait ObjectStorage: Send + Sync + 'static {
+pub trait ObjectStorage: std::fmt::Debug + Send + Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(
@@ -537,23 +537,25 @@ pub trait ObjectStorage: Send + Sync + 'static {
         Ok(Bytes::new())
     }
 
+    #[instrument(level = "debug")]
     async fn sync(&self, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
         if !Path::new(&CONFIG.staging_dir()).exists() {
+            trace!("Nothing to sync");
             return Ok(());
         }
 
         let streams = STREAM_INFO.list_streams();
 
-        for stream in &streams {
+        for stream_name in &streams {
             let time_partition = STREAM_INFO
-                .get_time_partition(stream)
+                .get_time_partition(stream_name)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let custom_partition = STREAM_INFO
-                .get_custom_partition(stream)
+                .get_custom_partition(stream_name)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let dir = StorageDir::new(stream);
+            let dir = StorageDir::new(stream_name);
             let schema = convert_disk_files_to_parquet(
-                stream,
+                stream_name,
                 &dir,
                 time_partition,
                 custom_partition.clone(),
@@ -561,12 +563,14 @@ pub trait ObjectStorage: Send + Sync + 'static {
             )
             .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
+            debug!("Arrow files compressed into parquet for stream: {stream_name}");
+
             if let Some(schema) = schema {
                 let static_schema_flag = STREAM_INFO
-                    .get_static_schema_flag(stream)
+                    .get_static_schema_flag(stream_name)
                     .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
                 if static_schema_flag.is_none() {
-                    commit_schema_to_storage(stream, schema).await?;
+                    commit_schema_to_storage(stream_name, schema).await?;
                 }
             }
 
@@ -582,13 +586,13 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
                 let compressed_size = file.metadata().map_or(0, |meta| meta.len());
                 STORAGE_SIZE
-                    .with_label_values(&["data", stream, "parquet"])
+                    .with_label_values(&["data", stream_name, "parquet"])
                     .add(compressed_size as i64);
                 EVENTS_STORAGE_SIZE_DATE
-                    .with_label_values(&["data", stream, "parquet", file_date_part])
+                    .with_label_values(&["data", stream_name, "parquet", file_date_part])
                     .add(compressed_size as i64);
                 LIFETIME_EVENTS_STORAGE_SIZE
-                    .with_label_values(&["data", stream, "parquet"])
+                    .with_label_values(&["data", stream_name, "parquet"])
                     .add(compressed_size as i64);
                 let mut file_suffix = str::replacen(filename, ".", "/", 3);
 
@@ -601,12 +605,14 @@ pub trait ObjectStorage: Send + Sync + 'static {
                         str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
                 }
 
-                let stream_relative_path = format!("{stream}/{file_suffix}");
+                let stream_relative_path = format!("{stream_name}/{file_suffix}");
 
                 // Try uploading the file, handle potential errors without breaking the loop
                 if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
                     error!("Failed to upload file {}: {:?}", filename, e);
                     continue; // Skip to the next file
+                } else {
+                    debug!("Parquet file uploaded to s3 for stream: {stream_name}");
                 }
 
                 let absolute_path = self
@@ -615,9 +621,11 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 let store = CONFIG.storage().get_object_store();
                 let manifest =
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
-                catalog::update_snapshot(store, stream, manifest).await?;
+                catalog::update_snapshot(store, stream_name, manifest).await?;
 
-                let _ = fs::remove_file(file);
+                if let Err(e) = fs::remove_file(file) {
+                    error!("Couldn't delete parquet file: {stream_relative_path}; error = {e}")
+                }
             }
         }
 
