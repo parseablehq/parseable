@@ -33,7 +33,6 @@ use crate::option::Mode;
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
-    localcache::LocalCacheManager,
     metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
     option::CONFIG,
@@ -46,7 +45,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
-use itertools::Itertools;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use tracing::error;
@@ -546,13 +544,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
 
         let streams = STREAM_INFO.list_streams();
 
-        let cache_manager = LocalCacheManager::global();
-        let mut cache_updates: HashMap<&String, Vec<_>> = HashMap::new();
-
         for stream in &streams {
-            let cache_enabled = STREAM_INFO
-                .get_cache_enabled(stream)
-                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let time_partition = STREAM_INFO
                 .get_time_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
@@ -624,36 +616,9 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 let manifest =
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
-                if cache_enabled && cache_manager.is_some() {
-                    cache_updates
-                        .entry(stream)
-                        .or_default()
-                        .push((absolute_path, file));
-                } else {
-                    let _ = fs::remove_file(file);
-                }
+
+                let _ = fs::remove_file(file);
             }
-        }
-
-        // Cache management logic
-        if let Some(manager) = cache_manager {
-            let cache_updates = cache_updates
-                .into_iter()
-                .map(|(key, value)| (key.to_owned(), value))
-                .collect_vec();
-
-            tokio::spawn(async move {
-                for (stream, files) in cache_updates {
-                    for (storage_path, file) in files {
-                        if let Err(e) = manager
-                            .move_to_cache(&stream, storage_path, file.to_owned())
-                            .await
-                        {
-                            error!("Failed to move file to cache: {:?}", e);
-                        }
-                    }
-                }
-            });
         }
 
         Ok(())

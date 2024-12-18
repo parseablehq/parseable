@@ -43,9 +43,7 @@ spec:
           {{- toYaml .Values.parseable.securityContext | nindent 8 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
-        args: 
-        - /usr/bin/parseable
-        - {{ .Values.parseable.store }}
+        args: ["/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
         env:
           - name: HOSTNAME
             valueFrom:
@@ -73,6 +71,20 @@ spec:
           {{- end }}
           {{- end }}
 
+          {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+          {{- range $secret := .Values.parseable.gcsModeSecret.secrets }}
+          {{- range $key := $secret.keys }}
+          {{- $envPrefix := $secret.prefix | default "" | upper }}
+          {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
+          - name: {{ $envPrefix }}{{ $envKey | replace "GCS" "S3"}}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $secret.name }}
+                key: {{ $key }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+          
           {{- if and .Values.parseable.blobModeSecret .Values.parseable.blobModeSecret.enabled }}
           {{- range $secret := .Values.parseable.blobModeSecret.secrets }}
           {{- range $key := $secret.keys }}

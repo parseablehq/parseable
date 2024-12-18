@@ -63,7 +63,6 @@ use crate::{
         self, column::TypedStatistics, manifest::Manifest, snapshot::ManifestItem, ManifestFile,
     },
     event::{self, DEFAULT_TIMESTAMP_KEY},
-    localcache::LocalCacheManager,
     metadata::STREAM_INFO,
     metrics::QUERY_CACHE_HIT,
     option::CONFIG,
@@ -318,7 +317,6 @@ impl TableProvider for StandardTableProvider {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut memory_exec = None;
-        let mut cache_exec = None;
         let mut hot_tier_exec = None;
         let mut listing_exec = None;
         let object_store = state
@@ -333,12 +331,12 @@ impl TableProvider for StandardTableProvider {
             .await
             .map_err(|err| DataFusionError::Plan(err.to_string()))?;
         let time_partition = object_store_format.time_partition;
-        let mut time_filters = extract_primary_filter(filters, time_partition.clone());
+        let mut time_filters = extract_primary_filter(filters, &time_partition);
         if time_filters.is_empty() {
             return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
         }
 
-        if include_now(filters, time_partition.clone()) {
+        if include_now(filters, &time_partition) {
             if let Some(records) =
                 event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
             {
@@ -417,22 +415,6 @@ impl TableProvider for StandardTableProvider {
             );
         }
 
-        // Based on entries in the manifest files, find them in the cache and create a physical plan.
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            cache_exec = get_cache_exectuion_plan(
-                cache_manager,
-                &self.stream,
-                &mut manifest_files,
-                self.schema.clone(),
-                projection,
-                filters,
-                limit,
-                state,
-                time_partition.clone(),
-            )
-            .await?;
-        }
-
         // Hot tier data fetch
         if let Some(hot_tier_manager) = HotTierManager::global() {
             if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
@@ -453,7 +435,7 @@ impl TableProvider for StandardTableProvider {
         if manifest_files.is_empty() {
             QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
             return final_plan(
-                vec![listing_exec, memory_exec, cache_exec, hot_tier_exec],
+                vec![listing_exec, memory_exec, hot_tier_exec],
                 projection,
                 self.schema.clone(),
             );
@@ -474,13 +456,7 @@ impl TableProvider for StandardTableProvider {
         .await?;
 
         Ok(final_plan(
-            vec![
-                listing_exec,
-                memory_exec,
-                cache_exec,
-                hot_tier_exec,
-                Some(remote_exec),
-            ],
+            vec![listing_exec, memory_exec, hot_tier_exec, Some(remote_exec)],
             projection,
             self.schema.clone(),
         )?)
@@ -509,55 +485,6 @@ impl TableProvider for StandardTableProvider {
             .collect_vec();
         Ok(res_vec)
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn get_cache_exectuion_plan(
-    cache_manager: &LocalCacheManager,
-    stream: &str,
-    manifest_files: &mut Vec<File>,
-    schema: Arc<Schema>,
-    projection: Option<&Vec<usize>>,
-    filters: &[Expr],
-    limit: Option<usize>,
-    state: &dyn Session,
-    time_partition: Option<String>,
-) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
-    let (cached, remainder) = cache_manager
-        .partition_on_cached(stream, manifest_files.clone(), |file: &File| {
-            &file.file_path
-        })
-        .await
-        .map_err(|err| DataFusionError::External(Box::new(err)))?;
-
-    // Assign remaining entries back to manifest list
-    // This is to be used for remote query
-    *manifest_files = remainder;
-
-    let cached = cached
-        .into_iter()
-        .map(|(mut file, cache_path)| {
-            let cache_path = object_store::path::Path::from_absolute_path(cache_path).unwrap();
-            file.file_path = cache_path.to_string();
-            file
-        })
-        .collect();
-
-    let (partitioned_files, statistics) = partitioned_files(cached, &schema);
-    let plan = create_parquet_physical_plan(
-        ObjectStoreUrl::parse("file:///").unwrap(),
-        partitioned_files,
-        statistics,
-        schema.clone(),
-        projection,
-        filters,
-        limit,
-        state,
-        time_partition.clone(),
-    )
-    .await?;
-
-    Ok(Some(plan))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -683,11 +610,11 @@ pub enum PartialTimeFilter {
 }
 
 impl PartialTimeFilter {
-    fn try_from_expr(expr: &Expr, time_partition: Option<String>) -> Option<Self> {
+    fn try_from_expr(expr: &Expr, time_partition: &Option<String>) -> Option<Self> {
         let Expr::BinaryExpr(binexpr) = expr else {
             return None;
         };
-        let (op, time) = extract_timestamp_bound(binexpr.clone(), time_partition)?;
+        let (op, time) = extract_timestamp_bound(binexpr, time_partition)?;
         let value = match op {
             Operator::Gt => PartialTimeFilter::Low(Bound::Excluded(time)),
             Operator::GtEq => PartialTimeFilter::Low(Bound::Included(time)),
@@ -814,7 +741,7 @@ fn return_listing_time_filters(
     }
 }
 
-pub fn include_now(filters: &[Expr], time_partition: Option<String>) -> bool {
+pub fn include_now(filters: &[Expr], time_partition: &Option<String>) -> bool {
     let current_minute = Utc::now()
         .with_second(0)
         .and_then(|x| x.with_nanosecond(0))
@@ -846,7 +773,7 @@ fn expr_in_boundary(filter: &Expr) -> bool {
     let Expr::BinaryExpr(binexpr) = filter else {
         return false;
     };
-    let Some((op, time)) = extract_timestamp_bound(binexpr.clone(), None) else {
+    let Some((op, time)) = extract_timestamp_bound(binexpr, &None) else {
         return false;
     };
 
@@ -860,39 +787,33 @@ fn expr_in_boundary(filter: &Expr) -> bool {
         )
 }
 
-fn extract_from_lit(expr: BinaryExpr, time_partition: Option<String>) -> Option<NaiveDateTime> {
-    let mut column_name: String = String::default();
-    if let Expr::Column(column) = *expr.left {
-        column_name = column.name;
-    }
-    if let Expr::Literal(value) = *expr.right {
-        match value {
-            ScalarValue::TimestampMillisecond(Some(value), _) => {
-                Some(DateTime::from_timestamp_millis(value).unwrap().naive_utc())
-            }
-            ScalarValue::TimestampNanosecond(Some(value), _) => {
-                Some(DateTime::from_timestamp_nanos(value).naive_utc())
-            }
-            ScalarValue::Utf8(Some(str_value)) => {
-                if time_partition.is_some() && column_name == time_partition.unwrap() {
-                    Some(str_value.parse::<NaiveDateTime>().unwrap())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    } else {
-        None
-    }
-}
-
-/* `BinaryExp` doesn't implement `Copy` */
 fn extract_timestamp_bound(
-    binexpr: BinaryExpr,
-    time_partition: Option<String>,
+    binexpr: &BinaryExpr,
+    time_partition: &Option<String>,
 ) -> Option<(Operator, NaiveDateTime)> {
-    Some((binexpr.op, extract_from_lit(binexpr, time_partition)?))
+    let Expr::Literal(value) = binexpr.right.as_ref() else {
+        return None;
+    };
+
+    let is_time_partition = match (binexpr.left.as_ref(), time_partition) {
+        (Expr::Column(column), Some(time_partition)) => &column.name == time_partition,
+        _ => false,
+    };
+
+    match value {
+        ScalarValue::TimestampMillisecond(Some(value), _) => Some((
+            binexpr.op,
+            DateTime::from_timestamp_millis(*value).unwrap().naive_utc(),
+        )),
+        ScalarValue::TimestampNanosecond(Some(value), _) => Some((
+            binexpr.op,
+            DateTime::from_timestamp_nanos(*value).naive_utc(),
+        )),
+        ScalarValue::Utf8(Some(str_value)) if is_time_partition => {
+            Some((binexpr.op, str_value.parse::<NaiveDateTime>().unwrap()))
+        }
+        _ => None,
+    }
 }
 
 async fn collect_manifest_files(
@@ -917,24 +838,26 @@ async fn collect_manifest_files(
         .collect())
 }
 
-// extract start time and end time from filter preficate
+// Extract start time and end time from filter predicate
 fn extract_primary_filter(
     filters: &[Expr],
-    time_partition: Option<String>,
+    time_partition: &Option<String>,
 ) -> Vec<PartialTimeFilter> {
-    let mut time_filters = Vec::new();
-    filters.iter().for_each(|expr| {
-        let _ = expr.apply(&mut |expr| {
-            let time = PartialTimeFilter::try_from_expr(expr, time_partition.clone());
-            if let Some(time) = time {
-                time_filters.push(time);
-                Ok(TreeNodeRecursion::Stop)
-            } else {
-                Ok(TreeNodeRecursion::Jump)
-            }
-        });
-    });
-    time_filters
+    filters
+        .iter()
+        .filter_map(|expr| {
+            let mut time_filter = None;
+            let _ = expr.apply(&mut |expr| {
+                if let Some(time) = PartialTimeFilter::try_from_expr(expr, time_partition) {
+                    time_filter = Some(time);
+                    Ok(TreeNodeRecursion::Stop) // Stop further traversal
+                } else {
+                    Ok(TreeNodeRecursion::Jump) // Skip this node
+                }
+            });
+            time_filter
+        })
+        .collect()
 }
 
 trait ManifestExt: ManifestFile {
@@ -1048,11 +971,16 @@ fn satisfy_constraints(value: CastRes, op: Operator, stats: &TypedStatistics) ->
 mod tests {
     use std::ops::Add;
 
-    use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
+    use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+    use datafusion::{
+        logical_expr::{BinaryExpr, Operator},
+        prelude::Expr,
+        scalar::ScalarValue,
+    };
 
     use crate::catalog::snapshot::ManifestItem;
 
-    use super::{is_overlapping_query, PartialTimeFilter};
+    use super::{extract_timestamp_bound, is_overlapping_query, PartialTimeFilter};
 
     fn datetime_min(year: i32, month: u32, day: u32) -> DateTime<Utc> {
         NaiveDate::from_ymd_opt(year, month, day)
@@ -1134,5 +1062,145 @@ mod tests {
         );
 
         assert!(!res)
+    }
+
+    #[test]
+    fn timestamp_in_milliseconds() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
+                Some(1672531200000),
+                None,
+            ))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        let expected = Some((
+            Operator::Eq,
+            NaiveDateTime::parse_from_str("2023-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn timestamp_in_nanoseconds() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Gt,
+            right: Box::new(Expr::Literal(ScalarValue::TimestampNanosecond(
+                Some(1672531200000000000),
+                None,
+            ))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        let expected = Some((
+            Operator::Gt,
+            NaiveDateTime::parse_from_str("2023-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn string_timestamp() {
+        let timestamp = "2023-01-01T00:00:00";
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Lt,
+            right: Box::new(Expr::Literal(ScalarValue::Utf8(Some(timestamp.to_owned())))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        let expected = Some((
+            Operator::Lt,
+            NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S").unwrap(),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn unexpected_utf8_column() {
+        let timestamp = "2023-01-01T00:00:00";
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("other_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::Utf8(Some(timestamp.to_owned())))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn unsupported_literal_type() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::Int32(Some(42)))),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn no_literal_on_right() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Column("other_column".into())),
+        };
+
+        let time_partition = Some("timestamp_column".to_string());
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn non_time_partition_timestamps() {
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
+                Some(1672531200000),
+                None,
+            ))),
+        };
+
+        let time_partition = None;
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+        let expected = Some((
+            Operator::Eq,
+            NaiveDateTime::parse_from_str("2023-01-01T00:00:00", "%Y-%m-%dT%H:%M:%S").unwrap(),
+        ));
+
+        assert_eq!(result, expected);
+
+        let binexpr = BinaryExpr {
+            left: Box::new(Expr::Column("timestamp_column".into())),
+            op: Operator::Eq,
+            right: Box::new(Expr::Literal(ScalarValue::TimestampNanosecond(
+                Some(1672531200000000000),
+                None,
+            ))),
+        };
+        let result = extract_timestamp_bound(&binexpr, &time_partition);
+
+        assert_eq!(result, expected);
     }
 }

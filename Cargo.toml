@@ -128,3 +128,8 @@ assets-sha1 = "9d5a45f204d709a2dd96f6a5e0b21b3834ee0e36"
 
 [features]
 debug = []
+
+[profile.release-lto]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

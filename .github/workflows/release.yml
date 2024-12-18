@@ -37,11 +37,11 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --release --target ${{matrix.target}}
+          args: --profile release-lto --target ${{matrix.target}}
 
       - name: Rename binary
         run: |
-          mv target/${{ matrix.target }}/release/parseable Parseable_OSS_${{ matrix.target }}
+          mv target/${{ matrix.target }}/release-lto/parseable Parseable_OSS_${{ matrix.target }}
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v1
@@ -82,11 +82,11 @@ jobs:
           override: true
 
       - name: Build
-        run: cargo build --all --release --target x86_64-pc-windows-msvc
+        run: cargo build --all --profile release-lto --target x86_64-pc-windows-msvc
 
       - name: Rename binary
         run: |
-          mv target/x86_64-pc-windows-msvc/release/PARSEABLE.exe Parseable_OSS_x86_64-pc-windows-msvc.exe
+          mv target/x86_64-pc-windows-msvc/release-lto/PARSEABLE.exe Parseable_OSS_x86_64-pc-windows-msvc.exe
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v1
@@ -135,12 +135,12 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release --target ${{ matrix.target }}
-          strip target/${{ matrix.target }}/release/Parseable
+          cargo build --profile release-lto --target ${{ matrix.target }}
+          strip target/${{ matrix.target }}/release-lto/Parseable
 
       - name: Rename binary
         run: |
-          mv target/${{ matrix.target }}/release/Parseable Parseable_OSS_${{ matrix.target }}
+          mv target/${{ matrix.target }}/release-lto/Parseable Parseable_OSS_${{ matrix.target }}
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v1

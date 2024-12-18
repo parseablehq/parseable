@@ -17,7 +17,9 @@
  */
 
 use actix_cors::Cors;
+use actix_web::Responder;
 use arrow_schema::Schema;
+use http::StatusCode;
 use itertools::Itertools;
 use serde_json::Value;
 
@@ -26,7 +28,6 @@ use crate::{option::CONFIG, storage::STREAM_ROOT_DIRECTORY};
 use self::{cluster::get_ingestor_info, query::Query};
 
 pub mod about;
-pub mod cache;
 pub mod cluster;
 pub mod health_check;
 pub mod ingest;
@@ -129,4 +130,10 @@ pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec
     }
 
     Ok(res)
+}
+
+pub const CACHING_NOTICE: &str = "Caching as a feature has been deprecated";
+
+pub async fn caching_removed() -> impl Responder {
+    (CACHING_NOTICE, StatusCode::GONE)
 }

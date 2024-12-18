@@ -76,15 +76,6 @@ Cloud Native, log analytics platform for modern applications."#,
                         .exit()
                 }
 
-                if cli.local_cache_path.is_some() {
-                    create_parseable_cli_command()
-                        .error(
-                            ErrorKind::ValueValidation,
-                            "Cannot use cache with local-store subcommand.",
-                        )
-                        .exit()
-                }
-
                 if cli.hot_tier_storage_path.is_some() {
                     create_parseable_cli_command()
                         .error(
@@ -315,7 +306,6 @@ pub mod validation {
 
     use path_clean::PathClean;
 
-    use crate::option::MIN_CACHE_SIZE_BYTES;
     use human_size::{multiples, SpecificSize};
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
@@ -397,17 +387,6 @@ pub mod validation {
         } else {
             format!("{:.2} PiB", bytes as f64 / PIB as f64)
         }
-    }
-
-    pub fn cache_size(s: &str) -> Result<u64, String> {
-        let size = human_size_to_bytes(s)?;
-        if size < MIN_CACHE_SIZE_BYTES {
-            return Err(format!(
-                "Specified value of cache size is smaller than current minimum of {}",
-                human_size_to_bytes(&MIN_CACHE_SIZE_BYTES.to_string()).unwrap()
-            ));
-        }
-        Ok(size)
     }
 
     pub fn validate_disk_usage(max_disk_usage: &str) -> Result<f64, String> {
