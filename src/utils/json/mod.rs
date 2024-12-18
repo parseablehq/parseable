@@ -22,30 +22,29 @@ use serde_json::Value;
 pub mod flatten;
 
 pub fn flatten_json_body(
-    body: serde_json::Value,
-    time_partition: Option<String>,
-    time_partition_limit: Option<String>,
-    custom_partition: Option<String>,
+    body: &Value,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<&String>,
+    custom_partition: Option<&String>,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
-    match flatten::convert_to_array(flatten::flatten_json(&body)) {
-        Ok(nested_value) => flatten::flatten(
-            nested_value,
-            "_",
-            time_partition,
-            time_partition_limit,
-            custom_partition,
-            validation_required,
-        ),
-        Err(err) => Err(err),
-    }
+    let nested_value = flatten::convert_to_array(flatten::flatten_json(body))?;
+
+    flatten::flatten(
+        nested_value,
+        "_",
+        time_partition,
+        time_partition_limit,
+        custom_partition,
+        validation_required,
+    )
 }
 
 pub fn convert_array_to_object(
-    body: Value,
-    time_partition: Option<String>,
-    time_partition_limit: Option<String>,
-    custom_partition: Option<String>,
+    body: &Value,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<&String>,
+    custom_partition: Option<&String>,
 ) -> Result<Vec<Value>, anyhow::Error> {
     let data = flatten_json_body(
         body,

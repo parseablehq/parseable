@@ -24,9 +24,9 @@ use crate::storage::{
 use bytes::Bytes;
 use clap::error::ErrorKind;
 use clap::{command, Args, Command, FromArgMatches};
-use core::fmt;
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -236,7 +236,7 @@ Join the community at https://logg.ing/community.
         .subcommands([local, s3, azureblob])
 }
 
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Mode {
     Query,
     Ingest,
@@ -244,54 +244,29 @@ pub enum Mode {
     All,
 }
 
-impl Mode {
-    pub fn to_str(&self) -> &str {
-        match self {
-            Mode::Query => "Query",
-            Mode::Ingest => "Ingest",
-            Mode::All => "All",
-        }
-    }
-
-    pub fn from_string(mode: &str) -> Result<Self, String> {
-        match mode {
-            "Query" => Ok(Mode::Query),
-            "Ingest" => Ok(Mode::Ingest),
-            "All" => Ok(Mode::All),
-            x => Err(format!("Trying to Parse Invalid mode: {}", x)),
-        }
-    }
-}
-
-impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_str())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Compression {
-    UNCOMPRESSED,
-    SNAPPY,
-    GZIP,
-    LZO,
-    BROTLI,
+    Uncompressed,
+    Snappy,
+    Gzip,
+    Lzo,
+    Brotli,
     #[default]
-    LZ4,
-    ZSTD,
+    Lz4,
+    Zstd,
 }
 
 impl From<Compression> for parquet::basic::Compression {
     fn from(value: Compression) -> Self {
         match value {
-            Compression::UNCOMPRESSED => parquet::basic::Compression::UNCOMPRESSED,
-            Compression::SNAPPY => parquet::basic::Compression::SNAPPY,
-            Compression::GZIP => parquet::basic::Compression::GZIP(GzipLevel::default()),
-            Compression::LZO => parquet::basic::Compression::LZO,
-            Compression::BROTLI => parquet::basic::Compression::BROTLI(BrotliLevel::default()),
-            Compression::LZ4 => parquet::basic::Compression::LZ4,
-            Compression::ZSTD => parquet::basic::Compression::ZSTD(ZstdLevel::default()),
+            Compression::Uncompressed => parquet::basic::Compression::UNCOMPRESSED,
+            Compression::Snappy => parquet::basic::Compression::SNAPPY,
+            Compression::Gzip => parquet::basic::Compression::GZIP(GzipLevel::default()),
+            Compression::Lzo => parquet::basic::Compression::LZO,
+            Compression::Brotli => parquet::basic::Compression::BROTLI(BrotliLevel::default()),
+            Compression::Lz4 => parquet::basic::Compression::LZ4,
+            Compression::Zstd => parquet::basic::Compression::ZSTD(ZstdLevel::default()),
         }
     }
 }

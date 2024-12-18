@@ -155,16 +155,13 @@ async fn migration_hot_tier(stream: &str) -> anyhow::Result<()> {
                 stream_hot_tier.size = human_size_to_bytes(&stream_hot_tier.size)
                     .unwrap()
                     .to_string();
-                stream_hot_tier.available_size = Some(
-                    human_size_to_bytes(&stream_hot_tier.available_size.unwrap())
+                stream_hot_tier.available_size =
+                    human_size_to_bytes(&stream_hot_tier.available_size)
                         .unwrap()
-                        .to_string(),
-                );
-                stream_hot_tier.used_size = Some(
-                    human_size_to_bytes(&stream_hot_tier.used_size.unwrap())
-                        .unwrap()
-                        .to_string(),
-                );
+                        .to_string();
+                stream_hot_tier.used_size = human_size_to_bytes(&stream_hot_tier.used_size)
+                    .unwrap()
+                    .to_string();
                 hot_tier_manager
                     .put_hot_tier(stream, &mut stream_hot_tier)
                     .await?;

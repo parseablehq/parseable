@@ -527,20 +527,12 @@ impl FromArgMatches for Cli {
             .get_one::<usize>(Self::ROW_GROUP_SIZE)
             .cloned()
             .expect("default for row_group size");
-        self.parquet_compression = match m
-            .get_one::<String>(Self::PARQUET_COMPRESSION_ALGO)
-            .expect("default for compression algo")
-            .as_str()
-        {
-            "uncompressed" => Compression::UNCOMPRESSED,
-            "snappy" => Compression::SNAPPY,
-            "gzip" => Compression::GZIP,
-            "lzo" => Compression::LZO,
-            "brotli" => Compression::BROTLI,
-            "lz4" => Compression::LZ4,
-            "zstd" => Compression::ZSTD,
-            _ => unreachable!(),
-        };
+        self.parquet_compression = serde_json::from_str(&format!(
+            "{:?}",
+            m.get_one::<String>(Self::PARQUET_COMPRESSION_ALGO)
+                .expect("default for compression algo")
+        ))
+        .expect("unexpected compression algo");
 
         let openid_client_id = m.get_one::<String>(Self::OPENID_CLIENT_ID).cloned();
         let openid_client_secret = m.get_one::<String>(Self::OPENID_CLIENT_SECRET).cloned();
