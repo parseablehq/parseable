@@ -84,7 +84,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             tags: String::default(),
             metadata: String::default(),
         };
-        event.into_recordbatch(schema, None, None)?
+        event.into_recordbatch(&schema, None, None)?
     };
     event::Event {
         rb,

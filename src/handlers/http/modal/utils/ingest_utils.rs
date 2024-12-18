@@ -230,7 +230,11 @@ pub fn into_event_batch(
         tags,
         metadata,
     };
-    let (rb, is_first) = event.into_recordbatch(schema, static_schema_flag, time_partition)?;
+    let (rb, is_first) = event.into_recordbatch(
+        &schema,
+        static_schema_flag.as_ref(),
+        time_partition.as_ref(),
+    )?;
     Ok((rb, is_first))
 }
 
