@@ -191,6 +191,7 @@ pub fn to_object_store_path(path: &RelativePath) -> StorePath {
 
 // ObjStoreClient is generic client to enable interactions with different cloudprovider's
 // object store such as S3 and Azure Blob
+#[derive(Debug)]
 pub struct BlobStore {
     client: LimitStore<MicrosoftAzure>,
     account: String,

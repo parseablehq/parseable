@@ -47,7 +47,7 @@ use chrono::Local;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use tracing::error;
+use tracing::{debug, error, instrument, trace};
 
 use std::collections::BTreeMap;
 use std::{
@@ -66,7 +66,7 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
 }
 
 #[async_trait]
-pub trait ObjectStorage: Send + Sync + 'static {
+pub trait ObjectStorage: std::fmt::Debug + Send + Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(
@@ -537,8 +537,10 @@ pub trait ObjectStorage: Send + Sync + 'static {
         Ok(Bytes::new())
     }
 
+    #[instrument(level = "debug")]
     async fn sync(&self, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
         if !Path::new(&CONFIG.staging_dir()).exists() {
+            trace!("Nothing to sync");
             return Ok(());
         }
 
@@ -560,6 +562,8 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 shutdown_signal,
             )
             .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+
+            debug!("Arrow files compressed into parquet");
 
             if let Some(schema) = schema {
                 let static_schema_flag = STREAM_INFO

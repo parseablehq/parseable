@@ -23,6 +23,7 @@ use arrow_schema::Field;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
+use tracing::instrument;
 
 use crate::{
     event::{
@@ -60,6 +61,7 @@ pub async fn flatten_and_push_logs(
     Ok(())
 }
 
+#[instrument(level = "trace")]
 pub async fn push_logs(
     stream_name: String,
     req: HttpRequest,
@@ -166,6 +168,7 @@ pub async fn push_logs(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[instrument(level = "trace")]
 pub async fn create_process_record_batch(
     stream_name: String,
     req: HttpRequest,
