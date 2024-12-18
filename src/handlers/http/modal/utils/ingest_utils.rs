@@ -23,7 +23,7 @@ use arrow_schema::Field;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use crate::{
     event::{
@@ -163,6 +163,8 @@ pub async fn push_logs(
             .await?;
         }
     }
+
+    debug!("Ingestion successful on stream: {stream_name}");
 
     Ok(())
 }

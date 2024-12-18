@@ -41,7 +41,7 @@ use http::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, error, instrument, trace};
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
@@ -66,6 +66,7 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         flatten_and_push_logs(req, body, stream_name).await?;
         Ok(HttpResponse::Ok().finish())
     } else {
+        error!("Ingestion request doesn't specify stream name");
         Err(PostError::Header(ParseHeaderError::MissingStreamName))
     }
 }
