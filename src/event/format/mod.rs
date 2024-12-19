@@ -184,7 +184,7 @@ pub fn override_timestamp_fields_from_existing_schema(
     schema: &mut Arc<Schema>,
     existing_schema: &HashMap<String, Arc<Field>>,
 ) {
-    let timestamp_field_names: HashSet<&str> = existing_schema
+    let timestamp_field_names: HashSet<&String> = existing_schema
         .values()
         .filter(|field| {
             matches!(
@@ -192,14 +192,14 @@ pub fn override_timestamp_fields_from_existing_schema(
                 DataType::Timestamp(TimeUnit::Millisecond, None)
             )
         })
-        .map(|field| field.name().as_str())
+        .map(|field| field.name())
         .collect();
 
     let updated_fields: Vec<Arc<Field>> = schema
         .fields()
         .iter()
         .map(|field| {
-            if timestamp_field_names.contains(field.name().as_str()) {
+            if timestamp_field_names.contains(field.name()) {
                 Arc::new(Field::new(
                     field.name(),
                     DataType::Timestamp(TimeUnit::Millisecond, None),
@@ -222,16 +222,11 @@ fn update_schema_from_logs(
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
     log_records: &[Value],
 ) {
-    let existing_field_names: Vec<&String> = schema
+    let existing_field_names: HashSet<&String> = schema
         .fields()
         .iter()
-        .filter_map(|field| {
-            if existing_schema.map_or(false, |s| s.contains_key(field.name())) {
-                Some(field.name())
-            } else {
-                None
-            }
-        })
+        .filter(|field| existing_schema.map_or(false, |s| s.contains_key(field.name())))
+        .map(|field| field.name())
         .collect();
 
     let updated_schema = schema
