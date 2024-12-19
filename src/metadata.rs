@@ -164,20 +164,6 @@ impl StreamInfo {
         Ok(Arc::new(schema))
     }
 
-    /// update the schema in the metadata
-    pub fn set_schema(
-        &self,
-        stream_name: &str,
-        schema: HashMap<String, Arc<Field>>,
-    ) -> Result<(), MetadataError> {
-        let mut map = self.write().expect(LOCK_EXPECT);
-        map.get_mut(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| {
-                metadata.schema = schema;
-            })
-    }
-
     pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
