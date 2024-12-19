@@ -26,7 +26,7 @@ use super::modal::utils::logstream_utils::{
 use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
 use crate::catalog::get_first_event;
-use crate::event::format::update_data_type_to_datetime;
+use crate::event::format::update_field_type_in_schema;
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::STREAM_INFO;
@@ -110,10 +110,8 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
         }
     };
 
-    let mut schema = infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap();
-    for log_record in log_records {
-        schema = update_data_type_to_datetime(schema, log_record, Vec::new());
-    }
+    let mut schema = Arc::new(infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap());
+    update_field_type_in_schema(&mut schema, None, None, Some(&log_records));
     Ok((web::Json(schema), StatusCode::OK))
 }
 
