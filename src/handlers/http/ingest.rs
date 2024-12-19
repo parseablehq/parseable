@@ -20,6 +20,7 @@ use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
+use super::{otel_logs, otel_metrics, otel_traces};
 use crate::event::{
     self,
     error::EventError,
@@ -105,7 +106,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
 // Handler for POST /v1/logs to ingest OTEL logs
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn handle_otel_ingestion(
+pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
     body: Bytes,
 ) -> Result<HttpResponse, PostError> {
@@ -116,7 +117,67 @@ pub async fn handle_otel_ingestion(
     {
         let stream_name = stream_name.to_str().unwrap().to_owned();
         create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
-        push_logs(stream_name.to_string(), req.clone(), body).await?;
+
+        //custom flattening required for otel logs
+        let mut json = otel_logs::flatten_otel_logs(&body);
+        for record in json.iter_mut() {
+            let body: Bytes = serde_json::to_vec(record).unwrap().into();
+            push_logs(stream_name.to_string(), req.clone(), body).await?;
+        }
+    } else {
+        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    }
+    Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for POST /v1/metrics to ingest OTEL metrics
+// ingests events by extracting stream name from header
+// creates if stream does not exist
+pub async fn handle_otel_metrics_ingestion(
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<HttpResponse, PostError> {
+    if let Some((_, stream_name)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
+    {
+        let stream_name = stream_name.to_str().unwrap().to_owned();
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+
+        //custom flattening required for otel metrics
+        let mut json = otel_metrics::flatten_otel_metrics(&body);
+        for record in json.iter_mut() {
+            let body: Bytes = serde_json::to_vec(record).unwrap().into();
+            push_logs(stream_name.to_string(), req.clone(), body).await?;
+        }
+    } else {
+        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    }
+    Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for POST /v1/traces to ingest OTEL traces
+// ingests events by extracting stream name from header
+// creates if stream does not exist
+pub async fn handle_otel_traces_ingestion(
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<HttpResponse, PostError> {
+    if let Some((_, stream_name)) = req
+        .headers()
+        .iter()
+        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
+    {
+        let stream_name = stream_name.to_str().unwrap().to_owned();
+        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+
+        //custom flattening required for otel traces
+        let mut json = otel_traces::flatten_otel_traces(&body);
+        for record in json.iter_mut() {
+            let body: Bytes = serde_json::to_vec(record).unwrap().into();
+            push_logs(stream_name.to_string(), req.clone(), body).await?;
+        }
     } else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     }

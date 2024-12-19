@@ -398,7 +398,7 @@ impl Server {
                 web::resource("/logs")
                     .route(
                         web::post()
-                            .to(ingest::handle_otel_ingestion)
+                            .to(ingest::handle_otel_logs_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
@@ -407,7 +407,7 @@ impl Server {
                 web::resource("/metrics")
                     .route(
                         web::post()
-                            .to(ingest::handle_otel_ingestion)
+                            .to(ingest::handle_otel_metrics_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
@@ -416,7 +416,7 @@ impl Server {
                 web::resource("/traces")
                     .route(
                         web::post()
-                            .to(ingest::handle_otel_ingestion)
+                            .to(ingest::handle_otel_traces_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
