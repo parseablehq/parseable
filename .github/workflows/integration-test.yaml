@@ -17,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Start compose
-        run: docker compose -f docker-compose-test.yaml pull && docker compose -f docker-compose-test.yaml up --build --exit-code-from quest
+        run: docker compose -f docker-compose-test.yaml up --build --exit-code-from quest
       - name: Stop compose
         if: always()
         run: docker compose -f docker-compose-test.yaml down
@@ -29,7 +29,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Start compose
-        run: docker compose -f docker-compose-distributed-test.yaml pull && docker compose -f docker-compose-distributed-test.yaml up --build --exit-code-from quest
+        run: docker compose -f docker-compose-distributed-test.yaml up --build --exit-code-from quest
       - name: Stop compose
         if: always()
         run: docker compose -f docker-compose-distributed-test.yaml down
