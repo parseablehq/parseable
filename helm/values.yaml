@@ -116,7 +116,7 @@ parseable:
           - s3.bucket
           - s3.region
   gcsModeSecret:
-    enabled: true
+    enabled: false
     secrets:
       - name: parseable-env-secret
         prefix: P_
