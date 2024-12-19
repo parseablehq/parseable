@@ -28,6 +28,7 @@ use serde_json::Value;
 use super::otel::collect_json_from_values;
 use super::otel::flatten_attributes;
 
+//flatten log record and all its attributes to create one record for each log record
 pub fn flatten_log_record(log_record: &LogRecord) -> BTreeMap<String, Value> {
     let mut log_record_json: BTreeMap<String, Value> = BTreeMap::new();
     if log_record.time_unix_nano.is_some() {
@@ -121,6 +122,7 @@ pub fn flatten_log_record(log_record: &LogRecord) -> BTreeMap<String, Value> {
     log_record_json
 }
 
+//flatten otel logs
 pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let mut vec_otel_json: Vec<BTreeMap<String, Value>> = Vec::new();
     let body_str = std::str::from_utf8(body).unwrap();
@@ -132,6 +134,7 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
             let mut resource_log_json: BTreeMap<String, Value> = BTreeMap::new();
 
             if let Some(resource) = record.resource.as_ref() {
+                //flatten resource attributes to create multiple key value pairs (headers) for each log record
                 if let Some(attributes) = resource.attributes.as_ref() {
                     let attributes_json = flatten_attributes(attributes);
                     for key in attributes_json.keys() {
@@ -151,13 +154,14 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
 
             if let Some(scope_logs) = record.scope_logs.as_ref() {
                 let mut vec_scope_log_json: Vec<BTreeMap<String, Value>> = Vec::new();
+                //create flattened record for each scope log
                 for scope_log in scope_logs.iter() {
                     let mut scope_log_json: BTreeMap<String, Value> = BTreeMap::new();
                     if scope_log.scope.is_some() {
                         let instrumentation_scope = scope_log.scope.as_ref().unwrap();
                         if instrumentation_scope.name.is_some() {
                             scope_log_json.insert(
-                                "instrumentation_scope_name".to_string(),
+                                "scope_name".to_string(),
                                 Value::String(
                                     instrumentation_scope.name.as_ref().unwrap().to_string(),
                                 ),
@@ -165,13 +169,13 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                         }
                         if instrumentation_scope.version.is_some() {
                             scope_log_json.insert(
-                                "instrumentation_scope_version".to_string(),
+                                "scope_version".to_string(),
                                 Value::String(
                                     instrumentation_scope.version.as_ref().unwrap().to_string(),
                                 ),
                             );
                         }
-
+                        //flatten instrumentation scope attributes to create multiple key value pairs (headers) for each log record
                         if let Some(attributes) = instrumentation_scope.attributes.as_ref() {
                             let attributes_json = flatten_attributes(attributes);
                             for key in attributes_json.keys() {
@@ -182,7 +186,7 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
 
                         if instrumentation_scope.dropped_attributes_count.is_some() {
                             scope_log_json.insert(
-                                "instrumentation_scope_dropped_attributes_count".to_string(),
+                                "scope_dropped_attributes_count".to_string(),
                                 Value::Number(serde_json::Number::from(
                                     instrumentation_scope.dropped_attributes_count.unwrap(),
                                 )),
@@ -196,6 +200,7 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                         );
                     }
 
+                    //create flattened record for each log record
                     for log_record in scope_log.log_records.iter() {
                         let log_record_json = flatten_log_record(log_record);
 

@@ -86,21 +86,21 @@ pub struct Span {
     /// is zero-length and thus is also invalid).
     ///
     /// This field is required.
-    pub trace_id: Option<Vec<u8>>,
+    pub trace_id: Option<String>,
     /// A unique identifier for a span within a trace, assigned when the span
     /// is created. The ID is an 8-byte array. An ID with all zeroes OR of length
     /// other than 8 bytes is considered invalid (empty string in OTLP/JSON
     /// is zero-length and thus is also invalid).
     ///
     /// This field is required.
-    pub span_id: Option<Vec<u8>>,
+    pub span_id: Option<String>,
     /// trace_state conveys information about request position in multiple distributed tracing graphs.
     /// It is a trace_state in w3c-trace-context format: <https://www.w3.org/TR/trace-context/#tracestate-header>
     /// See also <https://github.com/w3c/distributed-tracing> for more details about this field.
     pub trace_state: Option<String>,
     /// The `span_id` of this span's parent span. If this is a root span, then this
     /// field must be empty. The ID is an 8-byte array.
-    pub parent_span_id: Option<Vec<u8>>,
+    pub parent_span_id: Option<String>,
     /// Flags, a bit field.
     ///
     /// Bits 0-7 (8 least significant bits) are the trace flags as defined in W3C Trace
@@ -145,14 +145,14 @@ pub struct Span {
     /// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
     ///
     /// This field is semantically required and it is expected that end_time >= start_time.
-    pub start_time_unix_nano: Option<u64>,
+    pub start_time_unix_nano: Option<String>,
     /// end_time_unix_nano is the end time of the span. On the client side, this is the time
     /// kept by the local machine where the span execution ends. On the server side, this
     /// is the time when the server application handler stops running.
     /// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
     ///
     /// This field is semantically required and it is expected that end_time >= start_time.
-    pub end_time_unix_nano: Option<u64>,
+    pub end_time_unix_nano: Option<String>,
     /// attributes is a collection of key/value pairs. Note, global attributes
     /// like server name can be set using the resource API. Examples of attributes:
     ///
@@ -213,9 +213,9 @@ pub mod span {
     pub struct Link {
         /// A unique identifier of a trace that this linked span is part of. The ID is a
         /// 16-byte array.
-        pub trace_id: Option<Vec<u8>>,
+        pub trace_id: Option<String>,
         /// A unique identifier for the linked span. The ID is an 8-byte array.
-        pub span_id: Option<Vec<u8>>,
+        pub span_id: Option<String>,
         /// The trace_state associated with the link.
         pub trace_state: Option<String>,
         /// attributes is a collection of attribute key/value pairs on the link.

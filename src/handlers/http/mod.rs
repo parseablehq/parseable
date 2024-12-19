@@ -41,6 +41,7 @@ pub mod oidc;
 pub mod otel;
 pub mod otel_logs;
 pub mod otel_metrics;
+pub mod otel_traces;
 pub mod query;
 pub mod rbac;
 pub mod role;
