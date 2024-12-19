@@ -40,7 +40,7 @@ spec:
       containers:
       - name: {{ .Chart.Name }}
         securityContext:
-          {{- toYaml .Values.parseable.securityContext | nindent 8 }}
+          {{- toYaml .Values.parseable.securityContext | nindent 10 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
         args: ["/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
