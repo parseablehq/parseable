@@ -116,7 +116,7 @@ parseable:
           - s3.bucket
           - s3.region
   gcsModeSecret:
-    enabled: false
+    enabled: true
     secrets:
       - name: parseable-env-secret
         prefix: P_
@@ -312,7 +312,11 @@ vector:
 fluent-bit:
   enabled: false
   kind: DaemonSet
-  serverHost: parseable.parseable.svc.cluster.local
+  serverHost: parseable-ingestor-service.parseable.svc.cluster.local
+  serverUsername: admin
+  serverPassword: admin
+  serverStream: $NAMESPACE
+  excludeNamespaces: kube-system, default
   replicaCount: 1
   image:
     repository: parseable/fluent-bit
@@ -399,19 +403,19 @@ fluent-bit:
           Name parseable
           Match kube.*
           Server_Host {{ .Values.serverHost }}
-          Username admin
-          Password admin
+          Username {{ .Values.serverUsername }}
+          Password {{ .Values.serverPassword }}
           Server_Port 80
-          Stream $NAMESPACE
-          Exclude_Namespaces kube-system, default
+          Stream {{ .Values.serverStream }}
+          Exclude_Namespaces {{ .Values.excludeNamespaces }}
 
       [OUTPUT]
           Name parseable
           Match k8s_events
           Server_Host {{ .Values.serverHost }}
           Server_Port 80
-          Username admin
-          Password admin
+          Username {{ .Values.serverUsername }}
+          Password {{ .Values.serverPassword }}
           Stream k8s-events 
 
     upstream: {}
