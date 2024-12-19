@@ -241,18 +241,16 @@ fn update_schema_from_logs(
             if !existing_field_names.contains(&field.name())
                 && field.data_type() == &DataType::Utf8
                 && TIME_FIELD_PREFIXS.iter().any(|p| field.name().contains(p))
-            {
-                if log_records
+                && log_records
                     .iter()
                     .any(|record| matches_date_time_field(field.name(), record))
-                {
-                    // Update the field's data type to Timestamp
-                    return Field::new(
-                        field.name().clone(),
-                        DataType::Timestamp(TimeUnit::Millisecond, None),
-                        true,
-                    );
-                }
+            {
+                // Update the field's data type to Timestamp
+                return Field::new(
+                    field.name().clone(),
+                    DataType::Timestamp(TimeUnit::Millisecond, None),
+                    true,
+                );
             }
             Field::new(field.name().clone(), field.data_type().clone(), true)
         })
