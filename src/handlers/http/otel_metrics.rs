@@ -601,7 +601,7 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<S
             if data_point.count.is_some() {
                 data_point_json.insert(
                     "exponential_histogram_data_point_count".to_string(),
-                    Value::Number(serde_json::Number::from(data_point.count.unwrap())),
+                    Value::String(data_point.count.as_ref().unwrap().to_string()),
                 );
             }
 
@@ -791,7 +791,7 @@ fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
             if data_point.count.is_some() {
                 data_point_json.insert(
                     "summary_data_point_count".to_string(),
-                    Value::Number(serde_json::Number::from(data_point.count.unwrap())),
+                    Value::String(data_point.count.as_ref().unwrap().to_string()),
                 );
             }
 
@@ -803,10 +803,11 @@ fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
             }
 
             if let Some(quantile_values) = data_point.quantile_values.as_ref() {
+                let mut quantile_ctr = 1;
                 for quantile_value in quantile_values.iter() {
                     if quantile_value.quantile.is_some() {
                         data_point_json.insert(
-                            "summary_quantile_value_quantile".to_string(),
+                            format!("summary_quantile_value_quantile_{}", quantile_ctr),
                             Value::Number(
                                 serde_json::Number::from_f64(quantile_value.quantile.unwrap())
                                     .unwrap(),
@@ -816,13 +817,12 @@ fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
 
                     if quantile_value.value.is_some() {
                         data_point_json.insert(
-                            "summary_quantile_value_value".to_string(),
-                            Value::Number(
-                                serde_json::Number::from_f64(quantile_value.value.unwrap())
-                                    .unwrap(),
-                            ),
+                            format!("summary_quantile_value_value_{}", quantile_ctr),
+                            Value::String(quantile_value.value.as_ref().unwrap().to_string()),
                         );
                     }
+
+                    quantile_ctr += 1;
                 }
             }
 

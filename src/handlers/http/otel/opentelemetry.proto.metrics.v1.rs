@@ -412,7 +412,7 @@ pub struct ExponentialHistogramDataPoint {
     /// count is the number of values in the population. Must be
     /// non-negative. This value must be equal to the sum of the "bucket_counts"
     /// values in the positive and negative Buckets plus the "zero_count" field.
-    pub count: Option<u64>,
+    pub count: Option<String>,
     /// sum of the values in the population. If count is zero then this field
     /// must be zero.
     ///
@@ -516,7 +516,7 @@ pub struct SummaryDataPoint {
     /// 1970.
     pub time_unix_nano: Option<String>,
     /// count is the number of values in the population. Must be non-negative.
-    pub count: Option<u64>,
+    pub count: Option<String>,
     /// sum of the values in the population. If count is zero then this field
     /// must be zero.
     ///
@@ -535,7 +535,7 @@ pub struct SummaryDataPoint {
 }
 /// Nested message and enum types in `SummaryDataPoint`.
 pub mod summary_data_point {
-    use serde::{Deserialize, Serialize};
+    use serde::{Deserialize, Deserializer, Serialize};
     /// Represents the value at a given quantile of a distribution.
     ///
     /// To record Min and Max values following conventions are used:
@@ -553,8 +553,34 @@ pub mod summary_data_point {
         /// The value at the given quantile of a distribution.
         ///
         /// Quantile values must NOT be negative.
+        #[serde(deserialize_with = "deserialize_f64_or_nan")]
         pub value: Option<f64>,
     }
+
+    fn deserialize_f64_or_nan<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error> where D: Deserializer<'de>, 
+    { 
+        struct StringOrFloatVisitor; 
+        impl<'de> serde::de::Visitor<'de> for StringOrFloatVisitor 
+        {
+             type Value = Option<f64>; 
+             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result 
+             { 
+                formatter.write_str("a string or a floating-point number") 
+            } 
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> where E: serde::de::Error, 
+            {
+                 if value == "NaN" 
+                 {
+                     Ok(Some(f64::NAN)) 
+                    } else {
+                         value.parse::<f64>().map(Some).map_err(E::custom)
+                         } }
+         fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> where E: serde::de::Error, 
+         {
+             Ok(Some(value))
+             }
+        }
+         deserializer.deserialize_any(StringOrFloatVisitor) }
 }
 /// A representation of an exemplar, which is a sample input measurement.
 /// Exemplars also hold information about the environment when the measurement
