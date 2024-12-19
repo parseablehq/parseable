@@ -25,10 +25,11 @@ use super::otel::{
     flatten_attributes,
     proto::metrics::v1::{
         exponential_histogram_data_point::Buckets, Exemplar, ExponentialHistogram, Gauge,
-        Histogram, Metric, MetricsData, Sum, Summary,
+        Histogram, Metric, MetricsData, NumberDataPoint, Sum, Summary,
     },
 };
 
+//flatten otel metrics
 pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let mut vec_otel_json: Vec<BTreeMap<String, Value>> = Vec::new();
     let body_str = std::str::from_utf8(body).unwrap();
@@ -40,7 +41,7 @@ pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
             let mut resource_metrics_json: BTreeMap<String, Value> = BTreeMap::new();
 
             if let Some(resource) = record.resource.as_ref() {
-                //flatten attributes
+                //flatten resource attributes to create multiple key value pairs (headers) for each metric record
                 if let Some(attributes) = resource.attributes.as_ref() {
                     let attributes_json = flatten_attributes(attributes);
                     for key in attributes_json.keys() {
@@ -61,7 +62,11 @@ pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
 
             if let Some(scope_metrics) = record.scope_metrics.as_ref() {
                 let mut vec_scope_metrics_json: Vec<BTreeMap<String, Value>> = Vec::new();
+                //create flattened record for each scope metric
                 for scope_metric in scope_metrics.iter() {
+                    let mut scope_metrics_json: BTreeMap<String, Value> = BTreeMap::new();
+
+                    //create flattened record for each metric record
                     for metrics_record in scope_metric.metrics.iter() {
                         let metrics_record_json = flatten_metrics_record(metrics_record);
 
@@ -73,44 +78,44 @@ pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
                     if scope_metric.scope.is_some() {
                         let instrumentation_scope = scope_metric.scope.as_ref().unwrap();
                         if instrumentation_scope.name.is_some() {
-                            for scope_metrics_json in vec_scope_metrics_json.iter_mut() {
-                                scope_metrics_json.insert(
-                                    "instrumentation_scope_name".to_string(),
-                                    Value::String(
-                                        instrumentation_scope.name.as_ref().unwrap().to_string(),
-                                    ),
-                                );
-                            }
+                            scope_metrics_json.insert(
+                                "scope_name".to_string(),
+                                Value::String(
+                                    instrumentation_scope.name.as_ref().unwrap().to_string(),
+                                ),
+                            );
                         }
                         if instrumentation_scope.version.is_some() {
-                            for scope_metrics_json in vec_scope_metrics_json.iter_mut() {
-                                scope_metrics_json.insert(
-                                    "instrumentation_scope_version".to_string(),
-                                    Value::String(
-                                        instrumentation_scope.version.as_ref().unwrap().to_string(),
-                                    ),
-                                );
-                            }
+                            scope_metrics_json.insert(
+                                "scope_version".to_string(),
+                                Value::String(
+                                    instrumentation_scope.version.as_ref().unwrap().to_string(),
+                                ),
+                            );
                         }
 
+                        //flatten instrumentation scope attributes to create multiple key value pairs (headers) for each metric record
                         if let Some(attributes) = instrumentation_scope.attributes.as_ref() {
                             let attributes_json = flatten_attributes(attributes);
                             for key in attributes_json.keys() {
-                                for scope_metrics_json in vec_scope_metrics_json.iter_mut() {
-                                    scope_metrics_json
-                                        .insert(key.to_owned(), attributes_json[key].to_owned());
-                                }
+                                scope_metrics_json
+                                    .insert(key.to_owned(), attributes_json[key].to_owned());
                             }
                         }
 
                         if instrumentation_scope.dropped_attributes_count.is_some() {
-                            for scope_metrics_json in vec_scope_metrics_json.iter_mut() {
-                                scope_metrics_json.insert(
-                                    "instrumentation_scope_dropped_attributes_count".to_string(),
-                                    Value::Number(serde_json::Number::from(
-                                        instrumentation_scope.dropped_attributes_count.unwrap(),
-                                    )),
-                                );
+                            scope_metrics_json.insert(
+                                "scope_dropped_attributes_count".to_string(),
+                                Value::Number(serde_json::Number::from(
+                                    instrumentation_scope.dropped_attributes_count.unwrap(),
+                                )),
+                            );
+                        }
+
+                        for scope_metric_json in vec_scope_metrics_json.iter_mut() {
+                            for key in scope_metrics_json.keys() {
+                                scope_metric_json
+                                    .insert(key.to_owned(), scope_metrics_json[key].to_owned());
                             }
                         }
                     }
@@ -151,7 +156,8 @@ pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     vec_otel_json
 }
 
-pub fn flatten_exemplar(exemplars: &[Exemplar]) -> BTreeMap<String, Value> {
+//flatten each emeplar record and all its attributes to create one record for each exemplar
+fn flatten_exemplar(exemplars: &[Exemplar]) -> BTreeMap<String, Value> {
     let mut exemplar_json: BTreeMap<String, Value> = BTreeMap::new();
     for exemplar in exemplars.iter() {
         if let Some(attributes) = exemplar.filtered_attributes.as_ref() {
@@ -202,156 +208,168 @@ pub fn flatten_exemplar(exemplars: &[Exemplar]) -> BTreeMap<String, Value> {
     exemplar_json
 }
 
+//flatten number data points to create one record for each data point
+fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<BTreeMap<String, Value>> {
+    let mut data_points_json: Vec<BTreeMap<String, Value>> = Vec::new();
+    for data_point in data_points.iter() {
+        let mut data_point_json: BTreeMap<String, Value> = BTreeMap::new();
+
+        if let Some(attributes) = data_point.attributes.as_ref() {
+            let attributes_json = flatten_attributes(attributes);
+            for key in attributes_json.keys() {
+                data_point_json.insert(key.to_owned(), attributes_json[key].to_owned());
+            }
+        }
+
+        if data_point.start_time_unix_nano.is_some() {
+            data_point_json.insert(
+                "start_time_unix_nano".to_string(),
+                Value::String(
+                    data_point
+                        .start_time_unix_nano
+                        .as_ref()
+                        .unwrap()
+                        .to_string(),
+                ),
+            );
+        }
+
+        if data_point.time_unix_nano.is_some() {
+            data_point_json.insert(
+                "time_unix_nano".to_string(),
+                Value::String(data_point.time_unix_nano.as_ref().unwrap().to_string()),
+            );
+        }
+
+        if let Some(exemplars) = data_point.exemplars.as_ref() {
+            let exemplar_json = flatten_exemplar(exemplars);
+            for key in exemplar_json.keys() {
+                data_point_json.insert(key.to_owned(), exemplar_json[key].to_owned());
+            }
+        }
+
+        if data_point.flags.is_some() {
+            data_point_json.insert(
+                "data_point_flags".to_string(),
+                Value::Number(serde_json::Number::from(data_point.flags.unwrap())),
+            );
+
+            match data_point.flags {
+                Some(0) => {
+                    data_point_json.insert(
+                        "data_point_flags_description".to_string(),
+                        Value::String("DATA_POINT_FLAGS_DO_NOT_USE".to_string()),
+                    );
+                }
+                Some(1) => {
+                    data_point_json.insert(
+                        "data_point_flags_description".to_string(),
+                        Value::String("DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK".to_string()),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        if data_point.as_double.is_some() {
+            data_point_json.insert(
+                "data_point_as_double".to_string(),
+                Value::Number(serde_json::Number::from_f64(data_point.as_double.unwrap()).unwrap()),
+            );
+        }
+
+        if data_point.as_int.is_some() {
+            data_point_json.insert(
+                "data_point_as_int".to_string(),
+                Value::String(data_point.as_int.as_ref().unwrap().to_string()),
+            );
+        }
+
+        data_points_json.push(data_point_json.clone());
+    }
+    data_points_json
+}
+
+//flatten each gauge record and all its data points to create one record for each data point
 fn flatten_gauge(gauge: &Gauge) -> Vec<BTreeMap<String, Value>> {
-    let mut data_points_json: Vec<BTreeMap<String, Value>> = Vec::new();
+    let mut vec_gauge_json: Vec<BTreeMap<String, Value>> = Vec::new();
     if let Some(data_points) = gauge.data_points.as_ref() {
-        for data_point in data_points.iter() {
-            let mut data_point_json: BTreeMap<String, Value> = BTreeMap::new();
-
-            if let Some(attributes) = data_point.attributes.as_ref() {
-                let attributes_json = flatten_attributes(attributes);
-                for key in attributes_json.keys() {
-                    data_point_json.insert(
-                        format!("gauge_{}", key.to_owned()),
-                        attributes_json[key].to_owned(),
-                    );
-                }
-            }
-
-            if data_point.start_time_unix_nano.is_some() {
-                data_point_json.insert(
-                    "gauge_start_time_unix_nano".to_string(),
-                    Value::String(
-                        data_point
-                            .start_time_unix_nano
-                            .as_ref()
-                            .unwrap()
-                            .to_string(),
-                    ),
+        let data_points_json = flatten_number_data_points(data_points);
+        for data_point_json in data_points_json.iter() {
+            let mut gauge_json: BTreeMap<String, Value> = BTreeMap::new();
+            for key in data_point_json.keys() {
+                gauge_json.insert(
+                    format!("gauge_{}", key.to_owned()),
+                    data_point_json[key].to_owned(),
                 );
             }
-
-            if data_point.time_unix_nano.is_some() {
-                data_point_json.insert(
-                    "gauge_time_unix_nano".to_string(),
-                    Value::String(data_point.time_unix_nano.as_ref().unwrap().to_string()),
-                );
-            }
-
-            if let Some(exemplars) = data_point.exemplars.as_ref() {
-                let exemplar_json = flatten_exemplar(exemplars);
-                for key in exemplar_json.keys() {
-                    data_point_json.insert(
-                        format!("gauge_{}", key.to_owned()),
-                        exemplar_json[key].to_owned(),
-                    );
-                }
-            }
-
-            if data_point.flags.is_some() {
-                data_point_json.insert(
-                    "gauge_data_point_flags".to_string(),
-                    Value::Number(serde_json::Number::from(data_point.flags.unwrap())),
-                );
-            }
-
-            if data_point.as_double.is_some() {
-                data_point_json.insert(
-                    "gauge_data_point_as_double".to_string(),
-                    Value::Number(
-                        serde_json::Number::from_f64(data_point.as_double.unwrap()).unwrap(),
-                    ),
-                );
-            }
-
-            if data_point.as_int.is_some() {
-                data_point_json.insert(
-                    "gauge_data_point_as_int".to_string(),
-                    Value::String(data_point.as_int.as_ref().unwrap().to_string()),
-                );
-            }
-
-            data_points_json.push(data_point_json.clone());
+            vec_gauge_json.push(gauge_json.clone());
         }
     }
-    data_points_json
+    vec_gauge_json
 }
 
+//flatten each sum record and all its data points to create one record for each data point
 fn flatten_sum(sum: &Sum) -> Vec<BTreeMap<String, Value>> {
-    let mut data_points_json: Vec<BTreeMap<String, Value>> = Vec::new();
+    let mut vec_sum_json: Vec<BTreeMap<String, Value>> = Vec::new();
     if let Some(data_points) = sum.data_points.as_ref() {
-        for data_point in data_points.iter() {
-            let mut data_point_json: BTreeMap<String, Value> = BTreeMap::new();
-
-            if let Some(attributes) = data_point.attributes.as_ref() {
-                let attributes_json = flatten_attributes(attributes);
-                for key in attributes_json.keys() {
-                    data_point_json.insert(
-                        format!("sum_{}", key.to_owned()),
-                        attributes_json[key].to_owned(),
+        let data_points_json = flatten_number_data_points(data_points);
+        for data_point_json in data_points_json.iter() {
+            let mut sum_json: BTreeMap<String, Value> = BTreeMap::new();
+            for key in data_point_json.keys() {
+                sum_json.insert(
+                    format!("sum_{}", key.to_owned()),
+                    data_point_json[key].to_owned(),
+                );
+            }
+            vec_sum_json.push(sum_json.clone());
+        }
+        let mut sum_json = BTreeMap::new();
+        if sum.aggregation_temporality.is_some() {
+            sum_json.insert(
+                "sum_aggregation_temporality".to_string(),
+                Value::String(sum.aggregation_temporality.as_ref().unwrap().to_string()),
+            );
+            match sum.aggregation_temporality {
+                Some(0) => {
+                    sum_json.insert(
+                        "sum_aggregation_temporality_description".to_string(),
+                        Value::String("AGGREGATION_TEMPORALITY_UNSPECIFIED".to_string()),
                     );
                 }
-            }
-
-            if data_point.start_time_unix_nano.is_some() {
-                data_point_json.insert(
-                    "sum_start_time_unix_nano".to_string(),
-                    Value::String(
-                        data_point
-                            .start_time_unix_nano
-                            .as_ref()
-                            .unwrap()
-                            .to_string(),
-                    ),
-                );
-            }
-
-            if data_point.time_unix_nano.is_some() {
-                data_point_json.insert(
-                    "sum_time_unix_nano".to_string(),
-                    Value::String(data_point.time_unix_nano.as_ref().unwrap().to_string()),
-                );
-            }
-
-            if let Some(exemplars) = data_point.exemplars.as_ref() {
-                let exemplar_json = flatten_exemplar(exemplars);
-                for key in exemplar_json.keys() {
-                    data_point_json.insert(
-                        format!("sum_{}", key.to_owned()),
-                        exemplar_json[key].to_owned(),
+                Some(1) => {
+                    sum_json.insert(
+                        "sum_aggregation_temporality_description".to_string(),
+                        Value::String("AGGREGATION_TEMPORALITY_DELTA".to_string()),
                     );
                 }
+                Some(2) => {
+                    sum_json.insert(
+                        "sum_aggregation_temporality_description".to_string(),
+                        Value::String("AGGREGATION_TEMPORALITY_CUMULATIVE".to_string()),
+                    );
+                }
+                _ => {}
             }
+        }
 
-            if data_point.flags.is_some() {
-                data_point_json.insert(
-                    "sum_data_point_flags".to_string(),
-                    Value::Number(serde_json::Number::from(data_point.flags.unwrap())),
-                );
+        if sum.is_monotonic.is_some() {
+            sum_json.insert(
+                "sum_is_monotonic".to_string(),
+                Value::Bool(sum.is_monotonic.unwrap()),
+            );
+        }
+        for data_point_json in vec_sum_json.iter_mut() {
+            for key in sum_json.keys() {
+                data_point_json.insert(key.to_owned(), sum_json[key].to_owned());
             }
-
-            if data_point.as_double.is_some() {
-                data_point_json.insert(
-                    "sum_data_point_as_double".to_string(),
-                    Value::Number(
-                        serde_json::Number::from_f64(data_point.as_double.unwrap()).unwrap(),
-                    ),
-                );
-            }
-
-            if data_point.as_int.is_some() {
-                data_point_json.insert(
-                    "sum_data_point_as_int".to_string(),
-                    Value::String(data_point.as_int.as_ref().unwrap().to_string()),
-                );
-            }
-
-            data_points_json.push(data_point_json.clone());
         }
     }
-    data_points_json
+
+    vec_sum_json
 }
 
+//flatten each histogram record and all its data points to create one record for each data point
 fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json: Vec<BTreeMap<String, Value>> = Vec::new();
     if let Some(histogram_data_points) = histogram.data_points.as_ref() {
@@ -438,6 +456,22 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
                     "histogram_data_point_flags".to_string(),
                     Value::Number(serde_json::Number::from(data_point.flags.unwrap())),
                 );
+
+                match data_point.flags {
+                    Some(0) => {
+                        data_point_json.insert(
+                            "histogram_data_point_flags_description".to_string(),
+                            Value::String("DATA_POINT_FLAGS_DO_NOT_USE".to_string()),
+                        );
+                    }
+                    Some(1) => {
+                        data_point_json.insert(
+                            "histogram_data_point_flags_description".to_string(),
+                            Value::String("DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK".to_string()),
+                        );
+                    }
+                    _ => {}
+                }
             }
 
             if data_point.min.is_some() {
@@ -457,24 +491,53 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
             data_points_json.push(data_point_json.clone());
         }
     }
+
+    let mut histogram_json: BTreeMap<String, Value> = BTreeMap::new();
     if histogram.aggregation_temporality.is_some() {
+        histogram_json.insert(
+            "histogram_aggregation_temporality".to_string(),
+            Value::String(
+                histogram
+                    .aggregation_temporality
+                    .as_ref()
+                    .unwrap()
+                    .to_string(),
+            ),
+        );
+
+        match histogram.aggregation_temporality {
+            Some(0) => {
+                histogram_json.insert(
+                    "histogram_aggregation_temporality_description".to_string(),
+                    Value::String("AGGREGATION_TEMPORALITY_UNSPECIFIED".to_string()),
+                );
+            }
+            Some(1) => {
+                histogram_json.insert(
+                    "histogram_aggregation_temporality_description".to_string(),
+                    Value::String("AGGREGATION_TEMPORALITY_DELTA".to_string()),
+                );
+            }
+            Some(2) => {
+                histogram_json.insert(
+                    "histogram_aggregation_temporality_description".to_string(),
+                    Value::String("AGGREGATION_TEMPORALITY_CUMULATIVE".to_string()),
+                );
+            }
+            _ => {}
+        }
+
         for data_point_json in data_points_json.iter_mut() {
-            data_point_json.insert(
-                "histogram_aggregation_temporality".to_string(),
-                Value::String(
-                    histogram
-                        .aggregation_temporality
-                        .as_ref()
-                        .unwrap()
-                        .to_string(),
-                ),
-            );
+            for key in histogram_json.keys() {
+                data_point_json.insert(key.to_owned(), histogram_json[key].to_owned());
+            }
         }
     }
 
     data_points_json
 }
 
+//flatten each bucket record and all its attributes to create one record for each bucket
 fn flatten_buckets(bucket: &Buckets) -> BTreeMap<String, Value> {
     let mut bucket_json = BTreeMap::new();
     if bucket.offset.is_some() {
@@ -498,6 +561,7 @@ fn flatten_buckets(bucket: &Buckets) -> BTreeMap<String, Value> {
     bucket_json
 }
 
+//flatten each exponential histogram record and all its data points to create one record for each data point
 fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json: Vec<BTreeMap<String, Value>> = Vec::new();
     if let Some(exp_histogram_data_points) = exp_histogram.data_points.as_ref() {
@@ -589,6 +653,21 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<S
                     "exponential_histogram_data_point_flags".to_string(),
                     Value::Number(serde_json::Number::from(data_point.flags.unwrap())),
                 );
+                match data_point.flags {
+                    Some(0) => {
+                        data_point_json.insert(
+                            "exponential_histogram_data_point_flags_description".to_string(),
+                            Value::String("DATA_POINT_FLAGS_DO_NOT_USE".to_string()),
+                        );
+                    }
+                    Some(1) => {
+                        data_point_json.insert(
+                            "exponential_histogram_data_point_flags_description".to_string(),
+                            Value::String("DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK".to_string()),
+                        );
+                    }
+                    _ => {}
+                }
             }
 
             if let Some(exemplars) = data_point.exemplars.as_ref() {
@@ -627,9 +706,52 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<S
         }
     }
 
+    let mut exp_histogram_json: BTreeMap<String, Value> = BTreeMap::new();
+    if exp_histogram.aggregation_temporality.is_some() {
+        exp_histogram_json.insert(
+            "exponential_histogram_aggregation_temporality".to_string(),
+            Value::String(
+                exp_histogram
+                    .aggregation_temporality
+                    .as_ref()
+                    .unwrap()
+                    .to_string(),
+            ),
+        );
+
+        match exp_histogram.aggregation_temporality {
+            Some(0) => {
+                exp_histogram_json.insert(
+                    "exponential_histogram_aggregation_temporality_description".to_string(),
+                    Value::String("AGGREGATION_TEMPORALITY_UNSPECIFIED".to_string()),
+                );
+            }
+            Some(1) => {
+                exp_histogram_json.insert(
+                    "exponential_histogram_aggregation_temporality_description".to_string(),
+                    Value::String("AGGREGATION_TEMPORALITY_DELTA".to_string()),
+                );
+            }
+            Some(2) => {
+                exp_histogram_json.insert(
+                    "exponential_histogram_aggregation_temporality_description".to_string(),
+                    Value::String("AGGREGATION_TEMPORALITY_CUMULATIVE".to_string()),
+                );
+            }
+            _ => {}
+        }
+
+        for data_point_json in data_points_json.iter_mut() {
+            for key in exp_histogram_json.keys() {
+                data_point_json.insert(key.to_owned(), exp_histogram_json[key].to_owned());
+            }
+        }
+    }
+
     data_points_json
 }
 
+//flatten each summary record and all its data points to create one record for each data point
 fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json: Vec<BTreeMap<String, Value>> = Vec::new();
     if let Some(summary_data_points) = summary.data_points.as_ref() {
@@ -709,6 +831,21 @@ fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
                     "summary_data_point_flags".to_string(),
                     Value::Number(serde_json::Number::from(data_point.flags.unwrap())),
                 );
+                match data_point.flags {
+                    Some(0) => {
+                        data_point_json.insert(
+                            "summary_data_point_flags_description".to_string(),
+                            Value::String("DATA_POINT_FLAGS_DO_NOT_USE".to_string()),
+                        );
+                    }
+                    Some(1) => {
+                        data_point_json.insert(
+                            "summary_data_point_flags_description".to_string(),
+                            Value::String("DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK".to_string()),
+                        );
+                    }
+                    _ => {}
+                }
             }
 
             data_points_json.push(data_point_json.clone());
@@ -717,9 +854,11 @@ fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
     data_points_json
 }
 
+//flatten each metric record to create one record for each data point
+//which may be under gauge, sum, histogram, exponential_histogram or summary
 pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json: Vec<BTreeMap<String, Value>> = Vec::new();
-
+    let mut metric_json: BTreeMap<String, Value> = BTreeMap::new();
     if let Some(gauge) = metrics_record.gauge.as_ref() {
         let gauge_json = flatten_gauge(gauge);
         for gauge_json in gauge_json.iter() {
@@ -756,38 +895,36 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<BTreeMap<String, V
     }
 
     if metrics_record.name.is_some() {
-        for data_point_json in data_points_json.iter_mut() {
-            data_point_json.insert(
-                "metric_name".to_string(),
-                Value::String(metrics_record.name.as_ref().unwrap().to_string()),
-            );
-        }
+        metric_json.insert(
+            "metric_name".to_string(),
+            Value::String(metrics_record.name.as_ref().unwrap().to_string()),
+        );
     }
 
     if metrics_record.description.is_some() {
-        for data_point_json in data_points_json.iter_mut() {
-            data_point_json.insert(
-                "metric_description".to_string(),
-                Value::String(metrics_record.description.as_ref().unwrap().to_string()),
-            );
-        }
+        metric_json.insert(
+            "metric_description".to_string(),
+            Value::String(metrics_record.description.as_ref().unwrap().to_string()),
+        );
     }
 
     if metrics_record.unit.is_some() {
-        for data_point_json in data_points_json.iter_mut() {
-            data_point_json.insert(
-                "metric_unit".to_string(),
-                Value::String(metrics_record.unit.as_ref().unwrap().to_string()),
-            );
-        }
+        metric_json.insert(
+            "metric_unit".to_string(),
+            Value::String(metrics_record.unit.as_ref().unwrap().to_string()),
+        );
     }
 
     if let Some(metadata) = metrics_record.metadata.as_ref() {
         let metadata_json = flatten_attributes(metadata);
         for key in metadata_json.keys() {
-            for data_point_json in data_points_json.iter_mut() {
-                data_point_json.insert(key.to_owned(), metadata_json[key].to_owned());
-            }
+            metric_json.insert(key.to_owned(), metadata_json[key].to_owned());
+        }
+    }
+
+    for data_point_json in data_points_json.iter_mut() {
+        for key in metric_json.keys() {
+            data_point_json.insert(key.to_owned(), metric_json[key].to_owned());
         }
     }
     data_points_json
