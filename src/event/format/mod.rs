@@ -17,7 +17,10 @@
  *
  */
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::{anyhow, Error as AnyError};
 use arrow_array::{RecordBatch, StringArray};
@@ -162,26 +165,18 @@ pub fn get_existing_fields(
     existing_fields
 }
 
-pub fn get_existing_timestamp_fields(
-    existing_schema: &HashMap<String, Arc<Field>>,
-) -> Vec<Arc<Field>> {
-    let mut timestamp_fields = Vec::new();
-
-    for field in existing_schema.values() {
-        if let DataType::Timestamp(TimeUnit::Millisecond, None) = field.data_type() {
-            timestamp_fields.push(field.clone());
-        }
-    }
-
-    timestamp_fields
-}
-
-pub fn override_timestamp_fields(
+pub fn override_timestamp_fields_from_existing_schema(
     inferred_schema: Arc<Schema>,
-    existing_timestamp_fields: &[Arc<Field>],
+    existing_schema: &HashMap<String, Arc<Field>>,
 ) -> Arc<Schema> {
-    let timestamp_field_names: Vec<&str> = existing_timestamp_fields
-        .iter()
+    let timestamp_field_names: HashSet<&str> = existing_schema
+        .values()
+        .filter(|field| {
+            matches!(
+                field.data_type(),
+                DataType::Timestamp(TimeUnit::Millisecond, None)
+            )
+        })
         .map(|field| field.name().as_str())
         .collect();
 
@@ -214,9 +209,9 @@ pub fn update_field_type_in_schema(
 
     if let Some(existing_schema) = existing_schema {
         let existing_fields = get_existing_fields(inferred_schema.clone(), Some(existing_schema));
-        let existing_timestamp_fields = get_existing_timestamp_fields(existing_schema);
         // overriding known timestamp fields which were inferred as string fields
-        updated_schema = override_timestamp_fields(updated_schema, &existing_timestamp_fields);
+        updated_schema =
+            override_timestamp_fields_from_existing_schema(updated_schema, existing_schema);
         let existing_field_names: Vec<String> = existing_fields
             .iter()
             .map(|field| field.name().clone())
