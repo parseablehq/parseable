@@ -25,7 +25,6 @@ use super::{
     SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
-use crate::event::format::override_num_fields_from_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
@@ -40,7 +39,7 @@ use crate::{
 };
 
 use actix_web_prometheus::PrometheusMetrics;
-use arrow_schema::{Field, Schema};
+use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
@@ -639,21 +638,8 @@ pub async fn commit_schema_to_storage(
     schema: Schema,
 ) -> Result<(), ObjectStorageError> {
     let storage = CONFIG.storage().get_object_store();
-    let mut stream_schema = storage.get_schema(stream_name).await?;
-    // override the data type of all numeric fields to Float64
-    //if data type is not Float64 already
-    stream_schema = Schema::new(override_num_fields_from_schema(
-        stream_schema.fields().iter().cloned().collect(),
-    ));
+    let stream_schema = storage.get_schema(stream_name).await?;
     let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
-
-    //update the merged schema in the metadata and storage
-    let schema_map: HashMap<String, Arc<Field>> = new_schema
-        .fields()
-        .iter()
-        .map(|field| (field.name().clone(), Arc::clone(field)))
-        .collect();
-    let _ = STREAM_INFO.set_schema(stream_name, schema_map);
     storage.put_schema(stream_name, &new_schema).await
 }
 

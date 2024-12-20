@@ -273,7 +273,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use actix_web::test::TestRequest;
-    use arrow_array::{ArrayRef, Float64Array, StringArray};
+    use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
     use arrow_schema::{DataType, Field};
     use serde_json::json;
 
@@ -283,11 +283,16 @@ mod tests {
     };
 
     trait TestExt {
+        fn as_int64_arr(&self) -> &Int64Array;
         fn as_float64_arr(&self) -> &Float64Array;
         fn as_utf8_arr(&self) -> &StringArray;
     }
 
     impl TestExt for ArrayRef {
+        fn as_int64_arr(&self) -> &Int64Array {
+            self.as_any().downcast_ref().unwrap()
+        }
+
         fn as_float64_arr(&self) -> &Float64Array {
             self.as_any().downcast_ref().unwrap()
         }
@@ -319,8 +324,8 @@ mod tests {
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 6);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from_iter([1.0])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from_iter([1])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -359,8 +364,8 @@ mod tests {
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from_iter([1.0])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from_iter([1])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -377,7 +382,7 @@ mod tests {
 
         let schema = fields_to_map(
             [
-                Field::new("a", DataType::Float64, true),
+                Field::new("a", DataType::Int64, true),
                 Field::new("b", DataType::Utf8, true),
                 Field::new("c", DataType::Float64, true),
             ]
@@ -391,8 +396,8 @@ mod tests {
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from_iter([1.0])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from_iter([1])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -409,7 +414,7 @@ mod tests {
 
         let schema = fields_to_map(
             [
-                Field::new("a", DataType::Float64, true),
+                Field::new("a", DataType::Int64, true),
                 Field::new("b", DataType::Utf8, true),
                 Field::new("c", DataType::Float64, true),
             ]
@@ -479,21 +484,21 @@ mod tests {
         let schema = rb.schema();
         let fields = &schema.fields;
 
-        assert_eq!(&*fields[1], &Field::new("a", DataType::Float64, true));
+        assert_eq!(&*fields[1], &Field::new("a", DataType::Int64, true));
         assert_eq!(&*fields[2], &Field::new("b", DataType::Utf8, true));
-        assert_eq!(&*fields[3], &Field::new("c", DataType::Float64, true));
+        assert_eq!(&*fields[3], &Field::new("c", DataType::Int64, true));
 
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, Some(1.0), Some(1.0)])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), Some(1)])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
             &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
         );
         assert_eq!(
-            rb.column_by_name("c").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, Some(1.0), None])
+            rb.column_by_name("c").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), None])
         );
     }
 
@@ -524,8 +529,8 @@ mod tests {
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, Some(1.0), Some(1.0)])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), Some(1)])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -559,7 +564,7 @@ mod tests {
 
         let schema = fields_to_map(
             [
-                Field::new("a", DataType::Float64, true),
+                Field::new("a", DataType::Int64, true),
                 Field::new("b", DataType::Utf8, true),
                 Field::new("c", DataType::Float64, true),
             ]
@@ -572,8 +577,8 @@ mod tests {
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, Some(1.0), Some(1.0)])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), Some(1)])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -599,7 +604,7 @@ mod tests {
                 "c": 1
             },
             {
-                "a": "1",
+                "a": 1,
                 "b": "hello",
                 "c": null
             },
@@ -609,7 +614,7 @@ mod tests {
 
         let schema = fields_to_map(
             [
-                Field::new("a", DataType::Float64, true),
+                Field::new("a", DataType::Int64, true),
                 Field::new("b", DataType::Utf8, true),
                 Field::new("c", DataType::Float64, true),
             ]
@@ -649,8 +654,8 @@ mod tests {
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 7);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![Some(1.0), Some(1.0), Some(1.0), Some(1.0)])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![Some(1), Some(1), Some(1), Some(1)])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -663,13 +668,13 @@ mod tests {
         );
 
         assert_eq!(
-            rb.column_by_name("c_a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, None, Some(1.0), Some(1.0)])
+            rb.column_by_name("c_a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, None, Some(1), Some(1)])
         );
 
         assert_eq!(
-            rb.column_by_name("c_b").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, None, None, Some(2.0)])
+            rb.column_by_name("c_b").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, None, None, Some(2)])
         );
     }
 }
