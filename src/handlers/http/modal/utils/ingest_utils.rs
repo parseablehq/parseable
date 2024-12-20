@@ -26,6 +26,7 @@ use arrow_schema::Field;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
+use tracing::{debug, instrument, warn};
 
 use crate::{
     event::{
@@ -56,7 +57,7 @@ pub async fn flatten_and_push_logs(
                 json = otel::flatten_otel_logs(&body);
             }
             _ => {
-                log::warn!("Unknown log source: {}", log_source);
+                warn!("Unknown log source: {}", log_source);
                 push_logs(stream_name.to_string(), req.clone(), body).await?;
             }
         }
@@ -70,6 +71,7 @@ pub async fn flatten_and_push_logs(
     Ok(())
 }
 
+#[instrument(level = "trace")]
 pub async fn push_logs(
     stream_name: String,
     req: HttpRequest,
@@ -172,10 +174,13 @@ pub async fn push_logs(
         }
     }
 
+    debug!("Ingestion successful on stream: {stream_name}");
+
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
+#[instrument(level = "trace")]
 pub async fn create_process_record_batch(
     stream_name: String,
     req: HttpRequest,

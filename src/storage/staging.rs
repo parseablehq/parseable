@@ -50,7 +50,7 @@ use std::{
     process,
     sync::Arc,
 };
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 // const PARQUET_FILE_EXTENSION: &str = "data.parquet";
@@ -223,6 +223,7 @@ impl StorageDir {
 //     data_path.join(dir)
 // }
 
+#[instrument(level = "debug")]
 pub fn convert_disk_files_to_parquet(
     stream: &str,
     dir: &StorageDir,

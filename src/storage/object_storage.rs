@@ -48,7 +48,7 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use itertools::Itertools;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use tracing::error;
+use tracing::{debug, error, instrument, trace};
 
 use std::collections::BTreeMap;
 use std::{
@@ -67,7 +67,7 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
 }
 
 #[async_trait]
-pub trait ObjectStorage: Send + Sync + 'static {
+pub trait ObjectStorage: std::fmt::Debug + Send + Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(
@@ -389,8 +389,10 @@ pub trait ObjectStorage: Send + Sync + 'static {
             )),
             Err(err) => {
                 if matches!(err, ObjectStorageError::NoSuchKey(_)) {
+                    debug!("Couldn't find manifest file: {path}");
                     Ok(None)
                 } else {
+                    error!("Couldn't get the manifest file: {err}");
                     Err(err)
                 }
             }
@@ -538,8 +540,10 @@ pub trait ObjectStorage: Send + Sync + 'static {
         Ok(Bytes::new())
     }
 
+    #[instrument(level = "debug")]
     async fn sync(&self, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
         if !Path::new(&CONFIG.staging_dir()).exists() {
+            trace!("Nothing to sync");
             return Ok(());
         }
 
@@ -552,6 +556,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
             let cache_enabled = STREAM_INFO
                 .get_cache_enabled(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+
             let time_partition = STREAM_INFO
                 .get_time_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
@@ -568,12 +573,17 @@ pub trait ObjectStorage: Send + Sync + 'static {
             )
             .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
+            debug!("Arrow files compressed into parquet for stream: {stream}");
+
             if let Some(schema) = schema {
                 let static_schema_flag = STREAM_INFO
                     .get_static_schema_flag(stream)
                     .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
                 if static_schema_flag.is_none() {
-                    commit_schema_to_storage(stream, schema).await?;
+                    if let Err(err) = commit_schema_to_storage(stream, schema).await {
+                        error!("Error while committing schema to storage: {err}");
+                        return Err(err);
+                    }
                 }
             }
 
@@ -614,6 +624,8 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
                     error!("Failed to upload file {}: {:?}", filename, e);
                     continue; // Skip to the next file
+                } else {
+                    debug!("Parquet file uploaded to s3 for stream: {stream}");
                 }
 
                 let absolute_path = self
@@ -622,7 +634,10 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 let store = CONFIG.storage().get_object_store();
                 let manifest =
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
-                catalog::update_snapshot(store, stream, manifest).await?;
+
+                if let Err(err) = catalog::update_snapshot(store, stream, manifest).await {
+                    error!("Error while updating snapshot: {err}");
+                }
                 if cache_enabled && cache_manager.is_some() {
                     cache_updates
                         .entry(stream)

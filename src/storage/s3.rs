@@ -316,6 +316,7 @@ fn to_object_store_path(path: &RelativePath) -> StorePath {
     StorePath::from(path.as_str())
 }
 
+#[derive(Debug)]
 pub struct S3 {
     client: LimitStore<AmazonS3>,
     bucket: String,

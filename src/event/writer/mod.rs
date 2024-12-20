@@ -38,6 +38,7 @@ use chrono::NaiveDateTime;
 use chrono::Utc;
 use derive_more::{Deref, DerefMut};
 use once_cell::sync::Lazy;
+use tracing::debug;
 
 pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 
@@ -124,6 +125,8 @@ impl WriterTable {
                 )?;
             }
         };
+        debug!("Successful append to local");
+
         Ok(())
     }
 

@@ -21,6 +21,7 @@ use chrono::{DateTime, Duration, Utc};
 use itertools::Itertools;
 use serde_json::map::Map;
 use serde_json::value::Value;
+use tracing::debug;
 
 pub fn flatten(
     nested_value: Value,
@@ -240,6 +241,7 @@ pub fn flatten_object(
             }
         }
     }
+    debug!("Flattened nested object");
     Ok(())
 }
 
@@ -300,7 +302,7 @@ pub fn flatten_array_objects(
         let new_key = format!("{parent_key}{separator}{key}");
         map.insert(new_key, Value::Array(arr));
     }
-
+    debug!("Flattened array of objects");
     Ok(())
 }
 

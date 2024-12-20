@@ -80,6 +80,7 @@ impl ObjectStorageProvider for FSConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct LocalFS {
     // absolute path of the data directory
     root: PathBuf,

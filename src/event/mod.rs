@@ -24,7 +24,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
 use itertools::Itertools;
 use std::sync::Arc;
-use tracing::error;
+use tracing::{error, instrument};
 
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
@@ -36,7 +36,7 @@ pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 pub const DEFAULT_TAGS_KEY: &str = "p_tags";
 pub const DEFAULT_METADATA_KEY: &str = "p_metadata";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Event {
     pub stream_name: String,
     pub rb: RecordBatch,
@@ -51,6 +51,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
+    #[instrument(level = "trace")]
     pub async fn process(&self) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
@@ -120,6 +121,7 @@ impl Event {
 
     // event process all events after the 1st event. Concatenates record batches
     // and puts them in memory store for each event.
+    #[instrument(level = "trace")]
     fn process_event(
         stream_name: &str,
         schema_key: &str,
