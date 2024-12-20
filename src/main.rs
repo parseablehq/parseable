@@ -21,12 +21,14 @@ use parseable::{
     option::{Mode, CONFIG},
     rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
+        .with_span_events(FmtSpan::NEW) // logs when a span is created
+        .with_span_events(FmtSpan::CLOSE) // logs when a span is destructed
         .compact()
         .init();
 

@@ -30,6 +30,7 @@ use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
 use object_store::{BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig};
 use relative_path::{RelativePath, RelativePathBuf};
+use tracing::{error, info};
 
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -315,6 +316,7 @@ fn to_object_store_path(path: &RelativePath) -> StorePath {
     StorePath::from(path.as_str())
 }
 
+#[derive(Debug)]
 pub struct S3 {
     client: LimitStore<AmazonS3>,
     bucket: String,
@@ -379,11 +381,11 @@ impl S3 {
                 match x {
                     Ok(obj) => {
                         if (self.client.delete(&obj.location).await).is_err() {
-                            log::error!("Failed to fetch object during delete stream");
+                            error!("Failed to fetch object during delete stream");
                         }
                     }
                     Err(_) => {
-                        log::error!("Failed to fetch object during delete stream");
+                        error!("Failed to fetch object during delete stream");
                     }
                 };
             })
@@ -483,7 +485,7 @@ impl S3 {
         } else {
             let bytes = tokio::fs::read(path).await?;
             let result = self.client.put(&key.into(), bytes.into()).await?;
-            log::info!("Uploaded file to S3: {:?}", result);
+            info!("Uploaded file to S3: {:?}", result);
             Ok(())
         };
 
@@ -506,7 +508,7 @@ impl S3 {
 
     //     /* `abort_multipart()` has been removed */
     //     // let close_multipart = |err| async move {
-    //     //     log::error!("multipart upload failed. {:?}", err);
+    //     //     error!("multipart upload failed. {:?}", err);
     //     //     self.client
     //     //         .abort_multipart(&key.into(), &multipart_id)
     //     //         .await
@@ -689,10 +691,10 @@ impl ObjectStorage for S3 {
                 // if the object is not found, it is not an error
                 // the given url path was incorrect
                 if matches!(err, object_store::Error::NotFound { .. }) {
-                    log::error!("Node does not exist");
+                    error!("Node does not exist");
                     Err(err.into())
                 } else {
-                    log::error!("Error deleting ingestor meta file: {:?}", err);
+                    error!("Error deleting ingestor meta file: {:?}", err);
                     Err(err.into())
                 }
             }

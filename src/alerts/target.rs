@@ -28,6 +28,7 @@ use chrono::Utc;
 use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use humantime_serde::re::humantime;
 use reqwest::ClientBuilder;
+use tracing::error;
 
 use crate::utils::json;
 
@@ -239,7 +240,7 @@ impl CallableTarget for SlackWebHook {
         };
 
         if let Err(e) = client.post(&self.endpoint).json(&alert).send().await {
-            log::error!("Couldn't make call to webhook, error: {}", e)
+            error!("Couldn't make call to webhook, error: {}", e)
         }
     }
 }
@@ -277,7 +278,7 @@ impl CallableTarget for OtherWebHook {
             .headers((&self.headers).try_into().expect("valid_headers"));
 
         if let Err(e) = request.body(alert).send().await {
-            log::error!("Couldn't make call to webhook, error: {}", e)
+            error!("Couldn't make call to webhook, error: {}", e)
         }
     }
 }
@@ -356,7 +357,7 @@ impl CallableTarget for AlertManager {
         };
 
         if let Err(e) = client.post(&self.endpoint).json(&alerts).send().await {
-            log::error!("Couldn't make call to alertmanager, error: {}", e)
+            error!("Couldn't make call to alertmanager, error: {}", e)
         }
     }
 }

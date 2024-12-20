@@ -54,6 +54,7 @@ use bytes::Bytes;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
+use tracing::error;
 
 /// ! have to use a guard before using it
 pub static INGESTOR_META: Lazy<IngestorMetadata> =
@@ -133,10 +134,10 @@ impl ParseableServer for IngestServer {
                     remote_sync_inbox.send(()).unwrap_or(());
                     localsync_inbox.send(()).unwrap_or(());
                     if let Err(e) = localsync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                        error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                        error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     return e
                 },
@@ -148,7 +149,7 @@ impl ParseableServer for IngestServer {
                 _ = &mut remote_sync_outbox => {
                     // remote_sync failed, this is recoverable by just starting remote_sync thread again
                     if let Err(e) = remote_sync_handler.await {
-                        log::error!("Error joining remote_sync_handler: {:?}", e);
+                        error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
                 }

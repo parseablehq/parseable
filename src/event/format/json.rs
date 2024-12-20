@@ -27,9 +27,10 @@ use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
+use tracing::error;
 
 use super::{EventFormat, Metadata, Tags};
-use crate::utils::{arrow::get_field, json::flatten_json_body};
+use crate::utils::{arrow::get_field, json};
 
 pub struct Event {
     pub data: Value,
@@ -48,7 +49,7 @@ impl EventFormat for Event {
         static_schema_flag: Option<String>,
         time_partition: Option<String>,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
-        let data = flatten_json_body(self.data, None, None, None, false)?;
+        let data = json::flatten::flatten(self.data, "_", None, None, None, false)?;
         let stream_schema = schema;
 
         // incoming event may be a single json or a json array
@@ -224,7 +225,7 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
         }
         DataType::Timestamp(_, _) => value.is_string() || value.is_number(),
         _ => {
-            log::error!("Unsupported datatype {:?}, value {:?}", data_type, value);
+            error!("Unsupported datatype {:?}, value {:?}", data_type, value);
             unreachable!()
         }
     }

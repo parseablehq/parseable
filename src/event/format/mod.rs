@@ -24,6 +24,7 @@ use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::DateTime;
 use serde_json::Value;
+use tracing::{debug, error};
 
 use crate::utils::{self, arrow::get_field};
 
@@ -59,23 +60,17 @@ pub trait EventFormat: Sized {
             time_partition.clone(),
         )?;
 
-        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
-            return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
-        };
-
-        if get_field(&schema, DEFAULT_METADATA_KEY).is_some() {
-            return Err(anyhow!(
-                "field {} is a reserved field",
-                DEFAULT_METADATA_KEY
-            ));
-        };
-
-        if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
-            return Err(anyhow!(
-                "field {} is a reserved field",
-                DEFAULT_TIMESTAMP_KEY
-            ));
-        };
+        for reserved_field in [
+            DEFAULT_TAGS_KEY,
+            DEFAULT_METADATA_KEY,
+            DEFAULT_TIMESTAMP_KEY,
+        ] {
+            if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
+                let msg = format!("{} is a reserved field", reserved_field);
+                error!("{msg}");
+                return Err(anyhow!(msg));
+            }
+        }
 
         // add the p_timestamp field to the event schema to the 0th index
         schema.insert(
@@ -100,7 +95,9 @@ pub trait EventFormat: Sized {
         // prepare the record batch and new fields to be added
         let mut new_schema = Arc::new(Schema::new(schema));
         if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
-            return Err(anyhow!("Schema mismatch"));
+            let msg = "Schema mismatch";
+            error!("{msg}");
+            return Err(anyhow!(msg));
         }
         new_schema = update_field_type_in_schema(new_schema, None, time_partition, None);
         let rb = Self::decode(data, new_schema.clone())?;
@@ -269,6 +266,10 @@ pub fn update_data_type_to_datetime(
                 if let Value::Object(map) = &value {
                     if let Some(Value::String(s)) = map.get(field.name()) {
                         if DateTime::parse_from_rfc3339(s).is_ok() {
+                            debug!(
+                                "Field type updated to timestamp from string: {}",
+                                field.name()
+                            );
                             // Update the field's data type to Timestamp
                             return Field::new(
                                 field.name().clone(),

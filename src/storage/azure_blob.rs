@@ -2,6 +2,7 @@ use bytes::Bytes;
 use datafusion::datasource::listing::ListingTableUrl;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
+use tracing::{error, info};
 /*
  * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
@@ -190,6 +191,7 @@ pub fn to_object_store_path(path: &RelativePath) -> StorePath {
 
 // ObjStoreClient is generic client to enable interactions with different cloudprovider's
 // object store such as S3 and Azure Blob
+#[derive(Debug)]
 pub struct BlobStore {
     client: LimitStore<MicrosoftAzure>,
     account: String,
@@ -251,11 +253,11 @@ impl BlobStore {
                 match x {
                     Ok(obj) => {
                         if (self.client.delete(&obj.location).await).is_err() {
-                            log::error!("Failed to fetch object during delete stream");
+                            error!("Failed to fetch object during delete stream");
                         }
                     }
                     Err(_) => {
-                        log::error!("Failed to fetch object during delete stream");
+                        error!("Failed to fetch object during delete stream");
                     }
                 };
             })
@@ -355,7 +357,7 @@ impl BlobStore {
         } else {
             let bytes = tokio::fs::read(path).await?;
             let result = self.client.put(&key.into(), bytes.into()).await?;
-            log::info!("Uploaded file to Azure Blob Storage: {:?}", result);
+            info!("Uploaded file to Azure Blob Storage: {:?}", result);
             Ok(())
         };
 
@@ -378,7 +380,7 @@ impl BlobStore {
 
     //     /* `abort_multipart()` has been removed */
     //     // let close_multipart = |err| async move {
-    //     //     log::error!("multipart upload failed. {:?}", err);
+    //     //     error!("multipart upload failed. {:?}", err);
     //     //     self.client
     //     //         .abort_multipart(&key.into(), &multipart_id)
     //     //         .await
@@ -561,10 +563,10 @@ impl ObjectStorage for BlobStore {
                 // if the object is not found, it is not an error
                 // the given url path was incorrect
                 if matches!(err, object_store::Error::NotFound { .. }) {
-                    log::error!("Node does not exist");
+                    error!("Node does not exist");
                     Err(err.into())
                 } else {
-                    log::error!("Error deleting ingestor meta file: {:?}", err);
+                    error!("Error deleting ingestor meta file: {:?}", err);
                     Err(err.into())
                 }
             }

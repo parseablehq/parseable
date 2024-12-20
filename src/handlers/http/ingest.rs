@@ -43,10 +43,12 @@ use http::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::{debug, error, instrument, trace};
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
+#[instrument(level = "trace")]
 pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     if let Some((_, stream_name)) = req
         .headers()
@@ -66,6 +68,7 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         flatten_and_push_logs(req, body, stream_name).await?;
         Ok(HttpResponse::Ok().finish())
     } else {
+        error!("Ingestion request doesn't specify stream name");
         Err(PostError::Header(ParseHeaderError::MissingStreamName))
     }
 }
@@ -143,6 +146,7 @@ pub async fn ingest_otel_logs(req: HttpRequest, body: Bytes) -> Result<HttpRespo
 // Handler for POST /api/v1/logstream/{logstream}
 // only ingests events into the specified logstream
 // fails if the logstream does not exist
+#[instrument(level = "trace")]
 pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let internal_stream_names = STREAM_INFO.list_internal_streams();
@@ -198,6 +202,7 @@ pub async fn create_stream_if_not_exists(
     let mut stream_exists = false;
     if STREAM_INFO.stream_exists(stream_name) {
         stream_exists = true;
+        trace!("Stream: {stream_name} already exists");
         return Ok(stream_exists);
     }
 
@@ -220,6 +225,7 @@ pub async fn create_stream_if_not_exists(
         stream_type,
     )
     .await?;
+    debug!("Stream: {stream_name} created");
 
     Ok(stream_exists)
 }

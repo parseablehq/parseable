@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 use sysinfo::System;
+use tracing::{error, info};
 use ulid::Ulid;
 
 const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io:80";
@@ -291,7 +292,7 @@ async fn build_metrics() -> HashMap<String, Value> {
 }
 
 pub fn init_analytics_scheduler() -> anyhow::Result<()> {
-    log::info!("Setting up schedular for anonymous user analytics");
+    info!("Setting up schedular for anonymous user analytics");
 
     let mut scheduler = AsyncScheduler::new();
     scheduler
@@ -302,7 +303,7 @@ pub fn init_analytics_scheduler() -> anyhow::Result<()> {
                 .unwrap_or_else(|err| {
                     // panicing because seperate thread
                     // TODO: a better way to handle this
-                    log::error!("Error while sending analytics: {}", err.to_string());
+                    error!("Error while sending analytics: {}", err.to_string());
                     panic!("{}", err.to_string());
                 })
                 .send()
