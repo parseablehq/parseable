@@ -113,57 +113,240 @@ struct StandardTableProvider {
     url: Url,
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn create_parquet_physical_plan(
-    object_store_url: ObjectStoreUrl,
-    partitions: Vec<Vec<PartitionedFile>>,
-    statistics: Statistics,
-    schema: Arc<Schema>,
-    projection: Option<&Vec<usize>>,
-    filters: &[Expr],
-    limit: Option<usize>,
-    state: &dyn Session,
-    time_partition: Option<String>,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let filters = if let Some(expr) = conjunction(filters.to_vec()) {
-        let table_df_schema = schema.as_ref().clone().to_dfschema()?;
-        let filters = create_physical_expr(&expr, &table_df_schema, state.execution_props())?;
-        Some(filters)
-    } else {
-        None
-    };
-
-    let sort_expr = PhysicalSortExpr {
-        expr: if let Some(time_partition) = time_partition {
-            physical_plan::expressions::col(&time_partition, &schema)?
+impl StandardTableProvider {
+    #[allow(clippy::too_many_arguments)]
+    async fn create_parquet_physical_plan(
+        &self,
+        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
+        object_store_url: ObjectStoreUrl,
+        partitions: Vec<Vec<PartitionedFile>>,
+        statistics: Statistics,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+        state: &dyn Session,
+        time_partition: Option<String>,
+    ) -> Result<(), DataFusionError> {
+        let filters = if let Some(expr) = conjunction(filters.to_vec()) {
+            let table_df_schema = self.schema.as_ref().clone().to_dfschema()?;
+            let filters = create_physical_expr(&expr, &table_df_schema, state.execution_props())?;
+            Some(filters)
         } else {
-            physical_plan::expressions::col(DEFAULT_TIMESTAMP_KEY, &schema)?
-        },
-        options: SortOptions {
-            descending: true,
-            nulls_first: true,
-        },
-    };
-    let file_format = ParquetFormat::default().with_enable_pruning(true);
+            None
+        };
 
-    // create the execution plan
-    let plan = file_format
-        .create_physical_plan(
-            state.as_any().downcast_ref::<SessionState>().unwrap(), // Remove this when ParquetFormat catches up
-            FileScanConfig {
-                object_store_url,
-                file_schema: schema.clone(),
-                file_groups: partitions,
-                statistics,
-                projection: projection.cloned(),
-                limit,
-                output_ordering: vec![vec![sort_expr]],
-                table_partition_cols: Vec::new(),
+        let sort_expr = PhysicalSortExpr {
+            expr: if let Some(time_partition) = time_partition {
+                physical_plan::expressions::col(&time_partition, &self.schema)?
+            } else {
+                physical_plan::expressions::col(DEFAULT_TIMESTAMP_KEY, &self.schema)?
             },
-            filters.as_ref(),
+            options: SortOptions {
+                descending: true,
+                nulls_first: true,
+            },
+        };
+        let file_format = ParquetFormat::default().with_enable_pruning(true);
+
+        // create the execution plan
+        let plan = file_format
+            .create_physical_plan(
+                state.as_any().downcast_ref::<SessionState>().unwrap(), // Remove this when ParquetFormat catches up
+                FileScanConfig {
+                    object_store_url,
+                    file_schema: self.schema.clone(),
+                    file_groups: partitions,
+                    statistics,
+                    projection: projection.cloned(),
+                    limit,
+                    output_ordering: vec![vec![sort_expr]],
+                    table_partition_cols: Vec::new(),
+                },
+                filters.as_ref(),
+            )
+            .await?;
+        execution_plans.push(plan);
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn get_hottier_exectuion_plan(
+        &self,
+        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
+        hot_tier_manager: &HotTierManager,
+        manifest_files: &mut Vec<File>,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+        state: &dyn Session,
+        time_partition: Option<String>,
+    ) -> Result<(), DataFusionError> {
+        let hot_tier_files = hot_tier_manager
+            .get_hot_tier_manifest_files(&self.stream, manifest_files)
+            .await
+            .map_err(|err| DataFusionError::External(Box::new(err)))?;
+
+        let hot_tier_files = hot_tier_files
+            .into_iter()
+            .map(|mut file| {
+                let path = CONFIG
+                    .parseable
+                    .hot_tier_storage_path
+                    .as_ref()
+                    .unwrap()
+                    .join(&file.file_path);
+                file.file_path = path.to_str().unwrap().to_string();
+                file
+            })
+            .collect();
+
+        let (partitioned_files, statistics) = self.partitioned_files(hot_tier_files);
+        self.create_parquet_physical_plan(
+            execution_plans,
+            ObjectStoreUrl::parse("file:///").unwrap(),
+            partitioned_files,
+            statistics,
+            projection,
+            filters,
+            limit,
+            state,
+            time_partition.clone(),
         )
         .await?;
-    Ok(plan)
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn legacy_listing_table(
+        &self,
+        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
+        glob_storage: Arc<dyn ObjectStorage>,
+        object_store: Arc<dyn ObjectStore>,
+        time_filters: &[PartialTimeFilter],
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+        time_partition: Option<String>,
+    ) -> Result<(), DataFusionError> {
+        ListingTableBuilder::new(self.stream.to_owned())
+            .populate_via_listing(glob_storage.clone(), object_store, time_filters)
+            .and_then(|builder| async {
+                let table = builder.build(
+                    self.schema.clone(),
+                    |x| glob_storage.query_prefixes(x),
+                    time_partition,
+                )?;
+                if let Some(table) = table {
+                    let plan = table.scan(state, projection, filters, limit).await?;
+                    execution_plans.push(plan);
+                }
+
+                Ok(())
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    fn final_plan(
+        &self,
+        mut execution_plans: Vec<Arc<dyn ExecutionPlan>>,
+        projection: Option<&Vec<usize>>,
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        let exec: Arc<dyn ExecutionPlan> = if execution_plans.is_empty() {
+            let schema = match projection {
+                Some(projection) => Arc::new(self.schema.project(projection)?),
+                None => self.schema.to_owned(),
+            };
+            Arc::new(EmptyExec::new(schema))
+        } else if execution_plans.len() == 1 {
+            execution_plans.pop().unwrap()
+        } else {
+            Arc::new(UnionExec::new(execution_plans))
+        };
+        Ok(exec)
+    }
+
+    fn partitioned_files(
+        &self,
+        manifest_files: Vec<catalog::manifest::File>,
+    ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
+        let target_partition = num_cpus::get();
+        let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
+        let mut column_statistics =
+            HashMap::<String, Option<catalog::column::TypedStatistics>>::new();
+        let mut count = 0;
+        for (index, file) in manifest_files
+            .into_iter()
+            .enumerate()
+            .map(|(x, y)| (x % target_partition, y))
+        {
+            #[allow(unused_mut)]
+            let catalog::manifest::File {
+                mut file_path,
+                num_rows,
+                columns,
+                ..
+            } = file;
+
+            // object_store::path::Path doesn't automatically deal with Windows path separators
+            // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
+            // before sending the file path to PartitionedFile
+            // the github issue- https://github.com/parseablehq/parseable/issues/824
+            // For some reason, the `from_absolute_path()` doesn't work for macos, hence the ugly solution
+            // TODO: figure out an elegant solution to this
+            #[cfg(windows)]
+            {
+                if CONFIG.storage_name.eq("drive") {
+                    file_path = object_store::path::Path::from_absolute_path(file_path).unwrap();
+                }
+            }
+            let pf = PartitionedFile::new(file_path, file.file_size);
+            partitioned_files[index].push(pf);
+
+            columns.into_iter().for_each(|col| {
+                column_statistics
+                    .entry(col.name)
+                    .and_modify(|x| {
+                        if let Some((stats, col_stats)) = x.as_ref().cloned().zip(col.stats.clone())
+                        {
+                            *x = Some(stats.update(col_stats));
+                        }
+                    })
+                    .or_insert_with(|| col.stats.as_ref().cloned());
+            });
+            count += num_rows;
+        }
+        let statistics = self
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                column_statistics
+                    .get(field.name())
+                    .and_then(|stats| stats.as_ref())
+                    .and_then(|stats| stats.clone().min_max_as_scalar(field.data_type()))
+                    .map(|(min, max)| datafusion::common::ColumnStatistics {
+                        null_count: Precision::Absent,
+                        max_value: Precision::Exact(max),
+                        min_value: Precision::Exact(min),
+                        distinct_count: Precision::Absent,
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        let statistics = datafusion::common::Statistics {
+            num_rows: Precision::Exact(count as usize),
+            total_byte_size: Precision::Absent,
+            column_statistics: statistics,
+        };
+
+        (partitioned_files, statistics)
+    }
 }
 
 async fn collect_from_snapshot(
@@ -213,88 +396,6 @@ async fn collect_from_snapshot(
     Ok(manifest_files)
 }
 
-fn partitioned_files(
-    manifest_files: Vec<catalog::manifest::File>,
-    table_schema: &Schema,
-) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
-    let target_partition = num_cpus::get();
-    let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
-    let mut column_statistics = HashMap::<String, Option<catalog::column::TypedStatistics>>::new();
-    let mut count = 0;
-    for (index, file) in manifest_files
-        .into_iter()
-        .enumerate()
-        .map(|(x, y)| (x % target_partition, y))
-    {
-        let catalog::manifest::File {
-            file_path,
-            num_rows,
-            columns,
-            ..
-        } = file;
-
-        // object_store::path::Path doesn't automatically deal with Windows path separators
-        // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
-        // before sending the file path to PartitionedFile
-        // the github issue- https://github.com/parseablehq/parseable/issues/824
-        // For some reason, the `from_absolute_path()` doesn't work for macos, hence the ugly solution
-        // TODO: figure out an elegant solution to this
-        let pf;
-
-        #[cfg(unix)]
-        {
-            pf = PartitionedFile::new(file_path, file.file_size);
-        }
-        #[cfg(windows)]
-        {
-            pf = if CONFIG.storage_name.eq("drive") {
-                let file_path = object_store::path::Path::from_absolute_path(file_path).unwrap();
-                PartitionedFile::new(file_path, file.file_size)
-            } else {
-                PartitionedFile::new(file_path, file.file_size)
-            };
-        }
-
-        partitioned_files[index].push(pf);
-        columns.into_iter().for_each(|col| {
-            column_statistics
-                .entry(col.name)
-                .and_modify(|x| {
-                    if let Some((stats, col_stats)) = x.as_ref().cloned().zip(col.stats.clone()) {
-                        *x = Some(stats.update(col_stats));
-                    }
-                })
-                .or_insert_with(|| col.stats.as_ref().cloned());
-        });
-        count += num_rows;
-    }
-    let statistics = table_schema
-        .fields()
-        .iter()
-        .map(|field| {
-            column_statistics
-                .get(field.name())
-                .and_then(|stats| stats.as_ref())
-                .and_then(|stats| stats.clone().min_max_as_scalar(field.data_type()))
-                .map(|(min, max)| datafusion::common::ColumnStatistics {
-                    null_count: Precision::Absent,
-                    max_value: Precision::Exact(max),
-                    min_value: Precision::Exact(min),
-                    distinct_count: Precision::Absent,
-                })
-                .unwrap_or_default()
-        })
-        .collect();
-
-    let statistics = datafusion::common::Statistics {
-        num_rows: Precision::Exact(count as usize),
-        total_byte_size: Precision::Absent,
-        column_statistics: statistics,
-    };
-
-    (partitioned_files, statistics)
-}
-
 #[async_trait::async_trait]
 impl TableProvider for StandardTableProvider {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -316,9 +417,7 @@ impl TableProvider for StandardTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let mut memory_exec = None;
-        let mut hot_tier_exec = None;
-        let mut listing_exec = None;
+        let mut execution_plans = vec![];
         let object_store = state
             .runtime_env()
             .object_store_registry
@@ -341,11 +440,11 @@ impl TableProvider for StandardTableProvider {
                 event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
             {
                 let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
-                memory_exec = Some(
-                    reversed_mem_table
-                        .scan(state, projection, filters, limit)
-                        .await?,
-                );
+
+                let memory_exec = reversed_mem_table
+                    .scan(state, projection, filters, limit)
+                    .await?;
+                execution_plans.push(memory_exec);
             }
         };
         let mut merged_snapshot: snapshot::Snapshot = Snapshot::default();
@@ -379,23 +478,20 @@ impl TableProvider for StandardTableProvider {
             let listing_time_fiters =
                 return_listing_time_filters(&merged_snapshot.manifest_list, &mut time_filters);
 
-            listing_exec = if let Some(listing_time_filter) = listing_time_fiters {
-                legacy_listing_table(
-                    self.stream.clone(),
+            if let Some(listing_time_filter) = listing_time_fiters {
+                self.legacy_listing_table(
+                    &mut execution_plans,
                     glob_storage.clone(),
                     object_store.clone(),
                     &listing_time_filter,
-                    self.schema.clone(),
                     state,
                     projection,
                     filters,
                     limit,
                     time_partition.clone(),
                 )
-                .await?
-            } else {
-                None
-            };
+                .await?;
+            }
         }
 
         let mut manifest_files = collect_from_snapshot(
@@ -408,21 +504,16 @@ impl TableProvider for StandardTableProvider {
         .await?;
 
         if manifest_files.is_empty() {
-            return final_plan(
-                vec![listing_exec, memory_exec],
-                projection,
-                self.schema.clone(),
-            );
+            return self.final_plan(execution_plans, projection);
         }
 
         // Hot tier data fetch
         if let Some(hot_tier_manager) = HotTierManager::global() {
             if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
-                hot_tier_exec = get_hottier_exectuion_plan(
+                self.get_hottier_exectuion_plan(
+                    &mut execution_plans,
                     hot_tier_manager,
-                    &self.stream,
                     &mut manifest_files,
-                    self.schema.clone(),
                     projection,
                     filters,
                     limit,
@@ -434,19 +525,15 @@ impl TableProvider for StandardTableProvider {
         }
         if manifest_files.is_empty() {
             QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
-            return final_plan(
-                vec![listing_exec, memory_exec, hot_tier_exec],
-                projection,
-                self.schema.clone(),
-            );
+            return self.final_plan(execution_plans, projection);
         }
 
-        let (partitioned_files, statistics) = partitioned_files(manifest_files, &self.schema);
-        let remote_exec = create_parquet_physical_plan(
+        let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
+        self.create_parquet_physical_plan(
+            &mut execution_plans,
             ObjectStoreUrl::parse(glob_storage.store_url()).unwrap(),
             partitioned_files,
             statistics,
-            self.schema.clone(),
             projection,
             filters,
             limit,
@@ -455,11 +542,7 @@ impl TableProvider for StandardTableProvider {
         )
         .await?;
 
-        Ok(final_plan(
-            vec![listing_exec, memory_exec, hot_tier_exec, Some(remote_exec)],
-            projection,
-            self.schema.clone(),
-        )?)
+        Ok(self.final_plan(execution_plans, projection)?)
     }
 
     /*
@@ -485,110 +568,6 @@ impl TableProvider for StandardTableProvider {
             .collect_vec();
         Ok(res_vec)
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn get_hottier_exectuion_plan(
-    hot_tier_manager: &HotTierManager,
-    stream: &str,
-    manifest_files: &mut Vec<File>,
-    schema: Arc<Schema>,
-    projection: Option<&Vec<usize>>,
-    filters: &[Expr],
-    limit: Option<usize>,
-    state: &dyn Session,
-    time_partition: Option<String>,
-) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
-    let (hot_tier_files, remainder) = hot_tier_manager
-        .get_hot_tier_manifest_files(stream, manifest_files.clone())
-        .await
-        .map_err(|err| DataFusionError::External(Box::new(err)))?;
-    // Assign remaining entries back to manifest list
-    // This is to be used for remote query
-    *manifest_files = remainder;
-
-    let hot_tier_files = hot_tier_files
-        .into_iter()
-        .map(|mut file| {
-            let path = CONFIG
-                .parseable
-                .hot_tier_storage_path
-                .as_ref()
-                .unwrap()
-                .join(&file.file_path);
-            file.file_path = path.to_str().unwrap().to_string();
-            file
-        })
-        .collect();
-
-    let (partitioned_files, statistics) = partitioned_files(hot_tier_files, &schema);
-    let plan = create_parquet_physical_plan(
-        ObjectStoreUrl::parse("file:///").unwrap(),
-        partitioned_files,
-        statistics,
-        schema.clone(),
-        projection,
-        filters,
-        limit,
-        state,
-        time_partition.clone(),
-    )
-    .await?;
-
-    Ok(Some(plan))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn legacy_listing_table(
-    stream: String,
-    glob_storage: Arc<dyn ObjectStorage>,
-    object_store: Arc<dyn ObjectStore>,
-    time_filters: &[PartialTimeFilter],
-    schema: Arc<Schema>,
-    state: &dyn Session,
-    projection: Option<&Vec<usize>>,
-    filters: &[Expr],
-    limit: Option<usize>,
-    time_partition: Option<String>,
-) -> Result<Option<Arc<dyn ExecutionPlan>>, DataFusionError> {
-    let remote_table = ListingTableBuilder::new(stream)
-        .populate_via_listing(glob_storage.clone(), object_store, time_filters)
-        .and_then(|builder| async {
-            let table = builder.build(
-                schema.clone(),
-                |x| glob_storage.query_prefixes(x),
-                time_partition,
-            )?;
-            let res = match table {
-                Some(table) => Some(table.scan(state, projection, filters, limit).await?),
-                _ => None,
-            };
-            Ok(res)
-        })
-        .await?;
-
-    Ok(remote_table)
-}
-
-fn final_plan(
-    execution_plans: Vec<Option<Arc<dyn ExecutionPlan>>>,
-    projection: Option<&Vec<usize>>,
-    schema: Arc<Schema>,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    let mut execution_plans = execution_plans.into_iter().flatten().collect_vec();
-
-    let exec: Arc<dyn ExecutionPlan> = if execution_plans.is_empty() {
-        let schema = match projection {
-            Some(projection) => Arc::new(schema.project(projection)?),
-            None => schema,
-        };
-        Arc::new(EmptyExec::new(schema))
-    } else if execution_plans.len() == 1 {
-        execution_plans.pop().unwrap()
-    } else {
-        Arc::new(UnionExec::new(execution_plans))
-    };
-    Ok(exec)
 }
 
 fn reversed_mem_table(
@@ -992,7 +971,7 @@ mod tests {
     fn datetime_max(year: i32, month: u32, day: u32) -> DateTime<Utc> {
         NaiveDate::from_ymd_opt(year, month, day)
             .unwrap()
-            .and_hms_milli_opt(23, 59, 59, 99)
+            .and_hms_milli_opt(23, 59, 59, 999)
             .unwrap()
             .and_utc()
     }

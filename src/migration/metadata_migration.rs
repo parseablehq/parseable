@@ -16,15 +16,15 @@
  *
  */
 
+use bytes::Bytes;
 use rand::distributions::DistString;
-use serde_json::{Map, Value as JsonValue};
+use serde_json::{json, Map, Value as JsonValue};
 
 use crate::{
     handlers::http::modal::IngestorMetadata,
     option::CONFIG,
     storage::{object_storage::ingestor_metadata_path, staging},
 };
-use actix_web::body::MessageBody;
 
 /*
 v1
@@ -47,10 +47,7 @@ pub fn v1_v3(mut storage_metadata: JsonValue) -> JsonValue {
     metadata.insert("users".to_string(), JsonValue::Array(vec![]));
     metadata.insert("streams".to_string(), JsonValue::Array(vec![]));
     metadata.insert("roles".to_string(), JsonValue::Array(vec![]));
-    metadata.insert(
-        "server_mode".to_string(),
-        JsonValue::String(CONFIG.parseable.mode.to_string()),
-    );
+    metadata.insert("server_mode".to_string(), json!(CONFIG.parseable.mode));
     storage_metadata
 }
 
@@ -111,10 +108,7 @@ pub fn v2_v3(mut storage_metadata: JsonValue) -> JsonValue {
         "roles".to_string(),
         JsonValue::Object(Map::from_iter(privileges_map)),
     );
-    metadata.insert(
-        "server_mode".to_string(),
-        JsonValue::String(CONFIG.parseable.mode.to_string()),
-    );
+    metadata.insert("server_mode".to_string(), json!(CONFIG.parseable.mode));
     storage_metadata
 }
 
@@ -125,10 +119,7 @@ pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
     let sm = metadata.get("server_mode");
 
     if sm.is_none() || sm.unwrap().as_str().unwrap() == "All" {
-        metadata.insert(
-            "server_mode".to_string(),
-            JsonValue::String(CONFIG.parseable.mode.to_string()),
-        );
+        metadata.insert("server_mode".to_string(), json!(CONFIG.parseable.mode));
     }
 
     let roles = metadata.get_mut("roles").unwrap().as_object_mut().unwrap();
@@ -155,10 +146,7 @@ pub fn v4_v5(mut storage_metadata: JsonValue) -> JsonValue {
 
     match metadata.get("server_mode") {
         None => {
-            metadata.insert(
-                "server_mode".to_string(),
-                JsonValue::String(CONFIG.parseable.mode.to_string()),
-            );
+            metadata.insert("server_mode".to_string(), json!(CONFIG.parseable.mode));
         }
         Some(JsonValue::String(mode)) => match mode.as_str() {
             "Query" => {
@@ -168,10 +156,7 @@ pub fn v4_v5(mut storage_metadata: JsonValue) -> JsonValue {
                 );
             }
             "All" => {
-                metadata.insert(
-                    "server_mode".to_string(),
-                    JsonValue::String(CONFIG.parseable.mode.to_string()),
-                );
+                metadata.insert("server_mode".to_string(), json!(CONFIG.parseable.mode));
             }
             _ => (),
         },
@@ -209,9 +194,7 @@ pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetada
             JsonValue::String(CONFIG.parseable.flight_port.to_string()),
         );
     }
-    let bytes = serde_json::to_string(&json)?
-        .try_into_bytes()
-        .map_err(|err| anyhow::anyhow!(err))?;
+    let bytes = Bytes::from(serde_json::to_vec(&json)?);
 
     let resource: IngestorMetadata = serde_json::from_value(json)?;
     staging::put_ingestor_info(resource.clone())?;

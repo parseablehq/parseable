@@ -42,22 +42,21 @@ pub trait EventFormat: Sized {
 
     fn to_data(
         self,
-        schema: HashMap<String, Arc<Field>>,
-        static_schema_flag: Option<String>,
-        time_partition: Option<String>,
+        schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: Option<&String>,
+        time_partition: Option<&String>,
     ) -> Result<(Self::Data, EventSchema, bool, Tags, Metadata), AnyError>;
+
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
+
     fn into_recordbatch(
         self,
-        storage_schema: HashMap<String, Arc<Field>>,
-        static_schema_flag: Option<String>,
-        time_partition: Option<String>,
+        storage_schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: Option<&String>,
+        time_partition: Option<&String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first, tags, metadata) = self.to_data(
-            storage_schema.clone(),
-            static_schema_flag.clone(),
-            time_partition.clone(),
-        )?;
+        let (data, mut schema, is_first, tags, metadata) =
+            self.to_data(storage_schema, static_schema_flag, time_partition)?;
 
         if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
             return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
@@ -120,8 +119,8 @@ pub trait EventFormat: Sized {
 
     fn is_schema_matching(
         new_schema: Arc<Schema>,
-        storage_schema: HashMap<String, Arc<Field>>,
-        static_schema_flag: Option<String>,
+        storage_schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: Option<&String>,
     ) -> bool {
         if static_schema_flag.is_none() {
             return true;
@@ -207,7 +206,7 @@ pub fn override_timestamp_fields(
 pub fn update_field_type_in_schema(
     inferred_schema: Arc<Schema>,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
-    time_partition: Option<String>,
+    time_partition: Option<&String>,
     log_records: Option<&Vec<Value>>,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
@@ -236,12 +235,12 @@ pub fn update_field_type_in_schema(
     if time_partition.is_none() {
         return updated_schema;
     }
-    let time_partition_field_name = time_partition.unwrap();
+
     let new_schema: Vec<Field> = updated_schema
         .fields()
         .iter()
         .map(|field| {
-            if *field.name() == time_partition_field_name {
+            if field.name() == time_partition.unwrap() {
                 if field.data_type() == &DataType::Utf8 {
                     let new_data_type = DataType::Timestamp(TimeUnit::Millisecond, None);
                     Field::new(field.name().clone(), new_data_type, true)
