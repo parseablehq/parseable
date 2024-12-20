@@ -70,8 +70,9 @@ impl EventFormat for Event {
             Ok(schema) => schema,
             Err(_) => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
                 Ok(mut infer_schema) => {
-                    let new_infer_schema = super::super::format::update_field_type_in_schema(
-                        Arc::new(infer_schema),
+                    let mut new_infer_schema = Arc::new(infer_schema);
+                    super::super::format::update_field_type_in_schema(
+                        &mut new_infer_schema,
                         Some(&stream_schema),
                         time_partition,
                         Some(&value_arr),
