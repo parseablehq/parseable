@@ -36,7 +36,7 @@ use super::{DEFAULT_METADATA_KEY, DEFAULT_TAGS_KEY, DEFAULT_TIMESTAMP_KEY};
 pub mod json;
 
 // Prefixes that are most common in datetime field names
-const TIME_FIELD_PREFIXS: [&str; 2] = ["date", "time"];
+const TIME_FIELD_PREFIXES: [&str; 2] = ["date", "time"];
 
 type Tags = String;
 type Metadata = String;
@@ -235,7 +235,9 @@ fn detect_and_override_timestamp_fields(
         .map(|field| {
             if !existing_field_names.contains(&field.name())
                 && field.data_type() == &DataType::Utf8
-                && TIME_FIELD_PREFIXS.iter().any(|p| field.name().contains(p))
+                && TIME_FIELD_PREFIXES
+                    .iter()
+                    .any(|p| field.name().to_lowercase().contains(p))
                 && log_records
                     .iter()
                     .any(|record| matches_date_time_field(field.name(), record))
