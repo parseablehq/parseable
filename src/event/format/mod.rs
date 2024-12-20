@@ -169,7 +169,7 @@ pub fn update_field_type_in_schema(
     }
 
     if let Some(records) = log_records {
-        update_schema_from_logs(schema, existing_schema, records);
+        detect_and_override_timestamp_fields(schema, existing_schema, records);
     }
 
     if let Some(partition_field) = time_partition {
@@ -217,7 +217,7 @@ pub fn override_timestamp_fields_from_existing_schema(
 /// Updates the schema based on log records by identifying fields containing datetime patterns.
 /// Fields within the log records that match an expected substring in their names and have values
 /// resembling a datetime type will be added to or updated in the given schema.
-fn update_schema_from_logs(
+fn detect_and_override_timestamp_fields(
     schema: &mut Arc<Schema>,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
     log_records: &[Value],
