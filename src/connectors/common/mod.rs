@@ -16,7 +16,6 @@
  *
  */
 
-use serde::{Deserialize, Serialize};
 pub mod config;
 pub mod processor;
 pub mod shutdown;
@@ -32,18 +31,4 @@ pub enum ConnectorError {
     Processing(String),
     #[error("Initialization error: {0}")]
     Init(String),
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd)]
-#[serde(rename_all = "snake_case")]
-pub enum BadData {
-    Fail {},
-    Drop {},
-    Dlt {},
-}
-
-impl Default for BadData {
-    fn default() -> Self {
-        BadData::Drop {}
-    }
 }

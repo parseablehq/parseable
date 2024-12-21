@@ -40,7 +40,7 @@ pub async fn init() -> anyhow::Result<()> {
     if matches!(CONFIG.parseable.mode, Mode::Ingest | Mode::All) {
         match CONFIG.parseable.connector_config.clone() {
             Some(config) => {
-                let shutdown_handle = Shutdown::new();
+                let shutdown_handle = Shutdown::default();
                 let prometheus = metrics::build_metrics_handler();
                 let registry = prometheus.registry.clone();
                 let processor = ParseableSinkProcessor;

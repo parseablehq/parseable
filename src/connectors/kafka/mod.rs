@@ -159,10 +159,10 @@ impl ConsumerRecord {
     }
 
     pub fn key_str(&self) -> String {
-        self.key
-            .clone()
-            .map(|k| String::from_utf8_lossy(k.as_ref()).to_string())
-            .unwrap_or_else(|| String::from("null"))
+        self.key.clone().map_or_else(
+            || String::from("null"),
+            |k| String::from_utf8_lossy(k.as_ref()).to_string(),
+        )
     }
 
     pub fn offset_to_commit(&self) -> KafkaResult<rdkafka::TopicPartitionList> {

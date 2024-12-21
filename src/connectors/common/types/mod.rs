@@ -61,3 +61,12 @@ impl TryFrom<String> for ConnectionType {
         }
     }
 }
+
+#[derive(Default, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub enum BadData {
+    Fail,
+    #[default]
+    Drop,
+    Dlt, // TODO: Implement DLT
+}

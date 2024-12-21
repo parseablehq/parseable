@@ -23,8 +23,8 @@ use tracing::warn;
 use url::Url;
 
 use crate::connectors::common::config::ConnectorConfig;
+use crate::connectors::common::types::BadData;
 use crate::connectors::common::types::ConnectorType;
-use crate::connectors::common::BadData;
 use crate::connectors::kafka::config::{ConsumerConfig, KafkaConfig, SourceOffset};
 use crate::{
     oidc::{self, OpenidConfig},
@@ -738,7 +738,7 @@ impl FromArgMatches for Cli {
             let group_id = m
                 .get_one::<String>(Cli::KAFKA_GROUP_ID)
                 .cloned()
-                .unwrap_or("parseable-default-group".to_string());
+                .unwrap_or_else(|| "parseable-default-group".to_string());
 
             if topics.is_empty() {
                 return Err(clap::Error::raw(
@@ -807,7 +807,7 @@ impl FromArgMatches for Cli {
                 .unwrap_or_else(|| "earliest".to_string());
 
             let mut consumer = ConsumerConfig::default();
-            consumer.group_id = group_id.clone();
+            consumer.group_id = group_id;
             consumer.auto_offset_reset = auto_offset_reset;
 
             let topics: Vec<String> = topics.split(",").map(|t| t.to_owned()).collect();

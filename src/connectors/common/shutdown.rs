@@ -72,7 +72,7 @@ impl Shutdown {
 
 impl Default for Shutdown {
     fn default() -> Self {
-        Self::new()
+        Shutdown::new()
     }
 }
 
@@ -95,7 +95,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_recv() {
-        let shutdown = Shutdown::new();
+        let shutdown = Shutdown::default();
         let shutdown_clone = shutdown.clone();
         // receive shutdown task
         let task = tokio::spawn(async move {
@@ -117,7 +117,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_wait_for_complete() {
-        let shutdown = Shutdown::new();
+        let shutdown = Shutdown::default();
         let shutdown_clone = shutdown.clone();
         let check_value: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let check_value_clone = Arc::clone(&check_value);

@@ -16,8 +16,9 @@
  *
  */
 
+use crate::connectors::common::types::BadData;
 use crate::connectors::common::types::ConnectorType;
-use crate::connectors::common::{BadData, ConnectorError};
+use crate::connectors::common::ConnectorError;
 use crate::connectors::kafka::config::{KafkaConfig, SourceOffset};
 use serde::{Deserialize, Serialize};
 use std::{time::Duration, vec};
