@@ -16,35 +16,19 @@
  *
  */
 
-mod about;
-mod alerts;
-pub mod analytics;
-pub mod banner;
-mod catalog;
-mod cli;
-pub mod connectors;
-mod event;
-pub mod handlers;
-pub mod hottier;
-mod livetail;
-mod metadata;
-pub mod metrics;
-pub mod migration;
-mod oidc;
-pub mod option;
-mod query;
-pub mod rbac;
-mod response;
-mod static_schema;
-mod stats;
-pub mod storage;
-pub mod sync;
-pub mod users;
-mod utils;
-mod validator;
+pub mod config;
+pub mod processor;
+pub mod shutdown;
+pub mod types;
 
-pub use handlers::http::modal::{
-    ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
-};
-
-pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectorError {
+    #[error("Kafka error: {0}")]
+    Kafka(#[from] rdkafka::error::KafkaError),
+    #[error("Configuration error: {0}")]
+    Config(String),
+    #[error("Processing error: {0}")]
+    Processing(String),
+    #[error("Initialization error: {0}")]
+    Init(String),
+}
