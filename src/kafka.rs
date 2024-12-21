@@ -228,7 +228,11 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
 
     let (rb, is_first) = event
-        .into_recordbatch(schema, static_schema_flag, time_partition)
+        .into_recordbatch(
+            &schema,
+            static_schema_flag.as_ref(),
+            time_partition.as_ref(),
+        )
         .map_err(|err| KafkaError::PostError(PostError::CustomError(err.to_string())))?;
 
     event::Event {
