@@ -22,6 +22,7 @@ pub mod analytics;
 pub mod banner;
 mod catalog;
 mod cli;
+pub mod connectors;
 mod event;
 pub mod handlers;
 pub mod hottier;

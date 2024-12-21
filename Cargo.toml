@@ -30,6 +30,11 @@ actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 mime = "0.3.17"
 
+### connectors dependencies
+rdkafka = { version = "0.37", features = ["cmake-build", "tracing", "sasl", "ssl", "libz-static"] }
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["kafka"] }
+
 ### other dependencies
 anyhow = { version = "1.0", features = ["backtrace"] }
 argon2 = "0.5.0"
@@ -81,13 +86,15 @@ static-files = "0.2"
 sysinfo = "0.31.4"
 thiserror = "1.0.64"
 thread-priority = "1.0.0"
-tokio = { version = "1.28", default-features = false, features = [
+tokio = { version = "1.42", default-features = false, features = [
     "sync",
     "macros",
     "fs",
+    "rt-multi-thread"
 ] }
 tokio-stream = { version = "0.1", features = ["fs"] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tokio-util = "0.7"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "time"] }
 ulid = { version = "1.0", features = ["serde"] }
 uptime_lib = "0.3.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

@@ -178,6 +178,20 @@ impl StreamInfo {
             })
     }
 
+    pub fn schema_raw(
+        &self,
+        stream_name: &str,
+    ) -> Result<HashMap<String, Arc<Field>>, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+
+        let schema = map
+            .get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.schema.clone())?;
+
+        Ok(schema)
+    }
+
     pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
