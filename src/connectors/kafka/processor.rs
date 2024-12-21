@@ -49,7 +49,7 @@ impl ParseableSinkProcessor {
                 };
 
                 // TODO: Implement a buffer (e.g., a wrapper around [Box<dyn ArrayBuilder>]) to optimize the creation of ParseableEvent by compacting the internal RecordBatch.
-                let (record_batch, is_first) = event.into_recordbatch(schema, None, None)?;
+                let (record_batch, is_first) = event.into_recordbatch(&schema, None, None)?;
 
                 let p_event = crate::event::Event {
                     rb: record_batch,
