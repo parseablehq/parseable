@@ -321,44 +321,6 @@ pub async fn put_retention(
     ))
 }
 
-pub async fn get_cache_enabled(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    if CONFIG.parseable.local_cache_path.is_none() {
-        return Err(StreamError::CacheNotEnabled(stream_name));
-    }
-
-    let cache_enabled = STREAM_INFO.get_cache_enabled(&stream_name)?;
-    Ok((web::Json(cache_enabled), StatusCode::OK))
-}
-
-pub async fn put_enable_cache(
-    req: HttpRequest,
-    body: web::Json<bool>,
-) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-    let storage = CONFIG.storage().get_object_store();
-
-    if !metadata::STREAM_INFO.stream_exists(&stream_name) {
-        return Err(StreamError::StreamNotFound(stream_name));
-    }
-    if CONFIG.parseable.local_cache_path.is_none() {
-        return Err(StreamError::CacheNotEnabled(stream_name));
-    }
-    let enable_cache = body.into_inner();
-    let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
-    stream_metadata.cache_enabled = enable_cache;
-    storage
-        .put_stream_manifest(&stream_name, &stream_metadata)
-        .await?;
-
-    STREAM_INFO.set_cache_enabled(&stream_name, enable_cache)?;
-    Ok((
-        format!("Cache set to {enable_cache} for log stream {stream_name}"),
-        StatusCode::OK,
-    ))
-}
-
 pub async fn get_stats_date(stream_name: &str, date: &str) -> Result<Stats, StreamError> {
     let event_labels = event_labels_date(stream_name, "json", date);
     let storage_size_labels = storage_size_labels_date(stream_name, date);
@@ -652,8 +614,8 @@ pub async fn put_stream_hot_tier(
         let existing_hot_tier_used_size = hot_tier_manager
             .validate_hot_tier_size(&stream_name, &hottier.size)
             .await?;
-        hottier.used_size = Some(existing_hot_tier_used_size.to_string());
-        hottier.available_size = Some(hottier.size.clone());
+        hottier.used_size = existing_hot_tier_used_size.to_string();
+        hottier.available_size = hottier.size.to_string();
         hottier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
         hot_tier_manager
             .put_hot_tier(&stream_name, &mut hottier)
@@ -696,8 +658,8 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
     if let Some(hot_tier_manager) = HotTierManager::global() {
         let mut hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
         hot_tier.size = format!("{} {}", hot_tier.size, "Bytes");
-        hot_tier.used_size = Some(format!("{} {}", hot_tier.used_size.unwrap(), "Bytes"));
-        hot_tier.available_size = Some(format!("{} {}", hot_tier.available_size.unwrap(), "Bytes"));
+        hot_tier.used_size = format!("{} Bytes", hot_tier.used_size);
+        hot_tier.available_size = format!("{} Bytes", hot_tier.available_size);
         Ok((web::Json(hot_tier), StatusCode::OK))
     } else {
         Err(StreamError::Custom {
@@ -812,10 +774,6 @@ pub mod error {
         CreateStream(#[from] CreateStreamError),
         #[error("Log stream {0} does not exist")]
         StreamNotFound(String),
-        #[error(
-            "Caching not enabled at Parseable server config. Can't enable cache for stream {0}"
-        )]
-        CacheNotEnabled(String),
         #[error("Log stream is not initialized, send an event to this logstream and try again")]
         UninitializedLogstream,
         #[error("Storage Error {0}")]
@@ -872,7 +830,6 @@ pub mod error {
                 StreamError::CreateStream(CreateStreamError::SerdeError(_)) => {
                     StatusCode::BAD_REQUEST
                 }
-                StreamError::CacheNotEnabled(_) => StatusCode::BAD_REQUEST,
                 StreamError::StreamNotFound(_) => StatusCode::NOT_FOUND,
                 StreamError::Custom { status, .. } => *status,
                 StreamError::UninitializedLogstream => StatusCode::METHOD_NOT_ALLOWED,

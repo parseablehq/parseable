@@ -25,12 +25,12 @@ use super::OpenIdClient;
 use super::ParseableServer;
 use crate::analytics;
 use crate::handlers::airplane;
+use crate::handlers::http::caching_removed;
 use crate::handlers::http::ingest;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::DisAllowRootUser;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::role;
-use crate::localcache::LocalCacheManager;
 use crate::metrics;
 use crate::migration;
 use crate::migration::metadata_migration::migrate_ingester_metadata;
@@ -43,7 +43,6 @@ use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::sync;
 
 use crate::{handlers::http::base_path, option::CONFIG};
-use actix_web::body::MessageBody;
 use actix_web::web;
 use actix_web::web::resource;
 use actix_web::Scope;
@@ -101,13 +100,6 @@ impl ParseableServer for IngestServer {
 
     /// configure the server and start an instance to ingest data
     async fn init(&self) -> anyhow::Result<()> {
-        // ! Undefined and Untested behaviour
-        if let Some(cache_manager) = LocalCacheManager::global() {
-            cache_manager
-                .validate(CONFIG.parseable.local_cache_size)
-                .await?;
-        };
-
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -278,18 +270,10 @@ impl IngestServer {
                 )
                 .service(
                     web::resource("/cache")
-                        // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
-                        .route(
-                            web::put()
-                                .to(ingestor_logstream::put_enable_cache)
-                                .authorize_for_stream(Action::PutCacheEnabled),
-                        )
-                        // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
-                        .route(
-                            web::get()
-                                .to(ingestor_logstream::get_cache_enabled)
-                                .authorize_for_stream(Action::GetCacheEnabled),
-                        ),
+                        // PUT "/logstream/{logstream}/cache" ==> caching has been deprecated
+                        .route(web::put().to(caching_removed))
+                        // GET "/logstream/{logstream}/cache" ==> caching has been deprecated
+                        .route(web::get().to(caching_removed)),
                 )
                 .service(
                     web::scope("/retention").service(
@@ -324,9 +308,7 @@ impl IngestServer {
                     .clone_from(&INGESTOR_META.domain_name);
                 store_data.port.clone_from(&INGESTOR_META.port);
 
-                let resource = serde_json::to_string(&store_data)?
-                    .try_into_bytes()
-                    .map_err(|err| anyhow!(err))?;
+                let resource = Bytes::from(serde_json::to_vec(&store_data)?);
 
                 // if pushing to object store fails propagate the error
                 return store
@@ -335,9 +317,7 @@ impl IngestServer {
                     .map_err(|err| anyhow!(err));
             }
         } else {
-            let resource = serde_json::to_string(&resource)?
-                .try_into_bytes()
-                .map_err(|err| anyhow!(err))?;
+            let resource = Bytes::from(serde_json::to_vec(&resource)?);
 
             store.put_object(&path, resource).await?;
         }

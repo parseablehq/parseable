@@ -45,11 +45,11 @@ impl EventFormat for Event {
     // also extract the arrow schema, tags and metadata from the incoming json
     fn to_data(
         self,
-        schema: HashMap<String, Arc<Field>>,
-        static_schema_flag: Option<String>,
-        time_partition: Option<String>,
+        schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: Option<&String>,
+        time_partition: Option<&String>,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
-        let data = flatten_json_body(self.data, None, None, None, false)?;
+        let data = flatten_json_body(&self.data, None, None, None, false)?;
         let stream_schema = schema;
 
         // incoming event may be a single json or a json array
@@ -66,13 +66,13 @@ impl EventFormat for Event {
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
-        let schema = match derive_arrow_schema(&stream_schema, fields) {
+        let schema = match derive_arrow_schema(stream_schema, fields) {
             Ok(schema) => schema,
             Err(_) => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
                 Ok(mut infer_schema) => {
                     let new_infer_schema = super::super::format::update_field_type_in_schema(
                         Arc::new(infer_schema),
-                        Some(&stream_schema),
+                        Some(stream_schema),
                         time_partition,
                         Some(&value_arr),
                     );
@@ -185,9 +185,7 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
         DataType::Boolean => value.is_boolean(),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => value.is_i64(),
         DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => value.is_u64(),
-        DataType::Float16 | DataType::Float32 => value.is_f64(),
-        // NOTE: All numbers can be ingested as Float64
-        DataType::Float64 => value.is_number(),
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => value.is_f64(),
         DataType::Utf8 => value.is_string(),
         DataType::List(field) => {
             let data_type = field.data_type();

@@ -3,8 +3,7 @@ parseable:
     repository: containers.parseable.com/parseable/parseable
     tag: v1.6.3
     pullPolicy: Always
-  ## object store can be local-store, s3-store or blob-store.
-  ## local needs to be false if set to object store.
+  ## object store can be local-store, s3-store, blob-store or gcs-store.
   store: local-store
   ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors)
   ## Please note that highAvailability is not supported in local mode
@@ -116,6 +115,22 @@ parseable:
           - s3.secret.key
           - s3.bucket
           - s3.region
+  gcsModeSecret:
+    enabled: false
+    secrets:
+      - name: parseable-env-secret
+        prefix: P_
+        keys:
+          - addr
+          - username
+          - password
+          - staging.dir
+          - fs.dir
+          - gcs.url
+          - gcs.access.key
+          - gcs.secret.key
+          - gcs.bucket
+          - gcs.region
   serviceAccount:
     create: true
     name: "parseable"
@@ -295,8 +310,13 @@ vector:
 # See fluent-bit helm documentation to learn more:
 # https://github.com/fluent/helm-charts/tree/main/charts/fluent-bit
 fluent-bit:
-  enabled: true
+  enabled: false
   kind: DaemonSet
+  serverHost: parseable-ingestor-service.parseable.svc.cluster.local
+  serverUsername: admin
+  serverPassword: admin
+  serverStream: $NAMESPACE
+  excludeNamespaces: kube-system, default
   replicaCount: 1
   image:
     repository: parseable/fluent-bit
@@ -382,20 +402,20 @@ fluent-bit:
       [OUTPUT]
           Name parseable
           Match kube.*
-          Server_Host parseable.parseable.svc.cluster.local
-          Username admin
-          Password admin
+          Server_Host {{ .Values.serverHost }}
+          Username {{ .Values.serverUsername }}
+          Password {{ .Values.serverPassword }}
           Server_Port 80
-          Stream $NAMESPACE
-          Exclude_Namespaces kube-system, default
+          Stream {{ .Values.serverStream }}
+          Exclude_Namespaces {{ .Values.excludeNamespaces }}
 
       [OUTPUT]
           Name parseable
           Match k8s_events
-          Server_Host parseable.parseable.svc.cluster.local
+          Server_Host {{ .Values.serverHost }}
           Server_Port 80
-          Username admin
-          Password admin
+          Username {{ .Values.serverUsername }}
+          Password {{ .Values.serverPassword }}
           Stream k8s-events 
 
     upstream: {}

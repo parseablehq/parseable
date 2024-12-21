@@ -34,22 +34,18 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
 use crate::handlers::http::cluster::get_ingestor_info;
-
-use crate::handlers::{CACHE_RESULTS_HEADER_KEY, CACHE_VIEW_HEADER_KEY, USER_ID_HEADER_KEY};
+use crate::handlers::http::query::{
+    authorize_and_set_filter_tags, into_query, update_schema_when_distributed,
+};
+use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::CONFIG;
-
-use crate::handlers::livetail::cross_origin_config;
-
-use crate::handlers::http::query::{
-    authorize_and_set_filter_tags, into_query, put_results_in_cache, update_schema_when_distributed,
-};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::querycache::QueryCacheManager;
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
     send_to_ingester,
 };
+use crate::utils::time::TimeRange;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
     FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc,
@@ -63,8 +59,6 @@ use crate::handlers::livetail::extract_session_key;
 use crate::metadata::STREAM_INFO;
 use crate::rbac;
 use crate::rbac::Users;
-
-use super::http::query::get_results_from_cache;
 
 #[derive(Clone, Debug)]
 pub struct AirServiceImpl {}
@@ -150,89 +144,58 @@ impl FlightService for AirServiceImpl {
                 Status::internal("Failed to create logical plan")
             })?;
 
+        let time_range = TimeRange::parse_human_time(&ticket.start_time, &ticket.end_time)
+            .map_err(|e| Status::internal(e.to_string()))?;
         // create a visitor to extract the table name
         let mut visitor = TableScanVisitor::default();
         let _ = raw_logical_plan.visit(&mut visitor);
 
         let streams = visitor.into_inner();
 
-        let query_cache_manager = QueryCacheManager::global(CONFIG.parseable.query_cache_size)
-            .await
-            .unwrap_or(None);
-
-        let cache_results = req
-            .metadata()
-            .get(CACHE_RESULTS_HEADER_KEY)
-            .and_then(|value| value.to_str().ok()); // I dont think we need to own this.
-
-        let show_cached = req
-            .metadata()
-            .get(CACHE_VIEW_HEADER_KEY)
-            .and_then(|value| value.to_str().ok());
-
-        let user_id = req
-            .metadata()
-            .get(USER_ID_HEADER_KEY)
-            .and_then(|value| value.to_str().ok());
         let stream_name = streams
             .first()
             .ok_or_else(|| Status::aborted("Malformed SQL Provided, Table Name Not Found"))?
             .to_owned();
-
-        // send the cached results
-        if let Ok(cache_results) = get_results_from_cache(
-            show_cached,
-            query_cache_manager,
-            &stream_name,
-            user_id,
-            &ticket.start_time,
-            &ticket.end_time,
-            &ticket.query,
-            ticket.send_null,
-            ticket.fields,
-        )
-        .await
-        {
-            return cache_results.into_flight();
-        }
 
         update_schema_when_distributed(streams)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
         // map payload to query
-        let mut query = into_query(&ticket, &session_state)
+        let mut query = into_query(&ticket, &session_state, time_range)
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
-        let event =
-            if send_to_ingester(query.start.timestamp_millis(), query.end.timestamp_millis()) {
-                let sql = format!("select * from {}", &stream_name);
-                let start_time = ticket.start_time.clone();
-                let end_time = ticket.end_time.clone();
-                let out_ticket = json!({
-                    "query": sql,
-                    "startTime": start_time,
-                    "endTime": end_time
-                })
-                .to_string();
+        let event = if send_to_ingester(
+            query.time_range.start.timestamp_millis(),
+            query.time_range.end.timestamp_millis(),
+        ) {
+            let sql = format!("select * from {}", &stream_name);
+            let start_time = ticket.start_time.clone();
+            let end_time = ticket.end_time.clone();
+            let out_ticket = json!({
+                "query": sql,
+                "startTime": start_time,
+                "endTime": end_time
+            })
+            .to_string();
 
-                let ingester_metadatas = get_ingestor_info()
-                    .await
-                    .map_err(|err| Status::failed_precondition(err.to_string()))?;
-                let mut minute_result: Vec<RecordBatch> = vec![];
+            let ingester_metadatas = get_ingestor_info()
+                .await
+                .map_err(|err| Status::failed_precondition(err.to_string()))?;
+            let mut minute_result: Vec<RecordBatch> = vec![];
 
-                for im in ingester_metadatas {
-                    if let Ok(mut batches) = run_do_get_rpc(im, out_ticket.clone()).await {
-                        minute_result.append(&mut batches);
-                    }
+            for im in ingester_metadatas {
+                if let Ok(mut batches) = run_do_get_rpc(im, out_ticket.clone()).await {
+                    minute_result.append(&mut batches);
                 }
-                let mr = minute_result.iter().collect::<Vec<_>>();
-                let event = append_temporary_events(&stream_name, mr).await?;
-                Some(event)
-            } else {
-                None
-            };
+            }
+            let mr = minute_result.iter().collect::<Vec<_>>();
+            let event = append_temporary_events(&stream_name, mr).await?;
+            Some(event)
+        } else {
+            None
+        };
 
         // try authorize
         match Users.authorize(key.clone(), rbac::role::Action::Query, None, None) {
@@ -257,21 +220,6 @@ impl FlightService for AirServiceImpl {
             .execute(stream_name.clone())
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
-
-        if let Err(err) = put_results_in_cache(
-            cache_results,
-            user_id,
-            query_cache_manager,
-            &stream_name,
-            &records,
-            query.start.to_rfc3339(),
-            query.end.to_rfc3339(),
-            ticket.query,
-        )
-        .await
-        {
-            error!("{}", err);
-        };
 
         /*
         * INFO: No returning the schema with the data.

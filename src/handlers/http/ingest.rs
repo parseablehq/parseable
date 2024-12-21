@@ -27,7 +27,6 @@ use crate::event::{
 };
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 use crate::handlers::STREAM_NAME_HEADER_KEY;
-use crate::localcache::CacheError;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
@@ -62,7 +61,7 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
         }
         create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
-        flatten_and_push_logs(req, body, stream_name).await?;
+        flatten_and_push_logs(req, body, &stream_name).await?;
         Ok(HttpResponse::Ok().finish())
     } else {
         Err(PostError::Header(ParseHeaderError::MissingStreamName))
@@ -85,7 +84,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             tags: String::default(),
             metadata: String::default(),
         };
-        event.into_recordbatch(schema, None, None)?
+        event.into_recordbatch(&schema, None, None)?
     };
     event::Event {
         rb,
@@ -115,9 +114,9 @@ pub async fn handle_otel_ingestion(
         .iter()
         .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
     {
-        let stream_name = stream_name.to_str().unwrap().to_owned();
-        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
-        push_logs(stream_name.to_string(), req.clone(), body).await?;
+        let stream_name = stream_name.to_str().unwrap();
+        create_stream_if_not_exists(stream_name, &StreamType::UserDefined.to_string()).await?;
+        push_logs(stream_name, &req, &body).await?;
     } else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     }
@@ -150,7 +149,7 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
         }
     }
 
-    flatten_and_push_logs(req, body, stream_name).await?;
+    flatten_and_push_logs(req, body, &stream_name).await?;
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -236,8 +235,6 @@ pub enum PostError {
     #[error("Error: {0}")]
     DashboardError(#[from] DashboardError),
     #[error("Error: {0}")]
-    CacheError(#[from] CacheError),
-    #[error("Error: {0}")]
     StreamError(#[from] StreamError),
 }
 
@@ -259,7 +256,6 @@ impl actix_web::ResponseError for PostError {
             PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::CacheError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -277,7 +273,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use actix_web::test::TestRequest;
-    use arrow_array::{ArrayRef, Float64Array, StringArray};
+    use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
     use arrow_schema::{DataType, Field};
     use serde_json::json;
 
@@ -287,11 +283,16 @@ mod tests {
     };
 
     trait TestExt {
+        fn as_int64_arr(&self) -> &Int64Array;
         fn as_float64_arr(&self) -> &Float64Array;
         fn as_utf8_arr(&self) -> &StringArray;
     }
 
     impl TestExt for ArrayRef {
+        fn as_int64_arr(&self) -> &Int64Array {
+            self.as_any().downcast_ref().unwrap()
+        }
+
         fn as_float64_arr(&self) -> &Float64Array {
             self.as_any().downcast_ref().unwrap()
         }
@@ -318,13 +319,13 @@ mod tests {
             .append_header((PREFIX_META.to_string() + "C", "meta1"))
             .to_http_request();
 
-        let (rb, _) = into_event_batch(req, json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 6);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from_iter([1.0])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from_iter([1])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -358,13 +359,13 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(req, json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from_iter([1.0])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from_iter([1])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -381,7 +382,7 @@ mod tests {
 
         let schema = fields_to_map(
             [
-                Field::new("a", DataType::Float64, true),
+                Field::new("a", DataType::Int64, true),
                 Field::new("b", DataType::Utf8, true),
                 Field::new("c", DataType::Float64, true),
             ]
@@ -390,13 +391,13 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(req, json, schema, None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, schema, None, None).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from_iter([1.0])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from_iter([1])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -413,7 +414,7 @@ mod tests {
 
         let schema = fields_to_map(
             [
-                Field::new("a", DataType::Float64, true),
+                Field::new("a", DataType::Int64, true),
                 Field::new("b", DataType::Utf8, true),
                 Field::new("c", DataType::Float64, true),
             ]
@@ -422,7 +423,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(into_event_batch(req, json, schema, None, None).is_err());
+        assert!(into_event_batch(&req, &json, schema, None, None).is_err());
     }
 
     #[test]
@@ -440,7 +441,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(req, json, schema, None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, schema, None, None).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -452,7 +453,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(into_event_batch(req, json, HashMap::default(), None, None).is_err())
+        assert!(into_event_batch(&req, &json, HashMap::default(), None, None).is_err())
     }
 
     #[test]
@@ -475,7 +476,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(req, json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -483,21 +484,21 @@ mod tests {
         let schema = rb.schema();
         let fields = &schema.fields;
 
-        assert_eq!(&*fields[1], &Field::new("a", DataType::Float64, true));
+        assert_eq!(&*fields[1], &Field::new("a", DataType::Int64, true));
         assert_eq!(&*fields[2], &Field::new("b", DataType::Utf8, true));
-        assert_eq!(&*fields[3], &Field::new("c", DataType::Float64, true));
+        assert_eq!(&*fields[3], &Field::new("c", DataType::Int64, true));
 
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, Some(1.0), Some(1.0)])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), Some(1)])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
             &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
         );
         assert_eq!(
-            rb.column_by_name("c").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, Some(1.0), None])
+            rb.column_by_name("c").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), None])
         );
     }
 
@@ -523,13 +524,13 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(req, json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, Some(1.0), Some(1.0)])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), Some(1)])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -563,7 +564,7 @@ mod tests {
 
         let schema = fields_to_map(
             [
-                Field::new("a", DataType::Float64, true),
+                Field::new("a", DataType::Int64, true),
                 Field::new("b", DataType::Utf8, true),
                 Field::new("c", DataType::Float64, true),
             ]
@@ -571,13 +572,13 @@ mod tests {
         );
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(req, json, schema, None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, schema, None, None).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, Some(1.0), Some(1.0)])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, Some(1), Some(1)])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -603,7 +604,7 @@ mod tests {
                 "c": 1
             },
             {
-                "a": "1",
+                "a": 1,
                 "b": "hello",
                 "c": null
             },
@@ -613,14 +614,14 @@ mod tests {
 
         let schema = fields_to_map(
             [
-                Field::new("a", DataType::Float64, true),
+                Field::new("a", DataType::Int64, true),
                 Field::new("b", DataType::Utf8, true),
                 Field::new("c", DataType::Float64, true),
             ]
             .into_iter(),
         );
 
-        assert!(into_event_batch(req, json, schema, None, None).is_err());
+        assert!(into_event_batch(&req, &json, schema, None, None).is_err());
     }
 
     #[test]
@@ -648,13 +649,13 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(req, json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
 
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 7);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![Some(1.0), Some(1.0), Some(1.0), Some(1.0)])
+            rb.column_by_name("a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![Some(1), Some(1), Some(1), Some(1)])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr(),
@@ -667,13 +668,13 @@ mod tests {
         );
 
         assert_eq!(
-            rb.column_by_name("c_a").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, None, Some(1.0), Some(1.0)])
+            rb.column_by_name("c_a").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, None, Some(1), Some(1)])
         );
 
         assert_eq!(
-            rb.column_by_name("c_b").unwrap().as_float64_arr(),
-            &Float64Array::from(vec![None, None, None, Some(2.0)])
+            rb.column_by_name("c_b").unwrap().as_int64_arr(),
+            &Int64Array::from(vec![None, None, None, Some(2)])
         );
     }
 }

@@ -25,7 +25,6 @@ use super::{
     SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
-use crate::event::format::override_num_fields_from_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
@@ -33,7 +32,6 @@ use crate::option::Mode;
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
-    localcache::LocalCacheManager,
     metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
     option::CONFIG,
@@ -41,12 +39,12 @@ use crate::{
 };
 
 use actix_web_prometheus::PrometheusMetrics;
-use arrow_schema::{Field, Schema};
+use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
-use itertools::Itertools;
+use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use tracing::error;
@@ -62,7 +60,12 @@ use std::{
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
     fn get_datafusion_runtime(&self) -> RuntimeConfig;
-    fn get_object_store(&self) -> Arc<dyn ObjectStorage>;
+    fn construct_client(&self) -> Arc<dyn ObjectStorage>;
+    fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
+        static STORE: OnceCell<Arc<dyn ObjectStorage>> = OnceCell::new();
+
+        STORE.get_or_init(|| self.construct_client()).clone()
+    }
     fn get_endpoint(&self) -> String;
     fn register_store_metrics(&self, handler: &PrometheusMetrics);
 }
@@ -546,13 +549,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
 
         let streams = STREAM_INFO.list_streams();
 
-        let cache_manager = LocalCacheManager::global();
-        let mut cache_updates: HashMap<&String, Vec<_>> = HashMap::new();
-
         for stream in &streams {
-            let cache_enabled = STREAM_INFO
-                .get_cache_enabled(stream)
-                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let time_partition = STREAM_INFO
                 .get_time_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
@@ -624,36 +621,9 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 let manifest =
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
-                if cache_enabled && cache_manager.is_some() {
-                    cache_updates
-                        .entry(stream)
-                        .or_default()
-                        .push((absolute_path, file));
-                } else {
-                    let _ = fs::remove_file(file);
-                }
+
+                let _ = fs::remove_file(file);
             }
-        }
-
-        // Cache management logic
-        if let Some(manager) = cache_manager {
-            let cache_updates = cache_updates
-                .into_iter()
-                .map(|(key, value)| (key.to_owned(), value))
-                .collect_vec();
-
-            tokio::spawn(async move {
-                for (stream, files) in cache_updates {
-                    for (storage_path, file) in files {
-                        if let Err(e) = manager
-                            .move_to_cache(&stream, storage_path, file.to_owned())
-                            .await
-                        {
-                            error!("Failed to move file to cache: {:?}", e);
-                        }
-                    }
-                }
-            });
         }
 
         Ok(())
@@ -668,21 +638,8 @@ pub async fn commit_schema_to_storage(
     schema: Schema,
 ) -> Result<(), ObjectStorageError> {
     let storage = CONFIG.storage().get_object_store();
-    let mut stream_schema = storage.get_schema(stream_name).await?;
-    // override the data type of all numeric fields to Float64
-    //if data type is not Float64 already
-    stream_schema = Schema::new(override_num_fields_from_schema(
-        stream_schema.fields().iter().cloned().collect(),
-    ));
+    let stream_schema = storage.get_schema(stream_name).await?;
     let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
-
-    //update the merged schema in the metadata and storage
-    let schema_map: HashMap<String, Arc<Field>> = new_schema
-        .fields()
-        .iter()
-        .map(|field| (field.name().clone(), Arc::clone(field)))
-        .collect();
-    let _ = STREAM_INFO.set_schema(stream_name, schema_map);
     storage.put_schema(stream_name, &new_schema).await
 }
 

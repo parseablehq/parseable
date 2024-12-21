@@ -25,9 +25,9 @@ use serde_json::value::Value;
 pub fn flatten(
     nested_value: Value,
     separator: &str,
-    time_partition: Option<String>,
-    time_partition_limit: Option<String>,
-    custom_partition: Option<String>,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<&String>,
+    custom_partition: Option<&String>,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
     match nested_value {
@@ -35,13 +35,13 @@ pub fn flatten(
             if validation_required {
                 let validate_time_partition_result = validate_time_partition(
                     &Value::Object(nested_dict.clone()),
-                    time_partition.clone(),
-                    time_partition_limit.clone(),
+                    time_partition,
+                    time_partition_limit,
                 );
 
                 let validate_custom_partition_result = validate_custom_partition(
                     &Value::Object(nested_dict.clone()),
-                    custom_partition.clone(),
+                    custom_partition,
                 );
                 if validate_time_partition_result.is_ok() {
                     if validate_custom_partition_result.is_ok() {
@@ -64,13 +64,10 @@ pub fn flatten(
             for _value in &mut arr {
                 let value: Value = _value.clone();
                 if validation_required {
-                    let validate_time_partition_result = validate_time_partition(
-                        &value,
-                        time_partition.clone(),
-                        time_partition_limit.clone(),
-                    );
+                    let validate_time_partition_result =
+                        validate_time_partition(&value, time_partition, time_partition_limit);
                     let validate_custom_partition_result =
-                        validate_custom_partition(&value, custom_partition.clone());
+                        validate_custom_partition(&value, custom_partition);
                     if validate_time_partition_result.is_ok() {
                         if validate_custom_partition_result.is_ok() {
                             let value = std::mem::replace(_value, Value::Null);
@@ -104,7 +101,7 @@ pub fn flatten(
 
 pub fn validate_custom_partition(
     value: &Value,
-    custom_partition: Option<String>,
+    custom_partition: Option<&String>,
 ) -> Result<bool, anyhow::Error> {
     if custom_partition.is_none() {
         return Ok(true);
@@ -145,8 +142,8 @@ pub fn validate_custom_partition(
 
 pub fn validate_time_partition(
     value: &Value,
-    time_partition: Option<String>,
-    time_partition_limit: Option<String>,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<&String>,
 ) -> Result<bool, anyhow::Error> {
     if time_partition.is_none() {
         Ok(true)
@@ -156,7 +153,7 @@ pub fn validate_time_partition(
         } else {
             30
         };
-        let body_timestamp = value.get(time_partition.clone().unwrap().to_string());
+        let body_timestamp = value.get(time_partition.unwrap().to_string());
         if body_timestamp.is_some() && body_timestamp.unwrap().to_owned().as_str().is_some() {
             if body_timestamp
                 .unwrap()
