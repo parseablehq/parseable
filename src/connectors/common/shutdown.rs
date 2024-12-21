@@ -28,16 +28,6 @@ pub struct Shutdown {
 }
 
 impl Shutdown {
-    pub fn new() -> Self {
-        let cancel_token = CancellationToken::new();
-        let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
-        Self {
-            cancel_token,
-            shutdown_complete_tx,
-            shutdown_complete_rx: Some(shutdown_complete_rx),
-        }
-    }
-
     pub fn start(&self) {
         self.cancel_token.cancel();
     }
@@ -72,7 +62,13 @@ impl Shutdown {
 
 impl Default for Shutdown {
     fn default() -> Self {
-        Shutdown::new()
+        let cancel_token = CancellationToken::new();
+        let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
+        Self {
+            cancel_token,
+            shutdown_complete_tx,
+            shutdown_complete_rx: Some(shutdown_complete_rx),
+        }
     }
 }
 
