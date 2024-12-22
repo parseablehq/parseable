@@ -117,7 +117,6 @@ impl RoleBuilder {
                 | Action::CreateStream
                 | Action::DeleteStream
                 | Action::GetStreamInfo
-                | Action::ListStream
                 | Action::ListCluster
                 | Action::ListClusterMetrics
                 | Action::Deleteingestor
@@ -134,6 +133,7 @@ impl RoleBuilder {
                 | Action::DeleteFilter
                 | Action::GetAnalytics => Permission::Unit(action),
                 Action::Ingest
+                | Action::ListStream
                 | Action::GetSchema
                 | Action::DetectSchema
                 | Action::GetStats

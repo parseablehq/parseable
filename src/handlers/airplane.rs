@@ -157,7 +157,7 @@ impl FlightService for AirServiceImpl {
             .ok_or_else(|| Status::aborted("Malformed SQL Provided, Table Name Not Found"))?
             .to_owned();
 
-        update_schema_when_distributed(streams)
+        update_schema_when_distributed(&streams)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
@@ -212,7 +212,7 @@ impl FlightService for AirServiceImpl {
 
         let permissions = Users.get_permissions(&key);
 
-        authorize_and_set_filter_tags(&mut query, permissions, &stream_name).map_err(|_| {
+        authorize_and_set_filter_tags(&mut query, permissions, &streams).map_err(|_| {
             Status::permission_denied("User Does not have permission to access this")
         })?;
         let time = Instant::now();
