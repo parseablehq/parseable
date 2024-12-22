@@ -32,9 +32,12 @@ use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
+use crate::rbac::role::Action;
+use crate::rbac::Users;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::StreamType;
 use crate::storage::{retention::Retention, StorageDir, StreamInfo};
+use crate::utils::actix::extract_session_key_from_req;
 use crate::{event, stats};
 
 use crate::{metadata, validator};
@@ -46,6 +49,7 @@ use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderName, HeaderValue};
+use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -86,16 +90,27 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
-pub async fn list(_: HttpRequest) -> impl Responder {
-    //list all streams from storage
+pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    let key = extract_session_key_from_req(&req)
+        .map_err(|err| StreamError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+
+    // list all streams from storage
     let res = CONFIG
         .storage()
         .get_object_store()
         .list_streams()
         .await
-        .unwrap();
+        .unwrap()
+        .into_iter()
+        .filter(|logstream| {
+            warn!("logstream-\n{logstream:?}");
 
-    web::Json(res)
+            Users.authorize(key.clone(), Action::ListStream, Some(&logstream.name), None)
+                == crate::rbac::Response::Authorized
+        })
+        .collect_vec();
+
+    Ok(web::Json(res))
 }
 
 pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
@@ -130,7 +145,7 @@ pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
         }
         Err(err) => return Err(StreamError::from(err)),
     };
-    match update_schema_when_distributed(vec![stream_name.clone()]).await {
+    match update_schema_when_distributed(&vec![stream_name.clone()]).await {
         Ok(_) => {
             let schema = STREAM_INFO.schema(&stream_name)?;
             Ok((web::Json(schema), StatusCode::OK))
