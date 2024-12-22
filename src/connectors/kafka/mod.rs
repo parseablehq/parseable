@@ -34,7 +34,7 @@ use tracing::{error, info, warn};
 pub mod config;
 pub mod consumer;
 pub mod metrics;
-mod partition_stream_queue;
+mod partition_stream;
 pub mod processor;
 pub mod rebalance_listener;
 pub mod sink;

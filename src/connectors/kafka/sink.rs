@@ -24,7 +24,7 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use std::sync::Arc;
 use tokio::time::Duration;
-use tracing::error;
+use tracing::{error, info};
 
 pub struct KafkaSinkConnector<P>
 where
@@ -66,12 +66,16 @@ where
                 tokio::spawn(async move {
                     partition_queue
                         .run_drain(|record_stream| async {
+                            info!("Starting task for partition: {:?}", tp);
+
                             worker
                                 .process_partition(tp.clone(), record_stream)
                                 .await
                                 .unwrap();
                         })
-                        .await
+                        .await;
+
+                    info!("Task completed for partition: {:?}", tp);
                 })
             })
             .for_each_concurrent(None, |task| async {

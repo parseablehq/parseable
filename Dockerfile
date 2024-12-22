@@ -21,6 +21,15 @@ LABEL maintainer="Parseable Team <hi@parseable.io>"
 LABEL org.opencontainers.image.vendor="Parseable Inc"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    cmake \
+    librdkafka-dev \
+    ca-certificates \
+    libsasl2-dev \
+    libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /parseable
 COPY . .
 RUN cargo build --release
@@ -30,7 +39,16 @@ FROM gcr.io/distroless/cc-debian12:latest
 
 WORKDIR /parseable
 
-# Copy the static shell into base image.
+# Copy the Parseable binary from builder
 COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
+
+# Copy only the libraries that binary needs since kafka is statically linked
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libsasl2.so.2 /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libssl.so.3   /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/lib/x86_64-linux-gnu/
+
+# Copy CA certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
 
 CMD ["/usr/bin/parseable"]

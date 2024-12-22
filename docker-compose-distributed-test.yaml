@@ -1,6 +1,6 @@
-version: "3.7"
 networks:
   parseable-internal:
+
 services:
   # minio
   minio:
@@ -18,7 +18,7 @@ services:
     ports:
       - 9000:9000
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
       interval: 15s
       timeout: 20s
       retries: 5
@@ -29,9 +29,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["parseable", "s3-store"]
+    platform: linux/amd64
+    command: [ "parseable", "s3-store" ]
     ports:
-      - 8000:8000
+      - "8000:8000"
     environment:
       - P_S3_URL=http://minio:9000
       - P_S3_ACCESS_KEY=parseable
@@ -47,7 +48,7 @@ services:
     networks:
       - parseable-internal
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
       interval: 15s
       timeout: 20s
       retries: 5
@@ -63,7 +64,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["parseable", "s3-store"]
+    platform: linux/amd64
+    command: [ "parseable", "s3-store" ]
     ports:
       - 8000
     environment:
@@ -79,16 +81,23 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
+      - P_KAFKA_TOPICS=dist-test-logs-stream
+      - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
+      - P_KAFKA_GROUP_ID=parseable-kafka-sink-connector
+      # additional settings like security, tuning, etc.
     networks:
       - parseable-internal
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
       interval: 15s
       timeout: 20s
       retries: 5
     depends_on:
       - parseable-query
       - minio
+      - kafka-0
+      - kafka-1
+      - kafka-2
     deploy:
       restart_policy:
         condition: on-failure
@@ -126,3 +135,141 @@ services:
         condition: on-failure
         delay: 20s
         max_attempts: 3
+
+  kafka-0:
+    image: docker.io/bitnami/kafka:3.9
+    ports:
+      - "9092"
+    environment:
+      # KRaft settings
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka-0:9093,1@kafka-1:9093,2@kafka-2:9093
+      - KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuv
+      # Listeners
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      # Clustering
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=3
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=3
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=2
+    volumes:
+      - kafka_0_data:/bitnami/kafka
+    networks:
+      - parseable-internal
+    healthcheck:
+      test: [ "CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka-1:
+    image: docker.io/bitnami/kafka:3.9
+    ports:
+      - "9092"
+    environment:
+      # KRaft settings
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka-0:9093,1@kafka-1:9093,2@kafka-2:9093
+      - KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuv
+      # Listeners
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      # Clustering
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=3
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=3
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=2
+    volumes:
+      - kafka_1_data:/bitnami/kafka
+    networks:
+      - parseable-internal
+    healthcheck:
+      test: [ "CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka-2:
+    image: docker.io/bitnami/kafka:3.9
+    ports:
+      - "9092"
+    environment:
+      # KRaft settings
+      - KAFKA_CFG_NODE_ID=2
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka-0:9093,1@kafka-1:9093,2@kafka-2:9093
+      - KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuv
+      # Listeners
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      # Clustering
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=3
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=3
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=2
+    volumes:
+      - kafka_2_data:/bitnami/kafka
+    networks:
+      - parseable-internal
+    healthcheck:
+      test: [ "CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka-ui:
+    platform: linux/amd64
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8080:8080"
+    depends_on:
+      - kafka-0
+      - kafka-1
+      - kafka-2
+    environment:
+      KAFKA_CLUSTERS_0_NAME: dist-test
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-0:9092,kafka-1:9092,kafka-2:9092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9101
+      DYNAMIC_CONFIG_ENABLED: "true"
+    networks:
+      - parseable-internal
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 3
+
+  kafka-log-generator:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BROKERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
+      - KAFKA_TOPIC=dist-test-logs-stream
+      - LOG_RATE=500
+      - TOTAL_LOGS=100000
+    depends_on:
+      - kafka-0
+      - kafka-1
+      - kafka-2
+    networks:
+      - parseable-internal
+    restart: "no"
+
+volumes:
+  kafka_0_data:
+    driver: local
+  kafka_1_data:
+    driver: local
+  kafka_2_data:
+    driver: local
+

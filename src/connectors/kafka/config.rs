@@ -261,7 +261,10 @@ impl KafkaConfig {
 
     pub fn consumer_config(&self) -> rdkafka::ClientConfig {
         let mut config = rdkafka::ClientConfig::new();
-        config.set("bootstrap.servers", &self.bootstrap_servers);
+        config
+            .set("bootstrap.servers", &self.bootstrap_servers)
+            .set("reconnect.backoff.ms", "100")
+            .set("reconnect.backoff.max.ms", "3600000");
 
         if let Some(client_id) = &self.client_id {
             config
@@ -339,7 +342,10 @@ impl KafkaConfig {
 
     pub fn producer_config(&self) -> rdkafka::config::ClientConfig {
         let mut config = rdkafka::config::ClientConfig::new();
-        config.set("bootstrap.servers", &self.bootstrap_servers);
+        config
+            .set("bootstrap.servers", &self.bootstrap_servers)
+            .set("reconnect.backoff.ms", "100")
+            .set("reconnect.backoff.max.ms", "3600000");
 
         if let Some(client_id) = &self.client_id {
             config

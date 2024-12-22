@@ -16,7 +16,7 @@
  *
  */
 
-use crate::connectors::kafka::partition_stream_queue::PartitionStreamSender;
+use crate::connectors::kafka::partition_stream::PartitionStreamSender;
 use crate::connectors::kafka::{TopicPartition, TopicPartitionList};
 use std::collections::HashMap;
 use tracing::info;

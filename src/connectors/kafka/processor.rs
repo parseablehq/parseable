@@ -32,8 +32,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, warn};
-use tracing::{error, info};
+use tracing::{debug, error, warn};
 
 #[derive(Default, Debug, Clone)]
 pub struct ParseableSinkProcessor;
@@ -138,7 +137,6 @@ where
         tp: TopicPartition,
         record_stream: ReceiverStream<ConsumerRecord>,
     ) -> anyhow::Result<()> {
-        info!("Started processing stream for {:?}", tp);
         let chunked_stream = tokio_stream::StreamExt::chunks_timeout(
             record_stream,
             self.buffer_size,
@@ -164,7 +162,6 @@ where
             })
             .await;
 
-        info!("Finished processing stream for {:?}", tp);
         self.processor.post_stream().await?;
 
         Ok(())

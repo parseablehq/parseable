@@ -17,13 +17,16 @@
  */
 
 use crate::connectors::common::shutdown::Shutdown;
-use crate::connectors::kafka::partition_stream_queue::PartitionStreamReceiver;
+use crate::connectors::kafka::partition_stream::{PartitionStreamReceiver, PartitionStreamSender};
 use crate::connectors::kafka::state::StreamState;
 use crate::connectors::kafka::{
-    partition_stream_queue, ConsumerRecord, KafkaContext, StreamConsumer, TopicPartition,
+    partition_stream, ConsumerRecord, KafkaContext, StreamConsumer, TopicPartition,
 };
+use backon::{ExponentialBuilder, Retryable};
 use futures_util::FutureExt;
 use rdkafka::consumer::Consumer;
+use rdkafka::error::KafkaError;
+use rdkafka::message::BorrowedMessage;
 use rdkafka::Statistics;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -81,10 +84,9 @@ impl KafkaStreams {
     /// 4. Listens for shutdown signals and gracefully terminates all partition streams, unsubscribing the consumer.
     ///
     /// Limitations and References:
-    /// - Issues with `split_partition_queue` in rust-rdkafka:
+    ///   - Issues with `split_partition_queue` in rust-rdkafka:
     ///   - https://github.com/fede1024/rust-rdkafka/issues/535
     ///   - https://github.com/confluentinc/librdkafka/issues/4059
-    ///   - https://github.com/fede1024/rust-rdkafka/issues/535
     ///   - https://github.com/confluentinc/librdkafka/issues/4059
     ///   - https://github.com/fede1024/rust-rdkafka/issues/654
     ///   - https://github.com/fede1024/rust-rdkafka/issues/651
@@ -106,49 +108,133 @@ impl KafkaStreams {
 
         std::thread::spawn(move || {
             tokio_handle.block_on(async move {
+                let retry_policy = ExponentialBuilder::default().with_max_times(5000);
+
                 loop {
-                    tokio::select! {
-                        result = consumer.recv() => {
-                            match result {
-                                Ok(msg) => {
-                                    let mut state = stream_state.write().await;
-                                    let tp = TopicPartition::from_kafka_msg(&msg);
-                                    let consumer_record = ConsumerRecord::from_borrowed_msg(msg);
-                                    let ps_tx = match state.get_partition_sender(&tp) {
-                                        Some(ps_tx) =>  ps_tx.clone(),
-                                        None => {
-                                            info!("Creating new stream for {:?}", tp);
-                                            let (ps_tx, ps_rx) = partition_stream_queue::bounded(10_000, tp.clone());
-                                            state.insert_partition_sender(tp.clone(), ps_tx.clone());
-                                            stream_tx.send(ps_rx).await.unwrap();
-                                            ps_tx
-                                        }
-                                    };
-                                    ps_tx.send(consumer_record).await;
-                                }
-                                Err(err) => {
-                                    error!("Cannot get message from kafka consumer! Cause {:?}", err);
-                                    break
-                                },
-                            };
-                        },
-                        _ = shutdown_handle.recv() => {
-                            info!("Gracefully stopping kafka partition streams!");
-                            let mut stream_state = stream_state.write().await;
-                            stream_state.clear();
-                            consumer.unsubscribe();
-                            break;
-                        },
-                        else => {
-                            error!("KafkaStreams terminated!");
+                    let result = KafkaStreams::process_consumer_messages(
+                        &consumer,
+                        &stream_state,
+                        &stream_tx,
+                        &shutdown_handle,
+                        &retry_policy,
+                    )
+                    .await;
+
+                    match result {
+                        Err(e) => {
+                            error!(
+                                "Partitioned processing encountered a critical error: {:?}",
+                                e
+                            );
                             break;
                         }
+                        Ok(..) => {}
                     }
                 }
-            })
+            });
         });
 
         ReceiverStream::new(stream_rx)
+    }
+
+    async fn process_consumer_messages(
+        consumer: &Arc<StreamConsumer>,
+        stream_state: &RwLock<StreamState>,
+        stream_tx: &mpsc::Sender<PartitionStreamReceiver>,
+        shutdown_handle: &Shutdown,
+        retry_policy: &ExponentialBuilder,
+    ) -> anyhow::Result<()> {
+        tokio::select! {
+            result = KafkaStreams::receive_with_retry(consumer, retry_policy) => match result {
+                Ok(msg) => KafkaStreams::handle_message(msg, stream_state, stream_tx).await,
+                Err(err) => {
+                    anyhow::bail!("Unrecoverable error occurred while receiving Kafka message: {:?}", err);
+                },
+            },
+            _ = shutdown_handle.recv() => {
+                KafkaStreams::handle_shutdown(consumer, stream_state).await;
+                Ok(())
+            },
+            else => {
+                error!("KafkaStreams terminated unexpectedly!");
+                Ok(())
+            }
+        }
+    }
+
+    async fn receive_with_retry<'a>(
+        consumer: &'a Arc<StreamConsumer>,
+        retry_policy: &'a ExponentialBuilder,
+    ) -> Result<BorrowedMessage<'a>, KafkaError> {
+        let recv_fn = || consumer.recv();
+
+        recv_fn
+            .retry(retry_policy.clone())
+            .sleep(tokio::time::sleep)
+            .notify(|err, dur| {
+                tracing::warn!(
+                    "Retrying message reception due to error: {:?}. Waiting for {:?}...",
+                    err,
+                    dur
+                );
+            })
+            .await
+    }
+
+    /// Handle individual Kafka message and route it to the proper partition stream
+    async fn handle_message(
+        msg: BorrowedMessage<'_>,
+        stream_state: &RwLock<StreamState>,
+        stream_tx: &mpsc::Sender<PartitionStreamReceiver>,
+    ) -> anyhow::Result<()> {
+        let mut state = stream_state.write().await;
+        let tp = TopicPartition::from_kafka_msg(&msg);
+        let consumer_record = ConsumerRecord::from_borrowed_msg(msg);
+
+        let partition_stream_tx =
+            KafkaStreams::get_or_create_partition_stream(&mut state, stream_tx, tp).await;
+        partition_stream_tx.send(consumer_record).await;
+
+        Ok(())
+    }
+
+    async fn get_or_create_partition_stream(
+        state: &mut StreamState,
+        stream_tx: &mpsc::Sender<PartitionStreamReceiver>,
+        tp: TopicPartition,
+    ) -> PartitionStreamSender {
+        if let Some(ps_tx) = state.get_partition_sender(&tp) {
+            ps_tx.clone()
+        } else {
+            Self::create_new_partition_stream(state, stream_tx, tp).await
+        }
+    }
+
+    async fn create_new_partition_stream(
+        state: &mut StreamState,
+        stream_tx: &mpsc::Sender<PartitionStreamReceiver>,
+        tp: TopicPartition,
+    ) -> PartitionStreamSender {
+        info!("Creating new stream for {:?}", tp);
+
+        let (ps_tx, ps_rx) = partition_stream::bounded(100_000, tp.clone());
+        state.insert_partition_sender(tp.clone(), ps_tx.clone());
+
+        if let Err(e) = stream_tx.send(ps_rx).await {
+            error!(
+                "Failed to send partition stream receiver for {:?}: {:?}",
+                tp, e
+            );
+        }
+
+        ps_tx
+    }
+
+    async fn handle_shutdown(consumer: &Arc<StreamConsumer>, stream_state: &RwLock<StreamState>) {
+        info!("Gracefully stopping kafka partition streams!");
+        let mut state = stream_state.write().await;
+        state.clear();
+        consumer.unsubscribe();
     }
 
     fn create_consumer(context: KafkaContext) -> Arc<StreamConsumer> {
