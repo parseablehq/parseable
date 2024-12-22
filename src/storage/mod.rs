@@ -44,6 +44,7 @@ pub use store_metadata::{
 };
 
 // metadata file names in a Stream prefix
+pub const ALERTS_ROOT_DIRECTORY: &str = ".alert";
 pub const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
 pub const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 pub const STREAM_ROOT_DIRECTORY: &str = ".stream";

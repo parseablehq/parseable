@@ -17,7 +17,6 @@
  */
 
 mod about;
-mod alerts;
 pub mod analytics;
 pub mod banner;
 mod catalog;

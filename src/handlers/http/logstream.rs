@@ -24,7 +24,6 @@ use super::modal::utils::logstream_utils::{
     create_stream_and_schema_from_storage, create_update_stream,
 };
 use super::query::update_schema_when_distributed;
-use crate::alerts::Alerts;
 use crate::catalog::get_first_event;
 use crate::event::format::update_data_type_to_datetime;
 use crate::handlers::STREAM_TYPE_KEY;
@@ -130,7 +129,7 @@ pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
         }
         Err(err) => return Err(StreamError::from(err)),
     };
-    match update_schema_when_distributed(vec![stream_name.clone()]).await {
+    match update_schema_when_distributed(&vec![stream_name.clone()]).await {
         Ok(_) => {
             let schema = STREAM_INFO.schema(&stream_name)?;
             Ok((web::Json(schema), StatusCode::OK))
@@ -142,112 +141,12 @@ pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     }
 }
 
-pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    let alerts = metadata::STREAM_INFO
-        .read()
-        .expect(metadata::LOCK_EXPECT)
-        .get(&stream_name)
-        .map(|metadata| {
-            serde_json::to_value(&metadata.alerts).expect("alerts can serialize to valid json")
-        });
-
-    let mut alerts = match alerts {
-        Some(alerts) => alerts,
-        None => {
-            let alerts = CONFIG
-                .storage()
-                .get_object_store()
-                .get_alerts(&stream_name)
-                .await?;
-
-            if alerts.alerts.is_empty() {
-                return Err(StreamError::NoAlertsSet);
-            }
-
-            serde_json::to_value(alerts).expect("alerts can serialize to valid json")
-        }
-    };
-
-    remove_id_from_alerts(&mut alerts);
-
-    Ok((web::Json(alerts), StatusCode::OK))
-}
-
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     create_update_stream(&req, &body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
-}
-
-pub async fn put_alert(
-    req: HttpRequest,
-    body: web::Json<serde_json::Value>,
-) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    let mut body = body.into_inner();
-    remove_id_from_alerts(&mut body);
-
-    let alerts: Alerts = match serde_json::from_value(body) {
-        Ok(alerts) => alerts,
-        Err(err) => {
-            return Err(StreamError::BadAlertJson {
-                stream: stream_name,
-                err,
-            })
-        }
-    };
-
-    validator::alert(&alerts)?;
-
-    if !STREAM_INFO.stream_initialized(&stream_name)? {
-        // For query mode, if the stream not found in memory map,
-        //check if it exists in the storage
-        //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
-            match create_stream_and_schema_from_storage(&stream_name).await {
-                Ok(true) => {}
-                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
-            }
-        } else {
-            return Err(StreamError::UninitializedLogstream);
-        }
-    }
-
-    let schema = STREAM_INFO.schema(&stream_name)?;
-    for alert in &alerts.alerts {
-        for column in alert.message.extract_column_names() {
-            let is_valid = alert.message.valid(&schema, column);
-            if !is_valid {
-                return Err(StreamError::InvalidAlertMessage(
-                    alert.name.to_owned(),
-                    column.to_string(),
-                ));
-            }
-            if !alert.rule.valid_for_schema(&schema) {
-                return Err(StreamError::InvalidAlert(alert.name.to_owned()));
-            }
-        }
-    }
-
-    CONFIG
-        .storage()
-        .get_object_store()
-        .put_alerts(&stream_name, &alerts)
-        .await?;
-
-    metadata::STREAM_INFO
-        .set_alert(&stream_name, alerts)
-        .expect("alerts set on existing stream");
-
-    Ok((
-        format!("set alert configuration for log stream {stream_name}"),
-        StatusCode::OK,
-    ))
 }
 
 pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamError> {
@@ -456,17 +355,6 @@ pub fn first_event_at_empty(stream_name: &str) -> bool {
         }
     }
     true
-}
-
-fn remove_id_from_alerts(value: &mut Value) {
-    if let Some(Value::Array(alerts)) = value.get_mut("alerts") {
-        alerts
-            .iter_mut()
-            .map_while(|alert| alert.as_object_mut())
-            .for_each(|map| {
-                map.remove("id");
-            });
-    }
 }
 
 pub async fn create_stream(

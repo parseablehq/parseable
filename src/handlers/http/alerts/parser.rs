@@ -229,13 +229,15 @@ impl FromStr for CompositeRule {
 mod tests {
     use std::str::FromStr;
 
-    use crate::alerts::rule::{
+    use crate::handlers::http::alerts::rule::{
         base::{
             ops::{NumericOperator, StringOperator},
             NumericRule, StringRule,
         },
         CompositeRule,
     };
+
+
 
     #[test]
     fn test_and_or_not() {

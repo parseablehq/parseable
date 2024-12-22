@@ -28,9 +28,9 @@ use chrono::Utc;
 use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use humantime_serde::re::humantime;
 use reqwest::ClientBuilder;
-use tracing::error;
+use tracing::{error, trace};
 
-use crate::utils::json;
+use crate::handlers::http::alerts::ALERTS;
 
 use super::{AlertState, CallableTarget, Context};
 
@@ -42,7 +42,13 @@ pub enum Retry {
     Finite(usize),
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+impl Default for Retry {
+    fn default() -> Self {
+        Retry::Finite(1)
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
 #[serde(try_from = "TargetVerifier")]
 pub struct Target {
@@ -57,11 +63,12 @@ impl Target {
         let timeout = &self.timeout;
         let resolves = context.alert_info.alert_state;
         let mut state = timeout.state.lock().unwrap();
+        state.alert_state = resolves;
 
         match resolves {
-            AlertState::SetToFiring => {
-                state.alert_state = AlertState::Firing;
+            AlertState::Triggered => {
                 if !state.timed_out {
+                    trace!("state not timed out- {state:?}");
                     // set state
                     state.timed_out = true;
                     state.awaiting_resolve = true;
@@ -70,8 +77,8 @@ impl Target {
                     call_target(self.target.clone(), context)
                 }
             }
-            AlertState::Resolved => {
-                state.alert_state = AlertState::Listening;
+            alert_state @ (AlertState::Resolved | AlertState::Silenced) => {
+                state.alert_state = alert_state;
                 if state.timed_out {
                     // if in timeout and resolve came in, only process if it's the first one ( awaiting resolve )
                     if state.awaiting_resolve {
@@ -84,42 +91,51 @@ impl Target {
 
                 call_target(self.target.clone(), context);
             }
-            _ => unreachable!(),
         }
     }
 
-    fn spawn_timeout_task(&self, repeat: &Timeout, alert_context: Context) {
-        let state = Arc::clone(&repeat.state);
-        let retry = repeat.times;
-        let timeout = repeat.interval;
+    fn spawn_timeout_task(&self, target_timeout: &Timeout, alert_context: Context) {
+        trace!("repeat-\n{target_timeout:?}\ncontext-\n{alert_context:?}");
+        let state = Arc::clone(&target_timeout.state);
+        let retry = target_timeout.times;
+        let timeout = target_timeout.interval;
         let target = self.target.clone();
+        let alert_id = alert_context.alert_info.alert_id.clone();
 
-        let sleep_and_check_if_call = move |timeout_state: Arc<Mutex<TimeoutState>>| {
-            async move {
-                tokio::time::sleep(timeout).await;
-                let mut state = timeout_state.lock().unwrap();
-                if state.alert_state == AlertState::Firing {
-                    // it is still firing .. sleep more and come back
-                    state.awaiting_resolve = true;
-                    true
-                } else {
-                    state.timed_out = false;
-                    false
+        let sleep_and_check_if_call =
+            move |timeout_state: Arc<Mutex<TimeoutState>>, current_state: AlertState| {
+                async move {
+                    tokio::time::sleep(timeout).await;
+
+                    let mut state = timeout_state.lock().unwrap();
+
+                    if current_state == AlertState::Triggered {
+                        // it is still firing .. sleep more and come back
+                        state.awaiting_resolve = true;
+                        true
+                    } else {
+                        state.timed_out = false;
+                        false
+                    }
                 }
-            }
-        };
+            };
 
-        actix_web::rt::spawn(async move {
+        trace!("Spawning retry task");
+        tokio::spawn(async move {
             match retry {
                 Retry::Infinite => loop {
-                    let should_call = sleep_and_check_if_call(Arc::clone(&state)).await;
+                    let current_state = ALERTS.get_state(&alert_id).await.unwrap();
+                    let should_call =
+                        sleep_and_check_if_call(Arc::clone(&state), current_state).await;
                     if should_call {
                         call_target(target.clone(), alert_context.clone())
                     }
                 },
                 Retry::Finite(times) => {
                     for _ in 0..times {
-                        let should_call = sleep_and_check_if_call(Arc::clone(&state)).await;
+                        let current_state = ALERTS.get_state(&alert_id).await.unwrap();
+                        let should_call =
+                            sleep_and_check_if_call(Arc::clone(&state), current_state).await;
                         if should_call {
                             call_target(target.clone(), alert_context.clone())
                         }
@@ -128,9 +144,9 @@ impl Target {
                     // Stream might be dead and sending too many alerts is not great
                     // Send and alert stating that this alert will only work once it has seen a RESOLVE
                     state.lock().unwrap().timed_out = false;
-                    let mut context = alert_context;
-                    context.alert_info.message = format!(
-                        "Triggering alert did not resolve itself after {times} retries, This alert is paused until it resolves");
+                    let context = alert_context;
+                    // context.alert_info.message = format!(
+                    //     "Triggering alert did not resolve itself after {times} retries, This alert is paused until it resolves");
                     // Send and exit this task.
                     call_target(target, context);
                 }
@@ -140,7 +156,7 @@ impl Target {
 }
 
 fn call_target(target: TargetType, context: Context) {
-    actix_web::rt::spawn(async move { target.call(&context).await });
+    tokio::spawn(async move { target.call(&context).await });
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -230,13 +246,15 @@ impl CallableTarget for SlackWebHook {
             .expect("Client can be constructed on this system");
 
         let alert = match payload.alert_info.alert_state {
-            AlertState::SetToFiring => {
+            AlertState::Triggered => {
                 serde_json::json!({ "text": payload.default_alert_string() })
             }
             AlertState::Resolved => {
                 serde_json::json!({ "text": payload.default_resolved_string() })
             }
-            _ => unreachable!(),
+            AlertState::Silenced => {
+                serde_json::json!({ "text": payload.default_silenced_string() })
+            }
         };
 
         if let Err(e) = client.post(&self.endpoint).json(&alert).send().await {
@@ -268,9 +286,9 @@ impl CallableTarget for OtherWebHook {
             .expect("Client can be constructed on this system");
 
         let alert = match payload.alert_info.alert_state {
-            AlertState::SetToFiring => payload.default_alert_string(),
+            AlertState::Triggered => payload.default_alert_string(),
             AlertState::Resolved => payload.default_resolved_string(),
-            _ => unreachable!(),
+            AlertState::Silenced => payload.default_silenced_string(),
         };
 
         let request = client
@@ -318,33 +336,33 @@ impl CallableTarget for AlertManager {
         let mut alerts = serde_json::json!([{
           "labels": {
             "alertname": payload.alert_info.alert_name,
-            "stream": payload.stream,
+            // "stream": payload.stream,
             "deployment_instance": payload.deployment_info.deployment_instance,
             "deployment_id": payload.deployment_info.deployment_id,
             "deployment_mode": payload.deployment_info.deployment_mode
             },
           "annotations": {
-            "message": payload.alert_info.message,
-            "reason": payload.alert_info.reason
+            "message": "MESSAGE",
+            "reason": "REASON"
           }
         }]);
 
         let alert = &mut alerts[0];
 
-        alert["labels"].as_object_mut().expect("is object").extend(
-            payload
-                .additional_labels
-                .as_object()
-                .expect("is object")
-                .iter()
-                // filter non null values for alertmanager and only pass strings
-                .filter(|(_, value)| !value.is_null())
-                .map(|(k, value)| (k.to_owned(), json::convert_to_string(value))),
-        );
+        // alert["labels"].as_object_mut().expect("is object").extend(
+        //     payload
+        //         .additional_labels
+        //         .as_object()
+        //         .expect("is object")
+        //         .iter()
+        //         // filter non null values for alertmanager and only pass strings
+        //         .filter(|(_, value)| !value.is_null())
+        //         .map(|(k, value)| (k.to_owned(), json::convert_to_string(value))),
+        // );
 
         // fill in status label accordingly
         match payload.alert_info.alert_state {
-            AlertState::SetToFiring => alert["labels"]["status"] = "firing".into(),
+            AlertState::Triggered => alert["labels"]["status"] = "triggered".into(),
             AlertState::Resolved => {
                 alert["labels"]["status"] = "resolved".into();
                 alert["annotations"]["reason"] =
@@ -353,7 +371,14 @@ impl CallableTarget for AlertManager {
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     .into();
             }
-            _ => unreachable!(),
+            AlertState::Silenced => {
+                alert["labels"]["status"] = "silenced".into();
+                alert["annotations"]["reason"] =
+                    serde_json::Value::String(payload.default_silenced_string());
+                // alert["endsAt"] = Utc::now()
+                //     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                //     .into();
+            }
         };
 
         if let Err(e) = client.post(&self.endpoint).json(&alerts).send().await {
@@ -362,10 +387,11 @@ impl CallableTarget for AlertManager {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct Timeout {
     #[serde(with = "humantime_serde")]
     pub interval: Duration,
+    #[serde(default = "Retry::default")]
     pub times: Retry,
     #[serde(skip)]
     pub state: Arc<Mutex<TimeoutState>>,
@@ -374,8 +400,8 @@ pub struct Timeout {
 impl Default for Timeout {
     fn default() -> Self {
         Self {
-            interval: Duration::from_secs(200),
-            times: Retry::Finite(5),
+            interval: Duration::from_secs(60),
+            times: Retry::default(),
             state: Arc::<Mutex<TimeoutState>>::default(),
         }
     }
