@@ -148,28 +148,22 @@ pub async fn update_state(req: HttpRequest, state: String) -> Result<impl Respon
 
     match current_state {
         AlertState::Triggered => {
-            match new_state {
-                AlertState::Triggered => {
-                    let msg = format!("Not allowed to manually go from Triggered to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                }
-                _ => {
-                    // update state on disk and in memory
-                    ALERTS.update_state(alert_id, new_state, true).await?;
-                }
+            if new_state == AlertState::Triggered {
+                let msg = format!("Not allowed to manually go from Triggered to {new_state}");
+                return Err(AlertError::InvalidStateChange(msg));
+            } else {
+                // update state on disk and in memory
+                ALERTS.update_state(alert_id, new_state, true).await?;
             }
         }
         AlertState::Silenced => {
             // from here, the user can only go to Resolved
-            match new_state {
-                AlertState::Resolved => {
-                    // update state on disk and in memory
-                    ALERTS.update_state(alert_id, new_state, true).await?;
-                }
-                _ => {
-                    let msg = format!("Not allowed to manually go from Silenced to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                }
+            if new_state == AlertState::Resolved {
+                // update state on disk and in memory
+                ALERTS.update_state(alert_id, new_state, true).await?;
+            } else {
+                let msg = format!("Not allowed to manually go from Silenced to {new_state}");
+                return Err(AlertError::InvalidStateChange(msg));
             }
         }
         AlertState::Resolved => {
