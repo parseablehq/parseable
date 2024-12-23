@@ -4,11 +4,11 @@ parseable:
     tag: v1.6.3
     pullPolicy: Always
   ## object store can be local-store, s3-store, blob-store or gcs-store.
-  store: local-store
+  store: gcs-store
   ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors)
   ## Please note that highAvailability is not supported in local mode
   highAvailability:
-    enabled: false
+    enabled: true
     ingestor: 
       port: 8000
       podAnnotations: {}
@@ -52,8 +52,8 @@ parseable:
   ## Note that Data directory is needed only for local mode
   persistence:
     staging:
-      enabled: false
-      storageClass: ""
+      enabled: true
+      storageClass: "do-block-storage"
       accessMode: ReadWriteOnce
       size: 1Gi
     ingestor:
@@ -67,8 +67,8 @@ parseable:
       accessMode: ReadWriteOnce
       size: 1Gi
     querier:
-      enabled: false
-      storageClass: ""
+      enabled: true
+      storageClass: "do-block-storage"
       accessMode: ReadWriteOnce
       size: 1Gi
   ## comment out the secrets depending upon deployment option
@@ -116,7 +116,7 @@ parseable:
           - s3.bucket
           - s3.region
   gcsModeSecret:
-    enabled: false
+    enabled: true
     secrets:
       - name: parseable-env-secret
         prefix: P_
