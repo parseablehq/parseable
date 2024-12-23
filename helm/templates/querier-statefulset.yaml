@@ -19,8 +19,6 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "parseable.querierLabels" . | nindent 4 }}
-  annotations:
-    "helm.sh/hook-weight": "1"
 spec:
   selector:
     matchLabels:
