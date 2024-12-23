@@ -17,7 +17,7 @@
  */
 
 use parseable::{
-    banner, connectors,
+    banner, connectors, metrics,
     option::{Mode, CONFIG},
     rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
@@ -46,8 +46,10 @@ async fn main() -> anyhow::Result<()> {
     // keep metadata info in mem
     metadata.set_global();
 
-    let parseable_server = server.init();
-    let connectors_task = connectors::init();
+    let prometheus = metrics::build_metrics_handler();
+    
+    let parseable_server = server.init(&prometheus);
+    let connectors_task = connectors::init(&prometheus);
 
     tokio::try_join!(parseable_server, connectors_task)?;
 

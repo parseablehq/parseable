@@ -20,14 +20,14 @@ use crate::connectors::common::config::ConnectorConfig;
 use crate::connectors::common::processor::Processor;
 use crate::connectors::common::shutdown::Shutdown;
 use crate::connectors::kafka::consumer::KafkaStreams;
-use crate::connectors::kafka::metrics::KafkaConsumerMetricsCollector;
+use crate::connectors::kafka::metrics::KafkaMetricsCollector;
 use crate::connectors::kafka::processor::ParseableSinkProcessor;
 use crate::connectors::kafka::rebalance_listener::RebalanceListener;
 use crate::connectors::kafka::sink::KafkaSinkConnector;
 use crate::connectors::kafka::state::StreamState;
 use crate::connectors::kafka::{ConsumerRecord, KafkaContext};
-use crate::metrics;
 use crate::option::{Mode, CONFIG};
+use actix_web_prometheus::PrometheusMetrics;
 use prometheus::Registry;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -36,12 +36,11 @@ use tracing::{info, warn};
 pub mod common;
 pub mod kafka;
 
-pub async fn init() -> anyhow::Result<()> {
+pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
     if matches!(CONFIG.parseable.mode, Mode::Ingest | Mode::All) {
         match CONFIG.parseable.connector_config.clone() {
             Some(config) => {
                 let shutdown_handle = Shutdown::default();
-                let prometheus = metrics::build_metrics_handler();
                 let registry = prometheus.registry.clone();
                 let processor = ParseableSinkProcessor;
 

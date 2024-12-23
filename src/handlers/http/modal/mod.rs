@@ -65,8 +65,8 @@ pub trait ParseableServer {
     /// load metadata/configuration from persistence for previous sessions of parseable
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>>;
 
-    /// code that describes starting and setup procedures for each type of server
-    async fn init(&self) -> anyhow::Result<()>;
+    /// code that describes starting and setup procedures for each type of server with prometheus
+    async fn init(&self, prometheus: &PrometheusMetrics) -> anyhow::Result<()>;
 
     /// configure the server
     async fn start(

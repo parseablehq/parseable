@@ -479,7 +479,7 @@ impl Default for KafkaConfig {
             // Common configuration with standard broker port
             bootstrap_servers: "localhost:9092".to_string(),
             topics: vec![],
-            client_id: None, // Let Kafka generate a unique client ID if not specified
+            client_id: Some("parseable-connect".to_string()),
 
             // Component-specific configurations with production-ready defaults
             consumer: Some(ConsumerConfig::default()),
@@ -613,7 +613,10 @@ mod tests {
         );
 
         let rdkafka_config = config.consumer_config();
-        assert_eq!(rdkafka_config.get("group.id"), Some("test-group"));
+        assert_eq!(
+            rdkafka_config.get("group.id"),
+            Some("parseable-test-group-gi")
+        );
         assert_eq!(
             rdkafka_config.get("partition.assignment.strategy"),
             Some("cooperative-sticky")
@@ -631,7 +634,7 @@ mod tests {
         if let Some(producer) = config.producer {
             assert_eq!(producer.acks, "all");
             assert!(producer.enable_idempotence);
-            assert_eq!(producer.compression_type, "snappy");
+            assert_eq!(producer.compression_type, "lz4");
         }
     }
 

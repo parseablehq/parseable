@@ -32,8 +32,6 @@ mime = "0.3.17"
 
 ### connectors dependencies
 rdkafka = { version = "0.37", features = ["cmake-build", "tracing", "sasl", "ssl", "libz-static"] }
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["kafka"] }
 backon = "1.3"
 
 ### other dependencies

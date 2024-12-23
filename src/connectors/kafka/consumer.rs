@@ -47,8 +47,8 @@ impl KafkaStreams {
         shutdown_handle: Shutdown,
     ) -> anyhow::Result<KafkaStreams> {
         info!("Initializing KafkaStreams...");
+        let statistics = Arc::clone(&context.statistics);
         let consumer = KafkaStreams::create_consumer(context);
-        let statistics = Arc::new(std::sync::RwLock::new(Statistics::default()));
         info!("KafkaStreams initialized successfully.");
 
         Ok(Self {
@@ -120,15 +120,12 @@ impl KafkaStreams {
                     )
                     .await;
 
-                    match result {
-                        Err(e) => {
-                            error!(
-                                "Partitioned processing encountered a critical error: {:?}",
-                                e
-                            );
-                            break;
-                        }
-                        Ok(..) => {}
+                    if let Err(e) = result {
+                        error!(
+                            "Partitioned processing encountered a critical error: {:?}",
+                            e
+                        );
+                        break;
                     }
                 }
             });
@@ -169,7 +166,7 @@ impl KafkaStreams {
         let recv_fn = || consumer.recv();
 
         recv_fn
-            .retry(retry_policy.clone())
+            .retry(*retry_policy)
             .sleep(tokio::time::sleep)
             .notify(|err, dur| {
                 tracing::warn!(
