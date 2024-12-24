@@ -16,224 +16,176 @@
  *
  */
 
-use anyhow::anyhow;
+use std::collections::BTreeMap;
+
+use anyhow::{anyhow, Error};
 use chrono::{DateTime, Duration, Utc};
-use itertools::Itertools;
 use serde_json::map::Map;
 use serde_json::value::Value;
 
 pub fn flatten(
-    nested_value: Value,
+    nested_value: &mut Value,
     separator: &str,
     time_partition: Option<&String>,
     time_partition_limit: Option<&String>,
     custom_partition: Option<&String>,
     validation_required: bool,
-) -> Result<Value, anyhow::Error> {
+) -> Result<(), Error> {
     match nested_value {
         Value::Object(nested_dict) => {
             if validation_required {
-                let validate_time_partition_result = validate_time_partition(
-                    &Value::Object(nested_dict.clone()),
+                validate_time_partition(&nested_dict, time_partition, time_partition_limit)?;
+                validate_custom_partition(&nested_dict, custom_partition)?;
+            }
+            let mut map = Map::new();
+            flatten_object(&mut map, None, nested_dict, separator)?;
+            *nested_dict = map;
+        }
+        Value::Array(arr) => {
+            for nested_value in arr {
+                flatten(
+                    nested_value,
+                    separator,
                     time_partition,
                     time_partition_limit,
-                );
-
-                let validate_custom_partition_result = validate_custom_partition(
-                    &Value::Object(nested_dict.clone()),
                     custom_partition,
-                );
-                if validate_time_partition_result.is_ok() {
-                    if validate_custom_partition_result.is_ok() {
-                        let mut map = Map::new();
-                        flatten_object(&mut map, None, nested_dict, separator)?;
-                        Ok(Value::Object(map))
-                    } else {
-                        Err(anyhow!(validate_custom_partition_result.unwrap_err()))
-                    }
-                } else {
-                    Err(anyhow!(validate_time_partition_result.unwrap_err()))
-                }
-            } else {
-                let mut map = Map::new();
-                flatten_object(&mut map, None, nested_dict, separator)?;
-                Ok(Value::Object(map))
+                    validation_required,
+                )?;
             }
         }
-        Value::Array(mut arr) => {
-            for _value in &mut arr {
-                let value: Value = _value.clone();
-                if validation_required {
-                    let validate_time_partition_result =
-                        validate_time_partition(&value, time_partition, time_partition_limit);
-                    let validate_custom_partition_result =
-                        validate_custom_partition(&value, custom_partition);
-                    if validate_time_partition_result.is_ok() {
-                        if validate_custom_partition_result.is_ok() {
-                            let value = std::mem::replace(_value, Value::Null);
-                            let mut map = Map::new();
-                            let Value::Object(obj) = value else {
-                                return Err(anyhow!("Expected object in array of objects"));
-                            };
-                            flatten_object(&mut map, None, obj, separator)?;
-                            *_value = Value::Object(map);
-                        } else {
-                            return Err(anyhow!(validate_custom_partition_result.unwrap_err()));
-                        }
-                    } else {
-                        return Err(anyhow!(validate_time_partition_result.unwrap_err()));
-                    }
-                } else {
-                    let value = std::mem::replace(_value, Value::Null);
-                    let mut map = Map::new();
-                    let Value::Object(obj) = value else {
-                        return Err(anyhow!("Expected object in array of objects"));
-                    };
-                    flatten_object(&mut map, None, obj, separator)?;
-                    *_value = Value::Object(map);
-                }
-            }
-            Ok(Value::Array(arr))
-        }
-        _ => Err(anyhow!("Cannot flatten this JSON")),
+        _ => return Err(anyhow!("Cannot flatten this JSON")),
     }
+
+    Ok(())
 }
 
 pub fn validate_custom_partition(
-    value: &Value,
+    value: &Map<String, Value>,
     custom_partition: Option<&String>,
-) -> Result<bool, anyhow::Error> {
-    if custom_partition.is_none() {
-        return Ok(true);
-    } else {
-        let custom_partition = custom_partition.unwrap();
-        let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-        for custom_partition_field in &custom_partition_list {
-            if value.get(custom_partition_field.trim()).is_none() {
-                return Err(anyhow!(format!(
-                    "ingestion failed as field {} is not part of the log",
-                    custom_partition_field
-                )));
-            } else {
-                let custom_partition_value = value
-                    .get(custom_partition_field.trim())
-                    .unwrap()
-                    .to_string();
-                if custom_partition_value.is_empty()
-                    || custom_partition_value.eq_ignore_ascii_case("null")
-                {
-                    return Err(anyhow!(format!(
-                        "ingestion failed as field {} is empty",
-                        custom_partition_field
-                    )));
-                }
-                if custom_partition_value.contains('.') {
-                    return Err(anyhow!(format!(
-                        "ingestion failed as field {} contains a period",
-                        custom_partition_field
-                    )));
-                }
+) -> Result<(), Error> {
+    let Some(custom_partition) = custom_partition else {
+        return Ok(());
+    };
+    let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
+
+    for field in custom_partition_list {
+        let trimmed_field = field.trim();
+        let Some(field_value) = value.get(trimmed_field) else {
+            return Err(anyhow!(
+                "Ingestion failed as field {} is not part of the log",
+                trimmed_field
+            ));
+        };
+
+        fn is_null_or_empty(value: &Value) -> bool {
+            match value {
+                Value::Null => true,
+                Value::Object(o) if o.is_empty() => true,
+                Value::Array(a) if a.is_empty() => true,
+                Value::String(s) if s.is_empty() => true,
+                _ => false,
             }
+        }
+
+        if is_null_or_empty(field_value) {
+            return Err(anyhow!(
+                "Ingestion failed as field {} is empty or 'null'",
+                trimmed_field
+            ));
+        }
+
+        if field_value.is_f64() {
+            return Err(anyhow!(
+                "Ingestion failed as field {} has a floating point value",
+                trimmed_field
+            ));
         }
     }
 
-    Ok(true)
+    Ok(())
 }
 
 pub fn validate_time_partition(
-    value: &Value,
+    value: &Map<String, Value>,
     time_partition: Option<&String>,
     time_partition_limit: Option<&String>,
-) -> Result<bool, anyhow::Error> {
-    if time_partition.is_none() {
-        Ok(true)
-    } else {
-        let time_partition_limit: i64 = if let Some(time_partition_limit) = time_partition_limit {
-            time_partition_limit.parse().unwrap_or(30)
-        } else {
-            30
-        };
-        let body_timestamp = value.get(time_partition.unwrap().to_string());
-        if body_timestamp.is_some() && body_timestamp.unwrap().to_owned().as_str().is_some() {
-            if body_timestamp
-                .unwrap()
-                .to_owned()
-                .as_str()
-                .unwrap()
-                .parse::<DateTime<Utc>>()
-                .is_ok()
-            {
-                let parsed_timestamp = body_timestamp
-                    .unwrap()
-                    .to_owned()
-                    .as_str()
-                    .unwrap()
-                    .parse::<DateTime<Utc>>()
-                    .unwrap()
-                    .naive_utc();
+) -> Result<(), Error> {
+    let Some(partition_key) = time_partition else {
+        return Ok(());
+    };
 
-                if parsed_timestamp >= Utc::now().naive_utc() - Duration::days(time_partition_limit)
-                {
-                    Ok(true)
-                } else {
-                    Err(anyhow!(format!(
-                        "field {} value is more than {} days old",
-                        time_partition.unwrap(),
-                        time_partition_limit
-                    )))
-                }
-            } else {
-                Err(anyhow!(format!(
-                    "field {} is not in the correct datetime format",
-                    time_partition.unwrap()
-                )))
-            }
-        } else {
-            Err(anyhow!(format!(
-                "ingestion failed as field {} is not part of the log",
-                time_partition.unwrap()
-            )))
-        }
+    let limit_days = time_partition_limit
+        .and_then(|limit| limit.parse::<i64>().ok())
+        .unwrap_or(30);
+
+    let Some(timestamp_value) = value.get(partition_key) else {
+        return Err(anyhow!(
+            "ingestion failed as field {} is not part of the log",
+            partition_key
+        ));
+    };
+
+    let Value::String(timestamp_str) = timestamp_value else {
+        return Err(anyhow!(
+            "ingestion failed as field {} is not a string",
+            partition_key
+        ));
+    };
+    let Ok(parsed_timestamp) = timestamp_str.parse::<DateTime<Utc>>() else {
+        return Err(anyhow!(
+            "field {} is not in the correct datetime format",
+            partition_key
+        ));
+    };
+    let cutoff_date = Utc::now().naive_utc() - Duration::days(limit_days);
+    if parsed_timestamp.naive_utc() >= cutoff_date {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "field {} value is more than {} days old",
+            partition_key,
+            limit_days
+        ))
     }
 }
 
 pub fn flatten_with_parent_prefix(
-    nested_value: Value,
+    nested_value: &mut Value,
     prefix: &str,
     separator: &str,
-) -> Result<Value, anyhow::Error> {
-    let mut map = Map::new();
-    if let Value::Object(nested_dict) = nested_value {
-        flatten_object(&mut map, Some(prefix), nested_dict, separator)?;
-    } else {
+) -> Result<(), Error> {
+    let Value::Object(nested_obj) = nested_value else {
         return Err(anyhow!("Must be an object"));
-    }
-    Ok(Value::Object(map))
+    };
+
+    let mut map = Map::new();
+    flatten_object(&mut map, Some(prefix), nested_obj, separator)?;
+    *nested_obj = map;
+
+    Ok(())
 }
 
 pub fn flatten_object(
-    map: &mut Map<String, Value>,
+    output_map: &mut Map<String, Value>,
     parent_key: Option<&str>,
-    nested_dict: Map<String, Value>,
+    nested_map: &mut Map<String, Value>,
     separator: &str,
-) -> Result<(), anyhow::Error> {
-    for (key, value) in nested_dict.into_iter() {
-        let new_key = parent_key.map_or_else(
-            || key.clone(),
-            |parent_key| format!("{parent_key}{separator}{key}"),
-        );
-        match value {
-            Value::Object(obj) => flatten_object(map, Some(&new_key), obj, separator)?,
-            Value::Array(arr) => {
-                // if value is object then decompose this list into lists
-                if arr.iter().any(|value| value.is_object()) {
-                    flatten_array_objects(map, &new_key, arr, separator)?;
-                } else {
-                    map.insert(new_key, Value::Array(arr));
-                }
+) -> Result<(), Error> {
+    for (key, mut value) in nested_map {
+        let new_key = match parent_key {
+            Some(parent) => format!("{parent}{separator}{key}"),
+            None => key.to_string(),
+        };
+
+        match &mut value {
+            Value::Object(obj) => {
+                flatten_object(output_map, Some(&new_key), obj, separator)?;
             }
-            x => {
-                map.insert(new_key, x);
+            Value::Array(arr) if arr.iter().any(Value::is_object) => {
+                flatten_array_objects(output_map, &new_key, arr, separator)?;
+            }
+            _ => {
+                output_map.insert(new_key, std::mem::take(&mut value));
             }
         }
     }
@@ -241,61 +193,49 @@ pub fn flatten_object(
 }
 
 pub fn flatten_array_objects(
-    map: &mut Map<String, Value>,
+    output_map: &mut Map<String, Value>,
     parent_key: &str,
-    arr: Vec<Value>,
+    arr: &mut Vec<Value>,
     separator: &str,
-) -> Result<(), anyhow::Error> {
-    let mut columns: Vec<(String, Vec<Value>)> = Vec::new();
-    let mut len = 0;
-    for value in arr {
-        if let Value::Object(object) = value {
-            let mut flattened_object = Map::new();
-            flatten_object(&mut flattened_object, None, object, separator)?;
-            let mut col_index = 0;
-            for (key, value) in flattened_object.into_iter().sorted_by(|a, b| a.0.cmp(&b.0)) {
-                loop {
-                    if let Some((column_name, column)) = columns.get_mut(col_index) {
-                        match (*column_name).cmp(&key) {
-                            std::cmp::Ordering::Less => {
-                                column.push(Value::Null);
-                                col_index += 1;
-                                continue;
-                            }
-                            std::cmp::Ordering::Equal => column.push(value),
-                            std::cmp::Ordering::Greater => {
-                                let mut list = vec![Value::Null; len];
-                                list.push(value);
-                                columns.insert(col_index, (key, list));
-                            }
-                        }
-                    } else {
-                        let mut list = vec![Value::Null; len];
-                        list.push(value);
-                        columns.push((key, list));
-                    }
-                    col_index += 1;
-                    break;
+) -> Result<(), Error> {
+    let mut columns: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+
+    for (index, value) in arr.iter_mut().enumerate() {
+        match value {
+            Value::Object(nested_object) => {
+                let mut output_map = Map::new();
+                flatten_object(&mut output_map, Some(parent_key), nested_object, separator)?;
+                for (key, value) in output_map {
+                    let column = columns
+                        .entry(key)
+                        .or_insert_with(|| vec![Value::Null; index]);
+                    column.push(value);
                 }
             }
-            for (_, column) in &mut columns[col_index..] {
-                column.push(Value::Null)
+            Value::Null => {
+                for column in columns.values_mut() {
+                    column.push(Value::Null);
+                }
             }
-        } else if value.is_null() {
-            for (_, column) in &mut columns {
-                column.push(Value::Null)
+            _ => {
+                return Err(anyhow!(
+                    "Found non-object element while flattening array of objects"
+                ))
             }
-        } else {
-            return Err(anyhow!(
-                "Found non object element while flattening array of object(s)",
-            ));
         }
-        len += 1;
+
+        // Ensure all columns are extended with null values if they weren't updated in this iteration
+        let max_len = index + 1;
+        for column in columns.values_mut() {
+            while column.len() < max_len {
+                column.push(Value::Null);
+            }
+        }
     }
 
-    for (key, arr) in columns {
-        let new_key = format!("{parent_key}{separator}{key}");
-        map.insert(new_key, Value::Array(arr));
+    // Update the main map with new keys and their corresponding arrays
+    for (key, values) in columns {
+        output_map.insert(key, Value::Array(values));
     }
 
     Ok(())
@@ -303,65 +243,61 @@ pub fn flatten_array_objects(
 
 pub fn flatten_json(value: &Value) -> Vec<Value> {
     match value {
-        Value::Array(arr) => {
-            let mut results = Vec::new();
-            for item in arr {
-                results.extend(flatten_json(item));
-            }
-            results
-        }
-        Value::Object(map) => {
-            let mut results = vec![map.clone()];
-            for (key, val) in map {
-                if matches!(val, Value::Array(_)) {
-                    if let Value::Array(arr) = val {
-                        let mut new_results = Vec::new();
-                        for item in arr {
-                            let flattened_items = flatten_json(item);
-                            for flattened_item in flattened_items {
-                                for result in &results {
-                                    let mut new_obj = result.clone();
-                                    new_obj.insert(key.clone(), flattened_item.clone());
-                                    new_results.push(new_obj);
-                                }
-                            }
-                        }
-                        results = new_results;
-                    }
-                } else if matches!(val, Value::Object(_)) {
-                    let nested_results = flatten_json(val);
-                    let mut new_results = Vec::new();
-                    for nested_result in nested_results {
-                        for result in &results {
+        Value::Array(arr) => arr.iter().flat_map(|item| flatten_json(item)).collect(),
+        Value::Object(map) => map
+            .iter()
+            .fold(vec![Map::new()], |results, (key, val)| match val {
+                Value::Array(arr) => arr
+                    .iter()
+                    .flat_map(|item| flatten_json(item))
+                    .flat_map(|flattened_item| {
+                        results.iter().map(move |result| {
+                            let mut new_obj = result.clone();
+                            new_obj.insert(key.clone(), flattened_item.clone());
+                            new_obj
+                        })
+                    })
+                    .collect(),
+                Value::Object(_) => flatten_json(val)
+                    .iter()
+                    .flat_map(|nested_result| {
+                        results.iter().map(move |result| {
                             let mut new_obj = result.clone();
                             new_obj.insert(key.clone(), nested_result.clone());
-                            new_results.push(new_obj);
-                        }
-                    }
-                    results = new_results;
-                }
-            }
-            results.into_iter().map(Value::Object).collect()
-        }
+                            new_obj
+                        })
+                    })
+                    .collect(),
+                _ => results
+                    .into_iter()
+                    .map(|mut result| {
+                        result.insert(key.clone(), val.clone());
+                        result
+                    })
+                    .collect(),
+            })
+            .into_iter()
+            .map(Value::Object)
+            .collect(),
         _ => vec![value.clone()],
     }
 }
 
-pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, anyhow::Error> {
+pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, Error> {
     let mut result = Vec::new();
     for item in flattened {
         let mut map = Map::new();
-        if let Some(item) = item.as_object() {
-            for (key, value) in item {
-                map.insert(key.clone(), value.clone());
-            }
-            result.push(Value::Object(map));
-        } else {
+        let Some(item) = item.as_object() else {
             return Err(anyhow!("Expected object in array of objects"));
+        };
+        for (key, value) in item {
+            map.insert(key.clone(), value.clone());
         }
+        result.push(Value::Object(map));
     }
     Ok(Value::Array(result))
 }
+
 #[cfg(test)]
 mod tests {
     use crate::utils::json::flatten::flatten_array_objects;
@@ -371,112 +307,102 @@ mod tests {
 
     #[test]
     fn flatten_single_key_string() {
-        let obj = json!({"key": "value"});
-        assert_eq!(
-            obj.clone(),
-            flatten(obj, "_", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": "value"});
+        let expected = obj.clone();
+        flatten(&mut obj, "_", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn flatten_single_key_int() {
-        let obj = json!({"key": 1});
-        assert_eq!(
-            obj.clone(),
-            flatten(obj, "_", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": 1});
+        let expected = obj.clone();
+        flatten(&mut obj, "_", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn flatten_multiple_key_value() {
-        let obj = json!({"key1": 1, "key2": "value2"});
-        assert_eq!(
-            obj.clone(),
-            flatten(obj, "_", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key1": 1, "key2": "value2"});
+        let expected = obj.clone();
+        flatten(&mut obj, "_", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn flatten_nested_single_key_value() {
-        let obj = json!({"key": "value", "nested_key": {"key":"value"}});
-        assert_eq!(
-            json!({"key": "value", "nested_key.key": "value"}),
-            flatten(obj, ".", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": "value", "nested_key": {"key":"value"}});
+        let expected = json!({"key": "value", "nested_key.key": "value"});
+        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn nested_multiple_key_value() {
-        let obj = json!({"key": "value", "nested_key": {"key1":"value1", "key2": "value2"}});
-        assert_eq!(
-            json!({"key": "value", "nested_key.key1": "value1", "nested_key.key2": "value2"}),
-            flatten(obj, ".", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": "value", "nested_key": {"key1":"value1", "key2": "value2"}});
+        let expected =
+            json!({"key": "value", "nested_key.key1": "value1", "nested_key.key2": "value2"});
+        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn nested_key_value_with_array() {
-        let obj = json!({"key": "value", "nested_key": {"key1":[1,2,3]}});
-        assert_eq!(
-            json!({"key": "value", "nested_key.key1": [1,2,3]}),
-            flatten(obj, ".", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": "value", "nested_key": {"key1":[1,2,3]}});
+        let expected = json!({"key": "value", "nested_key.key1": [1,2,3]});
+        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn nested_obj_array() {
-        let obj = json!({"key": [{"a": "value0"}, {"a": "value1"}]});
-        assert_eq!(
-            json!({"key.a": ["value0", "value1"]}),
-            flatten(obj, ".", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": [{"a": "value0"}, {"a": "value1"}]});
+        let expected = json!({"key.a": ["value0", "value1"]});
+        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn nested_obj_array_nulls() {
-        let obj = json!({"key": [{"a": "value0"}, {"a": "value1", "b": "value1"}]});
-        assert_eq!(
-            json!({"key.a": ["value0", "value1"], "key.b": [null, "value1"]}),
-            flatten(obj, ".", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": [{"a": "value0"}, {"a": "value1", "b": "value1"}]});
+        let expected = json!({"key.a": ["value0", "value1"], "key.b": [null, "value1"]});
+        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn nested_obj_array_nulls_reversed() {
-        let obj = json!({"key": [{"a": "value0", "b": "value0"}, {"a": "value1"}]});
-        assert_eq!(
-            json!({"key.a": ["value0", "value1"], "key.b": ["value0", null]}),
-            flatten(obj, ".", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": [{"a": "value0", "b": "value0"}, {"a": "value1"}]});
+        let expected = json!({"key.a": ["value0", "value1"], "key.b": ["value0", null]});
+        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn nested_obj_array_nested_obj() {
-        let obj = json!({"key": [{"a": {"p": 0}, "b": "value0"}, {"b": "value1"}]});
-        assert_eq!(
-            json!({"key.a.p": [0, null], "key.b": ["value0", "value1"]}),
-            flatten(obj, ".", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": [{"a": {"p": 0}, "b": "value0"}, {"b": "value1"}]});
+        let expected = json!({"key.a.p": [0, null], "key.b": ["value0", "value1"]});
+        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn nested_obj_array_nested_obj_array() {
-        let obj = json!({"key": [{"a": [{"p": "value0", "q": "value0"}, {"p": "value1", "q": null}], "b": "value0"}, {"b": "value1"}]});
-        assert_eq!(
-            json!({"key.a.p": [["value0", "value1"], null], "key.a.q": [["value0", null], null], "key.b": ["value0", "value1"]}),
-            flatten(obj, ".", None, None, None, false).unwrap()
-        );
+        let mut obj = json!({"key": [{"a": [{"p": "value0", "q": "value0"}, {"p": "value1", "q": null}], "b": "value0"}, {"b": "value1"}]});
+        let expected = json!({"key.a.p": [["value0", "value1"], null], "key.a.q": [["value0", null], null], "key.b": ["value0", "value1"]});
+        flatten(&mut obj, ".", None, None, None, false).unwrap();
+        assert_eq!(obj, expected);
     }
 
     #[test]
     fn flatten_mixed_object() {
-        let obj = json!({"a": 42, "arr": ["1", {"key": "2"}, {"key": {"nested": "3"}}]});
-        assert!(flatten(obj, ".", None, None, None, false).is_err());
+        let mut obj = json!({"a": 42, "arr": ["1", {"key": "2"}, {"key": {"nested": "3"}}]});
+        assert!(flatten(&mut obj, ".", None, None, None, false).is_err());
     }
 
     #[test]
     fn flatten_array_nulls_at_start() {
-        let Value::Array(arr) = json!([
+        let Value::Array(mut arr) = json!([
             null,
             {"p": 2, "q": 2},
             {"q": 3},
@@ -485,7 +411,7 @@ mod tests {
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", arr, ".").unwrap();
+        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
 
         assert_eq!(map.len(), 2);
         assert_eq!(map.get("key.p").unwrap(), &json!([null, 2, null]));
@@ -494,12 +420,12 @@ mod tests {
 
     #[test]
     fn flatten_array_objects_nulls_at_end() {
-        let Value::Array(arr) = json!([{"a": 1, "b": 1}, {"a": 2}, null]) else {
+        let Value::Array(mut arr) = json!([{"a": 1, "b": 1}, {"a": 2}, null]) else {
             unreachable!()
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", arr, ".").unwrap();
+        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
 
         assert_eq!(map.len(), 2);
         assert_eq!(map.get("key.a").unwrap(), &json!([1, 2, null]));
@@ -508,12 +434,12 @@ mod tests {
 
     #[test]
     fn flatten_array_objects_nulls_in_middle() {
-        let Value::Array(arr) = json!([{"a": 1, "b": 1}, null, {"a": 3, "c": 3}]) else {
+        let Value::Array(mut arr) = json!([{"a": 1, "b": 1}, null, {"a": 3, "c": 3}]) else {
             unreachable!()
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", arr, ".").unwrap();
+        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
 
         assert_eq!(map.len(), 3);
         assert_eq!(map.get("key.a").unwrap(), &json!([1, null, 3]));
@@ -523,7 +449,7 @@ mod tests {
 
     #[test]
     fn flatten_array_test() {
-        let Value::Array(arr) = json!([
+        let Value::Array(mut arr) = json!([
             {"p": 1, "q": 1},
             {"r": 2, "q": 2},
             {"p": 3, "r": 3}
@@ -532,7 +458,7 @@ mod tests {
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", arr, ".").unwrap();
+        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
 
         assert_eq!(map.len(), 3);
         assert_eq!(map.get("key.p").unwrap(), &json!([1, null, 3]));
@@ -542,7 +468,7 @@ mod tests {
 
     #[test]
     fn flatten_array_nested_test() {
-        let Value::Array(arr) = json!([
+        let Value::Array(mut arr) = json!([
             {"p": 1, "q": [{"x": 1}, {"x": 2}]},
             {"r": 2, "q": [{"x": 1}]},
             {"p": 3, "r": 3}
@@ -551,7 +477,7 @@ mod tests {
         };
 
         let mut map = Map::new();
-        flatten_array_objects(&mut map, "key", arr, ".").unwrap();
+        flatten_array_objects(&mut map, "key", &mut arr, ".").unwrap();
 
         assert_eq!(map.len(), 3);
         assert_eq!(map.get("key.p").unwrap(), &json!([1, null, 3]));

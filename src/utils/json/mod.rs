@@ -28,16 +28,18 @@ pub fn flatten_json_body(
     custom_partition: Option<&String>,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
-    let nested_value = flatten::convert_to_array(flatten::flatten_json(body))?;
+    let mut nested_value = flatten::convert_to_array(flatten::flatten_json(body))?;
 
     flatten::flatten(
-        nested_value,
+        &mut nested_value,
         "_",
         time_partition,
         time_partition_limit,
         custom_partition,
         validation_required,
-    )
+    )?;
+
+    Ok(nested_value)
 }
 
 pub fn convert_array_to_object(
