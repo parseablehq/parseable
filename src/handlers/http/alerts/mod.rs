@@ -19,7 +19,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::Json;
 use actix_web::{FromRequest, HttpRequest};
-use alerts_utils::user_auth_for_query;
+use alerts_utils::{evaluate_alert, user_auth_for_query};
 use async_trait::async_trait;
 use http::StatusCode;
 use once_cell::sync::Lazy;
@@ -227,6 +227,65 @@ impl Display for AlertState {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct AlertRequest {
+    pub version: AlertVerison,
+    pub title: String,
+    pub query: String,
+    pub alert_type: AlertType,
+    pub thresholds: Vec<ThresholdConfig>,
+    pub eval_type: EvalConfig,
+    pub targets: Vec<Target>,
+}
+
+impl FromRequest for AlertRequest {
+    type Error = actix_web::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
+
+    fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
+        let body = Json::<AlertRequest>::from_request(req, payload);
+        let fut = async move {
+            let body = body.await?.into_inner();
+            Ok(body)
+        };
+
+        Box::pin(fut)
+    }
+}
+
+impl AlertRequest {
+    pub fn modify(self, alert: AlertConfig) -> AlertConfig {
+        AlertConfig {
+            version: self.version,
+            id: alert.id,
+            title: self.title,
+            query: self.query,
+            alert_type: self.alert_type,
+            thresholds: self.thresholds,
+            eval_type: self.eval_type,
+            targets: self.targets,
+            state: alert.state,
+        }
+    }
+}
+
+impl From<AlertRequest> for AlertConfig {
+    fn from(val: AlertRequest) -> AlertConfig {
+        AlertConfig {
+            version: val.version,
+            id: crate::utils::uid::gen(),
+            title: val.title,
+            query: val.query,
+            alert_type: val.alert_type,
+            thresholds: val.thresholds,
+            eval_type: val.eval_type,
+            targets: val.targets,
+            state: AlertState::default(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct AlertConfig {
     pub version: AlertVerison,
     #[serde(default = "crate::utils::uid::gen")]
@@ -240,21 +299,6 @@ pub struct AlertConfig {
     // for new alerts, state should be resolved
     #[serde(default = "AlertState::default")]
     pub state: AlertState,
-}
-
-impl FromRequest for AlertConfig {
-    type Error = actix_web::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
-
-    fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
-        let body = Json::<AlertConfig>::from_request(req, payload);
-        let fut = async move {
-            let body = body.await?.into_inner();
-            Ok(body)
-        };
-
-        Box::pin(fut)
-    }
 }
 
 impl AlertConfig {
@@ -338,6 +382,7 @@ impl actix_web::ResponseError for AlertError {
 impl Alerts {
     /// Loads alerts from disk
     /// spawn scheduled tasks
+    /// Evaluate
     pub async fn load(&self) -> Result<(), AlertError> {
         let mut this = vec![];
         let store = CONFIG.storage().get_object_store();
@@ -359,7 +404,13 @@ impl Alerts {
         }
 
         let mut s = self.alerts.write().await;
-        s.append(&mut this);
+        s.append(&mut this.clone());
+        drop(s);
+
+        // run eval task once for each alert
+        for alert in this.iter() {
+            evaluate_alert(alert).await?;
+        }
 
         Ok(())
     }
@@ -382,24 +433,9 @@ impl Alerts {
     }
 
     /// Returns a sigle alert that the user has access to (based on query auth)
-    pub async fn get_alert_by_id(
-        &self,
-        session: SessionKey,
-        id: &str,
-    ) -> Result<AlertConfig, AlertError> {
-        let mut alert = None;
-        for a in self.alerts.read().await.iter() {
-            if a.id.to_string() == id {
-                let query = &a.query;
-                match user_auth_for_query(&session, query).await {
-                    Ok(_) => {
-                        alert = Some(a.clone());
-                        break;
-                    }
-                    Err(err) => return Err(err),
-                }
-            }
-        }
+    pub async fn get_alert_by_id(&self, id: &str) -> Result<AlertConfig, AlertError> {
+        let read_access = self.alerts.read().await;
+        let alert = read_access.iter().find(|a| a.id.to_string() == id);
 
         if let Some(alert) = alert {
             Ok(alert.clone())
@@ -425,21 +461,32 @@ impl Alerts {
         trigger_notif: bool,
     ) -> Result<(), AlertError> {
         let store = CONFIG.storage().get_object_store();
-        let alert_path = alert_json_path(alert_id);
+        // let alert_path = alert_json_path(alert_id);
 
-        // read and modify alert
-        let mut alert: AlertConfig = serde_json::from_slice(&store.get_object(&alert_path).await?)?;
+        // // read and modify alert
+        // let mut alert: AlertConfig = serde_json::from_slice(&store.get_object(&alert_path).await?)?;
+        // alert.state = new_state;
+        let mut alert = self.get_alert_by_id(alert_id).await?;
+
         alert.state = new_state;
-
         // save to disk
         store.put_alert(alert_id, &alert).await?;
 
         // modify in memory
-        self.alerts.write().await.iter_mut().for_each(|alert| {
-            if alert.id.to_string() == alert_id {
-                alert.state = new_state;
-            }
-        });
+        let mut writer = self.alerts.write().await;
+        let alert_to_update = writer
+            .iter_mut()
+            .find(|alert| alert.id.to_string() == alert_id);
+        if let Some(alert) = alert_to_update {
+            alert.state = new_state;
+        };
+        drop(writer);
+
+        // self.alerts.write().await.iter_mut().for_each(|alert| {
+        //     if alert.id.to_string() == alert_id {
+        //         alert.state = new_state;
+        //     }
+        // });
 
         if trigger_notif {
             alert.trigger_notifications().await?;

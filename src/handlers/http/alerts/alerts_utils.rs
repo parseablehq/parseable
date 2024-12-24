@@ -18,6 +18,12 @@
 
 use datafusion::{
     common::tree_node::TreeNode,
+    functions_aggregate::{
+        count::count,
+        expr_fn::avg,
+        min_max::{max, min},
+        sum::sum,
+    },
     prelude::{col, lit, Expr},
 };
 use tracing::trace;
@@ -77,8 +83,8 @@ pub async fn user_auth_for_query(session_key: &SessionKey, query: &str) -> Resul
 }
 
 /// This function contains the logic to run the alert evaluation task
-pub async fn evaluate_alert(alert: AlertConfig) -> Result<(), AlertError> {
-    println!("RUNNING EVAL TASK FOR- {alert:?}");
+pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
+    trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
     let (start_time, end_time) = match &alert.eval_type {
         super::EvalConfig::RollingWindow(rolling_window) => {
@@ -87,13 +93,11 @@ pub async fn evaluate_alert(alert: AlertConfig) -> Result<(), AlertError> {
     };
 
     let session_state = QUERY_SESSION.state();
-    let raw_logical_plan = session_state
-        .create_logical_plan(&alert.query)
-        .await
-        .unwrap();
+    let raw_logical_plan = session_state.create_logical_plan(&alert.query).await?;
 
     // TODO: Filter tags should be taken care of!!!
-    let time_range = TimeRange::parse_human_time(start_time, end_time).unwrap();
+    let time_range = TimeRange::parse_human_time(start_time, end_time)
+        .map_err(|err| AlertError::CustomError(err.to_string()))?;
     let query = crate::query::Query {
         raw_logical_plan,
         time_range,
@@ -102,11 +106,27 @@ pub async fn evaluate_alert(alert: AlertConfig) -> Result<(), AlertError> {
 
     // for now proceed in a similar fashion as we do in query
     // TODO: in case of multiple table query does the selection of time partition make a difference? (especially when the tables don't have overlapping data)
-    let stream_name = query.first_table_name().unwrap();
+    let stream_name = if let Some(stream_name) = query.first_table_name() {
+        stream_name
+    } else {
+        return Err(AlertError::CustomError(format!(
+            "Table name not found in query- {}",
+            alert.query
+        )));
+    };
 
-    let df = query.get_dataframe(stream_name).await.unwrap();
+    let df = query
+        .get_dataframe(stream_name)
+        .await
+        .map_err(|err| AlertError::CustomError(err.to_string()))?;
 
     // let df = DataFrame::new(session_state, raw_logical_plan);
+
+    // for now group by is empty, we can include this later
+    let group_expr = vec![];
+
+    // agg expression
+    let mut aggr_expr = vec![];
 
     let mut expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
     for threshold in &alert.thresholds {
@@ -137,10 +157,29 @@ pub async fn evaluate_alert(alert: AlertConfig) -> Result<(), AlertError> {
             }
         };
 
+        aggr_expr.push(match threshold.agg {
+            crate::handlers::http::alerts::Aggregate::Avg => {
+                avg(col(&threshold.column)).alias(&threshold.column)
+            }
+            crate::handlers::http::alerts::Aggregate::Count => {
+                count(col(&threshold.column)).alias(&threshold.column)
+            }
+            crate::handlers::http::alerts::Aggregate::Min => {
+                min(col(&threshold.column)).alias(&threshold.column)
+            }
+            crate::handlers::http::alerts::Aggregate::Max => {
+                max(col(&threshold.column)).alias(&threshold.column)
+            }
+            crate::handlers::http::alerts::Aggregate::Sum => {
+                sum(col(&threshold.column)).alias(&threshold.column)
+            }
+        });
         expr = expr.and(res);
     }
 
-    let nrows = df.clone().filter(expr).unwrap().count().await.unwrap();
+    let df = df.aggregate(group_expr, aggr_expr)?;
+
+    let nrows = df.clone().filter(expr)?.count().await?;
     trace!("dataframe-\n{:?}", df.collect().await);
 
     if nrows > 0 {

@@ -28,7 +28,7 @@ use chrono::Utc;
 use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use humantime_serde::re::humantime;
 use reqwest::ClientBuilder;
-use tracing::{error, trace};
+use tracing::{error, trace, warn};
 
 use crate::handlers::http::alerts::ALERTS;
 
@@ -60,6 +60,7 @@ pub struct Target {
 
 impl Target {
     pub fn call(&self, context: Context) {
+        trace!("context- {context:?}");
         let timeout = &self.timeout;
         let resolves = context.alert_info.alert_state;
         let mut state = timeout.state.lock().unwrap();
@@ -124,7 +125,14 @@ impl Target {
         tokio::spawn(async move {
             match retry {
                 Retry::Infinite => loop {
-                    let current_state = ALERTS.get_state(&alert_id).await.unwrap();
+                    let current_state = if let Ok(state) = ALERTS.get_state(&alert_id).await {
+                        state
+                    } else {
+                        state.lock().unwrap().timed_out = true;
+                        warn!("Unable to fetch state for given alert_id- {alert_id}, stopping target notifs");
+                        return;
+                    };
+
                     let should_call =
                         sleep_and_check_if_call(Arc::clone(&state), current_state).await;
                     if should_call {
@@ -133,22 +141,30 @@ impl Target {
                 },
                 Retry::Finite(times) => {
                     for _ in 0..times {
-                        let current_state = ALERTS.get_state(&alert_id).await.unwrap();
+                        let current_state = if let Ok(state) = ALERTS.get_state(&alert_id).await {
+                            state
+                        } else {
+                            state.lock().unwrap().timed_out = true;
+                            warn!("Unable to fetch state for given alert_id- {alert_id}, stopping target notifs");
+                            return;
+                        };
+                        println!("current_state= {state:?}");
+
                         let should_call =
                             sleep_and_check_if_call(Arc::clone(&state), current_state).await;
                         if should_call {
                             call_target(target.clone(), alert_context.clone())
                         }
                     }
-                    // fallback for if this task only observed FIRING on all RETRIES
-                    // Stream might be dead and sending too many alerts is not great
-                    // Send and alert stating that this alert will only work once it has seen a RESOLVE
-                    state.lock().unwrap().timed_out = false;
-                    let context = alert_context;
-                    // context.alert_info.message = format!(
-                    //     "Triggering alert did not resolve itself after {times} retries, This alert is paused until it resolves");
-                    // Send and exit this task.
-                    call_target(target, context);
+                    // // fallback for if this task only observed FIRING on all RETRIES
+                    // // Stream might be dead and sending too many alerts is not great
+                    // // Send and alert stating that this alert will only work once it has seen a RESOLVE
+                    // state.lock().unwrap().timed_out = false;
+                    // let context = alert_context;
+                    // // context.alert_info.message = format!(
+                    // //     "Triggering alert did not resolve itself after {times} retries, This alert is paused until it resolves");
+                    // // Send and exit this task.
+                    // call_target(target, context);
                 }
             }
         });
@@ -156,6 +172,7 @@ impl Target {
 }
 
 fn call_target(target: TargetType, context: Context) {
+    trace!("Calling target with context- {context:?}");
     tokio::spawn(async move { target.call(&context).await });
 }
 

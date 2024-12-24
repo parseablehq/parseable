@@ -68,6 +68,7 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_metrics_webscope())
+                    .service(Server::get_alerts_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
             .service(Server::get_generated());
@@ -297,21 +298,6 @@ impl QueryServer {
                                 .authorize_for_stream(Action::GetStreamInfo),
                         ),
                     )
-                    // .service(
-                    //     web::resource("/alert")
-                    //         // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
-                    //         .route(
-                    //             web::put()
-                    //                 .to(logstream::put_alert)
-                    //                 .authorize_for_stream(Action::PutAlert),
-                    //         )
-                    //         // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
-                    //         .route(
-                    //             web::get()
-                    //                 .to(logstream::get_alert)
-                    //                 .authorize_for_stream(Action::GetAlert),
-                    //         ),
-                    // )
                     .service(
                         // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
                         web::resource("/schema").route(

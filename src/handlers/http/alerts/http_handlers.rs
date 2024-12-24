@@ -18,15 +18,17 @@
 
 use crate::{
     option::CONFIG,
-    storage::object_storage::alert_json_path,
+    storage::{object_storage::alert_json_path, ALERTS_ROOT_DIRECTORY, PARSEABLE_ROOT_DIRECTORY},
     sync::schedule_alert_task,
-    utils::{actix::extract_session_key_from_req, uid::Uid},
+    utils::actix::extract_session_key_from_req,
 };
 use actix_web::{web, HttpRequest, Responder};
 use bytes::Bytes;
-use tracing::warn;
+use relative_path::RelativePathBuf;
 
-use super::{alerts_utils::user_auth_for_query, AlertConfig, AlertError, AlertState, ALERTS};
+use super::{
+    alerts_utils::user_auth_for_query, AlertConfig, AlertError, AlertRequest, AlertState, ALERTS,
+};
 
 // GET /alerts
 /// User needs at least a read access to the stream(s) that is being referenced in an alert
@@ -39,10 +41,11 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
 }
 
 // POST /alerts
-pub async fn post(req: HttpRequest, alert: AlertConfig) -> Result<impl Responder, AlertError> {
+pub async fn post(req: HttpRequest, alert: AlertRequest) -> Result<impl Responder, AlertError> {
+    let alert: AlertConfig = alert.into();
     // validate the incoming alert query
     // does the user have access to these tables or not?
-    let session_key = extract_session_key_from_req(&req).unwrap();
+    let session_key = extract_session_key_from_req(&req)?;
     user_auth_for_query(&session_key, &alert.query).await?;
 
     // now that we've validated that the user can run this query
@@ -71,17 +74,26 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, AlertError> {
         .get("alert_id")
         .ok_or(AlertError::Metadata("No alert ID Provided"))?;
 
-    let alert = ALERTS.get_alert_by_id(session_key, id).await?;
+    let alert = ALERTS.get_alert_by_id(id).await?;
+    // validate that the user has access to the tables mentioned
+    user_auth_for_query(&session_key, &alert.query).await?;
+
     Ok(web::Json(alert))
 }
 
 // DELETE /alerts/{alert_id}
 /// Deletion should happen from disk, sheduled tasks, then memory
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, AlertError> {
+    let session_key = extract_session_key_from_req(&req)?;
     let alert_id = req
         .match_info()
         .get("alert_id")
         .ok_or(AlertError::Metadata("No alert ID Provided"))?;
+
+    let alert = ALERTS.get_alert_by_id(alert_id).await?;
+
+    // validate that the user has access to the tables mentioned
+    user_auth_for_query(&session_key, &alert.query).await?;
 
     // delete from disk and memory
     ALERTS.delete(alert_id).await?;
@@ -95,30 +107,33 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, AlertError> {
 // PUT /alerts/{alert_id}
 /// first save on disk, then in memory
 /// then modify scheduled task
-pub async fn modify(
-    req: HttpRequest,
-    mut alert: AlertConfig,
-) -> Result<impl Responder, AlertError> {
+pub async fn modify(req: HttpRequest, alert: AlertRequest) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = req
         .match_info()
         .get("alert_id")
         .ok_or(AlertError::Metadata("No alert ID Provided"))?;
 
-    // ensure that the user doesn't unknowingly change the ID
-    if alert_id != alert.id.to_string() {
-        warn!("Alert modify request is trying to change Alert ID, reverting ID");
-        alert.id = Uid::from_string(alert_id)
-            .map_err(|_| AlertError::CustomError("Unable to get Uid from String".to_owned()))?;
-    }
+    // check if alert id exists in map
+    ALERTS.get_alert_by_id(alert_id).await?;
 
     // validate that the user has access to the tables mentioned
     user_auth_for_query(&session_key, &alert.query).await?;
 
-    // // fetch the alert from this ID to get AlertState
-    // let state = ALERTS.get_alert_by_id(session_key, alert_id).await?.state;
-
     let store = CONFIG.storage().get_object_store();
+
+    // fetch the alert object for the relevant ID
+    let old_alert_config: AlertConfig = serde_json::from_slice(
+        &store
+            .get_object(&RelativePathBuf::from_iter([
+                PARSEABLE_ROOT_DIRECTORY,
+                ALERTS_ROOT_DIRECTORY,
+                &format!("{alert_id}.json"),
+            ]))
+            .await?,
+    )?;
+
+    let alert = alert.modify(old_alert_config);
 
     // modify on disk
     store.put_alert(&alert.id.to_string(), &alert).await?;
@@ -136,10 +151,17 @@ pub async fn modify(
 
 // PUT /alerts/{alert_id}/update_state
 pub async fn update_state(req: HttpRequest, state: String) -> Result<impl Responder, AlertError> {
+    let session_key = extract_session_key_from_req(&req)?;
     let alert_id = req
         .match_info()
         .get("alert_id")
         .ok_or(AlertError::Metadata("No alert ID Provided"))?;
+
+    // check if alert id exists in map
+    let alert = ALERTS.get_alert_by_id(alert_id).await?;
+
+    // validate that the user has access to the tables mentioned
+    user_auth_for_query(&session_key, &alert.query).await?;
 
     // get current state
     let current_state = ALERTS.get_state(alert_id).await?;
