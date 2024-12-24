@@ -86,7 +86,7 @@ where
     let kafka_streams = KafkaStreams::init(kafka_context, stream_state, shutdown_handle.clone())?;
 
     let stats = kafka_streams.statistics();
-    registry.register(Box::new(KafkaConsumerMetricsCollector::new(stats)))?;
+    registry.register(Box::new(KafkaMetricsCollector::new(stats)?))?;
 
     let kafka_parseable_sink_connector = KafkaSinkConnector::new(
         kafka_streams,
