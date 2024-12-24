@@ -16,6 +16,7 @@
  *
  */
 
+use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
@@ -50,6 +51,7 @@ impl ParseableServer for QueryServer {
         config
             .service(
                 web::scope(&base_path())
+                    .service(Server::get_correlation_webscope())
                     .service(Server::get_query_factory())
                     .service(Server::get_trino_factory())
                     .service(Server::get_cache_webscope())
@@ -94,6 +96,9 @@ impl ParseableServer for QueryServer {
         //create internal stream at server start
         create_internal_stream_if_not_exists().await?;
 
+        if let Err(e) = CORRELATIONS.load().await {
+            error!("{e}");
+        }
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
         // track all parquet files already in the data directory

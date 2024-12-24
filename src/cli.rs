@@ -529,7 +529,9 @@ impl FromArgMatches for Cli {
         self.kafka_host = m.get_one::<String>(Self::KAFKA_HOST).cloned();
         self.kafka_group = m.get_one::<String>(Self::KAFKA_GROUP).cloned();
         self.kafka_client_id = m.get_one::<String>(Self::KAFKA_CLIENT_ID).cloned();
-        self.kafka_security_protocol = m.get_one::<SslProtocol>(Self::KAFKA_SECURITY_PROTOCOL).cloned();
+        self.kafka_security_protocol = m
+            .get_one::<SslProtocol>(Self::KAFKA_SECURITY_PROTOCOL)
+            .cloned();
         self.kafka_partitions = m.get_one::<String>(Self::KAFKA_PARTITIONS).cloned();
 
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();

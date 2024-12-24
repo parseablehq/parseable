@@ -21,10 +21,11 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    ALERT_FILE_NAME, CORRELATION_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
+    PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
+use crate::correlation::{CorrelationConfig, CorrelationError};
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
@@ -631,6 +632,32 @@ pub trait ObjectStorage: Send + Sync + 'static {
 
     // pick a better name
     fn get_bucket_name(&self) -> String;
+
+    async fn put_correlation(
+        &self,
+        correlation: &CorrelationConfig,
+    ) -> Result<(), ObjectStorageError> {
+        let path = RelativePathBuf::from_iter([
+            PARSEABLE_ROOT_DIRECTORY,
+            CORRELATION_DIRECTORY,
+            &format!("{}", correlation.id),
+        ]);
+        self.put_object(&path, to_bytes(correlation)).await?;
+        Ok(())
+    }
+
+    async fn get_correlations(&self) -> Result<Vec<Bytes>, CorrelationError> {
+        let correlation_path =
+            RelativePathBuf::from_iter([PARSEABLE_ROOT_DIRECTORY, CORRELATION_DIRECTORY]);
+        let correlation_bytes = self
+            .get_objects(
+                Some(&correlation_path),
+                Box::new(|file_name| file_name.ends_with(".json")),
+            )
+            .await?;
+
+        Ok(correlation_bytes)
+    }
 }
 
 pub async fn commit_schema_to_storage(
