@@ -39,7 +39,7 @@ use crate::{
     utils::time::TimeRange,
 };
 
-use super::{AlertConfig, AlertError};
+use super::{AlertConfig, AlertError, ThresholdConfig};
 
 async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, AlertError> {
     let session_state = QUERY_SESSION.state();
@@ -120,16 +120,37 @@ pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
         .await
         .map_err(|err| AlertError::CustomError(err.to_string()))?;
 
-    // let df = DataFrame::new(session_state, raw_logical_plan);
+    let (group_expr, aggr_expr, filter_expr) = get_exprs(&alert.thresholds);
+    let df = df.aggregate(group_expr, aggr_expr)?;
 
+    let nrows = df.clone().filter(filter_expr)?.count().await?;
+    trace!("dataframe-\n{:?}", df.collect().await);
+
+    if nrows > 0 {
+        trace!("ALERT!!!!!!");
+
+        // update state
+        ALERTS
+            .update_state(&alert.id.to_string(), AlertState::Triggered, true)
+            .await?;
+    } else {
+        ALERTS
+            .update_state(&alert.id.to_string(), AlertState::Resolved, false)
+            .await?;
+    }
+
+    Ok(())
+}
+
+fn get_exprs(thresholds: &Vec<ThresholdConfig>) -> (Vec<Expr>, Vec<Expr>, Expr) {
     // for now group by is empty, we can include this later
-    let group_expr = vec![];
+    let group_expr: Vec<Expr> = vec![];
 
     // agg expression
-    let mut aggr_expr = vec![];
+    let mut aggr_expr: Vec<Expr> = vec![];
 
     let mut expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
-    for threshold in &alert.thresholds {
+    for threshold in thresholds {
         let res = match threshold.operator {
             crate::handlers::http::alerts::AlertOperator::GreaterThan => {
                 col(&threshold.column).gt(lit(threshold.value))
@@ -177,23 +198,5 @@ pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
         expr = expr.and(res);
     }
 
-    let df = df.aggregate(group_expr, aggr_expr)?;
-
-    let nrows = df.clone().filter(expr)?.count().await?;
-    trace!("dataframe-\n{:?}", df.collect().await);
-
-    if nrows > 0 {
-        trace!("ALERT!!!!!!");
-
-        // update state
-        ALERTS
-            .update_state(&alert.id.to_string(), AlertState::Triggered, true)
-            .await?;
-    } else {
-        ALERTS
-            .update_state(&alert.id.to_string(), AlertState::Resolved, false)
-            .await?;
-    }
-
-    Ok(())
+    (group_expr, aggr_expr, expr)
 }
