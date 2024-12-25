@@ -17,6 +17,7 @@
  */
 
 use crate::cli::Cli;
+use crate::completions;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::{
     AzureBlobConfig, FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config,
@@ -24,26 +25,34 @@ use crate::storage::{
 use bytes::Bytes;
 use clap::error::ErrorKind;
 use clap::{command, Args, Command, FromArgMatches};
+use clap_complete::Shell;
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
+
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1073741824; // 1 GiB
 
 pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
-pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
+pub static CONFIG: Lazy<Arc<ParseableCommand>> = Lazy::new(|| Arc::new(ParseableCommand::new()));
+// pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
 
 #[derive(Debug)]
-pub struct Config {
-    pub parseable: Cli,
-    storage: Arc<dyn ObjectStorageProvider>,
-    pub storage_name: &'static str,
+pub enum ParseableCommand {
+    LocalStore(Config),
+    S3Store(Config),
+    BlobStore(Config),
+    Completion {
+        shell: Shell,
+        output: Option<PathBuf>,
+    },
 }
 
-impl Config {
+impl ParseableCommand {
     fn new() -> Self {
         let cli = create_parseable_cli_command()
             .name("Parseable")
@@ -94,11 +103,13 @@ parseable [command] --help
                         .exit()
                 }
 
-                Config {
+                let config = Config {
                     parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "drive",
-                }
+                };
+
+                ParseableCommand::LocalStore(config)
             }
             Some(("s3-store", m)) => {
                 let cli = match Cli::from_arg_matches(m) {
@@ -110,11 +121,12 @@ parseable [command] --help
                     Err(err) => err.exit(),
                 };
 
-                Config {
+                let config = Config {
                     parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "s3",
-                }
+                };
+                ParseableCommand::S3Store(config)
             }
             Some(("blob-store", m)) => {
                 let cli = match Cli::from_arg_matches(m) {
@@ -126,16 +138,136 @@ parseable [command] --help
                     Err(err) => err.exit(),
                 };
 
-                Config {
+                let config = Config {
                     parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "blob_store",
-                }
+                };
+
+                ParseableCommand::BlobStore(config)
+            }
+
+            Some(("completion", m)) => {
+                let output: Option<PathBuf> =
+                    m.get_one::<String>("output").map(|s| PathBuf::from(s));
+
+                let shell = m
+                    .get_one::<String>("shell")
+                    .map(|s| Shell::from_str(s).unwrap()) // 1. Shell from string in cli args
+                    .or_else(Shell::from_env) // 2. If not provided, use SHELL environment variable
+                    .unwrap_or(Shell::Bash); // 3. Else default to Bash
+
+                ParseableCommand::Completion { output, shell }
+                // let mut cmd = create_parseable_cli_command();
+                // let bin_name: String = cmd.get_name().to_owned();
+
+                // if let Err(e) =
+                //     completions::generate_completion_script(&mut cmd, &bin_name, shell, output)
+                // {
+                //     eprintln!("Error generating completion script: {}", e);
+                //     std::process::exit(1);
+                // }
+                // std::process::exit(0); // Exit successfully after generating completion
             }
             _ => unreachable!(),
         }
     }
 
+    pub fn parseable(&self) -> Option<&Cli> {
+        match self {
+            ParseableCommand::LocalStore(config)
+            | ParseableCommand::S3Store(config)
+            | ParseableCommand::BlobStore(config) => Some(&config.parseable),
+            ParseableCommand::Completion { .. } => None,
+        }
+    }
+
+    pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {
+        match self {
+            ParseableCommand::LocalStore(config)
+            | ParseableCommand::S3Store(config)
+            | ParseableCommand::BlobStore(config) => config.validate_storage().await,
+            ParseableCommand::Completion { .. } => {
+                unreachable!("validate_storage not available for completion")
+            }
+        }
+    }
+
+    pub fn storage(&self) -> Arc<dyn ObjectStorageProvider> {
+        match self {
+            ParseableCommand::LocalStore(config)
+            | ParseableCommand::S3Store(config)
+            | ParseableCommand::BlobStore(config) => config.storage(),
+            ParseableCommand::Completion { .. } => {
+                unreachable!("storage not available for completion")
+            }
+        }
+    }
+
+    pub fn staging_dir(&self) -> &PathBuf {
+        match self {
+            ParseableCommand::LocalStore(config)
+            | ParseableCommand::S3Store(config)
+            | ParseableCommand::BlobStore(config) => config.staging_dir(),
+            ParseableCommand::Completion { .. } => {
+                unreachable!("staging_dir not available for completion")
+            }
+        }
+    }
+
+    pub fn hot_tier_dir(&self) -> &Option<PathBuf> {
+        match self {
+            ParseableCommand::LocalStore(config)
+            | ParseableCommand::S3Store(config)
+            | ParseableCommand::BlobStore(config) => config.hot_tier_dir(),
+            ParseableCommand::Completion { .. } => {
+                unreachable!("hot_tier_dir not available for completion")
+            }
+        }
+    }
+
+    pub fn is_default_creds(&self) -> bool {
+        match self {
+            ParseableCommand::LocalStore(config)
+            | ParseableCommand::S3Store(config)
+            | ParseableCommand::BlobStore(config) => config.is_default_creds(),
+            ParseableCommand::Completion { .. } => {
+                unreachable!("is_default_creds not available for completion")
+            }
+        }
+    }
+
+    pub fn get_storage_mode_string(&self) -> &str {
+        match self {
+            ParseableCommand::LocalStore(config)
+            | ParseableCommand::S3Store(config)
+            | ParseableCommand::BlobStore(config) => config.get_storage_mode_string(),
+            ParseableCommand::Completion { .. } => {
+                unreachable!("get_storage_mode_string not available for completion")
+            }
+        }
+    }
+
+    pub fn get_server_mode_string(&self) -> &str {
+        match self {
+            ParseableCommand::LocalStore(config)
+            | ParseableCommand::S3Store(config)
+            | ParseableCommand::BlobStore(config) => config.get_server_mode_string(),
+            ParseableCommand::Completion { .. } => {
+                unreachable!("get_server_mode_string not available for completion")
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Config {
+    pub parseable: Cli,
+    storage: Arc<dyn ObjectStorageProvider>,
+    pub storage_name: &'static str,
+}
+
+impl Config {
     // validate the storage, if the proper path for staging directory is provided
     // if the proper data directory is provided, or s3 bucket is provided etc
     pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {
@@ -228,6 +360,22 @@ fn create_parseable_cli_command() -> Command {
     let azureblob = Cli::create_cli_command_with_clap("blob-store");
     let azureblob = <AzureBlobConfig as Args>::augment_args_for_update(azureblob);
 
+    let completion_subcommand = Command::new("completion")
+        .about("Generate sh completion script")
+        .arg(
+            clap::Arg::new("output")
+                .short('o')
+                .long("output")
+                .value_name("FILE")
+                .help("Sets the output file for the completion script"),
+        )
+        .arg(
+            clap::Arg::new("shell")
+                .long("shell")
+                .value_name("SHELL")
+                .help("Specify the shell for completion generation"),
+        );
+
     command!()
         .name("Parseable")
         .bin_name("parseable")
@@ -242,7 +390,7 @@ Join the community at https://logg.ing/community.
         "#,
         )
         .subcommand_required(true)
-        .subcommands([local, s3, azureblob])
+        .subcommands([local, s3, azureblob, completion_subcommand])
 }
 
 #[derive(Debug, Default, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]

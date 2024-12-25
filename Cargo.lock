@@ -1098,6 +1098,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5a2d6eec27fce550d708b2be5d798797e5a55b246b323ef36924a0001996352"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3136,6 +3145,7 @@ dependencies = [
  "chrono",
  "chrono-humanize",
  "clap",
+ "clap_complete",
  "clokwerk",
  "cookie 0.18.1",
  "crossterm",

@@ -152,7 +152,10 @@ pub trait ObjectStorage: Send + Sync + 'static {
         stream_type: &str,
     ) -> Result<String, ObjectStorageError> {
         let mut format = ObjectStoreFormat::default();
-        format.set_id(CONFIG.parseable.username.clone());
+        if let Some(username) = CONFIG.parseable().map(|p| p.username) {
+            format.set_id(username.clone());
+        }
+        // format.set_id(CONFIG.parseable.username.clone());
         let permission = Permisssion::new(CONFIG.parseable.username.clone());
         format.permissions = vec![permission];
         format.created_at = Local::now().to_rfc3339();
