@@ -18,10 +18,33 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{anyhow, Error};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::map::Map;
 use serde_json::value::Value;
+
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum JsonFlattenError {
+    #[error("Cannot flatten this JSON")]
+    CannotFlatten,
+    #[error("Ingestion failed as field {0} is not part of the log")]
+    FieldNotPartOfLog(String),
+    #[error("Ingestion failed as field {0} is empty or 'null'")]
+    FieldEmptyOrNull(String),
+    #[error("Ingestion failed as field {0} has a floating point value")]
+    FieldIsFloatingPoint(String),
+    #[error("Ingestion failed as field {0} is not a string")]
+    FieldNotString(String),
+    #[error("Field {0} is not in the correct datetime format")]
+    InvalidDatetimeFormat(String),
+    #[error("Field {0} value is more than {1} days old")]
+    TimestampTooOld(String, i64),
+    #[error("Expected object in array of objects")]
+    ExpectedObjectInArray,
+    #[error("Found non-object element while flattening array of objects")]
+    NonObjectInArray,
+}
 
 pub fn flatten(
     nested_value: &mut Value,
@@ -30,12 +53,12 @@ pub fn flatten(
     time_partition_limit: Option<&String>,
     custom_partition: Option<&String>,
     validation_required: bool,
-) -> Result<(), Error> {
+) -> Result<(), JsonFlattenError> {
     match nested_value {
         Value::Object(nested_dict) => {
             if validation_required {
-                validate_time_partition(&nested_dict, time_partition, time_partition_limit)?;
-                validate_custom_partition(&nested_dict, custom_partition)?;
+                validate_time_partition(nested_dict, time_partition, time_partition_limit)?;
+                validate_custom_partition(nested_dict, custom_partition)?;
             }
             let mut map = Map::new();
             flatten_object(&mut map, None, nested_dict, separator)?;
@@ -53,7 +76,7 @@ pub fn flatten(
                 )?;
             }
         }
-        _ => return Err(anyhow!("Cannot flatten this JSON")),
+        _ => return Err(JsonFlattenError::CannotFlatten),
     }
 
     Ok(())
@@ -62,7 +85,7 @@ pub fn flatten(
 pub fn validate_custom_partition(
     value: &Map<String, Value>,
     custom_partition: Option<&String>,
-) -> Result<(), Error> {
+) -> Result<(), JsonFlattenError> {
     let Some(custom_partition) = custom_partition else {
         return Ok(());
     };
@@ -71,9 +94,8 @@ pub fn validate_custom_partition(
     for field in custom_partition_list {
         let trimmed_field = field.trim();
         let Some(field_value) = value.get(trimmed_field) else {
-            return Err(anyhow!(
-                "Ingestion failed as field {} is not part of the log",
-                trimmed_field
+            return Err(JsonFlattenError::FieldNotPartOfLog(
+                trimmed_field.to_owned(),
             ));
         };
 
@@ -88,16 +110,12 @@ pub fn validate_custom_partition(
         }
 
         if is_null_or_empty(field_value) {
-            return Err(anyhow!(
-                "Ingestion failed as field {} is empty or 'null'",
-                trimmed_field
-            ));
+            return Err(JsonFlattenError::FieldEmptyOrNull(trimmed_field.to_owned()));
         }
 
         if field_value.is_f64() {
-            return Err(anyhow!(
-                "Ingestion failed as field {} has a floating point value",
-                trimmed_field
+            return Err(JsonFlattenError::FieldIsFloatingPoint(
+                trimmed_field.to_owned(),
             ));
         }
     }
@@ -109,7 +127,7 @@ pub fn validate_time_partition(
     value: &Map<String, Value>,
     time_partition: Option<&String>,
     time_partition_limit: Option<&String>,
-) -> Result<(), Error> {
+) -> Result<(), JsonFlattenError> {
     let Some(partition_key) = time_partition else {
         return Ok(());
     };
@@ -119,32 +137,26 @@ pub fn validate_time_partition(
         .unwrap_or(30);
 
     let Some(timestamp_value) = value.get(partition_key) else {
-        return Err(anyhow!(
-            "ingestion failed as field {} is not part of the log",
-            partition_key
+        return Err(JsonFlattenError::FieldNotPartOfLog(
+            partition_key.to_owned(),
         ));
     };
 
     let Value::String(timestamp_str) = timestamp_value else {
-        return Err(anyhow!(
-            "ingestion failed as field {} is not a string",
-            partition_key
-        ));
+        return Err(JsonFlattenError::FieldNotString(partition_key.to_owned()));
     };
     let Ok(parsed_timestamp) = timestamp_str.parse::<DateTime<Utc>>() else {
-        return Err(anyhow!(
-            "field {} is not in the correct datetime format",
-            partition_key
+        return Err(JsonFlattenError::InvalidDatetimeFormat(
+            partition_key.to_owned(),
         ));
     };
     let cutoff_date = Utc::now().naive_utc() - Duration::days(limit_days);
     if parsed_timestamp.naive_utc() >= cutoff_date {
         Ok(())
     } else {
-        Err(anyhow!(
-            "field {} value is more than {} days old",
-            partition_key,
-            limit_days
+        Err(JsonFlattenError::TimestampTooOld(
+            partition_key.to_owned(),
+            limit_days,
         ))
     }
 }
@@ -153,9 +165,9 @@ pub fn flatten_with_parent_prefix(
     nested_value: &mut Value,
     prefix: &str,
     separator: &str,
-) -> Result<(), Error> {
+) -> Result<(), JsonFlattenError> {
     let Value::Object(nested_obj) = nested_value else {
-        return Err(anyhow!("Must be an object"));
+        return Err(JsonFlattenError::NonObjectInArray);
     };
 
     let mut map = Map::new();
@@ -170,7 +182,7 @@ pub fn flatten_object(
     parent_key: Option<&str>,
     nested_map: &mut Map<String, Value>,
     separator: &str,
-) -> Result<(), Error> {
+) -> Result<(), JsonFlattenError> {
     for (key, mut value) in nested_map {
         let new_key = match parent_key {
             Some(parent) => format!("{parent}{separator}{key}"),
@@ -185,7 +197,7 @@ pub fn flatten_object(
                 flatten_array_objects(output_map, &new_key, arr, separator)?;
             }
             _ => {
-                output_map.insert(new_key, std::mem::take(&mut value));
+                output_map.insert(new_key, std::mem::take(value));
             }
         }
     }
@@ -195,9 +207,9 @@ pub fn flatten_object(
 pub fn flatten_array_objects(
     output_map: &mut Map<String, Value>,
     parent_key: &str,
-    arr: &mut Vec<Value>,
+    arr: &mut [Value],
     separator: &str,
-) -> Result<(), Error> {
+) -> Result<(), JsonFlattenError> {
     let mut columns: BTreeMap<String, Vec<Value>> = BTreeMap::new();
 
     for (index, value) in arr.iter_mut().enumerate() {
@@ -217,11 +229,7 @@ pub fn flatten_array_objects(
                     column.push(Value::Null);
                 }
             }
-            _ => {
-                return Err(anyhow!(
-                    "Found non-object element while flattening array of objects"
-                ))
-            }
+            _ => return Err(JsonFlattenError::NonObjectInArray),
         }
 
         // Ensure all columns are extended with null values if they weren't updated in this iteration
@@ -243,13 +251,13 @@ pub fn flatten_array_objects(
 
 pub fn flatten_json(value: &Value) -> Vec<Value> {
     match value {
-        Value::Array(arr) => arr.iter().flat_map(|item| flatten_json(item)).collect(),
+        Value::Array(arr) => arr.iter().flat_map(flatten_json).collect(),
         Value::Object(map) => map
             .iter()
             .fold(vec![Map::new()], |results, (key, val)| match val {
                 Value::Array(arr) => arr
                     .iter()
-                    .flat_map(|item| flatten_json(item))
+                    .flat_map(flatten_json)
                     .flat_map(|flattened_item| {
                         results.iter().map(move |result| {
                             let mut new_obj = result.clone();
@@ -283,12 +291,12 @@ pub fn flatten_json(value: &Value) -> Vec<Value> {
     }
 }
 
-pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, Error> {
+pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, JsonFlattenError> {
     let mut result = Vec::new();
     for item in flattened {
         let mut map = Map::new();
         let Some(item) = item.as_object() else {
-            return Err(anyhow!("Expected object in array of objects"));
+            return Err(JsonFlattenError::ExpectedObjectInArray);
         };
         for (key, value) in item {
             map.insert(key.clone(), value.clone());
