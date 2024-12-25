@@ -15,7 +15,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+pub mod logs;
+pub mod metrics;
+#[allow(clippy::all)]
 pub mod proto;
+pub mod traces;
 use proto::common::v1::KeyValue;
 use serde_json::Value;
 use std::collections::BTreeMap;

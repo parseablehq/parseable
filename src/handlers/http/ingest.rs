@@ -18,9 +18,11 @@
 
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
+use super::otel::logs::flatten_otel_logs;
+use super::otel::metrics::flatten_otel_metrics;
+use super::otel::traces::flatten_otel_traces;
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
-use super::{otel_logs, otel_metrics, otel_traces};
 use crate::event::{
     self,
     error::EventError,
@@ -120,7 +122,7 @@ pub async fn handle_otel_logs_ingestion(
         create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
         //custom flattening required for otel logs
-        let mut json = otel_logs::flatten_otel_logs(&body);
+        let mut json = flatten_otel_logs(&body);
         for record in json.iter_mut() {
             let body: Bytes = serde_json::to_vec(record).unwrap().into();
             push_logs(&stream_name, &req, &body).await?;
@@ -147,7 +149,7 @@ pub async fn handle_otel_metrics_ingestion(
         create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
         //custom flattening required for otel metrics
-        let mut json = otel_metrics::flatten_otel_metrics(&body);
+        let mut json = flatten_otel_metrics(&body);
         for record in json.iter_mut() {
             let body: Bytes = serde_json::to_vec(record).unwrap().into();
             push_logs(&stream_name, &req, &body).await?;
@@ -174,7 +176,7 @@ pub async fn handle_otel_traces_ingestion(
         create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
         //custom flattening required for otel traces
-        let mut json = otel_traces::flatten_otel_traces(&body);
+        let mut json = flatten_otel_traces(&body);
         for record in json.iter_mut() {
             let body: Bytes = serde_json::to_vec(record).unwrap().into();
             push_logs(&stream_name, &req, &body).await?;

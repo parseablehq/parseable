@@ -25,12 +25,16 @@ use crate::handlers::http::otel::proto::logs::v1::SeverityNumber;
 use bytes::Bytes;
 use serde_json::Value;
 
-use super::otel::collect_json_from_values;
-use super::otel::insert_attributes;
-use super::otel::insert_if_some;
-use super::otel::insert_number_if_some;
-use super::otel::proto::logs::v1::ScopeLogs;
+use super::collect_json_from_values;
+use super::insert_attributes;
+use super::insert_if_some;
+use super::insert_number_if_some;
+use super::proto::logs::v1::ScopeLogs;
 
+/// otel log event has severity number
+/// there is a mapping of severity number to severity text provided in proto
+/// this function fetches the severity text from the severity number
+/// and adds it to the flattened json
 fn flatten_severity(severity_number: &Option<i32>) -> BTreeMap<String, Value> {
     let mut severity_json: BTreeMap<String, Value> = BTreeMap::new();
     insert_number_if_some(
@@ -48,6 +52,10 @@ fn flatten_severity(severity_number: &Option<i32>) -> BTreeMap<String, Value> {
     severity_json
 }
 
+/// otel log event has flags
+/// there is a mapping of flags to flags text provided in proto
+/// this function fetches the flags text from the flags
+/// and adds it to the flattened json
 fn flatten_flags(flags: &Option<u32>) -> BTreeMap<String, Value> {
     let mut flags_json: BTreeMap<String, Value> = BTreeMap::new();
     insert_number_if_some(&mut flags_json, "flags_number", &flags.map(|f| f as f64));
@@ -60,7 +68,10 @@ fn flatten_flags(flags: &Option<u32>) -> BTreeMap<String, Value> {
     }
     flags_json
 }
-//flatten log record and all its attributes to create one record for each log record
+
+/// this function flattens the `LogRecord` object
+/// and returns a `BTreeMap` of the flattened json
+/// this function is called recursively for each log record object in the otel logs
 pub fn flatten_log_record(log_record: &LogRecord) -> BTreeMap<String, Value> {
     let mut log_record_json: BTreeMap<String, Value> = BTreeMap::new();
     insert_if_some(
@@ -97,7 +108,8 @@ pub fn flatten_log_record(log_record: &LogRecord) -> BTreeMap<String, Value> {
     log_record_json
 }
 
-//flatten otel logs
+/// this function flattens the `ScopeLogs` object
+/// and returns a `Vec` of `BTreeMap` of the flattened json
 fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<BTreeMap<String, Value>> {
     let mut vec_scope_log_json = Vec::new();
     let mut scope_log_json = BTreeMap::new();
@@ -130,6 +142,8 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<BTreeMap<String, Value>> {
     vec_scope_log_json
 }
 
+/// this function performs the custom flattening of the otel logs
+/// and returns a `Vec` of `BTreeMap` of the flattened json
 pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let body_str = std::str::from_utf8(body).unwrap();
     let message: LogsData = serde_json::from_str(body_str).unwrap();

@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use serde_json::Value;
 
-use super::otel::{
+use super::{
     insert_attributes, insert_bool_if_some, insert_if_some, insert_number_if_some,
     proto::metrics::v1::{
         exponential_histogram_data_point::Buckets, Exemplar, ExponentialHistogram, Gauge,
@@ -29,6 +29,10 @@ use super::otel::{
     },
 };
 
+/// otel metrics event has json array for exemplar
+/// this function flatten the exemplar json array
+/// and returns a `BTreeMap` of the exemplar json
+/// this function is reused in all json objects that have exemplar
 fn flatten_exemplar(exemplars: &[Exemplar]) -> BTreeMap<String, Value> {
     let mut exemplar_json = BTreeMap::new();
     for exemplar in exemplars {
@@ -50,6 +54,10 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> BTreeMap<String, Value> {
     exemplar_json
 }
 
+/// otel metrics event has json array for number data points
+/// this function flatten the number data points json array
+/// and returns a `Vec` of `BTreeMap` of the flattened json
+/// this function is reused in all json objects that have number data points
 fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<BTreeMap<String, Value>> {
     data_points
         .iter()
@@ -87,6 +95,10 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<BTreeMap<S
         .collect()
 }
 
+/// otel metrics event has json object for gauge
+/// each gauge object has json array for data points
+/// this function flatten the gauge json object
+/// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_gauge(gauge: &Gauge) -> Vec<BTreeMap<String, Value>> {
     let mut vec_gauge_json = Vec::new();
     if let Some(data_points) = &gauge.data_points {
@@ -102,6 +114,10 @@ fn flatten_gauge(gauge: &Gauge) -> Vec<BTreeMap<String, Value>> {
     vec_gauge_json
 }
 
+/// otel metrics event has json object for sum
+/// each sum object has json array for data points
+/// this function flatten the sum json object
+/// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_sum(sum: &Sum) -> Vec<BTreeMap<String, Value>> {
     let mut vec_sum_json = Vec::new();
     if let Some(data_points) = &sum.data_points {
@@ -127,6 +143,10 @@ fn flatten_sum(sum: &Sum) -> Vec<BTreeMap<String, Value>> {
     vec_sum_json
 }
 
+/// otel metrics event has json object for histogram
+/// each histogram object has json array for data points
+/// this function flatten the histogram json object
+/// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json = Vec::new();
     if let Some(histogram_data_points) = &histogram.data_points {
@@ -190,6 +210,9 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
     data_points_json
 }
 
+/// otel metrics event has json object for buckets
+/// this function flatten the buckets json object
+/// and returns a `BTreeMap` of the flattened json
 fn flatten_buckets(bucket: &Buckets) -> BTreeMap<String, Value> {
     let mut bucket_json = BTreeMap::new();
     insert_number_if_some(&mut bucket_json, "offset", &bucket.offset.map(|v| v as f64));
@@ -204,6 +227,10 @@ fn flatten_buckets(bucket: &Buckets) -> BTreeMap<String, Value> {
     bucket_json
 }
 
+/// otel metrics event has json object for exponential histogram
+/// each exponential histogram object has json array for data points
+/// this function flatten the exponential histogram json object
+/// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json = Vec::new();
     if let Some(exp_histogram_data_points) = &exp_histogram.data_points {
@@ -275,6 +302,10 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<S
     data_points_json
 }
 
+/// otel metrics event has json object for summary
+/// each summary object has json array for data points
+/// this function flatten the summary json object
+/// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json = Vec::new();
     if let Some(summary_data_points) = &summary.data_points {
@@ -321,6 +352,11 @@ fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
     data_points_json
 }
 
+/// this function flattens the `Metric` object
+/// each metric object has json object for gauge, sum, histogram, exponential histogram, summary
+/// this function flatten the metric json object
+/// and returns a `Vec` of `BTreeMap` of the flattened json
+/// this function is called recursively for each metric record object in the otel metrics event
 pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json = Vec::new();
     let mut metric_json = BTreeMap::new();
@@ -355,6 +391,8 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<BTreeMap<String, V
     data_points_json
 }
 
+/// this function performs the custom flattening of the otel metrics
+/// and returns a `Vec` of `BTreeMap` of the flattened json
 pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let body_str = std::str::from_utf8(body).unwrap();
     let message: MetricsData = serde_json::from_str(body_str).unwrap();
@@ -418,6 +456,10 @@ pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     vec_otel_json
 }
 
+/// otel metrics event has json object for aggregation temporality
+/// there is a mapping of aggregation temporality to its description provided in proto
+/// this function fetches the description from the aggregation temporality
+/// and adds it to the flattened json
 fn flatten_aggregation_temporality(
     aggregation_temporality: &Option<i32>,
 ) -> BTreeMap<String, Value> {
