@@ -193,7 +193,7 @@ pub mod span {
     #[derive(Serialize, Deserialize, Debug)]
     pub struct Event {
         /// time_unix_nano is the time the event occurred.
-        pub time_unix_nano: Option<u64>,
+        pub time_unix_nano: Option<String>,
         /// name of the event.
         /// This field is semantically required to be set to non-empty string.
         pub name: Option<String>,

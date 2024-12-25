@@ -25,27 +25,10 @@ pub fn collect_json_from_any_value(
     value: super::otel::proto::common::v1::Value,
 ) -> BTreeMap<String, Value> {
     let mut value_json: BTreeMap<String, Value> = BTreeMap::new();
-    if value.str_val.is_some() {
-        value_json.insert(
-            key.to_string(),
-            Value::String(value.str_val.as_ref().unwrap().to_owned()),
-        );
-    }
-    if value.bool_val.is_some() {
-        value_json.insert(key.to_string(), Value::Bool(value.bool_val.unwrap()));
-    }
-    if value.int_val.is_some() {
-        value_json.insert(
-            key.to_string(),
-            Value::String(value.int_val.as_ref().unwrap().to_owned()),
-        );
-    }
-    if value.double_val.is_some() {
-        value_json.insert(
-            key.to_string(),
-            Value::Number(serde_json::Number::from_f64(value.double_val.unwrap()).unwrap()),
-        );
-    }
+    insert_if_some(&mut value_json, key, &value.str_val);
+    insert_bool_if_some(&mut value_json, key, &value.bool_val);
+    insert_if_some(&mut value_json, key, &value.int_val);
+    insert_number_if_some(&mut value_json, key, &value.double_val);
 
     //ArrayValue is a vector of AnyValue
     //traverse by recursively calling the same function
@@ -91,12 +74,7 @@ pub fn collect_json_from_any_value(
             }
         }
     }
-    if value.bytes_val.is_some() {
-        value_json.insert(
-            key.to_string(),
-            Value::String(value.bytes_val.as_ref().unwrap().to_owned()),
-        );
-    }
+    insert_if_some(&mut value_json, key, &value.bytes_val);
 
     value_json
 }
@@ -134,4 +112,37 @@ pub fn flatten_attributes(attributes: &Vec<KeyValue>) -> BTreeMap<String, Value>
         }
     }
     attributes_json
+}
+
+pub fn insert_if_some<T: ToString>(
+    map: &mut BTreeMap<String, Value>,
+    key: &str,
+    option: &Option<T>,
+) {
+    if let Some(value) = option {
+        map.insert(key.to_string(), Value::String(value.to_string()));
+    }
+}
+
+pub fn insert_number_if_some(map: &mut BTreeMap<String, Value>, key: &str, option: &Option<f64>) {
+    if let Some(value) = option {
+        if let Some(number) = serde_json::Number::from_f64(*value) {
+            map.insert(key.to_string(), Value::Number(number));
+        }
+    }
+}
+
+pub fn insert_bool_if_some(map: &mut BTreeMap<String, Value>, key: &str, option: &Option<bool>) {
+    if let Some(value) = option {
+        map.insert(key.to_string(), Value::Bool(*value));
+    }
+}
+
+pub fn insert_attributes(map: &mut BTreeMap<String, Value>, attributes: &Option<Vec<KeyValue>>) {
+    if let Some(attrs) = attributes {
+        let attributes_json = flatten_attributes(attrs);
+        for (key, value) in attributes_json {
+            map.insert(key, value);
+        }
+    }
 }
