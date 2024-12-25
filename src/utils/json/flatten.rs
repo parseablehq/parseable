@@ -17,6 +17,7 @@
  */
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 
 use chrono::{DateTime, Duration, Utc};
 use serde_json::map::Map;
@@ -50,7 +51,7 @@ pub fn flatten(
     nested_value: &mut Value,
     separator: &str,
     time_partition: Option<&String>,
-    time_partition_limit: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
     validation_required: bool,
 ) -> Result<(), JsonFlattenError> {
@@ -126,14 +127,14 @@ pub fn validate_custom_partition(
 pub fn validate_time_partition(
     value: &Map<String, Value>,
     time_partition: Option<&String>,
-    time_partition_limit: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
 ) -> Result<(), JsonFlattenError> {
     let Some(partition_key) = time_partition else {
         return Ok(());
     };
 
     let limit_days = time_partition_limit
-        .and_then(|limit| limit.parse::<i64>().ok())
+        .map(|days| days.get() as i64)
         .unwrap_or(30);
 
     let Some(timestamp_value) = value.get(partition_key) else {

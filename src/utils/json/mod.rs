@@ -16,6 +16,8 @@
  *
  */
 
+use std::num::NonZeroU32;
+
 use serde_json;
 use serde_json::Value;
 
@@ -24,7 +26,7 @@ pub mod flatten;
 pub fn flatten_json_body(
     body: &Value,
     time_partition: Option<&String>,
-    time_partition_limit: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
@@ -45,7 +47,7 @@ pub fn flatten_json_body(
 pub fn convert_array_to_object(
     body: &Value,
     time_partition: Option<&String>,
-    time_partition_limit: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
 ) -> Result<Vec<Value>, anyhow::Error> {
     let data = flatten_json_body(
