@@ -133,9 +133,7 @@ pub fn validate_time_partition(
         return Ok(());
     };
 
-    let limit_days = time_partition_limit
-        .map(|days| days.get() as i64)
-        .unwrap_or(30);
+    let limit_days = time_partition_limit.map_or(30, |days| days.get() as i64);
 
     let Some(timestamp_value) = value.get(partition_key) else {
         return Err(JsonFlattenError::FieldNotPartOfLog(
