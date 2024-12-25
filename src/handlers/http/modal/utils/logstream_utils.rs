@@ -144,8 +144,7 @@ async fn update_stream(
     }
     if !time_partition_limit.is_empty() {
         let time_partition_days = validate_time_partition_limit(time_partition_limit)?;
-        update_time_partition_limit_in_stream(stream_name.to_string(), Some(time_partition_days))
-            .await?;
+        update_time_partition_limit_in_stream(stream_name.to_string(), time_partition_days).await?;
         return Ok(req.headers().clone());
     }
     validate_and_update_custom_partition(stream_name, custom_partition).await?;
@@ -289,7 +288,7 @@ pub fn validate_static_schema(
 
 pub async fn update_time_partition_limit_in_stream(
     stream_name: String,
-    time_partition_limit: Option<NonZeroU32>,
+    time_partition_limit: NonZeroU32,
 ) -> Result<(), CreateStreamError> {
     let storage = CONFIG.storage().get_object_store();
     if let Err(err) = storage

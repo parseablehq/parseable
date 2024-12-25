@@ -203,13 +203,13 @@ impl StreamInfo {
     pub fn update_time_partition_limit(
         &self,
         stream_name: &str,
-        time_partition_limit: Option<NonZeroU32>,
+        time_partition_limit: NonZeroU32,
     ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
-                metadata.time_partition_limit = time_partition_limit;
+                metadata.time_partition_limit = Some(time_partition_limit);
             })
     }
 

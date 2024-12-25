@@ -187,10 +187,10 @@ pub trait ObjectStorage: Send + Sync + 'static {
     async fn update_time_partition_limit_in_stream(
         &self,
         stream_name: &str,
-        time_partition_limit: Option<NonZeroU32>,
+        time_partition_limit: NonZeroU32,
     ) -> Result<(), ObjectStorageError> {
         let mut format = self.get_object_store_format(stream_name).await?;
-        format.time_partition_limit = time_partition_limit.map(|limit| limit.to_string());
+        format.time_partition_limit = Some(time_partition_limit.to_string());
         let format_json = to_bytes(&format);
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
