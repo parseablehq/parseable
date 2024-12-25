@@ -145,7 +145,6 @@ async fn update_stream(
     if !time_partition_limit.is_empty() {
         let time_partition_days = validate_time_partition_limit(time_partition_limit)?;
         update_time_partition_limit_in_stream(stream_name.to_string(), time_partition_days).await?;
-        return Ok(req.headers().clone());
     }
     validate_and_update_custom_partition(stream_name, custom_partition).await?;
 
