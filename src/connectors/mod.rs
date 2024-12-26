@@ -31,7 +31,6 @@ use crate::option::{Mode, CONFIG};
 use actix_web_prometheus::PrometheusMetrics;
 use prometheus::Registry;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -93,8 +92,7 @@ where
     let stats = kafka_streams.statistics();
     registry.register(Box::new(KafkaMetricsCollector::new(stats)?))?;
 
-    let kafka_parseable_sink_connector =
-        KafkaSinkConnector::new(kafka_streams, processor, 10000, Duration::from_millis(5000));
+    let kafka_parseable_sink_connector = KafkaSinkConnector::new(kafka_streams, processor);
 
     rebalance_listener.start();
     kafka_parseable_sink_connector.run().await?;

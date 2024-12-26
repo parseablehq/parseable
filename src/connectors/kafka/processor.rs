@@ -17,6 +17,7 @@
  */
 
 use crate::connectors::common::processor::Processor;
+use crate::connectors::kafka::config::BufferConfig;
 use crate::connectors::kafka::{ConsumerRecord, StreamConsumer, TopicPartition};
 use crate::event::format;
 use crate::event::format::EventFormat;
@@ -30,7 +31,6 @@ use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, warn};
 
@@ -110,25 +110,25 @@ where
 {
     processor: Arc<P>,
     consumer: Arc<StreamConsumer>,
-    buffer_size: usize,
-    buffer_timeout: Duration,
+    buffer_config: BufferConfig,
 }
 
 impl<P> StreamWorker<P>
 where
     P: Processor<Vec<ConsumerRecord>, ()> + Send + Sync + 'static,
 {
-    pub fn new(
-        processor: Arc<P>,
-        consumer: Arc<StreamConsumer>,
-        buffer_size: usize,
-        buffer_timeout: Duration,
-    ) -> Self {
+    pub fn new(processor: Arc<P>, consumer: Arc<StreamConsumer>) -> Self {
+        let buffer_config = consumer
+            .context()
+            .config()
+            .consumer()
+            .expect("Consumer config is missing")
+            .buffer_config();
+
         Self {
             processor,
             consumer,
-            buffer_size,
-            buffer_timeout,
+            buffer_config,
         }
     }
 
@@ -139,8 +139,8 @@ where
     ) -> anyhow::Result<()> {
         let chunked_stream = tokio_stream::StreamExt::chunks_timeout(
             record_stream,
-            self.buffer_size,
-            self.buffer_timeout,
+            self.buffer_config.buffer_size,
+            self.buffer_config.buffer_timeout,
         );
 
         chunked_stream

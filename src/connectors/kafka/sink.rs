@@ -23,7 +23,6 @@ use crate::connectors::kafka::ConsumerRecord;
 use anyhow::Result;
 use futures_util::StreamExt;
 use std::sync::Arc;
-use tokio::time::Duration;
 use tracing::{error, info};
 
 pub struct KafkaSinkConnector<P>
@@ -38,17 +37,10 @@ impl<P> KafkaSinkConnector<P>
 where
     P: Processor<Vec<ConsumerRecord>, ()> + Send + Sync + 'static,
 {
-    pub fn new(
-        kafka_streams: KafkaStreams,
-        processor: P,
-        buffer_size: usize,
-        buffer_timeout: Duration,
-    ) -> Self {
+    pub fn new(kafka_streams: KafkaStreams, processor: P) -> Self {
         let worker = Arc::new(StreamWorker::new(
             Arc::new(processor),
             kafka_streams.consumer(),
-            buffer_size,
-            buffer_timeout,
         ));
 
         Self {

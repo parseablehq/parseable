@@ -640,6 +640,28 @@ impl ConsumerConfig {
     pub fn topics(&self) -> Vec<&str> {
         self.topics.iter().map(|t| t.as_str()).collect()
     }
+
+    pub fn buffer_config(&self) -> BufferConfig {
+        BufferConfig {
+            buffer_size: self.buffer_size,
+            buffer_timeout: self.buffer_timeout,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BufferConfig {
+    pub buffer_size: usize,
+    pub buffer_timeout: Duration,
+}
+
+impl Default for BufferConfig {
+    fn default() -> Self {
+        Self {
+            buffer_size: 10000,
+            buffer_timeout: Duration::from_millis(10000),
+        }
+    }
 }
 
 impl ProducerConfig {
@@ -874,7 +896,7 @@ impl Default for ConsumerConfig {
             topics: vec![],
             group_id: "parseable-connect-cg".to_string(),
             buffer_size: 10_000,
-            buffer_timeout: Duration::from_millis(5000),
+            buffer_timeout: Duration::from_millis(10000),
             group_instance_id: "parseable-cg-ii".to_string(),
             // NOTE: cooperative-sticky does not work well in rdkafka when using manual commit.
             // @see https://github.com/confluentinc/librdkafka/issues/4629
