@@ -389,7 +389,7 @@ pub async fn update_data_type_time_partition(
 ) -> anyhow::Result<Schema> {
     let mut schema = schema.clone();
     if let Some(time_partition) = time_partition {
-        if let Ok(time_partition_field) = schema.field_with_name(&time_partition) {
+        if let Ok(time_partition_field) = schema.field_with_name(time_partition) {
             if time_partition_field.data_type() != &DataType::Timestamp(TimeUnit::Millisecond, None)
             {
                 let mut fields = schema

@@ -22,6 +22,7 @@ use actix_web::HttpRequest;
 use arrow_schema::Field;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
+use itertools::Itertools;
 use serde_json::Value;
 
 use crate::{
@@ -33,7 +34,7 @@ use crate::{
         http::{ingest::PostError, kinesis},
         LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     },
-    metadata::STREAM_INFO,
+    metadata::{SchemaVersion, STREAM_INFO},
     storage::StreamType,
     utils::{header_parsing::collect_labelled_headers, json::convert_array_to_object},
 };
@@ -69,96 +70,39 @@ pub async fn push_logs(
     let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
     let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
+    let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
     let body_val: Value = serde_json::from_slice(body)?;
-    let size: usize = body.len();
-    let mut parsed_timestamp = Utc::now().naive_utc();
-    if time_partition.is_none() {
-        if custom_partition.is_none() {
-            let size = size as u64;
-            create_process_record_batch(
-                stream_name,
-                req,
-                body_val,
-                static_schema_flag.as_ref(),
-                None,
-                parsed_timestamp,
-                &HashMap::new(),
-                size,
-            )
-            .await?;
-        } else {
-            let data = convert_array_to_object(&body_val, None, None, custom_partition.as_ref())?;
-            let custom_partition = custom_partition.unwrap();
-            let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
+    let data = convert_array_to_object(
+        body_val,
+        time_partition.as_ref(),
+        time_partition_limit,
+        custom_partition.as_ref(),
+        schema_version,
+    )?;
 
-            for value in data {
-                let custom_partition_values =
-                    get_custom_partition_values(&value, &custom_partition_list);
-
-                let size = value.to_string().into_bytes().len() as u64;
-                create_process_record_batch(
-                    stream_name,
-                    req,
-                    value,
-                    static_schema_flag.as_ref(),
-                    None,
-                    parsed_timestamp,
-                    &custom_partition_values,
-                    size,
-                )
-                .await?;
+    for value in data {
+        let size = value.to_string().into_bytes().len();
+        let parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref());
+        let partition_values = match custom_partition.as_ref() {
+            Some(custom_partition) => {
+                let custom_partitions = custom_partition.split(',').collect_vec();
+                get_custom_partition_values(&value, &custom_partitions)
             }
-        }
-    } else if custom_partition.is_none() {
-        let data = convert_array_to_object(
-            &body_val,
-            time_partition.as_ref(),
-            time_partition_limit,
-            None,
-        )?;
-        for value in data {
-            parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref());
-            let size = value.to_string().into_bytes().len() as u64;
-            create_process_record_batch(
-                stream_name,
-                req,
-                value,
-                static_schema_flag.as_ref(),
-                time_partition.as_ref(),
-                parsed_timestamp,
-                &HashMap::new(),
-                size,
-            )
-            .await?;
-        }
-    } else {
-        let data = convert_array_to_object(
-            &body_val,
-            time_partition.as_ref(),
-            time_partition_limit,
-            custom_partition.as_ref(),
-        )?;
-        let custom_partition = custom_partition.unwrap();
-        let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
+            None => HashMap::new(),
+        };
 
-        for value in data {
-            let custom_partition_values =
-                get_custom_partition_values(&value, &custom_partition_list);
-
-            parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref());
-            let size = value.to_string().into_bytes().len() as u64;
-            create_process_record_batch(
-                stream_name,
-                req,
-                value,
-                static_schema_flag.as_ref(),
-                time_partition.as_ref(),
-                parsed_timestamp,
-                &custom_partition_values,
-                size,
-            )
-            .await?;
-        }
+        create_process_record_batch(
+            stream_name,
+            req,
+            value,
+            static_schema_flag.as_ref(),
+            time_partition.as_ref(),
+            schema_version,
+            parsed_timestamp,
+            &partition_values,
+            size as u64,
+        )
+        .await?;
     }
 
     Ok(())
@@ -171,12 +115,19 @@ pub async fn create_process_record_batch(
     value: Value,
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
+    schema_version: SchemaVersion,
     parsed_timestamp: NaiveDateTime,
     custom_partition_values: &HashMap<String, String>,
     origin_size: u64,
 ) -> Result<(), PostError> {
-    let (rb, is_first_event) =
-        get_stream_schema(stream_name, req, &value, static_schema_flag, time_partition)?;
+    let (rb, is_first_event) = get_stream_schema(
+        stream_name,
+        req,
+        &value,
+        static_schema_flag,
+        time_partition,
+        schema_version,
+    )?;
     event::Event {
         rb,
         stream_name: stream_name.to_owned(),
@@ -200,6 +151,7 @@ pub fn get_stream_schema(
     body: &Value,
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
+    schema_version: SchemaVersion,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let hash_map = STREAM_INFO.read().unwrap();
     let schema = hash_map
@@ -207,7 +159,14 @@ pub fn get_stream_schema(
         .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
         .schema
         .clone();
-    into_event_batch(req, body, schema, static_schema_flag, time_partition)
+    into_event_batch(
+        req,
+        body,
+        schema,
+        static_schema_flag,
+        time_partition,
+        schema_version,
+    )
 }
 
 pub fn into_event_batch(
@@ -216,6 +175,7 @@ pub fn into_event_batch(
     schema: HashMap<String, Arc<Field>>,
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
+    schema_version: SchemaVersion,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let tags = collect_labelled_headers(req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(req, PREFIX_META, SEPARATOR)?;
@@ -224,7 +184,8 @@ pub fn into_event_batch(
         tags,
         metadata,
     };
-    let (rb, is_first) = event.into_recordbatch(&schema, static_schema_flag, time_partition)?;
+    let (rb, is_first) =
+        event.into_recordbatch(&schema, static_schema_flag, time_partition, schema_version)?;
     Ok((rb, is_first))
 }
 

@@ -280,15 +280,15 @@ pub fn flatten_array_objects(
 /// 2. `[{"a": 1}, {"b": 2}]` ~> `[{"a": 1}, {"b": 2}]`
 /// 3. `[{"a": [{"b": 1}, {"c": 2}]}]` ~> `[{"a": {"b": 1)}}, {"a": {"c": 2)}}]`
 /// 3. `{"a": [{"b": 1}, {"c": 2}], "d": {"e": 4}}` ~> `[{"a": {"b":1}, "d": {"e":4}}, {"a": {"c":2}, "d": {"e":4}}]`
-pub fn flatten_json(value: &Value) -> Vec<Value> {
+fn flattening_helper(value: &Value) -> Vec<Value> {
     match value {
-        Value::Array(arr) => arr.iter().flat_map(flatten_json).collect(),
+        Value::Array(arr) => arr.iter().flat_map(flattening_helper).collect(),
         Value::Object(map) => map
             .iter()
             .fold(vec![Map::new()], |results, (key, val)| match val {
                 Value::Array(arr) => arr
                     .iter()
-                    .flat_map(flatten_json)
+                    .flat_map(flattening_helper)
                     .flat_map(|flattened_item| {
                         results.iter().map(move |result| {
                             let mut new_obj = result.clone();
@@ -297,7 +297,7 @@ pub fn flatten_json(value: &Value) -> Vec<Value> {
                         })
                     })
                     .collect(),
-                Value::Object(_) => flatten_json(val)
+                Value::Object(_) => flattening_helper(val)
                     .iter()
                     .flat_map(|nested_result| {
                         results.iter().map(move |result| {
@@ -323,9 +323,9 @@ pub fn flatten_json(value: &Value) -> Vec<Value> {
 }
 
 // Converts a Vector of values into a `Value::Array`, as long as all of them are objects
-pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, JsonFlattenError> {
-    let mut result = Vec::new();
-    for item in flattened {
+pub fn generic_flattening(json: Value) -> Result<Value, JsonFlattenError> {
+    let mut flattened = Vec::new();
+    for item in flattening_helper(&json) {
         let mut map = Map::new();
         let Some(item) = item.as_object() else {
             return Err(JsonFlattenError::ExpectedObjectInArray);
@@ -333,9 +333,10 @@ pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, JsonFlattenError
         for (key, value) in item {
             map.insert(key.clone(), value.clone());
         }
-        result.push(Value::Object(map));
+        flattened.push(Value::Object(map));
     }
-    Ok(Value::Array(result))
+
+    Ok(Value::Array(flattened))
 }
 
 #[cfg(test)]

@@ -30,7 +30,10 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
 use super::{EventFormat, Metadata, Tags};
-use crate::utils::{arrow::get_field, json::flatten_json_body};
+use crate::{
+    metadata::SchemaVersion,
+    utils::{arrow::get_field, json::flatten_json_body},
+};
 
 pub struct Event {
     pub data: Value,
@@ -48,8 +51,9 @@ impl EventFormat for Event {
         schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
+        schema_version: SchemaVersion,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
-        let data = flatten_json_body(&self.data, None, None, None, false)?;
+        let data = flatten_json_body(self.data, None, None, None, schema_version, false)?;
         let stream_schema = schema;
 
         // incoming event may be a single json or a json array

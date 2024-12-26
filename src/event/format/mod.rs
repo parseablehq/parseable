@@ -25,7 +25,10 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::DateTime;
 use serde_json::Value;
 
-use crate::utils::{self, arrow::get_field};
+use crate::{
+    metadata::SchemaVersion,
+    utils::{self, arrow::get_field},
+};
 
 use super::{DEFAULT_METADATA_KEY, DEFAULT_TAGS_KEY, DEFAULT_TIMESTAMP_KEY};
 
@@ -45,6 +48,7 @@ pub trait EventFormat: Sized {
         schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
+        schema_version: SchemaVersion,
     ) -> Result<(Self::Data, EventSchema, bool, Tags, Metadata), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
@@ -54,9 +58,14 @@ pub trait EventFormat: Sized {
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
+        schema_version: SchemaVersion,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first, tags, metadata) =
-            self.to_data(storage_schema, static_schema_flag, time_partition)?;
+        let (data, mut schema, is_first, tags, metadata) = self.to_data(
+            storage_schema,
+            static_schema_flag,
+            time_partition,
+            schema_version,
+        )?;
 
         if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
             return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));

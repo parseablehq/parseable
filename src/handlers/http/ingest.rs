@@ -28,7 +28,7 @@ use crate::event::{
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 use crate::handlers::STREAM_NAME_HEADER_KEY;
 use crate::metadata::error::stream_info::MetadataError;
-use crate::metadata::STREAM_INFO;
+use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
@@ -84,7 +84,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             tags: String::default(),
             metadata: String::default(),
         };
-        event.into_recordbatch(&schema, None, None)?
+        event.into_recordbatch(&schema, None, None, SchemaVersion::V0)?
     };
     event::Event {
         rb,
@@ -280,6 +280,7 @@ mod tests {
     use crate::{
         event,
         handlers::{http::modal::utils::ingest_utils::into_event_batch, PREFIX_META, PREFIX_TAGS},
+        metadata::SchemaVersion,
     };
 
     trait TestExt {
@@ -319,7 +320,15 @@ mod tests {
             .append_header((PREFIX_META.to_string() + "C", "meta1"))
             .to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            HashMap::default(),
+            None,
+            None,
+            SchemaVersion::V0,
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 6);
@@ -359,7 +368,15 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            HashMap::default(),
+            None,
+            None,
+            SchemaVersion::V0,
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
@@ -391,7 +408,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, schema, None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
@@ -423,7 +440,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(into_event_batch(&req, &json, schema, None, None).is_err());
+        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).is_err());
     }
 
     #[test]
@@ -441,7 +458,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, schema, None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -453,7 +470,15 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(into_event_batch(&req, &json, HashMap::default(), None, None).is_err())
+        assert!(into_event_batch(
+            &req,
+            &json,
+            HashMap::default(),
+            None,
+            None,
+            SchemaVersion::V0
+        )
+        .is_err())
     }
 
     #[test]
@@ -476,7 +501,15 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            HashMap::default(),
+            None,
+            None,
+            SchemaVersion::V0,
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -524,7 +557,15 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            HashMap::default(),
+            None,
+            None,
+            SchemaVersion::V0,
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -572,7 +613,7 @@ mod tests {
         );
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, schema, None, None).unwrap();
+        let (rb, _) = into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -621,7 +662,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(&req, &json, schema, None, None).is_err());
+        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).is_err());
     }
 
     #[test]
@@ -649,7 +690,15 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, HashMap::default(), None, None).unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            HashMap::default(),
+            None,
+            None,
+            SchemaVersion::V0,
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 7);
