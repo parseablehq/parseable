@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # build stage
-FROM rust:1.77.1-bookworm as builder
+FROM  rust:1.83.0-bookworm as builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
@@ -24,8 +24,10 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0"
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
     cmake \
+    clang \
     librdkafka-dev \
     ca-certificates \
+    build-essential \
     libsasl2-dev \
     libssl-dev && \
     rm -rf /var/lib/apt/lists/*
