@@ -117,6 +117,10 @@ zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
 url = "2.4.0"
 prost-build = "0.13.3"
 
+[dev-dependencies]
+maplit = "1.0"
+rstest = "0.23.0"
+arrow = "53.0.0"
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.12/build.zip"
 assets-sha1 = "9d5a45f204d709a2dd96f6a5e0b21b3834ee0e36"
