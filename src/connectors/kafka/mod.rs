@@ -256,6 +256,7 @@ impl ClientContext for KafkaContext {
         &self,
         _oauthbearer_config: Option<&str>,
     ) -> Result<OAuthToken, Box<dyn Error>> {
-        todo!("Implement OAuth token generation")
+        // TODO Implement OAuth token generation when needed
+        Err("OAuth token generation is not implemented".into())
     }
 }
