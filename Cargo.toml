@@ -106,6 +106,7 @@ prost = "0.13.3"
 prometheus-parse = "0.2.5"
 sha2 = "0.10.8"
 tracing = "0.1.41"
+opentelemetry-proto = "0.27.0"
 
 [build-dependencies]
 cargo_toml = "0.20.1"

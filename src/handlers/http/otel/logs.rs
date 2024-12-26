@@ -16,57 +16,33 @@
  *
  */
 
-use std::collections::BTreeMap;
-
-use crate::handlers::http::otel::proto::logs::v1::LogRecord;
-use crate::handlers::http::otel::proto::logs::v1::LogRecordFlags;
-use crate::handlers::http::otel::proto::logs::v1::LogsData;
-use crate::handlers::http::otel::proto::logs::v1::SeverityNumber;
 use bytes::Bytes;
+use opentelemetry_proto::tonic::logs::v1::LogRecord;
+use opentelemetry_proto::tonic::logs::v1::LogsData;
+use opentelemetry_proto::tonic::logs::v1::ScopeLogs;
+use opentelemetry_proto::tonic::logs::v1::SeverityNumber;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use super::collect_json_from_values;
 use super::insert_attributes;
-use super::insert_if_some;
-use super::insert_number_if_some;
-use super::proto::logs::v1::ScopeLogs;
 
 /// otel log event has severity number
 /// there is a mapping of severity number to severity text provided in proto
 /// this function fetches the severity text from the severity number
 /// and adds it to the flattened json
-fn flatten_severity(severity_number: &Option<i32>) -> BTreeMap<String, Value> {
+fn flatten_severity(severity_number: i32) -> BTreeMap<String, Value> {
     let mut severity_json: BTreeMap<String, Value> = BTreeMap::new();
-    insert_number_if_some(
-        &mut severity_json,
-        "severity_number",
-        &severity_number.map(|f| f as f64),
+    severity_json.insert(
+        "severity_number".to_string(),
+        Value::Number(severity_number.into()),
     );
-    if let Some(severity_number) = severity_number {
-        insert_if_some(
-            &mut severity_json,
-            "severity_text",
-            &Some(SeverityNumber::as_str_name(*severity_number)),
-        );
-    }
+    let severity = SeverityNumber::try_from(severity_number).unwrap();
+    severity_json.insert(
+        "severity_text".to_string(),
+        Value::String(severity.as_str_name().to_string()),
+    );
     severity_json
-}
-
-/// otel log event has flags
-/// there is a mapping of flags to flags text provided in proto
-/// this function fetches the flags text from the flags
-/// and adds it to the flattened json
-fn flatten_flags(flags: &Option<u32>) -> BTreeMap<String, Value> {
-    let mut flags_json: BTreeMap<String, Value> = BTreeMap::new();
-    insert_number_if_some(&mut flags_json, "flags_number", &flags.map(|f| f as f64));
-    if let Some(flags) = flags {
-        insert_if_some(
-            &mut flags_json,
-            "flags_string",
-            &Some(LogRecordFlags::as_str_name(*flags)),
-        );
-    }
-    flags_json
 }
 
 /// this function flattens the `LogRecord` object
@@ -74,18 +50,16 @@ fn flatten_flags(flags: &Option<u32>) -> BTreeMap<String, Value> {
 /// this function is called recursively for each log record object in the otel logs
 pub fn flatten_log_record(log_record: &LogRecord) -> BTreeMap<String, Value> {
     let mut log_record_json: BTreeMap<String, Value> = BTreeMap::new();
-    insert_if_some(
-        &mut log_record_json,
-        "time_unix_nano",
-        &log_record.time_unix_nano,
+    log_record_json.insert(
+        "time_unix_nano".to_string(),
+        Value::Number(log_record.time_unix_nano.into()),
     );
-    insert_if_some(
-        &mut log_record_json,
-        "observed_time_unix_nano",
-        &log_record.observed_time_unix_nano,
+    log_record_json.insert(
+        "observable_time_unix_nano".to_string(),
+        Value::Number(log_record.observed_time_unix_nano.into()),
     );
 
-    log_record_json.extend(flatten_severity(&log_record.severity_number));
+    log_record_json.extend(flatten_severity(log_record.severity_number));
 
     if log_record.body.is_some() {
         let body = &log_record.body;
@@ -95,15 +69,23 @@ pub fn flatten_log_record(log_record: &LogRecord) -> BTreeMap<String, Value> {
         }
     }
     insert_attributes(&mut log_record_json, &log_record.attributes);
-    insert_number_if_some(
-        &mut log_record_json,
-        "log_record_dropped_attributes_count",
-        &log_record.dropped_attributes_count.map(|f| f as f64),
+    log_record_json.insert(
+        "log_record_dropped_attributes_count".to_string(),
+        Value::Number(log_record.dropped_attributes_count.into()),
     );
 
-    log_record_json.extend(flatten_flags(&log_record.flags));
-    insert_if_some(&mut log_record_json, "span_id", &log_record.span_id);
-    insert_if_some(&mut log_record_json, "trace_id", &log_record.trace_id);
+    log_record_json.insert(
+        "flags".to_string(),
+        Value::Number((log_record.flags).into()),
+    );
+    log_record_json.insert(
+        "span_id".to_string(),
+        Value::String(hex::encode(&log_record.span_id)),
+    );
+    log_record_json.insert(
+        "trace_id".to_string(),
+        Value::String(hex::encode(&log_record.trace_id)),
+    );
 
     log_record_json
 }
@@ -115,22 +97,21 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<BTreeMap<String, Value>> {
     let mut scope_log_json = BTreeMap::new();
 
     if let Some(scope) = &scope_log.scope {
-        insert_if_some(&mut scope_log_json, "scope_name", &scope.name);
-        insert_if_some(&mut scope_log_json, "scope_version", &scope.version);
-        insert_attributes(&mut scope_log_json, &scope.attributes);
-        insert_number_if_some(
-            &mut scope_log_json,
-            "scope_dropped_attributes_count",
-            &scope.dropped_attributes_count.map(|f| f as f64),
-        );
-    }
-
-    if let Some(schema_url) = &scope_log.schema_url {
+        scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
         scope_log_json.insert(
-            "scope_log_schema_url".to_string(),
-            Value::String(schema_url.clone()),
+            "scope_version".to_string(),
+            Value::String(scope.version.clone()),
+        );
+        insert_attributes(&mut scope_log_json, &scope.attributes);
+        scope_log_json.insert(
+            "scope_dropped_attributes_count".to_string(),
+            Value::Number(scope.dropped_attributes_count.into()),
         );
     }
+    scope_log_json.insert(
+        "scope_log_schema_url".to_string(),
+        Value::String(scope_log.schema_url.clone()),
+    );
 
     for log_record in &scope_log.log_records {
         let log_record_json = flatten_log_record(log_record);
@@ -149,34 +130,31 @@ pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let message: LogsData = serde_json::from_str(body_str).unwrap();
     let mut vec_otel_json = Vec::new();
 
-    if let Some(records) = &message.resource_logs {
-        for record in records {
-            let mut resource_log_json = BTreeMap::new();
+    for record in &message.resource_logs {
+        let mut resource_log_json = BTreeMap::new();
 
-            if let Some(resource) = &record.resource {
-                insert_attributes(&mut resource_log_json, &resource.attributes);
-                insert_number_if_some(
-                    &mut resource_log_json,
-                    "resource_dropped_attributes_count",
-                    &resource.dropped_attributes_count.map(|f| f as f64),
-                );
-            }
-
-            let mut vec_resource_logs_json = Vec::new();
-            if let Some(scope_logs) = &record.scope_logs {
-                for scope_log in scope_logs {
-                    vec_resource_logs_json.extend(flatten_scope_log(scope_log));
-                }
-            }
-
-            insert_if_some(&mut resource_log_json, "schema_url", &record.schema_url);
-
-            for resource_logs_json in &mut vec_resource_logs_json {
-                resource_logs_json.extend(resource_log_json.clone());
-            }
-
-            vec_otel_json.extend(vec_resource_logs_json);
+        if let Some(resource) = &record.resource {
+            insert_attributes(&mut resource_log_json, &resource.attributes);
+            resource_log_json.insert(
+                "resource_dropped_attributes_count".to_string(),
+                Value::Number(resource.dropped_attributes_count.into()),
+            );
         }
+
+        let mut vec_resource_logs_json = Vec::new();
+        for scope_log in &record.scope_logs {
+            vec_resource_logs_json.extend(flatten_scope_log(scope_log));
+        }
+        resource_log_json.insert(
+            "schema_url".to_string(),
+            Value::String(record.schema_url.clone()),
+        );
+
+        for resource_logs_json in &mut vec_resource_logs_json {
+            resource_logs_json.extend(resource_log_json.clone());
+        }
+
+        vec_otel_json.extend(vec_resource_logs_json);
     }
 
     vec_otel_json

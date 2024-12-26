@@ -19,15 +19,14 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
+use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
+use opentelemetry_proto::tonic::metrics::v1::{
+    exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets, metric, Exemplar,
+    ExponentialHistogram, Gauge, Histogram, Metric, MetricsData, NumberDataPoint, Sum, Summary,
+};
 use serde_json::Value;
 
-use super::{
-    insert_attributes, insert_bool_if_some, insert_if_some, insert_number_if_some,
-    proto::metrics::v1::{
-        exponential_histogram_data_point::Buckets, Exemplar, ExponentialHistogram, Gauge,
-        Histogram, Metric, MetricsData, NumberDataPoint, Sum, Summary,
-    },
-};
+use super::{insert_attributes, insert_number_if_some};
 
 /// otel metrics event has json array for exemplar
 /// this function flatten the exemplar json array
@@ -37,19 +36,34 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> BTreeMap<String, Value> {
     let mut exemplar_json = BTreeMap::new();
     for exemplar in exemplars {
         insert_attributes(&mut exemplar_json, &exemplar.filtered_attributes);
-        insert_if_some(
-            &mut exemplar_json,
-            "exemplar_time_unix_nano",
-            &exemplar.time_unix_nano,
+        exemplar_json.insert(
+            "exemplar_time_unix_nano".to_string(),
+            Value::Number(exemplar.time_unix_nano.into()),
         );
-        insert_if_some(&mut exemplar_json, "exemplar_span_id", &exemplar.span_id);
-        insert_if_some(&mut exemplar_json, "exemplar_trace_id", &exemplar.trace_id);
-        insert_number_if_some(
-            &mut exemplar_json,
-            "exemplar_as_double",
-            &exemplar.as_double,
+        exemplar_json.insert(
+            "exemplar_span_id".to_string(),
+            Value::String(hex::encode(&exemplar.span_id)),
         );
-        insert_if_some(&mut exemplar_json, "exemplar_as_int", &exemplar.as_int);
+        exemplar_json.insert(
+            "exemplar_trace_id".to_string(),
+            Value::String(hex::encode(&exemplar.trace_id)),
+        );
+        if let Some(value) = &exemplar.value {
+            match value {
+                ExemplarValue::AsDouble(double_val) => {
+                    exemplar_json.insert(
+                        "exemplar_value_as_double".to_string(),
+                        Value::Number(serde_json::Number::from_f64(*double_val).unwrap()),
+                    );
+                }
+                ExemplarValue::AsInt(int_val) => {
+                    exemplar_json.insert(
+                        "exemplar_value_as_int".to_string(),
+                        Value::Number(serde_json::Number::from(*int_val)),
+                    );
+                }
+            }
+        }
     }
     exemplar_json
 }
@@ -64,30 +78,33 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<BTreeMap<S
         .map(|data_point| {
             let mut data_point_json = BTreeMap::new();
             insert_attributes(&mut data_point_json, &data_point.attributes);
-            insert_if_some(
-                &mut data_point_json,
-                "start_time_unix_nano",
-                &data_point.start_time_unix_nano,
+            data_point_json.insert(
+                "start_time_unix_nano".to_string(),
+                Value::Number(data_point.start_time_unix_nano.into()),
             );
-            insert_if_some(
-                &mut data_point_json,
-                "time_unix_nano",
-                &data_point.time_unix_nano,
+            data_point_json.insert(
+                "time_unix_nano".to_string(),
+                Value::Number(data_point.time_unix_nano.into()),
             );
-            insert_number_if_some(
-                &mut data_point_json,
-                "data_point_as_double",
-                &data_point.as_double,
-            );
-            insert_if_some(
-                &mut data_point_json,
-                "data_point_as_int",
-                &data_point.as_int,
-            );
-            if let Some(exemplars) = &data_point.exemplars {
-                let exemplar_json = flatten_exemplar(exemplars);
-                for (key, value) in exemplar_json {
-                    data_point_json.insert(key, value);
+            let exemplar_json = flatten_exemplar(&data_point.exemplars);
+            for (key, value) in exemplar_json {
+                data_point_json.insert(key, value);
+            }
+            data_point_json.extend(flatten_data_point_flags(data_point.flags));
+            if let Some(value) = &data_point.value {
+                match value {
+                    NumberDataPointValue::AsDouble(double_val) => {
+                        data_point_json.insert(
+                            "data_point_value_as_double".to_string(),
+                            Value::Number(serde_json::Number::from_f64(*double_val).unwrap()),
+                        );
+                    }
+                    NumberDataPointValue::AsInt(int_val) => {
+                        data_point_json.insert(
+                            "data_point_value_as_int".to_string(),
+                            Value::Number(serde_json::Number::from(*int_val)),
+                        );
+                    }
                 }
             }
             data_point_json
@@ -101,15 +118,13 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<BTreeMap<S
 /// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_gauge(gauge: &Gauge) -> Vec<BTreeMap<String, Value>> {
     let mut vec_gauge_json = Vec::new();
-    if let Some(data_points) = &gauge.data_points {
-        let data_points_json = flatten_number_data_points(data_points);
-        for data_point_json in data_points_json {
-            let mut gauge_json = BTreeMap::new();
-            for (key, value) in &data_point_json {
-                gauge_json.insert(format!("gauge_{}", key), value.clone());
-            }
-            vec_gauge_json.push(gauge_json);
+    let data_points_json = flatten_number_data_points(&gauge.data_points);
+    for data_point_json in data_points_json {
+        let mut gauge_json = BTreeMap::new();
+        for (key, value) in &data_point_json {
+            gauge_json.insert(format!("gauge_{}", key), value.clone());
         }
+        vec_gauge_json.push(gauge_json);
     }
     vec_gauge_json
 }
@@ -120,24 +135,23 @@ fn flatten_gauge(gauge: &Gauge) -> Vec<BTreeMap<String, Value>> {
 /// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_sum(sum: &Sum) -> Vec<BTreeMap<String, Value>> {
     let mut vec_sum_json = Vec::new();
-    if let Some(data_points) = &sum.data_points {
-        let data_points_json = flatten_number_data_points(data_points);
-        for data_point_json in data_points_json {
-            let mut sum_json = BTreeMap::new();
-            for (key, value) in &data_point_json {
-                sum_json.insert(format!("sum_{}", key), value.clone());
-            }
-            vec_sum_json.push(sum_json);
-        }
+    let data_points_json = flatten_number_data_points(&sum.data_points);
+    for data_point_json in data_points_json {
         let mut sum_json = BTreeMap::new();
-        sum_json.extend(flatten_aggregation_temporality(
-            &sum.aggregation_temporality,
-        ));
-        insert_bool_if_some(&mut sum_json, "sum_is_monotonic", &sum.is_monotonic);
-        for data_point_json in &mut vec_sum_json {
-            for (key, value) in &sum_json {
-                data_point_json.insert(key.clone(), value.clone());
-            }
+        for (key, value) in &data_point_json {
+            sum_json.insert(format!("sum_{}", key), value.clone());
+        }
+        vec_sum_json.push(sum_json);
+    }
+    let mut sum_json = BTreeMap::new();
+    sum_json.extend(flatten_aggregation_temporality(sum.aggregation_temporality));
+    sum_json.insert(
+        "sum_is_monotonic".to_string(),
+        Value::Bool(sum.is_monotonic),
+    );
+    for data_point_json in &mut vec_sum_json {
+        for (key, value) in &sum_json {
+            data_point_json.insert(key.clone(), value.clone());
         }
     }
     vec_sum_json
@@ -149,58 +163,50 @@ fn flatten_sum(sum: &Sum) -> Vec<BTreeMap<String, Value>> {
 /// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json = Vec::new();
-    if let Some(histogram_data_points) = &histogram.data_points {
-        for data_point in histogram_data_points {
-            let mut data_point_json = BTreeMap::new();
-            insert_attributes(&mut data_point_json, &data_point.attributes);
-            insert_if_some(
-                &mut data_point_json,
-                "histogram_start_time_unix_nano",
-                &data_point.start_time_unix_nano,
+    for data_point in &histogram.data_points {
+        let mut data_point_json = BTreeMap::new();
+        insert_attributes(&mut data_point_json, &data_point.attributes);
+        data_point_json.insert(
+            "histogram_start_time_unix_nano".to_string(),
+            Value::Number(data_point.start_time_unix_nano.into()),
+        );
+        data_point_json.insert(
+            "histogram_time_unix_nano".to_string(),
+            Value::Number(data_point.time_unix_nano.into()),
+        );
+        data_point_json.insert(
+            "histogram_data_point_count".to_string(),
+            Value::Number(data_point.count.into()),
+        );
+        insert_number_if_some(
+            &mut data_point_json,
+            "histogram_data_point_sum",
+            &data_point.sum,
+        );
+        for (index, bucket_count) in data_point.bucket_counts.iter().enumerate() {
+            data_point_json.insert(
+                format!("histogram_data_point_bucket_count_{}", index + 1),
+                Value::String(bucket_count.to_string()),
             );
-            insert_if_some(
-                &mut data_point_json,
-                "histogram_time_unix_nano",
-                &data_point.time_unix_nano,
-            );
-            insert_if_some(
-                &mut data_point_json,
-                "histogram_data_point_count",
-                &data_point.count,
-            );
-            insert_number_if_some(
-                &mut data_point_json,
-                "histogram_data_point_sum",
-                &data_point.sum,
-            );
-            if let Some(bucket_counts) = &data_point.bucket_counts {
-                for (index, bucket_count) in bucket_counts.iter().enumerate() {
-                    data_point_json.insert(
-                        format!("histogram_data_point_bucket_count_{}", index + 1),
-                        Value::String(bucket_count.to_string()),
-                    );
-                }
-            }
-            if let Some(explicit_bounds) = &data_point.explicit_bounds {
-                for (index, explicit_bound) in explicit_bounds.iter().enumerate() {
-                    data_point_json.insert(
-                        format!("histogram_data_point_explicit_bound_{}", index + 1),
-                        Value::String(explicit_bound.to_string()),
-                    );
-                }
-            }
-            if let Some(exemplars) = &data_point.exemplars {
-                let exemplar_json = flatten_exemplar(exemplars);
-                for (key, value) in exemplar_json {
-                    data_point_json.insert(format!("histogram_{}", key), value);
-                }
-            }
-            data_points_json.push(data_point_json);
         }
+        for (index, explicit_bound) in data_point.explicit_bounds.iter().enumerate() {
+            data_point_json.insert(
+                format!("histogram_data_point_explicit_bound_{}", index + 1),
+                Value::String(explicit_bound.to_string()),
+            );
+        }
+        let exemplar_json = flatten_exemplar(&data_point.exemplars);
+        for (key, value) in exemplar_json {
+            data_point_json.insert(format!("histogram_{}", key), value);
+        }
+        data_point_json.extend(flatten_data_point_flags(data_point.flags));
+        insert_number_if_some(&mut data_point_json, "histogram_min", &data_point.min);
+        insert_number_if_some(&mut data_point_json, "histogram_max", &data_point.max);
+        data_points_json.push(data_point_json);
     }
     let mut histogram_json = BTreeMap::new();
     histogram_json.extend(flatten_aggregation_temporality(
-        &histogram.aggregation_temporality,
+        histogram.aggregation_temporality,
     ));
     for data_point_json in &mut data_points_json {
         for (key, value) in &histogram_json {
@@ -215,14 +221,13 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
 /// and returns a `BTreeMap` of the flattened json
 fn flatten_buckets(bucket: &Buckets) -> BTreeMap<String, Value> {
     let mut bucket_json = BTreeMap::new();
-    insert_number_if_some(&mut bucket_json, "offset", &bucket.offset.map(|v| v as f64));
-    if let Some(bucket_counts) = &bucket.bucket_counts {
-        for (index, bucket_count) in bucket_counts.iter().enumerate() {
-            bucket_json.insert(
-                format!("bucket_count_{}", index + 1),
-                Value::String(bucket_count.to_string()),
-            );
-        }
+    bucket_json.insert("offset".to_string(), Value::Number(bucket.offset.into()));
+
+    for (index, bucket_count) in bucket.bucket_counts.iter().enumerate() {
+        bucket_json.insert(
+            format!("bucket_count_{}", index + 1),
+            Value::String(bucket_count.to_string()),
+        );
     }
     bucket_json
 }
@@ -233,66 +238,55 @@ fn flatten_buckets(bucket: &Buckets) -> BTreeMap<String, Value> {
 /// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json = Vec::new();
-    if let Some(exp_histogram_data_points) = &exp_histogram.data_points {
-        for data_point in exp_histogram_data_points {
-            let mut data_point_json = BTreeMap::new();
-            insert_attributes(&mut data_point_json, &data_point.attributes);
-            insert_if_some(
-                &mut data_point_json,
-                "exponential_histogram_start_time_unix_nano",
-                &data_point.start_time_unix_nano,
-            );
-            insert_if_some(
-                &mut data_point_json,
-                "exponential_histogram_time_unix_nano",
-                &data_point.time_unix_nano,
-            );
-            insert_if_some(
-                &mut data_point_json,
-                "exponential_histogram_data_point_count",
-                &data_point.count,
-            );
-            insert_number_if_some(
-                &mut data_point_json,
-                "exponential_histogram_data_point_sum",
-                &data_point.sum,
-            );
-            insert_number_if_some(
-                &mut data_point_json,
-                "exponential_histogram_data_point_scale",
-                &data_point.scale.map(|v| v as f64),
-            );
-            insert_number_if_some(
-                &mut data_point_json,
-                "exponential_histogram_data_point_zero_count",
-                &data_point.zero_count.map(|v| v as f64),
-            );
-            if let Some(positive) = &data_point.positive {
-                let positive_json = flatten_buckets(positive);
-                for (key, value) in positive_json {
-                    data_point_json
-                        .insert(format!("exponential_histogram_positive_{}", key), value);
-                }
+    for data_point in &exp_histogram.data_points {
+        let mut data_point_json = BTreeMap::new();
+        insert_attributes(&mut data_point_json, &data_point.attributes);
+        data_point_json.insert(
+            "exponential_histogram_start_time_unix_nano".to_string(),
+            Value::Number(data_point.start_time_unix_nano.into()),
+        );
+        data_point_json.insert(
+            "exponential_histogram_time_unix_nano".to_string(),
+            Value::Number(data_point.time_unix_nano.into()),
+        );
+        data_point_json.insert(
+            "exponential_histogram_data_point_count".to_string(),
+            Value::Number(data_point.count.into()),
+        );
+        insert_number_if_some(
+            &mut data_point_json,
+            "exponential_histogram_data_point_sum",
+            &data_point.sum,
+        );
+        data_point_json.insert(
+            "exponential_histogram_data_point_scale".to_string(),
+            Value::Number(data_point.scale.into()),
+        );
+        data_point_json.insert(
+            "exponential_histogram_data_point_zero_count".to_string(),
+            Value::Number(data_point.zero_count.into()),
+        );
+        if let Some(positive) = &data_point.positive {
+            let positive_json = flatten_buckets(positive);
+            for (key, value) in positive_json {
+                data_point_json.insert(format!("exponential_histogram_positive_{}", key), value);
             }
-            if let Some(negative) = &data_point.negative {
-                let negative_json = flatten_buckets(negative);
-                for (key, value) in negative_json {
-                    data_point_json
-                        .insert(format!("exponential_histogram_negative_{}", key), value);
-                }
-            }
-            if let Some(exemplars) = &data_point.exemplars {
-                let exemplar_json = flatten_exemplar(exemplars);
-                for (key, value) in exemplar_json {
-                    data_point_json.insert(format!("exponential_histogram_{}", key), value);
-                }
-            }
-            data_points_json.push(data_point_json);
         }
+        if let Some(negative) = &data_point.negative {
+            let negative_json = flatten_buckets(negative);
+            for (key, value) in negative_json {
+                data_point_json.insert(format!("exponential_histogram_negative_{}", key), value);
+            }
+        }
+        let exemplar_json = flatten_exemplar(&data_point.exemplars);
+        for (key, value) in exemplar_json {
+            data_point_json.insert(format!("exponential_histogram_{}", key), value);
+        }
+        data_points_json.push(data_point_json);
     }
     let mut exp_histogram_json = BTreeMap::new();
     exp_histogram_json.extend(flatten_aggregation_temporality(
-        &exp_histogram.aggregation_temporality,
+        exp_histogram.aggregation_temporality,
     ));
     for data_point_json in &mut data_points_json {
         for (key, value) in &exp_histogram_json {
@@ -308,46 +302,36 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<S
 /// and returns a `Vec` of `BTreeMap` for each data point
 fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json = Vec::new();
-    if let Some(summary_data_points) = &summary.data_points {
-        for data_point in summary_data_points {
-            let mut data_point_json = BTreeMap::new();
-            insert_attributes(&mut data_point_json, &data_point.attributes);
-            insert_if_some(
-                &mut data_point_json,
-                "summary_start_time_unix_nano",
-                &data_point.start_time_unix_nano,
+    for data_point in &summary.data_points {
+        let mut data_point_json = BTreeMap::new();
+        insert_attributes(&mut data_point_json, &data_point.attributes);
+        data_point_json.insert(
+            "summary_start_time_unix_nano".to_string(),
+            Value::Number(data_point.start_time_unix_nano.into()),
+        );
+        data_point_json.insert(
+            "summary_time_unix_nano".to_string(),
+            Value::Number(data_point.time_unix_nano.into()),
+        );
+        data_point_json.insert(
+            "summary_data_point_count".to_string(),
+            Value::Number(data_point.count.into()),
+        );
+        data_point_json.insert(
+            "summary_data_point_sum".to_string(),
+            Value::Number(serde_json::Number::from_f64(data_point.sum).unwrap()),
+        );
+        for (index, quantile_value) in data_point.quantile_values.iter().enumerate() {
+            data_point_json.insert(
+                format!("summary_quantile_value_quantile_{}", index + 1),
+                Value::Number(serde_json::Number::from_f64(quantile_value.quantile).unwrap()),
             );
-            insert_if_some(
-                &mut data_point_json,
-                "summary_time_unix_nano",
-                &data_point.time_unix_nano,
+            data_point_json.insert(
+                format!("summary_quantile_value_value_{}", index + 1),
+                Value::Number(serde_json::Number::from_f64(quantile_value.value).unwrap()),
             );
-            insert_if_some(
-                &mut data_point_json,
-                "summary_data_point_count",
-                &data_point.count,
-            );
-            insert_number_if_some(
-                &mut data_point_json,
-                "summary_data_point_sum",
-                &data_point.sum,
-            );
-            if let Some(quantile_values) = &data_point.quantile_values {
-                for (index, quantile_value) in quantile_values.iter().enumerate() {
-                    insert_number_if_some(
-                        &mut data_point_json,
-                        &format!("summary_quantile_value_quantile_{}", index + 1),
-                        &quantile_value.quantile,
-                    );
-                    insert_if_some(
-                        &mut data_point_json,
-                        &format!("summary_quantile_value_value_{}", index + 1),
-                        &quantile_value.value,
-                    );
-                }
-            }
-            data_points_json.push(data_point_json);
         }
+        data_points_json.push(data_point_json);
     }
     data_points_json
 }
@@ -360,28 +344,37 @@ fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
 pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<BTreeMap<String, Value>> {
     let mut data_points_json = Vec::new();
     let mut metric_json = BTreeMap::new();
-    if let Some(gauge) = &metrics_record.gauge {
-        data_points_json.extend(flatten_gauge(gauge));
+
+    match &metrics_record.data {
+        Some(metric::Data::Gauge(gauge)) => {
+            data_points_json.extend(flatten_gauge(gauge));
+        }
+        Some(metric::Data::Sum(sum)) => {
+            data_points_json.extend(flatten_sum(sum));
+        }
+        Some(metric::Data::Histogram(histogram)) => {
+            data_points_json.extend(flatten_histogram(histogram));
+        }
+        Some(metric::Data::ExponentialHistogram(exp_histogram)) => {
+            data_points_json.extend(flatten_exp_histogram(exp_histogram));
+        }
+        Some(metric::Data::Summary(summary)) => {
+            data_points_json.extend(flatten_summary(summary));
+        }
+        None => {}
     }
-    if let Some(sum) = &metrics_record.sum {
-        data_points_json.extend(flatten_sum(sum));
-    }
-    if let Some(histogram) = &metrics_record.histogram {
-        data_points_json.extend(flatten_histogram(histogram));
-    }
-    if let Some(exp_histogram) = &metrics_record.exponential_histogram {
-        data_points_json.extend(flatten_exp_histogram(exp_histogram));
-    }
-    if let Some(summary) = &metrics_record.summary {
-        data_points_json.extend(flatten_summary(summary));
-    }
-    insert_if_some(&mut metric_json, "metric_name", &metrics_record.name);
-    insert_if_some(
-        &mut metric_json,
-        "metric_description",
-        &metrics_record.description,
+    metric_json.insert(
+        "metric_name".to_string(),
+        Value::String(metrics_record.name.clone()),
     );
-    insert_if_some(&mut metric_json, "metric_unit", &metrics_record.unit);
+    metric_json.insert(
+        "metric_description".to_string(),
+        Value::String(metrics_record.description.clone()),
+    );
+    metric_json.insert(
+        "metric_unit".to_string(),
+        Value::String(metrics_record.unit.clone()),
+    );
     insert_attributes(&mut metric_json, &metrics_record.metadata);
     for data_point_json in &mut data_points_json {
         for (key, value) in &metric_json {
@@ -397,61 +390,55 @@ pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let body_str = std::str::from_utf8(body).unwrap();
     let message: MetricsData = serde_json::from_str(body_str).unwrap();
     let mut vec_otel_json = Vec::new();
-    if let Some(records) = &message.resource_metrics {
-        for record in records {
-            let mut resource_metrics_json = BTreeMap::new();
-            if let Some(resource) = &record.resource {
-                insert_attributes(&mut resource_metrics_json, &resource.attributes);
-                insert_number_if_some(
-                    &mut resource_metrics_json,
-                    "resource_dropped_attributes_count",
-                    &resource.dropped_attributes_count.map(|f| f as f64),
+    for record in &message.resource_metrics {
+        let mut resource_metrics_json = BTreeMap::new();
+        if let Some(resource) = &record.resource {
+            insert_attributes(&mut resource_metrics_json, &resource.attributes);
+            resource_metrics_json.insert(
+                "resource_dropped_attributes_count".to_string(),
+                Value::Number(resource.dropped_attributes_count.into()),
+            );
+        }
+        let mut vec_scope_metrics_json = Vec::new();
+        for scope_metric in &record.scope_metrics {
+            let mut scope_metrics_json = BTreeMap::new();
+            for metrics_record in &scope_metric.metrics {
+                vec_scope_metrics_json.extend(flatten_metrics_record(metrics_record));
+            }
+            if let Some(scope) = &scope_metric.scope {
+                scope_metrics_json
+                    .insert("scope_name".to_string(), Value::String(scope.name.clone()));
+                scope_metrics_json.insert(
+                    "scope_version".to_string(),
+                    Value::String(scope.version.clone()),
+                );
+                insert_attributes(&mut scope_metrics_json, &scope.attributes);
+                scope_metrics_json.insert(
+                    "scope_dropped_attributes_count".to_string(),
+                    Value::Number(scope.dropped_attributes_count.into()),
                 );
             }
-            let mut vec_scope_metrics_json = Vec::new();
-            if let Some(scope_metrics) = &record.scope_metrics {
-                for scope_metric in scope_metrics {
-                    let mut scope_metrics_json = BTreeMap::new();
-                    for metrics_record in &scope_metric.metrics {
-                        vec_scope_metrics_json.extend(flatten_metrics_record(metrics_record));
-                    }
-                    if let Some(scope) = &scope_metric.scope {
-                        insert_if_some(&mut scope_metrics_json, "scope_name", &scope.name);
-                        insert_if_some(&mut scope_metrics_json, "scope_version", &scope.version);
-                        insert_attributes(&mut scope_metrics_json, &scope.attributes);
-                        insert_number_if_some(
-                            &mut scope_metrics_json,
-                            "scope_dropped_attributes_count",
-                            &scope.dropped_attributes_count.map(|f| f as f64),
-                        );
-                        for scope_metric_json in &mut vec_scope_metrics_json {
-                            for (key, value) in &scope_metrics_json {
-                                scope_metric_json.insert(key.clone(), value.clone());
-                            }
-                        }
-                    }
-                    if let Some(schema_url) = &scope_metric.schema_url {
-                        for scope_metrics_json in &mut vec_scope_metrics_json {
-                            scope_metrics_json.insert(
-                                "scope_metrics_schema_url".to_string(),
-                                Value::String(schema_url.clone()),
-                            );
-                        }
-                    }
-                }
-            }
-            insert_if_some(
-                &mut resource_metrics_json,
-                "resource_metrics_schema_url",
-                &record.schema_url,
+            scope_metrics_json.insert(
+                "scope_metrics_schema_url".to_string(),
+                Value::String(scope_metric.schema_url.clone()),
             );
-            for resource_metric_json in &mut vec_scope_metrics_json {
-                for (key, value) in &resource_metrics_json {
-                    resource_metric_json.insert(key.clone(), value.clone());
+
+            for scope_metric_json in &mut vec_scope_metrics_json {
+                for (key, value) in &scope_metrics_json {
+                    scope_metric_json.insert(key.clone(), value.clone());
                 }
             }
-            vec_otel_json.extend(vec_scope_metrics_json);
         }
+        resource_metrics_json.insert(
+            "resource_metrics_schema_url".to_string(),
+            Value::String(record.schema_url.clone()),
+        );
+        for resource_metric_json in &mut vec_scope_metrics_json {
+            for (key, value) in &resource_metrics_json {
+                resource_metric_json.insert(key.clone(), value.clone());
+            }
+        }
+        vec_otel_json.extend(vec_scope_metrics_json);
     }
     vec_otel_json
 }
@@ -460,28 +447,37 @@ pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
 /// there is a mapping of aggregation temporality to its description provided in proto
 /// this function fetches the description from the aggregation temporality
 /// and adds it to the flattened json
-fn flatten_aggregation_temporality(
-    aggregation_temporality: &Option<i32>,
-) -> BTreeMap<String, Value> {
+fn flatten_aggregation_temporality(aggregation_temporality: i32) -> BTreeMap<String, Value> {
     let mut aggregation_temporality_json = BTreeMap::new();
-    insert_number_if_some(
-        &mut aggregation_temporality_json,
-        "aggregation_temporality",
-        &aggregation_temporality.map(|f| f as f64),
+    aggregation_temporality_json.insert(
+        "aggregation_temporality".to_string(),
+        Value::Number(aggregation_temporality.into()),
+    );
+    let description = match aggregation_temporality {
+        0 => "AGGREGATION_TEMPORALITY_UNSPECIFIED",
+        1 => "AGGREGATION_TEMPORALITY_DELTA",
+        2 => "AGGREGATION_TEMPORALITY_CUMULATIVE",
+        _ => "",
+    };
+    aggregation_temporality_json.insert(
+        "aggregation_temporality_description".to_string(),
+        Value::String(description.to_string()),
     );
 
-    if let Some(aggregation_temporality) = aggregation_temporality {
-        let description = match aggregation_temporality {
-            0 => "AGGREGATION_TEMPORALITY_UNSPECIFIED",
-            1 => "AGGREGATION_TEMPORALITY_DELTA",
-            2 => "AGGREGATION_TEMPORALITY_CUMULATIVE",
-            _ => "",
-        };
-        aggregation_temporality_json.insert(
-            "aggregation_temporality_description".to_string(),
-            Value::String(description.to_string()),
-        );
-    }
-
     aggregation_temporality_json
+}
+
+fn flatten_data_point_flags(flags: u32) -> BTreeMap<String, Value> {
+    let mut data_point_flags_json = BTreeMap::new();
+    data_point_flags_json.insert("data_point_flags".to_string(), Value::Number(flags.into()));
+    let description = match flags {
+        0 => "DATA_POINT_FLAGS_DO_NOT_USE",
+        1 => "DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK",
+        _ => "",
+    };
+    data_point_flags_json.insert(
+        "data_point_flags_description".to_string(),
+        Value::String(description.to_string()),
+    );
+    data_point_flags_json
 }

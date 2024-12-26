@@ -15,83 +15,92 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+
 pub mod logs;
 pub mod metrics;
-#[allow(clippy::all)]
-pub mod proto;
 pub mod traces;
-use proto::common::v1::KeyValue;
+use opentelemetry_proto::tonic::common::v1::{any_value::Value as OtelValue, AnyValue, KeyValue};
 use serde_json::Value;
 use std::collections::BTreeMap;
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
-pub fn collect_json_from_any_value(
-    key: &String,
-    value: super::otel::proto::common::v1::Value,
-) -> BTreeMap<String, Value> {
+pub fn collect_json_from_value(key: &String, value: OtelValue) -> BTreeMap<String, Value> {
     let mut value_json: BTreeMap<String, Value> = BTreeMap::new();
-    insert_if_some(&mut value_json, key, &value.str_val);
-    insert_bool_if_some(&mut value_json, key, &value.bool_val);
-    insert_if_some(&mut value_json, key, &value.int_val);
-    insert_number_if_some(&mut value_json, key, &value.double_val);
-
-    //ArrayValue is a vector of AnyValue
-    //traverse by recursively calling the same function
-    if value.array_val.is_some() {
-        let array_val = value.array_val.as_ref().unwrap();
-        let values = &array_val.values;
-        for value in values {
-            let array_value_json = collect_json_from_any_value(key, value.clone());
-            for key in array_value_json.keys() {
-                value_json.insert(
-                    format!(
-                        "{}_{}",
-                        key.to_owned(),
-                        value_to_string(array_value_json[key].to_owned())
-                    ),
-                    array_value_json[key].to_owned(),
-                );
+    match value {
+        OtelValue::StringValue(str_val) => {
+            value_json.insert(key.to_string(), Value::String(str_val));
+        }
+        OtelValue::BoolValue(bool_val) => {
+            value_json.insert(key.to_string(), Value::Bool(bool_val));
+        }
+        OtelValue::IntValue(int_val) => {
+            value_json.insert(key.to_string(), Value::String(int_val.to_string()));
+        }
+        OtelValue::DoubleValue(double_val) => {
+            if let Some(number) = serde_json::Number::from_f64(double_val) {
+                value_json.insert(key.to_string(), Value::Number(number));
             }
         }
-    }
-
-    //KeyValueList is a vector of KeyValue
-    //traverse through each element in the vector
-    if value.kv_list_val.is_some() {
-        let kv_list_val = value.kv_list_val.unwrap();
-        for key_value in kv_list_val.values {
-            let value = key_value.value;
-            if value.is_some() {
-                let value = value.unwrap();
-                let key_value_json = collect_json_from_any_value(key, value);
-
-                for key in key_value_json.keys() {
+        OtelValue::ArrayValue(array_val) => {
+            let values = &array_val.values;
+            for value in values {
+                let array_value_json = collect_json_from_anyvalue(key, value.clone());
+                for key in array_value_json.keys() {
                     value_json.insert(
                         format!(
-                            "{}_{}_{}",
+                            "{}_{}",
                             key.to_owned(),
-                            key_value.key,
-                            value_to_string(key_value_json[key].to_owned())
+                            value_to_string(array_value_json[key].to_owned())
                         ),
-                        key_value_json[key].to_owned(),
+                        array_value_json[key].to_owned(),
                     );
                 }
             }
         }
+        OtelValue::KvlistValue(kv_list_val) => {
+            for key_value in kv_list_val.values {
+                let value = key_value.value;
+                if value.is_some() {
+                    let value = value.unwrap();
+                    let key_value_json = collect_json_from_anyvalue(key, value.clone());
+
+                    for key in key_value_json.keys() {
+                        value_json.insert(
+                            format!(
+                                "{}_{}_{}",
+                                key.to_owned(),
+                                key_value.key,
+                                value_to_string(key_value_json[key].to_owned())
+                            ),
+                            key_value_json[key].to_owned(),
+                        );
+                    }
+                }
+            }
+        }
+        OtelValue::BytesValue(bytes_val) => {
+            value_json.insert(
+                key.to_string(),
+                Value::String(String::from_utf8_lossy(&bytes_val).to_string()),
+            );
+        }
     }
-    insert_if_some(&mut value_json, key, &value.bytes_val);
 
     value_json
 }
 
+pub fn collect_json_from_anyvalue(key: &String, value: AnyValue) -> BTreeMap<String, Value> {
+    collect_json_from_value(key, value.value.unwrap())
+}
+
 //traverse through Value by calling function ollect_json_from_any_value
 pub fn collect_json_from_values(
-    values: &Option<super::otel::proto::common::v1::Value>,
+    values: &Option<AnyValue>,
     key: &String,
 ) -> BTreeMap<String, Value> {
     let mut value_json: BTreeMap<String, Value> = BTreeMap::new();
 
     for value in values.iter() {
-        value_json = collect_json_from_any_value(key, value.clone());
+        value_json = collect_json_from_anyvalue(key, value.clone());
     }
 
     value_json
@@ -142,11 +151,9 @@ pub fn insert_bool_if_some(map: &mut BTreeMap<String, Value>, key: &str, option:
     }
 }
 
-pub fn insert_attributes(map: &mut BTreeMap<String, Value>, attributes: &Option<Vec<KeyValue>>) {
-    if let Some(attrs) = attributes {
-        let attributes_json = flatten_attributes(attrs);
-        for (key, value) in attributes_json {
-            map.insert(key, value);
-        }
+pub fn insert_attributes(map: &mut BTreeMap<String, Value>, attributes: &Vec<KeyValue>) {
+    let attributes_json = flatten_attributes(attributes);
+    for (key, value) in attributes_json {
+        map.insert(key, value);
     }
 }

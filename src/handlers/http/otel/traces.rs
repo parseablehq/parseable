@@ -16,19 +16,18 @@
  *
  */
 
-use super::insert_attributes;
-use super::insert_if_some;
-use super::insert_number_if_some;
-use super::proto::trace::v1::span::Event;
-use super::proto::trace::v1::span::Link;
-use super::proto::trace::v1::ScopeSpans;
-use super::proto::trace::v1::Span;
-use super::proto::trace::v1::Status;
-use super::proto::trace::v1::TracesData;
 use bytes::Bytes;
 
+use opentelemetry_proto::tonic::trace::v1::span::Event;
+use opentelemetry_proto::tonic::trace::v1::span::Link;
+use opentelemetry_proto::tonic::trace::v1::ScopeSpans;
+use opentelemetry_proto::tonic::trace::v1::Span;
+use opentelemetry_proto::tonic::trace::v1::Status;
+use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+use super::insert_attributes;
 
 /// this function flattens the `ScopeSpans` object
 /// and returns a `Vec` of `BTreeMap` of the flattened json
@@ -36,21 +35,21 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<BTreeMap<String, Value>> {
     let mut vec_scope_span_json = Vec::new();
     let mut scope_span_json = BTreeMap::new();
 
-    if let Some(spans) = &scope_span.spans {
-        for span in spans {
-            let span_record_json = flatten_span_record(span);
-            vec_scope_span_json.extend(span_record_json);
-        }
+    for span in &scope_span.spans {
+        let span_record_json = flatten_span_record(span);
+        vec_scope_span_json.extend(span_record_json);
     }
 
     if let Some(scope) = &scope_span.scope {
-        insert_if_some(&mut scope_span_json, "scope_name", &scope.name);
-        insert_if_some(&mut scope_span_json, "scope_version", &scope.version);
+        scope_span_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
+        scope_span_json.insert(
+            "scope_version".to_string(),
+            Value::String(scope.version.clone()),
+        );
         insert_attributes(&mut scope_span_json, &scope.attributes);
-        insert_number_if_some(
-            &mut scope_span_json,
-            "scope_dropped_attributes_count",
-            &scope.dropped_attributes_count.map(|f| f as f64),
+        scope_span_json.insert(
+            "scope_dropped_attributes_count".to_string(),
+            Value::Number(scope.dropped_attributes_count.into()),
         );
 
         for span_json in &mut vec_scope_span_json {
@@ -60,10 +59,11 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<BTreeMap<String, Value>> {
         }
     }
 
-    if let Some(schema_url) = &scope_span.schema_url {
-        for span_json in &mut vec_scope_span_json {
-            span_json.insert("schema_url".to_string(), Value::String(schema_url.clone()));
-        }
+    for span_json in &mut vec_scope_span_json {
+        span_json.insert(
+            "schema_url".to_string(),
+            Value::String(scope_span.schema_url.clone()),
+        );
     }
 
     vec_scope_span_json
@@ -76,41 +76,35 @@ pub fn flatten_otel_traces(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
     let message: TracesData = serde_json::from_str(body_str).unwrap();
     let mut vec_otel_json = Vec::new();
 
-    if let Some(records) = &message.resource_spans {
-        for record in records {
-            let mut resource_span_json = BTreeMap::new();
+    for record in &message.resource_spans {
+        let mut resource_span_json = BTreeMap::new();
 
-            if let Some(resource) = &record.resource {
-                insert_attributes(&mut resource_span_json, &resource.attributes);
-                insert_number_if_some(
-                    &mut resource_span_json,
-                    "resource_dropped_attributes_count",
-                    &resource.dropped_attributes_count.map(|f| f as f64),
-                );
-            }
-
-            let mut vec_resource_spans_json = Vec::new();
-            if let Some(scope_spans) = &record.scope_spans {
-                for scope_span in scope_spans {
-                    let scope_span_json = flatten_scope_span(scope_span);
-                    vec_resource_spans_json.extend(scope_span_json);
-                }
-            }
-
-            insert_if_some(
-                &mut resource_span_json,
-                "resource_span_schema_url",
-                &record.schema_url,
+        if let Some(resource) = &record.resource {
+            insert_attributes(&mut resource_span_json, &resource.attributes);
+            resource_span_json.insert(
+                "resource_dropped_attributes_count".to_string(),
+                Value::Number(resource.dropped_attributes_count.into()),
             );
-
-            for resource_spans_json in &mut vec_resource_spans_json {
-                for (key, value) in &resource_span_json {
-                    resource_spans_json.insert(key.clone(), value.clone());
-                }
-            }
-
-            vec_otel_json.extend(vec_resource_spans_json);
         }
+
+        let mut vec_resource_spans_json = Vec::new();
+        for scope_span in &record.scope_spans {
+            let scope_span_json = flatten_scope_span(scope_span);
+            vec_resource_spans_json.extend(scope_span_json);
+        }
+
+        resource_span_json.insert(
+            "schema_url".to_string(),
+            Value::String(record.schema_url.clone()),
+        );
+
+        for resource_spans_json in &mut vec_resource_spans_json {
+            for (key, value) in &resource_span_json {
+                resource_spans_json.insert(key.clone(), value.clone());
+            }
+        }
+
+        vec_otel_json.extend(vec_resource_spans_json);
     }
 
     vec_otel_json
@@ -124,17 +118,15 @@ fn flatten_events(events: &[Event]) -> Vec<BTreeMap<String, Value>> {
         .iter()
         .map(|event| {
             let mut event_json = BTreeMap::new();
-            insert_if_some(
-                &mut event_json,
-                "event_time_unix_nano",
-                &event.time_unix_nano,
+            event_json.insert(
+                "event_time_unix_nano".to_string(),
+                Value::Number(event.time_unix_nano.into()),
             );
-            insert_if_some(&mut event_json, "event_name", &event.name);
+            event_json.insert("event_name".to_string(), Value::String(event.name.clone()));
             insert_attributes(&mut event_json, &event.attributes);
-            insert_number_if_some(
-                &mut event_json,
-                "event_dropped_attributes_count",
-                &event.dropped_attributes_count.map(|f| f as f64),
+            event_json.insert(
+                "event_dropped_attributes_count".to_string(),
+                Value::Number(event.dropped_attributes_count.into()),
             );
             event_json
         })
@@ -149,13 +141,19 @@ fn flatten_links(links: &[Link]) -> Vec<BTreeMap<String, Value>> {
         .iter()
         .map(|link| {
             let mut link_json = BTreeMap::new();
-            insert_if_some(&mut link_json, "link_trace_id", &link.trace_id);
-            insert_if_some(&mut link_json, "link_span_id", &link.span_id);
+            link_json.insert(
+                "link_span_id".to_string(),
+                Value::String(hex::encode(&link.span_id)),
+            );
+            link_json.insert(
+                "link_trace_id".to_string(),
+                Value::String(hex::encode(&link.trace_id)),
+            );
+
             insert_attributes(&mut link_json, &link.attributes);
-            insert_number_if_some(
-                &mut link_json,
-                "link_dropped_attributes_count",
-                &link.dropped_attributes_count.map(|f| f as f64),
+            link_json.insert(
+                "link_dropped_attributes_count".to_string(),
+                Value::Number(link.dropped_attributes_count.into()),
             );
             link_json
         })
@@ -168,25 +166,24 @@ fn flatten_links(links: &[Link]) -> Vec<BTreeMap<String, Value>> {
 /// and adds it to the flattened json
 fn flatten_status(status: &Status) -> BTreeMap<String, Value> {
     let mut status_json = BTreeMap::new();
-    insert_if_some(&mut status_json, "span_status_message", &status.message);
-    insert_number_if_some(
-        &mut status_json,
-        "span_status_code",
-        &status.code.map(|f| f as f64),
+    status_json.insert(
+        "span_status_message".to_string(),
+        Value::String(status.message.clone()),
     );
-
-    if let Some(code) = status.code {
-        let description = match code {
-            0 => "STATUS_CODE_UNSET",
-            1 => "STATUS_CODE_OK",
-            2 => "STATUS_CODE_ERROR",
-            _ => "",
-        };
-        status_json.insert(
-            "span_status_description".to_string(),
-            Value::String(description.to_string()),
-        );
-    }
+    status_json.insert(
+        "span_status_code".to_string(),
+        Value::Number(status.code.into()),
+    );
+    let description = match status.code {
+        0 => "STATUS_CODE_UNSET",
+        1 => "STATUS_CODE_OK",
+        2 => "STATUS_CODE_ERROR",
+        _ => "",
+    };
+    status_json.insert(
+        "span_status_description".to_string(),
+        Value::String(description.to_string()),
+    );
 
     status_json
 }
@@ -195,23 +192,20 @@ fn flatten_status(status: &Status) -> BTreeMap<String, Value> {
 /// there is a mapping of flags to flags description provided in proto
 /// this function fetches the flags description from the flags
 /// and adds it to the flattened json
-fn flatten_flags(flags: &Option<u32>) -> BTreeMap<String, Value> {
+fn flatten_flags(flags: u32) -> BTreeMap<String, Value> {
     let mut flags_json = BTreeMap::new();
-    insert_number_if_some(&mut flags_json, "span_flags", &flags.map(|f| f as f64));
-
-    if let Some(flag) = flags {
-        let description = match flag {
-            0 => "SPAN_FLAGS_DO_NOT_USE",
-            255 => "SPAN_FLAGS_TRACE_FLAGS_MASK",
-            256 => "SPAN_FLAGS_CONTEXT_HAS_IS_REMOTE_MASK",
-            512 => "SPAN_FLAGS_CONTEXT_IS_REMOTE_MASK",
-            _ => "",
-        };
-        flags_json.insert(
-            "span_flags_description".to_string(),
-            Value::String(description.to_string()),
-        );
-    }
+    flags_json.insert("span_flags".to_string(), Value::Number(flags.into()));
+    let description = match flags {
+        0 => "SPAN_FLAGS_DO_NOT_USE",
+        255 => "SPAN_FLAGS_TRACE_FLAGS_MASK",
+        256 => "SPAN_FLAGS_CONTEXT_HAS_IS_REMOTE_MASK",
+        512 => "SPAN_FLAGS_CONTEXT_IS_REMOTE_MASK",
+        _ => "",
+    };
+    flags_json.insert(
+        "span_flags_description".to_string(),
+        Value::String(description.to_string()),
+    );
 
     flags_json
 }
@@ -220,25 +214,22 @@ fn flatten_flags(flags: &Option<u32>) -> BTreeMap<String, Value> {
 /// there is a mapping of kind to kind description provided in proto
 /// this function fetches the kind description from the kind
 /// and adds it to the flattened json
-fn flatten_kind(kind: &Option<i32>) -> BTreeMap<String, Value> {
+fn flatten_kind(kind: i32) -> BTreeMap<String, Value> {
     let mut kind_json = BTreeMap::new();
-    insert_number_if_some(&mut kind_json, "span_kind", &kind.map(|k| k as f64));
-
-    if let Some(kind) = kind {
-        let description = match kind {
-            0 => "SPAN_KIND_UNSPECIFIED",
-            1 => "SPAN_KIND_INTERNAL",
-            2 => "SPAN_KIND_SERVER",
-            3 => "SPAN_KIND_CLIENT",
-            4 => "SPAN_KIND_PRODUCER",
-            5 => "SPAN_KIND_CONSUMER",
-            _ => "",
-        };
-        kind_json.insert(
-            "span_kind_description".to_string(),
-            Value::String(description.to_string()),
-        );
-    }
+    kind_json.insert("span_kind".to_string(), Value::Number(kind.into()));
+    let description = match kind {
+        0 => "SPAN_KIND_UNSPECIFIED",
+        1 => "SPAN_KIND_INTERNAL",
+        2 => "SPAN_KIND_SERVER",
+        3 => "SPAN_KIND_CLIENT",
+        4 => "SPAN_KIND_PRODUCER",
+        5 => "SPAN_KIND_CONSUMER",
+        _ => "",
+    };
+    kind_json.insert(
+        "span_kind_description".to_string(),
+        Value::String(description.to_string()),
+    );
 
     kind_json
 }
@@ -250,57 +241,50 @@ fn flatten_span_record(span_record: &Span) -> Vec<BTreeMap<String, Value>> {
     let mut span_records_json = Vec::new();
 
     let mut span_record_json = BTreeMap::new();
-    insert_if_some(
-        &mut span_record_json,
-        "span_trace_id",
-        &span_record.trace_id,
+    span_record_json.insert(
+        "span_trace_id".to_string(),
+        Value::String(hex::encode(&span_record.span_id)),
     );
-    insert_if_some(&mut span_record_json, "span_span_id", &span_record.span_id);
-    insert_if_some(
-        &mut span_record_json,
-        "span_trace_state",
-        &span_record.trace_state,
+    span_record_json.insert(
+        "span_span_id".to_string(),
+        Value::String(hex::encode(&span_record.trace_id)),
     );
-    insert_if_some(
-        &mut span_record_json,
-        "span_parent_span_id",
-        &span_record.parent_span_id,
+    span_record_json.insert(
+        "span_trace_state".to_string(),
+        Value::String(span_record.trace_state.clone()),
     );
-    span_record_json.extend(flatten_flags(&span_record.flags));
-    insert_if_some(&mut span_record_json, "span_name", &span_record.name);
-    span_record_json.extend(flatten_kind(&span_record.kind));
-    insert_if_some(
-        &mut span_record_json,
-        "span_start_time_unix_nano",
-        &span_record.start_time_unix_nano,
+    span_record_json.insert(
+        "span_parent_span_id".to_string(),
+        Value::String(hex::encode(&span_record.parent_span_id)),
     );
-    insert_if_some(
-        &mut span_record_json,
-        "span_end_time_unix_nano",
-        &span_record.end_time_unix_nano,
+    span_record_json.extend(flatten_flags(span_record.flags));
+    span_record_json.insert(
+        "span_name".to_string(),
+        Value::String(span_record.name.clone()),
+    );
+    span_record_json.extend(flatten_kind(span_record.kind));
+    span_record_json.insert(
+        "span_start_time_unix_nano".to_string(),
+        Value::Number(span_record.start_time_unix_nano.into()),
+    );
+    span_record_json.insert(
+        "span_end_time_unix_nano".to_string(),
+        Value::Number(span_record.end_time_unix_nano.into()),
     );
     insert_attributes(&mut span_record_json, &span_record.attributes);
-    insert_if_some(
-        &mut span_record_json,
-        "span_dropped_attributes_count",
-        &span_record.dropped_attributes_count,
+    span_record_json.insert(
+        "span_dropped_attributes_count".to_string(),
+        Value::Number(span_record.dropped_attributes_count.into()),
     );
-    if let Some(events) = &span_record.events {
-        span_records_json.extend(flatten_events(events));
-    }
-    insert_number_if_some(
-        &mut span_record_json,
-        "span_dropped_events_count",
-        &span_record.dropped_events_count.map(|f| f as f64),
+    span_records_json.extend(flatten_events(&span_record.events));
+    span_record_json.insert(
+        "span_dropped_events_count".to_string(),
+        Value::Number(span_record.dropped_events_count.into()),
     );
-    if let Some(links) = &span_record.links {
-        span_records_json.extend(flatten_links(links));
-    }
-
-    insert_number_if_some(
-        &mut span_record_json,
-        "span_dropped_links_count",
-        &span_record.dropped_links_count.map(|f| f as f64),
+    span_records_json.extend(flatten_links(&span_record.links));
+    span_record_json.insert(
+        "span_dropped_links_count".to_string(),
+        Value::Number(span_record.dropped_links_count.into()),
     );
 
     if let Some(status) = &span_record.status {
