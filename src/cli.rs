@@ -16,16 +16,12 @@
  *
  */
 
-use clap::{value_parser, Arg, ArgGroup, Command, FromArgMatches};
+use clap::{value_parser, Arg, ArgGroup, Command, CommandFactory, FromArgMatches};
 use std::path::PathBuf;
-use std::time::Duration;
-use tracing::warn;
+
 use url::Url;
 
 use crate::connectors::common::config::ConnectorConfig;
-use crate::connectors::common::types::BadData;
-use crate::connectors::common::types::ConnectorType;
-use crate::connectors::kafka::config::{ConsumerConfig, KafkaConfig, SourceOffset};
 use crate::{
     oidc::{self, OpenidConfig},
     option::{validation, Compression, Mode},
@@ -112,8 +108,6 @@ pub struct Cli {
     pub trino_auth: Option<String>,
     pub trino_schema: Option<String>,
     pub trino_catalog: Option<String>,
-    //Connectors config
-    pub connector_config: Option<ConnectorConfig>,
 }
 
 impl Cli {
@@ -155,46 +149,6 @@ impl Cli {
     pub const TRINO_AUTHORIZATION: &'static str = "p-trino-authorization";
     pub const TRINO_SCHEMA: &'static str = "p-trino-schema";
 
-    // ConnectorConfig arguments
-    pub const CONNECTOR_NAME: &'static str = "connector-name";
-    pub const CONNECTOR_BUFFER_SIZE: &'static str = "connector-buffer-size";
-    pub const CONNECTOR_BUFFER_TIMEOUT: &'static str = "connector-buffer-timeout";
-    pub const CONNECTOR_OFFSET_MODE: &'static str = "connector-offset-mode"; // earliest, latest, group
-    pub const CONNECTOR_BAD_DATA_POLICY: &'static str = "connector-bad-data-policy"; // e.g. "drop", "fail" , "dlt"
-    pub const CONNECTOR_MAX_RETRIES: &'static str = "connector-max-retries";
-    pub const CONNECTOR_RETRY_INTERVAL_MS: &'static str = "connector-retry-interval-ms";
-    pub const CONNECTOR_METRICS_ENABLED: &'static str = "connector-metrics-enabled";
-    pub const CONNECTOR_INSTANCE_ID: &'static str = "connector-instance-id";
-
-    // ConsumerConfig arguments
-    pub const CONSUMER_GROUP_INSTANCE_ID: &'static str = "consumer-group-instance-id";
-    pub const CONSUMER_PARTITION_ASSIGNMENT_STRATEGY: &'static str =
-        "consumer-partition-assignment-strategy";
-    pub const CONSUMER_SESSION_TIMEOUT_MS: &'static str = "consumer-session-timeout-ms";
-    pub const CONSUMER_HEARTBEAT_INTERVAL_MS: &'static str = "consumer-heartbeat-interval-ms";
-    pub const CONSUMER_MAX_POLL_INTERVAL_MS: &'static str = "consumer-max-poll-interval-ms";
-    pub const CONSUMER_ENABLE_AUTO_COMMIT: &'static str = "consumer-enable-auto-commit";
-    pub const CONSUMER_AUTO_COMMIT_INTERVAL_MS: &'static str = "consumer-auto-commit-interval-ms";
-    pub const CONSUMER_ENABLE_AUTO_OFFSET_STORE: &'static str = "consumer-enable-auto-offset-store";
-    pub const CONSUMER_AUTO_OFFSET_RESET: &'static str = "consumer-auto-offset-reset";
-    pub const CONSUMER_FETCH_MIN_BYTES: &'static str = "consumer-fetch-min-bytes";
-    pub const CONSUMER_FETCH_MAX_BYTES: &'static str = "consumer-fetch-max-bytes";
-    pub const CONSUMER_FETCH_MAX_WAIT_MS: &'static str = "consumer-fetch-max-wait-ms";
-    pub const CONSUMER_MAX_PARTITION_FETCH_BYTES: &'static str =
-        "consumer-max-partition-fetch-bytes";
-    pub const CONSUMER_QUEUED_MIN_MESSAGES: &'static str = "consumer-queued-min-messages";
-    pub const CONSUMER_QUEUED_MAX_MESSAGES_KBYTES: &'static str =
-        "consumer-queued-max-messages-kbytes";
-    pub const CONSUMER_ENABLE_PARTITION_EOF: &'static str = "consumer-enable-partition-eof";
-    pub const CONSUMER_CHECK_CRCS: &'static str = "consumer-check-crcs";
-    pub const CONSUMER_ISOLATION_LEVEL: &'static str = "consumer-isolation-level";
-    pub const CONSUMER_FETCH_MESSAGE_MAX_BYTES: &'static str = "consumer-fetch-message-max-bytes";
-    pub const CONSUMER_STATS_INTERVAL_MS: &'static str = "consumer-stats-interval-ms";
-
-    pub const KAFKA_TOPICS: &'static str = "kafka-topics";
-    pub const KAFKA_BOOTSTRAP_SERVERS: &'static str = "kafka-bootstrap-servers";
-    pub const KAFKA_GROUP_ID: &'static str = "kafka-group-id";
-
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
     }
@@ -207,7 +161,8 @@ impl Cli {
     }
 
     pub fn create_cli_command_with_clap(name: &'static str) -> Command {
-        Command::new(name).next_line_help(false)
+        let mut command = Command::new(name)
+            .next_line_help(false)
             .arg(
                 Arg::new(Self::TRINO_ENDPOINT)
                     .long(Self::TRINO_ENDPOINT)
@@ -267,25 +222,25 @@ impl Cli {
                     .value_parser(validation::canonicalize_path)
                     .help("Local path on this device where all trusted certificates are located.")
             )
-             .arg(
-                 Arg::new(Self::ADDRESS)
-                     .long(Self::ADDRESS)
-                     .env("P_ADDR")
-                     .value_name("ADDR:PORT")
-                     .default_value("0.0.0.0:8000")
-                     .value_parser(validation::socket_addr)
-                     .help("Address and port for Parseable HTTP(s) server"),
-             )
-             .arg(
-                 Arg::new(Self::STAGING)
-                     .long(Self::STAGING)
-                     .env("P_STAGING_DIR")
-                     .value_name("DIR")
-                     .default_value("./staging")
-                     .value_parser(validation::canonicalize_path)
-                     .help("Local path on this device to be used as landing point for incoming events")
-                     .next_line_help(true),
-             )
+            .arg(
+                Arg::new(Self::ADDRESS)
+                    .long(Self::ADDRESS)
+                    .env("P_ADDR")
+                    .value_name("ADDR:PORT")
+                    .default_value("0.0.0.0:8000")
+                    .value_parser(validation::socket_addr)
+                    .help("Address and port for Parseable HTTP(s) server"),
+            )
+            .arg(
+                Arg::new(Self::STAGING)
+                    .long(Self::STAGING)
+                    .env("P_STAGING_DIR")
+                    .value_name("DIR")
+                    .default_value("./staging")
+                    .value_parser(validation::canonicalize_path)
+                    .help("Local path on this device to be used as landing point for incoming events")
+                    .next_line_help(true),
+            )
             .arg(
                 Arg::new(Self::USERNAME)
                     .long(Self::USERNAME)
@@ -416,7 +371,7 @@ impl Cli {
             .arg(
                 // RowGroupSize controls the number of rows present in one row group
                 // More rows = better compression but HIGHER Memory consumption during read/write
-                // 1048576 is the default value for DataFusion 
+                // 1048576 is the default value for DataFusion
                 Arg::new(Self::ROW_GROUP_SIZE)
                     .long(Self::ROW_GROUP_SIZE)
                     .env("P_PARQUET_ROW_GROUP_SIZE")
@@ -489,232 +444,17 @@ impl Cli {
                     .value_name("STRING")
                     .required(false)
                     .help("Tag for MS Clarity"),
-            ).arg(
-            Arg::new(Self::CONNECTOR_NAME)
-                .long(Self::CONNECTOR_NAME)
-                .env("P_CONNECTOR_NAME")
-                .required(false)
-                .help("Name of the connector")
-        )
-            .arg(
-                Arg::new(Self::CONNECTOR_BUFFER_SIZE)
-                    .long(Self::CONNECTOR_BUFFER_SIZE)
-                    .env("P_CONNECTOR_BATCH_SIZE")
-                    .value_parser(value_parser!(usize))
-                    .required(false)
-                    .help("Buffer size for processing")
-            )
-            .arg(
-                Arg::new(Self::CONNECTOR_BUFFER_TIMEOUT)
-                    .long(Self::CONNECTOR_BUFFER_TIMEOUT)
-                    .env("P_CONNECTOR_BUFFER_TIMEOUT")
-                    .value_parser(value_parser!(u64))
-                    .required(false)
-                    .help("Buffer timeout for processing")
-            )
-            .arg(
-                Arg::new(Self::CONNECTOR_OFFSET_MODE)
-                    .long(Self::CONNECTOR_OFFSET_MODE)
-                    .required(false)
-                    .env("P_CONNECTOR_OFFSET_MODE")
-                    .value_parser(["earliest", "latest", "group"])
-                    .help("Offset mode: earliest, latest, or group")
-            )
-            .arg(
-                Arg::new(Self::CONNECTOR_BAD_DATA_POLICY)
-                    .long(Self::CONNECTOR_BAD_DATA_POLICY)
-                    .required(false)
-                    .env("P_CONNECTOR_BAD_DATA_POLICY")
-                    .help("Bad data handling policy: skip, error")
-            )
-            .arg(
-                Arg::new(Self::CONNECTOR_MAX_RETRIES)
-                    .long(Self::CONNECTOR_MAX_RETRIES)
-                    .env("P_CONNECTOR_MAX_RETRIES")
-                    .required(false)
-                    .value_parser(value_parser!(u32))
-                    .help("Maximum number of retries on errors")
-            )
-            .arg(
-                Arg::new(Self::CONNECTOR_RETRY_INTERVAL_MS)
-                    .long(Self::CONNECTOR_RETRY_INTERVAL_MS)
-                    .env("P_CONNECTOR_RETRY_INTERVAL_MS")
-                    .value_parser(value_parser!(u64))
-                    .required(false)
-                    .help("Retry interval in milliseconds")
-            )
-            .arg(
-                Arg::new(Self::CONNECTOR_METRICS_ENABLED)
-                    .long(Self::CONNECTOR_METRICS_ENABLED)
-                    .env("P_CONNECTOR_METRICS_ENABLED")
-                    .value_parser(value_parser!(bool))
-                    .required(false)
-                    .help("Enable or disable connector metrics")
-            )
-            .arg(
-                Arg::new(Self::CONNECTOR_INSTANCE_ID)
-                    .long(Self::CONNECTOR_INSTANCE_ID)
-                    .required(false)
-                    .env("P_CONNECTOR_INSTANCE_ID")
-                    .help("Instance ID for the connector")
-            )
-
-            // ConsumerConfig arguments:
-            .arg(
-                Arg::new(Self::CONSUMER_GROUP_INSTANCE_ID)
-                    .long(Self::CONSUMER_GROUP_INSTANCE_ID)
-                    .required(false)
-                    .env("P_CONSUMER_GROUP_INSTANCE_ID")
-                    .help("Consumer group instance ID")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_PARTITION_ASSIGNMENT_STRATEGY)
-                    .long(Self::CONSUMER_PARTITION_ASSIGNMENT_STRATEGY)
-                    .env("P_CONSUMER_PARTITION_ASSIGNMENT_STRATEGY")
-                    .help("Partition assignment strategy")
-                    .required(false)
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_SESSION_TIMEOUT_MS)
-                    .long(Self::CONSUMER_SESSION_TIMEOUT_MS)
-                    .env("P_CONSUMER_SESSION_TIMEOUT_MS")
-                    .value_parser(value_parser!(u32))
-                    .help("Consumer session timeout in ms")
-                    .required(false)
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_HEARTBEAT_INTERVAL_MS)
-                    .long(Self::CONSUMER_HEARTBEAT_INTERVAL_MS)
-                    .env("P_CONSUMER_HEARTBEAT_INTERVAL_MS")
-                    .value_parser(value_parser!(u32))
-                    .help("Consumer heartbeat interval in ms")
-                    .required(false)
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_MAX_POLL_INTERVAL_MS)
-                    .long(Self::CONSUMER_MAX_POLL_INTERVAL_MS)
-                    .env("P_CONSUMER_MAX_POLL_INTERVAL_MS")
-                    .value_parser(value_parser!(u32))
-                    .help("Max poll interval in ms")
-                    .required(false)
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_ENABLE_AUTO_OFFSET_STORE)
-                    .long(Self::CONSUMER_ENABLE_AUTO_OFFSET_STORE)
-                    .env("P_CONSUMER_ENABLE_AUTO_OFFSET_STORE")
-                    .value_parser(value_parser!(bool))
-                    .help("Enable auto offset store")
-                    .default_value("true") // Just for as few metrics
-                    .required(false)
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_AUTO_OFFSET_RESET)
-                    .long(Self::CONSUMER_AUTO_OFFSET_RESET)
-                    .env("P_CONSUMER_AUTO_OFFSET_RESET")
-                    .value_parser(["earliest", "latest", "none"])
-                    .help("Auto offset reset behavior")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_FETCH_MIN_BYTES)
-                    .long(Self::CONSUMER_FETCH_MIN_BYTES)
-                    .env("P_CONSUMER_FETCH_MIN_BYTES")
-                    .value_parser(value_parser!(u32))
-                    .help("Fetch min bytes")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_FETCH_MAX_BYTES)
-                    .long(Self::CONSUMER_FETCH_MAX_BYTES)
-                    .env("P_CONSUMER_FETCH_MAX_BYTES")
-                    .value_parser(value_parser!(u32))
-                    .help("Fetch max bytes")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_FETCH_MAX_WAIT_MS)
-                    .long(Self::CONSUMER_FETCH_MAX_WAIT_MS)
-                    .env("P_CONSUMER_FETCH_MAX_WAIT_MS")
-                    .value_parser(value_parser!(u32))
-                    .help("Fetch max wait in ms")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_MAX_PARTITION_FETCH_BYTES)
-                    .long(Self::CONSUMER_MAX_PARTITION_FETCH_BYTES)
-                    .env("P_CONSUMER_MAX_PARTITION_FETCH_BYTES")
-                    .value_parser(value_parser!(u32))
-                    .help("Max partition fetch bytes")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_QUEUED_MIN_MESSAGES)
-                    .long(Self::CONSUMER_QUEUED_MIN_MESSAGES)
-                    .env("P_CONSUMER_QUEUED_MIN_MESSAGES")
-                    .value_parser(value_parser!(u32))
-                    .help("Queued min messages")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_QUEUED_MAX_MESSAGES_KBYTES)
-                    .long(Self::CONSUMER_QUEUED_MAX_MESSAGES_KBYTES)
-                    .env("P_CONSUMER_QUEUED_MAX_MESSAGES_KBYTES")
-                    .value_parser(value_parser!(u32))
-                    .help("Queued max messages kbytes")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_ENABLE_PARTITION_EOF)
-                    .long(Self::CONSUMER_ENABLE_PARTITION_EOF)
-                    .env("P_CONSUMER_ENABLE_PARTITION_EOF")
-                    .value_parser(value_parser!(bool))
-                    .help("Enable partition EOF")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_CHECK_CRCS)
-                    .long(Self::CONSUMER_CHECK_CRCS)
-                    .env("P_CONSUMER_CHECK_CRCS")
-                    .value_parser(value_parser!(bool))
-                    .help("Check CRCs")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_ISOLATION_LEVEL)
-                    .long(Self::CONSUMER_ISOLATION_LEVEL)
-                    .env("P_CONSUMER_ISOLATION_LEVEL")
-                    .value_parser(["read_uncommitted", "read_committed"])
-                    .help("Isolation level")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_FETCH_MESSAGE_MAX_BYTES)
-                    .long(Self::CONSUMER_FETCH_MESSAGE_MAX_BYTES)
-                    .env("P_CONSUMER_FETCH_MESSAGE_MAX_BYTES")
-                    .help("Fetch message max bytes (string)")
-            )
-            .arg(
-                Arg::new(Self::CONSUMER_STATS_INTERVAL_MS)
-                    .long(Self::CONSUMER_STATS_INTERVAL_MS)
-                    .env("P_CONSUMER_STATS_INTERVAL_MS")
-                    .value_parser(value_parser!(u64))
-                    .help("Consumer stats interval ms")
-            )
-            .arg(
-                Arg::new(Self::KAFKA_TOPICS)
-                    .long(Self::KAFKA_TOPICS)
-                    .env("P_KAFKA_TOPICS")
-                    .help("Kafka topics to consume from.Comma seperated string")
-            )
-            .arg(
-                Arg::new(Self::KAFKA_BOOTSTRAP_SERVERS)
-                    .long(Self::KAFKA_BOOTSTRAP_SERVERS)
-                    .env("P_KAFKA_BOOTSTRAP_SERVERS")
-                    .help("Kafka bootstrap servers.")
-            )
-            .arg(
-                Arg::new(Self::KAFKA_GROUP_ID)
-                    .long(Self::KAFKA_GROUP_ID)
-                    .required(false)
-                    .env("P_KAFKA_GROUP_ID")
-                    .help("Kafka consumer group ID.")
             )
             .group(
                 ArgGroup::new("oidc")
                     .args([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
                     .requires_all([Self::OPENID_CLIENT_ID, Self::OPENID_CLIENT_SECRET, Self::OPENID_ISSUER])
                     .multiple(true)
-            )
+            );
+
+        command = command.subcommand(ConnectorConfig::command());
+
+        command
     }
 }
 
@@ -726,126 +466,6 @@ impl FromArgMatches for Cli {
     }
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
-        if matches!(self.mode, Mode::Query) {
-            self.connector_config = None;
-        }
-
-        if let Some(topics) = m.get_one::<String>(Cli::KAFKA_TOPICS).cloned() {
-            let bootstrap_servers = m
-                .get_one::<String>(Cli::KAFKA_BOOTSTRAP_SERVERS)
-                .cloned()
-                .unwrap_or_default();
-            let group_id = m
-                .get_one::<String>(Cli::KAFKA_GROUP_ID)
-                .cloned()
-                .unwrap_or_else(|| "parseable-default-group".to_string());
-
-            if topics.is_empty() {
-                return Err(clap::Error::raw(
-                    clap::error::ErrorKind::MissingRequiredArgument,
-                    "Kafka topics required in ingest/all mode.",
-                ));
-            }
-            if bootstrap_servers.is_empty() {
-                return Err(clap::Error::raw(
-                    clap::error::ErrorKind::MissingRequiredArgument,
-                    "Kafka bootstrap servers required in ingest/all mode.",
-                ));
-            }
-
-            let offset_mode = match m
-                .get_one::<String>(Cli::CONNECTOR_OFFSET_MODE)
-                .map(|s| s.as_str())
-            {
-                Some("earliest") => SourceOffset::Earliest,
-                Some("latest") => SourceOffset::Latest,
-                Some("group") | None => SourceOffset::Group,
-                _ => SourceOffset::Latest,
-            };
-
-            let buffer_size = m
-                .get_one::<usize>(Cli::CONNECTOR_BUFFER_SIZE)
-                .cloned()
-                .unwrap_or(10000);
-            let buffer_timeout = m
-                .get_one::<u64>(Cli::CONNECTOR_BUFFER_TIMEOUT)
-                .cloned()
-                .unwrap_or(5000);
-
-            let max_retries = m
-                .get_one::<u32>(Cli::CONNECTOR_MAX_RETRIES)
-                .cloned()
-                .unwrap_or(20);
-            let retry_interval_ms = m
-                .get_one::<u64>(Cli::CONNECTOR_RETRY_INTERVAL_MS)
-                .cloned()
-                .unwrap_or(10000);
-            let metrics_enabled = m
-                .get_one::<bool>(Cli::CONNECTOR_METRICS_ENABLED)
-                .cloned()
-                .unwrap_or(true);
-            let connector_name = m
-                .get_one::<String>(Cli::CONNECTOR_NAME)
-                .cloned()
-                .unwrap_or_else(|| "parseable-connectors".to_string());
-            let instance_id = m
-                .get_one::<String>(Cli::CONNECTOR_INSTANCE_ID)
-                .cloned()
-                .unwrap_or_else(|| "parseable-connectors".to_string());
-
-            let bad_data_policy = m.get_one::<String>(Cli::CONNECTOR_BAD_DATA_POLICY).cloned();
-            let bad_data = match bad_data_policy.as_deref() {
-                Some("drop") => Some(BadData::Drop {}),
-                Some("fail") => Some(BadData::Fail {}),
-                Some("dlt") => Some(BadData::Dlt {}),
-                _ => None,
-            };
-
-            let auto_offset_reset = m
-                .get_one::<String>(Cli::CONSUMER_AUTO_OFFSET_RESET)
-                .cloned()
-                .unwrap_or_else(|| "earliest".to_string());
-
-            let mut consumer = ConsumerConfig::default();
-            consumer.group_id = group_id;
-            consumer.auto_offset_reset = auto_offset_reset;
-
-            let topics: Vec<String> = topics.split(",").map(|t| t.to_owned()).collect();
-            let topics_clone = topics.to_vec();
-
-            let kafka_config = KafkaConfig::builder()
-                .bootstrap_servers(bootstrap_servers)
-                .topic(topics_clone)
-                .with_consumer(consumer)
-                .build()
-                .map_err(|e| {
-                    clap::Error::raw(clap::error::ErrorKind::InvalidValue, e.to_string())
-                })?;
-
-            let mut connector_config = ConnectorConfig::builder()
-                .connector_type(ConnectorType::KafkaSource)
-                .name(connector_name)
-                .buffer_size(buffer_size)
-                .buffer_timeout(Duration::from_millis(buffer_timeout))
-                .offset_mode(offset_mode)
-                .topic(topics)
-                .max_retries(max_retries)
-                .retry_interval(Duration::from_millis(retry_interval_ms))
-                .metrics_enabled(metrics_enabled)
-                .kafka_config(kafka_config)
-                .instance_id(instance_id)
-                .build()
-                .map_err(|e| {
-                    clap::Error::raw(clap::error::ErrorKind::InvalidValue, e.to_string())
-                })?;
-
-            connector_config.bad_data = bad_data;
-
-            self.connector_config = Some(connector_config);
-        } else {
-            warn!("No Kafka topics provided");
-        }
-
         self.trino_catalog = m.get_one::<String>(Self::TRINO_CATALOG_NAME).cloned();
         self.trino_endpoint = m.get_one::<String>(Self::TRINO_ENDPOINT).cloned();
         self.trino_auth = m.get_one::<String>(Self::TRINO_AUTHORIZATION).cloned();

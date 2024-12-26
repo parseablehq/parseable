@@ -19,7 +19,6 @@
 pub mod config;
 pub mod processor;
 pub mod shutdown;
-pub mod types;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectorError {

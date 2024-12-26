@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     metadata.set_global();
 
     let prometheus = metrics::build_metrics_handler();
-    
+
     let parseable_server = server.init(&prometheus);
     let connectors_task = connectors::init(&prometheus);
 

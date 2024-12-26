@@ -29,7 +29,7 @@ services:
       context: .
       dockerfile: Dockerfile
     platform: linux/amd64
-    command: [ "parseable", "s3-store" ]
+    command: [ "parseable", "s3-store", "connectors", "kafka-sink" ]
     ports:
       - "8000:8000"
     environment:
@@ -43,9 +43,8 @@ services:
       - P_PASSWORD=parseableadmin
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
-      - P_KAFKA_TOPICS=test-logs-stream
+      - P_KAFKA_CONSUMER_TOPICS=test-logs-stream
       - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
-      - P_KAFKA_GROUP_ID=parseable-kafka-sink-connector
       # additional settings like security, tuning, etc.
     depends_on:
       - minio
@@ -116,7 +115,7 @@ services:
     networks:
       - parseable-internal
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      test: [ "CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -146,7 +145,7 @@ services:
     networks:
       - parseable-internal
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      test: [ "CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -176,7 +175,7 @@ services:
     networks:
       - parseable-internal
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      test: [ "CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5

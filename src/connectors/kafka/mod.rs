@@ -18,6 +18,7 @@
 
 use crate::connectors::kafka::config::KafkaConfig;
 use derive_more::Constructor;
+use rdkafka::client::OAuthToken;
 use rdkafka::consumer::{ConsumerContext, Rebalance};
 use rdkafka::error::KafkaResult;
 use rdkafka::message::{BorrowedMessage, Headers};
@@ -26,6 +27,7 @@ use rdkafka::topic_partition_list::TopicPartitionListElem;
 use rdkafka::{ClientContext, Message, Offset, Statistics};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
@@ -236,6 +238,9 @@ impl ProducerContext for KafkaContext {
 }
 
 impl ClientContext for KafkaContext {
+    // TODO: when implementing OAuth, set this to true
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = false;
+
     fn stats(&self, new_stats: Statistics) {
         match self.statistics.write() {
             Ok(mut stats) => {
@@ -245,5 +250,12 @@ impl ClientContext for KafkaContext {
                 error!("Cannot write to kafka statistics from RwLock. Error: {}", e)
             }
         };
+    }
+
+    fn generate_oauth_token(
+        &self,
+        _oauthbearer_config: Option<&str>,
+    ) -> Result<OAuthToken, Box<dyn Error>> {
+        todo!("Implement OAuth token generation")
     }
 }

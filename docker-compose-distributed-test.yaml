@@ -65,7 +65,7 @@ services:
       context: .
       dockerfile: Dockerfile
     platform: linux/amd64
-    command: [ "parseable", "s3-store" ]
+    command: [ "parseable", "s3-store", "connectors", "kafka-sink" ]
     ports:
       - 8000
     environment:
@@ -81,9 +81,8 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
-      - P_KAFKA_TOPICS=dist-test-logs-stream
+      - P_KAFKA_CONSUMER_TOPICS=dist-test-logs-stream
       - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
-      - P_KAFKA_GROUP_ID=parseable-kafka-sink-connector
       # additional settings like security, tuning, etc.
     networks:
       - parseable-internal

@@ -46,7 +46,7 @@ bzip2 = { version = "*", features = ["static"] }
 cookie = "0.18.1"
 chrono = "0.4"
 chrono-humanize = "0.2"
-clap = { version = "4.1", default-features = false, features = [
+clap = { version = "4.5", default-features = false, features = [
     "std",
     "color",
     "help",

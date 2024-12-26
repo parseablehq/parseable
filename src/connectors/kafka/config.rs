@@ -1,232 +1,10 @@
-/*
- * Parseable Server (C) 2022 - 2024 Parseable, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- */
-
-use anyhow::bail;
-use rdkafka::Offset;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls_pemfile::{self, Item};
+use clap::{Args, ValueEnum};
+use rdkafka::{ClientConfig, Offset};
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
-use std::io::BufReader;
-use std::sync::Arc;
-use tracing::{debug, info};
+use std::path::PathBuf;
+use std::time::Duration;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KafkaConfig {
-    // Common configuration
-    pub bootstrap_servers: String,
-    topics: Vec<String>,
-    pub client_id: Option<String>,
-
-    // Component-specific configurations
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub consumer: Option<ConsumerConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub producer: Option<ProducerConfig>,
-
-    // Security and advanced settings
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub security: Option<SecurityConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConsumerConfig {
-    // Consumer group configuration
-    pub group_id: String,
-    pub group_instance_id: Option<String>,
-    pub partition_assignment_strategy: String,
-
-    // Session handling
-    pub session_timeout_ms: u32,
-    pub heartbeat_interval_ms: u32,
-    pub max_poll_interval_ms: u32,
-
-    // Offset management
-    pub enable_auto_commit: bool,
-    pub auto_commit_interval_ms: u32,
-    pub enable_auto_offset_store: bool,
-    pub auto_offset_reset: String,
-
-    // Fetch configuration
-    pub fetch_min_bytes: u32,
-    pub fetch_max_bytes: u32,
-    pub fetch_max_wait_ms: u32,
-    pub max_partition_fetch_bytes: u32,
-
-    // Queue configuration
-    pub queued_min_messages: u32,
-    pub queued_max_messages_kbytes: u32,
-
-    // Processing configuration
-    pub enable_partition_eof: bool,
-    pub check_crcs: bool,
-    pub isolation_level: String,
-    pub fetch_message_max_bytes: String,
-    pub stats_interval_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProducerConfig {
-    pub acks: String,
-    pub compression_type: String,
-    pub batch_size: u32,
-    pub linger_ms: u32,
-    pub delivery_timeout_ms: u32,
-    pub max_in_flight_requests_per_connection: u32,
-    pub max_request_size: u32,
-    pub enable_idempotence: bool,
-    pub transaction_timeout_ms: Option<u32>,
-    pub queue_buffering_max_messages: u32,
-    queue_buffering_max_ms: u32,
-    retry_backoff_ms: u32,
-    batch_num_messages: u32,
-    retries: u32,
-}
-
-impl Default for ConsumerConfig {
-    fn default() -> Self {
-        Self {
-            group_id: "default-cg".to_string(),
-            group_instance_id: Some("default-cg-ii".to_string()),
-            // NOTE: cooperative-sticky does not work well in rdkafka when using manual commit.
-            // @see https://github.com/confluentinc/librdkafka/issues/4629
-            // @see https://github.com/confluentinc/librdkafka/issues/4368
-            partition_assignment_strategy: "roundrobin,range".to_string(),
-            session_timeout_ms: 60000,
-            heartbeat_interval_ms: 3000,
-            max_poll_interval_ms: 300000,
-            enable_auto_commit: false,
-            auto_commit_interval_ms: 5000,
-            enable_auto_offset_store: true,
-            auto_offset_reset: "earliest".to_string(),
-            fetch_min_bytes: 1,
-            fetch_max_bytes: 52428800,
-            fetch_max_wait_ms: 500,
-            max_partition_fetch_bytes: 1048576,
-            queued_min_messages: 100000,
-            queued_max_messages_kbytes: 65536,
-            enable_partition_eof: false,
-            check_crcs: false,
-            isolation_level: "read_committed".to_string(),
-            fetch_message_max_bytes: "1048576".to_string(),
-            stats_interval_ms: Some(10000),
-        }
-    }
-}
-
-impl Default for ProducerConfig {
-    fn default() -> Self {
-        Self {
-            acks: "all".to_string(),
-            compression_type: "lz4".to_string(),
-            batch_size: 16384,           // 16KB default batch size
-            linger_ms: 5,                // Small latency for better batching
-            delivery_timeout_ms: 120000, // 2 minute delivery timeout
-            max_in_flight_requests_per_connection: 5,
-            max_request_size: 1048576,            // 1MB max request size
-            enable_idempotence: true,             // Ensure exactly-once delivery
-            transaction_timeout_ms: Some(60000),  // 1 minute transaction timeout
-            queue_buffering_max_messages: 100000, // Producer queue size
-            queue_buffering_max_ms: 100,          // Max time to wait before sending
-            retry_backoff_ms: 100,                // Backoff time between retries
-            batch_num_messages: 10000,            // Messages per batch
-            retries: 3,                           // Number of retries
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[warn(non_camel_case_types)]
-#[serde(rename_all = "UPPERCASE")]
-#[allow(non_camel_case_types)]
-pub enum SecurityProtocol {
-    Plaintext,
-    SSL,
-    SASL_SSL,
-    SASL_PLAINTEXT,
-}
-
-impl Display for SecurityProtocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let str = match self {
-            SecurityProtocol::Plaintext => "PLAINTEXT",
-            SecurityProtocol::SSL => "SSL",
-            SecurityProtocol::SASL_SSL => "SASL_SSL",
-            SecurityProtocol::SASL_PLAINTEXT => "SASL_PLAINTEXT",
-        }
-        .to_string();
-        write!(f, "{}", str)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecurityConfig {
-    pub protocol: SecurityProtocol,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ssl_config: Option<SSLConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sasl_config: Option<SASLConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SSLConfig {
-    pub ca_certificate_pem: String,
-    pub client_certificate_pem: String,
-    pub client_key_pem: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum SASLMechanism {
-    Plain,
-    ScramSha256,
-    ScramSha512,
-    GssAPI,
-}
-
-impl Display for SASLMechanism {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let str = match self {
-            SASLMechanism::Plain => "PLAIN",
-            SASLMechanism::ScramSha256 => "SCRAM-SHA-256",
-            SASLMechanism::ScramSha512 => "SCRAM-SHA-512",
-            SASLMechanism::GssAPI => "GSSAPI",
-        }
-        .to_string();
-        write!(f, "{}", str)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SASLConfig {
-    pub mechanism: SASLMechanism,
-    pub username: String,
-    pub password: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kerberos_service_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kerberos_principal: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kerberos_keytab: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(ValueEnum, Debug, Clone)]
 pub enum SourceOffset {
     Earliest,
     Latest,
@@ -243,412 +21,934 @@ impl SourceOffset {
     }
 }
 
-impl KafkaConfig {
-    pub fn new(
-        bootstrap_servers: String,
-        topics: Vec<String>,
-        consumer_config: Option<ConsumerConfig>,
-    ) -> Self {
-        Self {
-            bootstrap_servers,
-            topics,
-            client_id: None,
-            consumer: consumer_config,
-            producer: None,
-            security: None,
-        }
-    }
+#[derive(Debug, Clone, Args)]
+#[command(name = "kafka-config", about = "Configure Kafka connector settings")]
+#[group(id = "kafka")]
+pub struct KafkaConfig {
+    #[arg(
+        long = "bootstrap-servers",
+        env = "P_KAFKA_BOOTSTRAP_SERVERS",
+        value_name = "bootstrap-servers",
+        required = true,
+        help = "Comma-separated list of Kafka bootstrap servers"
+    )]
+    pub bootstrap_servers: String,
 
-    pub fn consumer_config(&self) -> rdkafka::ClientConfig {
-        let mut config = rdkafka::ClientConfig::new();
+    #[arg(
+        long = "client-id",
+        env = "P_KAFKA_CLIENT_ID",
+        required = false,
+        default_value_t = String::from("parseable-connect"),
+        value_name = "client_id",
+        help = "Client ID for Kafka connection"
+    )]
+    pub client_id: String,
+
+    #[command(flatten)]
+    #[group(id = "consumer", required = false)]
+    pub consumer: Option<ConsumerConfig>,
+
+    #[command(flatten)]
+    #[group(id = "producer", required = false)]
+    pub producer: Option<ProducerConfig>,
+
+    #[command(flatten)]
+    #[group(id = "security", required = false)]
+    pub security: Option<SecurityConfig>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ConsumerConfig {
+    #[arg(
+        long = "consumer-topics",
+        env = "P_KAFKA_CONSUMER_TOPICS",
+        value_name = "consumer-topics",
+        required = true,
+        value_delimiter = ',',
+        help = "Comma-separated list of topics"
+    )]
+    pub topics: Vec<String>,
+
+    #[arg(
+        long = "consumer-group-id",
+        env = "P_KAFKA_CONSUMER_GROUP_ID",
+        value_name = "id",
+        required = false,
+        default_value_t = String::from("parseable-connect-cg"),
+        help = "Consumer group ID"
+    )]
+    pub group_id: String,
+
+    // uses per partition stream micro-batch buffer size
+    #[arg(
+        long = "buffer-size",
+        env = "P_KAFKA_CONSUMER_BUFFER_SIZE",
+        value_name = "size",
+        required = false,
+        default_value_t = 10000,
+        help = "Size of the buffer for batching records"
+    )]
+    pub buffer_size: usize,
+
+    // uses per partition stream micro-batch buffer timeout
+    #[clap(
+        value_parser = humantime::parse_duration,
+        default_value= "10000ms",
+        long = "buffer-timeout",
+        env = "P_KAFKA_CONSUMER_BUFFER_TIMEOUT",
+        value_name = "timeout_ms",
+        required = false,
+        help = "Timeout for buffer flush in milliseconds"
+    )]
+    pub buffer_timeout: Duration,
+
+    #[arg(
+        long = "consumer-group-instance-id",
+        required = false,
+        env = "P_KAFKA_CONSUMER_GROUP_INSTANCE_ID",
+             default_value_t = format!("parseable-connect-cg-ii-{}", rand::random::<u8>()).to_string(),
+        help = "Group instance ID for static membership"
+    )]
+    pub group_instance_id: String,
+
+    #[arg(
+        long = "consumer-partition-strategy",
+        env = "P_KAFKA_CONSUMER_PARTITION_STRATEGY",
+        required = false,
+        default_value_t = String::from("roundrobin,range"),
+        help = "Partition assignment strategy"
+    )]
+    pub partition_assignment_strategy: String,
+
+    #[arg(
+        long = "consumer-session-timeout",
+        env = "P_KAFKA_CONSUMER_SESSION_TIMEOUT",
+        required = false,
+        default_value_t = 60000,
+        help = "Session timeout in milliseconds"
+    )]
+    pub session_timeout_ms: u32,
+
+    #[arg(
+        long = "consumer-heartbeat-interval",
+        env = "P_KAFKA_CONSUMER_HEARTBEAT_INTERVAL",
+        required = false,
+        default_value_t = 3000,
+        help = "Heartbeat interval in milliseconds"
+    )]
+    pub heartbeat_interval_ms: u32,
+
+    #[arg(
+        long = "consumer-max-poll-interval",
+        env = "P_KAFKA_CONSUMER_MAX_POLL_INTERVAL",
+        required = false,
+        default_value_t = 300000,
+        help = "Maximum poll interval in milliseconds"
+    )]
+    pub max_poll_interval_ms: u32,
+
+    #[arg(
+        long = "consumer-enable-auto-offset-store",
+        env = "P_KAFKA_CONSUMER_ENABLE_AUTO_OFFSET_STORE",
+        required = false,
+        default_value_t = true,
+        help = "Enable auto offset store"
+    )]
+    pub enable_auto_offset_store: bool,
+
+    #[clap(
+        value_enum,
+        long = "consumer-auto-offset-reset",
+        required = false,
+        env = "P_KAFKA_CONSUMER_AUTO_OFFSET_RESET",
+        default_value_t = SourceOffset::Earliest,
+        help = "Auto offset reset behavior"
+    )]
+    pub auto_offset_reset: SourceOffset,
+
+    #[arg(
+        long = "consumer-fetch-min-bytes",
+        env = "P_KAFKA_CONSUMER_FETCH_MIN_BYTES",
+        default_value_t = 1,
+        required = false,
+        help = "Minimum bytes to fetch"
+    )]
+    pub fetch_min_bytes: u32,
+
+    #[arg(
+        long = "consumer-fetch-max-bytes",
+        env = "P_KAFKA_CONSUMER_FETCH_MAX_BYTES",
+        default_value_t = 52428800,
+        required = false,
+        help = "Maximum bytes to fetch"
+    )]
+    pub fetch_max_bytes: u32,
+
+    #[arg(
+        long = "consumer-fetch-max-wait",
+        env = "P_KAFKA_CONSUMER_FETCH_MAX_WAIT",
+        default_value_t = 500,
+        required = false,
+        help = "Maximum wait time for fetch in milliseconds"
+    )]
+    pub fetch_max_wait_ms: u32,
+
+    #[arg(
+        long = "consumer-max-partition-fetch-bytes",
+        env = "P_KAFKA_CONSUMER_MAX_PARTITION_FETCH_BYTES",
+        required = false,
+        default_value_t = 1048576,
+        help = "Maximum bytes to fetch per partition"
+    )]
+    pub max_partition_fetch_bytes: u32,
+
+    #[arg(
+        long = "consumer-queued-min-messages",
+        env = "P_KAFKA_CONSUMER_QUEUED_MIN_MESSAGES",
+        required = false,
+        default_value_t = 100000,
+        help = "Minimum messages to queue"
+    )]
+    pub queued_min_messages: u32,
+
+    #[arg(
+        long = "consumer-queued-max-messages-kbytes",
+        env = "P_KAFKA_CONSUMER_QUEUED_MAX_MESSAGES_KBYTES",
+        required = false,
+        default_value_t = 65536,
+        help = "Maximum message queue size in KBytes"
+    )]
+    pub queued_max_messages_kbytes: u32,
+
+    #[arg(
+        long = "consumer-enable-partition-eof",
+        env = "P_KAFKA_CONSUMER_ENABLE_PARTITION_EOF",
+        required = false,
+        default_value_t = false,
+        help = "Enable partition EOF"
+    )]
+    pub enable_partition_eof: bool,
+
+    #[arg(
+        long = "consumer-check-crcs",
+        env = "P_KAFKA_CONSUMER_CHECK_CRCS",
+        required = false,
+        default_value_t = false,
+        help = "Check CRCs on messages"
+    )]
+    pub check_crcs: bool,
+
+    #[arg(
+        long = "consumer-isolation-level",
+        env = "P_KAFKA_CONSUMER_ISOLATION_LEVEL",
+        required = false,
+        default_value_t = String::from("read_committed"),
+        help = "Transaction isolation level"
+    )]
+    pub isolation_level: String,
+
+    #[arg(
+        long = "consumer-fetch-message-max-bytes",
+        env = "P_KAFKA_CONSUMER_FETCH_MESSAGE_MAX_BYTES",
+        required = false,
+        default_value_t = 1048576,
+        help = "Maximum bytes per message"
+    )]
+    pub fetch_message_max_bytes: u64,
+
+    #[arg(
+        long = "consumer-stats-interval",
+        env = "P_KAFKA_CONSUMER_STATS_INTERVAL",
+        required = false,
+        default_value_t = 10000,
+        help = "Statistics interval in milliseconds"
+    )]
+    pub stats_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProducerConfig {
+    #[arg(
+        long = "producer-acks",
+        env = "P_KAFKA_PRODUCER_ACKS",
+        required = false,
+        default_value_t = String::from("all"),
+        value_parser = ["0", "1", "all"],
+        help = "Number of acknowledgments the producer requires"
+    )]
+    pub acks: String,
+
+    #[arg(
+        long = "producer-compression-type",
+        env = "P_KAFKA_PRODUCER_COMPRESSION_TYPE",
+        required = false,
+        default_value_t= String::from("lz4"),
+        value_parser = ["none", "gzip", "snappy", "lz4", "zstd"],
+        help = "Compression type for messages"
+    )]
+    pub compression_type: String,
+
+    #[arg(
+        long = "producer-batch-size",
+        env = "P_KAFKA_PRODUCER_BATCH_SIZE",
+        required = false,
+        default_value_t = 16384,
+        help = "Maximum size of a request in bytes"
+    )]
+    pub batch_size: u32,
+
+    #[arg(
+        long = "producer-linger-ms",
+        env = "P_KAFKA_PRODUCER_LINGER_MS",
+        required = false,
+        default_value_t = 5,
+        help = "Delay to wait for more messages in the same batch"
+    )]
+    pub linger_ms: u32,
+
+    #[arg(
+        long = "producer-message-timeout-ms",
+        env = "P_KAFKA_PRODUCER_MESSAGE_TIMEOUT_MS",
+        required = false,
+        default_value_t = 120000,
+        help = "Local message timeout"
+    )]
+    pub message_timeout_ms: u32,
+
+    #[arg(
+        long = "producer-max-inflight",
+        env = "P_KAFKA_PRODUCER_MAX_INFLIGHT",
+        required = false,
+        default_value_t = 5,
+        help = "Maximum number of in-flight requests per connection"
+    )]
+    pub max_in_flight_requests_per_connection: u32,
+
+    #[arg(
+        long = "producer-message-max-bytes",
+        env = "P_KAFKA_PRODUCER_MESSAGE_MAX_BYTES",
+        required = false,
+        default_value_t = 1048576,
+        help = "Maximum size of a message in bytes"
+    )]
+    pub message_max_bytes: u32,
+
+    #[arg(
+        long = "producer-enable-idempotence",
+        env = "P_KAFKA_PRODUCER_ENABLE_IDEMPOTENCE",
+        required = false,
+        default_value_t = true,
+        help = "Enable idempotent producer"
+    )]
+    pub enable_idempotence: bool,
+
+    #[arg(
+        long = "producer-transaction-timeout-ms",
+        env = "P_KAFKA_PRODUCER_TRANSACTION_TIMEOUT_MS",
+        required = false,
+        default_value_t = 60000,
+        help = "Transaction timeout"
+    )]
+    pub transaction_timeout_ms: u64,
+
+    #[arg(
+        long = "producer-buffer-memory",
+        env = "P_KAFKA_PRODUCER_BUFFER_MEMORY",
+        required = false,
+        default_value_t = 33554432,
+        help = "Total bytes of memory the producer can use"
+    )]
+    pub buffer_memory: u32,
+
+    #[arg(
+        long = "producer-retry-backoff-ms",
+        env = "P_KAFKA_PRODUCER_RETRY_BACKOFF_MS",
+        required = false,
+        default_value_t = 100,
+        help = "Time to wait before retrying a failed request"
+    )]
+    pub retry_backoff_ms: u32,
+
+    #[arg(
+        long = "producer-request-timeout-ms",
+        env = "P_KAFKA_PRODUCER_REQUEST_TIMEOUT_MS",
+        required = false,
+        default_value_t = 30000,
+        help = "Time to wait for a response from brokers"
+    )]
+    pub request_timeout_ms: u32,
+
+    #[arg(
+        long = "producer-queue-buffering-max-messages",
+        env = "P_KAFKA_PRODUCER_QUEUE_BUFFERING_MAX_MESSAGES",
+        required = false,
+        default_value_t = 100000,
+        help = "Maximum number of messages allowed on the producer queue"
+    )]
+    pub queue_buffering_max_messages: u32,
+
+    #[arg(
+        long = "producer-queue-buffering-max-kbytes",
+        env = "P_KAFKA_PRODUCER_QUEUE_BUFFERING_MAX_KBYTES",
+        required = false,
+        default_value_t = 1048576,
+        help = "Maximum total message size sum allowed on the producer queue"
+    )]
+    pub queue_buffering_max_kbytes: u32,
+
+    #[arg(
+        long = "producer-delivery-timeout-ms",
+        env = "P_KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS",
+        required = false,
+        default_value_t = 120000,
+        help = "Maximum time to report success or failure after send"
+    )]
+    pub delivery_timeout_ms: u32,
+
+    #[arg(
+        long = "producer-max-retries",
+        env = "P_KAFKA_PRODUCER_MAX_RETRIES",
+        required = false,
+        default_value_t = 2147483647,
+        help = "Maximum number of retries per message"
+    )]
+    pub max_retries: u32,
+
+    #[arg(
+        long = "producer-retry-backoff-max-ms",
+        env = "P_KAFKA_PRODUCER_RETRY_BACKOFF_MAX_MS",
+        required = false,
+        default_value_t = 1000,
+        help = "Maximum back-off time between retries"
+    )]
+    pub retry_backoff_max_ms: u32,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SecurityConfig {
+    #[clap(
+        value_enum,
+        long = "security-protocol",
+        env = "P_KAFKA_SECURITY_PROTOCOL",
+        required = false,
+        default_value_t = SecurityProtocol::Plaintext,
+        help = "Security protocol"
+    )]
+    pub protocol: SecurityProtocol,
+
+    // SSL Configuration
+    #[arg(
+        long = "ssl-ca-location",
+        env = "P_KAFKA_SSL_CA_LOCATION",
+        required = false,
+        help = "CA certificate file path"
+    )]
+    pub ssl_ca_location: Option<PathBuf>,
+
+    #[arg(
+        long = "ssl-certificate-location",
+        env = "P_KAFKA_SSL_CERTIFICATE_LOCATION",
+        required = false,
+        help = "Client certificate file path"
+    )]
+    pub ssl_certificate_location: Option<PathBuf>,
+
+    #[arg(
+        long = "ssl-key-location",
+        env = "P_KAFKA_SSL_KEY_LOCATION",
+        required = false,
+        help = "Client key file path"
+    )]
+    pub ssl_key_location: Option<PathBuf>,
+
+    // SASL Configuration
+    #[arg(
+        value_enum,
+        long = "sasl-mechanism",
+        env = "P_KAFKA_SASL_MECHANISM",
+        required = false,
+        help = "SASL mechanism"
+    )]
+    pub sasl_mechanism: Option<SaslMechanism>,
+
+    #[arg(
+        long = "sasl-username",
+        env = "P_KAFKA_SASL_USERNAME",
+        required = false,
+        help = "SASL username"
+    )]
+    pub sasl_username: Option<String>,
+
+    #[arg(
+        long = "sasl-password",
+        env = "P_KAFKA_SASL_PASSWORD",
+        required = false,
+        help = "SASL password"
+    )]
+    pub sasl_password: Option<String>,
+
+    #[arg(
+        long = "ssl-key-password",
+        env = "P_KAFKA_SSL_KEY_PASSWORD",
+        required = false,
+        help = "SSL key password"
+    )]
+    pub ssl_key_password: Option<String>,
+
+    // Kerberos configuration fields
+    #[arg(
+        long = "kerberos-service-name",
+        env = "P_KAFKA_KERBEROS_SERVICE_NAME",
+        required = false,
+        help = "Kerberos service name"
+    )]
+    pub kerberos_service_name: Option<String>,
+
+    #[arg(
+        long = "kerberos-principal",
+        env = "P_KAFKA_KERBEROS_PRINCIPAL",
+        required = false,
+        help = "Kerberos principal"
+    )]
+    pub kerberos_principal: Option<String>,
+
+    #[arg(
+        long = "kerberos-keytab",
+        env = "P_KAFKA_KERBEROS_KEYTAB",
+        required = false,
+        help = "Path to Kerberos keytab file"
+    )]
+    pub kerberos_keytab: Option<PathBuf>,
+}
+
+impl KafkaConfig {
+    pub fn to_rdkafka_consumer_config(&self) -> ClientConfig {
+        let mut config = ClientConfig::new();
+
+        // Basic configuration
         config
             .set("bootstrap.servers", &self.bootstrap_servers)
-            .set("reconnect.backoff.ms", "100")
-            .set("reconnect.backoff.max.ms", "3600000");
+            .set("client.id", &self.client_id);
 
-        if let Some(client_id) = &self.client_id {
-            config
-                .set("client.id", format!("parseable-{}-ci", client_id))
-                .set("client.rack", format!("parseable-{}-cr", client_id));
+        // Consumer configuration
+        if let Some(consumer) = &self.consumer {
+            consumer.apply_to_config(&mut config);
+        }
+
+        // Security configuration
+        if let Some(security) = &self.security {
+            security.apply_to_config(&mut config);
+        } else {
+            config.set("security.protocol", "PLAINTEXT");
+        }
+
+        config
+    }
+
+    pub fn to_rdkafka_producer_config(&self) -> ClientConfig {
+        let mut config = ClientConfig::new();
+
+        // Basic configuration
+        config
+            .set("bootstrap.servers", &self.bootstrap_servers)
+            .set("client.id", &self.client_id);
+
+        // Producer configuration
+        if let Some(producer) = &self.producer {
+            producer.apply_to_config(&mut config);
+        }
+
+        // Security configuration
+        if let Some(security) = &self.security {
+            security.apply_to_config(&mut config);
+        } else {
+            config.set("security.protocol", "PLAINTEXT");
+        }
+
+        config
+    }
+
+    pub fn consumer(&self) -> Option<&ConsumerConfig> {
+        self.consumer.as_ref()
+    }
+
+    pub fn producer(&self) -> Option<&ProducerConfig> {
+        self.producer.as_ref()
+    }
+
+    pub fn security(&self) -> Option<&SecurityConfig> {
+        self.security.as_ref()
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.bootstrap_servers.is_empty() {
+            anyhow::bail!("Bootstrap servers must not be empty");
         }
 
         if let Some(consumer) = &self.consumer {
-            let enable_auto_commit = consumer.enable_auto_commit.to_string();
-            let group_id = format!("parseable-{}-gi", &consumer.group_id);
-            info!("Setting group.id to {}", group_id);
-            config
-                .set("group.id", group_id)
-                .set("log_level", "7")
-                .set("enable.auto.commit", enable_auto_commit)
-                .set(
-                    "enable.auto.offset.store",
-                    consumer.enable_auto_offset_store.to_string(),
-                )
-                .set("auto.offset.reset", &consumer.auto_offset_reset)
-                .set(
-                    "partition.assignment.strategy",
-                    &consumer.partition_assignment_strategy,
-                )
-                .set(
-                    "session.timeout.ms",
-                    consumer.session_timeout_ms.to_string(),
-                )
-                .set(
-                    "heartbeat.interval.ms",
-                    consumer.heartbeat_interval_ms.to_string(),
-                )
-                .set(
-                    "max.poll.interval.ms",
-                    consumer.max_poll_interval_ms.to_string(),
-                )
-                .set("fetch.min.bytes", consumer.fetch_min_bytes.to_string())
-                .set("fetch.max.bytes", consumer.fetch_max_bytes.to_string())
-                .set(
-                    "fetch.message.max.bytes",
-                    consumer.fetch_message_max_bytes.to_string(),
-                )
-                .set(
-                    "max.partition.fetch.bytes",
-                    consumer.max_partition_fetch_bytes.to_string(),
-                )
-                .set(
-                    "queued.min.messages",
-                    consumer.queued_min_messages.to_string(),
-                )
-                .set(
-                    "queued.max.messages.kbytes",
-                    consumer.queued_max_messages_kbytes.to_string(),
-                )
-                .set(
-                    "enable.partition.eof",
-                    consumer.enable_partition_eof.to_string(),
-                )
-                .set("isolation.level", &consumer.isolation_level)
-                .set(
-                    "statistics.interval.ms",
-                    consumer.stats_interval_ms.unwrap_or(10000).to_string(),
-                );
-
-            if let Some(instance_id) = &consumer.group_instance_id {
-                config.set("group.instance.id", instance_id);
-            }
+            consumer.validate()?;
         }
 
-        self.apply_security_config(&mut config);
+        if let Some(producer) = &self.producer {
+            producer.validate()?;
+        }
 
-        info!("Consumer configuration: {:?}", config);
-        config
+        if let Some(security) = &self.security {
+            security.validate()?;
+        }
+
+        Ok(())
+    }
+}
+
+impl ConsumerConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.group_id.is_empty() {
+            anyhow::bail!("Consumer group ID must not be empty");
+        }
+        Ok(())
     }
 
-    pub fn producer_config(&self) -> rdkafka::config::ClientConfig {
-        let mut config = rdkafka::config::ClientConfig::new();
+    fn apply_to_config(&self, config: &mut ClientConfig) {
         config
-            .set("bootstrap.servers", &self.bootstrap_servers)
-            .set("reconnect.backoff.ms", "100")
-            .set("reconnect.backoff.max.ms", "3600000");
-
-        if let Some(client_id) = &self.client_id {
-            config
-                .set("client.id", format!("parseable-{}-ci", client_id))
-                .set("client.rack", format!("parseable-{}-cr", client_id));
-        }
-
-        if let Some(producer_config) = &self.producer {
-            config
-                .set("acks", &producer_config.acks)
-                .set("compression.type", &producer_config.compression_type)
-                .set("batch.size", producer_config.batch_size.to_string())
-                .set("linger.ms", producer_config.linger_ms.to_string())
-                .set(
-                    "delivery.timeout.ms",
-                    producer_config.delivery_timeout_ms.to_string(),
-                )
-                .set(
-                    "max.in.flight.requests.per.connection",
-                    producer_config
-                        .max_in_flight_requests_per_connection
-                        .to_string(),
-                )
-                .set(
-                    "max.request.size",
-                    producer_config.max_request_size.to_string(),
-                )
-                .set(
-                    "enable.idempotence",
-                    producer_config.enable_idempotence.to_string(),
-                )
-                .set(
-                    "batch.num.messages",
-                    producer_config.batch_num_messages.to_string(),
-                )
-                .set(
-                    "queue.buffering.max.messages",
-                    producer_config.queue_buffering_max_messages.to_string(),
-                )
-                .set(
-                    "queue.buffering.max.ms",
-                    producer_config.queue_buffering_max_ms.to_string(),
-                )
-                .set(
-                    "retry.backoff.ms",
-                    producer_config.retry_backoff_ms.to_string(),
-                )
-                .set("retries", producer_config.retries.to_string());
-
-            if let Some(timeout) = producer_config.transaction_timeout_ms {
-                config.set("transaction.timeout.ms", timeout.to_string());
-            }
-        }
-
-        self.apply_security_config(&mut config);
-
-        config
+            .set("group.id", &self.group_id)
+            .set(
+                "partition.assignment.strategy",
+                &self.partition_assignment_strategy,
+            )
+            .set("session.timeout.ms", self.session_timeout_ms.to_string())
+            .set(
+                "heartbeat.interval.ms",
+                self.heartbeat_interval_ms.to_string(),
+            )
+            .set(
+                "max.poll.interval.ms",
+                self.max_poll_interval_ms.to_string(),
+            )
+            .set("enable.auto.commit", "false")
+            .set("fetch.min.bytes", self.fetch_min_bytes.to_string())
+            .set("fetch.max.bytes", self.fetch_max_bytes.to_string())
+            .set(
+                "max.partition.fetch.bytes",
+                self.max_partition_fetch_bytes.to_string(),
+            )
+            .set("isolation.level", self.isolation_level.to_string())
+            .set("group.instance.id", self.group_instance_id.to_string())
+            .set("statistics.interval.ms", self.stats_interval_ms.to_string());
     }
 
-    fn apply_security_config(&self, config: &mut rdkafka::ClientConfig) {
-        let security = match &self.security {
-            Some(sec) => sec,
-            None => {
-                debug!("No security configuration provided, using PLAINTEXT");
-                config.set("security.protocol", "plaintext");
-                return;
-            }
-        };
+    pub fn topics(&self) -> Vec<&str> {
+        self.topics.iter().map(|t| t.as_str()).collect()
+    }
+}
 
-        config.set(
-            "security.protocol",
-            security.protocol.to_string().to_lowercase(),
-        );
+impl ProducerConfig {
+    fn apply_to_config(&self, config: &mut ClientConfig) {
+        config
+            .set("acks", self.acks.to_string())
+            .set("compression.type", self.compression_type.to_string())
+            .set("batch.size", self.batch_size.to_string())
+            .set("linger.ms", self.linger_ms.to_string())
+            .set("enable.idempotence", self.enable_idempotence.to_string())
+            .set(
+                "max.in.flight.requests.per.connection",
+                self.max_in_flight_requests_per_connection.to_string(),
+            )
+            .set("delivery.timeout.ms", self.delivery_timeout_ms.to_string())
+            .set("retry.backoff.ms", self.retry_backoff_ms.to_string())
+            .set(
+                "transaction.timeout.ms",
+                self.transaction_timeout_ms.to_string(),
+            )
+            .set("request.timeout.ms", self.request_timeout_ms.to_string())
+            .set("max.retries", self.max_retries.to_string())
+            .set(
+                "retry.backoff.max.ms",
+                self.retry_backoff_max_ms.to_string(),
+            )
+            .set("buffer.memory", self.buffer_memory.to_string())
+            .set("message.timeout.ms", self.message_timeout_ms.to_string())
+            .set("message.max.bytes", self.message_max_bytes.to_string());
+    }
 
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.batch_size == 0 {
+            anyhow::bail!("Batch size must be greater than 0");
+        }
+
+        if self.linger_ms > self.delivery_timeout_ms {
+            anyhow::bail!("Linger time cannot be greater than delivery timeout");
+        }
+
+        Ok(())
+    }
+}
+
+impl SecurityConfig {
+    fn apply_to_config(&self, config: &mut ClientConfig) {
+        // Set security protocol
+        config.set("security.protocol", self.protocol.to_string());
+
+        // Configure SSL if enabled
         if matches!(
-            security.protocol,
-            SecurityProtocol::SSL | SecurityProtocol::SASL_SSL
+            self.protocol,
+            SecurityProtocol::Ssl | SecurityProtocol::SaslSsl
         ) {
-            if let Some(ssl) = &security.ssl_config {
-                debug!("Applying SSL configuration");
-                config
-                    .set("ssl.ca.pem", &ssl.ca_certificate_pem)
-                    .set("ssl.certificate.pem", &ssl.client_certificate_pem)
-                    .set("ssl.key.pem", &ssl.client_key_pem);
-            } else {
-                panic!(
-                    "SSL configuration required for {:?} protocol",
-                    security.protocol
+            if let Some(ref path) = self.ssl_ca_location {
+                config.set("ssl.ca.location", path.to_string_lossy().to_string());
+            }
+            if let Some(ref path) = self.ssl_certificate_location {
+                config.set(
+                    "ssl.certificate.location",
+                    path.to_string_lossy().to_string(),
                 );
+            }
+            if let Some(ref path) = self.ssl_key_location {
+                config.set("ssl.key.location", path.to_string_lossy().to_string());
+            }
+            if let Some(ref password) = self.ssl_key_password {
+                config.set("ssl.key.password", password);
             }
         }
 
+        // Configure SASL if enabled
         if matches!(
-            security.protocol,
-            SecurityProtocol::SASL_SSL | SecurityProtocol::SASL_PLAINTEXT
+            self.protocol,
+            SecurityProtocol::SaslSsl | SecurityProtocol::SaslPlaintext
         ) {
-            if let Some(sasl) = &security.sasl_config {
-                debug!(
-                    "Applying SASL configuration with mechanism: {}",
-                    sasl.mechanism.to_string()
-                );
-                config
-                    .set("sasl.mechanism", sasl.mechanism.to_string())
-                    .set("sasl.username", &sasl.username)
-                    .set("sasl.password", &sasl.password);
+            if let Some(ref mechanism) = self.sasl_mechanism {
+                config.set("sasl.mechanism", mechanism.to_string());
+            }
+            if let Some(ref username) = self.sasl_username {
+                config.set("sasl.username", username);
+            }
+            if let Some(ref password) = self.sasl_password {
+                config.set("sasl.password", password);
+            }
 
-                // Apply Kerberos-specific configuration if using GSSAPI
-                if matches!(sasl.mechanism, SASLMechanism::GssAPI) {
-                    if let Some(service_name) = &sasl.kerberos_service_name {
-                        config.set("sasl.kerberos.service.name", service_name);
-                    }
-                    if let Some(principal) = &sasl.kerberos_principal {
-                        config.set("sasl.kerberos.principal", principal);
-                    }
-                    if let Some(keytab) = &sasl.kerberos_keytab {
-                        config.set("sasl.kerberos.keytab", keytab);
-                    }
+            // Configure Kerberos settings if using GSSAPI
+            if matches!(self.sasl_mechanism, Some(SaslMechanism::Gssapi)) {
+                if let Some(ref service) = self.kerberos_service_name {
+                    config.set("sasl.kerberos.service.name", service);
                 }
-            } else {
-                panic!(
-                    "SASL configuration required for {:?} protocol",
-                    security.protocol
-                );
+                if let Some(ref principal) = self.kerberos_principal {
+                    config.set("sasl.kerberos.principal", principal);
+                }
+                if let Some(ref keytab) = self.kerberos_keytab {
+                    config.set("sasl.kerberos.keytab", keytab.to_string_lossy().to_string());
+                }
             }
+
+            // TODO: Implement OAuthBearer mechanism for SASL when needed. This depends on the vendor (on-prem, Confluent Kafka, AWS MSK, etc.).
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        match self.protocol {
+            SecurityProtocol::Ssl | SecurityProtocol::SaslSsl => {
+                if self.ssl_ca_location.is_none() {
+                    anyhow::bail!("CA certificate location is required for SSL");
+                }
+                if self.ssl_certificate_location.is_none() {
+                    anyhow::bail!("Client certificate location is required for SSL");
+                }
+                if self.ssl_key_location.is_none() {
+                    anyhow::bail!("Client key location is required for SSL");
+                }
+            }
+            SecurityProtocol::SaslPlaintext => {
+                if self.sasl_mechanism.is_none() {
+                    anyhow::bail!("SASL mechanism is required when SASL is enabled");
+                }
+                if self.sasl_username.is_none() || self.sasl_password.is_none() {
+                    anyhow::bail!("SASL username and password are required");
+                }
+
+                if matches!(self.sasl_mechanism, Some(SaslMechanism::Gssapi))
+                    && self.kerberos_service_name.is_none()
+                {
+                    anyhow::bail!("Kerberos service name is required for GSSAPI");
+                }
+            }
+            SecurityProtocol::Plaintext => {} // No validation needed for PLAINTEXT
+        }
+        Ok(())
+    }
+}
+
+#[derive(ValueEnum, Debug, Clone, Serialize, Deserialize)]
+pub enum SecurityProtocol {
+    Plaintext,
+    Ssl,
+    SaslSsl,
+    SaslPlaintext,
+}
+
+impl std::str::FromStr for SecurityProtocol {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "PLAINTEXT" => Ok(SecurityProtocol::Plaintext),
+            "SSL" => Ok(SecurityProtocol::Ssl),
+            "SASL_SSL" => Ok(SecurityProtocol::SaslSsl),
+            "SASL_PLAINTEXT" => Ok(SecurityProtocol::SaslPlaintext),
+            _ => Err(format!("Invalid security protocol: {}", s)),
         }
     }
 }
+
+impl std::fmt::Display for SecurityProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SecurityProtocol::Plaintext => write!(f, "PLAINTEXT"),
+            SecurityProtocol::Ssl => write!(f, "SSL"),
+            SecurityProtocol::SaslSsl => write!(f, "SASL_SSL"),
+            SecurityProtocol::SaslPlaintext => write!(f, "SASL_PLAINTEXT"),
+        }
+    }
+}
+
+#[derive(ValueEnum, Debug, Clone, Serialize, Deserialize)]
+pub enum SaslMechanism {
+    Plain,
+    ScramSha256,
+    ScramSha512,
+    Gssapi,
+    OAuthBearer,
+}
+
 impl Default for KafkaConfig {
     fn default() -> Self {
         Self {
             // Common configuration with standard broker port
             bootstrap_servers: "localhost:9092".to_string(),
-            topics: vec![],
-            client_id: Some("parseable-connect".to_string()),
-
+            client_id: "parseable-connect".to_string(),
             // Component-specific configurations with production-ready defaults
             consumer: Some(ConsumerConfig::default()),
             producer: Some(ProducerConfig::default()),
-
-            // Security defaults to plaintext for development
-            // Production environments should explicitly configure security
-            security: Some(SecurityConfig {
-                protocol: SecurityProtocol::Plaintext,
-                ssl_config: None,
-                sasl_config: None,
-            }),
+            // Security configuration with plaintext protocol
+            security: Some(SecurityConfig::default()),
         }
     }
 }
 
-impl KafkaConfig {
-    pub fn builder() -> KafkaConfigBuilder {
-        KafkaConfigBuilder::default()
+impl std::fmt::Display for SaslMechanism {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaslMechanism::Plain => write!(f, "PLAIN"),
+            SaslMechanism::ScramSha256 => write!(f, "SCRAM-SHA-256"),
+            SaslMechanism::ScramSha512 => write!(f, "SCRAM-SHA-512"),
+            SaslMechanism::Gssapi => write!(f, "GSSAPI"),
+            SaslMechanism::OAuthBearer => write!(f, "OAUTHBEARER"),
+        }
     }
-
-    pub fn topics(&self) -> Vec<&str> {
-        self.topics.iter().map(|s| s.as_str()).collect()
+}
+impl Default for ProducerConfig {
+    fn default() -> Self {
+        Self {
+            acks: "all".to_string(),
+            compression_type: "lz4".to_string(),
+            batch_size: 16384,           // 16KB default batch size
+            linger_ms: 5,                // Small latency for better batching
+            delivery_timeout_ms: 120000, // 2 minute delivery timeout
+            max_retries: 20,
+            max_in_flight_requests_per_connection: 5,
+            message_max_bytes: 1048576,    // 1MB maximum message size
+            enable_idempotence: true,      // Ensure exactly-once delivery
+            transaction_timeout_ms: 60000, // 1 minute transaction timeout
+            queue_buffering_max_messages: 100000, // Producer queue size
+            retry_backoff_ms: 100,         // Backoff time between retries
+            message_timeout_ms: 120000,    // 2 minute message timeout
+            buffer_memory: 33554432,       // 32MB buffer memory
+            request_timeout_ms: 60000,     // 60 second request timeout
+            queue_buffering_max_kbytes: 1048576, // 1MB maximum queue size
+            retry_backoff_max_ms: 1000,    // Maximum backoff time between retries
+        }
     }
 }
 
-#[derive(Default, Debug)]
-pub struct KafkaConfigBuilder {
-    config: KafkaConfig,
-}
-
-impl KafkaConfigBuilder {
-    pub fn bootstrap_servers(mut self, servers: impl Into<String>) -> Self {
-        self.config.bootstrap_servers = servers.into();
-        self
-    }
-
-    pub fn topic(mut self, topics: Vec<String>) -> Self {
-        self.config.topics = topics;
-        self
-    }
-
-    pub fn client_id(mut self, client_id: impl Into<String>) -> Self {
-        self.config.client_id = Some(client_id.into());
-        self
-    }
-
-    pub fn with_consumer(mut self, consumer: ConsumerConfig) -> Self {
-        self.config.consumer = Some(consumer);
-        self
-    }
-
-    pub fn with_producer(mut self, producer: ProducerConfig) -> Self {
-        self.config.producer = Some(producer);
-        self
-    }
-
-    pub fn with_security(mut self, security: SecurityConfig) -> Self {
-        self.config.security = Some(security);
-        self
-    }
-
-    pub fn build(self) -> anyhow::Result<KafkaConfig> {
-        let config = self.config;
-
-        if config.bootstrap_servers.is_empty() {
-            anyhow::bail!("bootstrap_servers cannot be empty");
+impl Default for ConsumerConfig {
+    fn default() -> Self {
+        Self {
+            topics: vec![],
+            group_id: "parseable-connect-cg".to_string(),
+            buffer_size: 10_000,
+            buffer_timeout: Duration::from_millis(5000),
+            group_instance_id: "parseable-cg-ii".to_string(),
+            // NOTE: cooperative-sticky does not work well in rdkafka when using manual commit.
+            // @see https://github.com/confluentinc/librdkafka/issues/4629
+            // @see https://github.com/confluentinc/librdkafka/issues/4368
+            partition_assignment_strategy: "roundrobin,range".to_string(),
+            session_timeout_ms: 60000,
+            heartbeat_interval_ms: 3000,
+            max_poll_interval_ms: 300000,
+            enable_auto_offset_store: true,
+            auto_offset_reset: SourceOffset::Earliest,
+            fetch_min_bytes: 1,
+            fetch_max_bytes: 52428800,
+            fetch_max_wait_ms: 500,
+            max_partition_fetch_bytes: 1048576,
+            queued_min_messages: 100000,
+            queued_max_messages_kbytes: 65536,
+            enable_partition_eof: false,
+            check_crcs: false,
+            isolation_level: "read_committed".to_string(),
+            fetch_message_max_bytes: 1048576,
+            stats_interval_ms: 10000,
         }
-
-        Ok(config)
     }
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct KafkaCertificates {
-    ca_certificate: Arc<CertificateDer<'static>>,
-    client_certificate: Arc<CertificateDer<'static>>,
-    client_key: Arc<PrivateKeyDer<'static>>,
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            protocol: SecurityProtocol::Plaintext,
+            ssl_ca_location: None,
+            ssl_certificate_location: None,
+            ssl_key_location: None,
+            sasl_mechanism: None,
+            sasl_username: None,
+            sasl_password: None,
+            ssl_key_password: None,
+            kerberos_service_name: None,
+            kerberos_principal: None,
+            kerberos_keytab: None,
+        }
+    }
 }
 
-#[allow(dead_code)]
-fn parse_first_certificate(pem: &str) -> anyhow::Result<CertificateDer<'static>> {
-    let mut reader = BufReader::new(pem.as_bytes());
-    let items = rustls_pemfile::read_all(&mut reader);
+impl std::str::FromStr for SaslMechanism {
+    type Err = String;
 
-    for item in items.flatten() {
-        if let Item::X509Certificate(cert_data) = item {
-            return Ok(cert_data);
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "PLAIN" => Ok(SaslMechanism::Plain),
+            "SCRAM-SHA-256" => Ok(SaslMechanism::ScramSha256),
+            "SCRAM-SHA-512" => Ok(SaslMechanism::ScramSha512),
+            "GSSAPI" => Ok(SaslMechanism::Gssapi),
+            "OAUTHBEARER" => Ok(SaslMechanism::OAuthBearer),
+            _ => Err(format!("Invalid SASL mechanism: {}", s)),
         }
     }
-    bail!("No certificate found in PEM")
 }
 
-#[allow(dead_code)]
-fn parse_first_private_key(pem: &str) -> anyhow::Result<PrivateKeyDer<'static>> {
-    let mut reader = BufReader::new(pem.as_bytes());
-    let items = rustls_pemfile::read_all(&mut reader);
-
-    for item in items {
-        if let Ok(Item::Pkcs1Key(key_data)) = item {
-            return Ok(key_data.into());
-        }
-        if let Ok(Item::Pkcs8Key(key_data)) = item {
-            return Ok(key_data.into());
-        }
-        if let Ok(Item::Sec1Key(key_data)) = item {
-            return Ok(key_data.into());
-        }
-    }
-
-    bail!("No private key found in PEM")
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Acks {
+    None,
+    Leader,
+    All,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl std::str::FromStr for Acks {
+    type Err = String;
 
-    #[test]
-    fn test_consumer_config() {
-        let consumer_config = ConsumerConfig {
-            group_id: "test-group".to_string(),
-            partition_assignment_strategy: "cooperative-sticky".to_string(),
-            ..ConsumerConfig::default()
-        };
-
-        let config = KafkaConfig::new(
-            "localhost:9092".to_string(),
-            vec!["test-topic".to_string()],
-            Some(consumer_config),
-        );
-
-        let rdkafka_config = config.consumer_config();
-        assert_eq!(
-            rdkafka_config.get("group.id"),
-            Some("parseable-test-group-gi")
-        );
-        assert_eq!(
-            rdkafka_config.get("partition.assignment.strategy"),
-            Some("cooperative-sticky")
-        );
-    }
-
-    #[test]
-    fn test_default_kafka_config() {
-        let config = KafkaConfig::default();
-        assert_eq!(config.bootstrap_servers, "localhost:9092");
-        assert!(config.topics.is_empty());
-        assert!(config.consumer.is_some());
-        assert!(config.producer.is_some());
-
-        if let Some(producer) = config.producer {
-            assert_eq!(producer.acks, "all");
-            assert!(producer.enable_idempotence);
-            assert_eq!(producer.compression_type, "lz4");
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "0" => Ok(Acks::None),
+            "1" => Ok(Acks::Leader),
+            "all" => Ok(Acks::All),
+            _ => Err(format!("Invalid acks value: {}", s)),
         }
-    }
-
-    #[test]
-    fn test_kafka_config_builder() {
-        let config = KafkaConfig::builder()
-            .bootstrap_servers("kafka1:9092,kafka2:9092")
-            .topic(vec!["test-topic".to_string()])
-            .client_id("test-client")
-            .build()
-            .unwrap();
-
-        assert_eq!(config.bootstrap_servers, "kafka1:9092,kafka2:9092");
-        assert_eq!(config.topics.first().unwrap(), "test-topic");
-        assert_eq!(config.client_id, Some("test-client".to_string()));
     }
 }

@@ -112,43 +112,10 @@ impl KafkaMetricsCollector {
     pub fn new(stats: Arc<RwLock<Statistics>>) -> anyhow::Result<KafkaMetricsCollector> {
         let mut descs = Vec::new();
 
-        fn create_gauge_vec(
-            name: &str,
-            help: &str,
-            labels: &[&str],
-            descs: &mut Vec<Desc>,
-        ) -> IntGaugeVec {
-            let gauge = IntGaugeVec::new(Opts::new(name, help), labels).unwrap();
-            descs.extend(gauge.clone().desc().into_iter().cloned());
-            gauge
-        }
-
-        fn create_counter_vec(
-            name: &str,
-            help: &str,
-            labels: &[&str],
-            descs: &mut Vec<Desc>,
-        ) -> IntCounterVec {
-            let counter = IntCounterVec::new(Opts::new(name, help), labels).unwrap();
-            descs.extend(counter.clone().desc().into_iter().cloned());
-            counter
-        }
-
-        fn create_histogram_vec(
-            name: &str,
-            help: &str,
-            labels: &[&str],
-            descs: &mut Vec<Desc>,
-        ) -> HistogramVec {
-            let histogram = HistogramVec::new(HistogramOpts::new(name, help), labels).unwrap();
-            descs.extend(histogram.clone().desc().into_iter().cloned());
-            histogram
-        }
-
         let topic_labels = &["topic"];
         let partition_labels = &["topic", "partition"];
 
-        let collector = KafkaMetricsCollector {
+        let mut collector = KafkaMetricsCollector {
             stats: stats.clone(),
             descs: descs.clone(),
             // Core metrics
@@ -265,19 +232,19 @@ impl KafkaMetricsCollector {
                 "Broker throttle time",
             ))?,
             // Topic metrics with labels
-            topic_metadata_age: create_gauge_vec(
+            topic_metadata_age: Self::create_gauge_vec(
                 "kafka_topic_metadata_age",
                 "Age of topic metadata",
                 topic_labels,
                 &mut descs,
             ),
-            topic_batchsize: create_histogram_vec(
+            topic_batchsize: Self::create_histogram_vec(
                 "kafka_topic_batchsize",
                 "Topic batch sizes",
                 topic_labels,
                 &mut descs,
             ),
-            topic_batchcnt: create_histogram_vec(
+            topic_batchcnt: Self::create_histogram_vec(
                 "kafka_topic_batchcnt",
                 "Topic batch counts",
                 topic_labels,
@@ -285,139 +252,139 @@ impl KafkaMetricsCollector {
             ),
 
             // Partition metrics with labels
-            partition_msgq_cnt: create_gauge_vec(
+            partition_msgq_cnt: Self::create_gauge_vec(
                 "kafka_partition_msgq_cnt",
                 "Messages in partition queue",
                 partition_labels,
                 &mut descs,
             ),
-            partition_msgq_bytes: create_gauge_vec(
+            partition_msgq_bytes: Self::create_gauge_vec(
                 "kafka_partition_msgq_bytes",
                 "Bytes in partition queue",
                 partition_labels,
                 &mut descs,
             ),
-            partition_xmit_msgq_cnt: create_gauge_vec(
+            partition_xmit_msgq_cnt: Self::create_gauge_vec(
                 "kafka_partition_xmit_msgq_cnt",
                 "Messages in partition transmit queue",
                 partition_labels,
                 &mut descs,
             ),
-            partition_xmit_msgq_bytes: create_gauge_vec(
+            partition_xmit_msgq_bytes: Self::create_gauge_vec(
                 "kafka_partition_xmit_msgq_bytes",
                 "Bytes in partition transmit queue",
                 partition_labels,
                 &mut descs,
             ),
-            partition_fetchq_cnt: create_gauge_vec(
+            partition_fetchq_cnt: Self::create_gauge_vec(
                 "kafka_partition_fetchq_cnt",
                 "Messages in partition fetch queue",
                 partition_labels,
                 &mut descs,
             ),
-            partition_fetchq_size: create_gauge_vec(
+            partition_fetchq_size: Self::create_gauge_vec(
                 "kafka_partition_fetchq_size",
                 "Size of partition fetch queue",
                 partition_labels,
                 &mut descs,
             ),
-            partition_query_offset: create_gauge_vec(
+            partition_query_offset: Self::create_gauge_vec(
                 "kafka_partition_query_offset",
                 "Current partition query offset",
                 partition_labels,
                 &mut descs,
             ),
-            partition_next_offset: create_gauge_vec(
+            partition_next_offset: Self::create_gauge_vec(
                 "kafka_partition_next_offset",
                 "Next partition offset",
                 partition_labels,
                 &mut descs,
             ),
-            partition_app_offset: create_gauge_vec(
+            partition_app_offset: Self::create_gauge_vec(
                 "kafka_partition_app_offset",
                 "Application partition offset",
                 partition_labels,
                 &mut descs,
             ),
-            partition_stored_offset: create_gauge_vec(
+            partition_stored_offset: Self::create_gauge_vec(
                 "kafka_partition_stored_offset",
                 "Stored partition offset",
                 partition_labels,
                 &mut descs,
             ),
-            partition_committed_offset: create_gauge_vec(
+            partition_committed_offset: Self::create_gauge_vec(
                 "kafka_partition_committed_offset",
                 "Committed partition offset",
                 partition_labels,
                 &mut descs,
             ),
-            partition_eof_offset: create_gauge_vec(
+            partition_eof_offset: Self::create_gauge_vec(
                 "kafka_partition_eof_offset",
                 "EOF partition offset",
                 partition_labels,
                 &mut descs,
             ),
-            partition_lo_offset: create_gauge_vec(
+            partition_lo_offset: Self::create_gauge_vec(
                 "kafka_partition_lo_offset",
                 "Low watermark partition offset",
                 partition_labels,
                 &mut descs,
             ),
-            partition_hi_offset: create_gauge_vec(
+            partition_hi_offset: Self::create_gauge_vec(
                 "kafka_partition_hi_offset",
                 "High watermark partition offset",
                 partition_labels,
                 &mut descs,
             ),
-            partition_consumer_lag: create_gauge_vec(
+            partition_consumer_lag: Self::create_gauge_vec(
                 "kafka_partition_consumer_lag",
                 "Consumer lag",
                 partition_labels,
                 &mut descs,
             ),
-            partition_consumer_lag_stored: create_gauge_vec(
+            partition_consumer_lag_stored: Self::create_gauge_vec(
                 "kafka_partition_consumer_lag_stored",
                 "Stored consumer lag",
                 partition_labels,
                 &mut descs,
             ),
-            partition_txmsgs: create_counter_vec(
+            partition_txmsgs: Self::create_counter_vec(
                 "kafka_partition_txmsgs_total",
                 "Total partition messages transmitted",
                 partition_labels,
                 &mut descs,
             ),
-            partition_txbytes: create_counter_vec(
+            partition_txbytes: Self::create_counter_vec(
                 "kafka_partition_txbytes_total",
                 "Total partition bytes transmitted",
                 partition_labels,
                 &mut descs,
             ),
-            partition_rxmsgs: create_counter_vec(
+            partition_rxmsgs: Self::create_counter_vec(
                 "kafka_partition_rxmsgs_total",
                 "Total partition messages received",
                 partition_labels,
                 &mut descs,
             ),
-            partition_rxbytes: create_counter_vec(
+            partition_rxbytes: Self::create_counter_vec(
                 "kafka_partition_rxbytes_total",
                 "Total partition bytes received",
                 partition_labels,
                 &mut descs,
             ),
-            partition_msgs: create_counter_vec(
+            partition_msgs: Self::create_counter_vec(
                 "kafka_partition_msgs_total",
                 "Total partition messages",
                 partition_labels,
                 &mut descs,
             ),
-            partition_rx_ver_drops: create_counter_vec(
+            partition_rx_ver_drops: Self::create_counter_vec(
                 "kafka_partition_rx_ver_drops_total",
                 "Total partition version drops",
                 partition_labels,
                 &mut descs,
             ),
-            partition_msgs_inflight: create_gauge_vec(
+            partition_msgs_inflight: Self::create_gauge_vec(
                 "kafka_partition_msgs_inflight",
                 "Messages in flight",
                 partition_labels,
@@ -433,10 +400,42 @@ impl KafkaMetricsCollector {
             eos_producer_epoch: IntGauge::new("kafka_eos_producer_epoch", "Producer epoch")?,
         };
 
-        let mut collector = collector;
-        collector.descs = descs.clone();
+        collector.descs = descs;
 
         Ok(collector)
+    }
+
+    fn create_gauge_vec(
+        name: &str,
+        help: &str,
+        labels: &[&str],
+        descs: &mut Vec<Desc>,
+    ) -> IntGaugeVec {
+        let gauge = IntGaugeVec::new(Opts::new(name, help), labels).unwrap();
+        descs.extend(gauge.clone().desc().into_iter().cloned());
+        gauge
+    }
+
+    fn create_counter_vec(
+        name: &str,
+        help: &str,
+        labels: &[&str],
+        descs: &mut Vec<Desc>,
+    ) -> IntCounterVec {
+        let counter = IntCounterVec::new(Opts::new(name, help), labels).unwrap();
+        descs.extend(counter.clone().desc().into_iter().cloned());
+        counter
+    }
+
+    fn create_histogram_vec(
+        name: &str,
+        help: &str,
+        labels: &[&str],
+        descs: &mut Vec<Desc>,
+    ) -> HistogramVec {
+        let histogram = HistogramVec::new(HistogramOpts::new(name, help), labels).unwrap();
+        descs.extend(histogram.clone().desc().into_iter().cloned());
+        histogram
     }
 }
 

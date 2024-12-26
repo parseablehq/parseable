@@ -238,7 +238,7 @@ impl KafkaStreams {
         info!("Creating Kafka consumer from configs {:#?}", context.config);
 
         let kafka_config = &context.config;
-        let consumer_config = kafka_config.consumer_config();
+        let consumer_config = kafka_config.to_rdkafka_consumer_config();
         info!("Consumer configs: {:#?}", &consumer_config);
 
         let consumer: StreamConsumer = consumer_config
@@ -250,14 +250,17 @@ impl KafkaStreams {
         }
 
         let consumer = Arc::new(consumer);
+        let topics = kafka_config
+            .consumer()
+            .expect("Consumer config is missing")
+            .topics();
 
-        let topics = &kafka_config.topics();
-        KafkaStreams::subscribe(&consumer, topics);
+        KafkaStreams::subscribe(&consumer, &topics);
 
         consumer
     }
 
-    fn subscribe(consumer: &Arc<StreamConsumer>, topics: &Vec<&str>) {
+    fn subscribe(consumer: &Arc<StreamConsumer>, topics: &[&str]) {
         match consumer.subscribe(topics) {
             Ok(_) => {
                 info!("Subscribed to topics: {:?}", topics);

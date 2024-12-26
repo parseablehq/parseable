@@ -16,9 +16,10 @@
  *
  */
 
-use crate::connectors::common::config::ConnectorConfig;
+use crate::connectors::common::config::Connectors;
 use crate::connectors::common::processor::Processor;
 use crate::connectors::common::shutdown::Shutdown;
+use crate::connectors::kafka::config::KafkaConfig;
 use crate::connectors::kafka::consumer::KafkaStreams;
 use crate::connectors::kafka::metrics::KafkaMetricsCollector;
 use crate::connectors::kafka::processor::ParseableSinkProcessor;
@@ -30,6 +31,7 @@ use crate::option::{Mode, CONFIG};
 use actix_web_prometheus::PrometheusMetrics;
 use prometheus::Registry;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -38,8 +40,8 @@ pub mod kafka;
 
 pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
     if matches!(CONFIG.parseable.mode, Mode::Ingest | Mode::All) {
-        match CONFIG.parseable.connector_config.clone() {
-            Some(config) => {
+        match CONFIG.connector_config.clone() {
+            Some(connectors) => {
                 let shutdown_handle = Shutdown::default();
                 let registry = prometheus.registry.clone();
                 let processor = ParseableSinkProcessor;
@@ -51,8 +53,11 @@ pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
                         info!("Connector received shutdown signal!");
                     }
                 });
-
-                run_kafka2parseable(config, registry, processor, shutdown_handle).await?
+                match connectors.connectors {
+                    Connectors::KafkaSink(config) => {
+                        run_kafka2parseable(config, registry, processor, shutdown_handle).await?
+                    }
+                }
             }
             None => {
                 warn!("Kafka connector configuration is missing. Skipping Kafka pipeline.");
@@ -64,7 +69,7 @@ pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
 }
 
 async fn run_kafka2parseable<P>(
-    config: ConnectorConfig,
+    config: KafkaConfig,
     registry: Registry,
     processor: P,
     shutdown_handle: Shutdown,
@@ -72,7 +77,7 @@ async fn run_kafka2parseable<P>(
 where
     P: Processor<Vec<ConsumerRecord>, ()> + Send + Sync + 'static,
 {
-    let kafka_config = Arc::new(config.kafka_config.clone().unwrap_or_default());
+    let kafka_config = Arc::new(config.clone());
     let (kafka_context, rebalance_rx) = KafkaContext::new(kafka_config);
 
     //TODO: fetch topics metadata from kafka then give dynamic value to StreamState
@@ -88,12 +93,8 @@ where
     let stats = kafka_streams.statistics();
     registry.register(Box::new(KafkaMetricsCollector::new(stats)?))?;
 
-    let kafka_parseable_sink_connector = KafkaSinkConnector::new(
-        kafka_streams,
-        processor,
-        config.buffer_size,
-        config.buffer_timeout,
-    );
+    let kafka_parseable_sink_connector =
+        KafkaSinkConnector::new(kafka_streams, processor, 10000, Duration::from_millis(5000));
 
     rebalance_listener.start();
     kafka_parseable_sink_connector.run().await?;
