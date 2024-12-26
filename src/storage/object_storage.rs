@@ -640,7 +640,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
         let path = RelativePathBuf::from_iter([
             PARSEABLE_ROOT_DIRECTORY,
             CORRELATION_DIRECTORY,
-            &format!("{}", correlation.id),
+            &format!("{}.json", correlation.id),
         ]);
         self.put_object(&path, to_bytes(correlation)).await?;
         Ok(())

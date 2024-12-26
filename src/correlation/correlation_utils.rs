@@ -16,39 +16,24 @@
  *
  */
 
-use datafusion::common::tree_node::TreeNode;
+use itertools::Itertools;
 
-use crate::{
-    query::{TableScanVisitor, QUERY_SESSION},
-    rbac::{
-        map::SessionKey,
-        role::{Action, Permission},
-        Users,
-    },
+use crate::rbac::{
+    map::SessionKey,
+    role::{Action, Permission},
+    Users,
 };
 
-use super::CorrelationError;
-
-async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, CorrelationError> {
-    let session_state = QUERY_SESSION.state();
-    let raw_logical_plan = session_state
-        .create_logical_plan(query)
-        .await
-        .map_err(|err| CorrelationError::AnyhowError(err.into()))?;
-
-    let mut visitor = TableScanVisitor::default();
-    let _ = raw_logical_plan.visit(&mut visitor);
-    Ok(visitor)
-}
+use super::{CorrelationError, TableConfig};
 
 pub async fn user_auth_for_query(
     session_key: &SessionKey,
-    query: &str,
+    table_configs: &[TableConfig],
 ) -> Result<(), CorrelationError> {
-    let tables = get_tables_from_query(query).await?;
+    let tables = table_configs.iter().map(|t| &t.table_name).collect_vec();
     let permissions = Users.get_permissions(session_key);
 
-    for table_name in tables.into_inner().iter() {
+    for table_name in tables {
         let mut authorized = false;
 
         // in permission check if user can run query on the stream.

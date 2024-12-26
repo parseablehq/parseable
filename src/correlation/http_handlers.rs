@@ -23,7 +23,7 @@ use relative_path::RelativePathBuf;
 use crate::{
     option::CONFIG,
     storage::{CORRELATION_DIRECTORY, PARSEABLE_ROOT_DIRECTORY},
-    utils::{actix::extract_session_key_from_req, uid::Uid},
+    utils::actix::extract_session_key_from_req,
 };
 
 use super::{
@@ -53,7 +53,7 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
 
     let correlation = CORRELATIONS.get_correlation_by_id(correlation_id).await?;
 
-    if user_auth_for_query(&session_key, &correlation.query)
+    if user_auth_for_query(&session_key, &correlation.table_configs)
         .await
         .is_ok()
     {
@@ -68,10 +68,10 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Corre
         .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
 
     let correlation_request: CorrelationRequest = serde_json::from_slice(&body)?;
-    let correlation: CorrelationConfig = correlation_request.into();
 
-    // validate user's query auth
-    user_auth_for_query(&session_key, &correlation.query).await?;
+    correlation_request.validate(&session_key).await?;
+
+    let correlation: CorrelationConfig = correlation_request.into();
 
     // Save to disk
     let store = CONFIG.storage().get_object_store();
@@ -80,10 +80,7 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Corre
     // Save to memory
     CORRELATIONS.update(&correlation).await?;
 
-    Ok(format!(
-        "Saved correlation with ID- {}",
-        correlation.id.to_string()
-    ))
+    Ok(format!("Saved correlation with ID- {}", correlation.id))
 }
 
 pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, CorrelationError> {
@@ -95,17 +92,14 @@ pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, Cor
         .get("correlation_id")
         .ok_or(CorrelationError::Metadata("No correlation ID Provided"))?;
 
+    // validate whether user has access to this correlation object or not
+    let correlation = CORRELATIONS.get_correlation_by_id(correlation_id).await?;
+    user_auth_for_query(&session_key, &correlation.table_configs).await?;
+
     let correlation_request: CorrelationRequest = serde_json::from_slice(&body)?;
+    correlation_request.validate(&session_key).await?;
 
-    // validate user's query auth
-    user_auth_for_query(&session_key, &correlation_request.query).await?;
-
-    let correlation: CorrelationConfig = CorrelationConfig {
-        version: correlation_request.version,
-        id: Uid::from_string(correlation_id)
-            .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?,
-        query: correlation_request.query,
-    };
+    let correlation = correlation_request.generate_correlation_config(correlation_id.to_owned());
 
     // Save to disk
     let store = CONFIG.storage().get_object_store();
@@ -114,10 +108,7 @@ pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, Cor
     // Save to memory
     CORRELATIONS.update(&correlation).await?;
 
-    Ok(format!(
-        "Modified correlation with ID- {}",
-        correlation.id.to_string()
-    ))
+    Ok(format!("Modified correlation with ID- {}", correlation.id))
 }
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
@@ -132,14 +123,14 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, CorrelationError
     let correlation = CORRELATIONS.get_correlation_by_id(correlation_id).await?;
 
     // validate user's query auth
-    user_auth_for_query(&session_key, &correlation.query).await?;
+    user_auth_for_query(&session_key, &correlation.table_configs).await?;
 
     // Delete from disk
     let store = CONFIG.storage().get_object_store();
     let path = RelativePathBuf::from_iter([
         PARSEABLE_ROOT_DIRECTORY,
         CORRELATION_DIRECTORY,
-        &format!("{}", correlation.id),
+        &correlation.id.to_string(),
     ]);
     store.delete_object(&path).await?;
 

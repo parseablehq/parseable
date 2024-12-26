@@ -16,8 +16,12 @@
  *
  */
 
+use std::collections::HashSet;
+
 use actix_web::http::header::ContentType;
+use chrono::Utc;
 use correlation_utils::user_auth_for_query;
+use datafusion::error::DataFusionError;
 use http::StatusCode;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
@@ -27,8 +31,8 @@ use tokio::sync::RwLock;
 use tracing::{trace, warn};
 
 use crate::{
-    handlers::http::rbac::RBACError, option::CONFIG, rbac::map::SessionKey,
-    storage::ObjectStorageError, utils::uid::Uid,
+    handlers::http::rbac::RBACError, option::CONFIG, query::QUERY_SESSION, rbac::map::SessionKey,
+    storage::ObjectStorageError, users::filters::FilterQuery, utils::get_hash,
 };
 
 pub mod correlation_utils;
@@ -69,7 +73,10 @@ impl Correlation {
 
         let mut user_correlations = vec![];
         for c in correlations {
-            if user_auth_for_query(session_key, &c.query).await.is_ok() {
+            if user_auth_for_query(session_key, &c.table_configs)
+                .await
+                .is_ok()
+            {
                 user_correlations.push(c);
             }
         }
@@ -81,10 +88,7 @@ impl Correlation {
         correlation_id: &str,
     ) -> Result<CorrelationConfig, CorrelationError> {
         let read = self.0.read().await;
-        let correlation = read
-            .iter()
-            .find(|c| c.id.to_string() == correlation_id)
-            .cloned();
+        let correlation = read.iter().find(|c| c.id == correlation_id).cloned();
 
         if let Some(c) = correlation {
             Ok(c)
@@ -110,7 +114,7 @@ impl Correlation {
         let index = read_access
             .iter()
             .enumerate()
-            .find(|(_, c)| c.id.to_string() == correlation_id)
+            .find(|(_, c)| c.id == correlation_id)
             .to_owned();
 
         if let Some((index, _)) = index {
@@ -126,6 +130,7 @@ impl Correlation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CorrelationVersion {
     V1,
 }
@@ -134,8 +139,12 @@ pub enum CorrelationVersion {
 #[serde(rename_all = "camelCase")]
 pub struct CorrelationConfig {
     pub version: CorrelationVersion,
-    pub id: Uid,
-    pub query: String,
+    pub id: String,
+    pub table_configs: Vec<TableConfig>,
+    pub join_config: JoinConfig,
+    pub filter: Option<FilterQuery>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
 }
 
 impl CorrelationConfig {}
@@ -144,16 +153,89 @@ impl CorrelationConfig {}
 #[serde(rename_all = "camelCase")]
 pub struct CorrelationRequest {
     pub version: CorrelationVersion,
-    pub query: String,
+    pub table_configs: Vec<TableConfig>,
+    pub join_config: JoinConfig,
+    pub filter: Option<FilterQuery>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
 }
 
 impl From<CorrelationRequest> for CorrelationConfig {
     fn from(val: CorrelationRequest) -> Self {
         Self {
             version: val.version,
-            id: crate::utils::uid::gen(),
-            query: val.query,
+            id: get_hash(Utc::now().timestamp_micros().to_string().as_str()),
+            table_configs: val.table_configs,
+            join_config: val.join_config,
+            filter: val.filter,
+            start_time: val.start_time,
+            end_time: val.end_time,
         }
+    }
+}
+
+impl CorrelationRequest {
+    pub fn generate_correlation_config(self, id: String) -> CorrelationConfig {
+        CorrelationConfig {
+            version: self.version,
+            id,
+            table_configs: self.table_configs,
+            join_config: self.join_config,
+            filter: self.filter,
+            start_time: self.start_time,
+            end_time: self.end_time,
+        }
+    }
+
+    /// This function will validate the TableConfigs, JoinConfig, and user auth
+    pub async fn validate(&self, session_key: &SessionKey) -> Result<(), CorrelationError> {
+        let ctx = &QUERY_SESSION;
+
+        let h1: HashSet<&String> = self.table_configs.iter().map(|t| &t.table_name).collect();
+        let h2 = HashSet::from([&self.join_config.table_one, &self.join_config.table_two]);
+
+        // check if table config tables are the same
+        if h1.len() != 2 {
+            return Err(CorrelationError::Metadata(
+                "Must provide config for two unique tables",
+            ));
+        }
+
+        // check that the tables mentioned in join config are
+        // the same as those in table config
+        if h1 != h2 {
+            return Err(CorrelationError::Metadata(
+                "Must provide same tables for join config and table config",
+            ));
+        }
+
+        // check if user has access to table
+        user_auth_for_query(session_key, &self.table_configs).await?;
+
+        // to validate table config, we need to check whether the mentioned fields
+        // are present in the table or not
+        for table_config in self.table_configs.iter() {
+            // table config check
+            let df = ctx.table(&table_config.table_name).await?;
+
+            let mut selected_fields = table_config
+                .selected_fields
+                .iter()
+                .map(|c| c.as_str())
+                .collect_vec();
+            let join_field = if table_config.table_name == self.join_config.table_one {
+                &self.join_config.field_one
+            } else {
+                &self.join_config.field_two
+            };
+
+            selected_fields.push(join_field.as_str());
+
+            // if this errors out then the table config is incorrect or join config is incorrect
+            df.select_columns(selected_fields.as_slice())?;
+        }
+
+        Ok(())
     }
 }
 
@@ -171,6 +253,8 @@ pub enum CorrelationError {
     AnyhowError(#[from] anyhow::Error),
     #[error("Unauthorized")]
     Unauthorized,
+    #[error("DataFusion Error: {0}")]
+    DataFusion(#[from] DataFusionError),
 }
 
 impl actix_web::ResponseError for CorrelationError {
@@ -182,6 +266,7 @@ impl actix_web::ResponseError for CorrelationError {
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
             Self::AnyhowError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized => StatusCode::BAD_REQUEST,
+            Self::DataFusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -190,4 +275,20 @@ impl actix_web::ResponseError for CorrelationError {
             .insert_header(ContentType::plaintext())
             .body(self.to_string())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableConfig {
+    pub selected_fields: Vec<String>,
+    pub table_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinConfig {
+    pub table_one: String,
+    pub field_one: String,
+    pub table_two: String,
+    pub field_two: String,
 }

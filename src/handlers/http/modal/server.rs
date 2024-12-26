@@ -194,7 +194,7 @@ impl Server {
                     ),
             )
             .service(
-                web::resource("/correlation/{correlation_id}")
+                web::resource("/{correlation_id}")
                     .route(
                         web::get()
                             .to(correlation::http_handlers::get)
