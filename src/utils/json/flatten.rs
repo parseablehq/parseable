@@ -47,6 +47,8 @@ pub enum JsonFlattenError {
     NonObjectInArray,
 }
 
+// Recursively flattens JSON objects and arrays, e.g. with the separator `.`, starting from the TOP
+// `{"key": "value", "nested_key": {"key":"value"}}` becomes `{"key": "value", "nested_key.key": "value"}`
 pub fn flatten(
     nested_value: &mut Value,
     separator: &str,
@@ -67,6 +69,7 @@ pub fn flatten(
         }
         Value::Array(arr) => {
             for nested_value in arr {
+                // Recursively flatten each element, ONLY in the TOP array
                 flatten(
                     nested_value,
                     separator,
@@ -83,6 +86,19 @@ pub fn flatten(
     Ok(())
 }
 
+// Checks if a JSON value is null or empty
+fn is_null_or_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Object(o) if o.is_empty() => true,
+        Value::Array(a) if a.is_empty() => true,
+        Value::String(s) if s.is_empty() => true,
+        _ => false,
+    }
+}
+
+// Validates the presence and content of custom partition fields
+// that it is not null, empty, or a floating-point number
 pub fn validate_custom_partition(
     value: &Map<String, Value>,
     custom_partition: Option<&String>,
@@ -100,16 +116,6 @@ pub fn validate_custom_partition(
             ));
         };
 
-        fn is_null_or_empty(value: &Value) -> bool {
-            match value {
-                Value::Null => true,
-                Value::Object(o) if o.is_empty() => true,
-                Value::Array(a) if a.is_empty() => true,
-                Value::String(s) if s.is_empty() => true,
-                _ => false,
-            }
-        }
-
         if is_null_or_empty(field_value) {
             return Err(JsonFlattenError::FieldEmptyOrNull(trimmed_field.to_owned()));
         }
@@ -124,6 +130,8 @@ pub fn validate_custom_partition(
     Ok(())
 }
 
+// Validates time partitioning constraints, checking if a timestamp is a string
+// that can be parsed as datetime within the configured time limit
 pub fn validate_time_partition(
     value: &Map<String, Value>,
     time_partition: Option<&String>,
@@ -160,6 +168,8 @@ pub fn validate_time_partition(
     }
 }
 
+// Flattens starting from only object types at TOP, e.g. with the parent_key `root` and separator `_`
+// `{ "a": { "b": 1, c: { "d": 2 } } }` becomes `{"root_a_b":1,"root_a_c_d":2}`
 pub fn flatten_with_parent_prefix(
     nested_value: &mut Value,
     prefix: &str,
@@ -176,7 +186,8 @@ pub fn flatten_with_parent_prefix(
     Ok(())
 }
 
-pub fn flatten_object(
+// Flattens a nested JSON Object/Map into another target Map
+fn flatten_object(
     output_map: &mut Map<String, Value>,
     parent_key: Option<&str>,
     nested_map: &mut Map<String, Value>,
@@ -203,6 +214,7 @@ pub fn flatten_object(
     Ok(())
 }
 
+// Flattens a nested JSON Array into the parent Map
 pub fn flatten_array_objects(
     output_map: &mut Map<String, Value>,
     parent_key: &str,
@@ -248,6 +260,16 @@ pub fn flatten_array_objects(
     Ok(())
 }
 
+/// Recursively flattens a JSON value.
+/// - If the value is an array, it flattens all elements of the array.
+/// - If the value is an object, it flattens all nested objects and arrays.
+/// - Otherwise, it returns the value itself in a vector.
+///
+/// Examples:
+/// 1. `{"a": 1}` ~> `[{"a": 1}]`
+/// 2. `[{"a": 1}, {"b": 2}]` ~> `[{"a": 1}, {"b": 2}]`
+/// 3. `[{"a": [{"b": 1}, {"c": 2}]}]` ~> `[{"a": {"b": 1)}}, {"a": {"c": 2)}}]`
+/// 3. `{"a": [{"b": 1}, {"c": 2}], "d": {"e": 4}}` ~> `[{"a": {"b":1}, "d": {"e":4}}, {"a": {"c":2}, "d": {"e":4}}]`
 pub fn flatten_json(value: &Value) -> Vec<Value> {
     match value {
         Value::Array(arr) => arr.iter().flat_map(flatten_json).collect(),
@@ -290,6 +312,7 @@ pub fn flatten_json(value: &Value) -> Vec<Value> {
     }
 }
 
+// Converts a Vector of values into a `Value::Array`, as long as all of them are objects
 pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, JsonFlattenError> {
     let mut result = Vec::new();
     for item in flattened {
