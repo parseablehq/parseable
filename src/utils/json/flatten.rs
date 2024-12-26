@@ -33,8 +33,12 @@ pub enum JsonFlattenError {
     FieldNotPartOfLog(String),
     #[error("Ingestion failed as field {0} is empty or 'null'")]
     FieldEmptyOrNull(String),
-    #[error("Ingestion failed as field {0} has a floating point value")]
-    FieldIsFloatingPoint(String),
+    #[error("Ingestion failed as field {0} is an object")]
+    FieldIsObject(String),
+    #[error("Ingestion failed as field {0} is an array")]
+    FieldIsArray(String),
+    #[error("Ingestion failed as field {0} contains a period in the value")]
+    FieldContainsPeriod(String),
     #[error("Ingestion failed as field {0} is not a string")]
     FieldNotString(String),
     #[error("Field {0} is not in the correct datetime format")]
@@ -86,19 +90,8 @@ pub fn flatten(
     Ok(())
 }
 
-// Checks if a JSON value is null or empty
-fn is_null_or_empty(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::Object(o) if o.is_empty() => true,
-        Value::Array(a) if a.is_empty() => true,
-        Value::String(s) if s.is_empty() => true,
-        _ => false,
-    }
-}
-
-// Validates the presence and content of custom partition fields
-// that it is not null, empty, or a floating-point number
+// Validates the presence and content of custom partition fields, that it is
+// not null, empty, an object , an array, or contain a `.` when serialized
 pub fn validate_custom_partition(
     value: &Map<String, Value>,
     custom_partition: Option<&String>,
@@ -116,14 +109,31 @@ pub fn validate_custom_partition(
             ));
         };
 
-        if is_null_or_empty(field_value) {
-            return Err(JsonFlattenError::FieldEmptyOrNull(trimmed_field.to_owned()));
-        }
-
-        if field_value.is_f64() {
-            return Err(JsonFlattenError::FieldIsFloatingPoint(
-                trimmed_field.to_owned(),
-            ));
+        // The field should not be null, empty, an object, an array or contain a `.` in the value
+        match field_value {
+            Value::Null => {
+                return Err(JsonFlattenError::FieldEmptyOrNull(trimmed_field.to_owned()))
+            }
+            Value::String(s) if s.is_empty() => {
+                return Err(JsonFlattenError::FieldEmptyOrNull(trimmed_field.to_owned()))
+            }
+            Value::Object(_) => {
+                return Err(JsonFlattenError::FieldIsObject(trimmed_field.to_owned()))
+            }
+            Value::Array(_) => {
+                return Err(JsonFlattenError::FieldIsArray(trimmed_field.to_owned()))
+            }
+            Value::String(s) if s.contains('.') => {
+                return Err(JsonFlattenError::FieldContainsPeriod(
+                    trimmed_field.to_owned(),
+                ))
+            }
+            Value::Number(n) if n.is_f64() => {
+                return Err(JsonFlattenError::FieldContainsPeriod(
+                    trimmed_field.to_owned(),
+                ))
+            }
+            _ => {}
         }
     }
 
@@ -332,7 +342,7 @@ pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, JsonFlattenError
 mod tests {
     use crate::utils::json::flatten::flatten_array_objects;
 
-    use super::flatten;
+    use super::{flatten, JsonFlattenError};
     use serde_json::{json, Map, Value};
 
     #[test]
@@ -513,5 +523,79 @@ mod tests {
         assert_eq!(map.get("key.p").unwrap(), &json!([1, null, 3]));
         assert_eq!(map.get("key.q.x").unwrap(), &json!([[1, 2], [1], null]));
         assert_eq!(map.get("key.r").unwrap(), &json!([null, 2, 3]));
+    }
+
+    #[test]
+    fn acceptable_value_custom_parition_test() {
+        let mut value = json!({
+            "a": 1,
+        });
+        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
+
+        let mut value = json!({
+            "a": true,
+        });
+        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
+
+        let mut value = json!({
+            "a": "yes",
+        });
+        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
+
+        let mut value = json!({
+            "a": -1,
+        });
+        assert!(flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).is_ok());
+    }
+
+    #[test]
+    fn unacceptable_value_custom_partition_test() {
+        let mut value = json!({
+            "a": null,
+        });
+        matches!(
+            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            JsonFlattenError::FieldEmptyOrNull(_)
+        );
+
+        let mut value = json!({
+            "a": "",
+        });
+        matches!(
+            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            JsonFlattenError::FieldEmptyOrNull(_)
+        );
+
+        let mut value = json!({
+            "a": {"b": 1},
+        });
+        matches!(
+            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            JsonFlattenError::FieldIsObject(_)
+        );
+
+        let mut value = json!({
+            "a": ["b", "c"],
+        });
+        matches!(
+            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            JsonFlattenError::FieldIsArray(_)
+        );
+
+        let mut value = json!({
+            "a": "b.c",
+        });
+        matches!(
+            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            JsonFlattenError::FieldContainsPeriod(_)
+        );
+
+        let mut value = json!({
+            "a": 1.0,
+        });
+        matches!(
+            flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
+            JsonFlattenError::FieldContainsPeriod(_)
+        );
     }
 }
