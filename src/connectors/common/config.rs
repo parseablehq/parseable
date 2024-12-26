@@ -14,20 +14,11 @@ pub struct ConnectorConfig {
         value_enum,
         long = "bad-data-policy",
         required = false,
-        default_value_t = BadData::Drop,
+        default_value_t = BadData::Fail,
         env = "P_CONNECTOR_BAD_DATA_POLICY",
         help = "Policy for handling bad data"
     )]
     pub bad_data: BadData,
-
-    #[arg(
-        long = "metrics-enabled",
-        env = "P_CONNECTOR_METRICS_ENABLED",
-        required = false,
-        default_value_t = true,
-        help = "Enable metrics collection"
-    )]
-    pub metrics_enabled: bool,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -52,8 +43,8 @@ impl fmt::Display for Connectors {
 
 #[derive(ValueEnum, Default, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BadData {
-    Fail,
     #[default]
+    Fail,
     Drop,
     Dlt, //TODO: Implement Dead Letter Topic support when needed
 }
@@ -75,7 +66,6 @@ impl Default for ConnectorConfig {
     fn default() -> Self {
         ConnectorConfig {
             bad_data: BadData::Drop,
-            metrics_enabled: true,
             connectors: Connectors::KafkaSink(KafkaConfig::default()),
         }
     }

@@ -28,8 +28,16 @@ use std::sync::{Arc, RwLock};
 pub struct KafkaMetricsCollector {
     stats: Arc<RwLock<Statistics>>,
     descs: Vec<Desc>,
+    core_metrics: CoreMetrics,
+    broker_metrics: BrokerMetrics,
+    topic_metrics: TopicMetrics,
+    partition_metrics: PartitionMetrics,
+    consumer_metrics: ConsumerGroupMetrics,
+    eos_metrics: EosMetrics,
+}
 
-    // Core client metrics
+#[derive(Debug)]
+struct CoreMetrics {
     msg_cnt: IntGauge,
     msg_size: IntGauge,
     msg_max: IntGauge,
@@ -43,82 +51,84 @@ pub struct KafkaMetricsCollector {
     txmsg_bytes: IntCounter,
     rxmsgs: IntCounter,
     rxmsg_bytes: IntCounter,
-
-    // Broker metrics
-    broker_state_cnt: IntGauge,
-    broker_outbuf_cnt: IntGauge,
-    broker_outbuf_msg_cnt: IntGauge,
-    broker_waitresp_cnt: IntGauge,
-    broker_waitresp_msg_cnt: IntGauge,
-    broker_tx: IntCounter,
-    broker_tx_bytes: IntCounter,
-    broker_tx_errs: IntCounter,
-    broker_tx_retries: IntCounter,
-    broker_req_timeouts: IntCounter,
-    broker_rx: IntCounter,
-    broker_rx_bytes: IntCounter,
-    broker_rx_errs: IntCounter,
-    broker_rx_corrid_errs: IntCounter,
-    broker_rx_partial: IntCounter,
-    broker_connects: IntCounter,
-    broker_disconnects: IntCounter,
-    broker_int_latency: Histogram,
-    broker_outbuf_latency: Histogram,
-    broker_rtt: Histogram,
-    broker_throttle: Histogram,
-
-    // Topic metrics
-    topic_metadata_age: IntGaugeVec,
-    topic_batchsize: HistogramVec,
-    topic_batchcnt: HistogramVec,
-
-    // Partition metrics with labels
-    partition_msgq_cnt: IntGaugeVec,
-    partition_msgq_bytes: IntGaugeVec,
-    partition_xmit_msgq_cnt: IntGaugeVec,
-    partition_xmit_msgq_bytes: IntGaugeVec,
-    partition_fetchq_cnt: IntGaugeVec,
-    partition_fetchq_size: IntGaugeVec,
-    partition_query_offset: IntGaugeVec,
-    partition_next_offset: IntGaugeVec,
-    partition_app_offset: IntGaugeVec,
-    partition_stored_offset: IntGaugeVec,
-    partition_committed_offset: IntGaugeVec,
-    partition_eof_offset: IntGaugeVec,
-    partition_lo_offset: IntGaugeVec,
-    partition_hi_offset: IntGaugeVec,
-    partition_consumer_lag: IntGaugeVec,
-    partition_consumer_lag_stored: IntGaugeVec,
-    partition_txmsgs: IntCounterVec,
-    partition_txbytes: IntCounterVec,
-    partition_rxmsgs: IntCounterVec,
-    partition_rxbytes: IntCounterVec,
-    partition_msgs: IntCounterVec,
-    partition_rx_ver_drops: IntCounterVec,
-    partition_msgs_inflight: IntGaugeVec,
-
-    // Consumer group metrics
-    cgrp_rebalance_cnt: IntCounter,
-    cgrp_rebalance_age: IntGauge,
-    cgrp_assignment_size: IntGauge,
-
-    // Exactly once semantics metrics
-    eos_epoch_cnt: IntCounter,
-    eos_producer_id: IntGauge,
-    eos_producer_epoch: IntGauge,
 }
 
-impl KafkaMetricsCollector {
-    pub fn new(stats: Arc<RwLock<Statistics>>) -> anyhow::Result<KafkaMetricsCollector> {
-        let mut descs = Vec::new();
+#[derive(Debug)]
+struct BrokerMetrics {
+    state_cnt: IntGauge,
+    outbuf_cnt: IntGauge,
+    outbuf_msg_cnt: IntGauge,
+    waitresp_cnt: IntGauge,
+    waitresp_msg_cnt: IntGauge,
+    tx: IntCounter,
+    tx_bytes: IntCounter,
+    tx_errs: IntCounter,
+    tx_retries: IntCounter,
+    req_timeouts: IntCounter,
+    rx: IntCounter,
+    rx_bytes: IntCounter,
+    rx_errs: IntCounter,
+    rx_corrid_errs: IntCounter,
+    rx_partial: IntCounter,
+    connects: IntCounter,
+    disconnects: IntCounter,
+    int_latency: Histogram,
+    outbuf_latency: Histogram,
+    rtt: Histogram,
+    throttle: Histogram,
+}
 
-        let topic_labels = &["topic"];
-        let partition_labels = &["topic", "partition"];
+#[derive(Debug)]
+struct TopicMetrics {
+    metadata_age: IntGaugeVec,
+    batchsize: HistogramVec,
+    batchcnt: HistogramVec,
+}
 
-        let mut collector = KafkaMetricsCollector {
-            stats: stats.clone(),
-            descs: descs.clone(),
-            // Core metrics
+#[derive(Debug)]
+struct PartitionMetrics {
+    msgq_cnt: IntGaugeVec,
+    msgq_bytes: IntGaugeVec,
+    xmit_msgq_cnt: IntGaugeVec,
+    xmit_msgq_bytes: IntGaugeVec,
+    fetchq_cnt: IntGaugeVec,
+    fetchq_size: IntGaugeVec,
+    query_offset: IntGaugeVec,
+    next_offset: IntGaugeVec,
+    app_offset: IntGaugeVec,
+    stored_offset: IntGaugeVec,
+    committed_offset: IntGaugeVec,
+    eof_offset: IntGaugeVec,
+    lo_offset: IntGaugeVec,
+    hi_offset: IntGaugeVec,
+    consumer_lag: IntGaugeVec,
+    consumer_lag_stored: IntGaugeVec,
+    txmsgs: IntCounterVec,
+    txbytes: IntCounterVec,
+    rxmsgs: IntCounterVec,
+    rxbytes: IntCounterVec,
+    msgs: IntCounterVec,
+    rx_ver_drops: IntCounterVec,
+    msgs_inflight: IntGaugeVec,
+}
+
+#[derive(Debug)]
+struct ConsumerGroupMetrics {
+    rebalance_cnt: IntCounter,
+    rebalance_age: IntGauge,
+    assignment_size: IntGauge,
+}
+
+#[derive(Debug)]
+struct EosMetrics {
+    epoch_cnt: IntCounter,
+    producer_id: IntGauge,
+    producer_epoch: IntGauge,
+}
+
+impl CoreMetrics {
+    fn new() -> anyhow::Result<Self> {
+        Ok(Self {
             msg_cnt: IntGauge::new(
                 "kafka_msg_cnt",
                 "Current number of messages in producer queues",
@@ -153,256 +163,610 @@ impl KafkaMetricsCollector {
                 "kafka_rxmsg_bytes_total",
                 "Total number of message bytes received",
             )?,
+        })
+    }
+}
 
-            // Broker metrics
-            broker_state_cnt: IntGauge::new("kafka_broker_state", "Broker connection state")?,
-            broker_outbuf_cnt: IntGauge::new(
+impl BrokerMetrics {
+    fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            state_cnt: IntGauge::new("kafka_broker_state", "Broker connection state")?,
+            outbuf_cnt: IntGauge::new(
                 "kafka_broker_outbuf_cnt",
                 "Number of requests awaiting transmission",
             )?,
-            broker_outbuf_msg_cnt: IntGauge::new(
+            outbuf_msg_cnt: IntGauge::new(
                 "kafka_broker_outbuf_msg_cnt",
                 "Number of messages awaiting transmission",
             )?,
-            broker_waitresp_cnt: IntGauge::new(
+            waitresp_cnt: IntGauge::new(
                 "kafka_broker_waitresp_cnt",
                 "Number of requests in-flight",
             )?,
-            broker_waitresp_msg_cnt: IntGauge::new(
+            waitresp_msg_cnt: IntGauge::new(
                 "kafka_broker_waitresp_msg_cnt",
                 "Number of messages in-flight",
             )?,
-            broker_tx: IntCounter::new("kafka_broker_tx_total", "Total broker transmissions")?,
-            broker_tx_bytes: IntCounter::new(
+            tx: IntCounter::new("kafka_broker_tx_total", "Total broker transmissions")?,
+            tx_bytes: IntCounter::new(
                 "kafka_broker_tx_bytes_total",
                 "Total broker bytes transmitted",
             )?,
-            broker_tx_errs: IntCounter::new(
+            tx_errs: IntCounter::new(
                 "kafka_broker_tx_errs_total",
                 "Total broker transmission errors",
             )?,
-            broker_tx_retries: IntCounter::new(
+            tx_retries: IntCounter::new(
                 "kafka_broker_tx_retries_total",
                 "Total broker transmission retries",
             )?,
-            broker_req_timeouts: IntCounter::new(
+            req_timeouts: IntCounter::new(
                 "kafka_broker_req_timeouts_total",
                 "Total broker request timeouts",
             )?,
-            broker_rx: IntCounter::new("kafka_broker_rx_total", "Total broker receptions")?,
-            broker_rx_bytes: IntCounter::new(
+            rx: IntCounter::new("kafka_broker_rx_total", "Total broker receptions")?,
+            rx_bytes: IntCounter::new(
                 "kafka_broker_rx_bytes_total",
                 "Total broker bytes received",
             )?,
-            broker_rx_errs: IntCounter::new(
+            rx_errs: IntCounter::new(
                 "kafka_broker_rx_errs_total",
                 "Total broker reception errors",
             )?,
-            broker_rx_corrid_errs: IntCounter::new(
+            rx_corrid_errs: IntCounter::new(
                 "kafka_broker_rx_corrid_errs_total",
                 "Total broker correlation ID errors",
             )?,
-            broker_rx_partial: IntCounter::new(
+            rx_partial: IntCounter::new(
                 "kafka_broker_rx_partial_total",
                 "Total broker partial message sets",
             )?,
-            broker_connects: IntCounter::new(
+            connects: IntCounter::new(
                 "kafka_broker_connects_total",
                 "Total broker connection attempts",
             )?,
-            broker_disconnects: IntCounter::new(
+            disconnects: IntCounter::new(
                 "kafka_broker_disconnects_total",
                 "Total broker disconnections",
             )?,
-            broker_int_latency: Histogram::with_opts(HistogramOpts::new(
+            int_latency: Histogram::with_opts(HistogramOpts::new(
                 "kafka_broker_int_latency",
                 "Internal broker latency",
             ))?,
-            broker_outbuf_latency: Histogram::with_opts(HistogramOpts::new(
+            outbuf_latency: Histogram::with_opts(HistogramOpts::new(
                 "kafka_broker_outbuf_latency",
                 "Outbuf latency",
             ))?,
-            broker_rtt: Histogram::with_opts(HistogramOpts::new(
+            rtt: Histogram::with_opts(HistogramOpts::new(
                 "kafka_broker_rtt",
                 "Broker round-trip time",
             ))?,
-
-            broker_throttle: Histogram::with_opts(HistogramOpts::new(
+            throttle: Histogram::with_opts(HistogramOpts::new(
                 "kafka_broker_throttle",
                 "Broker throttle time",
             ))?,
-            // Topic metrics with labels
-            topic_metadata_age: Self::create_gauge_vec(
+        })
+    }
+}
+
+impl TopicMetrics {
+    fn new(labels: &[&str], descs: &mut Vec<Desc>) -> Self {
+        Self {
+            metadata_age: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_topic_metadata_age",
                 "Age of topic metadata",
-                topic_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            topic_batchsize: Self::create_histogram_vec(
+            batchsize: KafkaMetricsCollector::create_histogram_vec(
                 "kafka_topic_batchsize",
                 "Topic batch sizes",
-                topic_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            topic_batchcnt: Self::create_histogram_vec(
+            batchcnt: KafkaMetricsCollector::create_histogram_vec(
                 "kafka_topic_batchcnt",
                 "Topic batch counts",
-                topic_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
+        }
+    }
+}
 
-            // Partition metrics with labels
-            partition_msgq_cnt: Self::create_gauge_vec(
+impl PartitionMetrics {
+    fn new(labels: &[&str], descs: &mut Vec<Desc>) -> Self {
+        Self {
+            msgq_cnt: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_msgq_cnt",
                 "Messages in partition queue",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_msgq_bytes: Self::create_gauge_vec(
+            msgq_bytes: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_msgq_bytes",
                 "Bytes in partition queue",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_xmit_msgq_cnt: Self::create_gauge_vec(
+            xmit_msgq_cnt: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_xmit_msgq_cnt",
                 "Messages in partition transmit queue",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_xmit_msgq_bytes: Self::create_gauge_vec(
+            xmit_msgq_bytes: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_xmit_msgq_bytes",
                 "Bytes in partition transmit queue",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_fetchq_cnt: Self::create_gauge_vec(
+            fetchq_cnt: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_fetchq_cnt",
                 "Messages in partition fetch queue",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_fetchq_size: Self::create_gauge_vec(
+            fetchq_size: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_fetchq_size",
                 "Size of partition fetch queue",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_query_offset: Self::create_gauge_vec(
+            query_offset: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_query_offset",
                 "Current partition query offset",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_next_offset: Self::create_gauge_vec(
+            next_offset: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_next_offset",
                 "Next partition offset",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_app_offset: Self::create_gauge_vec(
+            app_offset: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_app_offset",
                 "Application partition offset",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_stored_offset: Self::create_gauge_vec(
+            stored_offset: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_stored_offset",
                 "Stored partition offset",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_committed_offset: Self::create_gauge_vec(
+            committed_offset: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_committed_offset",
                 "Committed partition offset",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_eof_offset: Self::create_gauge_vec(
+            eof_offset: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_eof_offset",
                 "EOF partition offset",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_lo_offset: Self::create_gauge_vec(
+            lo_offset: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_lo_offset",
                 "Low watermark partition offset",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_hi_offset: Self::create_gauge_vec(
+            hi_offset: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_hi_offset",
                 "High watermark partition offset",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_consumer_lag: Self::create_gauge_vec(
+            consumer_lag: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_consumer_lag",
                 "Consumer lag",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_consumer_lag_stored: Self::create_gauge_vec(
+            consumer_lag_stored: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_consumer_lag_stored",
                 "Stored consumer lag",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_txmsgs: Self::create_counter_vec(
+            txmsgs: KafkaMetricsCollector::create_counter_vec(
                 "kafka_partition_txmsgs_total",
                 "Total partition messages transmitted",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_txbytes: Self::create_counter_vec(
+            txbytes: KafkaMetricsCollector::create_counter_vec(
                 "kafka_partition_txbytes_total",
                 "Total partition bytes transmitted",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_rxmsgs: Self::create_counter_vec(
+            rxmsgs: KafkaMetricsCollector::create_counter_vec(
                 "kafka_partition_rxmsgs_total",
                 "Total partition messages received",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_rxbytes: Self::create_counter_vec(
+            rxbytes: KafkaMetricsCollector::create_counter_vec(
                 "kafka_partition_rxbytes_total",
                 "Total partition bytes received",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_msgs: Self::create_counter_vec(
+            msgs: KafkaMetricsCollector::create_counter_vec(
                 "kafka_partition_msgs_total",
                 "Total partition messages",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_rx_ver_drops: Self::create_counter_vec(
+            rx_ver_drops: KafkaMetricsCollector::create_counter_vec(
                 "kafka_partition_rx_ver_drops_total",
                 "Total partition version drops",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            partition_msgs_inflight: Self::create_gauge_vec(
+            msgs_inflight: KafkaMetricsCollector::create_gauge_vec(
                 "kafka_partition_msgs_inflight",
                 "Messages in flight",
-                partition_labels,
-                &mut descs,
+                labels,
+                descs,
             ),
-            cgrp_rebalance_cnt: IntCounter::new("kafka_cgrp_rebalance_total", "Total rebalances")?,
-            cgrp_rebalance_age: IntGauge::new("kafka_cgrp_rebalance_age", "Rebalance age")?,
-            cgrp_assignment_size: IntGauge::new("kafka_cgrp_assignment_size", "Assignment size")?,
+        }
+    }
 
-            // Exactly once semantics metrics
-            eos_epoch_cnt: IntCounter::new("kafka_eos_epoch_total", "Total number of epochs")?,
-            eos_producer_id: IntGauge::new("kafka_eos_producer_id", "Producer ID")?,
-            eos_producer_epoch: IntGauge::new("kafka_eos_producer_epoch", "Producer epoch")?,
-        };
+    fn collect_metrics(
+        &self,
+        topic_name: &str,
+        partition_id: &i32,
+        partition: &rdkafka::statistics::Partition,
+    ) -> Vec<proto::MetricFamily> {
+        let mut mfs = Vec::new();
+        let labels = &[topic_name, &partition_id.to_string()];
 
-        collector.descs = descs;
+        self.set_gauges(labels, partition);
+        self.set_counters(labels, partition);
 
-        Ok(collector)
+        self.collect_all_metrics(&mut mfs);
+
+        mfs
+    }
+
+    fn set_gauges(&self, labels: &[&str], partition: &rdkafka::statistics::Partition) {
+        self.msgq_cnt
+            .with_label_values(labels)
+            .set(partition.msgq_cnt);
+        self.msgq_bytes
+            .with_label_values(labels)
+            .set(partition.msgq_bytes as i64);
+        self.xmit_msgq_cnt
+            .with_label_values(labels)
+            .set(partition.xmit_msgq_cnt);
+        self.xmit_msgq_bytes
+            .with_label_values(labels)
+            .set(partition.xmit_msgq_bytes as i64);
+        self.fetchq_cnt
+            .with_label_values(labels)
+            .set(partition.fetchq_cnt);
+        self.fetchq_size
+            .with_label_values(labels)
+            .set(partition.fetchq_size as i64);
+        self.query_offset
+            .with_label_values(labels)
+            .set(partition.query_offset);
+        self.next_offset
+            .with_label_values(labels)
+            .set(partition.next_offset);
+        self.app_offset
+            .with_label_values(labels)
+            .set(partition.app_offset);
+        self.stored_offset
+            .with_label_values(labels)
+            .set(partition.stored_offset);
+        self.committed_offset
+            .with_label_values(labels)
+            .set(partition.committed_offset);
+        self.eof_offset
+            .with_label_values(labels)
+            .set(partition.eof_offset);
+        self.lo_offset
+            .with_label_values(labels)
+            .set(partition.lo_offset);
+        self.hi_offset
+            .with_label_values(labels)
+            .set(partition.hi_offset);
+        self.consumer_lag
+            .with_label_values(labels)
+            .set(partition.consumer_lag);
+        self.consumer_lag_stored
+            .with_label_values(labels)
+            .set(partition.consumer_lag_stored);
+        self.msgs_inflight
+            .with_label_values(labels)
+            .set(partition.msgs_inflight);
+    }
+
+    fn set_counters(&self, labels: &[&str], partition: &rdkafka::statistics::Partition) {
+        self.txmsgs
+            .with_label_values(labels)
+            .inc_by(partition.txmsgs);
+        self.txbytes
+            .with_label_values(labels)
+            .inc_by(partition.txbytes);
+        self.rxmsgs
+            .with_label_values(labels)
+            .inc_by(partition.rxmsgs);
+        self.rxbytes
+            .with_label_values(labels)
+            .inc_by(partition.rxbytes);
+        self.msgs.with_label_values(labels).inc_by(partition.msgs);
+        self.rx_ver_drops
+            .with_label_values(labels)
+            .inc_by(partition.rx_ver_drops);
+    }
+
+    fn collect_all_metrics(&self, mfs: &mut Vec<proto::MetricFamily>) {
+        // Collect gauges
+        mfs.extend(self.msgq_cnt.collect());
+        mfs.extend(self.msgq_bytes.collect());
+        mfs.extend(self.xmit_msgq_cnt.collect());
+        mfs.extend(self.xmit_msgq_bytes.collect());
+        mfs.extend(self.fetchq_cnt.collect());
+        mfs.extend(self.fetchq_size.collect());
+        mfs.extend(self.query_offset.collect());
+        mfs.extend(self.next_offset.collect());
+        mfs.extend(self.app_offset.collect());
+        mfs.extend(self.stored_offset.collect());
+        mfs.extend(self.committed_offset.collect());
+        mfs.extend(self.eof_offset.collect());
+        mfs.extend(self.lo_offset.collect());
+        mfs.extend(self.hi_offset.collect());
+        mfs.extend(self.consumer_lag.collect());
+        mfs.extend(self.consumer_lag_stored.collect());
+        mfs.extend(self.msgs_inflight.collect());
+
+        // Collect counters
+        mfs.extend(self.txmsgs.collect());
+        mfs.extend(self.txbytes.collect());
+        mfs.extend(self.rxmsgs.collect());
+        mfs.extend(self.rxbytes.collect());
+        mfs.extend(self.msgs.collect());
+        mfs.extend(self.rx_ver_drops.collect());
+    }
+}
+
+impl BrokerMetrics {
+    fn collect_metrics(&self, broker: &rdkafka::statistics::Broker) -> Vec<proto::MetricFamily> {
+        let mut mfs = Vec::new();
+
+        self.state_cnt.set(match broker.state.as_str() {
+            "UP" => 1,
+            "DOWN" => 0,
+            _ => -1,
+        });
+
+        self.set_gauges(broker);
+        self.set_counters(broker);
+        self.set_latency_metrics(broker);
+        self.collect_all_metrics(&mut mfs);
+
+        mfs
+    }
+
+    fn set_gauges(&self, broker: &rdkafka::statistics::Broker) {
+        self.outbuf_cnt.set(broker.outbuf_cnt);
+        self.outbuf_msg_cnt.set(broker.outbuf_msg_cnt);
+        self.waitresp_cnt.set(broker.waitresp_cnt);
+        self.waitresp_msg_cnt.set(broker.waitresp_msg_cnt);
+    }
+
+    fn set_counters(&self, broker: &rdkafka::statistics::Broker) {
+        self.tx.inc_by(broker.tx);
+        self.tx_bytes.inc_by(broker.txbytes);
+        self.tx_errs.inc_by(broker.txerrs);
+        self.tx_retries.inc_by(broker.txretries);
+        self.req_timeouts.inc_by(broker.req_timeouts);
+        self.rx.inc_by(broker.rx);
+        self.rx_bytes.inc_by(broker.rxbytes);
+        self.rx_errs.inc_by(broker.rxerrs);
+        self.rx_corrid_errs.inc_by(broker.rxcorriderrs);
+        self.rx_partial.inc_by(broker.rxpartial);
+
+        if let Some(connects) = broker.connects {
+            self.connects.inc_by(connects as u64);
+        }
+        if let Some(disconnects) = broker.disconnects {
+            self.disconnects.inc_by(disconnects as u64);
+        }
+    }
+
+    fn set_latency_metrics(&self, broker: &rdkafka::statistics::Broker) {
+        if let Some(ref latency) = broker.int_latency {
+            self.int_latency.observe(latency.avg as f64);
+        }
+        if let Some(ref latency) = broker.outbuf_latency {
+            self.outbuf_latency.observe(latency.avg as f64);
+        }
+        if let Some(ref rtt) = broker.rtt {
+            self.rtt.observe(rtt.avg as f64);
+        }
+        if let Some(ref throttle) = broker.throttle {
+            self.throttle.observe(throttle.avg as f64);
+        }
+    }
+
+    fn collect_all_metrics(&self, mfs: &mut Vec<proto::MetricFamily>) {
+        mfs.extend(self.state_cnt.collect());
+        mfs.extend(self.outbuf_cnt.collect());
+        mfs.extend(self.outbuf_msg_cnt.collect());
+        mfs.extend(self.waitresp_cnt.collect());
+        mfs.extend(self.waitresp_msg_cnt.collect());
+        mfs.extend(self.tx.collect());
+        mfs.extend(self.tx_bytes.collect());
+        mfs.extend(self.tx_errs.collect());
+        mfs.extend(self.tx_retries.collect());
+        mfs.extend(self.req_timeouts.collect());
+        mfs.extend(self.rx.collect());
+        mfs.extend(self.rx_bytes.collect());
+        mfs.extend(self.rx_errs.collect());
+        mfs.extend(self.rx_corrid_errs.collect());
+        mfs.extend(self.rx_partial.collect());
+        mfs.extend(self.connects.collect());
+        mfs.extend(self.disconnects.collect());
+        mfs.extend(self.int_latency.collect());
+        mfs.extend(self.outbuf_latency.collect());
+        mfs.extend(self.rtt.collect());
+        mfs.extend(self.throttle.collect());
+    }
+}
+
+impl TopicMetrics {
+    fn collect_metrics(
+        &self,
+        topic_name: &str,
+        topic: &rdkafka::statistics::Topic,
+    ) -> Vec<proto::MetricFamily> {
+        let mut mfs = Vec::new();
+        let labels = &[topic_name];
+
+        self.metadata_age
+            .with_label_values(labels)
+            .set(topic.metadata_age);
+        self.batchsize
+            .with_label_values(labels)
+            .observe(topic.batchsize.avg as f64);
+        self.batchcnt
+            .with_label_values(labels)
+            .observe(topic.batchcnt.avg as f64);
+
+        mfs.extend(self.metadata_age.collect());
+        mfs.extend(self.batchsize.collect());
+        mfs.extend(self.batchcnt.collect());
+
+        mfs
+    }
+}
+
+impl ConsumerGroupMetrics {
+    fn collect_metrics(
+        &self,
+        cgrp: &rdkafka::statistics::ConsumerGroup,
+    ) -> Vec<proto::MetricFamily> {
+        let mut mfs = Vec::new();
+
+        self.rebalance_cnt.inc_by(cgrp.rebalance_cnt as u64);
+        self.rebalance_age.set(cgrp.rebalance_age);
+        self.assignment_size.set(cgrp.assignment_size as i64);
+
+        mfs.extend(self.rebalance_cnt.collect());
+        mfs.extend(self.rebalance_age.collect());
+        mfs.extend(self.assignment_size.collect());
+
+        mfs
+    }
+}
+
+impl EosMetrics {
+    fn collect_metrics(
+        &self,
+        eos: &rdkafka::statistics::ExactlyOnceSemantics,
+    ) -> Vec<proto::MetricFamily> {
+        let mut mfs = Vec::new();
+
+        self.epoch_cnt.inc_by(eos.epoch_cnt as u64);
+        self.producer_id.set(eos.producer_id);
+        self.producer_epoch.set(eos.producer_epoch);
+
+        mfs.extend(self.epoch_cnt.collect());
+        mfs.extend(self.producer_id.collect());
+        mfs.extend(self.producer_epoch.collect());
+
+        mfs
+    }
+}
+
+impl CoreMetrics {
+    fn collect_metrics(&self, stats: &Statistics) -> Vec<proto::MetricFamily> {
+        let mut mfs = Vec::new();
+
+        self.msg_cnt.set(stats.msg_cnt as i64);
+        self.msg_size.set(stats.msg_size as i64);
+        self.msg_max.set(stats.msg_max as i64);
+        self.msg_size_max.set(stats.msg_size_max as i64);
+        self.metadata_cache_cnt.set(stats.metadata_cache_cnt);
+        self.tx.inc_by(stats.tx as u64);
+        self.tx_bytes.inc_by(stats.tx_bytes as u64);
+        self.rx.inc_by(stats.rx as u64);
+        self.rx_bytes.inc_by(stats.rx_bytes as u64);
+        self.txmsgs.inc_by(stats.txmsgs as u64);
+        self.txmsg_bytes.inc_by(stats.txmsg_bytes as u64);
+        self.rxmsgs.inc_by(stats.rxmsgs as u64);
+        self.rxmsg_bytes.inc_by(stats.rxmsg_bytes as u64);
+
+        mfs.extend(self.msg_cnt.collect());
+        mfs.extend(self.msg_size.collect());
+        mfs.extend(self.msg_max.collect());
+        mfs.extend(self.msg_size_max.collect());
+        mfs.extend(self.metadata_cache_cnt.collect());
+        mfs.extend(self.tx.collect());
+        mfs.extend(self.tx_bytes.collect());
+        mfs.extend(self.rx.collect());
+        mfs.extend(self.rx_bytes.collect());
+        mfs.extend(self.txmsgs.collect());
+        mfs.extend(self.txmsg_bytes.collect());
+        mfs.extend(self.rxmsgs.collect());
+        mfs.extend(self.rxmsg_bytes.collect());
+
+        mfs
+    }
+}
+
+impl ConsumerGroupMetrics {
+    fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            rebalance_cnt: IntCounter::new("kafka_cgrp_rebalance_total", "Total rebalances")?,
+            rebalance_age: IntGauge::new("kafka_cgrp_rebalance_age", "Rebalance age")?,
+            assignment_size: IntGauge::new("kafka_cgrp_assignment_size", "Assignment size")?,
+        })
+    }
+}
+
+impl EosMetrics {
+    fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            epoch_cnt: IntCounter::new("kafka_eos_epoch_total", "Total number of epochs")?,
+            producer_id: IntGauge::new("kafka_eos_producer_id", "Producer ID")?,
+            producer_epoch: IntGauge::new("kafka_eos_producer_epoch", "Producer epoch")?,
+        })
+    }
+}
+
+impl KafkaMetricsCollector {
+    pub fn new(stats: Arc<RwLock<Statistics>>) -> anyhow::Result<KafkaMetricsCollector> {
+        let mut descs = Vec::new();
+        let topic_labels = &["topic"];
+        let partition_labels = &["topic", "partition"];
+
+        let core_metrics = CoreMetrics::new()?;
+        let broker_metrics = BrokerMetrics::new()?;
+        let topic_metrics = TopicMetrics::new(topic_labels, &mut descs);
+        let partition_metrics = PartitionMetrics::new(partition_labels, &mut descs);
+        let consumer_metrics = ConsumerGroupMetrics::new()?;
+        let eos_metrics = EosMetrics::new()?;
+
+        Ok(KafkaMetricsCollector {
+            stats,
+            descs,
+            core_metrics,
+            broker_metrics,
+            topic_metrics,
+            partition_metrics,
+            consumer_metrics,
+            eos_metrics,
+        })
     }
 
     fn create_gauge_vec(
@@ -450,238 +814,39 @@ impl Collector for KafkaMetricsCollector {
             Err(_) => return vec![],
         };
 
-        // Core metrics
         let mut mfs = Vec::new();
-        self.msg_cnt.set(stats.msg_cnt as i64);
-        self.msg_size.set(stats.msg_size as i64);
-        self.msg_max.set(stats.msg_max as i64);
-        self.msg_size_max.set(stats.msg_size_max as i64);
-        self.metadata_cache_cnt.set(stats.metadata_cache_cnt);
-        self.tx.inc_by(stats.tx as u64);
-        self.tx_bytes.inc_by(stats.tx_bytes as u64);
-        self.rx.inc_by(stats.rx as u64);
-        self.rx_bytes.inc_by(stats.rx_bytes as u64);
-        self.txmsgs.inc_by(stats.txmsgs as u64);
-        self.txmsg_bytes.inc_by(stats.txmsg_bytes as u64);
-        self.rxmsgs.inc_by(stats.rxmsgs as u64);
-        self.rxmsg_bytes.inc_by(stats.rxmsg_bytes as u64);
 
-        mfs.extend(self.msg_cnt.collect());
-        mfs.extend(self.msg_size.collect());
-        mfs.extend(self.msg_max.collect());
-        mfs.extend(self.msg_size_max.collect());
-        mfs.extend(self.metadata_cache_cnt.collect());
-        mfs.extend(self.tx.collect());
-        mfs.extend(self.tx_bytes.collect());
-        mfs.extend(self.rx.collect());
-        mfs.extend(self.rx_bytes.collect());
-        mfs.extend(self.txmsgs.collect());
-        mfs.extend(self.txmsg_bytes.collect());
-        mfs.extend(self.rxmsgs.collect());
-        mfs.extend(self.rxmsg_bytes.collect());
+        // Collect core metrics
+        mfs.extend(self.core_metrics.collect_metrics(&stats));
 
-        // Broker metrics
+        // Collect broker metrics
         for (_broker_id, broker) in stats.brokers.iter() {
-            self.broker_state_cnt.set(match broker.state.as_str() {
-                "UP" => 1,
-                "DOWN" => 0,
-                _ => -1,
-            });
-
-            self.broker_outbuf_cnt.set(broker.outbuf_cnt);
-            self.broker_outbuf_msg_cnt.set(broker.outbuf_msg_cnt);
-            self.broker_waitresp_cnt.set(broker.waitresp_cnt);
-            self.broker_waitresp_msg_cnt.set(broker.waitresp_msg_cnt);
-
-            self.broker_tx.inc_by(broker.tx);
-            self.broker_tx_bytes.inc_by(broker.txbytes);
-            self.broker_tx_errs.inc_by(broker.txerrs);
-            self.broker_tx_retries.inc_by(broker.txretries);
-            self.broker_req_timeouts.inc_by(broker.req_timeouts);
-            self.broker_rx.inc_by(broker.rx);
-            self.broker_rx_bytes.inc_by(broker.rxbytes);
-            self.broker_rx_errs.inc_by(broker.rxerrs);
-            self.broker_rx_corrid_errs.inc_by(broker.rxcorriderrs);
-            self.broker_rx_partial.inc_by(broker.rxpartial);
-
-            if let Some(connects) = broker.connects {
-                self.broker_connects.inc_by(connects as u64);
-            }
-            if let Some(disconnects) = broker.disconnects {
-                self.broker_disconnects.inc_by(disconnects as u64);
-            }
-
-            // Latency metrics
-            if let Some(ref latency) = broker.int_latency {
-                self.broker_int_latency.observe(latency.avg as f64);
-            }
-            if let Some(ref latency) = broker.outbuf_latency {
-                self.broker_outbuf_latency.observe(latency.avg as f64);
-            }
-            if let Some(ref rtt) = broker.rtt {
-                self.broker_rtt.observe(rtt.avg as f64);
-            }
-            if let Some(ref throttle) = broker.throttle {
-                self.broker_throttle.observe(throttle.avg as f64);
-            }
+            mfs.extend(self.broker_metrics.collect_metrics(broker));
         }
 
-        mfs.extend(self.broker_state_cnt.collect());
-        mfs.extend(self.broker_outbuf_cnt.collect());
-        mfs.extend(self.broker_outbuf_msg_cnt.collect());
-        mfs.extend(self.broker_waitresp_cnt.collect());
-        mfs.extend(self.broker_waitresp_msg_cnt.collect());
-        mfs.extend(self.broker_tx.collect());
-        mfs.extend(self.broker_tx_bytes.collect());
-        mfs.extend(self.broker_tx_errs.collect());
-        mfs.extend(self.broker_tx_retries.collect());
-        mfs.extend(self.broker_req_timeouts.collect());
-        mfs.extend(self.broker_rx.collect());
-        mfs.extend(self.broker_rx_bytes.collect());
-        mfs.extend(self.broker_rx_errs.collect());
-        mfs.extend(self.broker_rx_corrid_errs.collect());
-        mfs.extend(self.broker_rx_partial.collect());
-        mfs.extend(self.broker_connects.collect());
-        mfs.extend(self.broker_disconnects.collect());
-        mfs.extend(self.broker_int_latency.collect());
-        mfs.extend(self.broker_outbuf_latency.collect());
-        mfs.extend(self.broker_rtt.collect());
-        mfs.extend(self.broker_throttle.collect());
-
-        // Topic and partition metrics with labels
+        // Collect topic and partition metrics
         for (topic_name, topic) in stats.topics.iter() {
-            self.topic_metadata_age
-                .with_label_values(&[topic_name])
-                .set(topic.metadata_age);
-            self.topic_batchsize
-                .with_label_values(&[topic_name])
-                .observe(topic.batchsize.avg as f64);
-            self.topic_batchcnt
-                .with_label_values(&[topic_name])
-                .observe(topic.batchcnt.avg as f64);
+            mfs.extend(self.topic_metrics.collect_metrics(topic_name, topic));
 
+            // Collect partition metrics for each topic
             for (partition_id, partition) in topic.partitions.iter() {
-                let labels = &[topic_name.as_str(), &partition_id.to_string()];
-                self.partition_msgq_cnt
-                    .with_label_values(labels)
-                    .set(partition.msgq_cnt);
-                self.partition_msgq_bytes
-                    .with_label_values(labels)
-                    .set(partition.msgq_bytes as i64);
-                self.partition_xmit_msgq_cnt
-                    .with_label_values(labels)
-                    .set(partition.xmit_msgq_cnt);
-                self.partition_xmit_msgq_bytes
-                    .with_label_values(labels)
-                    .set(partition.xmit_msgq_bytes as i64);
-                self.partition_fetchq_cnt
-                    .with_label_values(labels)
-                    .set(partition.fetchq_cnt);
-                self.partition_fetchq_size
-                    .with_label_values(labels)
-                    .set(partition.fetchq_size as i64);
-                self.partition_query_offset
-                    .with_label_values(labels)
-                    .set(partition.query_offset);
-                self.partition_next_offset
-                    .with_label_values(labels)
-                    .set(partition.next_offset);
-                self.partition_app_offset
-                    .with_label_values(labels)
-                    .set(partition.app_offset);
-                self.partition_stored_offset
-                    .with_label_values(labels)
-                    .set(partition.stored_offset);
-                self.partition_committed_offset
-                    .with_label_values(labels)
-                    .set(partition.committed_offset);
-                self.partition_eof_offset
-                    .with_label_values(labels)
-                    .set(partition.eof_offset);
-                self.partition_lo_offset
-                    .with_label_values(labels)
-                    .set(partition.lo_offset);
-                self.partition_hi_offset
-                    .with_label_values(labels)
-                    .set(partition.hi_offset);
-                self.partition_consumer_lag
-                    .with_label_values(labels)
-                    .set(partition.consumer_lag);
-                self.partition_consumer_lag_stored
-                    .with_label_values(labels)
-                    .set(partition.consumer_lag_stored);
-                self.partition_txmsgs
-                    .with_label_values(labels)
-                    .inc_by(partition.txmsgs);
-                self.partition_txbytes
-                    .with_label_values(labels)
-                    .inc_by(partition.txbytes);
-                self.partition_rxmsgs
-                    .with_label_values(labels)
-                    .inc_by(partition.rxmsgs);
-                self.partition_rxbytes
-                    .with_label_values(labels)
-                    .inc_by(partition.rxbytes);
-                self.partition_msgs
-                    .with_label_values(labels)
-                    .inc_by(partition.msgs);
-                self.partition_rx_ver_drops
-                    .with_label_values(labels)
-                    .inc_by(partition.rx_ver_drops);
-                self.partition_msgs_inflight
-                    .with_label_values(labels)
-                    .set(partition.msgs_inflight);
+                mfs.extend(self.partition_metrics.collect_metrics(
+                    topic_name,
+                    partition_id,
+                    partition,
+                ));
             }
         }
 
-        mfs.extend(self.topic_metadata_age.collect());
-        mfs.extend(self.topic_batchsize.collect());
-        mfs.extend(self.topic_batchcnt.collect());
-        mfs.extend(self.partition_msgq_cnt.collect());
-        mfs.extend(self.partition_msgq_bytes.collect());
-        mfs.extend(self.partition_xmit_msgq_cnt.collect());
-        mfs.extend(self.partition_xmit_msgq_bytes.collect());
-        mfs.extend(self.partition_fetchq_cnt.collect());
-        mfs.extend(self.partition_fetchq_size.collect());
-        mfs.extend(self.partition_query_offset.collect());
-        mfs.extend(self.partition_next_offset.collect());
-        mfs.extend(self.partition_app_offset.collect());
-        mfs.extend(self.partition_stored_offset.collect());
-        mfs.extend(self.partition_committed_offset.collect());
-        mfs.extend(self.partition_eof_offset.collect());
-        mfs.extend(self.partition_lo_offset.collect());
-        mfs.extend(self.partition_hi_offset.collect());
-        mfs.extend(self.partition_consumer_lag.collect());
-        mfs.extend(self.partition_consumer_lag_stored.collect());
-        mfs.extend(self.partition_txmsgs.collect());
-        mfs.extend(self.partition_txbytes.collect());
-        mfs.extend(self.partition_rxmsgs.collect());
-        mfs.extend(self.partition_rxbytes.collect());
-        mfs.extend(self.partition_msgs.collect());
-        mfs.extend(self.partition_rx_ver_drops.collect());
-        mfs.extend(self.partition_msgs_inflight.collect());
-
-        // Consumer group metrics
+        // Collect consumer group metrics
         if let Some(ref cgrp) = stats.cgrp {
-            self.cgrp_rebalance_cnt.inc_by(cgrp.rebalance_cnt as u64);
-            self.cgrp_rebalance_age.set(cgrp.rebalance_age);
-            self.cgrp_assignment_size.set(cgrp.assignment_size as i64);
+            mfs.extend(self.consumer_metrics.collect_metrics(cgrp));
         }
 
-        mfs.extend(self.cgrp_rebalance_cnt.collect());
-        mfs.extend(self.cgrp_rebalance_age.collect());
-        mfs.extend(self.cgrp_assignment_size.collect());
-
-        // EOS metrics
+        // Collect EOS metrics
         if let Some(ref eos) = stats.eos {
-            self.eos_epoch_cnt.inc_by(eos.epoch_cnt as u64);
-            self.eos_producer_id.set(eos.producer_id);
-            self.eos_producer_epoch.set(eos.producer_epoch);
+            mfs.extend(self.eos_metrics.collect_metrics(eos));
         }
-
-        mfs.extend(self.eos_epoch_cnt.collect());
-        mfs.extend(self.eos_producer_id.collect());
-        mfs.extend(self.eos_producer_epoch.collect());
 
         mfs
     }
