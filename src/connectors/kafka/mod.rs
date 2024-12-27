@@ -203,11 +203,14 @@ impl ConsumerContext for KafkaContext {
         match rebalance {
             Rebalance::Revoke(tpl) => {
                 let (pq_waiter_tx, pq_waiter_rx) = std::sync::mpsc::channel();
+
+                let tpl = TopicPartitionList::from_rdkafka_tpl(tpl);
+                self.notify(RebalanceEvent::Revoke(tpl, pq_waiter_tx));
+
                 if pq_waiter_rx.recv().is_err() {
                     warn!("Queue termination sender dropped");
                 }
-                let tpl = TopicPartitionList::from_rdkafka_tpl(tpl);
-                self.notify(RebalanceEvent::Revoke(tpl, pq_waiter_tx));
+                info!("Rebalance Revoke started");
             }
             Rebalance::Assign(tpl) => {
                 let tpl = TopicPartitionList::from_rdkafka_tpl(tpl);

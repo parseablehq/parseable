@@ -60,6 +60,8 @@ impl RebalanceListener {
                                     info!("RebalanceEvent Revoke: {:?}", tpl);
                                     let mut stream_state = stream_state.write().await;
                                     stream_state.terminate_partition_streams(tpl).await;
+                                    drop(stream_state);
+                                    
                                     if let Err(err) = callback.send(()) {
                                         warn!("Error during sending response to context. Cause: {:?}", err);
                                     }

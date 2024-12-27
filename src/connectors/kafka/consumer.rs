@@ -235,11 +235,12 @@ impl KafkaStreams {
     }
 
     fn create_consumer(context: KafkaContext) -> Arc<StreamConsumer> {
-        info!("Creating Kafka consumer from configs {:#?}", context.config);
-
         let kafka_config = &context.config;
         let consumer_config = kafka_config.to_rdkafka_consumer_config();
-        info!("Consumer configs: {:#?}", &consumer_config);
+        info!(
+            "Creating Kafka consumer from configs: {:#?}",
+            &consumer_config
+        );
 
         let consumer: StreamConsumer = consumer_config
             .create_with_context(context.clone())
