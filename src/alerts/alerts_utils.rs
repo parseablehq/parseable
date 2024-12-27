@@ -29,7 +29,6 @@ use datafusion::{
 use tracing::trace;
 
 use crate::{
-    handlers::http::alerts::{AlertState, ALERTS},
     query::{TableScanVisitor, QUERY_SESSION},
     rbac::{
         map::SessionKey,
@@ -39,7 +38,9 @@ use crate::{
     utils::time::TimeRange,
 };
 
-use super::{AlertConfig, AlertError, ThresholdConfig};
+use super::{
+    Aggregate, AlertConfig, AlertError, AlertOperator, AlertState, ThresholdConfig, ALERTS,
+};
 
 async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, AlertError> {
     let session_state = QUERY_SESSION.state();
@@ -152,48 +153,22 @@ fn get_exprs(thresholds: &Vec<ThresholdConfig>) -> (Vec<Expr>, Vec<Expr>, Expr) 
     let mut expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
     for threshold in thresholds {
         let res = match threshold.operator {
-            crate::handlers::http::alerts::AlertOperator::GreaterThan => {
-                col(&threshold.column).gt(lit(threshold.value))
-            }
-            crate::handlers::http::alerts::AlertOperator::LessThan => {
-                col(&threshold.column).lt(lit(threshold.value))
-            }
-            crate::handlers::http::alerts::AlertOperator::EqualTo => {
-                col(&threshold.column).eq(lit(threshold.value))
-            }
-            crate::handlers::http::alerts::AlertOperator::NotEqualTo => {
-                col(&threshold.column).not_eq(lit(threshold.value))
-            }
-            crate::handlers::http::alerts::AlertOperator::GreaterThanEqualTo => {
-                col(&threshold.column).gt_eq(lit(threshold.value))
-            }
-            crate::handlers::http::alerts::AlertOperator::LessThanEqualTo => {
-                col(&threshold.column).lt_eq(lit(threshold.value))
-            }
-            crate::handlers::http::alerts::AlertOperator::Like => {
-                col(&threshold.column).like(lit(threshold.value))
-            }
-            crate::handlers::http::alerts::AlertOperator::NotLike => {
-                col(&threshold.column).not_like(lit(threshold.value))
-            }
+            AlertOperator::GreaterThan => col(&threshold.column).gt(lit(threshold.value)),
+            AlertOperator::LessThan => col(&threshold.column).lt(lit(threshold.value)),
+            AlertOperator::EqualTo => col(&threshold.column).eq(lit(threshold.value)),
+            AlertOperator::NotEqualTo => col(&threshold.column).not_eq(lit(threshold.value)),
+            AlertOperator::GreaterThanEqualTo => col(&threshold.column).gt_eq(lit(threshold.value)),
+            AlertOperator::LessThanEqualTo => col(&threshold.column).lt_eq(lit(threshold.value)),
+            AlertOperator::Like => col(&threshold.column).like(lit(threshold.value)),
+            AlertOperator::NotLike => col(&threshold.column).not_like(lit(threshold.value)),
         };
 
         aggr_expr.push(match threshold.agg {
-            crate::handlers::http::alerts::Aggregate::Avg => {
-                avg(col(&threshold.column)).alias(&threshold.column)
-            }
-            crate::handlers::http::alerts::Aggregate::Count => {
-                count(col(&threshold.column)).alias(&threshold.column)
-            }
-            crate::handlers::http::alerts::Aggregate::Min => {
-                min(col(&threshold.column)).alias(&threshold.column)
-            }
-            crate::handlers::http::alerts::Aggregate::Max => {
-                max(col(&threshold.column)).alias(&threshold.column)
-            }
-            crate::handlers::http::alerts::Aggregate::Sum => {
-                sum(col(&threshold.column)).alias(&threshold.column)
-            }
+            Aggregate::Avg => avg(col(&threshold.column)).alias(&threshold.column),
+            Aggregate::Count => count(col(&threshold.column)).alias(&threshold.column),
+            Aggregate::Min => min(col(&threshold.column)).alias(&threshold.column),
+            Aggregate::Max => max(col(&threshold.column)).alias(&threshold.column),
+            Aggregate::Sum => sum(col(&threshold.column)).alias(&threshold.column),
         });
         expr = expr.and(res);
     }

@@ -26,7 +26,7 @@ use actix_web::{web, HttpRequest, Responder};
 use bytes::Bytes;
 use relative_path::RelativePathBuf;
 
-use super::{
+use crate::alerts::{
     alerts_utils::user_auth_for_query, AlertConfig, AlertError, AlertRequest, AlertState, ALERTS,
 };
 
@@ -95,6 +95,15 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, AlertError> {
     // validate that the user has access to the tables mentioned
     user_auth_for_query(&session_key, &alert.query).await?;
 
+    let store = CONFIG.storage().get_object_store();
+    let alert_path = alert_json_path(alert_id);
+
+    // delete from disk
+    store
+        .delete_object(&alert_path)
+        .await
+        .map_err(AlertError::ObjectStorage)?;
+
     // delete from disk and memory
     ALERTS.delete(alert_id).await?;
 
@@ -115,9 +124,11 @@ pub async fn modify(req: HttpRequest, alert: AlertRequest) -> Result<impl Respon
         .ok_or(AlertError::Metadata("No alert ID Provided"))?;
 
     // check if alert id exists in map
-    ALERTS.get_alert_by_id(alert_id).await?;
+    let old_alert = ALERTS.get_alert_by_id(alert_id).await?;
 
     // validate that the user has access to the tables mentioned
+    // in the old as well as the modified alert
+    user_auth_for_query(&session_key, &old_alert.query).await?;
     user_auth_for_query(&session_key, &alert.query).await?;
 
     let store = CONFIG.storage().get_object_store();

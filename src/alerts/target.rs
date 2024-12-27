@@ -30,7 +30,7 @@ use humantime_serde::re::humantime;
 use reqwest::ClientBuilder;
 use tracing::{error, trace, warn};
 
-use crate::handlers::http::alerts::ALERTS;
+use super::ALERTS;
 
 use super::{AlertState, CallableTarget, Context};
 

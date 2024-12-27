@@ -26,7 +26,7 @@ use super::{
 };
 
 use crate::correlation::{CorrelationConfig, CorrelationError};
-use crate::handlers::http::alerts::AlertConfig;
+use crate::alerts::AlertConfig;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};

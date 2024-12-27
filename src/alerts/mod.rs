@@ -35,13 +35,11 @@ use tracing::{trace, warn};
 use ulid::Ulid;
 
 pub mod alerts_utils;
-pub mod http_handlers;
 pub mod target;
 
 use crate::option::CONFIG;
 use crate::rbac::map::SessionKey;
 use crate::storage;
-use crate::storage::object_storage::alert_json_path;
 use crate::storage::ObjectStorageError;
 use crate::sync::schedule_alert_task;
 use crate::utils::uid;
@@ -461,14 +459,12 @@ impl Alerts {
         trigger_notif: bool,
     ) -> Result<(), AlertError> {
         let store = CONFIG.storage().get_object_store();
-        // let alert_path = alert_json_path(alert_id);
 
-        // // read and modify alert
-        // let mut alert: AlertConfig = serde_json::from_slice(&store.get_object(&alert_path).await?)?;
-        // alert.state = new_state;
+        // read and modify alert
         let mut alert = self.get_alert_by_id(alert_id).await?;
 
         alert.state = new_state;
+
         // save to disk
         store.put_alert(alert_id, &alert).await?;
 
@@ -482,12 +478,6 @@ impl Alerts {
         };
         drop(writer);
 
-        // self.alerts.write().await.iter_mut().for_each(|alert| {
-        //     if alert.id.to_string() == alert_id {
-        //         alert.state = new_state;
-        //     }
-        // });
-
         if trigger_notif {
             alert.trigger_notifications().await?;
         }
@@ -497,17 +487,7 @@ impl Alerts {
 
     /// Remove alert and scheduled task from disk and memory
     pub async fn delete(&self, alert_id: &str) -> Result<(), AlertError> {
-        let store = CONFIG.storage().get_object_store();
-        let alert_path = alert_json_path(alert_id);
-
-        // delete from disk
-        store
-            .delete_object(&alert_path)
-            .await
-            .map_err(AlertError::ObjectStorage)?;
-        trace!("Deleted from disk");
-
-        // now delete from memory
+        // delete from memory
         let read_access = self.alerts.read().await;
 
         let index = read_access

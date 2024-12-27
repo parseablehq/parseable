@@ -17,8 +17,8 @@
  */
 
 use crate::correlation::CORRELATIONS;
+use crate::alerts::ALERTS;
 use crate::handlers::airplane;
-use crate::handlers::http::alerts::ALERTS;
 use crate::handlers::http::base_path;
 use crate::handlers::http::caching_removed;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};

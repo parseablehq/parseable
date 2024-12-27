@@ -23,7 +23,7 @@ use tokio::task;
 use tokio::time::{interval, sleep, Duration};
 use tracing::{error, info, warn};
 
-use crate::handlers::http::alerts::{alerts_utils, AlertConfig, AlertError};
+use crate::alerts::{alerts_utils, AlertConfig, AlertError};
 use crate::option::CONFIG;
 use crate::{storage, STORAGE_UPLOAD_INTERVAL};
 

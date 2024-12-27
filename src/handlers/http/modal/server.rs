@@ -16,12 +16,12 @@
  *
  */
 
+use crate::alerts::ALERTS;
 use crate::analytics;
 use crate::correlation::CORRELATIONS;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::alerts;
-use crate::handlers::http::alerts::ALERTS;
 use crate::handlers::http::base_path;
 use crate::handlers::http::caching_removed;
 use crate::handlers::http::health_check;
@@ -228,39 +228,23 @@ impl Server {
         web::scope("/alerts")
             .service(
                 web::resource("")
-                    .route(
-                        web::get()
-                            .to(alerts::http_handlers::list)
-                            .authorize(Action::GetAlert),
-                    )
-                    .route(
-                        web::post()
-                            .to(alerts::http_handlers::post)
-                            .authorize(Action::PutAlert),
-                    ),
+                    .route(web::get().to(alerts::list).authorize(Action::GetAlert))
+                    .route(web::post().to(alerts::post).authorize(Action::PutAlert)),
             )
             .service(
                 web::resource("/{alert_id}")
-                    .route(
-                        web::get()
-                            .to(alerts::http_handlers::get)
-                            .authorize(Action::GetAlert),
-                    )
-                    .route(
-                        web::put()
-                            .to(alerts::http_handlers::modify)
-                            .authorize(Action::PutAlert),
-                    )
+                    .route(web::get().to(alerts::get).authorize(Action::GetAlert))
+                    .route(web::put().to(alerts::modify).authorize(Action::PutAlert))
                     .route(
                         web::delete()
-                            .to(alerts::http_handlers::delete)
+                            .to(alerts::delete)
                             .authorize(Action::DeleteAlert),
                     ),
             )
             .service(
                 web::resource("/{alert_id}/update_state").route(
                     web::put()
-                        .to(alerts::http_handlers::update_state)
+                        .to(alerts::update_state)
                         .authorize(Action::PutAlert),
                 ),
             )
