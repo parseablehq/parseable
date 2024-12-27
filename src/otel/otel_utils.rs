@@ -16,9 +16,6 @@
  *
  */
 
-pub mod logs;
-pub mod metrics;
-pub mod traces;
 use opentelemetry_proto::tonic::common::v1::{any_value::Value as OtelValue, AnyValue, KeyValue};
 use serde_json::Value;
 use std::collections::BTreeMap;

@@ -24,8 +24,8 @@ use opentelemetry_proto::tonic::logs::v1::SeverityNumber;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use super::collect_json_from_values;
-use super::insert_attributes;
+use super::otel_utils::collect_json_from_values;
+use super::otel_utils::insert_attributes;
 
 /// otel log event has severity number
 /// there is a mapping of severity number to severity text provided in proto

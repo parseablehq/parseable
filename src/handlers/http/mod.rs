@@ -38,7 +38,6 @@ pub mod logstream;
 pub mod middleware;
 pub mod modal;
 pub mod oidc;
-pub mod otel;
 pub mod query;
 pub mod rbac;
 pub mod role;

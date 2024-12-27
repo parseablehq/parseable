@@ -33,17 +33,12 @@ use crate::{
         format::{self, EventFormat},
     },
     handlers::{
-        http::{
-            ingest::PostError,
-            kinesis,
-            otel::{
-                logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces,
-            },
-        },
+        http::{ingest::PostError, kinesis},
         LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, LOG_SOURCE_OTEL_LOGS, LOG_SOURCE_OTEL_METRICS,
         LOG_SOURCE_OTEL_TRACES, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     },
     metadata::{SchemaVersion, STREAM_INFO},
+    otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     storage::StreamType,
     utils::{header_parsing::collect_labelled_headers, json::convert_array_to_object},
 };

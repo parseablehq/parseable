@@ -27,7 +27,7 @@ use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use super::insert_attributes;
+use super::otel_utils::insert_attributes;
 
 /// this function flattens the `ScopeSpans` object
 /// and returns a `Vec` of `BTreeMap` of the flattened json

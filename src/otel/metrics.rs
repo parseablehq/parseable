@@ -26,7 +26,7 @@ use opentelemetry_proto::tonic::metrics::v1::{
 };
 use serde_json::Value;
 
-use super::{insert_attributes, insert_number_if_some};
+use super::otel_utils::{insert_attributes, insert_number_if_some};
 
 /// otel metrics event has json array for exemplar
 /// this function flatten the exemplar json array

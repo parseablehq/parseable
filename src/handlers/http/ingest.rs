@@ -18,9 +18,6 @@
 
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
-use super::otel::logs::flatten_otel_logs;
-use super::otel::metrics::flatten_otel_metrics;
-use super::otel::traces::flatten_otel_traces;
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 use crate::event::{
@@ -33,6 +30,9 @@ use crate::handlers::STREAM_NAME_HEADER_KEY;
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
+use crate::otel::logs::flatten_otel_logs;
+use crate::otel::metrics::flatten_otel_metrics;
+use crate::otel::traces::flatten_otel_traces;
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
