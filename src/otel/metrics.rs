@@ -18,7 +18,6 @@
 
 use std::collections::BTreeMap;
 
-use bytes::Bytes;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
 use opentelemetry_proto::tonic::metrics::v1::{
     exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets, metric, Exemplar,
@@ -386,9 +385,7 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<BTreeMap<String, V
 
 /// this function performs the custom flattening of the otel metrics
 /// and returns a `Vec` of `BTreeMap` of the flattened json
-pub fn flatten_otel_metrics(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
-    let body_str = std::str::from_utf8(body).unwrap();
-    let message: MetricsData = serde_json::from_str(body_str).unwrap();
+pub fn flatten_otel_metrics(message: MetricsData) -> Vec<BTreeMap<String, Value>> {
     let mut vec_otel_json = Vec::new();
     for record in &message.resource_metrics {
         let mut resource_metrics_json = BTreeMap::new();

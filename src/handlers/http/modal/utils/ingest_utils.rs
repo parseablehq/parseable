@@ -21,6 +21,10 @@ use anyhow::anyhow;
 use arrow_schema::Field;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
+use nom::AsBytes;
+use opentelemetry_proto::tonic::{
+    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
+};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -48,39 +52,39 @@ pub async fn flatten_and_push_logs(
     body: Bytes,
     stream_name: &str,
 ) -> Result<(), PostError> {
-    //flatten logs
-    if let Some((_, log_source)) = req.headers().iter().find(|&(key, _)| key == LOG_SOURCE_KEY) {
-        let mut json: Vec<BTreeMap<String, Value>> = Vec::new();
-        let log_source: String = log_source.to_str().unwrap().to_owned();
-        match log_source.as_str() {
-            LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
-
-            //custom flattening required for otel logs
-            LOG_SOURCE_OTEL_LOGS => {
-                json = flatten_otel_logs(&body);
-            }
-
-            //custom flattening required for otel metrics
-            LOG_SOURCE_OTEL_METRICS => {
-                json = flatten_otel_metrics(&body);
-            }
-
-            //custom flattening required for otel traces
-            LOG_SOURCE_OTEL_TRACES => {
-                json = flatten_otel_traces(&body);
-            }
-            _ => {
-                tracing::warn!("Unknown log source: {}", log_source);
-                push_logs(stream_name, &req, &body).await?;
-            }
+    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
+        push_logs(stream_name, &req, &body).await?;
+        return Ok(());
+    };
+    let mut json: Vec<BTreeMap<String, Value>> = Vec::new();
+    match log_source.to_str().unwrap() {
+        LOG_SOURCE_KINESIS => json = kinesis::flatten_kinesis_logs(&body),
+        //custom flattening required for otel logs
+        LOG_SOURCE_OTEL_LOGS => {
+            let logs: LogsData = serde_json::from_slice(body.as_bytes())?;
+            json = flatten_otel_logs(&logs);
         }
-        for record in json.iter_mut() {
-            let body: Bytes = serde_json::to_vec(record).unwrap().into();
+        //custom flattening required for otel metrics
+        LOG_SOURCE_OTEL_METRICS => {
+            let metrics: MetricsData = serde_json::from_slice(body.as_bytes())?;
+            json = flatten_otel_metrics(metrics);
+        }
+        //custom flattening required for otel traces
+        LOG_SOURCE_OTEL_TRACES => {
+            let traces: TracesData = serde_json::from_slice(body.as_bytes())?;
+            json = flatten_otel_traces(&traces);
+        }
+        log_source => {
+            tracing::warn!("Unknown log source: {}", log_source);
             push_logs(stream_name, &req, &body).await?;
         }
-    } else {
+    }
+
+    for record in json.iter_mut() {
+        let body: Bytes = serde_json::to_vec(record).unwrap().into();
         push_logs(stream_name, &req, &body).await?;
     }
+
     Ok(())
 }
 

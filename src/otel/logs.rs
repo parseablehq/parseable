@@ -16,7 +16,6 @@
  *
  */
 
-use bytes::Bytes;
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
 use opentelemetry_proto::tonic::logs::v1::ScopeLogs;
@@ -125,11 +124,8 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<BTreeMap<String, Value>> {
 
 /// this function performs the custom flattening of the otel logs
 /// and returns a `Vec` of `BTreeMap` of the flattened json
-pub fn flatten_otel_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
-    let body_str = std::str::from_utf8(body).unwrap();
-    let message: LogsData = serde_json::from_str(body_str).unwrap();
+pub fn flatten_otel_logs(message: &LogsData) -> Vec<BTreeMap<String, Value>> {
     let mut vec_otel_json = Vec::new();
-
     for record in &message.resource_logs {
         let mut resource_log_json = BTreeMap::new();
 

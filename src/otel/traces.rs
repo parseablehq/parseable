@@ -16,8 +16,6 @@
  *
  */
 
-use bytes::Bytes;
-
 use opentelemetry_proto::tonic::trace::v1::span::Event;
 use opentelemetry_proto::tonic::trace::v1::span::Link;
 use opentelemetry_proto::tonic::trace::v1::ScopeSpans;
@@ -71,9 +69,7 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<BTreeMap<String, Value>> {
 
 /// this function performs the custom flattening of the otel traces event
 /// and returns a `Vec` of `BTreeMap` of the flattened json
-pub fn flatten_otel_traces(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
-    let body_str = std::str::from_utf8(body).unwrap();
-    let message: TracesData = serde_json::from_str(body_str).unwrap();
+pub fn flatten_otel_traces(message: &TracesData) -> Vec<BTreeMap<String, Value>> {
     let mut vec_otel_json = Vec::new();
 
     for record in &message.resource_spans {
