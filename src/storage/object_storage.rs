@@ -50,6 +50,7 @@ use relative_path::RelativePathBuf;
 use tracing::error;
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::{
     collections::HashMap,
     fs,
@@ -145,7 +146,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
         &self,
         stream_name: &str,
         time_partition: &str,
-        time_partition_limit: &str,
+        time_partition_limit: Option<NonZeroU32>,
         custom_partition: &str,
         static_schema_flag: &str,
         schema: Arc<Schema>,
@@ -162,11 +163,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
         } else {
             format.time_partition = Some(time_partition.to_string());
         }
-        if time_partition_limit.is_empty() {
-            format.time_partition_limit = None;
-        } else {
-            format.time_partition_limit = Some(time_partition_limit.to_string());
-        }
+        format.time_partition_limit = time_partition_limit.map(|limit| limit.to_string());
         if custom_partition.is_empty() {
             format.custom_partition = None;
         } else {
@@ -190,14 +187,10 @@ pub trait ObjectStorage: Send + Sync + 'static {
     async fn update_time_partition_limit_in_stream(
         &self,
         stream_name: &str,
-        time_partition_limit: &str,
+        time_partition_limit: NonZeroU32,
     ) -> Result<(), ObjectStorageError> {
         let mut format = self.get_object_store_format(stream_name).await?;
-        if time_partition_limit.is_empty() {
-            format.time_partition_limit = None;
-        } else {
-            format.time_partition_limit = Some(time_partition_limit.to_string());
-        }
+        format.time_partition_limit = Some(time_partition_limit.to_string());
         let format_json = to_bytes(&format);
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;

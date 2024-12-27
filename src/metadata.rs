@@ -23,6 +23,7 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
@@ -53,7 +54,7 @@ pub struct LogStreamMetadata {
     pub created_at: String,
     pub first_event_at: Option<String>,
     pub time_partition: Option<String>,
-    pub time_partition_limit: Option<String>,
+    pub time_partition_limit: Option<NonZeroU32>,
     pub custom_partition: Option<String>,
     pub static_schema_flag: Option<String>,
     pub hot_tier_enabled: Option<bool>,
@@ -113,11 +114,11 @@ impl StreamInfo {
     pub fn get_time_partition_limit(
         &self,
         stream_name: &str,
-    ) -> Result<Option<String>, MetadataError> {
+    ) -> Result<Option<NonZeroU32>, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         map.get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.time_partition_limit.clone())
+            .map(|metadata| metadata.time_partition_limit)
     }
 
     pub fn get_custom_partition(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
@@ -216,7 +217,7 @@ impl StreamInfo {
     pub fn update_time_partition_limit(
         &self,
         stream_name: &str,
-        time_partition_limit: String,
+        time_partition_limit: NonZeroU32,
     ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
@@ -258,7 +259,7 @@ impl StreamInfo {
         stream_name: String,
         created_at: String,
         time_partition: String,
-        time_partition_limit: String,
+        time_partition_limit: Option<NonZeroU32>,
         custom_partition: String,
         static_schema_flag: String,
         static_schema: HashMap<String, Arc<Field>>,
@@ -276,11 +277,7 @@ impl StreamInfo {
             } else {
                 Some(time_partition)
             },
-            time_partition_limit: if time_partition_limit.is_empty() {
-                None
-            } else {
-                Some(time_partition_limit)
-            },
+            time_partition_limit,
             custom_partition: if custom_partition.is_empty() {
                 None
             } else {
@@ -334,7 +331,9 @@ impl StreamInfo {
             created_at: meta.created_at,
             first_event_at: meta.first_event_at,
             time_partition: meta.time_partition,
-            time_partition_limit: meta.time_partition_limit,
+            time_partition_limit: meta
+                .time_partition_limit
+                .and_then(|limit| limit.parse().ok()),
             custom_partition: meta.custom_partition,
             static_schema_flag: meta.static_schema_flag,
             hot_tier_enabled: meta.hot_tier_enabled,
@@ -487,7 +486,9 @@ pub async fn load_stream_metadata_on_server_start(
         created_at: meta.created_at,
         first_event_at: meta.first_event_at,
         time_partition: meta.time_partition,
-        time_partition_limit: meta.time_partition_limit,
+        time_partition_limit: meta
+            .time_partition_limit
+            .and_then(|limit| limit.parse().ok()),
         custom_partition: meta.custom_partition,
         static_schema_flag: meta.static_schema_flag,
         hot_tier_enabled: meta.hot_tier_enabled,
