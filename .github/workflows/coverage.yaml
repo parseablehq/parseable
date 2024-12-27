@@ -27,6 +27,10 @@ jobs:
         with:
           tool: cargo-hack, cargo-llvm-cov, nextest
 
+      - name: Install dependencies
+        run: sudo apt-get install -y libsasl2-dev || echo "Skipping libsasl2-dev installation"
+        continue-on-error: true
+
       - name: Check with clippy
         run: cargo hack clippy --verbose --each-feature --no-dev-deps -- -D warnings
 
@@ -39,7 +43,7 @@ jobs:
       - name: Tests
         run: cargo hack --each-feature llvm-cov --no-report nextest
 
-      - name: Genrate coverage report
+      - name: Generate coverage report
         run: cargo llvm-cov report --lcov --output-path coverage.lcov
 
       - name: Upload Coverage Report
