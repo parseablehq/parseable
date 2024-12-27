@@ -30,28 +30,49 @@ async fn main() -> anyhow::Result<()> {
         .compact()
         .init();
 
-    // these are empty ptrs so mem footprint should be minimal
-    let server: Box<dyn ParseableServer> = match CONFIG.parseable.mode {
-        Mode::Query => Box::new(QueryServer),
-        Mode::Ingest => Box::new(IngestServer),
-        Mode::All => Box::new(Server),
-    };
+    match CONFIG.as_ref() {
+        ParseableCommand::Completion { shell, output } => {
+            let mut cmd = parseable::create_parseable_cli_command();
+            let bin_name = cmd.get_name().to_owned();
 
-    // load metadata from persistence
-    let parseable_json = server.load_metadata().await?;
-    let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
-    banner::print(&CONFIG, &metadata).await;
-    // initialize the rbac map
-    rbac::map::init(&metadata);
-    // keep metadata info in mem
-    metadata.set_global();
+            parseable::completions::generate_completion_script(
+                &mut cmd,
+                &bin_name,
+                *shell,
+                output.clone(),
+            )?;
+            return Ok(());
+        }
+        ParseableCommand::LocalStore(config)
+        | ParseableCommand::S3Store(config)
+        | ParseableCommand::BlobStore(config) => {
+            // these are empty ptrs so mem footprint should be minimal
+            let server: Box<dyn ParseableServer> = match config.parseable.mode {
+                Mode::Query => Box::new(QueryServer),
+                Mode::Ingest => Box::new(IngestServer),
+                Mode::All => Box::new(Server),
+            };
 
-    // load kafka server
-    if CONFIG.parseable.mode != Mode::Query {
-        tokio::task::spawn(kafka::setup_integration());
+            // Load metadata from persistence
+            let parseable_json = server.load_metadata().await?;
+            let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
+            banner::print(&CONFIG, &metadata).await;
+
+            // Initialize the RBAC map
+            rbac::map::init(&metadata);
+
+            // Keep metadata info in memory
+            metadata.set_global();
+
+            // Load Kafka server if not in Query mode
+            if config.parseable.mode != Mode::Query {
+                tokio::task::spawn(kafka::setup_integration());
+            }
+
+            // Initialize the server
+            server.init().await?;
+        }
     }
-
-    server.init().await?;
 
     Ok(())
 }

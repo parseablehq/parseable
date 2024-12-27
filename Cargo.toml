@@ -42,7 +42,7 @@ bzip2 = { version = "*", features = ["static"] }
 cookie = "0.18.1"
 chrono = "0.4"
 chrono-humanize = "0.2"
-clap = { version = "4.1", default-features = false, features = [
+clap = { version = "4.5", default-features = false, features = [
     "std",
     "color",
     "help",
@@ -51,6 +51,7 @@ clap = { version = "4.1", default-features = false, features = [
     "cargo",
     "error-context",
 ] }
+clap_complete = "4.5"
 clokwerk = "0.4"
 crossterm = "0.28.1"
 derive_more = "0.99.18"

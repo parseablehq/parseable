@@ -16,36 +16,26 @@
  *
  */
 
-mod about;
-mod alerts;
-pub mod analytics;
-pub mod banner;
-mod catalog;
-mod cli;
-mod completions;
-mod event;
-pub mod handlers;
-pub mod hottier;
-pub mod kafka;
-mod livetail;
-mod metadata;
-pub mod metrics;
-pub mod migration;
-mod oidc;
-pub mod option;
-mod query;
-pub mod rbac;
-mod response;
-mod static_schema;
-mod stats;
-pub mod storage;
-pub mod sync;
-pub mod users;
-mod utils;
-mod validator;
+use clap::Command;
+use clap_complete::{generate, Shell};
+use std::io;
+use std::path::PathBuf;
 
-pub use handlers::http::modal::{
-    ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
-};
-
-pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
+/// Generates a completion script for the specified shell.
+///
+/// If `output` is `Some(PathBuf)`, the script is written to the specified file.
+/// Otherwise, it's written to `stdout`.
+pub fn generate_completion_script(
+    cmd: &mut Command,
+    bin_name: &str,
+    shell: Shell,
+    output: Option<PathBuf>,
+) -> Result<(), io::Error> {
+    if let Some(file_path) = output {
+        let mut file = std::fs::File::create(file_path)?;
+        generate(shell, cmd, bin_name, &mut file);
+    } else {
+        generate(shell, cmd, bin_name, &mut io::stdout());
+    }
+    Ok(())
+}
