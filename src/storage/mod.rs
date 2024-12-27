@@ -17,7 +17,9 @@
  */
 
 use crate::{
-    catalog::snapshot::Snapshot, metadata::error::stream_info::MetadataError, stats::FullStats,
+    catalog::snapshot::Snapshot,
+    metadata::{error::stream_info::MetadataError, SchemaVersion},
+    stats::FullStats,
 };
 
 use chrono::Local;
@@ -77,6 +79,9 @@ pub const CURRENT_SCHEMA_VERSION: &str = "v5";
 pub struct ObjectStoreFormat {
     /// Version of schema registry
     pub version: String,
+    /// Version of schema, defaults to v0 if not set
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
     /// Version for change in the way how parquet are generated/stored.
     #[serde(rename = "objectstore-format")]
     pub objectstore_format: String,
@@ -176,6 +181,7 @@ impl Default for ObjectStoreFormat {
     fn default() -> Self {
         Self {
             version: CURRENT_SCHEMA_VERSION.to_string(),
+            schema_version: SchemaVersion::V1, // Newly created streams should be v1
             objectstore_format: CURRENT_OBJECT_STORE_VERSION.to_string(),
             stream_type: Some(StreamType::UserDefined.to_string()),
             created_at: Local::now().to_rfc3339(),

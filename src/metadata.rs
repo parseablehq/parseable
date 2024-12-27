@@ -21,6 +21,7 @@ use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{Local, NaiveDateTime};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
@@ -28,13 +29,14 @@ use std::sync::{Arc, RwLock};
 
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 use crate::alerts::Alerts;
+use crate::catalog::snapshot::ManifestItem;
 use crate::metrics::{
     fetch_stats_from_storage, EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE,
     EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED,
     LIFETIME_EVENTS_INGESTED_SIZE,
 };
 use crate::storage::retention::Retention;
-use crate::storage::{LogStream, ObjectStorage, ObjectStoreFormat, StorageDir, StreamType};
+use crate::storage::{ObjectStorage, ObjectStoreFormat, StorageDir, StreamType};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
 
@@ -45,8 +47,18 @@ pub static STREAM_INFO: Lazy<StreamInfo> = Lazy::new(StreamInfo::default);
 #[derive(Debug, Deref, DerefMut, Default)]
 pub struct StreamInfo(RwLock<HashMap<String, LogStreamMetadata>>);
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[non_exhaustive]
+#[serde(rename_all = "lowercase")]
+pub enum SchemaVersion {
+    #[default]
+    V0,
+    V1,
+}
+
 #[derive(Debug, Default)]
 pub struct LogStreamMetadata {
+    pub schema_version: SchemaVersion,
     pub schema: HashMap<String, Arc<Field>>,
     pub alerts: Alerts,
     pub retention: Option<Retention>,
@@ -143,6 +155,13 @@ impl StreamInfo {
         map.get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| metadata.retention.clone())
+    }
+
+    pub fn get_schema_version(&self, stream_name: &str) -> Result<SchemaVersion, MetadataError> {
+        let map = self.read().expect(LOCK_EXPECT);
+        map.get(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| metadata.schema_version)
     }
 
     pub fn schema(&self, stream_name: &str) -> Result<Arc<Schema>, MetadataError> {
@@ -290,48 +309,6 @@ impl StreamInfo {
         map.remove(stream_name);
     }
 
-    #[allow(dead_code)]
-    pub async fn upsert_stream_info(
-        &self,
-        storage: &(impl ObjectStorage + ?Sized),
-        stream: LogStream,
-    ) -> Result<(), LoadError> {
-        let alerts = storage.get_alerts(&stream.name).await?;
-
-        let schema = storage.upsert_schema_to_storage(&stream.name).await?;
-        let meta = storage.upsert_stream_metadata(&stream.name).await?;
-        let retention = meta.retention;
-        let schema = update_schema_from_staging(&stream.name, schema);
-        let schema = HashMap::from_iter(
-            schema
-                .fields
-                .iter()
-                .map(|v| (v.name().to_owned(), v.clone())),
-        );
-
-        let metadata = LogStreamMetadata {
-            schema,
-            alerts,
-            retention,
-            cache_enabled: meta.cache_enabled,
-            created_at: meta.created_at,
-            first_event_at: meta.first_event_at,
-            time_partition: meta.time_partition,
-            time_partition_limit: meta
-                .time_partition_limit
-                .and_then(|limit| limit.parse().ok()),
-            custom_partition: meta.custom_partition,
-            static_schema_flag: meta.static_schema_flag,
-            hot_tier_enabled: meta.hot_tier_enabled,
-            stream_type: meta.stream_type,
-        };
-
-        let mut map = self.write().expect(LOCK_EXPECT);
-
-        map.insert(stream.name, metadata);
-        Ok(())
-    }
-
     pub fn list_streams(&self) -> Vec<String> {
         self.read()
             .expect(LOCK_EXPECT)
@@ -408,18 +385,17 @@ pub async fn update_data_type_time_partition(
     storage: &(impl ObjectStorage + ?Sized),
     stream_name: &str,
     schema: Schema,
-    meta: ObjectStoreFormat,
+    time_partition: Option<&String>,
 ) -> anyhow::Result<Schema> {
     let mut schema = schema.clone();
-    if meta.time_partition.is_some() {
-        let time_partition = meta.time_partition.unwrap();
+    if let Some(time_partition) = time_partition {
         if let Ok(time_partition_field) = schema.field_with_name(&time_partition) {
             if time_partition_field.data_type() != &DataType::Timestamp(TimeUnit::Millisecond, None)
             {
                 let mut fields = schema
                     .fields()
                     .iter()
-                    .filter(|field| *field.name() != time_partition)
+                    .filter(|field| field.name() != time_partition)
                     .cloned()
                     .collect::<Vec<Arc<Field>>>();
                 let time_partition_field = Arc::new(Field::new(
@@ -442,18 +418,33 @@ pub async fn load_stream_metadata_on_server_start(
     schema: Schema,
     stream_metadata_value: Value,
 ) -> Result<(), LoadError> {
-    let mut meta: ObjectStoreFormat = ObjectStoreFormat::default();
-    if !stream_metadata_value.is_null() {
-        meta =
-            serde_json::from_slice(&serde_json::to_vec(&stream_metadata_value).unwrap()).unwrap();
-    }
+    let ObjectStoreFormat {
+        schema_version,
+        created_at,
+        first_event_at,
+        retention,
+        cache_enabled,
+        snapshot,
+        stats,
+        time_partition,
+        time_partition_limit,
+        custom_partition,
+        static_schema_flag,
+        hot_tier_enabled,
+        stream_type,
+        ..
+    } = if !stream_metadata_value.is_null() {
+        serde_json::from_slice(&serde_json::to_vec(&stream_metadata_value).unwrap()).unwrap()
+    } else {
+        ObjectStoreFormat::default()
+    };
     let schema =
-        update_data_type_time_partition(storage, stream_name, schema, meta.clone()).await?;
+        update_data_type_time_partition(storage, stream_name, schema, time_partition.as_ref())
+            .await?;
     storage.put_schema(stream_name, &schema).await?;
     //load stats from storage
-    let stats = meta.stats;
     fetch_stats_from_storage(stream_name, stats).await;
-    load_daily_metrics(&meta, stream_name);
+    load_daily_metrics(&snapshot.manifest_list, stream_name);
 
     let alerts = storage.get_alerts(stream_name).await?;
     let schema = update_schema_from_staging(stream_name, schema);
@@ -465,20 +456,19 @@ pub async fn load_stream_metadata_on_server_start(
     );
 
     let metadata = LogStreamMetadata {
+        schema_version,
         schema,
         alerts,
-        retention: meta.retention,
-        cache_enabled: meta.cache_enabled,
-        created_at: meta.created_at,
-        first_event_at: meta.first_event_at,
-        time_partition: meta.time_partition,
-        time_partition_limit: meta
-            .time_partition_limit
-            .and_then(|limit| limit.parse().ok()),
-        custom_partition: meta.custom_partition,
-        static_schema_flag: meta.static_schema_flag,
-        hot_tier_enabled: meta.hot_tier_enabled,
-        stream_type: meta.stream_type,
+        retention,
+        cache_enabled,
+        created_at,
+        first_event_at,
+        time_partition,
+        time_partition_limit: time_partition_limit.and_then(|limit| limit.parse().ok()),
+        custom_partition,
+        static_schema_flag,
+        hot_tier_enabled,
+        stream_type,
     };
 
     let mut map = STREAM_INFO.write().expect(LOCK_EXPECT);
@@ -488,8 +478,7 @@ pub async fn load_stream_metadata_on_server_start(
     Ok(())
 }
 
-fn load_daily_metrics(meta: &ObjectStoreFormat, stream_name: &str) {
-    let manifests = &meta.snapshot.manifest_list;
+fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {
     for manifest in manifests {
         let manifest_date = manifest.time_lower_bound.date_naive().to_string();
         let events_ingested = manifest.events_ingested;
