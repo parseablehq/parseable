@@ -108,11 +108,10 @@ impl Alert {
         );
         let deployment_id = storage::StorageMetadata::global().deployment_id;
         let deployment_mode = storage::StorageMetadata::global().mode.to_string();
-        let additional_labels =
+        let mut additional_labels =
             serde_json::to_value(rule).expect("rule is perfectly deserializable");
-        let flatten_additional_labels =
-            utils::json::flatten::flatten_with_parent_prefix(additional_labels, "rule", "_")
-                .expect("can be flattened");
+        utils::json::flatten::flatten_with_parent_prefix(&mut additional_labels, "rule", "_")
+            .expect("can be flattened");
         Context::new(
             stream_name,
             AlertInfo::new(
@@ -122,7 +121,7 @@ impl Alert {
                 alert_state,
             ),
             DeploymentInfo::new(deployment_instance, deployment_id, deployment_mode),
-            flatten_additional_labels,
+            additional_labels,
         )
     }
 }

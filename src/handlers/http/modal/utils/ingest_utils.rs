@@ -113,7 +113,7 @@ pub async fn push_logs(
         let data = convert_array_to_object(
             &body_val,
             time_partition.as_ref(),
-            time_partition_limit.as_ref(),
+            time_partition_limit,
             None,
         )?;
         for value in data {
@@ -135,7 +135,7 @@ pub async fn push_logs(
         let data = convert_array_to_object(
             &body_val,
             time_partition.as_ref(),
-            time_partition_limit.as_ref(),
+            time_partition_limit,
             custom_partition.as_ref(),
         )?;
         let custom_partition = custom_partition.unwrap();

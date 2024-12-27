@@ -49,6 +49,7 @@ use http::{HeaderName, HeaderValue};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
+use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -471,7 +472,7 @@ fn remove_id_from_alerts(value: &mut Value) {
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
-    time_partition_limit: &str,
+    time_partition_limit: Option<NonZeroU32>,
     custom_partition: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
@@ -511,7 +512,7 @@ pub async fn create_stream(
                 stream_name.to_string(),
                 created_at,
                 time_partition.to_string(),
-                time_partition_limit.to_string(),
+                time_partition_limit,
                 custom_partition.to_string(),
                 static_schema_flag.to_string(),
                 static_schema,
@@ -561,7 +562,9 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         created_at: stream_meta.created_at.clone(),
         first_event_at: stream_meta.first_event_at.clone(),
         time_partition: stream_meta.time_partition.clone(),
-        time_partition_limit: stream_meta.time_partition_limit.clone(),
+        time_partition_limit: stream_meta
+            .time_partition_limit
+            .map(|limit| limit.to_string()),
         custom_partition: stream_meta.custom_partition.clone(),
         cache_enabled: stream_meta.cache_enabled,
         static_schema_flag: stream_meta.static_schema_flag.clone(),
