@@ -81,7 +81,7 @@ pub async fn push_logs(
     )?;
 
     for value in data {
-        let size = value.to_string().into_bytes().len();
+        let size = serde_json::to_vec(&value).unwrap().len(); // string length need not be the same as byte length
         let parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref());
         let partition_values = match custom_partition.as_ref() {
             Some(custom_partition) => {
