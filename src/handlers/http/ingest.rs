@@ -196,7 +196,7 @@ pub async fn create_stream_if_not_exists(
     super::logstream::create_stream(
         stream_name.to_string(),
         "",
-        "",
+        None,
         "",
         "",
         Arc::new(Schema::empty()),
