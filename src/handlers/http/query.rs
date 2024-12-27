@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{error, trace};
+use tracing::error;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
@@ -85,7 +85,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
 
-    // create a visitor to extract the table name
+    // create a visitor to extract the table names present in query
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
 
@@ -153,17 +153,15 @@ pub async fn create_streams_for_querier() {
     }
 }
 
-// check auth for each table in the tables vector
 pub fn authorize_and_set_filter_tags(
     query: &mut LogicalQuery,
     permissions: Vec<Permission>,
-    tables: &Vec<String>,
+    tables: &[String],
 ) -> Result<(), QueryError> {
-    // check authorization of this query if it references physical table;
-    let mut authorized = false;
-
-    trace!("table names in auth- {tables:?}");
     for table_name in tables.iter() {
+        // check authorization of this query if it references physical table;
+        let mut authorized = false;
+
         let mut tags = Vec::new();
 
         // in permission check if user can run query on the stream.
