@@ -17,7 +17,6 @@
  */
 
 use crate::analytics;
-use crate::correlation;
 use crate::correlation::CORRELATIONS;
 use crate::handlers;
 use crate::handlers::http::about;
@@ -184,12 +183,12 @@ impl Server {
                 web::resource("")
                     .route(
                         web::get()
-                            .to(correlation::http_handlers::list)
+                            .to(http::correlation::list)
                             .authorize(Action::GetCorrelation),
                     )
                     .route(
                         web::post()
-                            .to(correlation::http_handlers::post)
+                            .to(http::correlation::post)
                             .authorize(Action::CreateCorrelation),
                     ),
             )
@@ -197,17 +196,17 @@ impl Server {
                 web::resource("/{correlation_id}")
                     .route(
                         web::get()
-                            .to(correlation::http_handlers::get)
+                            .to(http::correlation::get)
                             .authorize(Action::GetCorrelation),
                     )
                     .route(
                         web::put()
-                            .to(correlation::http_handlers::modify)
+                            .to(http::correlation::modify)
                             .authorize(Action::PutCorrelation),
                     )
                     .route(
                         web::delete()
-                            .to(correlation::http_handlers::delete)
+                            .to(http::correlation::delete)
                             .authorize(Action::DeleteCorrelation),
                     ),
             )

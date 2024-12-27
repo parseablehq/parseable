@@ -28,7 +28,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Error as SerdeError;
 use tokio::sync::RwLock;
-use tracing::{trace, warn};
+use tracing::{error, trace, warn};
 
 use crate::{
     handlers::http::rbac::RBACError, option::CONFIG, query::QUERY_SESSION, rbac::map::SessionKey,
@@ -36,7 +36,6 @@ use crate::{
 };
 
 pub mod correlation_utils;
-pub mod http_handlers;
 
 pub static CORRELATIONS: Lazy<Correlation> = Lazy::new(Correlation::default);
 
@@ -55,7 +54,13 @@ impl Correlation {
                 continue;
             }
 
-            let correlation: CorrelationConfig = serde_json::from_slice(&corr)?;
+            let correlation: CorrelationConfig = match serde_json::from_slice(&corr) {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Unable to load correlation- {e}");
+                    continue;
+                },
+            };
 
             correlations.push(correlation);
         }
@@ -192,7 +197,12 @@ impl CorrelationRequest {
         let ctx = &QUERY_SESSION;
 
         let h1: HashSet<&String> = self.table_configs.iter().map(|t| &t.table_name).collect();
-        let h2 = HashSet::from([&self.join_config.table_one, &self.join_config.table_two]);
+        let h2: HashSet<&String> = self
+            .join_config
+            .join_conditions
+            .iter()
+            .map(|j| &j.table_name)
+            .collect();
 
         // check if table config tables are the same
         if h1.len() != 2 {
@@ -223,13 +233,19 @@ impl CorrelationRequest {
                 .iter()
                 .map(|c| c.as_str())
                 .collect_vec();
-            let join_field = if table_config.table_name == self.join_config.table_one {
-                &self.join_config.field_one
-            } else {
-                &self.join_config.field_two
-            };
 
-            selected_fields.push(join_field.as_str());
+            // unwrap because we have determined that the tables in table config are the same as those in join config
+            let condition = self
+                .join_config
+                .join_conditions
+                .iter()
+                .find(|j| j.table_name == table_config.table_name)
+                .unwrap();
+            let join_field = condition.field.as_str();
+
+            if !selected_fields.contains(&join_field) {
+                selected_fields.push(join_field);
+            }
 
             // if this errors out then the table config is incorrect or join config is incorrect
             df.select_columns(selected_fields.as_slice())?;
@@ -286,9 +302,13 @@ pub struct TableConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct JoinCondition {
+    pub table_name: String,
+    pub field: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JoinConfig {
-    pub table_one: String,
-    pub field_one: String,
-    pub table_two: String,
-    pub field_two: String,
+    pub join_conditions: Vec<JoinCondition>,
 }

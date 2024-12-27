@@ -26,7 +26,7 @@ use crate::{
     utils::actix::extract_session_key_from_req,
 };
 
-use super::{
+use crate::correlation::{
     correlation_utils::user_auth_for_query, CorrelationConfig, CorrelationError,
     CorrelationRequest, CORRELATIONS,
 };
