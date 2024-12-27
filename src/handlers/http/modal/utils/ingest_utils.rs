@@ -83,7 +83,7 @@ pub async fn push_logs(
     for value in data {
         let size = serde_json::to_vec(&value).unwrap().len(); // string length need not be the same as byte length
         let parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref());
-        let partition_values = match custom_partition.as_ref() {
+        let custom_partition_values = match custom_partition.as_ref() {
             Some(custom_partition) => {
                 let custom_partitions = custom_partition.split(',').collect_vec();
                 get_custom_partition_values(&value, &custom_partitions)
@@ -99,7 +99,7 @@ pub async fn push_logs(
             time_partition.as_ref(),
             schema_version,
             parsed_timestamp,
-            &partition_values,
+            custom_partition_values,
             size as u64,
         )
         .await?;
@@ -117,7 +117,7 @@ pub async fn create_process_record_batch(
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
     parsed_timestamp: NaiveDateTime,
-    custom_partition_values: &HashMap<String, String>,
+    custom_partition_values: HashMap<String, String>,
     origin_size: u64,
 ) -> Result<(), PostError> {
     let (rb, is_first_event) = get_stream_schema(
@@ -136,7 +136,7 @@ pub async fn create_process_record_batch(
         is_first_event,
         parsed_timestamp,
         time_partition: time_partition.cloned(),
-        custom_partition_values: custom_partition_values.clone(),
+        custom_partition_values,
         stream_type: StreamType::UserDefined,
     }
     .process()
