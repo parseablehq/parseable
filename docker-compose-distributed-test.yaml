@@ -257,7 +257,7 @@ services:
       - KAFKA_TOPIC=dist-test-logs-stream
       - LOG_RATE=500
       - TOTAL_LOGS=50000
-      - REPLICATION_FACTO=3
+      - REPLICATION_FACTOR=3
     depends_on:
       - kafka-0
       - kafka-1
