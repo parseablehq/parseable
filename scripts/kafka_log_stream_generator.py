@@ -150,14 +150,16 @@ def generate_log():
 
 
 def main():
-    logger.info("Starting rate-limited log producer...")
+    logger.info("Starting continuous log producer...")
     create_topic(KAFKA_TOPIC, NUM_PARTITIONS, REPLICATION_FACTOR)
-    logger.info(f"Broker: {KAFKA_BROKERS}, Topic: {KAFKA_TOPIC}, Rate: {LOG_RATE} logs/sec, Total Logs: {TOTAL_LOGS}")
+    logger.info(f"Broker: {KAFKA_BROKERS}, Topic: {KAFKA_TOPIC}, Rate: {LOG_RATE} logs/sec")
 
+    message_count = 0
     start_time = time.time()
+    batch_start_time = time.time()
 
     try:
-        for i in range(TOTAL_LOGS):
+        while True:
             log_data = generate_log()
             log_str = json.dumps(log_data)
 
@@ -168,9 +170,19 @@ def main():
                 callback=delivery_report
             )
 
-            if (i + 1) % REPORT_EVERY == 0:
-                logger.info(f"{i + 1} messages produced. Flushing producer...")
+            message_count += 1
+
+            if message_count % REPORT_EVERY == 0:
+                current_time = time.time()
+                batch_elapsed = current_time - batch_start_time
+                total_elapsed = current_time - start_time
+
+                logger.info(f"Batch of {REPORT_EVERY} messages produced in {batch_elapsed:.2f}s")
+                logger.info(f"Total messages: {message_count}, Running time: {total_elapsed:.2f}s")
+                logger.info(f"Current rate: ~{REPORT_EVERY / batch_elapsed:,.0f} logs/sec")
+
                 producer.flush()
+                batch_start_time = current_time
 
             # Sleep to maintain the logs/second rate
             time.sleep(1 / LOG_RATE)
@@ -185,10 +197,6 @@ def main():
     finally:
         logger.info("Flushing producer...")
         producer.flush()
-
-        elapsed = time.time() - start_time
-        logger.info(f"DONE! Produced {TOTAL_LOGS} log messages in {elapsed:.2f} seconds.")
-        logger.info(f"Effective rate: ~{TOTAL_LOGS / elapsed:,.0f} logs/sec")
 
 
 if __name__ == "__main__":
