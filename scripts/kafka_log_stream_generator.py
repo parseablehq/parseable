@@ -40,9 +40,9 @@ KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "local-logs-stream")
 NUM_PARTITIONS = int(os.getenv("NUM_PARTITIONS", "6"))  # Default partitions
 REPLICATION_FACTOR = int(os.getenv("REPLICATION_FACTOR", "1"))  # Default RF
-TOTAL_LOGS = int(os.getenv("TOTAL_LOGS", "100000"))  # Total logs to produce
-LOG_RATE = int(os.getenv("LOG_RATE", "500"))  # Logs per second
-REPORT_EVERY = 10_000  # Progress report frequency
+TOTAL_LOGS = int(os.getenv("TOTAL_LOGS", "100"))  # Total logs to produce
+LOG_RATE = int(os.getenv("LOG_RATE", "50"))  # Logs per second
+REPORT_EVERY = 5_000  # Progress report frequency
 
 producer_conf = {
     "bootstrap.servers": KAFKA_BROKERS,
@@ -157,35 +157,51 @@ def main():
     message_count = 0
     start_time = time.time()
     batch_start_time = time.time()
+    limit_reached = False
 
     try:
         while True:
-            log_data = generate_log()
-            log_str = json.dumps(log_data)
+            current_time = time.time()
 
-            # Send to Kafka
-            producer.produce(
-                topic=KAFKA_TOPIC,
-                value=log_str,
-                callback=delivery_report
-            )
+            if not limit_reached:
+                if message_count < TOTAL_LOGS:
+                    log_data = generate_log()
+                    log_str = json.dumps(log_data)
 
-            message_count += 1
+                    # Send to Kafka
+                    producer.produce(
+                        topic=KAFKA_TOPIC,
+                        value=log_str,
+                        callback=delivery_report
+                    )
 
-            if message_count % REPORT_EVERY == 0:
-                current_time = time.time()
-                batch_elapsed = current_time - batch_start_time
+                    message_count += 1
+
+                    if message_count % REPORT_EVERY == 0:
+                        batch_elapsed = current_time - batch_start_time
+                        total_elapsed = current_time - start_time
+
+                        logger.info(f"Batch of {REPORT_EVERY} messages produced in {batch_elapsed:.2f}s")
+                        logger.info(f"Total messages: {message_count}, Running time: {total_elapsed:.2f}s")
+                        logger.info(f"Current rate: ~{REPORT_EVERY / batch_elapsed:,.0f} logs/sec")
+
+                        producer.flush()
+                        batch_start_time = current_time
+
+                elif not limit_reached:
+                    logger.info(
+                        f"Reached TOTAL_LOGS limit of {TOTAL_LOGS}. Continuing to run without producing messages...")
+                    producer.flush()
+                    limit_reached = True
+
+            if limit_reached:
+                time.sleep(5)
                 total_elapsed = current_time - start_time
-
-                logger.info(f"Batch of {REPORT_EVERY} messages produced in {batch_elapsed:.2f}s")
-                logger.info(f"Total messages: {message_count}, Running time: {total_elapsed:.2f}s")
-                logger.info(f"Current rate: ~{REPORT_EVERY / batch_elapsed:,.0f} logs/sec")
-
-                producer.flush()
-                batch_start_time = current_time
-
-            # Sleep to maintain the logs/second rate
-            time.sleep(1 / LOG_RATE)
+                if total_elapsed % 60 < 5:
+                    logger.info(f"Total messages sent: {message_count}")
+            else:
+                # Sleep to maintain the logs/second rate
+                time.sleep(1 / LOG_RATE)
 
     except KeyboardInterrupt:
         logger.warning("Interrupted by user! Flushing remaining messages...")
