@@ -163,26 +163,26 @@ services:
       timeout: 5s
       retries: 5
 
-  kafka-ui:
-    platform: linux/amd64
-    image: provectuslabs/kafka-ui:latest
-    environment:
-      KAFKA_CLUSTERS_0_NAME: dist-test
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-0:9092
-      KAFKA_CLUSTERS_0_METRICS_PORT: 9101
-      DYNAMIC_CONFIG_ENABLED: "true"
-      JAVA_OPTS: -Xms256m -Xmx512m -XX:+UseG1GC
-    networks:
-      - parseable-internal
-    depends_on:
-      - kafka-0
-    ports:
-      - "8080:8080"
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 20s
-        max_attempts: 3
+  #kafka-ui:
+  #  platform: linux/amd64
+  #  image: provectuslabs/kafka-ui:latest
+  #  environment:
+  #    KAFKA_CLUSTERS_0_NAME: dist-test
+  #    KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-0:9092
+  #    KAFKA_CLUSTERS_0_METRICS_PORT: 9101
+  #    DYNAMIC_CONFIG_ENABLED: "true"
+  #    JAVA_OPTS: -Xms256m -Xmx512m -XX:+UseG1GC
+  #  networks:
+  #    - parseable-internal
+  #  depends_on:
+  #    - kafka-0
+  #  ports:
+  #    - "8080:8080"
+  #  deploy:
+  #    restart_policy:
+  #      condition: on-failure
+  #      delay: 20s
+  #      max_attempts: 3
 
   kafka-log-generator:
     build:
