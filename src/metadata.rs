@@ -47,12 +47,17 @@ pub static STREAM_INFO: Lazy<StreamInfo> = Lazy::new(StreamInfo::default);
 #[derive(Debug, Deref, DerefMut, Default)]
 pub struct StreamInfo(RwLock<HashMap<String, LogStreamMetadata>>);
 
+/// In order to support backward compatability with streams created before v1.6.4,
+/// we will consider past versions of stream schema to be v0. Streams created with
+/// v1.6.4+ will be v1.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[non_exhaustive]
 #[serde(rename_all = "lowercase")]
 pub enum SchemaVersion {
     #[default]
     V0,
+    /// Applies generic JSON flattening, ignores null data, handles all numbers as
+    /// float64 and uses the timestamp type to store compatible time information.
     V1,
 }
 
