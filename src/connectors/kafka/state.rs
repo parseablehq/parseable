@@ -50,9 +50,9 @@ impl StreamState {
         for tp in tpl.tpl {
             if let Some(sender) = self.partition_senders.remove(&tp) {
                 info!("Terminating stream for {:?}", tp);
-                drop(sender.sender());
                 sender.terminate();
-                info!("Waiting for stream to finish for {:?}", tp);
+                drop(sender);
+                info!("Stream terminated for {:?}", tp);
             } else {
                 info!("Stream already completed for {:?}", tp);
             }

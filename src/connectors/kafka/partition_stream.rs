@@ -20,7 +20,7 @@ use crate::connectors::kafka::{ConsumerRecord, TopicPartition};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Notify};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::info;
+use tracing::{error, info};
 
 #[derive(Clone)]
 pub struct PartitionStreamSender {
@@ -38,7 +38,9 @@ impl PartitionStreamSender {
     }
 
     pub async fn send(&self, consumer_record: ConsumerRecord) {
-        self.inner.send(consumer_record).await.unwrap();
+        if let Err(e) = self.inner.send(consumer_record).await {
+            error!("Failed to send message to partition stream: {:?}", e);
+        }
     }
 
     pub fn sender(&self) -> mpsc::Sender<ConsumerRecord> {

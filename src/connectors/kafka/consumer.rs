@@ -17,21 +17,21 @@
  */
 
 use crate::connectors::common::shutdown::Shutdown;
+use crate::connectors::common::ConnectorError;
 use crate::connectors::kafka::partition_stream::{PartitionStreamReceiver, PartitionStreamSender};
 use crate::connectors::kafka::state::StreamState;
 use crate::connectors::kafka::{
     partition_stream, ConsumerRecord, KafkaContext, StreamConsumer, TopicPartition,
 };
-use backon::{ExponentialBuilder, Retryable};
 use futures_util::FutureExt;
 use rdkafka::consumer::Consumer;
-use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::Statistics;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub struct KafkaStreams {
     consumer: Arc<StreamConsumer>,
@@ -108,74 +108,47 @@ impl KafkaStreams {
 
         std::thread::spawn(move || {
             tokio_handle.block_on(async move {
-                let retry_policy = ExponentialBuilder::default().with_max_times(5000);
-
                 loop {
-                    let result = KafkaStreams::process_consumer_messages(
-                        &consumer,
-                        &stream_state,
-                        &stream_tx,
-                        &shutdown_handle,
-                        &retry_policy,
-                    )
-                    .await;
+                    let result: Result<(), ConnectorError> = tokio::select! {
+                        result = consumer.recv() => {
+                            match result {
+                                Ok(msg) => KafkaStreams::handle_message(msg, &stream_state, &stream_tx).await.map_err(Into::into),
+                                Err(e) => Err(e.into())
+                            }
+                        }
+                        _ = shutdown_handle.recv() => {
+                            KafkaStreams::shutdown(&consumer, &stream_state).await;
+                            break;
+                        }
+                    };
 
-                    if let Err(e) = result {
-                        error!(
-                            "Partitioned processing encountered a critical error: {:?}",
-                            e
-                        );
-                        break;
+                    match result {
+                        Ok(_) => continue,
+                        Err(error) => match &error {
+                            ConnectorError::Connection(msg) => {
+                                error!("Connection error: {}", msg);
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                            }
+                            ConnectorError::Fatal(msg) => {
+                                error!("Fatal error: {}", msg);
+                                break;
+                            }
+                            ConnectorError::Auth(msg) => {
+                                error!("Authentication error: {}", msg);
+                                break;
+                            }
+                            error => {
+                                warn!("Non-fatal error: {}", error);
+                            }
+                        },
                     }
                 }
+
+                info!("Kafka stream processing terminated");
             });
         });
 
         ReceiverStream::new(stream_rx)
-    }
-
-    async fn process_consumer_messages(
-        consumer: &Arc<StreamConsumer>,
-        stream_state: &RwLock<StreamState>,
-        stream_tx: &mpsc::Sender<PartitionStreamReceiver>,
-        shutdown_handle: &Shutdown,
-        retry_policy: &ExponentialBuilder,
-    ) -> anyhow::Result<()> {
-        tokio::select! {
-            result = KafkaStreams::receive_with_retry(consumer, retry_policy) => match result {
-                Ok(msg) => KafkaStreams::handle_message(msg, stream_state, stream_tx).await,
-                Err(err) => {
-                    anyhow::bail!("Unrecoverable error occurred while receiving Kafka message: {:?}", err);
-                },
-            },
-            _ = shutdown_handle.recv() => {
-                KafkaStreams::handle_shutdown(consumer, stream_state).await;
-                Ok(())
-            },
-            else => {
-                error!("KafkaStreams terminated unexpectedly!");
-                Ok(())
-            }
-        }
-    }
-
-    async fn receive_with_retry<'a>(
-        consumer: &'a Arc<StreamConsumer>,
-        retry_policy: &'a ExponentialBuilder,
-    ) -> Result<BorrowedMessage<'a>, KafkaError> {
-        let recv_fn = || consumer.recv();
-
-        recv_fn
-            .retry(*retry_policy)
-            .sleep(tokio::time::sleep)
-            .notify(|err, dur| {
-                tracing::warn!(
-                    "Retrying message reception due to error: {:?}. Waiting for {:?}...",
-                    err,
-                    dur
-                );
-            })
-            .await
     }
 
     /// Handle individual Kafka message and route it to the proper partition stream
@@ -227,7 +200,7 @@ impl KafkaStreams {
         ps_tx
     }
 
-    async fn handle_shutdown(consumer: &Arc<StreamConsumer>, stream_state: &RwLock<StreamState>) {
+    async fn shutdown(consumer: &Arc<StreamConsumer>, stream_state: &RwLock<StreamState>) {
         info!("Gracefully stopping kafka partition streams!");
         let mut state = stream_state.write().await;
         state.clear();

@@ -72,10 +72,11 @@ impl KafkaContext {
         let rebalance_sender = self.rebalance_tx.clone();
         std::thread::spawn(move || {
             info!("Sending RebalanceEvent to listener...");
-            if rebalance_sender.blocking_send(rebalance_event).is_err() {
-                warn!("Rebalance event receiver is closed!");
+            if let Err(e) = rebalance_sender.blocking_send(rebalance_event) {
+                warn!("Rebalance event receiver is closed! {:?}", e);
+            } else {
+                info!("RebalanceEvent sent successfully!");
             }
-            info!("Sent RebalanceEvent to lister.");
         });
     }
 

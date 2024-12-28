@@ -15,19 +15,62 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
+use thiserror::Error;
 
 pub mod config;
 pub mod processor;
 pub mod shutdown;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 pub enum ConnectorError {
     #[error("Kafka error: {0}")]
-    Kafka(#[from] rdkafka::error::KafkaError),
-    #[error("Configuration error: {0}")]
-    Config(String),
+    Kafka(KafkaError),
+
+    #[error("Connection error: {0}")]
+    Connection(String),
+
+    #[error("Fatal error: {0}")]
+    Fatal(String),
+
     #[error("Processing error: {0}")]
-    Processing(String),
-    #[error("Initialization error: {0}")]
-    Init(String),
+    Processing(#[from] anyhow::Error),
+
+    #[error("State error: {0}")]
+    State(String),
+
+    #[error("Authentication error: {0}")]
+    Auth(String),
+}
+
+impl From<KafkaError> for ConnectorError {
+    fn from(error: KafkaError) -> Self {
+        if let Some(code) = error.rdkafka_error_code() {
+            match code {
+                RDKafkaErrorCode::BrokerTransportFailure
+                | RDKafkaErrorCode::NetworkException
+                | RDKafkaErrorCode::AllBrokersDown => ConnectorError::Connection(error.to_string()),
+
+                RDKafkaErrorCode::Fatal | RDKafkaErrorCode::CriticalSystemResource => {
+                    ConnectorError::Fatal(error.to_string())
+                }
+
+                RDKafkaErrorCode::Authentication | RDKafkaErrorCode::SaslAuthenticationFailed => {
+                    ConnectorError::Auth(error.to_string())
+                }
+
+                _ => ConnectorError::Kafka(error),
+            }
+        } else {
+            ConnectorError::Kafka(error)
+        }
+    }
+}
+impl ConnectorError {
+    pub fn is_fatal(&self) -> bool {
+        matches!(
+            self,
+            ConnectorError::Fatal(_) | ConnectorError::Auth(_) | ConnectorError::State(_)
+        )
+    }
 }

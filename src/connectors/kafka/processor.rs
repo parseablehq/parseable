@@ -156,7 +156,9 @@ where
                     //@see https://github.com/confluentinc/librdkafka/issues/4534
                     //@see https://github.com/confluentinc/librdkafka/issues/4059
                     if let Err(e) = self.consumer.commit(&tpl, CommitMode::Sync) {
-                        error!("Failed to commit offsets for {:?}: {:?}", tp, e);
+                        error!(error = %e, "Failed to commit offsets for {:?}", tpl);
+                    } else {
+                        debug!("Committed offsets for {:?}", tpl);
                     }
                 }
             })

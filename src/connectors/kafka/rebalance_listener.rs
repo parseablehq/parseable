@@ -58,9 +58,12 @@ impl RebalanceListener {
                                 Some(RebalanceEvent::Assign(tpl)) => info!("RebalanceEvent Assign: {:?}", tpl),
                                 Some(RebalanceEvent::Revoke(tpl, callback)) => {
                                     info!("RebalanceEvent Revoke: {:?}", tpl);
-                                    let mut stream_state = stream_state.write().await;
-                                    stream_state.terminate_partition_streams(tpl).await;
-                                    drop(stream_state);
+                                    if let Ok(mut stream_state) = stream_state.try_write() {
+                                        stream_state.terminate_partition_streams(tpl).await;
+                                        drop(stream_state);
+                                    } else {
+                                        warn!("Stream state lock is busy, skipping rebalance revoke for {:?}", tpl);
+                                    }
                                     
                                     if let Err(err) = callback.send(()) {
                                         warn!("Error during sending response to context. Cause: {:?}", err);
