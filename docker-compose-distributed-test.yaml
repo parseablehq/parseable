@@ -191,7 +191,7 @@ services:
     environment:
       - KAFKA_BROKERS=kafka-0:9092
       - KAFKA_TOPIC=dist-test-logs-stream
-      - LOG_RATE=100
+      - LOG_RATE=500
       - TOTAL_LOGS=20000
     depends_on:
       - kafka-0
