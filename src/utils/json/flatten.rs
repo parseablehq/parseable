@@ -637,13 +637,13 @@ mod tests {
     #[test]
     fn unacceptable_levels_of_nested_json() {
         let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
-        assert_eq!(has_more_than_four_levels(&value, 1), true);
+        assert!(has_more_than_four_levels(&value, 1));
     }
 
     #[test]
     fn acceptable_levels_of_nested_json() {
         let value = json!({"a":{"b":{"e":["a","b"]}}});
-        assert_eq!(has_more_than_four_levels(&value, 1), false);
+        assert!(!has_more_than_four_levels(&value, 1));
     }
 
     #[test]
