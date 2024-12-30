@@ -59,7 +59,7 @@ impl Correlation {
                 Err(e) => {
                     error!("Unable to load correlation- {e}");
                     continue;
-                },
+                }
             };
 
             correlations.push(correlation);

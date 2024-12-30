@@ -631,7 +631,6 @@ pub trait ObjectStorage: Send + Sync + 'static {
         correlation: &CorrelationConfig,
     ) -> Result<(), ObjectStorageError> {
         let path = RelativePathBuf::from_iter([
-            PARSEABLE_ROOT_DIRECTORY,
             CORRELATION_DIRECTORY,
             &format!("{}.json", correlation.id),
         ]);
@@ -640,8 +639,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
     }
 
     async fn get_correlations(&self) -> Result<Vec<Bytes>, CorrelationError> {
-        let correlation_path =
-            RelativePathBuf::from_iter([PARSEABLE_ROOT_DIRECTORY, CORRELATION_DIRECTORY]);
+        let correlation_path = RelativePathBuf::from_iter([CORRELATION_DIRECTORY]);
         let correlation_bytes = self
             .get_objects(
                 Some(&correlation_path),
