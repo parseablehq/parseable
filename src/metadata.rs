@@ -165,6 +165,7 @@ impl StreamInfo {
         Ok(Arc::new(schema))
     }
 
+    #[allow(dead_code)]
     pub fn schema_raw(
         &self,
         stream_name: &str,

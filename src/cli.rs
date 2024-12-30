@@ -16,11 +16,17 @@
  *
  */
 
+#[allow(unused_imports)]
 use clap::{value_parser, Arg, ArgGroup, Command, CommandFactory, FromArgMatches};
 use std::path::PathBuf;
 
 use url::Url;
 
+#[cfg(any(
+    feature = "rdkafka-ssl",
+    feature = "rdkafka-ssl-vendored",
+    feature = "rdkafka-sasl"
+))]
 use crate::connectors::common::config::ConnectorConfig;
 use crate::{
     oidc::{self, OpenidConfig},
@@ -161,7 +167,7 @@ impl Cli {
     }
 
     pub fn create_cli_command_with_clap(name: &'static str) -> Command {
-        let mut command = Command::new(name)
+        let command = Command::new(name)
             .next_line_help(false)
             .arg(
                 Arg::new(Self::TRINO_ENDPOINT)
@@ -452,8 +458,20 @@ impl Cli {
                     .multiple(true)
             );
 
-        command = command.subcommand(ConnectorConfig::command());
+        #[cfg(any(
+            feature = "rdkafka-ssl",
+            feature = "rdkafka-ssl-vendored",
+            feature = "rdkafka-sasl"
+        ))]
+        {
+            command.subcommand(ConnectorConfig::command())
+        }
 
+        #[cfg(not(any(
+            feature = "rdkafka-ssl",
+            feature = "rdkafka-ssl-vendored",
+            feature = "rdkafka-sasl"
+        )))]
         command
     }
 }

@@ -28,10 +28,9 @@ actix-web = { version = "4.9.0", features = ["rustls-0_22"] }
 actix-cors = "0.7.0"
 actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
-mime = "0.3.17"
 
 ### connectors dependencies
-rdkafka = { version = "0.37", features = ["cmake-build", "tracing", "sasl", "ssl", "libz-static"] }
+rdkafka = { version = "0.37", optional = true, features = ["cmake-build", "tracing", "libz-static"] }
 
 ### other dependencies
 anyhow = { version = "1.0", features = ["backtrace"] }
@@ -41,7 +40,6 @@ base64 = "0.22.0"
 lazy_static = "1.4"
 bytes = "1.4"
 byteorder = "1.4.3"
-bzip2 = { version = "*", features = ["static"] }
 cookie = "0.18.1"
 chrono = "0.4"
 chrono-humanize = "0.2"
@@ -60,7 +58,6 @@ derive_more = "0.99.18"
 fs_extra = "1.3"
 futures = "0.3"
 futures-util = "0.3.28"
-hex = "0.4"
 hostname = "0.4.0"
 http = "0.2.7"
 humantime-serde = "1.1"
@@ -83,7 +80,6 @@ serde_json = "1.0"
 static-files = "0.2"
 sysinfo = "0.33.0"
 thiserror = "2.0.9"
-thread-priority = "1.0.0"
 tokio = { version = "1.42", default-features = false, features = [
     "sync",
     "macros",
@@ -96,7 +92,6 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "time"] }
 ulid = { version = "1.0", features = ["serde"] }
 uptime_lib = "0.3.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-xz2 = { version = "*", features = ["static"] }
 nom = "7.1.3"
 humantime = "2.1.0"
 human-size = "0.4"
@@ -104,9 +99,7 @@ openid = { version = "0.15.0", default-features = false, features = ["rustls"] }
 url = "2.4.0"
 http-auth-basic = "0.3.3"
 serde_repr = "0.1.17"
-hashlru = { version = "0.11.0", features = ["serde"] }
 path-clean = "1.0.1"
-prost = "0.13.3"
 prometheus-parse = "0.2.5"
 sha2 = "0.10.8"
 tracing = "0.1.41"
@@ -119,10 +112,8 @@ ureq = "2.6"
 vergen = { version = "8.1", features = ["build", "git", "cargo", "gitcl"] }
 zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
 url = "2.4.0"
-prost-build = "0.13.3"
 
 [dev-dependencies]
-maplit = "1.0"
 rstest = "0.23.0"
 arrow = "53.0.0"
 
@@ -132,6 +123,10 @@ assets-sha1 = "9d5a45f204d709a2dd96f6a5e0b21b3834ee0e36"
 
 [features]
 debug = []
+
+rdkafka-ssl-vendored = ["rdkafka", "rdkafka/ssl-vendored"]
+rdkafka-ssl = ["rdkafka", "rdkafka/ssl"]
+rdkafka-sasl = ["rdkafka", "rdkafka/sasl"]
 
 [profile.release-lto]
 inherits = "release"

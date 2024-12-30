@@ -16,8 +16,14 @@
  *
  */
 
+#[cfg(any(
+    feature = "rdkafka-ssl",
+    feature = "rdkafka-ssl-vendored",
+    feature = "rdkafka-sasl"
+))]
+use parseable::connectors;
 use parseable::{
-    banner, connectors, metrics,
+    banner, metrics,
     option::{Mode, CONFIG},
     rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
@@ -47,11 +53,26 @@ async fn main() -> anyhow::Result<()> {
     metadata.set_global();
 
     let prometheus = metrics::build_metrics_handler();
-
     let parseable_server = server.init(&prometheus);
-    let connectors_task = connectors::init(&prometheus);
 
-    tokio::try_join!(parseable_server, connectors_task)?;
+    #[cfg(any(
+        feature = "rdkafka-ssl",
+        feature = "rdkafka-ssl-vendored",
+        feature = "rdkafka-sasl"
+    ))]
+    {
+        let connectors_task = connectors::init(&prometheus);
+        tokio::try_join!(parseable_server, connectors_task)?;
+    }
+
+    #[cfg(not(any(
+        feature = "rdkafka-ssl",
+        feature = "rdkafka-ssl-vendored",
+        feature = "rdkafka-sasl"
+    )))]
+    {
+        parseable_server.await?;
+    }
 
     Ok(())
 }

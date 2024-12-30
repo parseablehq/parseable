@@ -22,6 +22,11 @@ pub mod analytics;
 pub mod banner;
 mod catalog;
 mod cli;
+#[cfg(any(
+    feature = "rdkafka-ssl",
+    feature = "rdkafka-ssl-vendored",
+    feature = "rdkafka-sasl"
+))]
 pub mod connectors;
 mod event;
 pub mod handlers;

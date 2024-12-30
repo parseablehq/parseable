@@ -76,6 +76,8 @@ async fn run_kafka2parseable<P>(
 where
     P: Processor<Vec<ConsumerRecord>, ()> + Send + Sync + 'static,
 {
+    info!("Initializing KafkaSink connector...");
+
     let kafka_config = Arc::new(config.clone());
     let (kafka_context, rebalance_rx) = KafkaContext::new(kafka_config);
 

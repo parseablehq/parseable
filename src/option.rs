@@ -17,6 +17,11 @@
  */
 
 use crate::cli::Cli;
+#[cfg(any(
+    feature = "rdkafka-ssl",
+    feature = "rdkafka-ssl-vendored",
+    feature = "rdkafka-sasl"
+))]
 use crate::connectors::common::config::ConnectorConfig;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::{
@@ -43,6 +48,11 @@ pub struct Config {
     pub parseable: Cli,
     storage: Arc<dyn ObjectStorageProvider>,
     pub storage_name: &'static str,
+    #[cfg(any(
+        feature = "rdkafka-ssl",
+        feature = "rdkafka-ssl-vendored",
+        feature = "rdkafka-sasl"
+    ))]
     pub connector_config: Option<ConnectorConfig>,
 }
 
@@ -101,6 +111,11 @@ parseable [command] --help
                     parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "drive",
+                    #[cfg(any(
+                        feature = "rdkafka-ssl",
+                        feature = "rdkafka-ssl-vendored",
+                        feature = "rdkafka-sasl"
+                    ))]
                     connector_config: ConnectorConfig::from(m),
                 }
             }
@@ -118,6 +133,11 @@ parseable [command] --help
                     parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "s3",
+                    #[cfg(any(
+                        feature = "rdkafka-ssl",
+                        feature = "rdkafka-ssl-vendored",
+                        feature = "rdkafka-sasl"
+                    ))]
                     connector_config: ConnectorConfig::from(m),
                 }
             }
@@ -135,6 +155,11 @@ parseable [command] --help
                     parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "blob_store",
+                    #[cfg(any(
+                        feature = "rdkafka-ssl",
+                        feature = "rdkafka-ssl-vendored",
+                        feature = "rdkafka-sasl"
+                    ))]
                     connector_config: ConnectorConfig::from(m),
                 }
             }
