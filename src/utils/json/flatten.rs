@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
+use anyhow::anyhow;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::map::Map;
 use serde_json::value::Value;
@@ -273,59 +274,90 @@ pub fn flatten_array_objects(
 /// Recursively flattens a JSON value.
 /// - If the value is an array, it flattens all elements of the array.
 /// - If the value is an object, it flattens all nested objects and arrays.
+/// - If the JSON value is heavily nested (with more than 4 levels of hierarchy), returns error
 /// - Otherwise, it returns the value itself in a vector.
 ///
 /// Examples:
 /// 1. `{"a": 1}` ~> `[{"a": 1}]`
 /// 2. `[{"a": 1}, {"b": 2}]` ~> `[{"a": 1}, {"b": 2}]`
 /// 3. `[{"a": [{"b": 1}, {"c": 2}]}]` ~> `[{"a": {"b": 1)}}, {"a": {"c": 2)}}]`
-/// 3. `{"a": [{"b": 1}, {"c": 2}], "d": {"e": 4}}` ~> `[{"a": {"b":1}, "d": {"e":4}}, {"a": {"c":2}, "d": {"e":4}}]`
-fn flattening_helper(value: &Value) -> Vec<Value> {
+/// 4. `{"a": [{"b": 1}, {"c": 2}], "d": {"e": 4}}` ~> `[{"a": {"b":1}, "d": {"e":4}}, {"a": {"c":2}, "d": {"e":4}}]`
+/// 5. `{"a":{"b":{"c":{"d":{"e":["a","b"]}}}}}` ~> returns error - heavily nested, cannot flatten this JSON
+fn flattening_helper(value: &Value) -> Result<Vec<Value>, anyhow::Error> {
+    if has_more_than_four_levels(value, 1) {
+        return Err(anyhow!("heavily nested, cannot flatten this JSON"));
+    }
+
     match value {
-        Value::Array(arr) => arr.iter().flat_map(flattening_helper).collect(),
-        Value::Object(map) => map
+        Value::Array(arr) => Ok(arr
             .iter()
-            .fold(vec![Map::new()], |results, (key, val)| match val {
-                Value::Array(arr) => arr
-                    .iter()
-                    .flat_map(flattening_helper)
-                    .flat_map(|flattened_item| {
-                        results.iter().map(move |result| {
-                            let mut new_obj = result.clone();
-                            new_obj.insert(key.clone(), flattened_item.clone());
-                            new_obj
+            .flat_map(|flatten_item| flattening_helper(flatten_item).unwrap_or_default())
+            .collect()),
+        Value::Object(map) => {
+            let results = map
+                .iter()
+                .fold(vec![Map::new()], |results, (key, val)| match val {
+                    Value::Array(arr) => arr
+                        .iter()
+                        .flat_map(|flatten_item| flattening_helper(flatten_item).unwrap_or_default())
+                        .flat_map(|flattened_item| {
+                            results.iter().map(move |result| {
+                                let mut new_obj = result.clone();
+                                new_obj.insert(key.clone(), flattened_item.clone());
+                                new_obj
+                            })
                         })
-                    })
-                    .collect(),
-                Value::Object(_) => flattening_helper(val)
-                    .iter()
-                    .flat_map(|nested_result| {
-                        results.iter().map(move |result| {
-                            let mut new_obj = result.clone();
-                            new_obj.insert(key.clone(), nested_result.clone());
-                            new_obj
+                        .collect(),
+                    Value::Object(_) => flattening_helper(val)
+                        .unwrap_or_default()
+                        .iter()
+                        .flat_map(|nested_result| {
+                            results.iter().map(move |result| {
+                                let mut new_obj = result.clone();
+                                new_obj.insert(key.clone(), nested_result.clone());
+                                new_obj
+                            })
                         })
-                    })
-                    .collect(),
-                _ => results
-                    .into_iter()
-                    .map(|mut result| {
-                        result.insert(key.clone(), val.clone());
-                        result
-                    })
-                    .collect(),
-            })
-            .into_iter()
-            .map(Value::Object)
-            .collect(),
-        _ => vec![value.clone()],
+                        .collect(),
+                    _ => results
+                        .into_iter()
+                        .map(|mut result| {
+                            result.insert(key.clone(), val.clone());
+                            result
+                        })
+                        .collect(),
+                });
+
+            Ok(results.into_iter().map(Value::Object).collect())
+        }
+        _ => Ok(vec![value.clone()]),
+    }
+}
+
+/// recursively checks the level of nesting for the serde Value
+/// if Value has more than 4 levels of hierarchy, returns true
+/// example -
+/// 1. `{"a":{"b":{"c":{"d":{"e":["a","b"]}}}}}` ~> returns true
+/// 2. `{"a": [{"b": 1}, {"c": 2}], "d": {"e": 4}}` ~> returns false
+fn has_more_than_four_levels(value: &Value, current_level: usize) -> bool {
+    if current_level > 4 {
+        return true;
+    }
+    match value {
+        Value::Array(arr) => arr
+            .iter()
+            .any(|item| has_more_than_four_levels(item, current_level)),
+        Value::Object(map) => map
+            .values()
+            .any(|val| has_more_than_four_levels(val, current_level + 1)),
+        _ => false,
     }
 }
 
 // Converts a Vector of values into a `Value::Array`, as long as all of them are objects
 pub fn generic_flattening(json: Value) -> Result<Value, JsonFlattenError> {
     let mut flattened = Vec::new();
-    for item in flattening_helper(&json) {
+    for item in flattening_helper(&json).unwrap_or_default() {
         let mut map = Map::new();
         let Some(item) = item.as_object() else {
             return Err(JsonFlattenError::ExpectedObjectInArray);
@@ -341,7 +373,9 @@ pub fn generic_flattening(json: Value) -> Result<Value, JsonFlattenError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::json::flatten::flatten_array_objects;
+    use crate::utils::json::flatten::{
+        flatten_array_objects, generic_flattening, has_more_than_four_levels,
+    };
 
     use super::{flatten, JsonFlattenError};
     use serde_json::{json, Map, Value};
@@ -598,5 +632,30 @@ mod tests {
             flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
             JsonFlattenError::FieldContainsPeriod(_)
         );
+    }
+
+    #[test]
+    fn unacceptable_levels_of_nested_json() {
+        let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
+        assert_eq!(has_more_than_four_levels(&value, 1), true);
+    }
+
+    #[test]
+    fn acceptable_levels_of_nested_json() {
+        let value = json!({"a":{"b":{"e":["a","b"]}}});
+        assert_eq!(has_more_than_four_levels(&value, 1), false);
+    }
+
+    #[test]
+    fn flatten_json_success() {
+        let value = json!({"a":{"b":{"e":["a","b"]}}});
+        let expected = json!([{"a":{"b":{"e":"a"}}},{"a":{"b":{"e":"b"}}}]);
+        assert_eq!(generic_flattening(value).unwrap(), expected);
+    }
+
+    #[test]
+    fn flatten_json_error() {
+        let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
+        assert!(generic_flattening(value).is_err());
     }
 }
