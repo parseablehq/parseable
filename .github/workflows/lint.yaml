@@ -1,0 +1,45 @@
+name: Lint
+on:
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "helm/**"
+      - "assets/**"
+      - "**.md"
+  push:
+    branches:
+      - main
+
+jobs:
+
+  fmt:
+    name: Rust fmt check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - run: rustup component add rustfmt
+      - uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+  clippy:
+    name: Cargo Clippy check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - run: rustup component add clippy
+      - uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: -- -D warnings

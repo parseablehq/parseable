@@ -1,12 +1,11 @@
-name: Integration
-
+name: Integration Tests with Quest
 on:
   pull_request:
     paths-ignore:
-      - 'docs/**'
-      - 'helm/**'
-      - 'assets/**'
-      - '**.md'
+      - "docs/**"
+      - "helm/**"
+      - "assets/**"
+      - "**.md"
 
 jobs:
 
