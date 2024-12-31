@@ -301,8 +301,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
     }
 
     async fn get_alerts(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let alerts_path =
-            RelativePathBuf::from_iter([PARSEABLE_ROOT_DIRECTORY, ALERTS_ROOT_DIRECTORY]);
+        let alerts_path = RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY]);
         let alerts_bytes = self
             .get_objects(
                 Some(&alerts_path),
@@ -728,11 +727,7 @@ pub fn parseable_json_path() -> RelativePathBuf {
 /// TODO: Needs to be updated for distributed mode
 #[inline(always)]
 pub fn alert_json_path(alert_id: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([
-        PARSEABLE_ROOT_DIRECTORY,
-        ALERTS_ROOT_DIRECTORY,
-        &format!("{alert_id}.json"),
-    ])
+    RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, &format!("{alert_id}.json")])
     // RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, ALERT_FILE_NAME])
 }
 

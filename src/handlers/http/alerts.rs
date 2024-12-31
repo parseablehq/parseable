@@ -18,7 +18,7 @@
 
 use crate::{
     option::CONFIG,
-    storage::{object_storage::alert_json_path, ALERTS_ROOT_DIRECTORY, PARSEABLE_ROOT_DIRECTORY},
+    storage::{object_storage::alert_json_path, ALERTS_ROOT_DIRECTORY},
     sync::schedule_alert_task,
     utils::actix::extract_session_key_from_req,
 };
@@ -43,10 +43,15 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
 // POST /alerts
 pub async fn post(req: HttpRequest, alert: AlertRequest) -> Result<impl Responder, AlertError> {
     let alert: AlertConfig = alert.into();
+    alert.validate().await?;
+
     // validate the incoming alert query
     // does the user have access to these tables or not?
     let session_key = extract_session_key_from_req(&req)?;
     user_auth_for_query(&session_key, &alert.query).await?;
+
+    // create scheduled tasks
+    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
 
     // now that we've validated that the user can run this query
     // move on to saving the alert in ObjectStore
@@ -58,10 +63,7 @@ pub async fn post(req: HttpRequest, alert: AlertRequest) -> Result<impl Responde
     let alert_bytes = serde_json::to_vec(&alert)?;
     store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
-    // create scheduled tasks
-    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
-
-    ALERTS.update_task(alert.id, handle, rx, tx).await;
+    ALERTS.update_task(&alert.id, handle, rx, tx).await;
 
     Ok(format!("alert created with ID- {}", alert.id))
 }
@@ -137,7 +139,6 @@ pub async fn modify(req: HttpRequest, alert: AlertRequest) -> Result<impl Respon
     let old_alert_config: AlertConfig = serde_json::from_slice(
         &store
             .get_object(&RelativePathBuf::from_iter([
-                PARSEABLE_ROOT_DIRECTORY,
                 ALERTS_ROOT_DIRECTORY,
                 &format!("{alert_id}.json"),
             ]))
@@ -145,6 +146,10 @@ pub async fn modify(req: HttpRequest, alert: AlertRequest) -> Result<impl Respon
     )?;
 
     let alert = alert.modify(old_alert_config);
+    alert.validate().await?;
+
+    // modify task
+    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
 
     // modify on disk
     store.put_alert(&alert.id.to_string(), &alert).await?;
@@ -152,10 +157,7 @@ pub async fn modify(req: HttpRequest, alert: AlertRequest) -> Result<impl Respon
     // modify in memory
     ALERTS.update(&alert).await;
 
-    // modify task
-    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
-
-    ALERTS.update_task(alert.id, handle, rx, tx).await;
+    ALERTS.update_task(&alert.id, handle, rx, tx).await;
 
     Ok(format!("Modified alert {}", alert.id))
 }
@@ -186,14 +188,18 @@ pub async fn update_state(req: HttpRequest, state: String) -> Result<impl Respon
                 return Err(AlertError::InvalidStateChange(msg));
             } else {
                 // update state on disk and in memory
-                ALERTS.update_state(alert_id, new_state, true).await?;
+                ALERTS
+                    .update_state(alert_id, new_state, Some("".into()))
+                    .await?;
             }
         }
         AlertState::Silenced => {
             // from here, the user can only go to Resolved
             if new_state == AlertState::Resolved {
                 // update state on disk and in memory
-                ALERTS.update_state(alert_id, new_state, true).await?;
+                ALERTS
+                    .update_state(alert_id, new_state, Some("".into()))
+                    .await?;
             } else {
                 let msg = format!("Not allowed to manually go from Silenced to {new_state}");
                 return Err(AlertError::InvalidStateChange(msg));
