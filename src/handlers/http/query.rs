@@ -52,7 +52,7 @@ use crate::utils::time::{TimeParseError, TimeRange};
 use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
 /// Query Request through http endpoint.
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     pub query: String,

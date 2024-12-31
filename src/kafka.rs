@@ -125,7 +125,7 @@ pub enum KafkaError {
 fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
     if let Some(topics) = &CONFIG.parseable.kafka_topics {
         // topics can be a comma separated list of topics to subscribe to
-        let topics = topics.split(",").map(|v| v.to_owned()).collect_vec();
+        let topics = topics.split(',').map(|v| v.to_owned()).collect_vec();
 
         let host = if CONFIG.parseable.kafka_host.is_some() {
             CONFIG.parseable.kafka_host.as_ref()
@@ -162,8 +162,8 @@ fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
             // partitions is a comma separated pairs of topic:partitions
             let mut topic_partition_pairs = Vec::new();
             let mut set = true;
-            for vals in vals_raw.split(",") {
-                let intermediate = vals.split(":").collect_vec();
+            for vals in vals_raw.split(',') {
+                let intermediate = vals.split(':').collect_vec();
                 if intermediate.len() != 2 {
                     warn!(
                         "Value for P_KAFKA_PARTITIONS is incorrect! Skipping setting partitions!"

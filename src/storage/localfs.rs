@@ -39,8 +39,9 @@ use crate::{
 };
 
 use super::{
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
-    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
+    CORRELATIONS_ROOT_DIRECTORY, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -295,7 +296,12 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY, USERS_ROOT_DIR];
+        let ignore_dir = &[
+            "lost+found",
+            PARSEABLE_ROOT_DIRECTORY,
+            USERS_ROOT_DIR,
+            CORRELATIONS_ROOT_DIRECTORY,
+        ];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
@@ -315,7 +321,11 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY];
+        let ignore_dir = &[
+            "lost+found",
+            PARSEABLE_ROOT_DIRECTORY,
+            CORRELATIONS_ROOT_DIRECTORY,
+        ];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
