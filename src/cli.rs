@@ -526,7 +526,9 @@ impl FromArgMatches for Cli {
         self.trino_username = m.get_one::<String>(Self::TRINO_USER_NAME).cloned();
 
         self.kafka_topics = m.get_one::<String>(Self::KAFKA_TOPICS).cloned();
-        self.kafka_host = m.get_one::<String>(Self::KAFKA_HOST).cloned();
+        self.kafka_security_protocol = m
+            .get_one::<SslProtocol>(Self::KAFKA_SECURITY_PROTOCOL)
+            .cloned();
         self.kafka_group = m.get_one::<String>(Self::KAFKA_GROUP).cloned();
         self.kafka_client_id = m.get_one::<String>(Self::KAFKA_CLIENT_ID).cloned();
         self.kafka_security_protocol = m
