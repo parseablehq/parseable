@@ -21,7 +21,8 @@ use bytes::Bytes;
 use relative_path::RelativePathBuf;
 
 use crate::{
-    option::CONFIG, storage::CORRELATION_DIRECTORY, utils::actix::extract_session_key_from_req,
+    option::CONFIG, storage::CORRELATIONS_ROOT_DIRECTORY,
+    utils::actix::extract_session_key_from_req,
 };
 
 use crate::correlation::{
@@ -125,7 +126,8 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, CorrelationError
 
     // Delete from disk
     let store = CONFIG.storage().get_object_store();
-    let path = RelativePathBuf::from_iter([CORRELATION_DIRECTORY, &correlation.id.to_string()]);
+    let path =
+        RelativePathBuf::from_iter([CORRELATIONS_ROOT_DIRECTORY, &correlation.id.to_string()]);
     store.delete_object(&path).await?;
 
     // Delete from memory

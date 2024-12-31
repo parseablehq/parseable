@@ -21,7 +21,7 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    ALERT_FILE_NAME, CORRELATION_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
+    ALERT_FILE_NAME, CORRELATIONS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
     PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
@@ -631,7 +631,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
         correlation: &CorrelationConfig,
     ) -> Result<(), ObjectStorageError> {
         let path = RelativePathBuf::from_iter([
-            CORRELATION_DIRECTORY,
+            CORRELATIONS_ROOT_DIRECTORY,
             &format!("{}.json", correlation.id),
         ]);
         self.put_object(&path, to_bytes(correlation)).await?;
@@ -639,7 +639,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
     }
 
     async fn get_correlations(&self) -> Result<Vec<Bytes>, CorrelationError> {
-        let correlation_path = RelativePathBuf::from_iter([CORRELATION_DIRECTORY]);
+        let correlation_path = RelativePathBuf::from_iter([CORRELATIONS_ROOT_DIRECTORY]);
         let correlation_bytes = self
             .get_objects(
                 Some(&correlation_path),
