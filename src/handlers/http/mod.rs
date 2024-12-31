@@ -29,6 +29,7 @@ use self::{cluster::get_ingestor_info, query::Query};
 
 pub mod about;
 pub mod cluster;
+pub mod correlation;
 pub mod health_check;
 pub mod ingest;
 mod kinesis;
