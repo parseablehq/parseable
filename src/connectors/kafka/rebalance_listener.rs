@@ -64,7 +64,6 @@ impl RebalanceListener {
                                     } else {
                                         warn!("Stream state lock is busy, skipping rebalance revoke for {:?}", tpl);
                                     }
-                                    
                                     if let Err(err) = callback.send(()) {
                                         warn!("Error during sending response to context. Cause: {:?}", err);
                                     }
