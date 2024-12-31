@@ -28,6 +28,7 @@ mod cli;
     feature = "rdkafka-sasl"
 ))]
 pub mod connectors;
+pub mod correlation;
 mod event;
 pub mod handlers;
 pub mod hottier;

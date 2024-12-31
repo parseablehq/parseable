@@ -17,6 +17,7 @@
  */
 
 use crate::analytics;
+use crate::correlation::CORRELATIONS;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
@@ -68,6 +69,7 @@ impl ParseableServer for Server {
         config
             .service(
                 web::scope(&base_path())
+                    .service(Self::get_correlation_webscope())
                     .service(Self::get_query_factory())
                     .service(Self::get_trino_factory())
                     .service(Self::get_cache_webscope())
@@ -102,6 +104,9 @@ impl ParseableServer for Server {
 
         migration::run_migration(&CONFIG).await?;
 
+        if let Err(e) = CORRELATIONS.load().await {
+            error!("{e}");
+        }
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
 
@@ -170,6 +175,41 @@ impl Server {
         web::scope("/metrics").service(
             web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),
         )
+    }
+
+    pub fn get_correlation_webscope() -> Scope {
+        web::scope("/correlation")
+            .service(
+                web::resource("")
+                    .route(
+                        web::get()
+                            .to(http::correlation::list)
+                            .authorize(Action::GetCorrelation),
+                    )
+                    .route(
+                        web::post()
+                            .to(http::correlation::post)
+                            .authorize(Action::CreateCorrelation),
+                    ),
+            )
+            .service(
+                web::resource("/{correlation_id}")
+                    .route(
+                        web::get()
+                            .to(http::correlation::get)
+                            .authorize(Action::GetCorrelation),
+                    )
+                    .route(
+                        web::put()
+                            .to(http::correlation::modify)
+                            .authorize(Action::PutCorrelation),
+                    )
+                    .route(
+                        web::delete()
+                            .to(http::correlation::delete)
+                            .authorize(Action::DeleteCorrelation),
+                    ),
+            )
     }
 
     // get the dashboards web scope
