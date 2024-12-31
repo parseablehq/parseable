@@ -23,6 +23,9 @@ use serde_json::Value;
 
 pub mod flatten;
 
+/// calls the function `flatten_json` which results Vec<Value> or Error
+/// in case when Vec<Value> is returned, converts the Vec<Value> to Value of Array
+/// this is to ensure recursive flattening does not happen for heavily nested jsons
 pub fn flatten_json_body(
     body: &Value,
     time_partition: Option<&String>,
@@ -30,8 +33,10 @@ pub fn flatten_json_body(
     custom_partition: Option<&String>,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
-    let mut nested_value = flatten::convert_to_array(flatten::flatten_json(body))?;
-
+    let mut nested_value = body.clone();
+    if let Ok(flattened_json) = flatten::flatten_json(body) {
+        nested_value = flatten::convert_to_array(flattened_json)?;
+    }
     flatten::flatten(
         &mut nested_value,
         "_",
@@ -40,7 +45,6 @@ pub fn flatten_json_body(
         custom_partition,
         validation_required,
     )?;
-
     Ok(nested_value)
 }
 
@@ -82,5 +86,31 @@ pub fn convert_to_string(value: &Value) -> Value {
                 .collect();
             Value::Object(new_map)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flatten_json_body;
+    use serde_json::json;
+
+    #[test]
+    fn hierarchical_json_flattening_success() {
+        let value = json!({"a":{"b":{"e":["a","b"]}}});
+        let expected = json!([{"a_b_e": "a"}, {"a_b_e": "b"}]);
+        assert_eq!(
+            flatten_json_body(&value, None, None, None, false).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn hierarchical_json_flattening_failure() {
+        let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
+        let expected = json!({"a_b_c_d_e": ["a","b"]});
+        assert_eq!(
+            flatten_json_body(&value, None, None, None, false).unwrap(),
+            expected
+        );
     }
 }
