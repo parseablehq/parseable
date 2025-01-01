@@ -377,6 +377,14 @@ fluent-bit:
           Mem_Buf_Limit 5MB
           Skip_Long_Lines On
 
+      # [INPUT]
+      #     Name tail
+      #     Path /var/log/containers/{NGINX_DEPLOYMENT_NAME}-*.log
+      #     Parser nginx_error
+      #     Tag kube.*
+      #     Mem_Buf_Limit 5MB
+      #     Skip_Long_Lines On
+
       [INPUT]
           name kubernetes_events
           tag k8s_events
@@ -427,6 +435,14 @@ fluent-bit:
           Time_Keep Off
           Time_Key time
           Time_Format %Y-%m-%dT%H:%M:%S.%L
+
+      [PARSER]
+          Name     nginx_error
+          Format   regex
+          Regex    ^(?<timestamp>\S+Z) stderr F (?<error_timestamp>\S+ \S+) \[(?<log_level>\S+)\] (?<process_id>\d+#\d+): \*(?<request_id>\d+) (?<error_message>.*?) client: (?<client_ip>\S+), server: (?<server_name>\S+), request: "(?<request_method>\S+) (?<request_path>\S+) HTTP/\S+", upstream: "(?<upstream_url>[^"]+)", host: "(?<host>\S+)"$
+          Time_Key timestamp
+          Time_Format %Y-%m-%dT%H:%M:%S.%LZ
+
   # The config volume is mounted by default, either to the existingConfigMap value, or the default of "fluent-bit.fullname"
   volumeMounts:
     - name: config
