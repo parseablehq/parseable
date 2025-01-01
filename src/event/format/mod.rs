@@ -37,6 +37,8 @@ use super::{DEFAULT_METADATA_KEY, DEFAULT_TAGS_KEY, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
 
+static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
+
 type Tags = String;
 type Metadata = String;
 type EventSchema = Vec<Arc<Field>>;
@@ -269,9 +271,14 @@ pub fn update_data_type_to_datetime(
         .iter()
         .map(|field| {
             if let Some(Value::String(s)) = map.get(field.name()) {
-                // for new fields in json with inferred type string, parse to check if timestamp value
-                if field.data_type() == &DataType::Utf8
-                    && !ignore_field_names.contains(field.name().as_str())
+                let field_name = field.name().as_str();
+                // for new fields in json named "time"/"date" or such and having inferred type string,
+                // parse to check if value is timestamp, else use original type information.
+                if TIME_FIELD_NAME_PARTS
+                    .iter()
+                    .any(|part| field_name.to_lowercase().contains(part))
+                    && field.data_type() == &DataType::Utf8
+                    && !ignore_field_names.contains(field_name)
                     && (DateTime::parse_from_rfc3339(s).is_ok()
                         || DateTime::parse_from_rfc2822(s).is_ok())
                 {
