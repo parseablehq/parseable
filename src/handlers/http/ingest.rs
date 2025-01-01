@@ -273,7 +273,8 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use actix_web::test::TestRequest;
-    use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
+    use arrow::datatypes::Int64Type;
+    use arrow_array::{ArrayRef, Float64Array, Int64Array, ListArray, StringArray};
     use arrow_schema::{DataType, Field};
     use serde_json::json;
 
@@ -699,6 +700,86 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+        )
+        .unwrap();
+
+        assert_eq!(rb.num_rows(), 4);
+        assert_eq!(rb.num_columns(), 7);
+        assert_eq!(
+            rb.column_by_name("a").unwrap().as_int64_arr().unwrap(),
+            &Int64Array::from(vec![Some(1), Some(1), Some(1), Some(1)])
+        );
+        assert_eq!(
+            rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
+            &StringArray::from(vec![
+                Some("hello"),
+                Some("hello"),
+                Some("hello"),
+                Some("hello")
+            ])
+        );
+
+        assert_eq!(
+            rb.column_by_name("c_a")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap(),
+            &ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
+                None,
+                None,
+                Some(vec![Some(1i64)]),
+                Some(vec![Some(1)])
+            ])
+        );
+
+        assert_eq!(
+            rb.column_by_name("c_b")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap(),
+            &ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
+                None,
+                None,
+                None,
+                Some(vec![Some(2i64)])
+            ])
+        );
+    }
+
+    #[test]
+    fn arr_obj_with_nested_type_v1() {
+        let json = json!([
+            {
+                "a": 1,
+                "b": "hello",
+            },
+            {
+                "a": 1,
+                "b": "hello",
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": [{"a": 1}]
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": [{"a": 1, "b": 2}]
+            },
+        ]);
+
+        let req = TestRequest::default().to_http_request();
+
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            HashMap::default(),
+            None,
+            None,
+            SchemaVersion::V1,
         )
         .unwrap();
 
