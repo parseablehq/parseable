@@ -115,7 +115,8 @@ pub trait EventFormat: Sized {
         if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
         }
-        new_schema = update_field_type_in_schema(new_schema, None, time_partition, None);
+        new_schema =
+            update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
         let rb = Self::decode(data, new_schema.clone())?;
         let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
         let metadata_arr =
@@ -210,6 +211,7 @@ pub fn update_field_type_in_schema(
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
     time_partition: Option<&String>,
     log_records: Option<&Vec<Value>>,
+    schema_version: SchemaVersion,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
     let existing_field_names = get_existing_field_names(inferred_schema.clone(), existing_schema);
@@ -219,13 +221,15 @@ pub fn update_field_type_in_schema(
         updated_schema = override_existing_timestamp_fields(existing_schema, updated_schema);
     }
 
-    if let Some(log_records) = log_records {
-        for log_record in log_records {
-            updated_schema = update_data_type_to_datetime(
-                updated_schema.clone(),
-                log_record.clone(),
-                &existing_field_names,
-            );
+    if schema_version == SchemaVersion::V1 {
+        if let Some(log_records) = log_records {
+            for log_record in log_records {
+                updated_schema = update_data_type_v1(
+                    updated_schema.clone(),
+                    log_record.clone(),
+                    &existing_field_names,
+                );
+            }
         }
     }
 
@@ -252,7 +256,9 @@ pub fn update_field_type_in_schema(
     Arc::new(Schema::new(new_schema))
 }
 
-pub fn update_data_type_to_datetime(
+// From Schema v1 onwards, convert json fields with name containig "date"/"time" and having
+// a string value parseable into timestamp as timestamp type and all numbers as float64
+pub fn update_data_type_v1(
     schema: Arc<Schema>,
     log_record: Value,
     ignore_field_names: &HashSet<String>,
@@ -264,28 +270,37 @@ pub fn update_data_type_to_datetime(
         .fields()
         .iter()
         .map(|field| {
-            if let Some(Value::String(s)) = map.get(field.name()) {
-                let field_name = field.name().as_str();
+            let field_name = field.name().as_str();
+            match map.get(field.name()) {
                 // for new fields in json named "time"/"date" or such and having inferred type string,
-                // parse to check if value is timestamp, else use original type information.
-                if TIME_FIELD_NAME_PARTS
-                    .iter()
-                    .any(|part| field_name.to_lowercase().contains(part))
-                    && field.data_type() == &DataType::Utf8
-                    && !ignore_field_names.contains(field_name)
-                    && (DateTime::parse_from_rfc3339(s).is_ok()
-                        || DateTime::parse_from_rfc2822(s).is_ok())
+                // that can be parsed as timestamp, use the timestamp type.
+                Some(Value::String(s))
+                    if TIME_FIELD_NAME_PARTS
+                        .iter()
+                        .any(|part| field_name.to_lowercase().contains(part))
+                        && field.data_type() == &DataType::Utf8
+                        && !ignore_field_names.contains(field_name)
+                        && (DateTime::parse_from_rfc3339(s).is_ok()
+                            || DateTime::parse_from_rfc2822(s).is_ok()) =>
                 {
                     // Update the field's data type to Timestamp
-                    return Field::new(
+                    Field::new(
                         field.name().clone(),
                         DataType::Timestamp(TimeUnit::Millisecond, None),
                         true,
-                    );
+                    )
                 }
+                // for new fields in json with inferred type number, cast as float64
+                Some(Value::Number(_))
+                    if field.data_type().is_numeric()
+                        && !ignore_field_names.contains(field_name) =>
+                {
+                    // Update the field's data type to Float64
+                    Field::new(field.name().clone(), DataType::Float64, true)
+                }
+                // Return the original field if no update is needed
+                _ => Field::new(field.name(), field.data_type().clone(), true),
             }
-            // Return the original field if no update is needed
-            Field::new(field.name(), field.data_type().clone(), true)
         })
         .collect();
 

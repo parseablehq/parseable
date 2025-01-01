@@ -74,11 +74,12 @@ impl EventFormat for Event {
             Ok(schema) => schema,
             Err(_) => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
                 Ok(mut infer_schema) => {
-                    let new_infer_schema = super::super::format::update_field_type_in_schema(
+                    let new_infer_schema = super::update_field_type_in_schema(
                         Arc::new(infer_schema),
                         Some(stream_schema),
                         time_partition,
                         Some(&value_arr),
+                        schema_version,
                     );
                     infer_schema = Schema::new(new_infer_schema.fields().clone());
                     if let Err(err) = Schema::try_merge(vec![
