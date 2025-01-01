@@ -272,7 +272,8 @@ pub fn update_data_type_to_datetime(
                 // for new fields in json with inferred type string, parse to check if timestamp value
                 if field.data_type() == &DataType::Utf8
                     && !ignore_field_names.contains(field.name().as_str())
-                    && DateTime::parse_from_rfc3339(s).is_ok()
+                    && (DateTime::parse_from_rfc3339(s).is_ok()
+                        || DateTime::parse_from_rfc2822(s).is_ok())
                 {
                     // Update the field's data type to Timestamp
                     return Field::new(
