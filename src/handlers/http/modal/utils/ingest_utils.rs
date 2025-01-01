@@ -28,8 +28,8 @@ use serde_json::Value;
 
 use crate::{
     event::{
-        self,
         format::{self, EventFormat},
+        Event,
     },
     handlers::{
         http::{ingest::PostError, kinesis},
@@ -82,7 +82,7 @@ pub async fn push_logs(
     )?;
 
     for value in data {
-        let size = serde_json::to_vec(&value).unwrap().len(); // string length need not be the same as byte length
+        let origin_size = serde_json::to_vec(&value).unwrap().len() as u64; // string length need not be the same as byte length
         let parsed_timestamp = match time_partition.as_ref() {
             Some(time_partition) => get_parsed_timestamp(&value, time_partition)?,
             _ => Utc::now().naive_utc(),
@@ -94,83 +94,38 @@ pub async fn push_logs(
             }
             None => HashMap::new(),
         };
-
-        create_process_record_batch(
-            stream_name,
+        let schema = STREAM_INFO
+            .read()
+            .unwrap()
+            .get(stream_name)
+            .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
+            .schema
+            .clone();
+        let (rb, is_first_event) = into_event_batch(
             req,
-            value,
+            &value,
+            schema,
             static_schema_flag.as_ref(),
             time_partition.as_ref(),
             schema_version,
+        )?;
+
+        Event {
+            rb,
+            stream_name: stream_name.to_owned(),
+            origin_format: "json",
+            origin_size,
+            is_first_event,
             parsed_timestamp,
+            time_partition: time_partition.clone(),
             custom_partition_values,
-            size as u64,
-        )
+            stream_type: StreamType::UserDefined,
+        }
+        .process()
         .await?;
     }
 
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn create_process_record_batch(
-    stream_name: &str,
-    req: &HttpRequest,
-    value: Value,
-    static_schema_flag: Option<&String>,
-    time_partition: Option<&String>,
-    schema_version: SchemaVersion,
-    parsed_timestamp: NaiveDateTime,
-    custom_partition_values: HashMap<String, String>,
-    origin_size: u64,
-) -> Result<(), PostError> {
-    let (rb, is_first_event) = get_stream_schema(
-        stream_name,
-        req,
-        &value,
-        static_schema_flag,
-        time_partition,
-        schema_version,
-    )?;
-    event::Event {
-        rb,
-        stream_name: stream_name.to_owned(),
-        origin_format: "json",
-        origin_size,
-        is_first_event,
-        parsed_timestamp,
-        time_partition: time_partition.cloned(),
-        custom_partition_values,
-        stream_type: StreamType::UserDefined,
-    }
-    .process()
-    .await?;
-
-    Ok(())
-}
-
-pub fn get_stream_schema(
-    stream_name: &str,
-    req: &HttpRequest,
-    body: &Value,
-    static_schema_flag: Option<&String>,
-    time_partition: Option<&String>,
-    schema_version: SchemaVersion,
-) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let hash_map = STREAM_INFO.read().unwrap();
-    let schema = hash_map
-        .get(stream_name)
-        .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
-        .schema
-        .clone();
-    into_event_batch(
-        req,
-        body,
-        schema,
-        static_schema_flag,
-        time_partition,
-        schema_version,
-    )
 }
 
 pub fn into_event_batch(
