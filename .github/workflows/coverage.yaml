@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - main
+  check_run:
 
 name: Lint, Test and Coverage Report
 jobs:
