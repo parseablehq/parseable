@@ -82,7 +82,10 @@ pub async fn push_logs(
 
     for value in data {
         let size = serde_json::to_vec(&value).unwrap().len(); // string length need not be the same as byte length
-        let parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref());
+        let parsed_timestamp = match get_parsed_timestamp(&value, time_partition.as_ref()) {
+            Ok(parsed) => parsed,
+            _ => Utc::now().naive_utc(),
+        };
         let custom_partition_values = match custom_partition.as_ref() {
             Some(custom_partition) => {
                 let custom_partitions = custom_partition.split(',').collect_vec();
@@ -209,15 +212,67 @@ pub fn get_custom_partition_values(
     custom_partition_values
 }
 
-pub fn get_parsed_timestamp(body: &Value, time_partition: Option<&String>) -> NaiveDateTime {
-    let body_timestamp = body.get(time_partition.unwrap());
-    let parsed_timestamp = body_timestamp
-        .unwrap()
-        .to_owned()
-        .as_str()
-        .unwrap()
-        .parse::<DateTime<Utc>>()
-        .unwrap()
-        .naive_utc();
-    parsed_timestamp
+#[derive(Debug, thiserror::Error)]
+enum TimePartitionError {
+    #[error("Time Partition not known")]
+    NoTimepartition,
+    #[error("Field for time Partition not present in JSON")]
+    MissingField,
+    #[error("Field for time Partition couldn't be parsed as Datetime")]
+    Serde(#[from] serde_json::Error),
+}
+
+fn get_parsed_timestamp(
+    body: &Value,
+    time_partition: Option<&String>,
+) -> Result<NaiveDateTime, TimePartitionError> {
+    let time_partition = time_partition.ok_or(TimePartitionError::NoTimepartition)?;
+    let current_time = body
+        .get(time_partition)
+        .ok_or(TimePartitionError::MissingField)?;
+    let parsed_time: DateTime<Utc> = serde_json::from_value(current_time.clone())?;
+
+    Ok(parsed_time.naive_utc())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn parse_time_parition_from_value() {
+        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
+        let parsed = get_parsed_timestamp(&json, Some("timestamp".to_owned()).as_ref());
+
+        let expected = NaiveDateTime::from_str("2025-05-15T15:30:00").unwrap();
+        assert_eq!(parsed.unwrap(), expected);
+    }
+
+    #[test]
+    fn no_time_parition_provided() {
+        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
+        let parsed = get_parsed_timestamp(&json, None);
+
+        matches!(parsed, Err(TimePartitionError::NoTimepartition));
+    }
+
+    #[test]
+    fn time_parition_not_in_json() {
+        let json = json!({"data": "2025-05-15T15:30:00Z"});
+        let parsed = get_parsed_timestamp(&json, None);
+
+        matches!(parsed, Err(TimePartitionError::MissingField));
+    }
+
+    #[test]
+    fn time_parition_not_parseable_as_datetime() {
+        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
+        let parsed = get_parsed_timestamp(&json, None);
+
+        matches!(parsed, Err(TimePartitionError::Serde(_)));
+    }
 }
