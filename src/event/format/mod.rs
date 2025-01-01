@@ -139,20 +139,14 @@ pub trait EventFormat: Sized {
         if static_schema_flag.is_none() {
             return true;
         }
-        for (field_name, field) in new_schema
-            .fields()
-            .iter()
-            .map(|field| (field.name().to_owned(), field.clone()))
-            .collect::<HashMap<String, Arc<Field>>>()
-        {
-            if let Some(storage_field) = storage_schema.get(&field_name) {
-                if field_name != *storage_field.name() {
-                    return false;
-                }
-                if field.data_type() != storage_field.data_type() {
-                    return false;
-                }
-            } else {
+        for field in new_schema.fields() {
+            let Some(storage_field) = storage_schema.get(field.name()) else {
+                return false;
+            };
+            if field.name() != storage_field.name() {
+                return false;
+            }
+            if field.data_type() != storage_field.data_type() {
                 return false;
             }
         }
