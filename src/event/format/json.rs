@@ -72,38 +72,32 @@ impl EventFormat for Event {
         let mut is_first = false;
         let schema = match derive_arrow_schema(stream_schema, fields) {
             Ok(schema) => schema,
-            Err(_) => match infer_json_schema_from_iterator(value_arr.iter().map(Ok)) {
-                Ok(mut infer_schema) => {
-                    let new_infer_schema = super::update_field_type_in_schema(
-                        Arc::new(infer_schema),
-                        Some(stream_schema),
-                        time_partition,
-                        Some(&value_arr),
-                        schema_version,
-                    );
-                    infer_schema = Schema::new(new_infer_schema.fields().clone());
-                    if let Err(err) = Schema::try_merge(vec![
-                        Schema::new(stream_schema.values().cloned().collect::<Fields>()),
-                        infer_schema.clone(),
-                    ]) {
-                        return Err(anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err));
-                    }
-                    is_first = true;
-                    infer_schema
-                        .fields
-                        .iter()
-                        .filter(|field| !field.data_type().is_null())
-                        .cloned()
-                        .sorted_by(|a, b| a.name().cmp(b.name()))
-                        .collect()
-                }
-                Err(err) => {
-                    return Err(anyhow!(
-                        "Could not infer schema for this event due to err {:?}",
-                        err
-                    ))
-                }
-            },
+            Err(_) => {
+                let mut infer_schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok))
+                    .map_err(|err| {
+                        anyhow!("Could not infer schema for this event due to err {:?}", err)
+                    })?;
+                let new_infer_schema = super::update_field_type_in_schema(
+                    Arc::new(infer_schema),
+                    Some(stream_schema),
+                    time_partition,
+                    Some(&value_arr),
+                    schema_version,
+                );
+                infer_schema = Schema::new(new_infer_schema.fields().clone());
+                Schema::try_merge(vec![
+                    Schema::new(stream_schema.values().cloned().collect::<Fields>()),
+                    infer_schema.clone(),
+                ]).map_err(|err| anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err))?;
+                is_first = true;
+                infer_schema
+                    .fields
+                    .iter()
+                    .filter(|field| !field.data_type().is_null())
+                    .cloned()
+                    .sorted_by(|a, b| a.name().cmp(b.name()))
+                    .collect()
+            }
         };
 
         if static_schema_flag.is_none()
