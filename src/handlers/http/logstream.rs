@@ -47,7 +47,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderName, HeaderValue};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::num::NonZeroU32;
 use std::str::FromStr;
@@ -113,7 +113,7 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
 
     let mut schema = Arc::new(infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap());
     for log_record in log_records {
-        schema = override_data_type(schema, log_record, &HashSet::new(), SchemaVersion::V1);
+        schema = override_data_type(schema, log_record, SchemaVersion::V1);
     }
     Ok((web::Json(schema), StatusCode::OK))
 }

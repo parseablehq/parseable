@@ -224,12 +224,8 @@ pub fn update_field_type_in_schema(
 
     if let Some(log_records) = log_records {
         for log_record in log_records {
-            updated_schema = override_data_type(
-                updated_schema.clone(),
-                log_record.clone(),
-                &existing_field_names,
-                schema_version,
-            );
+            updated_schema =
+                override_data_type(updated_schema.clone(), log_record.clone(), schema_version);
         }
     }
 
@@ -261,7 +257,6 @@ pub fn update_field_type_in_schema(
 pub fn override_data_type(
     inferred_schema: Arc<Schema>,
     log_record: Value,
-    ignore_field_names: &HashSet<String>,
     schema_version: SchemaVersion,
 ) -> Arc<Schema> {
     let Value::Object(map) = log_record else {
@@ -281,7 +276,6 @@ pub fn override_data_type(
                         .iter()
                         .any(|part| field_name.to_lowercase().contains(part))
                         && field.data_type() == &DataType::Utf8
-                        && !ignore_field_names.contains(field_name)
                         && (DateTime::parse_from_rfc3339(s).is_ok()
                             || DateTime::parse_from_rfc2822(s).is_ok()) =>
                 {
@@ -293,10 +287,7 @@ pub fn override_data_type(
                     )
                 }
                 // in V1 for new fields in json with inferred type number, cast as float64.
-                (SchemaVersion::V1, Some(Value::Number(_)))
-                    if field.data_type().is_numeric()
-                        && !ignore_field_names.contains(field_name) =>
-                {
+                (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_numeric() => {
                     // Update the field's data type to Float64
                     Field::new(field_name, DataType::Float64, true)
                 }
