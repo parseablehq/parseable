@@ -109,7 +109,7 @@ impl EventFormat for Event {
         if static_schema_flag.is_none()
             && value_arr
                 .iter()
-                .any(|value| fields_mismatch(&schema, value))
+                .any(|value| fields_mismatch(&schema, value, schema_version))
         {
             return Err(anyhow!(
                 "Could not process this event due to mismatch in datatype"
@@ -170,7 +170,7 @@ fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a s
     Ok(keys)
 }
 
-fn fields_mismatch(schema: &[Arc<Field>], body: &Value) -> bool {
+fn fields_mismatch(schema: &[Arc<Field>], body: &Value, schema_version: SchemaVersion) -> bool {
     for (name, val) in body.as_object().expect("body is of object variant") {
         if val.is_null() {
             continue;
@@ -178,21 +178,22 @@ fn fields_mismatch(schema: &[Arc<Field>], body: &Value) -> bool {
         let Some(field) = get_field(schema, name) else {
             return true;
         };
-        if !valid_type(field.data_type(), val) {
+        if !valid_type(field.data_type(), val, schema_version) {
             return true;
         }
     }
     false
 }
 
-fn valid_type(data_type: &DataType, value: &Value) -> bool {
+fn valid_type(data_type: &DataType, value: &Value, schema_version: SchemaVersion) -> bool {
     match data_type {
         DataType::Boolean => value.is_boolean(),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => value.is_i64(),
         DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => value.is_u64(),
         DataType::Float16 | DataType::Float32 => value.is_f64(),
         // All numbers can be cast as Float64 from schema version v1
-        DataType::Float64 => value.is_number(),
+        DataType::Float64 if schema_version == SchemaVersion::V1 => value.is_number(),
+        DataType::Float64 if schema_version != SchemaVersion::V1 => value.is_f64(),
         DataType::Utf8 => value.is_string(),
         DataType::List(field) => {
             let data_type = field.data_type();
@@ -201,7 +202,7 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
                     if elem.is_null() {
                         continue;
                     }
-                    if !valid_type(data_type, elem) {
+                    if !valid_type(data_type, elem, schema_version) {
                         return false;
                     }
                 }
@@ -219,7 +220,7 @@ fn valid_type(data_type: &DataType, value: &Value) -> bool {
                         if value.is_null() {
                             continue;
                         }
-                        if !valid_type(field.data_type(), value) {
+                        if !valid_type(field.data_type(), value, schema_version) {
                             return false;
                         }
                     } else {
