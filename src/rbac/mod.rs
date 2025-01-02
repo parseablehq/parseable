@@ -33,6 +33,7 @@ use self::map::SessionKey;
 use self::role::{Permission, RoleBuilder};
 use self::user::UserType;
 
+#[derive(PartialEq)]
 pub enum Response {
     Authorized,
     UnAuthorized,
