@@ -16,151 +16,56 @@
  *
  */
 
-use arrow_array::cast::as_string_array;
-use arrow_array::RecordBatch;
-use arrow_schema::DataType;
+use actix_web::http::header::ContentType;
+use actix_web::web::Json;
+use actix_web::{FromRequest, HttpRequest};
+use alerts_utils::{evaluate_alert, user_auth_for_query};
 use async_trait::async_trait;
-use datafusion::arrow::compute::kernels::cast;
-use datafusion::arrow::datatypes::Schema;
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use std::fmt;
+use chrono::Utc;
+use http::StatusCode;
+use itertools::Itertools;
+use once_cell::sync::Lazy;
+use serde_json::Error as SerdeError;
+use std::collections::{HashMap, HashSet};
+use std::fmt::{self, Display};
+use std::future::Future;
+use std::pin::Pin;
+use tokio::sync::oneshot::{Receiver, Sender};
+use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
+use tracing::{trace, warn};
 
-pub mod parser;
-pub mod rule;
+pub mod alerts_utils;
 pub mod target;
 
-use crate::metrics::ALERTS_STATES;
 use crate::option::CONFIG;
-use crate::utils::arrow::get_field;
-use crate::utils::uid;
-use crate::{storage, utils};
+use crate::query::QUERY_SESSION;
+use crate::rbac::map::SessionKey;
+use crate::storage;
+use crate::storage::ObjectStorageError;
+use crate::sync::schedule_alert_task;
+use crate::utils::time::TimeRange;
+use crate::utils::{get_hash, uid};
 
-pub use self::rule::Rule;
 use self::target::Target;
 
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+// these types describe the scheduled task for an alert
+pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
+pub type ScheduledTasks = RwLock<HashMap<String, ScheduledTaskHandlers>>;
+
+pub static ALERTS: Lazy<Alerts> = Lazy::new(Alerts::default);
+
+#[derive(Debug, Default)]
 pub struct Alerts {
-    pub version: AlertVerison,
-    pub alerts: Vec<Alert>,
+    pub alerts: RwLock<Vec<AlertConfig>>,
+    pub scheduled_tasks: ScheduledTasks,
 }
 
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum AlertVerison {
     #[default]
     V1,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Alert {
-    #[serde(default = "crate::utils::uid::gen")]
-    pub id: uid::Uid,
-    pub name: String,
-    #[serde(flatten)]
-    pub message: Message,
-    pub rule: Rule,
-    pub targets: Vec<Target>,
-}
-
-impl Alert {
-    pub fn check_alert(&self, stream_name: &str, events: RecordBatch) {
-        let resolves = self.rule.resolves(events.clone());
-
-        for (index, state) in resolves.into_iter().enumerate() {
-            match state {
-                AlertState::Listening | AlertState::Firing => (),
-                alert_state @ (AlertState::SetToFiring | AlertState::Resolved) => {
-                    let context = self.get_context(
-                        stream_name.to_owned(),
-                        alert_state,
-                        &self.rule,
-                        events.slice(index, 1),
-                    );
-                    ALERTS_STATES
-                        .with_label_values(&[
-                            context.stream.as_str(),
-                            context.alert_info.alert_name.as_str(),
-                            context.alert_info.alert_state.to_string().as_str(),
-                        ])
-                        .inc();
-                    for target in &self.targets {
-                        target.call(context.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    fn get_context(
-        &self,
-        stream_name: String,
-        alert_state: AlertState,
-        rule: &Rule,
-        event_row: RecordBatch,
-    ) -> Context {
-        let deployment_instance = format!(
-            "{}://{}",
-            CONFIG.parseable.get_scheme(),
-            CONFIG.parseable.address
-        );
-        let deployment_id = storage::StorageMetadata::global().deployment_id;
-        let deployment_mode = storage::StorageMetadata::global().mode.to_string();
-        let mut additional_labels =
-            serde_json::to_value(rule).expect("rule is perfectly deserializable");
-        utils::json::flatten::flatten_with_parent_prefix(&mut additional_labels, "rule", "_")
-            .expect("can be flattened");
-        Context::new(
-            stream_name,
-            AlertInfo::new(
-                self.name.clone(),
-                self.message.get(event_row),
-                rule.trigger_reason(),
-                alert_state,
-            ),
-            DeploymentInfo::new(deployment_instance, deployment_id, deployment_mode),
-            additional_labels,
-        )
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Message {
-    pub message: String,
-}
-
-impl Message {
-    // checks if message (with a column name) is valid (i.e. the column name is present in the schema)
-    pub fn valid(&self, schema: &Schema, column: &str) -> bool {
-        get_field(&schema.fields, column).is_some()
-    }
-
-    pub fn extract_column_names(&self) -> Vec<&str> {
-        // the message can have either no column name ({column_name} not present) or any number of {column_name} present
-        Regex::new(r"\{(.*?)\}")
-            .unwrap()
-            .captures_iter(self.message.as_str())
-            .map(|cap| cap.get(1).unwrap().as_str())
-            .collect()
-    }
-
-    /// Returns the message with the column names replaced with the values in the column.
-    fn get(&self, event: RecordBatch) -> String {
-        let mut replace_message = self.message.clone();
-        for column in self.extract_column_names() {
-            if let Some(value) = event.column_by_name(column) {
-                let arr = cast(value, &DataType::Utf8).unwrap();
-                let value = as_string_array(&arr).value(0);
-
-                replace_message =
-                    replace_message.replace(&format!("{{{column}}}"), value.to_string().as_str());
-            }
-        }
-        replace_message
-    }
 }
 
 #[async_trait]
@@ -170,65 +75,64 @@ pub trait CallableTarget {
 
 #[derive(Debug, Clone)]
 pub struct Context {
-    stream: String,
     alert_info: AlertInfo,
     deployment_info: DeploymentInfo,
-    additional_labels: serde_json::Value,
+    message: String,
 }
 
 impl Context {
-    pub fn new(
-        stream: String,
-        alert_info: AlertInfo,
-        deployment_info: DeploymentInfo,
-        additional_labels: serde_json::Value,
-    ) -> Self {
+    pub fn new(alert_info: AlertInfo, deployment_info: DeploymentInfo, message: String) -> Self {
         Self {
-            stream,
             alert_info,
             deployment_info,
-            additional_labels,
+            message,
         }
     }
 
     fn default_alert_string(&self) -> String {
         format!(
-            "{} triggered on {}\nMessage: {}\nFailing Condition: {}",
+            "AlertName: {}, Triggered TimeStamp: {}, Severity: {}, Message: {}",
             self.alert_info.alert_name,
-            self.stream,
-            self.alert_info.message,
-            self.alert_info.reason
+            Utc::now().to_rfc3339(),
+            self.alert_info.severity,
+            self.message
         )
     }
 
     fn default_resolved_string(&self) -> String {
+        format!("{} is now resolved ", self.alert_info.alert_name)
+    }
+
+    fn default_silenced_string(&self) -> String {
         format!(
-            "{} on {} is now resolved ",
-            self.alert_info.alert_name, self.stream
+            "Notifications for {} have been silenced ",
+            self.alert_info.alert_name
         )
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct AlertInfo {
+    alert_id: String,
     alert_name: String,
-    message: String,
-    reason: String,
+    // message: String,
+    // reason: String,
     alert_state: AlertState,
+    severity: String,
 }
 
 impl AlertInfo {
     pub fn new(
+        alert_id: String,
         alert_name: String,
-        message: String,
-        reason: String,
         alert_state: AlertState,
+        severity: String,
     ) -> Self {
         Self {
+            alert_id,
             alert_name,
-            message,
-            reason,
             alert_state,
+            severity,
         }
     }
 }
@@ -254,27 +158,625 @@ impl DeploymentInfo {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum AlertState {
-    Listening,
-    SetToFiring,
-    Firing,
-    Resolved,
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum AlertType {
+    Threshold,
 }
 
-impl Default for AlertState {
-    fn default() -> Self {
-        Self::Listening
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum AlertOperator {
+    #[serde(rename = ">")]
+    GreaterThan,
+    #[serde(rename = "<")]
+    LessThan,
+    #[serde(rename = "=")]
+    EqualTo,
+    #[serde(rename = "<>")]
+    NotEqualTo,
+    #[serde(rename = ">=")]
+    GreaterThanEqualTo,
+    #[serde(rename = "<=")]
+    LessThanEqualTo,
+    #[serde(rename = "like")]
+    Like,
+    #[serde(rename = "not like")]
+    NotLike,
+}
+
+impl Display for AlertOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AlertOperator::GreaterThan => write!(f, ">"),
+            AlertOperator::LessThan => write!(f, "<"),
+            AlertOperator::EqualTo => write!(f, "="),
+            AlertOperator::NotEqualTo => write!(f, "<>"),
+            AlertOperator::GreaterThanEqualTo => write!(f, ">="),
+            AlertOperator::LessThanEqualTo => write!(f, "<="),
+            AlertOperator::Like => write!(f, "like"),
+            AlertOperator::NotLike => write!(f, "not like"),
+        }
     }
 }
 
-impl fmt::Display for AlertState {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            AlertState::Listening => write!(f, "Listening"),
-            AlertState::SetToFiring => write!(f, "SetToFiring"),
-            AlertState::Firing => write!(f, "Firing"),
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum Aggregate {
+    Avg,
+    Count,
+    Min,
+    Max,
+    Sum,
+}
+
+impl Display for Aggregate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Aggregate::Avg => write!(f, "Avg"),
+            Aggregate::Count => write!(f, "Count"),
+            Aggregate::Min => write!(f, "Min"),
+            Aggregate::Max => write!(f, "Max"),
+            Aggregate::Sum => write!(f, "Sum"),
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct OperationConfig {
+    pub column: String,
+    pub operator: Option<String>,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterConfig {
+    pub conditions: Vec<Conditions>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct ConditionConfig {
+    pub column: String,
+    pub operator: AlertOperator,
+    pub value: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub enum Conditions {
+    AND((ConditionConfig, ConditionConfig)),
+    OR((ConditionConfig, ConditionConfig)),
+    Condition(ConditionConfig),
+}
+
+impl Conditions {
+    pub fn generate_filter_message(&self) -> String {
+        match self {
+            Conditions::AND((expr1, expr2)) => {
+                format!(
+                    "[{} {} {} AND {} {} {}]",
+                    expr1.column,
+                    expr1.operator,
+                    expr1.value,
+                    expr2.column,
+                    expr2.operator,
+                    expr2.value
+                )
+            }
+            Conditions::OR((expr1, expr2)) => {
+                format!(
+                    "[{} {} {} OR {} {} {}]",
+                    expr1.column,
+                    expr1.operator,
+                    expr1.value,
+                    expr2.column,
+                    expr2.operator,
+                    expr2.value
+                )
+            }
+            Conditions::Condition(expr) => {
+                format!("[{} {} {}]", expr.column, expr.operator, expr.value)
+            }
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateConfig {
+    pub agg: Aggregate,
+    pub condition_config: Option<Conditions>,
+    pub column: String,
+    pub operator: AlertOperator,
+    pub value: f64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub enum AggregateCondition {
+    AND,
+    OR,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RollingWindow {
+    // x minutes (25m)
+    pub eval_start: String,
+    // should always be "now"
+    pub eval_end: String,
+    // x minutes (5m)
+    pub eval_frequency: u32,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum EvalConfig {
+    RollingWindow(RollingWindow),
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertEval {}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AlertState {
+    Triggered,
+    Silenced,
+    #[default]
+    Resolved,
+}
+
+impl Display for AlertState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AlertState::Triggered => write!(f, "Triggered"),
+            AlertState::Silenced => write!(f, "Silenced"),
             AlertState::Resolved => write!(f, "Resolved"),
         }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Severity {
+    Critical,
+    High,
+    #[default]
+    Medium,
+    Low,
+}
+
+impl Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Severity::Critical => write!(f, "Critical (P0)"),
+            Severity::High => write!(f, "High (P1)"),
+            Severity::Medium => write!(f, "Medium (P2)"),
+            Severity::Low => write!(f, "Low (P3)"),
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertRequest {
+    pub version: AlertVerison,
+    #[serde(default = "Severity::default")]
+    pub severity: Severity,
+    pub title: String,
+    pub query: String,
+    pub alert_type: AlertType,
+    pub aggregate_config: Vec<AggregateConfig>,
+    pub agg_condition: Option<AggregateCondition>,
+    pub eval_type: EvalConfig,
+    pub targets: Vec<Target>,
+}
+
+impl FromRequest for AlertRequest {
+    type Error = actix_web::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
+
+    fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
+        let body = Json::<AlertRequest>::from_request(req, payload);
+        let fut = async move {
+            let body = body.await?.into_inner();
+            Ok(body)
+        };
+
+        Box::pin(fut)
+    }
+}
+
+impl AlertRequest {
+    pub fn modify(self, alert: AlertConfig) -> AlertConfig {
+        AlertConfig {
+            version: self.version,
+            id: alert.id,
+            severity: alert.severity,
+            title: self.title,
+            query: self.query,
+            alert_type: self.alert_type,
+            aggregate_config: self.aggregate_config,
+            agg_condition: self.agg_condition,
+            eval_type: self.eval_type,
+            targets: self.targets,
+            state: AlertState::default(),
+        }
+    }
+}
+
+impl From<AlertRequest> for AlertConfig {
+    fn from(val: AlertRequest) -> AlertConfig {
+        AlertConfig {
+            version: val.version,
+            id: get_hash(Utc::now().timestamp_micros().to_string().as_str()),
+            severity: val.severity,
+            title: val.title,
+            query: val.query,
+            alert_type: val.alert_type,
+            aggregate_config: val.aggregate_config,
+            agg_condition: val.agg_condition,
+            eval_type: val.eval_type,
+            targets: val.targets,
+            state: AlertState::default(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertConfig {
+    pub version: AlertVerison,
+    pub id: String,
+    pub severity: Severity,
+    pub title: String,
+    pub query: String,
+    pub alert_type: AlertType,
+    pub aggregate_config: Vec<AggregateConfig>,
+    pub agg_condition: Option<AggregateCondition>,
+    pub eval_type: EvalConfig,
+    pub targets: Vec<Target>,
+    // for new alerts, state should be resolved
+    #[serde(default = "AlertState::default")]
+    pub state: AlertState,
+}
+
+impl AlertConfig {
+    /// Validate whether the query and the
+    /// aggregate config are correct or not
+    pub async fn validate(&self) -> Result<(), AlertError> {
+        // if agg_conditions limited to two
+        // if multiple conditions, agg_condition should be present
+        if self.aggregate_config.len() > 2 {
+            return Err(AlertError::Metadata(
+                "aggregateConfig can't be more than two",
+            ));
+        }
+
+        if self.aggregate_config.len() > 1 && self.agg_condition.is_none() {
+            return Err(AlertError::Metadata(
+                "aggCondition can't be null with multiple aggregateConfigs",
+            ));
+        }
+
+        let session_state = QUERY_SESSION.state();
+        let raw_logical_plan = session_state.create_logical_plan(&self.query).await?;
+
+        // TODO: Filter tags should be taken care of!!!
+        let time_range = TimeRange::parse_human_time("1m", "now")
+            .map_err(|err| AlertError::CustomError(err.to_string()))?;
+
+        let query = crate::query::Query {
+            raw_logical_plan,
+            time_range,
+            filter_tag: None,
+        };
+
+        // for now proceed in a similar fashion as we do in query
+        // TODO: in case of multiple table query does the selection of time partition make a difference? (especially when the tables don't have overlapping data)
+        let stream_name = if let Some(stream_name) = query.first_table_name() {
+            stream_name
+        } else {
+            return Err(AlertError::CustomError(format!(
+                "Table name not found in query- {}",
+                self.query
+            )));
+        };
+
+        let base_df = query
+            .get_dataframe(stream_name)
+            .await
+            .map_err(|err| AlertError::CustomError(err.to_string()))?;
+
+        warn!("got base_df");
+        // now that we have base_df, verify that it has
+        // columns from aggregate config
+        let mut columns = HashSet::new();
+        for agg_config in &self.aggregate_config {
+            columns.insert(&agg_config.column);
+
+            if let Some(filters) = &agg_config.condition_config {
+                match filters {
+                    Conditions::AND((e1, e2)) => {
+                        columns.insert(&e1.column);
+                        columns.insert(&e2.column);
+                    }
+                    Conditions::OR((e1, e2)) => {
+                        columns.insert(&e1.column);
+                        columns.insert(&e2.column);
+                    }
+                    Conditions::Condition(e1) => {
+                        columns.insert(&e1.column);
+                    }
+                }
+            }
+        }
+
+        warn!("select_columns- {columns:?}");
+
+        base_df.select_columns(columns.iter().map(|c| c.as_str()).collect_vec().as_slice())?;
+        Ok(())
+    }
+
+    pub fn get_eval_frequency(&self) -> u32 {
+        match &self.eval_type {
+            EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_frequency,
+        }
+    }
+
+    fn get_context(&self, alert_state: AlertState) -> Context {
+        let deployment_instance = format!(
+            "{}://{}",
+            CONFIG.parseable.get_scheme(),
+            CONFIG.parseable.address
+        );
+        let deployment_id = storage::StorageMetadata::global().deployment_id;
+        let deployment_mode = storage::StorageMetadata::global().mode.to_string();
+
+        // let additional_labels =
+        //     serde_json::to_value(rule).expect("rule is perfectly deserializable");
+        // let flatten_additional_labels =
+        //     utils::json::flatten::flatten_with_parent_prefix(additional_labels, "rule", "_")
+        //         .expect("can be flattened");
+
+        Context::new(
+            AlertInfo::new(
+                self.id.to_string(),
+                self.title.clone(),
+                alert_state,
+                self.severity.clone().to_string(),
+            ),
+            DeploymentInfo::new(deployment_instance, deployment_id, deployment_mode),
+            String::default(),
+        )
+    }
+
+    pub async fn trigger_notifications(&self, message: String) -> Result<(), AlertError> {
+        let mut context = self.get_context(self.state);
+        context.message = message;
+        for target in &self.targets {
+            target.call(context.clone());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AlertError {
+    #[error("Storage Error: {0}")]
+    ObjectStorage(#[from] ObjectStorageError),
+    #[error("Serde Error: {0}")]
+    Serde(#[from] SerdeError),
+    #[error("Cannot perform this operation: {0}")]
+    Metadata(&'static str),
+    #[error("User is not authorized to run this query")]
+    Unauthorized,
+    #[error("ActixError: {0}")]
+    Error(#[from] actix_web::Error),
+    #[error("DataFusion Error: {0}")]
+    DatafusionError(#[from] datafusion::error::DataFusionError),
+    #[error("Error: {0}")]
+    CustomError(String),
+    #[error("Invalid State Change: {0}")]
+    InvalidStateChange(String),
+}
+
+impl actix_web::ResponseError for AlertError {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::ObjectStorage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Serde(_) => StatusCode::BAD_REQUEST,
+            Self::Metadata(_) => StatusCode::BAD_REQUEST,
+            Self::Unauthorized => StatusCode::BAD_REQUEST,
+            Self::Error(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::DatafusionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::CustomError(_) => StatusCode::BAD_REQUEST,
+            Self::InvalidStateChange(_) => StatusCode::BAD_REQUEST,
+        }
+    }
+
+    fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
+        actix_web::HttpResponse::build(self.status_code())
+            .insert_header(ContentType::plaintext())
+            .body(self.to_string())
+    }
+}
+
+impl Alerts {
+    /// Loads alerts from disk
+    /// spawn scheduled tasks
+    /// Evaluate
+    pub async fn load(&self) -> Result<(), AlertError> {
+        let mut this = vec![];
+        let store = CONFIG.storage().get_object_store();
+        let all_alerts = store.get_alerts().await.unwrap_or_default();
+
+        for alert in all_alerts {
+            if alert.is_empty() {
+                continue;
+            }
+
+            let alert: AlertConfig = serde_json::from_slice(&alert)?;
+
+            let (handle, rx, tx) =
+                schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
+
+            self.update_task(&alert.id, handle, rx, tx).await;
+
+            this.push(alert);
+        }
+
+        let mut s = self.alerts.write().await;
+        s.append(&mut this.clone());
+        drop(s);
+
+        // run eval task once for each alert
+        for alert in this.iter() {
+            evaluate_alert(alert).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Returns a list of alerts that the user has access to (based on query auth)
+    pub async fn list_alerts_for_user(
+        &self,
+        session: SessionKey,
+    ) -> Result<Vec<AlertConfig>, AlertError> {
+        let mut alerts: Vec<AlertConfig> = Vec::new();
+        for alert in self.alerts.read().await.iter() {
+            // filter based on whether the user can execute this query or not
+            let query = &alert.query;
+            if user_auth_for_query(&session, query).await.is_ok() {
+                alerts.push(alert.to_owned());
+            }
+        }
+
+        Ok(alerts)
+    }
+
+    /// Returns a sigle alert that the user has access to (based on query auth)
+    pub async fn get_alert_by_id(&self, id: &str) -> Result<AlertConfig, AlertError> {
+        let read_access = self.alerts.read().await;
+        let alert = read_access.iter().find(|a| a.id == id);
+
+        if let Some(alert) = alert {
+            Ok(alert.clone())
+        } else {
+            Err(AlertError::CustomError(format!(
+                "No alert found for the given ID- {id}"
+            )))
+        }
+    }
+
+    /// Update the in-mem vector of alerts
+    pub async fn update(&self, alert: &AlertConfig) {
+        let mut s = self.alerts.write().await;
+        s.retain(|a| a.id != alert.id);
+        s.push(alert.clone());
+    }
+
+    /// Update the state of alert
+    pub async fn update_state(
+        &self,
+        alert_id: &str,
+        new_state: AlertState,
+        trigger_notif: Option<String>,
+    ) -> Result<(), AlertError> {
+        let store = CONFIG.storage().get_object_store();
+
+        // read and modify alert
+        let mut alert = self.get_alert_by_id(alert_id).await?;
+
+        alert.state = new_state;
+
+        // save to disk
+        store.put_alert(alert_id, &alert).await?;
+
+        // modify in memory
+        let mut writer = self.alerts.write().await;
+        let alert_to_update = writer.iter_mut().find(|alert| alert.id == alert_id);
+        if let Some(alert) = alert_to_update {
+            alert.state = new_state;
+        };
+        drop(writer);
+
+        if trigger_notif.is_some() {
+            alert.trigger_notifications(trigger_notif.unwrap()).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Remove alert and scheduled task from disk and memory
+    pub async fn delete(&self, alert_id: &str) -> Result<(), AlertError> {
+        // delete from memory
+        let read_access = self.alerts.read().await;
+
+        let index = read_access
+            .iter()
+            .enumerate()
+            .find(|(_, alert)| alert.id == alert_id)
+            .to_owned();
+
+        if let Some((index, _)) = index {
+            // drop the read access in order to get exclusive write access
+            drop(read_access);
+            self.alerts.write().await.remove(index);
+            trace!("removed alert from memory");
+        } else {
+            warn!("Alert ID- {alert_id} not found in memory!");
+        }
+        Ok(())
+    }
+
+    /// Get state of alert using alert_id
+    pub async fn get_state(&self, alert_id: &str) -> Result<AlertState, AlertError> {
+        let read_access = self.alerts.read().await;
+        let alert = read_access.iter().find(|a| a.id == alert_id);
+
+        if let Some(alert) = alert {
+            Ok(alert.state)
+        } else {
+            let msg = format!("No alert present for ID- {alert_id}");
+            Err(AlertError::CustomError(msg))
+        }
+    }
+
+    /// Update the scheduled alert tasks in-memory map
+    pub async fn update_task(
+        &self,
+        id: &str,
+        handle: JoinHandle<()>,
+        rx: Receiver<()>,
+        tx: Sender<()>,
+    ) {
+        let mut s = self.scheduled_tasks.write().await;
+        s.remove(id);
+        s.insert(id.to_owned(), (handle, rx, tx));
+    }
+
+    /// Remove a scheduled alert task
+    pub async fn delete_task(&self, alert_id: &str) -> Result<(), AlertError> {
+        let read_access = self.scheduled_tasks.read().await;
+
+        let hashed_object = read_access.iter().find(|(id, _)| *id == alert_id);
+
+        if hashed_object.is_some() {
+            // drop the read access in order to get exclusive write access
+            drop(read_access);
+
+            // now delete from hashmap
+            let removed = self.scheduled_tasks.write().await.remove(alert_id);
+
+            if removed.is_none() {
+                trace!("Unable to remove alert task {alert_id} from hashmap");
+            }
+        } else {
+            trace!("Alert task {alert_id} not found in hashmap");
+        }
+
+        Ok(())
     }
 }

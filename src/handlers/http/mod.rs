@@ -28,6 +28,7 @@ use crate::{option::CONFIG, storage::STREAM_ROOT_DIRECTORY};
 use self::{cluster::get_ingestor_info, query::Query};
 
 pub mod about;
+pub mod alerts;
 pub mod cluster;
 pub mod correlation;
 pub mod health_check;

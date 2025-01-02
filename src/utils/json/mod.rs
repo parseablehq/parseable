@@ -64,23 +64,3 @@ pub fn convert_array_to_object(
     };
     Ok(value_arr)
 }
-
-pub fn convert_to_string(value: &Value) -> Value {
-    match value {
-        Value::Null => Value::String("null".to_owned()),
-        Value::Bool(b) => Value::String(b.to_string()),
-        Value::Number(n) => Value::String(n.to_string()),
-        Value::String(s) => Value::String(s.to_owned()),
-        Value::Array(v) => {
-            let new_vec = v.iter().map(convert_to_string).collect();
-            Value::Array(new_vec)
-        }
-        Value::Object(map) => {
-            let new_map = map
-                .iter()
-                .map(|(k, v)| (k.clone(), convert_to_string(v)))
-                .collect();
-            Value::Object(new_map)
-        }
-    }
-}

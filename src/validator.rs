@@ -18,10 +18,7 @@
 
 use error::HotTierValidationError;
 
-use self::error::{AlertValidationError, StreamNameValidationError, UsernameValidationError};
-use crate::alerts::rule::base::{NumericRule, StringRule};
-use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
-use crate::alerts::{Alerts, Rule};
+use self::error::{StreamNameValidationError, UsernameValidationError};
 use crate::hottier::MIN_STREAM_HOT_TIER_SIZE_BYTES;
 use crate::option::validation::bytes_to_human_size;
 use crate::storage::StreamType;
@@ -32,50 +29,6 @@ const DENIED_NAMES: &[&str] = &[
 ];
 
 const ALLOWED_SPECIAL_CHARS: &[char] = &['-', '_'];
-
-pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
-    let alert_name: Vec<&str> = alerts.alerts.iter().map(|a| a.name.as_str()).collect();
-    let mut alert_name_dedup = alert_name.clone();
-    alert_name_dedup.sort();
-    alert_name_dedup.dedup();
-
-    if alert_name.len() != alert_name_dedup.len() {
-        return Err(AlertValidationError::ExistingName);
-    }
-    for alert in &alerts.alerts {
-        if alert.name.is_empty() {
-            return Err(AlertValidationError::EmptyName);
-        }
-
-        if alert.message.message.is_empty() {
-            return Err(AlertValidationError::EmptyMessage);
-        }
-        if alert.targets.is_empty() {
-            return Err(AlertValidationError::NoTarget);
-        }
-
-        if let Rule::Column(ref column_rule) = alert.rule {
-            match column_rule {
-                ColumnRule::ConsecutiveNumeric(ConsecutiveNumericRule {
-                    base_rule: NumericRule { ref column, .. },
-                    ref state,
-                })
-                | ColumnRule::ConsecutiveString(ConsecutiveStringRule {
-                    base_rule: StringRule { ref column, .. },
-                    ref state,
-                }) => {
-                    if column.is_empty() {
-                        return Err(AlertValidationError::EmptyRuleField);
-                    }
-                    if state.repeats == 0 {
-                        return Err(AlertValidationError::InvalidRuleRepeat);
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
 
 pub fn stream_name(stream_name: &str, stream_type: &str) -> Result<(), StreamNameValidationError> {
     if stream_name.is_empty() {

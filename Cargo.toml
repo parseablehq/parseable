@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 ### apache arrow/datafusion dependencies
+arrow = "53.0.0"
 arrow-schema = { version = "53.0.0", features = ["serde"] }
 arrow-array = { version = "53.0.0" }
 arrow-json = "53.0.0"
@@ -120,7 +121,6 @@ prost-build = "0.13.3"
 [dev-dependencies]
 maplit = "1.0"
 rstest = "0.23.0"
-arrow = "53.0.0"
 
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.12/build.zip"
