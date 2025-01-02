@@ -304,6 +304,7 @@ impl StreamInfo {
                 static_schema
             },
             stream_type: Some(stream_type.to_string()),
+            schema_version: SchemaVersion::V1,
             ..Default::default()
         };
         map.insert(stream_name, metadata);
