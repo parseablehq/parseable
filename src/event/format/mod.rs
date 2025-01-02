@@ -221,15 +221,14 @@ pub fn update_field_type_in_schema(
         updated_schema = override_existing_timestamp_fields(existing_schema, updated_schema);
     }
 
-    if schema_version == SchemaVersion::V1 {
-        if let Some(log_records) = log_records {
-            for log_record in log_records {
-                updated_schema = update_data_type_v1(
-                    updated_schema.clone(),
-                    log_record.clone(),
-                    &existing_field_names,
-                );
-            }
+    if let Some(log_records) = log_records {
+        for log_record in log_records {
+            updated_schema = override_data_type(
+                updated_schema.clone(),
+                log_record.clone(),
+                &existing_field_names,
+                schema_version,
+            );
         }
     }
 
@@ -257,11 +256,12 @@ pub fn update_field_type_in_schema(
 }
 
 // From Schema v1 onwards, convert json fields with name containig "date"/"time" and having
-// a string value parseable into timestamp as timestamp type and all numbers as float64
-pub fn update_data_type_v1(
+// a string value parseable into timestamp as timestamp type and all numbers as float64.
+pub fn override_data_type(
     schema: Arc<Schema>,
     log_record: Value,
     ignore_field_names: &HashSet<String>,
+    schema_version: SchemaVersion,
 ) -> Arc<Schema> {
     let Value::Object(map) = log_record else {
         return schema;
@@ -271,10 +271,10 @@ pub fn update_data_type_v1(
         .iter()
         .map(|field| {
             let field_name = field.name().as_str();
-            match map.get(field.name()) {
-                // for new fields in json named "time"/"date" or such and having inferred type string,
-                // that can be parsed as timestamp, use the timestamp type.
-                Some(Value::String(s))
+            match (schema_version, map.get(field.name())) {
+                // in V1 for new fields in json named "time"/"date" or such and having inferred
+                // type string, that can be parsed as timestamp, use the timestamp type.
+                (SchemaVersion::V1, Some(Value::String(s)))
                     if TIME_FIELD_NAME_PARTS
                         .iter()
                         .any(|part| field_name.to_lowercase().contains(part))
@@ -285,21 +285,21 @@ pub fn update_data_type_v1(
                 {
                     // Update the field's data type to Timestamp
                     Field::new(
-                        field.name().clone(),
+                        field_name,
                         DataType::Timestamp(TimeUnit::Millisecond, None),
                         true,
                     )
                 }
-                // for new fields in json with inferred type number, cast as float64
-                Some(Value::Number(_))
+                // in V1 for new fields in json with inferred type number, cast as float64.
+                (SchemaVersion::V1, Some(Value::Number(_)))
                     if field.data_type().is_numeric()
                         && !ignore_field_names.contains(field_name) =>
                 {
                     // Update the field's data type to Float64
-                    Field::new(field.name().clone(), DataType::Float64, true)
+                    Field::new(field_name, DataType::Float64, true)
                 }
                 // Return the original field if no update is needed
-                _ => Field::new(field.name(), field.data_type().clone(), true),
+                _ => Field::new(field_name, field.data_type().clone(), true),
             }
         })
         .collect();
