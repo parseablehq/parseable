@@ -17,6 +17,8 @@
  */
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use thiserror::Error;
+use tokio::runtime;
+use tokio::runtime::Builder;
 
 pub mod config;
 pub mod processor;
@@ -73,4 +75,14 @@ impl ConnectorError {
             ConnectorError::Fatal(_) | ConnectorError::Auth(_) | ConnectorError::State(_)
         )
     }
+}
+
+pub fn build_runtime(worker_threads: usize, thread_name: &str) -> anyhow::Result<runtime::Runtime> {
+    Builder::new_multi_thread()
+        .enable_all()
+        .thread_name(thread_name)
+        .worker_threads(worker_threads)
+        .max_blocking_threads(worker_threads)
+        .build()
+        .map_err(|e| anyhow::anyhow!(e))
 }

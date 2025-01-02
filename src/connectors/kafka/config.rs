@@ -44,6 +44,16 @@ pub struct KafkaConfig {
     )]
     pub client_id: String,
 
+    #[arg(
+        long = "partition-listener-concurrency",
+        env = "P_KAFKA_PARTITION_LISTENER_CONCURRENCY",
+        value_name = "concurrency",
+        required = false,
+        default_value_t = 1,
+        help = "Number of parallel threads for Kafka partition listeners. Each partition gets processed on a dedicated thread."
+    )]
+    pub partition_listener_concurrency: usize,
+
     #[command(flatten)]
     #[group(id = "consumer", required = false)]
     pub consumer: Option<ConsumerConfig>,
@@ -846,6 +856,8 @@ impl Default for KafkaConfig {
             // Common configuration with standard broker port
             bootstrap_servers: "localhost:9092".to_string(),
             client_id: "parseable-connect".to_string(),
+            // Single threaded listener for all assigned partitions
+            partition_listener_concurrency: 1,
             // Component-specific configurations with production-ready defaults
             consumer: Some(ConsumerConfig::default()),
             producer: Some(ProducerConfig::default()),
