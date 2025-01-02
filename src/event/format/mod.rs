@@ -72,6 +72,7 @@ pub trait EventFormat: Sized {
             schema_version,
         )?;
 
+        // DEFAULT_TAGS_KEY, DEFAULT_METADATA_KEY and DEFAULT_TIMESTAMP_KEY are reserved field names
         if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
             return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
         };
@@ -258,15 +259,15 @@ pub fn update_field_type_in_schema(
 // From Schema v1 onwards, convert json fields with name containig "date"/"time" and having
 // a string value parseable into timestamp as timestamp type and all numbers as float64.
 pub fn override_data_type(
-    schema: Arc<Schema>,
+    inferred_schema: Arc<Schema>,
     log_record: Value,
     ignore_field_names: &HashSet<String>,
     schema_version: SchemaVersion,
 ) -> Arc<Schema> {
     let Value::Object(map) = log_record else {
-        return schema;
+        return inferred_schema;
     };
-    let new_schema: Vec<Field> = schema
+    let updated_schema: Vec<Field> = inferred_schema
         .fields()
         .iter()
         .map(|field| {
@@ -274,6 +275,7 @@ pub fn override_data_type(
             match (schema_version, map.get(field.name())) {
                 // in V1 for new fields in json named "time"/"date" or such and having inferred
                 // type string, that can be parsed as timestamp, use the timestamp type.
+                // NOTE: support even more datetime string formats
                 (SchemaVersion::V1, Some(Value::String(s)))
                     if TIME_FIELD_NAME_PARTS
                         .iter()
@@ -304,5 +306,5 @@ pub fn override_data_type(
         })
         .collect();
 
-    Arc::new(Schema::new(new_schema))
+    Arc::new(Schema::new(updated_schema))
 }
