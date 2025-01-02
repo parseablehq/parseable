@@ -23,7 +23,6 @@ use url::Url;
 
 use crate::{
     kafka::SslProtocol,
-    kafka::SslProtocol,
     oidc::{self, OpenidConfig},
     option::{validation, Compression, Mode},
 };

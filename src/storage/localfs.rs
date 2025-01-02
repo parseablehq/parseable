@@ -297,14 +297,10 @@ impl ObjectStorage for LocalFS {
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
         let ignore_dir = &[
-            
             "lost+found",
-           
             PARSEABLE_ROOT_DIRECTORY,
-           
             USERS_ROOT_DIR,
             CORRELATIONS_ROOT_DIRECTORY,
-        ,
             ALERTS_ROOT_DIRECTORY,
         ];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
@@ -327,12 +323,9 @@ impl ObjectStorage for LocalFS {
 
     async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
         let ignore_dir = &[
-            
             "lost+found",
-           
             PARSEABLE_ROOT_DIRECTORY,
             CORRELATIONS_ROOT_DIRECTORY,
-        ,
             ALERTS_ROOT_DIRECTORY,
         ];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);

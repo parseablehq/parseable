@@ -158,7 +158,7 @@ pub async fn schedule_alert_task(
             scheduler.every((eval_frequency).minutes()).run(move || {
                 let alert_val = alert.clone();
                 async move {
-                    match alerts_utils::evaluate_alert_the_second(&alert_val).await {
+                    match alerts_utils::evaluate_alert(&alert_val).await {
                         Ok(_) => {}
                         Err(err) => error!("Error while evaluation- {err}"),
                     }

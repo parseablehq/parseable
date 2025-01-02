@@ -40,7 +40,7 @@ use crate::{
 };
 
 use super::{
-    Aggregate, AggregateConfig, AlertConfig, AlertError, AlertOperator, AlertState, ALERTS,
+    Aggregate, AlertConfig, AlertError, AlertOperator, AlertState, Conditions, ALERTS
 };
 
 async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, AlertError> {
@@ -95,7 +95,7 @@ pub async fn user_auth_for_query(session_key: &SessionKey, query: &str) -> Resul
 /// collect the results in the end
 ///
 /// check whether notification needs to be triggered or not
-pub async fn evaluate_alert_the_second(alert: &AlertConfig) -> Result<(), AlertError> {
+pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
     trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
     let (start_time, end_time) = match &alert.eval_type {
@@ -141,58 +141,8 @@ pub async fn evaluate_alert_the_second(alert: &AlertConfig) -> Result<(), AlertE
         let mut aggr_expr: Vec<Expr> = vec![];
 
         let filtered_df = if let Some(where_clause) = &agg_config.condition_config {
-            let filter_expr = match where_clause {
-                crate::alerts::Conditions::AND((expr1, expr2)) => {
-                    let mut expr =
-                        Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
-                    for e in [expr1, expr2] {
-                        let ex = match e.operator {
-                            AlertOperator::GreaterThan => col(&e.column).gt(lit(&e.value)),
-                            AlertOperator::LessThan => col(&e.column).lt(lit(&e.value)),
-                            AlertOperator::EqualTo => col(&e.column).eq(lit(&e.value)),
-                            AlertOperator::NotEqualTo => col(&e.column).not_eq(lit(&e.value)),
-                            AlertOperator::GreaterThanEqualTo => {
-                                col(&e.column).gt_eq(lit(&e.value))
-                            }
-                            AlertOperator::LessThanEqualTo => col(&e.column).lt_eq(lit(&e.value)),
-                            AlertOperator::Like => col(&e.column).like(lit(&e.value)),
-                            AlertOperator::NotLike => col(&e.column).not_like(lit(&e.value)),
-                        };
-                        expr = expr.and(ex);
-                    }
-                    expr
-                }
-                crate::alerts::Conditions::OR((expr1, expr2)) => {
-                    let mut expr =
-                        Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
-                    for e in [expr1, expr2] {
-                        let ex = match e.operator {
-                            AlertOperator::GreaterThan => col(&e.column).gt(lit(&e.value)),
-                            AlertOperator::LessThan => col(&e.column).lt(lit(&e.value)),
-                            AlertOperator::EqualTo => col(&e.column).eq(lit(&e.value)),
-                            AlertOperator::NotEqualTo => col(&e.column).not_eq(lit(&e.value)),
-                            AlertOperator::GreaterThanEqualTo => {
-                                col(&e.column).gt_eq(lit(&e.value))
-                            }
-                            AlertOperator::LessThanEqualTo => col(&e.column).lt_eq(lit(&e.value)),
-                            AlertOperator::Like => col(&e.column).like(lit(&e.value)),
-                            AlertOperator::NotLike => col(&e.column).not_like(lit(&e.value)),
-                        };
-                        expr = expr.or(ex);
-                    }
-                    expr
-                }
-                crate::alerts::Conditions::Condition(expr) => match expr.operator {
-                    AlertOperator::GreaterThan => col(&expr.column).gt(lit(&expr.value)),
-                    AlertOperator::LessThan => col(&expr.column).lt(lit(&expr.value)),
-                    AlertOperator::EqualTo => col(&expr.column).eq(lit(&expr.value)),
-                    AlertOperator::NotEqualTo => col(&expr.column).not_eq(lit(&expr.value)),
-                    AlertOperator::GreaterThanEqualTo => col(&expr.column).gt_eq(lit(&expr.value)),
-                    AlertOperator::LessThanEqualTo => col(&expr.column).lt_eq(lit(&expr.value)),
-                    AlertOperator::Like => col(&expr.column).like(lit(&expr.value)),
-                    AlertOperator::NotLike => col(&expr.column).not_like(lit(&expr.value)),
-                },
-            };
+
+            let filter_expr = get_filter_expr(where_clause);
 
             trace!("filter_expr-\n{filter_expr:?}");
 
@@ -266,7 +216,7 @@ pub async fn evaluate_alert_the_second(alert: &AlertConfig) -> Result<(), AlertE
                         .generate_filter_message(),
                 )
             } else {
-                Some(String::new())
+                Some(String::default())
             }
         } else {
             None
@@ -291,7 +241,7 @@ pub async fn evaluate_alert_the_second(alert: &AlertConfig) -> Result<(), AlertE
     if res {
         trace!("ALERT!!!!!!");
 
-        let mut message = String::new();
+        let mut message = String::default();
         for (_, filter_msg, agg_config, final_value) in agg_results {
             if let Some(msg) = filter_msg {
                 message.extend([format!(
@@ -445,35 +395,57 @@ pub async fn evaluate_alert_the_second(alert: &AlertConfig) -> Result<(), AlertE
 //     Ok(())
 // }
 
-fn get_exprs(thresholds: &Vec<AggregateConfig>) -> (Vec<Expr>, Vec<Expr>, Expr) {
-    // for now group by is empty, we can include this later
-    let group_expr: Vec<Expr> = vec![];
-
-    // agg expression
-    let mut aggr_expr: Vec<Expr> = vec![];
-
-    let mut filter_expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
-    for threshold in thresholds {
-        let res = match threshold.operator {
-            AlertOperator::GreaterThan => col(&threshold.column).gt(lit(threshold.value)),
-            AlertOperator::LessThan => col(&threshold.column).lt(lit(threshold.value)),
-            AlertOperator::EqualTo => col(&threshold.column).eq(lit(threshold.value)),
-            AlertOperator::NotEqualTo => col(&threshold.column).not_eq(lit(threshold.value)),
-            AlertOperator::GreaterThanEqualTo => col(&threshold.column).gt_eq(lit(threshold.value)),
-            AlertOperator::LessThanEqualTo => col(&threshold.column).lt_eq(lit(threshold.value)),
-            AlertOperator::Like => col(&threshold.column).like(lit(threshold.value)),
-            AlertOperator::NotLike => col(&threshold.column).not_like(lit(threshold.value)),
-        };
-
-        aggr_expr.push(match threshold.agg {
-            Aggregate::Avg => avg(col(&threshold.column)).alias(&threshold.column),
-            Aggregate::Count => count(col(&threshold.column)).alias(&threshold.column),
-            Aggregate::Min => min(col(&threshold.column)).alias(&threshold.column),
-            Aggregate::Max => max(col(&threshold.column)).alias(&threshold.column),
-            Aggregate::Sum => sum(col(&threshold.column)).alias(&threshold.column),
-        });
-        filter_expr = filter_expr.and(res);
+fn get_filter_expr(where_clause: &Conditions) -> Expr {
+    match where_clause {
+        crate::alerts::Conditions::AND((expr1, expr2)) => {
+            let mut expr =
+                Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
+            for e in [expr1, expr2] {
+                let ex = match e.operator {
+                    AlertOperator::GreaterThan => col(&e.column).gt(lit(&e.value)),
+                    AlertOperator::LessThan => col(&e.column).lt(lit(&e.value)),
+                    AlertOperator::EqualTo => col(&e.column).eq(lit(&e.value)),
+                    AlertOperator::NotEqualTo => col(&e.column).not_eq(lit(&e.value)),
+                    AlertOperator::GreaterThanEqualTo => {
+                        col(&e.column).gt_eq(lit(&e.value))
+                    }
+                    AlertOperator::LessThanEqualTo => col(&e.column).lt_eq(lit(&e.value)),
+                    AlertOperator::Like => col(&e.column).like(lit(&e.value)),
+                    AlertOperator::NotLike => col(&e.column).not_like(lit(&e.value)),
+                };
+                expr = expr.and(ex);
+            }
+            expr
+        }
+        crate::alerts::Conditions::OR((expr1, expr2)) => {
+            let mut expr =
+                Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
+            for e in [expr1, expr2] {
+                let ex = match e.operator {
+                    AlertOperator::GreaterThan => col(&e.column).gt(lit(&e.value)),
+                    AlertOperator::LessThan => col(&e.column).lt(lit(&e.value)),
+                    AlertOperator::EqualTo => col(&e.column).eq(lit(&e.value)),
+                    AlertOperator::NotEqualTo => col(&e.column).not_eq(lit(&e.value)),
+                    AlertOperator::GreaterThanEqualTo => {
+                        col(&e.column).gt_eq(lit(&e.value))
+                    }
+                    AlertOperator::LessThanEqualTo => col(&e.column).lt_eq(lit(&e.value)),
+                    AlertOperator::Like => col(&e.column).like(lit(&e.value)),
+                    AlertOperator::NotLike => col(&e.column).not_like(lit(&e.value)),
+                };
+                expr = expr.or(ex);
+            }
+            expr
+        }
+        crate::alerts::Conditions::Condition(expr) => match expr.operator {
+            AlertOperator::GreaterThan => col(&expr.column).gt(lit(&expr.value)),
+            AlertOperator::LessThan => col(&expr.column).lt(lit(&expr.value)),
+            AlertOperator::EqualTo => col(&expr.column).eq(lit(&expr.value)),
+            AlertOperator::NotEqualTo => col(&expr.column).not_eq(lit(&expr.value)),
+            AlertOperator::GreaterThanEqualTo => col(&expr.column).gt_eq(lit(&expr.value)),
+            AlertOperator::LessThanEqualTo => col(&expr.column).lt_eq(lit(&expr.value)),
+            AlertOperator::Like => col(&expr.column).like(lit(&expr.value)),
+            AlertOperator::NotLike => col(&expr.column).not_like(lit(&expr.value)),
+        },
     }
-
-    (group_expr, aggr_expr, filter_expr)
 }

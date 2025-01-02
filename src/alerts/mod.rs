@@ -19,7 +19,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::Json;
 use actix_web::{FromRequest, HttpRequest};
-use alerts_utils::{evaluate_alert_the_second, user_auth_for_query};
+use alerts_utils::{evaluate_alert, user_auth_for_query};
 use async_trait::async_trait;
 use chrono::Utc;
 use http::StatusCode;
@@ -454,12 +454,10 @@ impl AlertConfig {
             ));
         }
 
-        if self.aggregate_config.len() > 1 {
-            if self.agg_condition.is_none() {
-                return Err(AlertError::Metadata(
-                    "aggCondition can't be null with multiple aggregateConfigs",
-                ));
-            }
+        if self.aggregate_config.len() > 1 && self.agg_condition.is_none() {
+            return Err(AlertError::Metadata(
+                "aggCondition can't be null with multiple aggregateConfigs",
+            ));
         }
 
         let session_state = QUERY_SESSION.state();
@@ -550,7 +548,7 @@ impl AlertConfig {
                 self.severity.clone().to_string(),
             ),
             DeploymentInfo::new(deployment_instance, deployment_id, deployment_mode),
-            String::new(),
+            String::default(),
         )
     }
 
@@ -635,7 +633,7 @@ impl Alerts {
 
         // run eval task once for each alert
         for alert in this.iter() {
-            evaluate_alert_the_second(alert).await?;
+            evaluate_alert(alert).await?;
         }
 
         Ok(())

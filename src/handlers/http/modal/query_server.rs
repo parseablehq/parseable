@@ -16,8 +16,8 @@
  *
  */
 
-use crate::correlation::CORRELATIONS;
 use crate::alerts::ALERTS;
+use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
 use crate::handlers::http::base_path;
 use crate::handlers::http::caching_removed;
