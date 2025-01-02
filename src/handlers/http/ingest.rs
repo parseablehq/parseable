@@ -786,8 +786,8 @@ mod tests {
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 7);
         assert_eq!(
-            rb.column_by_name("a").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from(vec![Some(1), Some(1), Some(1), Some(1)])
+            rb.column_by_name("a").unwrap().as_float64_arr().unwrap(),
+            &Float64Array::from(vec![Some(1.0), Some(1.0), Some(1.0), Some(1.0)])
         );
         assert_eq!(
             rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
@@ -800,13 +800,13 @@ mod tests {
         );
 
         assert_eq!(
-            rb.column_by_name("c_a").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from(vec![None, None, Some(1), Some(1)])
+            rb.column_by_name("c_a").unwrap().as_float64_arr().unwrap(),
+            &Float64Array::from(vec![None, None, Some(1.0), Some(1.0)])
         );
 
         assert_eq!(
-            rb.column_by_name("c_b").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from(vec![None, None, None, Some(2)])
+            rb.column_by_name("c_b").unwrap().as_float64_arr().unwrap(),
+            &Float64Array::from(vec![None, None, None, Some(2.0)])
         );
     }
 }
