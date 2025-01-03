@@ -274,6 +274,7 @@ impl StreamInfo {
         static_schema_flag: String,
         static_schema: HashMap<String, Arc<Field>>,
         stream_type: &str,
+        schema_version: SchemaVersion,
     ) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
@@ -304,7 +305,7 @@ impl StreamInfo {
                 static_schema
             },
             stream_type: Some(stream_type.to_string()),
-            schema_version: SchemaVersion::V1,
+            schema_version,
             ..Default::default()
         };
         map.insert(stream_name, metadata);

@@ -517,6 +517,7 @@ pub async fn create_stream(
                 static_schema_flag.to_string(),
                 static_schema,
                 stream_type,
+                SchemaVersion::V1, // New stream
             );
         }
         Err(err) => {
