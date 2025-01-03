@@ -132,7 +132,6 @@ pub struct ActorLog {
 pub struct RequestLog {
     pub method: String,
     pub path: String,
-    pub host: String,
     pub protocol: String,
     pub headers: HashMap<String, String>,
 }
@@ -201,7 +200,6 @@ impl AuditLogBuilder {
         self.request = RequestLog {
             method: req.method().to_string(),
             path: req.path().to_string(),
-            host: req.uri().host().unwrap_or("").to_owned(),
             protocol: conn.scheme().to_owned(),
             headers: req
                 .headers()
