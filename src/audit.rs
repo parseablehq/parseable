@@ -1,5 +1,6 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
+use crate::about::current;
 use crate::handlers::http::modal::utils::rbac_utils::get_metadata;
 
 use super::option::CONFIG;
@@ -154,7 +155,7 @@ impl Default for ResponseLog {
     }
 }
 
-const OBFUSCATE_HEADERS: [&str; 2] = ["authorization", "cookie"];
+const DROP_HEADERS: [&str; 3] = ["authorization", "cookie", "user-agent"];
 
 pub struct AuditLogBuilder {
     version: AuditLogVersion,
@@ -207,10 +208,8 @@ impl AuditLogBuilder {
                 .headers()
                 .iter()
                 .filter_map(|(name, value)| match name.as_str() {
-                    // NOTE: obfuscate any headers that are a risk to capture
-                    name if OBFUSCATE_HEADERS.contains(&name.to_lowercase().as_str()) => {
-                        Some((name.to_owned(), "*".to_string()))
-                    }
+                    // NOTE: drop headers that are not required
+                    name if DROP_HEADERS.contains(&name.to_lowercase().as_str()) => None,
                     name => {
                         // NOTE: Drop headers that can't be parsed as string
                         value
@@ -238,6 +237,7 @@ impl Drop for AuditLogBuilder {
     fn drop(&mut self) {
         let audit_json = json!({
             "version": self.version as u8,
+            "parseableVersion": current().released_version.to_string(),
             "deploymentId" : self.deployment_id,
             "auditId" : self.audit_id,
             "timestamp" : Utc::now().to_rfc3339(),
@@ -247,6 +247,6 @@ impl Drop for AuditLogBuilder {
             "request" : self.request,
             "response" : self.response,
         });
-        info!(audit = %audit_json)
+        info!(audit = audit_json.to_string())
     }
 }
