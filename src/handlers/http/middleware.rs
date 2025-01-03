@@ -195,7 +195,14 @@ where
 
             // Capture status_code and error information from response
             match &res {
-                Ok(res) => log_builder.response.status_code = res.status().as_u16(),
+                Ok(res) => {
+                    let status = res.status();
+                    log_builder.response.status_code = status.as_u16();
+                    // Use error information from reponse object if an error
+                    if let Some(err) = res.response().error() {
+                        log_builder.set_response_error(err.to_string());
+                    }
+                }
                 Err(err) => log_builder.set_response_error(err.to_string()),
             }
 
