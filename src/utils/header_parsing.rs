@@ -68,6 +68,8 @@ pub enum ParseHeaderError {
     SeperatorInValue(char),
     #[error("Stream name not found in header [x-p-stream]")]
     MissingStreamName,
+    #[error("Log source not found in header [x-p-log-source]")]
+    MissingLogSource,
 }
 
 impl ResponseError for ParseHeaderError {

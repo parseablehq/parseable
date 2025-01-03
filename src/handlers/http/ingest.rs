@@ -26,7 +26,10 @@ use crate::event::{
     format::{self, EventFormat},
 };
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
-use crate::handlers::STREAM_NAME_HEADER_KEY;
+use crate::handlers::{
+    LOG_SOURCE_KEY, LOG_SOURCE_OTEL_LOGS, LOG_SOURCE_OTEL_METRICS, LOG_SOURCE_OTEL_TRACES,
+    STREAM_NAME_HEADER_KEY,
+};
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
@@ -120,6 +123,16 @@ pub async fn handle_otel_logs_ingestion(
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
+
+    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
+    };
+    if log_source.to_str().unwrap() != LOG_SOURCE_OTEL_LOGS {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Please use x-p-log-source: otel-logs for ingesting otel logs"
+        )));
+    }
+
     let stream_name = stream_name.to_str().unwrap().to_owned();
     create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
@@ -144,6 +157,14 @@ pub async fn handle_otel_metrics_ingestion(
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
+    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
+    };
+    if log_source.to_str().unwrap() != LOG_SOURCE_OTEL_METRICS {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Please use x-p-log-source: otel-metrics for ingesting otel metrics"
+        )));
+    }
     let stream_name = stream_name.to_str().unwrap().to_owned();
     create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
@@ -168,6 +189,15 @@ pub async fn handle_otel_traces_ingestion(
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
+
+    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
+    };
+    if log_source.to_str().unwrap() != LOG_SOURCE_OTEL_TRACES {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Please use x-p-log-source: otel-traces for ingesting otel traces"
+        )));
+    }
     let stream_name = stream_name.to_str().unwrap().to_owned();
     create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
 
