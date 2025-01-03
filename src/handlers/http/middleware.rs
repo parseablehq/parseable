@@ -139,11 +139,8 @@ where
 
          ## Section start */
         let mut stream_name = None;
-        if let Some((_, kinesis_common_attributes)) = req
-            .request()
-            .headers()
-            .iter()
-            .find(|&(key, _)| key == KINESIS_COMMON_ATTRIBUTES_KEY)
+        if let Some(kinesis_common_attributes) =
+            req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
         {
             let attribute_value: &str = kinesis_common_attributes.to_str().unwrap();
             let message: Message = serde_json::from_str(attribute_value).unwrap();
@@ -159,14 +156,12 @@ where
                 HeaderName::from_static(LOG_SOURCE_KEY),
                 header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
             );
-            stream_name = Some(message.common_attributes.x_p_stream);
-        }
-
-        if let Some(stream) = req.match_info().get("logstream") {
-            stream_name = Some(stream.to_owned());
+            stream_name.replace(message.common_attributes.x_p_stream);
+        } else if let Some(stream) = req.match_info().get("logstream") {
+            stream_name.replace(stream.to_owned());
         } else if let Some(value) = req.headers().get(STREAM_NAME_HEADER_KEY) {
             if let Ok(stream) = value.to_str() {
-                stream_name = Some(stream.to_owned())
+                stream_name.replace(stream.to_owned());
             }
         }
 
@@ -223,11 +218,7 @@ pub fn auth_stream_context(
     let creds = extract_session_key(req);
     let mut stream = req.match_info().get("logstream");
     if stream.is_none() {
-        if let Some((_, stream_name)) = req
-            .headers()
-            .iter()
-            .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-        {
+        if let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) {
             stream = Some(stream_name.to_str().unwrap());
         }
     }

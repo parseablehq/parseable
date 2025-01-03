@@ -160,10 +160,10 @@ const DROP_HEADERS: [&str; 4] = ["authorization", "cookie", "user-agent", "x-p-s
 
 pub struct AuditLogBuilder {
     version: AuditLogVersion,
-    pub deployment_id: Ulid,
+    deployment_id: Ulid,
     audit_id: Ulid,
     start_time: DateTime<Utc>,
-    pub stream: String,
+    stream: String,
     pub actor: ActorLog,
     pub request: RequestLog,
     pub response: ResponseLog,
@@ -198,7 +198,23 @@ impl AuditLogBuilder {
     }
 
     pub fn update_from_http(&mut self, req: &mut ServiceRequest) {
-        let (username, authorization_method) = get_auth_details(req);
+        let mut username = "Unknown".to_owned();
+        let mut authorization_method = "None".to_owned();
+
+        // Extract authorization details from request, either from basic auth
+        // header or cookie, else use default value.
+        if let Ok(creds) = req.extract::<BasicAuth>().into_inner() {
+            username = creds.user_id().trim().to_owned();
+            authorization_method = "Basic Auth".to_owned();
+        } else if let Some(cookie) = req.cookie("session") {
+            authorization_method = "Session Cookie".to_owned();
+            if let Some(user_id) = Ulid::from_string(cookie.value())
+                .ok()
+                .and_then(|ulid| Users.get_username_from_session(&SessionKey::SessionId(ulid)))
+            {
+                username = user_id;
+            }
+        }
 
         let conn = req.connection_info();
         self.request = RequestLog {
@@ -233,27 +249,6 @@ impl AuditLogBuilder {
             authorization_method,
         }
     }
-}
-
-fn get_auth_details(req: &mut ServiceRequest) -> (String, String) {
-    let mut username = "Unknown".to_owned();
-    let mut auth_method = "None".to_owned();
-
-    if let Ok(creds) = req.extract::<BasicAuth>().into_inner() {
-        return (creds.user_id().trim().to_owned(), "Basic Auth".to_owned());
-    }
-
-    if let Some(cookie) = req.cookie("session") {
-        auth_method = "Session Cookie".to_owned();
-        if let Some(user_id) = Ulid::from_string(cookie.value())
-            .ok()
-            .and_then(|ulid| Users.get_username_from_session(&SessionKey::SessionId(ulid)))
-        {
-            username = user_id;
-        }
-    }
-
-    (username, auth_method)
 }
 
 impl Drop for AuditLogBuilder {
