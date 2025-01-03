@@ -25,6 +25,7 @@ use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 
 /// this function flattens the `ScopeSpans` object
@@ -116,7 +117,9 @@ fn flatten_events(events: &[Event]) -> Vec<BTreeMap<String, Value>> {
             let mut event_json = BTreeMap::new();
             event_json.insert(
                 "event_time_unix_nano".to_string(),
-                Value::Number(event.time_unix_nano.into()),
+                Value::String(
+                    convert_epoch_nano_to_timestamp(event.time_unix_nano as i64).to_string(),
+                ),
             );
             event_json.insert("event_name".to_string(), Value::String(event.name.clone()));
             insert_attributes(&mut event_json, &event.attributes);
@@ -261,11 +264,15 @@ fn flatten_span_record(span_record: &Span) -> Vec<BTreeMap<String, Value>> {
     span_record_json.extend(flatten_kind(span_record.kind));
     span_record_json.insert(
         "span_start_time_unix_nano".to_string(),
-        Value::Number(span_record.start_time_unix_nano.into()),
+        Value::String(convert_epoch_nano_to_timestamp(
+            span_record.start_time_unix_nano as i64,
+        )),
     );
     span_record_json.insert(
         "span_end_time_unix_nano".to_string(),
-        Value::Number(span_record.end_time_unix_nano.into()),
+        Value::String(convert_epoch_nano_to_timestamp(
+            span_record.end_time_unix_nano as i64,
+        )),
     );
     insert_attributes(&mut span_record_json, &span_record.attributes);
     span_record_json.insert(

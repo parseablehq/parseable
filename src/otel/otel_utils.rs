@@ -16,6 +16,7 @@
  *
  */
 
+use chrono::DateTime;
 use opentelemetry_proto::tonic::common::v1::{any_value::Value as OtelValue, AnyValue, KeyValue};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -153,4 +154,9 @@ pub fn insert_attributes(map: &mut BTreeMap<String, Value>, attributes: &Vec<Key
     for (key, value) in attributes_json {
         map.insert(key, value);
     }
+}
+
+pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
+    let dt = DateTime::from_timestamp_nanos(epoch_ns).naive_utc();
+    dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }

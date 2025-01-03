@@ -24,6 +24,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use super::otel_utils::collect_json_from_values;
+use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 
 /// otel log event has severity number
@@ -51,11 +52,15 @@ pub fn flatten_log_record(log_record: &LogRecord) -> BTreeMap<String, Value> {
     let mut log_record_json: BTreeMap<String, Value> = BTreeMap::new();
     log_record_json.insert(
         "time_unix_nano".to_string(),
-        Value::Number(log_record.time_unix_nano.into()),
+        Value::String(convert_epoch_nano_to_timestamp(
+            log_record.time_unix_nano as i64,
+        )),
     );
     log_record_json.insert(
-        "observable_time_unix_nano".to_string(),
-        Value::Number(log_record.observed_time_unix_nano.into()),
+        "observed_time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            log_record.observed_time_unix_nano as i64,
+        )),
     );
 
     log_record_json.extend(flatten_severity(log_record.severity_number));

@@ -25,7 +25,9 @@ use opentelemetry_proto::tonic::metrics::v1::{
 };
 use serde_json::Value;
 
-use super::otel_utils::{insert_attributes, insert_number_if_some};
+use super::otel_utils::{
+    convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
+};
 
 /// otel metrics event has json array for exemplar
 /// this function flatten the exemplar json array
@@ -37,7 +39,9 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> BTreeMap<String, Value> {
         insert_attributes(&mut exemplar_json, &exemplar.filtered_attributes);
         exemplar_json.insert(
             "exemplar_time_unix_nano".to_string(),
-            Value::Number(exemplar.time_unix_nano.into()),
+            Value::String(convert_epoch_nano_to_timestamp(
+                exemplar.time_unix_nano as i64,
+            )),
         );
         exemplar_json.insert(
             "exemplar_span_id".to_string(),
@@ -79,11 +83,15 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<BTreeMap<S
             insert_attributes(&mut data_point_json, &data_point.attributes);
             data_point_json.insert(
                 "start_time_unix_nano".to_string(),
-                Value::Number(data_point.start_time_unix_nano.into()),
+                Value::String(convert_epoch_nano_to_timestamp(
+                    data_point.start_time_unix_nano as i64,
+                )),
             );
             data_point_json.insert(
                 "time_unix_nano".to_string(),
-                Value::Number(data_point.time_unix_nano.into()),
+                Value::String(convert_epoch_nano_to_timestamp(
+                    data_point.time_unix_nano as i64,
+                )),
             );
             let exemplar_json = flatten_exemplar(&data_point.exemplars);
             for (key, value) in exemplar_json {
@@ -167,11 +175,15 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
         insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "histogram_start_time_unix_nano".to_string(),
-            Value::Number(data_point.start_time_unix_nano.into()),
+            Value::String(convert_epoch_nano_to_timestamp(
+                data_point.start_time_unix_nano as i64,
+            )),
         );
         data_point_json.insert(
             "histogram_time_unix_nano".to_string(),
-            Value::Number(data_point.time_unix_nano.into()),
+            Value::String(convert_epoch_nano_to_timestamp(
+                data_point.time_unix_nano as i64,
+            )),
         );
         data_point_json.insert(
             "histogram_data_point_count".to_string(),
@@ -242,11 +254,15 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<S
         insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "exponential_histogram_start_time_unix_nano".to_string(),
-            Value::Number(data_point.start_time_unix_nano.into()),
+            Value::String(convert_epoch_nano_to_timestamp(
+                data_point.start_time_unix_nano as i64,
+            )),
         );
         data_point_json.insert(
             "exponential_histogram_time_unix_nano".to_string(),
-            Value::Number(data_point.time_unix_nano.into()),
+            Value::String(convert_epoch_nano_to_timestamp(
+                data_point.time_unix_nano as i64,
+            )),
         );
         data_point_json.insert(
             "exponential_histogram_data_point_count".to_string(),
@@ -306,11 +322,15 @@ fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
         insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "summary_start_time_unix_nano".to_string(),
-            Value::Number(data_point.start_time_unix_nano.into()),
+            Value::String(convert_epoch_nano_to_timestamp(
+                data_point.start_time_unix_nano as i64,
+            )),
         );
         data_point_json.insert(
             "summary_time_unix_nano".to_string(),
-            Value::Number(data_point.time_unix_nano.into()),
+            Value::String(convert_epoch_nano_to_timestamp(
+                data_point.time_unix_nano as i64,
+            )),
         );
         data_point_json.insert(
             "summary_data_point_count".to_string(),
