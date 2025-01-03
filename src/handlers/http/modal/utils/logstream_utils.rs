@@ -29,7 +29,7 @@ use crate::{
         CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
         TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
     },
-    metadata::{self, STREAM_INFO},
+    metadata::{self, SchemaVersion, STREAM_INFO},
     option::{Mode, CONFIG},
     static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
     storage::{LogStream, ObjectStoreFormat, StreamType},
@@ -84,9 +84,9 @@ pub async fn create_update_stream(
     }
 
     let time_partition_in_days = if !time_partition_limit.is_empty() {
-        validate_time_partition_limit(&time_partition_limit)?
+        Some(validate_time_partition_limit(&time_partition_limit)?)
     } else {
-        ""
+        None
     };
 
     if !custom_partition.is_empty() {
@@ -207,7 +207,7 @@ pub fn fetch_headers_from_put_stream_request(
 
 pub fn validate_time_partition_limit(
     time_partition_limit: &str,
-) -> Result<&str, CreateStreamError> {
+) -> Result<NonZeroU32, CreateStreamError> {
     if !time_partition_limit.ends_with('d') {
         return Err(CreateStreamError::Custom {
             msg: "Missing 'd' suffix for duration value".to_string(),
@@ -215,12 +215,12 @@ pub fn validate_time_partition_limit(
         });
     }
     let days = &time_partition_limit[0..time_partition_limit.len() - 1];
-    if days.parse::<NonZeroU32>().is_err() {
+    let Ok(days) = days.parse::<NonZeroU32>() else {
         return Err(CreateStreamError::Custom {
             msg: "Could not convert duration to an unsigned number".to_string(),
             status: StatusCode::BAD_REQUEST,
         });
-    }
+    };
 
     Ok(days)
 }
@@ -288,7 +288,7 @@ pub fn validate_static_schema(
 
 pub async fn update_time_partition_limit_in_stream(
     stream_name: String,
-    time_partition_limit: &str,
+    time_partition_limit: NonZeroU32,
 ) -> Result<(), CreateStreamError> {
     let storage = CONFIG.storage().get_object_store();
     if let Err(err) = storage
@@ -299,7 +299,7 @@ pub async fn update_time_partition_limit_in_stream(
     }
 
     if metadata::STREAM_INFO
-        .update_time_partition_limit(&stream_name, time_partition_limit.to_string())
+        .update_time_partition_limit(&stream_name, time_partition_limit)
         .is_err()
     {
         return Err(CreateStreamError::Custom {
@@ -381,7 +381,7 @@ pub async fn update_custom_partition_in_stream(
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
-    time_partition_limit: &str,
+    time_partition_limit: Option<NonZeroU32>,
     custom_partition: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
@@ -421,11 +421,12 @@ pub async fn create_stream(
                 stream_name.to_string(),
                 created_at,
                 time_partition.to_string(),
-                time_partition_limit.to_string(),
+                time_partition_limit,
                 custom_partition.to_string(),
                 static_schema_flag.to_string(),
                 static_schema,
                 stream_type,
+                SchemaVersion::V1, // New stream
             );
         }
         Err(err) => {
@@ -470,21 +471,22 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
         let time_partition = stream_metadata.time_partition.as_deref().unwrap_or("");
         let time_partition_limit = stream_metadata
             .time_partition_limit
-            .as_deref()
-            .unwrap_or("");
+            .and_then(|limit| limit.parse().ok());
         let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
         let static_schema_flag = stream_metadata.static_schema_flag.as_deref().unwrap_or("");
         let stream_type = stream_metadata.stream_type.as_deref().unwrap_or("");
+        let schema_version = stream_metadata.schema_version;
 
         metadata::STREAM_INFO.add_stream(
             stream_name.to_string(),
             stream_metadata.created_at,
             time_partition.to_string(),
-            time_partition_limit.to_string(),
+            time_partition_limit,
             custom_partition.to_string(),
             static_schema_flag.to_string(),
             static_schema,
             stream_type,
+            schema_version,
         );
     } else {
         return Ok(false);

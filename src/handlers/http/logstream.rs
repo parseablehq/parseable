@@ -26,10 +26,10 @@ use super::modal::utils::logstream_utils::{
 use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
 use crate::catalog::get_first_event;
-use crate::event::format::update_data_type_to_datetime;
+use crate::event::format::override_data_type;
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
-use crate::metadata::STREAM_INFO;
+use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
@@ -49,6 +49,7 @@ use http::{HeaderName, HeaderValue};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
+use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -110,9 +111,9 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
         }
     };
 
-    let mut schema = infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap();
+    let mut schema = Arc::new(infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap());
     for log_record in log_records {
-        schema = update_data_type_to_datetime(schema, log_record, Vec::new());
+        schema = override_data_type(schema, log_record, SchemaVersion::V1);
     }
     Ok((web::Json(schema), StatusCode::OK))
 }
@@ -471,7 +472,7 @@ fn remove_id_from_alerts(value: &mut Value) {
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
-    time_partition_limit: &str,
+    time_partition_limit: Option<NonZeroU32>,
     custom_partition: &str,
     static_schema_flag: &str,
     schema: Arc<Schema>,
@@ -511,11 +512,12 @@ pub async fn create_stream(
                 stream_name.to_string(),
                 created_at,
                 time_partition.to_string(),
-                time_partition_limit.to_string(),
+                time_partition_limit,
                 custom_partition.to_string(),
                 static_schema_flag.to_string(),
                 static_schema,
                 stream_type,
+                SchemaVersion::V1, // New stream
             );
         }
         Err(err) => {
@@ -561,7 +563,9 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         created_at: stream_meta.created_at.clone(),
         first_event_at: stream_meta.first_event_at.clone(),
         time_partition: stream_meta.time_partition.clone(),
-        time_partition_limit: stream_meta.time_partition_limit.clone(),
+        time_partition_limit: stream_meta
+            .time_partition_limit
+            .map(|limit| limit.to_string()),
         custom_partition: stream_meta.custom_partition.clone(),
         cache_enabled: stream_meta.cache_enabled,
         static_schema_flag: stream_meta.static_schema_flag.clone(),

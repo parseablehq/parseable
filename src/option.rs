@@ -49,7 +49,16 @@ impl Config {
             .name("Parseable")
             .about(
                 r#"
-Cloud Native, log analytics platform for modern applications."#,
+Cloud Native, log analytics platform for modern applications.
+
+Usage: 
+parseable [command] [options..]
+
+
+Help:
+parseable [command] --help
+
+"#,
             )
             .arg_required_else_help(true)
             .subcommand_required(true)
