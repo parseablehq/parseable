@@ -5,12 +5,11 @@ use crate::handlers::http::modal::utils::rbac_utils::get_metadata;
 
 use super::option::CONFIG;
 use actix_web::dev::ServiceRequest;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tokio::runtime::Handle;
-use tokio::time::Instant;
 use tracing::info;
 use tracing::{
     error,
@@ -161,7 +160,7 @@ pub struct AuditLogBuilder {
     version: AuditLogVersion,
     pub deployment_id: Ulid,
     audit_id: Ulid,
-    start_time: Instant,
+    start_time: DateTime<Utc>,
     pub stream: String,
     pub actor: ActorLog,
     pub request: RequestLog,
@@ -174,7 +173,7 @@ impl Default for AuditLogBuilder {
             version: AuditLogVersion::V1,
             deployment_id: Ulid::nil(),
             audit_id: Ulid::new(),
-            start_time: Instant::now(),
+            start_time: Utc::now(),
             stream: String::default(),
             actor: ActorLog::default(),
             request: RequestLog::default(),
@@ -240,8 +239,8 @@ impl Drop for AuditLogBuilder {
             "parseableVersion": current().released_version.to_string(),
             "deploymentId" : self.deployment_id,
             "auditId" : self.audit_id,
-            "timestamp" : Utc::now().to_rfc3339(),
-            "timeElapsed" : self.start_time.elapsed(),
+            "startTime" : self.start_time.to_rfc3339(),
+            "endTime" : Utc::now().to_rfc3339(),
             "stream" : self.stream,
             "actor" : self.actor,
             "request" : self.request,
