@@ -55,13 +55,13 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> BTreeMap<String, Value> {
             match value {
                 ExemplarValue::AsDouble(double_val) => {
                     exemplar_json.insert(
-                        "exemplar_value_as_double".to_string(),
+                        "exemplar_value".to_string(),
                         Value::Number(serde_json::Number::from_f64(*double_val).unwrap()),
                     );
                 }
                 ExemplarValue::AsInt(int_val) => {
                     exemplar_json.insert(
-                        "exemplar_value_as_int".to_string(),
+                        "exemplar_value".to_string(),
                         Value::Number(serde_json::Number::from(*int_val)),
                     );
                 }
@@ -102,13 +102,13 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<BTreeMap<S
                 match value {
                     NumberDataPointValue::AsDouble(double_val) => {
                         data_point_json.insert(
-                            "data_point_value_as_double".to_string(),
+                            "data_point_value".to_string(),
                             Value::Number(serde_json::Number::from_f64(*double_val).unwrap()),
                         );
                     }
                     NumberDataPointValue::AsInt(int_val) => {
                         data_point_json.insert(
-                            "data_point_value_as_int".to_string(),
+                            "data_point_value".to_string(),
                             Value::Number(serde_json::Number::from(*int_val)),
                         );
                     }
@@ -129,7 +129,7 @@ fn flatten_gauge(gauge: &Gauge) -> Vec<BTreeMap<String, Value>> {
     for data_point_json in data_points_json {
         let mut gauge_json = BTreeMap::new();
         for (key, value) in &data_point_json {
-            gauge_json.insert(format!("gauge_{}", key), value.clone());
+            gauge_json.insert(key.clone(), value.clone());
         }
         vec_gauge_json.push(gauge_json);
     }
@@ -146,16 +146,13 @@ fn flatten_sum(sum: &Sum) -> Vec<BTreeMap<String, Value>> {
     for data_point_json in data_points_json {
         let mut sum_json = BTreeMap::new();
         for (key, value) in &data_point_json {
-            sum_json.insert(format!("sum_{}", key), value.clone());
+            sum_json.insert(key.clone(), value.clone());
         }
         vec_sum_json.push(sum_json);
     }
     let mut sum_json = BTreeMap::new();
     sum_json.extend(flatten_aggregation_temporality(sum.aggregation_temporality));
-    sum_json.insert(
-        "sum_is_monotonic".to_string(),
-        Value::Bool(sum.is_monotonic),
-    );
+    sum_json.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
     for data_point_json in &mut vec_sum_json {
         for (key, value) in &sum_json {
             data_point_json.insert(key.clone(), value.clone());
@@ -174,45 +171,49 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
         let mut data_point_json = BTreeMap::new();
         insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
-            "histogram_start_time_unix_nano".to_string(),
+            "start_time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
                 data_point.start_time_unix_nano as i64,
             )),
         );
         data_point_json.insert(
-            "histogram_time_unix_nano".to_string(),
+            "time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
                 data_point.time_unix_nano as i64,
             )),
         );
         data_point_json.insert(
-            "histogram_data_point_count".to_string(),
+            "data_point_count".to_string(),
             Value::Number(data_point.count.into()),
         );
-        insert_number_if_some(
-            &mut data_point_json,
-            "histogram_data_point_sum",
-            &data_point.sum,
+        insert_number_if_some(&mut data_point_json, "data_point_sum", &data_point.sum);
+        data_point_json.insert(
+            "data_point_bucket_counts".to_string(),
+            Value::Array(
+                data_point
+                    .bucket_counts
+                    .iter()
+                    .map(|&count| Value::Number(count.into()))
+                    .collect(),
+            ),
         );
-        for (index, bucket_count) in data_point.bucket_counts.iter().enumerate() {
-            data_point_json.insert(
-                format!("histogram_data_point_bucket_count_{}", index + 1),
-                Value::String(bucket_count.to_string()),
-            );
-        }
-        for (index, explicit_bound) in data_point.explicit_bounds.iter().enumerate() {
-            data_point_json.insert(
-                format!("histogram_data_point_explicit_bound_{}", index + 1),
-                Value::String(explicit_bound.to_string()),
-            );
-        }
+        data_point_json.insert(
+            "data_point_explicit_bounds".to_string(),
+            Value::Array(
+                data_point
+                    .explicit_bounds
+                    .iter()
+                    .map(|bound| Value::String(bound.to_string()))
+                    .collect(),
+            ),
+        );
         let exemplar_json = flatten_exemplar(&data_point.exemplars);
         for (key, value) in exemplar_json {
-            data_point_json.insert(format!("histogram_{}", key), value);
+            data_point_json.insert(key.to_string(), value);
         }
         data_point_json.extend(flatten_data_point_flags(data_point.flags));
-        insert_number_if_some(&mut data_point_json, "histogram_min", &data_point.min);
-        insert_number_if_some(&mut data_point_json, "histogram_max", &data_point.max);
+        insert_number_if_some(&mut data_point_json, "min", &data_point.min);
+        insert_number_if_some(&mut data_point_json, "max", &data_point.max);
         data_points_json.push(data_point_json);
     }
     let mut histogram_json = BTreeMap::new();
@@ -233,13 +234,16 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<BTreeMap<String, Value>> {
 fn flatten_buckets(bucket: &Buckets) -> BTreeMap<String, Value> {
     let mut bucket_json = BTreeMap::new();
     bucket_json.insert("offset".to_string(), Value::Number(bucket.offset.into()));
-
-    for (index, bucket_count) in bucket.bucket_counts.iter().enumerate() {
-        bucket_json.insert(
-            format!("bucket_count_{}", index + 1),
-            Value::String(bucket_count.to_string()),
-        );
-    }
+    bucket_json.insert(
+        "bucket_count".to_string(),
+        Value::Array(
+            bucket
+                .bucket_counts
+                .iter()
+                .map(|&count| Value::Number(count.into()))
+                .collect(),
+        ),
+    );
     bucket_json
 }
 
@@ -253,49 +257,45 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<BTreeMap<S
         let mut data_point_json = BTreeMap::new();
         insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
-            "exponential_histogram_start_time_unix_nano".to_string(),
+            "start_time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
                 data_point.start_time_unix_nano as i64,
             )),
         );
         data_point_json.insert(
-            "exponential_histogram_time_unix_nano".to_string(),
+            "time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
                 data_point.time_unix_nano as i64,
             )),
         );
         data_point_json.insert(
-            "exponential_histogram_data_point_count".to_string(),
+            "data_point_count".to_string(),
             Value::Number(data_point.count.into()),
         );
-        insert_number_if_some(
-            &mut data_point_json,
-            "exponential_histogram_data_point_sum",
-            &data_point.sum,
-        );
+        insert_number_if_some(&mut data_point_json, "data_point_sum", &data_point.sum);
         data_point_json.insert(
-            "exponential_histogram_data_point_scale".to_string(),
+            "data_point_scale".to_string(),
             Value::Number(data_point.scale.into()),
         );
         data_point_json.insert(
-            "exponential_histogram_data_point_zero_count".to_string(),
+            "data_point_zero_count".to_string(),
             Value::Number(data_point.zero_count.into()),
         );
         if let Some(positive) = &data_point.positive {
             let positive_json = flatten_buckets(positive);
             for (key, value) in positive_json {
-                data_point_json.insert(format!("exponential_histogram_positive_{}", key), value);
+                data_point_json.insert(format!("positive_{}", key), value);
             }
         }
         if let Some(negative) = &data_point.negative {
             let negative_json = flatten_buckets(negative);
             for (key, value) in negative_json {
-                data_point_json.insert(format!("exponential_histogram_negative_{}", key), value);
+                data_point_json.insert(format!("negative_{}", key), value);
             }
         }
         let exemplar_json = flatten_exemplar(&data_point.exemplars);
         for (key, value) in exemplar_json {
-            data_point_json.insert(format!("exponential_histogram_{}", key), value);
+            data_point_json.insert(key, value);
         }
         data_points_json.push(data_point_json);
     }
@@ -321,35 +321,56 @@ fn flatten_summary(summary: &Summary) -> Vec<BTreeMap<String, Value>> {
         let mut data_point_json = BTreeMap::new();
         insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
-            "summary_start_time_unix_nano".to_string(),
+            "start_time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
                 data_point.start_time_unix_nano as i64,
             )),
         );
         data_point_json.insert(
-            "summary_time_unix_nano".to_string(),
+            "time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
                 data_point.time_unix_nano as i64,
             )),
         );
         data_point_json.insert(
-            "summary_data_point_count".to_string(),
+            "data_point_count".to_string(),
             Value::Number(data_point.count.into()),
         );
         data_point_json.insert(
-            "summary_data_point_sum".to_string(),
+            "data_point_sum".to_string(),
             Value::Number(serde_json::Number::from_f64(data_point.sum).unwrap()),
         );
-        for (index, quantile_value) in data_point.quantile_values.iter().enumerate() {
-            data_point_json.insert(
-                format!("summary_quantile_value_quantile_{}", index + 1),
-                Value::Number(serde_json::Number::from_f64(quantile_value.quantile).unwrap()),
-            );
-            data_point_json.insert(
-                format!("summary_quantile_value_value_{}", index + 1),
-                Value::Number(serde_json::Number::from_f64(quantile_value.value).unwrap()),
-            );
-        }
+        data_point_json.insert(
+            "data_point_quantile_values".to_string(),
+            Value::Array(
+                data_point
+                    .quantile_values
+                    .iter()
+                    .map(|quantile_value| {
+                        Value::Object(
+                            vec![
+                                (
+                                    "quantile",
+                                    Value::Number(
+                                        serde_json::Number::from_f64(quantile_value.quantile)
+                                            .unwrap(),
+                                    ),
+                                ),
+                                (
+                                    "value",
+                                    Value::Number(
+                                        serde_json::Number::from_f64(quantile_value.value).unwrap(),
+                                    ),
+                                ),
+                            ]
+                            .into_iter()
+                            .map(|(k, v)| (k.to_string(), v))
+                            .collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+        );
         data_points_json.push(data_point_json);
     }
     data_points_json
