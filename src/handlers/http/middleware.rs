@@ -191,7 +191,14 @@ where
                 ),
                 _ => {}
             }
-            fut.await
+            let res = fut.await;
+
+            // Capture status_code information from response
+            if let Ok(res) = &res {
+                log_builder.response.status_code = res.status().as_u16();
+            }
+
+            res
         })
     }
 }
