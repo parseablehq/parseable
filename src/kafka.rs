@@ -278,12 +278,7 @@ pub async fn setup_integration() {
         // Constructs a log for each kafka request
         let mut log_builder = AuditLogBuilder::default();
         log_builder.set_actor(
-            CONFIG
-                .parseable
-                .kafka_host
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or(""),
+            CONFIG.parseable.kafka_host.as_deref().unwrap_or(""),
             "Kafka Client",
             "",
             "",

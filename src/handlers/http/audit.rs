@@ -70,7 +70,6 @@ pub async fn audit_log_middleware(
         }
     }
 
-    let conn = req.connection_info();
     let headers = req
         .headers()
         .iter()
@@ -85,10 +84,17 @@ pub async fn audit_log_middleware(
                     .ok()
             }
         });
-    log_builder.set_request(req.method().as_str(), req.path(), conn.scheme(), headers);
+    log_builder.set_request(
+        req.method().as_str(),
+        req.path(),
+        req.connection_info().scheme(),
+        headers,
+    );
 
     log_builder.set_actor(
-        conn.realip_remote_addr().unwrap_or_default(),
+        req.connection_info()
+            .realip_remote_addr()
+            .unwrap_or_default(),
         req.headers()
             .get("User-Agent")
             .and_then(|a| a.to_str().ok())
@@ -96,7 +102,6 @@ pub async fn audit_log_middleware(
         username,
         authorization_method,
     );
-    drop(conn);
 
     let res = next.call(req).await;
 
