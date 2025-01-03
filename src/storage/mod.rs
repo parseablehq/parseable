@@ -202,13 +202,6 @@ impl Default for ObjectStoreFormat {
     }
 }
 
-impl ObjectStoreFormat {
-    fn set_id(&mut self, id: String) {
-        self.owner.id.clone_from(&id);
-        self.owner.group = id;
-    }
-}
-
 #[derive(serde::Serialize, PartialEq)]
 pub struct LogStream {
     pub name: String,
