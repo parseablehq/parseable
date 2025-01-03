@@ -54,6 +54,7 @@ pub trait EventFormat: Sized {
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        log_source: &str,
     ) -> Result<(Self::Data, EventSchema, bool, Tags, Metadata), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
@@ -64,12 +65,14 @@ pub trait EventFormat: Sized {
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        log_source: &str,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let (data, mut schema, is_first, tags, metadata) = self.to_data(
             storage_schema,
             static_schema_flag,
             time_partition,
             schema_version,
+            log_source,
         )?;
 
         // DEFAULT_TAGS_KEY, DEFAULT_METADATA_KEY and DEFAULT_TIMESTAMP_KEY are reserved field names

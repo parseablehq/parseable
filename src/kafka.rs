@@ -198,6 +198,7 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
             static_schema_flag.as_ref(),
             time_partition.as_ref(),
             schema_version,
+            "",
         )
         .map_err(|err| KafkaError::PostError(PostError::CustomError(err.to_string())))?;
 

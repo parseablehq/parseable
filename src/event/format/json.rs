@@ -52,8 +52,17 @@ impl EventFormat for Event {
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        log_source: &str,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
-        let data = flatten_json_body(self.data, None, None, None, schema_version, false)?;
+        let data = flatten_json_body(
+            self.data,
+            None,
+            None,
+            None,
+            schema_version,
+            false,
+            log_source,
+        )?;
         let stream_schema = schema;
 
         // incoming event may be a single json or a json array

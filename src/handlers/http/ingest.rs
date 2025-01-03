@@ -95,7 +95,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             metadata: String::default(),
         };
         // For internal streams, use old schema
-        event.into_recordbatch(&schema, None, None, SchemaVersion::V0)?
+        event.into_recordbatch(&schema, None, None, SchemaVersion::V0, "")?
     };
     event::Event {
         rb,
@@ -127,7 +127,8 @@ pub async fn handle_otel_logs_ingestion(
     let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingLogSource));
     };
-    if log_source.to_str().unwrap() != LOG_SOURCE_OTEL_LOGS {
+    let log_source = log_source.to_str().unwrap();
+    if log_source != LOG_SOURCE_OTEL_LOGS {
         return Err(PostError::Invalid(anyhow::anyhow!(
             "Please use x-p-log-source: otel-logs for ingesting otel logs"
         )));
@@ -141,7 +142,7 @@ pub async fn handle_otel_logs_ingestion(
     let mut json = flatten_otel_logs(&logs);
     for record in json.iter_mut() {
         let body: Bytes = serde_json::to_vec(record).unwrap().into();
-        push_logs(&stream_name, &req, &body).await?;
+        push_logs(&stream_name, &req, &body, log_source).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -160,7 +161,8 @@ pub async fn handle_otel_metrics_ingestion(
     let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingLogSource));
     };
-    if log_source.to_str().unwrap() != LOG_SOURCE_OTEL_METRICS {
+    let log_source = log_source.to_str().unwrap();
+    if log_source != LOG_SOURCE_OTEL_METRICS {
         return Err(PostError::Invalid(anyhow::anyhow!(
             "Please use x-p-log-source: otel-metrics for ingesting otel metrics"
         )));
@@ -173,7 +175,7 @@ pub async fn handle_otel_metrics_ingestion(
     let mut json = flatten_otel_metrics(metrics);
     for record in json.iter_mut() {
         let body: Bytes = serde_json::to_vec(record).unwrap().into();
-        push_logs(&stream_name, &req, &body).await?;
+        push_logs(&stream_name, &req, &body, log_source).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -193,7 +195,8 @@ pub async fn handle_otel_traces_ingestion(
     let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingLogSource));
     };
-    if log_source.to_str().unwrap() != LOG_SOURCE_OTEL_TRACES {
+    let log_source = log_source.to_str().unwrap();
+    if log_source != LOG_SOURCE_OTEL_TRACES {
         return Err(PostError::Invalid(anyhow::anyhow!(
             "Please use x-p-log-source: otel-traces for ingesting otel traces"
         )));
@@ -206,7 +209,7 @@ pub async fn handle_otel_traces_ingestion(
     let mut json = flatten_otel_traces(&traces);
     for record in json.iter_mut() {
         let body: Bytes = serde_json::to_vec(record).unwrap().into();
-        push_logs(&stream_name, &req, &body).await?;
+        push_logs(&stream_name, &req, &body, log_source).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -417,6 +420,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            "",
         )
         .unwrap();
 
@@ -467,6 +471,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            "",
         )
         .unwrap();
 
@@ -500,7 +505,8 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).unwrap();
+        let (rb, _) =
+            into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
@@ -532,7 +538,7 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).is_err());
+        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").is_err());
     }
 
     #[test]
@@ -550,7 +556,8 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).unwrap();
+        let (rb, _) =
+            into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -568,7 +575,8 @@ mod tests {
             HashMap::default(),
             None,
             None,
-            SchemaVersion::V0
+            SchemaVersion::V0,
+            ""
         )
         .is_err())
     }
@@ -600,6 +608,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            "",
         )
         .unwrap();
 
@@ -656,6 +665,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            "",
         )
         .unwrap();
 
@@ -705,7 +715,8 @@ mod tests {
         );
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).unwrap();
+        let (rb, _) =
+            into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -754,7 +765,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).is_err());
+        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").is_err());
     }
 
     #[test]
@@ -789,6 +800,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            "",
         )
         .unwrap();
 
@@ -869,6 +881,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V1,
+            "",
         )
         .unwrap();
 
