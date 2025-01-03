@@ -21,16 +21,23 @@ use std::num::NonZeroU32;
 use serde_json;
 use serde_json::Value;
 
+use crate::metadata::SchemaVersion;
+
 pub mod flatten;
 
 pub fn flatten_json_body(
-    body: &Value,
+    body: Value,
     time_partition: Option<&String>,
     time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
+    schema_version: SchemaVersion,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
-    let mut nested_value = flatten::convert_to_array(flatten::flatten_json(body))?;
+    let mut nested_value = if schema_version == SchemaVersion::V1 {
+        flatten::generic_flattening(body)?
+    } else {
+        body
+    };
 
     flatten::flatten(
         &mut nested_value,
@@ -45,16 +52,18 @@ pub fn flatten_json_body(
 }
 
 pub fn convert_array_to_object(
-    body: &Value,
+    body: Value,
     time_partition: Option<&String>,
     time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
+    schema_version: SchemaVersion,
 ) -> Result<Vec<Value>, anyhow::Error> {
     let data = flatten_json_body(
         body,
         time_partition,
         time_partition_limit,
         custom_partition,
+        schema_version,
         true,
     )?;
     let value_arr = match data {
