@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, fmt::Debug};
 use tracing::{debug, error, info, warn};
 
+use crate::audit::AuditLogBuilder;
 use crate::option::CONFIG;
 use crate::{
     event::{
@@ -274,6 +275,18 @@ pub async fn setup_integration() {
     let mut stream = consumer.stream();
 
     while let Ok(curr) = stream.next().await.unwrap() {
+        // Constructs a log for each kafka request
+        let mut log_builder = AuditLogBuilder::default();
+        log_builder.set_deployment_id().await;
+        log_builder.actor.user_agent = "KAFKA_CLIENT".to_owned();
+        log_builder.actor.remote_host = CONFIG
+            .parseable
+            .kafka_host
+            .as_ref()
+            .cloned()
+            .unwrap_or_default();
+        log_builder.request.protocol = "Kafka".to_owned();
+        log_builder.set_stream_name(curr.topic().to_owned());
         if let Err(err) = ingest_message(curr).await {
             error!("Unable to ingest incoming kafka message- {err}")
         }
