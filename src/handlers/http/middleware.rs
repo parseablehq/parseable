@@ -177,7 +177,7 @@ where
         // Ensures that log will be pushed to subscriber on drop
         let mut log_builder = AuditLogBuilder::default();
         log_builder.set_stream_name(stream_name.unwrap_or_default());
-        log_builder.update_from_http(&req);
+        log_builder.update_from_http(&mut req);
         let fut = self.service.call(req);
         Box::pin(async move {
             log_builder.set_deployment_id().await;

@@ -2,9 +2,12 @@ use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use crate::about::current;
 use crate::handlers::http::modal::utils::rbac_utils::get_metadata;
+use crate::rbac::map::SessionKey;
+use crate::rbac::Users;
 
 use super::option::CONFIG;
 use actix_web::dev::ServiceRequest;
+use actix_web_httpauth::extractors::basic::BasicAuth;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Serialize;
@@ -194,9 +197,10 @@ impl AuditLogBuilder {
         self.stream = stream;
     }
 
-    pub fn update_from_http(&mut self, req: &ServiceRequest) {
-        let conn = req.connection_info();
+    pub fn update_from_http(&mut self, req: &mut ServiceRequest) {
+        let (username, authorization_method) = get_auth_details(req);
 
+        let conn = req.connection_info();
         self.request = RequestLog {
             method: req.method().to_string(),
             path: req.path().to_string(),
@@ -225,9 +229,31 @@ impl AuditLogBuilder {
                 .and_then(|a| a.to_str().ok())
                 .unwrap_or_default()
                 .to_owned(),
-            ..Default::default()
+            username,
+            authorization_method,
         }
     }
+}
+
+fn get_auth_details(req: &mut ServiceRequest) -> (String, String) {
+    let mut username = "Unknown".to_owned();
+    let mut auth_method = "None".to_owned();
+
+    if let Ok(creds) = req.extract::<BasicAuth>().into_inner() {
+        return (creds.user_id().trim().to_owned(), "Basic Auth".to_owned());
+    }
+
+    if let Some(cookie) = req.cookie("session") {
+        auth_method = "Session Cookie".to_owned();
+        if let Some(user_id) = Ulid::from_string(cookie.value())
+            .ok()
+            .and_then(|ulid| Users.get_username_from_session(&SessionKey::SessionId(ulid)))
+        {
+            username = user_id;
+        }
+    }
+
+    (username, auth_method)
 }
 
 impl Drop for AuditLogBuilder {
