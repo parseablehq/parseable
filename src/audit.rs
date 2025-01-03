@@ -194,19 +194,21 @@ impl AuditLogBuilder {
             headers: req
                 .headers()
                 .iter()
-                .filter(|(name, _)| match name.as_str().to_lowercase().as_str() {
-                    "authorization" => false,
-                    "cookie" => false,
-                    // NOTE: drop any headers that are a risk to capture
-                    _ => true,
-                })
-                .filter_map(|(name, value)| {
-                    if let Ok(value) = value.to_str() {
-                        Some((name.to_string(), value.to_string()))
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(
+                    |(name, value)| match name.as_str().to_lowercase().as_str() {
+                        // NOTE: obfuscate any headers that are a risk to capture
+                        name if name == "authorization" || name == "cookie" => {
+                            Some((name.to_owned(), "*".to_string()))
+                        }
+                        name => {
+                            // NOTE: Drop headers that can't be parsed as string
+                            value
+                                .to_str()
+                                .map(|value| (name.to_owned(), value.to_string()))
+                                .ok()
+                        }
+                    },
+                )
                 .collect(),
         };
         self.actor = ActorLog {
