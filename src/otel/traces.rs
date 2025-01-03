@@ -239,11 +239,11 @@ fn flatten_span_record(span_record: &Span) -> Vec<BTreeMap<String, Value>> {
     let mut span_record_json = BTreeMap::new();
     span_record_json.insert(
         "span_trace_id".to_string(),
-        Value::String(hex::encode(&span_record.span_id)),
+        Value::String(hex::encode(&span_record.trace_id)),
     );
     span_record_json.insert(
         "span_span_id".to_string(),
-        Value::String(hex::encode(&span_record.trace_id)),
+        Value::String(hex::encode(&span_record.span_id)),
     );
     span_record_json.insert(
         "span_trace_state".to_string(),
