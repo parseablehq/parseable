@@ -16,8 +16,8 @@
  *
  */
 
-use audit::AuditLayer;
 use parseable::{
+    audit::AuditLayer,
     banner, kafka,
     option::{Mode, CONFIG},
     rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
@@ -26,8 +26,6 @@ use tokio::runtime::Handle;
 use tracing_subscriber::{
     layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer, Registry,
 };
-
-mod audit;
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {

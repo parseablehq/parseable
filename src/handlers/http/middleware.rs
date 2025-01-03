@@ -23,11 +23,12 @@ use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
     http::header::{self, HeaderName},
-    Error, Route,
+    Error, HttpMessage, Route,
 };
 use futures_util::future::LocalBoxFuture;
 
 use crate::{
+    audit::AuditLogBuilder,
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
         STREAM_NAME_HEADER_KEY,
@@ -137,6 +138,7 @@ where
         For requests made from other clients, no change.
 
          ## Section start */
+        let mut stream_name = None;
         if let Some((_, kinesis_common_attributes)) = req
             .request()
             .headers()
@@ -147,25 +149,39 @@ where
             let message: Message = serde_json::from_str(attribute_value).unwrap();
             req.headers_mut().insert(
                 HeaderName::from_static(AUTHORIZATION_KEY),
-                header::HeaderValue::from_str(&message.common_attributes.authorization.clone())
-                    .unwrap(),
+                header::HeaderValue::from_str(&message.common_attributes.authorization).unwrap(),
             );
             req.headers_mut().insert(
                 HeaderName::from_static(STREAM_NAME_HEADER_KEY),
-                header::HeaderValue::from_str(&message.common_attributes.x_p_stream.clone())
-                    .unwrap(),
+                header::HeaderValue::from_str(&message.common_attributes.x_p_stream).unwrap(),
             );
             req.headers_mut().insert(
                 HeaderName::from_static(LOG_SOURCE_KEY),
                 header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
             );
+            stream_name = Some(message.common_attributes.x_p_stream);
+        }
+
+        if let Some(stream) = req.match_info().get("logstream") {
+            stream_name = Some(stream.to_owned());
+        } else if let Some(value) = req.headers().get(STREAM_NAME_HEADER_KEY) {
+            if let Ok(stream) = value.to_str() {
+                stream_name = Some(stream.to_owned())
+            }
         }
 
         /* ## Section end */
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
+
+        // Ensures that log will be pushed to subscriber on drop
+        let mut log_builder = AuditLogBuilder::default();
+        log_builder.set_stream_name(stream_name.unwrap_or_default());
+        log_builder.update_from_http(&req);
         let fut = self.service.call(req);
         Box::pin(async move {
+            log_builder.set_deployment_id().await;
+
             match auth_result? {
                 rbac::Response::UnAuthorized => return Err(
                     ErrorForbidden("You don't have permission to access this resource. Please contact your administrator for assistance.")

@@ -1,15 +1,23 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
-use parseable::option::CONFIG;
+use crate::handlers::http::modal::utils::rbac_utils::get_metadata;
+
+use super::option::CONFIG;
+use actix_web::dev::ServiceRequest;
+use chrono::Utc;
 use reqwest::Client;
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tokio::runtime::Handle;
+use tokio::time::Instant;
+use tracing::info;
 use tracing::{
     error,
     field::{Field, Visit},
     Event, Metadata, Subscriber,
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+use ulid::Ulid;
 use url::Url;
 
 pub struct AuditLayer {
@@ -59,13 +67,9 @@ where
         let mut visitor = AuditVisitor::default();
         event.record(&mut visitor);
 
-        // if the log line contains `audit = true`, construct an HTTP request and push to audit endpouint
+        // if the log line contains `audit` string with serialized json object, construct an HTTP request and push to configured audit endpoint
         // NOTE: We only support the ingest API of parseable for audit logging parseable
         if visitor.audit {
-            visitor
-                .json
-                .insert("message".to_owned(), json!(visitor.message));
-
             let mut req = self
                 .client
                 .post(self.log_endpoint.as_str())
@@ -91,46 +95,146 @@ where
 
 #[derive(Debug, Default)]
 struct AuditVisitor {
-    message: String,
     json: Map<String, Value>,
     audit: bool,
 }
 
 impl Visit for AuditVisitor {
-    fn record_bool(&mut self, field: &Field, value: bool) {
-        if field.name() == "audit" {
-            self.audit = value;
-        } else {
-            self.json.insert(field.name().to_owned(), json!(value));
-        }
-    }
-
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "message" {
-            self.message = value.to_owned();
-        } else {
-            self.json.insert(field.name().to_owned(), json!(value));
+        if field.name() == "audit" {
+            if let Ok(Value::Object(json)) = serde_json::from_str(value) {
+                self.audit = true;
+                self.json = json;
+            }
         }
     }
 
-    fn record_f64(&mut self, field: &Field, value: f64) {
-        self.json.insert(field.name().to_owned(), json!(value));
-    }
+    fn record_debug(&mut self, _: &Field, _: &dyn Debug) {}
+}
 
-    fn record_i64(&mut self, field: &Field, value: i64) {
-        self.json.insert(field.name().to_owned(), json!(value));
-    }
+#[non_exhaustive]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+pub enum AuditLogVersion {
+    V1 = 1,
+}
 
-    fn record_u64(&mut self, field: &Field, value: u64) {
-        self.json.insert(field.name().to_owned(), json!(value));
-    }
+#[derive(Serialize, Default)]
+pub struct ActorLog {
+    pub remote_host: String,
+    pub user_agent: String,
+    pub username: String,
+    pub authorization_method: String,
+}
 
-    fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
-        if field.name() == "message" {
-            self.message = format!("{value:?}");
-        } else {
-            self.json
-                .insert(field.name().to_owned(), json!(format!("{value:?}")));
+#[derive(Serialize, Default)]
+pub struct RequestLog {
+    pub method: String,
+    pub path: String,
+    pub host: String,
+    pub protocol: String,
+    pub headers: HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+pub struct ResponseLog {
+    pub status_code: u16,
+}
+
+impl Default for ResponseLog {
+    fn default() -> Self {
+        // Server failed to respond
+        ResponseLog { status_code: 500 }
+    }
+}
+
+pub struct AuditLogBuilder {
+    version: AuditLogVersion,
+    pub deployment_id: Ulid,
+    audit_id: Ulid,
+    start_time: Instant,
+    pub stream: String,
+    pub actor: ActorLog,
+    pub request: RequestLog,
+    pub response: ResponseLog,
+}
+
+impl Default for AuditLogBuilder {
+    fn default() -> Self {
+        AuditLogBuilder {
+            version: AuditLogVersion::V1,
+            deployment_id: Ulid::nil(),
+            audit_id: Ulid::new(),
+            start_time: Instant::now(),
+            stream: String::default(),
+            actor: ActorLog::default(),
+            request: RequestLog::default(),
+            response: ResponseLog::default(),
         }
+    }
+}
+
+impl AuditLogBuilder {
+    pub async fn set_deployment_id(&mut self) {
+        self.deployment_id = get_metadata().await.unwrap().deployment_id;
+    }
+
+    pub fn set_stream_name(&mut self, stream: String) {
+        self.stream = stream;
+    }
+
+    pub fn update_from_http(&mut self, req: &ServiceRequest) {
+        let conn = req.connection_info();
+
+        self.request = RequestLog {
+            method: req.method().to_string(),
+            path: req.path().to_string(),
+            host: req.uri().host().unwrap_or("").to_owned(),
+            protocol: conn.scheme().to_owned(),
+            headers: req
+                .headers()
+                .iter()
+                .filter(|(name, _)| match name.as_str() {
+                    "Authorization" => false,
+                    "Cookie" => false,
+                    // NOTE: drop any headers that are a risk to capture
+                    _ => true,
+                })
+                .filter_map(|(name, value)| {
+                    if let Ok(value) = value.to_str() {
+                        Some((name.to_string(), value.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        };
+        self.actor = ActorLog {
+            remote_host: conn.realip_remote_addr().unwrap_or_default().to_owned(),
+            user_agent: req
+                .headers()
+                .get("User-Agent")
+                .and_then(|a| a.to_str().ok())
+                .unwrap_or_default()
+                .to_owned(),
+            ..Default::default()
+        }
+    }
+}
+
+impl Drop for AuditLogBuilder {
+    fn drop(&mut self) {
+        let audit_json = json!({
+            "version": self.version as u8,
+            "deployment_id" : self.deployment_id,
+            "audit_id" : self.audit_id,
+            "timestamp" : Utc::now().to_rfc3339(),
+            "time_elapsed" : self.start_time.elapsed(),
+            "stream" : self.stream,
+            "actor" : self.actor,
+            "request" : self.request,
+            "response" : self.response,
+        });
+        info!(audit = %audit_json)
     }
 }
