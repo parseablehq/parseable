@@ -5,7 +5,7 @@ parseable:
     pullPolicy: Always
   ## object store can be local-store, s3-store, blob-store or gcs-store.
   store: local-store
-  ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors)
+  ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors + hot tier)
   ## Please note that highAvailability is not supported in local mode
   highAvailability:
     enabled: false
@@ -66,11 +66,13 @@ parseable:
       storageClass: ""
       accessMode: ReadWriteOnce
       size: 5Gi
+  ## enabling the disk on querier adds the hot-tier.
+  ## local-store is not supported on hot-tier.
     querier:
       enabled: false
       storageClass: ""
       accessMode: ReadWriteOnce
-      size: 5Gi
+      size: 20Gi
   ## comment out the secrets depending upon deployment option
   ## localModeSecret if store is set to local
   ## blobModeSecret if store is set to blob-store
@@ -379,7 +381,15 @@ fluent-bit:
 
       # [INPUT]
       #     Name tail
-      #     Path /var/log/containers/{NGINX_DEPLOYMENT_NAME}-*.log
+      #     Path /var/log/containers/{{ NGINX_POD_NAME }}-*.log
+      #     Parser nginx_access
+      #     Tag kube.*
+      #     Mem_Buf_Limit 5MB
+      #     Skip_Long_Lines On
+
+      # [INPUT]
+      #     Name tail
+      #     Path /var/log/containers/{{ NGINX_POD_NAME }}-*.log
       #     Parser nginx_error
       #     Tag kube.*
       #     Mem_Buf_Limit 5MB
@@ -436,12 +446,19 @@ fluent-bit:
           Time_Key time
           Time_Format %Y-%m-%dT%H:%M:%S.%L
 
-      [PARSER]
-          Name     nginx_error
-          Format   regex
-          Regex    ^(?<timestamp>\S+Z) stderr F (?<error_timestamp>\S+ \S+) \[(?<log_level>\S+)\] (?<process_id>\d+#\d+): \*(?<request_id>\d+) (?<error_message>.*?) client: (?<client_ip>\S+), server: (?<server_name>\S+), request: "(?<request_method>\S+) (?<request_path>\S+) HTTP/\S+", upstream: "(?<upstream_url>[^"]+)", host: "(?<host>\S+)"$
-          Time_Key timestamp
-          Time_Format %Y-%m-%dT%H:%M:%S.%LZ
+      # [PARSER]
+      #     Name     nginx_error
+      #     Format   regex
+      #     Regex    ^(?<timestamp>\S+Z) stderr F (?<error_timestamp>\S+ \S+) \[(?<log_level>\S+)\] (?<process_id>\d+#\d+): \*(?<request_id>\d+) (?<error_message>.*?) client: (?<client_ip>\S+), server: (?<server_name>\S+), request: "(?<request_method>\S+) (?<request_path>\S+) HTTP/\S+", upstream: "(?<upstream_url>[^"]+)", host: "(?<host>\S+)"$
+      #     Time_Key  timestamp
+      #     Time_Format %Y/%m/%d %H:%M:%S
+      
+      # [PARSER]
+      #     Name   nginx_access
+      #     Format regex
+      #     Regex  (?<remote_addr>[^ ]*) - (?<remote_user>[^ ]*) \[(?<timestamp>[^\]]*)\] "(?<method>\S+)(?: +(?<request>[^\"]*?)(?: +\S*)?)?" (?<status>[^ ]*) (?<body_bytes_sent>[^ ]*) "(?<http_referer>[^\"]*)" "(?<http_user_agent>[^\"]*)" (?<request_length>[^ ]*) (?<request_time>[^ ]*) \[(?<proxy_upstream_name>[^ ]*)\] \[(?<proxy_alternative_upstream_name>[^ ]*)\] (?<upstream_addr>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<upstream_response_length>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<upstream_response_time>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<upstream_status>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<req_id>[^ ]*)
+      #     Time_Key timestamp
+      #     Time_Format %d/%b/%Y:%H:%M:%S %z
 
   # The config volume is mounted by default, either to the existingConfigMap value, or the default of "fluent-bit.fullname"
   volumeMounts:
