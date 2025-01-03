@@ -287,8 +287,12 @@ pub async fn setup_integration() {
             .unwrap_or_default();
         log_builder.request.protocol = "Kafka".to_owned();
         log_builder.set_stream_name(curr.topic().to_owned());
-        if let Err(err) = ingest_message(curr).await {
-            error!("Unable to ingest incoming kafka message- {err}")
-        }
+
+        let Err(err) = ingest_message(curr).await else {
+            log_builder.response.status_code = 200;
+            continue;
+        };
+        log_builder.set_response_error(err.to_string());
+        error!("Unable to ingest incoming kafka message- {err}")
     }
 }

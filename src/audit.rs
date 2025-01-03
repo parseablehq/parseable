@@ -141,12 +141,16 @@ pub struct RequestLog {
 #[serde(rename_all = "camelCase")]
 pub struct ResponseLog {
     pub status_code: u16,
+    pub error: Option<String>,
 }
 
 impl Default for ResponseLog {
     fn default() -> Self {
         // Server failed to respond
-        ResponseLog { status_code: 500 }
+        ResponseLog {
+            status_code: 500,
+            error: None,
+        }
     }
 }
 
@@ -181,6 +185,10 @@ impl Default for AuditLogBuilder {
 impl AuditLogBuilder {
     pub async fn set_deployment_id(&mut self) {
         self.deployment_id = get_metadata().await.unwrap().deployment_id;
+    }
+
+    pub fn set_response_error(&mut self, err: String) {
+        self.response.error = Some(err);
     }
 
     pub fn set_stream_name(&mut self, stream: String) {

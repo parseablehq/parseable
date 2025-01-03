@@ -193,9 +193,10 @@ where
             }
             let res = fut.await;
 
-            // Capture status_code information from response
-            if let Ok(res) = &res {
-                log_builder.response.status_code = res.status().as_u16();
+            // Capture status_code and error information from response
+            match &res {
+                Ok(res) => log_builder.response.status_code = res.status().as_u16(),
+                Err(err) => log_builder.set_response_error(err.to_string()),
             }
 
             res
