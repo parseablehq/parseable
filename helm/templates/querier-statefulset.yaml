@@ -52,6 +52,10 @@ spec:
                 fieldPath: metadata.name
           - name: P_MODE
             value: "query"
+          {{- if .Values.parseable.persistence.querier.enabled }}
+          - name: P_HOT_TIER_DIR
+            value: "/parseable/hot-tier"
+          {{- end }}
           {{- range $key, $value :=  .Values.parseable.env }}
           - name: {{ $key }}
             value: {{ tpl $value $ | quote }}
