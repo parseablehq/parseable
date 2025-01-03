@@ -194,9 +194,9 @@ impl AuditLogBuilder {
             headers: req
                 .headers()
                 .iter()
-                .filter(|(name, _)| match name.as_str() {
-                    "Authorization" => false,
-                    "Cookie" => false,
+                .filter(|(name, _)| match name.as_str().to_lowercase().as_str() {
+                    "authorization" => false,
+                    "cookie" => false,
                     // NOTE: drop any headers that are a risk to capture
                     _ => true,
                 })
