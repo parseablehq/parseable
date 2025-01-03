@@ -120,6 +120,7 @@ pub enum AuditLogVersion {
 }
 
 #[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ActorLog {
     pub remote_host: String,
     pub user_agent: String,
@@ -137,6 +138,7 @@ pub struct RequestLog {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResponseLog {
     pub status_code: u16,
 }
@@ -147,6 +149,8 @@ impl Default for ResponseLog {
         ResponseLog { status_code: 500 }
     }
 }
+
+const OBFUSCATE_HEADERS: [&str; 2] = ["authorization", "cookie"];
 
 pub struct AuditLogBuilder {
     version: AuditLogVersion,
@@ -194,21 +198,19 @@ impl AuditLogBuilder {
             headers: req
                 .headers()
                 .iter()
-                .filter_map(
-                    |(name, value)| match name.as_str().to_lowercase().as_str() {
-                        // NOTE: obfuscate any headers that are a risk to capture
-                        name if name == "authorization" || name == "cookie" => {
-                            Some((name.to_owned(), "*".to_string()))
-                        }
-                        name => {
-                            // NOTE: Drop headers that can't be parsed as string
-                            value
-                                .to_str()
-                                .map(|value| (name.to_owned(), value.to_string()))
-                                .ok()
-                        }
-                    },
-                )
+                .filter_map(|(name, value)| match name.as_str() {
+                    // NOTE: obfuscate any headers that are a risk to capture
+                    name if OBFUSCATE_HEADERS.contains(&name.to_lowercase().as_str()) => {
+                        Some((name.to_owned(), "*".to_string()))
+                    }
+                    name => {
+                        // NOTE: Drop headers that can't be parsed as string
+                        value
+                            .to_str()
+                            .map(|value| (name.to_owned(), value.to_string()))
+                            .ok()
+                    }
+                })
                 .collect(),
         };
         self.actor = ActorLog {
@@ -228,10 +230,10 @@ impl Drop for AuditLogBuilder {
     fn drop(&mut self) {
         let audit_json = json!({
             "version": self.version as u8,
-            "deployment_id" : self.deployment_id,
-            "audit_id" : self.audit_id,
+            "deploymentId" : self.deployment_id,
+            "auditId" : self.audit_id,
             "timestamp" : Utc::now().to_rfc3339(),
-            "time_elapsed" : self.start_time.elapsed(),
+            "timeElapsed" : self.start_time.elapsed(),
             "stream" : self.stream,
             "actor" : self.actor,
             "request" : self.request,
