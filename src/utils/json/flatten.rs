@@ -178,24 +178,6 @@ pub fn validate_time_partition(
     }
 }
 
-// Flattens starting from only object types at TOP, e.g. with the parent_key `root` and separator `_`
-// `{ "a": { "b": 1, c: { "d": 2 } } }` becomes `{"root_a_b":1,"root_a_c_d":2}`
-pub fn flatten_with_parent_prefix(
-    nested_value: &mut Value,
-    prefix: &str,
-    separator: &str,
-) -> Result<(), JsonFlattenError> {
-    let Value::Object(nested_obj) = nested_value else {
-        return Err(JsonFlattenError::NonObjectInArray);
-    };
-
-    let mut map = Map::new();
-    flatten_object(&mut map, Some(prefix), nested_obj, separator)?;
-    *nested_obj = map;
-
-    Ok(())
-}
-
 // Flattens a nested JSON Object/Map into another target Map
 fn flatten_object(
     output_map: &mut Map<String, Value>,

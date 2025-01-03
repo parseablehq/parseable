@@ -19,9 +19,10 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::Json;
 use actix_web::{FromRequest, HttpRequest};
-use alerts_utils::{evaluate_alert, user_auth_for_query};
+use alerts_utils::user_auth_for_query;
 use async_trait::async_trait;
 use chrono::Utc;
+use datafusion::common::tree_node::TreeNode;
 use http::StatusCode;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
@@ -39,7 +40,7 @@ pub mod alerts_utils;
 pub mod target;
 
 use crate::option::CONFIG;
-use crate::query::QUERY_SESSION;
+use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::storage;
 use crate::storage::ObjectStorageError;
@@ -202,7 +203,7 @@ impl Display for AlertOperator {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub enum Aggregate {
+pub enum AggregateOperation {
     Avg,
     Count,
     Min,
@@ -210,14 +211,14 @@ pub enum Aggregate {
     Sum,
 }
 
-impl Display for Aggregate {
+impl Display for AggregateOperation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Aggregate::Avg => write!(f, "Avg"),
-            Aggregate::Count => write!(f, "Count"),
-            Aggregate::Min => write!(f, "Min"),
-            Aggregate::Max => write!(f, "Max"),
-            Aggregate::Sum => write!(f, "Sum"),
+            AggregateOperation::Avg => write!(f, "Avg"),
+            AggregateOperation::Count => write!(f, "Count"),
+            AggregateOperation::Min => write!(f, "Min"),
+            AggregateOperation::Max => write!(f, "Max"),
+            AggregateOperation::Sum => write!(f, "Sum"),
         }
     }
 }
@@ -284,11 +285,18 @@ impl Conditions {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateConfig {
-    pub agg: Aggregate,
+    pub agg: AggregateOperation,
     pub condition_config: Option<Conditions>,
     pub column: String,
     pub operator: AlertOperator,
     pub value: f64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub enum Aggregations {
+    AND((AggregateConfig, AggregateConfig)),
+    OR((AggregateConfig, AggregateConfig)),
+    Single(AggregateConfig),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -367,8 +375,7 @@ pub struct AlertRequest {
     pub title: String,
     pub query: String,
     pub alert_type: AlertType,
-    pub aggregate_config: Vec<AggregateConfig>,
-    pub agg_condition: Option<AggregateCondition>,
+    pub aggregate_config: Aggregations,
     pub eval_type: EvalConfig,
     pub targets: Vec<Target>,
 }
@@ -398,7 +405,6 @@ impl AlertRequest {
             query: self.query,
             alert_type: self.alert_type,
             aggregate_config: self.aggregate_config,
-            agg_condition: self.agg_condition,
             eval_type: self.eval_type,
             targets: self.targets,
             state: AlertState::default(),
@@ -416,7 +422,6 @@ impl From<AlertRequest> for AlertConfig {
             query: val.query,
             alert_type: val.alert_type,
             aggregate_config: val.aggregate_config,
-            agg_condition: val.agg_condition,
             eval_type: val.eval_type,
             targets: val.targets,
             state: AlertState::default(),
@@ -433,8 +438,7 @@ pub struct AlertConfig {
     pub title: String,
     pub query: String,
     pub alert_type: AlertType,
-    pub aggregate_config: Vec<AggregateConfig>,
-    pub agg_condition: Option<AggregateCondition>,
+    pub aggregate_config: Aggregations,
     pub eval_type: EvalConfig,
     pub targets: Vec<Target>,
     // for new alerts, state should be resolved
@@ -443,25 +447,61 @@ pub struct AlertConfig {
 }
 
 impl AlertConfig {
-    /// Validate whether the query and the
-    /// aggregate config are correct or not
-    pub async fn validate(&self) -> Result<(), AlertError> {
-        // if agg_conditions limited to two
-        // if multiple conditions, agg_condition should be present
-        if self.aggregate_config.len() > 2 {
-            return Err(AlertError::Metadata(
-                "aggregateConfig can't be more than two",
-            ));
-        }
+    /// Validations
+    pub async fn validate<'a>(&'_ self) -> Result<(), AlertError> {
+        // validate evalType
+        let eval_frequency = match &self.eval_type {
+            EvalConfig::RollingWindow(rolling_window) => {
+                if rolling_window.eval_end != "now" {
+                    return Err(AlertError::Metadata("evalEnd should be now"));
+                }
 
-        if self.aggregate_config.len() > 1 && self.agg_condition.is_none() {
-            return Err(AlertError::Metadata(
-                "aggCondition can't be null with multiple aggregateConfigs",
-            ));
+                if humantime::parse_duration(&rolling_window.eval_start).is_err() {
+                    return Err(AlertError::Metadata(
+                        "evalStart should be of type humantime",
+                    ));
+                }
+                rolling_window.eval_frequency
+            }
+        };
+
+        // validate that target repeat notifs !> eval_frequency
+        for target in &self.targets {
+            match &target.timeout.times {
+                target::Retry::Infinite => {}
+                target::Retry::Finite(repeat) => {
+                    let notif_duration = target.timeout.interval * *repeat as u32;
+                    if (notif_duration.as_secs_f64()).gt(&((eval_frequency * 60) as f64)) {
+                        return Err(AlertError::Metadata(
+                            "evalFrequency should be greater than target repetition  interval",
+                        ));
+                    }
+                }
+            }
         }
 
         let session_state = QUERY_SESSION.state();
         let raw_logical_plan = session_state.create_logical_plan(&self.query).await?;
+
+        // create a visitor to extract the table names present in query
+        let mut visitor = TableScanVisitor::default();
+        let _ = raw_logical_plan.visit(&mut visitor);
+
+        let table = visitor.into_inner().first().unwrap().to_owned();
+
+        let lowercase = self.query.split(&table).collect_vec()[0].to_lowercase();
+
+        if lowercase
+            .strip_prefix(" ")
+            .unwrap_or(&lowercase)
+            .strip_suffix(" ")
+            .unwrap_or(&lowercase)
+            .ne("select * from")
+        {
+            return Err(AlertError::Metadata(
+                "Query needs to be select * from <logstream>",
+            ));
+        }
 
         // TODO: Filter tags should be taken care of!!!
         let time_range = TimeRange::parse_human_time("1m", "now")
@@ -489,34 +529,49 @@ impl AlertConfig {
             .await
             .map_err(|err| AlertError::CustomError(err.to_string()))?;
 
-        warn!("got base_df");
         // now that we have base_df, verify that it has
         // columns from aggregate config
-        let mut columns = HashSet::new();
-        for agg_config in &self.aggregate_config {
-            columns.insert(&agg_config.column);
-
-            if let Some(filters) = &agg_config.condition_config {
-                match filters {
-                    Conditions::AND((e1, e2)) => {
-                        columns.insert(&e1.column);
-                        columns.insert(&e2.column);
-                    }
-                    Conditions::OR((e1, e2)) => {
-                        columns.insert(&e1.column);
-                        columns.insert(&e2.column);
-                    }
-                    Conditions::Condition(e1) => {
-                        columns.insert(&e1.column);
-                    }
-                }
-            }
-        }
-
-        warn!("select_columns- {columns:?}");
+        let columns = self.get_agg_config_cols();
 
         base_df.select_columns(columns.iter().map(|c| c.as_str()).collect_vec().as_slice())?;
         Ok(())
+    }
+
+    // validate whether
+    fn get_agg_config_cols(&self) -> HashSet<&String> {
+        let mut columns: HashSet<&String> = HashSet::new();
+        match &self.aggregate_config {
+            Aggregations::AND((agg1, agg2)) | Aggregations::OR((agg1, agg2)) => {
+                columns.insert(&agg1.column);
+                columns.insert(&agg2.column);
+
+                if let Some(condition) = &agg1.condition_config {
+                    columns.extend(self.get_condition_cols(condition));
+                }
+            }
+            Aggregations::Single(agg) => {
+                columns.insert(&agg.column);
+
+                if let Some(condition) = &agg.condition_config {
+                    columns.extend(self.get_condition_cols(condition));
+                }
+            }
+        }
+        columns
+    }
+
+    fn get_condition_cols<'a>(&'a self, condition: &'a Conditions) -> HashSet<&'a String> {
+        let mut columns: HashSet<&String> = HashSet::new();
+        match condition {
+            Conditions::AND((c1, c2)) | Conditions::OR((c1, c2)) => {
+                columns.insert(&c1.column);
+                columns.insert(&c2.column);
+            }
+            Conditions::Condition(c) => {
+                columns.insert(&c.column);
+            }
+        }
+        columns
     }
 
     pub fn get_eval_frequency(&self) -> u32 {
@@ -525,7 +580,7 @@ impl AlertConfig {
         }
     }
 
-    fn get_context(&self, alert_state: AlertState) -> Context {
+    fn get_context(&self) -> Context {
         let deployment_instance = format!(
             "{}://{}",
             CONFIG.parseable.get_scheme(),
@@ -544,7 +599,7 @@ impl AlertConfig {
             AlertInfo::new(
                 self.id.to_string(),
                 self.title.clone(),
-                alert_state,
+                self.state,
                 self.severity.clone().to_string(),
             ),
             DeploymentInfo::new(deployment_instance, deployment_id, deployment_mode),
@@ -553,9 +608,10 @@ impl AlertConfig {
     }
 
     pub async fn trigger_notifications(&self, message: String) -> Result<(), AlertError> {
-        let mut context = self.get_context(self.state);
+        let mut context = self.get_context();
         context.message = message;
         for target in &self.targets {
+            trace!("Target (trigger_notifications)-\n{target:?}");
             target.call(context.clone());
         }
         Ok(())
@@ -631,11 +687,6 @@ impl Alerts {
         s.append(&mut this.clone());
         drop(s);
 
-        // run eval task once for each alert
-        for alert in this.iter() {
-            evaluate_alert(alert).await?;
-        }
-
         Ok(())
     }
 
@@ -688,8 +739,11 @@ impl Alerts {
 
         // read and modify alert
         let mut alert = self.get_alert_by_id(alert_id).await?;
+        trace!("get alert state by id-\n{}", alert.state);
 
         alert.state = new_state;
+
+        trace!("new state-\n{}", alert.state);
 
         // save to disk
         store.put_alert(alert_id, &alert).await?;
@@ -698,11 +752,14 @@ impl Alerts {
         let mut writer = self.alerts.write().await;
         let alert_to_update = writer.iter_mut().find(|alert| alert.id == alert_id);
         if let Some(alert) = alert_to_update {
+            trace!("in memory alert-\n{}", alert.state);
             alert.state = new_state;
+            trace!("in memory updated alert-\n{}", alert.state);
         };
         drop(writer);
 
         if trigger_notif.is_some() {
+            trace!("trigger notif on-\n{}", alert.state);
             alert.trigger_notifications(trigger_notif.unwrap()).await?;
         }
 

@@ -21,7 +21,7 @@ use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
 use crate::handlers::http::base_path;
 use crate::handlers::http::caching_removed;
-use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
+use crate::handlers::http::cluster::{self, init_cluster_metrics_scheduler};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{self, role};
@@ -123,7 +123,7 @@ impl ParseableServer for QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
-        if matches!(init_cluster_metrics_schedular(), Ok(())) {
+        if matches!(init_cluster_metrics_scheduler(), Ok(())) {
             info!("Cluster metrics scheduler started successfully");
         }
         if let Some(hot_tier_manager) = HotTierManager::global() {

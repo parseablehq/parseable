@@ -60,10 +60,11 @@ pub struct Target {
 
 impl Target {
     pub fn call(&self, context: Context) {
-        trace!("context- {context:?}");
+        trace!("target.call context- {context:?}");
         let timeout = &self.timeout;
         let resolves = context.alert_info.alert_state;
         let mut state = timeout.state.lock().unwrap();
+        trace!("target.call state- {state:?}");
         state.alert_state = resolves;
 
         match resolves {
@@ -75,7 +76,6 @@ impl Target {
                     state.awaiting_resolve = true;
                     drop(state);
                     self.spawn_timeout_task(timeout, context.clone());
-                    call_target(self.target.clone(), context)
                 }
             }
             alert_state @ (AlertState::Resolved | AlertState::Silenced) => {
@@ -96,7 +96,7 @@ impl Target {
     }
 
     fn spawn_timeout_task(&self, target_timeout: &Timeout, alert_context: Context) {
-        trace!("repeat-\n{target_timeout:?}\ncontext-\n{alert_context:?}");
+        trace!("repeat-\n{target_timeout:?}");
         let state = Arc::clone(&target_timeout.state);
         let retry = target_timeout.times;
         let timeout = target_timeout.interval;
@@ -128,7 +128,7 @@ impl Target {
                     let current_state = if let Ok(state) = ALERTS.get_state(&alert_id).await {
                         state
                     } else {
-                        state.lock().unwrap().timed_out = true;
+                        *state.lock().unwrap() = TimeoutState::default();
                         warn!("Unable to fetch state for given alert_id- {alert_id}, stopping target notifs");
                         return;
                     };
@@ -144,11 +144,10 @@ impl Target {
                         let current_state = if let Ok(state) = ALERTS.get_state(&alert_id).await {
                             state
                         } else {
-                            state.lock().unwrap().timed_out = true;
+                            *state.lock().unwrap() = TimeoutState::default();
                             warn!("Unable to fetch state for given alert_id- {alert_id}, stopping target notifs");
                             return;
                         };
-                        println!("current_state= {state:?}");
 
                         let should_call =
                             sleep_and_check_if_call(Arc::clone(&state), current_state).await;
@@ -167,6 +166,7 @@ impl Target {
                     // call_target(target, context);
                 }
             }
+            *state.lock().unwrap() = TimeoutState::default();
         });
     }
 }

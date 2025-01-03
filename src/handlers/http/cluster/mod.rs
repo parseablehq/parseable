@@ -784,8 +784,8 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     Ok(dresses)
 }
 
-pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
-    info!("Setting up schedular for cluster metrics ingestion");
+pub fn init_cluster_metrics_scheduler() -> Result<(), PostError> {
+    info!("Setting up scheduler for cluster metrics ingestion");
     let mut scheduler = AsyncScheduler::new();
     scheduler
         .every(CLUSTER_METRICS_INTERVAL_SECONDS)

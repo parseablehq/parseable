@@ -292,7 +292,7 @@ async fn build_metrics() -> HashMap<String, Value> {
 }
 
 pub fn init_analytics_scheduler() -> anyhow::Result<()> {
-    info!("Setting up schedular for anonymous user analytics");
+    info!("Setting up scheduler for anonymous user analytics");
 
     let mut scheduler = AsyncScheduler::new();
     scheduler
