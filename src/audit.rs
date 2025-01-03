@@ -154,7 +154,7 @@ impl Default for ResponseLog {
     }
 }
 
-const DROP_HEADERS: [&str; 3] = ["authorization", "cookie", "user-agent"];
+const DROP_HEADERS: [&str; 4] = ["authorization", "cookie", "user-agent", "x-p-stream"];
 
 pub struct AuditLogBuilder {
     version: AuditLogVersion,
