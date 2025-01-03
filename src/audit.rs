@@ -2,12 +2,8 @@ use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use crate::about::current;
 use crate::handlers::http::modal::utils::rbac_utils::get_metadata;
-use crate::rbac::map::SessionKey;
-use crate::rbac::Users;
 
 use super::option::CONFIG;
-use actix_web::dev::ServiceRequest;
-use actix_web_httpauth::extractors::basic::BasicAuth;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Serialize;
@@ -156,8 +152,6 @@ impl Default for ResponseLog {
     }
 }
 
-const DROP_HEADERS: [&str; 4] = ["authorization", "cookie", "user-agent", "x-p-stream"];
-
 pub struct AuditLogBuilder {
     version: AuditLogVersion,
     deployment_id: Ulid,
@@ -195,59 +189,6 @@ impl AuditLogBuilder {
 
     pub fn set_stream_name(&mut self, stream: String) {
         self.stream = stream;
-    }
-
-    pub fn update_from_http(&mut self, req: &mut ServiceRequest) {
-        let mut username = "Unknown".to_owned();
-        let mut authorization_method = "None".to_owned();
-
-        // Extract authorization details from request, either from basic auth
-        // header or cookie, else use default value.
-        if let Ok(creds) = req.extract::<BasicAuth>().into_inner() {
-            username = creds.user_id().trim().to_owned();
-            authorization_method = "Basic Auth".to_owned();
-        } else if let Some(cookie) = req.cookie("session") {
-            authorization_method = "Session Cookie".to_owned();
-            if let Some(user_id) = Ulid::from_string(cookie.value())
-                .ok()
-                .and_then(|ulid| Users.get_username_from_session(&SessionKey::SessionId(ulid)))
-            {
-                username = user_id;
-            }
-        }
-
-        let conn = req.connection_info();
-        self.request = RequestLog {
-            method: req.method().to_string(),
-            path: req.path().to_string(),
-            protocol: conn.scheme().to_owned(),
-            headers: req
-                .headers()
-                .iter()
-                .filter_map(|(name, value)| match name.as_str() {
-                    // NOTE: drop headers that are not required
-                    name if DROP_HEADERS.contains(&name.to_lowercase().as_str()) => None,
-                    name => {
-                        // NOTE: Drop headers that can't be parsed as string
-                        value
-                            .to_str()
-                            .map(|value| (name.to_owned(), value.to_string()))
-                            .ok()
-                    }
-                })
-                .collect(),
-        };
-        self.actor = ActorLog {
-            remote_host: conn.realip_remote_addr().unwrap_or_default().to_owned(),
-            user_agent: req
-                .headers()
-                .get("User-Agent")
-                .and_then(|a| a.to_str().ok())
-                .unwrap_or_default()
-                .to_owned(),
-            username,
-            authorization_method,
-        }
     }
 }
 
