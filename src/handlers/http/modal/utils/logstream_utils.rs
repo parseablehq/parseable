@@ -29,7 +29,7 @@ use crate::{
         CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
         TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
     },
-    metadata::{self, STREAM_INFO},
+    metadata::{self, SchemaVersion, STREAM_INFO},
     option::{Mode, CONFIG},
     static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
     storage::{LogStream, ObjectStoreFormat, StreamType},
@@ -426,6 +426,7 @@ pub async fn create_stream(
                 static_schema_flag.to_string(),
                 static_schema,
                 stream_type,
+                SchemaVersion::V1, // New stream
             );
         }
         Err(err) => {
@@ -474,6 +475,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
         let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
         let static_schema_flag = stream_metadata.static_schema_flag.as_deref().unwrap_or("");
         let stream_type = stream_metadata.stream_type.as_deref().unwrap_or("");
+        let schema_version = stream_metadata.schema_version;
 
         metadata::STREAM_INFO.add_stream(
             stream_name.to_string(),
@@ -484,6 +486,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             static_schema_flag.to_string(),
             static_schema,
             stream_type,
+            schema_version,
         );
     } else {
         return Ok(false);

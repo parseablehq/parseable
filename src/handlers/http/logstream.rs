@@ -26,10 +26,10 @@ use super::modal::utils::logstream_utils::{
 use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
 use crate::catalog::get_first_event;
-use crate::event::format::update_data_type_to_datetime;
+use crate::event::format::override_data_type;
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
-use crate::metadata::STREAM_INFO;
+use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
@@ -111,9 +111,9 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
         }
     };
 
-    let mut schema = infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap();
+    let mut schema = Arc::new(infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap());
     for log_record in log_records {
-        schema = update_data_type_to_datetime(schema, log_record, Vec::new());
+        schema = override_data_type(schema, log_record, SchemaVersion::V1);
     }
     Ok((web::Json(schema), StatusCode::OK))
 }
@@ -517,6 +517,7 @@ pub async fn create_stream(
                 static_schema_flag.to_string(),
                 static_schema,
                 stream_type,
+                SchemaVersion::V1, // New stream
             );
         }
         Err(err) => {

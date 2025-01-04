@@ -21,13 +21,15 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    ALERT_FILE_NAME, CORRELATIONS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
-    PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    Owner, ALERT_FILE_NAME, CORRELATIONS_ROOT_DIRECTORY, MANIFEST_FILE,
+    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 use crate::correlation::{CorrelationConfig, CorrelationError};
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
+use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
 use crate::{
@@ -153,28 +155,22 @@ pub trait ObjectStorage: Send + Sync + 'static {
         schema: Arc<Schema>,
         stream_type: &str,
     ) -> Result<String, ObjectStorageError> {
-        let mut format = ObjectStoreFormat::default();
-        format.set_id(CONFIG.parseable.username.clone());
-        let permission = Permisssion::new(CONFIG.parseable.username.clone());
-        format.permissions = vec![permission];
-        format.created_at = Local::now().to_rfc3339();
-        format.stream_type = Some(stream_type.to_string());
-        if time_partition.is_empty() {
-            format.time_partition = None;
-        } else {
-            format.time_partition = Some(time_partition.to_string());
-        }
-        format.time_partition_limit = time_partition_limit.map(|limit| limit.to_string());
-        if custom_partition.is_empty() {
-            format.custom_partition = None;
-        } else {
-            format.custom_partition = Some(custom_partition.to_string());
-        }
-        if static_schema_flag != "true" {
-            format.static_schema_flag = None;
-        } else {
-            format.static_schema_flag = Some(static_schema_flag.to_string());
-        }
+        let format = ObjectStoreFormat {
+            created_at: Local::now().to_rfc3339(),
+            permissions: vec![Permisssion::new(CONFIG.parseable.username.clone())],
+            stream_type: Some(stream_type.to_string()),
+            time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
+            time_partition_limit: time_partition_limit.map(|limit| limit.to_string()),
+            custom_partition: (!custom_partition.is_empty()).then(|| custom_partition.to_string()),
+            static_schema_flag: (static_schema_flag == "true")
+                .then(|| static_schema_flag.to_string()),
+            schema_version: SchemaVersion::V1, // NOTE: Newly created streams are all V1
+            owner: Owner {
+                id: CONFIG.parseable.username.clone(),
+                group: CONFIG.parseable.username.clone(),
+            },
+            ..Default::default()
+        };
         let format_json = to_bytes(&format);
         self.put_object(&schema_path(stream_name), to_bytes(&schema))
             .await?;
