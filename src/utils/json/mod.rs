@@ -18,6 +18,7 @@
 
 use std::num::NonZeroU32;
 
+use flatten::{convert_to_array, generic_flattening};
 use serde_json;
 use serde_json::Value;
 
@@ -37,9 +38,11 @@ pub fn flatten_json_body(
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
     let mut nested_value = if schema_version == SchemaVersion::V1 {
-        flatten::generic_flattening(&body)
-            .map(flatten::convert_to_array)
-            .unwrap_or(Ok(body))?
+        if let Ok(flattened_json) = generic_flattening(&body) {
+            convert_to_array(flattened_json)?
+        } else {
+            body
+        }
     } else {
         body
     };
