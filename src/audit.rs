@@ -44,11 +44,11 @@ pub struct AuditLogger {
 }
 
 impl AuditLogger {
-    /// Create an audit logger that can be used to capture and push 
+    /// Create an audit logger that can be used to capture and push
     /// audit logs to the appropriate logging system over HTTP
     pub fn new() -> Option<AuditLogger> {
-        // Try to construct the log endpoint URL by joining the base URL 
-        // with the ingest path, This can fail if the URL is not valid, 
+        // Try to construct the log endpoint URL by joining the base URL
+        // with the ingest path, This can fail if the URL is not valid,
         // when the base URL is not set or the ingest path is not valid
         let log_endpoint = match CONFIG
             .parseable
@@ -76,7 +76,7 @@ impl AuditLogger {
             .post(self.log_endpoint.as_str())
             .json(&json)
             .header("x-p-stream", "audit_log");
-        
+
         // Use basic auth if credentials are configured
         if let Some(username) = CONFIG.parseable.audit_username.as_ref() {
             req = req.basic_auth(username, CONFIG.parseable.audit_password.as_ref())
