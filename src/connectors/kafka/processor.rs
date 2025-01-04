@@ -22,7 +22,7 @@ use crate::connectors::kafka::{ConsumerRecord, StreamConsumer, TopicPartition};
 use crate::event::format;
 use crate::event::format::EventFormat;
 use crate::handlers::http::ingest::create_stream_if_not_exists;
-use crate::metadata::STREAM_INFO;
+use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::storage::StreamType;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -66,7 +66,8 @@ impl ParseableSinkProcessor {
                 };
 
                 // TODO: Implement a buffer (e.g., a wrapper around [Box<dyn ArrayBuilder>]) to optimize the creation of ParseableEvent by compacting the internal RecordBatch.
-                let (record_batch, is_first) = event.into_recordbatch(&schema, None, None)?;
+                let (record_batch, is_first) =
+                    event.into_recordbatch(&schema, None, None, SchemaVersion::V1)?;
 
                 let p_event = crate::event::Event {
                     rb: record_batch,
