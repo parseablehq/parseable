@@ -126,11 +126,7 @@ impl Users {
     ) -> Response {
         // try fetch from auth map for faster auth flow
         if let Some(res) = sessions().check_auth(&key, action, context_stream, context_user) {
-            return if res {
-                Response::Authorized
-            } else {
-                Response::UnAuthorized
-            };
+            return res;
         }
 
         // attempt reloading permissions into new session for basic auth user
@@ -155,14 +151,9 @@ impl Users {
                     DateTime::<Utc>::MAX_UTC,
                     roles_to_permission(user.roles()),
                 );
-                return if sessions
+                return sessions
                     .check_auth(&key, action, context_stream, context_user)
-                    .expect("entry for this key just added")
-                {
-                    Response::Authorized
-                } else {
-                    Response::UnAuthorized
-                };
+                    .expect("entry for this key just added");
             }
         }
 

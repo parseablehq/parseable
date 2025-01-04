@@ -116,6 +116,11 @@ pub struct Cli {
     pub kafka_client_id: Option<String>,
     pub kafka_security_protocol: Option<SslProtocol>,
     pub kafka_partitions: Option<String>,
+
+    // Audit Logging env vars
+    pub audit_logger: Option<Url>,
+    pub audit_username: Option<String>,
+    pub audit_password: Option<String>,
 }
 
 impl Cli {
@@ -164,6 +169,10 @@ impl Cli {
     pub const KAFKA_CLIENT_ID: &'static str = "kafka-client-id";
     pub const KAFKA_SECURITY_PROTOCOL: &'static str = "kafka-security-protocol";
     pub const KAFKA_PARTITIONS: &'static str = "kafka-partitions";
+
+    pub const AUDIT_LOGGER: &'static str = "audit-logger";
+    pub const AUDIT_USERNAME: &'static str = "audit-username";
+    pub const AUDIT_PASSWORD: &'static str = "audit-password";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -219,6 +228,29 @@ impl Cli {
                     .env("P_KAFKA_PARTITIONS")
                     .value_name("STRING")
                     .help("Kafka partitions"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_LOGGER)
+                    .long(Self::AUDIT_LOGGER)
+                    .env("P_AUDIT_LOGGER")
+                    .value_name("URL")
+                    .required(false)
+                    .value_parser(validation::url)
+                    .help("Audit logger endpoint"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_USERNAME)
+                    .long(Self::AUDIT_USERNAME)
+                    .env("P_AUDIT_USERNAME")
+                    .value_name("STRING")
+                    .help("Audit logger username"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_PASSWORD)
+                    .long(Self::AUDIT_PASSWORD)
+                    .env("P_AUDIT_PASSWORD")
+                    .value_name("STRING")
+                    .help("Audit logger password"),
             )
              .arg(
                  Arg::new(Self::TRINO_ENDPOINT)
@@ -535,6 +567,10 @@ impl FromArgMatches for Cli {
             .get_one::<SslProtocol>(Self::KAFKA_SECURITY_PROTOCOL)
             .cloned();
         self.kafka_partitions = m.get_one::<String>(Self::KAFKA_PARTITIONS).cloned();
+
+        self.audit_logger = m.get_one::<Url>(Self::AUDIT_LOGGER).cloned();
+        self.audit_username = m.get_one::<String>(Self::AUDIT_USERNAME).cloned();
+        self.audit_password = m.get_one::<String>(Self::AUDIT_PASSWORD).cloned();
 
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();

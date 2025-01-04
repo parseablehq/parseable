@@ -20,6 +20,7 @@ use crate::rbac::user::User;
 use crate::{option::CONFIG, storage::StorageMetadata};
 use std::{collections::HashMap, sync::Mutex};
 
+use super::Response;
 use super::{
     role::{model::DefaultPrivilege, Action, Permission, RoleBuilder},
     user,
@@ -193,16 +194,16 @@ impl Sessions {
     }
 
     // returns None if user is not in the map
-    // Otherwise returns Some(is_authenticated)
+    // Otherwise returns Some(Response) where response is authorized/unauthorized
     pub fn check_auth(
         &self,
         key: &SessionKey,
         required_action: Action,
         context_stream: Option<&str>,
         context_user: Option<&str>,
-    ) -> Option<bool> {
+    ) -> Option<Response> {
         self.active_sessions.get(key).map(|(username, perms)| {
-            perms.iter().any(|user_perm| {
+            if perms.iter().any(|user_perm| {
                 match *user_perm {
                     // if any action is ALL then we we authorize
                     Permission::Unit(action) => action == required_action || action == Action::All,
@@ -221,7 +222,11 @@ impl Sessions {
                     }
                     _ => false,
                 }
-            })
+            }) {
+                Response::Authorized
+            } else {
+                Response::UnAuthorized
+            }
         })
     }
 

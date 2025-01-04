@@ -41,6 +41,7 @@ use ssl_acceptor::get_ssl_acceptor;
 use tokio::sync::{oneshot, Mutex};
 use tracing::{error, info, warn};
 
+use super::audit;
 use super::cross_origin_config;
 use super::API_BASE_PATH;
 use super::API_VERSION;
@@ -101,6 +102,7 @@ pub trait ParseableServer {
                 .wrap(prometheus.clone())
                 .configure(|config| Self::configure_routes(config, oidc_client.clone()))
                 .wrap(from_fn(health_check::check_shutdown_middleware))
+                .wrap(from_fn(audit::audit_log_middleware))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())
                 .wrap(cross_origin_config())

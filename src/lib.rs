@@ -19,6 +19,7 @@
 mod about;
 mod alerts;
 pub mod analytics;
+pub mod audit;
 pub mod banner;
 mod catalog;
 mod cli;
