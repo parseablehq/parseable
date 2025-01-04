@@ -421,6 +421,9 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<BTreeMap<String, V
             data_point_json.insert(key.clone(), value.clone());
         }
     }
+    if data_points_json.is_empty() {
+        data_points_json.push(metric_json);
+    }
     data_points_json
 }
 
