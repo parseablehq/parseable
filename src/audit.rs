@@ -39,10 +39,8 @@ use url::Url;
 static AUDIT_LOGGER: Lazy<Option<AuditLogger>> = Lazy::new(AuditLogger::new);
 
 pub struct AuditLogger {
-    client: Arc<Client>,
+    client: Client,
     log_endpoint: Url,
-    username: Option<String>,
-    password: Option<String>,
 }
 
 impl AuditLogger {
@@ -62,16 +60,9 @@ impl AuditLogger {
             }
         };
 
-        let client = Arc::new(reqwest::Client::new());
-
-        let username = CONFIG.parseable.audit_username.clone();
-        let password = CONFIG.parseable.audit_password.clone();
-
         Some(AuditLogger {
-            client,
+            client: reqwest::Client::new(),
             log_endpoint,
-            username,
-            password,
         })
     }
 
@@ -81,8 +72,10 @@ impl AuditLogger {
             .post(self.log_endpoint.as_str())
             .json(&json)
             .header("x-p-stream", "audit_log");
-        if let Some(username) = self.username.as_ref() {
-            req = req.basic_auth(username, self.password.as_ref())
+        
+        // Use basic auth if credentials are configured
+        if let Some(username) = CONFIG.parseable.audit_username.as_ref() {
+            req = req.basic_auth(username, CONFIG.parseable.audit_password.as_ref())
         }
 
         match req.send().await {
