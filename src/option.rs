@@ -17,6 +17,12 @@
  */
 
 use crate::cli::Cli;
+#[cfg(any(
+    feature = "rdkafka-ssl",
+    feature = "rdkafka-ssl-vendored",
+    feature = "rdkafka-sasl"
+))]
+use crate::connectors::common::config::ConnectorConfig;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::{
     AzureBlobConfig, FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config,
@@ -30,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+
 pub const MIN_CACHE_SIZE_BYTES: u64 = 1073741824; // 1 GiB
 
 pub const JOIN_COMMUNITY: &str =
@@ -41,6 +48,12 @@ pub struct Config {
     pub parseable: Cli,
     storage: Arc<dyn ObjectStorageProvider>,
     pub storage_name: &'static str,
+    #[cfg(any(
+        feature = "rdkafka-ssl",
+        feature = "rdkafka-ssl-vendored",
+        feature = "rdkafka-sasl"
+    ))]
+    pub connector_config: Option<ConnectorConfig>,
 }
 
 impl Config {
@@ -98,6 +111,12 @@ parseable [command] --help
                     parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "drive",
+                    #[cfg(any(
+                        feature = "rdkafka-ssl",
+                        feature = "rdkafka-ssl-vendored",
+                        feature = "rdkafka-sasl"
+                    ))]
+                    connector_config: ConnectorConfig::from(m),
                 }
             }
             Some(("s3-store", m)) => {
@@ -114,6 +133,12 @@ parseable [command] --help
                     parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "s3",
+                    #[cfg(any(
+                        feature = "rdkafka-ssl",
+                        feature = "rdkafka-ssl-vendored",
+                        feature = "rdkafka-sasl"
+                    ))]
+                    connector_config: ConnectorConfig::from(m),
                 }
             }
             Some(("blob-store", m)) => {
@@ -130,6 +155,12 @@ parseable [command] --help
                     parseable: cli,
                     storage: Arc::new(storage),
                     storage_name: "blob_store",
+                    #[cfg(any(
+                        feature = "rdkafka-ssl",
+                        feature = "rdkafka-ssl-vendored",
+                        feature = "rdkafka-sasl"
+                    ))]
+                    connector_config: ConnectorConfig::from(m),
                 }
             }
             _ => unreachable!(),
@@ -222,6 +253,7 @@ fn create_parseable_cli_command() -> Command {
         .mut_arg(Cli::PASSWORD, |arg| {
             arg.required(false).default_value(Cli::DEFAULT_PASSWORD)
         });
+
     let s3 = Cli::create_cli_command_with_clap("s3-store");
     let s3 = <S3Config as Args>::augment_args_for_update(s3);
 

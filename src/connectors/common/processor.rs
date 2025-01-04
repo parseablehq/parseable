@@ -16,41 +16,14 @@
  *
  */
 
-mod about;
-mod alerts;
-pub mod analytics;
-pub mod banner;
-mod catalog;
-mod cli;
-#[cfg(any(
-    feature = "rdkafka-ssl",
-    feature = "rdkafka-ssl-vendored",
-    feature = "rdkafka-sasl"
-))]
-pub mod connectors;
-pub mod correlation;
-mod event;
-pub mod handlers;
-pub mod hottier;
-mod livetail;
-mod metadata;
-pub mod metrics;
-pub mod migration;
-mod oidc;
-pub mod option;
-mod query;
-pub mod rbac;
-mod response;
-mod static_schema;
-mod stats;
-pub mod storage;
-pub mod sync;
-pub mod users;
-mod utils;
-mod validator;
+use async_trait::async_trait;
 
-pub use handlers::http::modal::{
-    ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
-};
+#[async_trait]
+pub trait Processor<IN, OUT>: Send + Sync + Sized + 'static {
+    async fn process(&self, records: IN) -> anyhow::Result<OUT>;
 
-pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
+    #[allow(unused_variables)]
+    async fn post_stream(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}

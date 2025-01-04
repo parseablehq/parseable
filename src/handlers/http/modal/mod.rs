@@ -65,8 +65,8 @@ pub trait ParseableServer {
     /// load metadata/configuration from persistence for previous sessions of parseable
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>>;
 
-    /// code that describes starting and setup procedures for each type of server
-    async fn init(&self) -> anyhow::Result<()>;
+    /// code that describes starting and setup procedures for each type of server with prometheus
+    async fn init(&self, prometheus: &PrometheusMetrics) -> anyhow::Result<()>;
 
     /// configure the server
     async fn start(
@@ -116,7 +116,7 @@ pub trait ParseableServer {
         // Spawn the signal handler task
         let signal_task = tokio::spawn(async move {
             health_check::handle_signals(shutdown_signal).await;
-            println!("Received shutdown signal, notifying server to shut down...");
+            info!("Received shutdown signal, notifying server to shut down...");
         });
 
         // Create the HTTP server

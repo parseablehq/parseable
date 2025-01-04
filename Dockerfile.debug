@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # build stage
-FROM rust:1.77.1-bookworm as builder
+FROM rust:1.83.0-bookworm AS builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
@@ -30,6 +30,7 @@ FROM docker.io/debian:bookworm-slim
 
 WORKDIR /parseable
 
+# Copy the Parseable binary from builder
 COPY --from=builder /parseable/target/debug/parseable /usr/bin/parseable
 
 CMD ["/usr/bin/parseable"]

@@ -31,7 +31,6 @@ use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::DisAllowRootUser;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::role;
-use crate::metrics;
 use crate::migration;
 use crate::migration::metadata_migration::migrate_ingester_metadata;
 use crate::rbac::role::Action;
@@ -46,6 +45,7 @@ use crate::{handlers::http::base_path, option::CONFIG};
 use actix_web::web;
 use actix_web::web::resource;
 use actix_web::Scope;
+use actix_web_prometheus::PrometheusMetrics;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use base64::Engine;
@@ -99,9 +99,8 @@ impl ParseableServer for IngestServer {
     }
 
     /// configure the server and start an instance to ingest data
-    async fn init(&self) -> anyhow::Result<()> {
-        let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
+    async fn init(&self, prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
+        CONFIG.storage().register_store_metrics(prometheus);
 
         migration::run_migration(&CONFIG).await?;
 
@@ -116,7 +115,7 @@ impl ParseableServer for IngestServer {
         self.set_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
-        let app = self.start(prometheus, None);
+        let app = self.start(prometheus.clone(), None);
 
         tokio::pin!(app);
         loop {
