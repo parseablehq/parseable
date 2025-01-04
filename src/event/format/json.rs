@@ -29,7 +29,7 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
-use super::{EventFormat, Metadata, Tags};
+use super::{EventFormat, LogSource, Metadata, Tags};
 use crate::{
     metadata::SchemaVersion,
     utils::{arrow::get_field, json::flatten_json_body},
@@ -52,7 +52,7 @@ impl EventFormat for Event {
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
-        log_source: &str,
+        log_source: &LogSource,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
         let data = flatten_json_body(
             self.data,

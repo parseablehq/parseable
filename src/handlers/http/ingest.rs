@@ -20,16 +20,14 @@ use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
+use crate::event::format::LogSource;
 use crate::event::{
     self,
     error::EventError,
     format::{self, EventFormat},
 };
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
-use crate::handlers::{
-    LOG_SOURCE_KEY, LOG_SOURCE_OTEL_LOGS, LOG_SOURCE_OTEL_METRICS, LOG_SOURCE_OTEL_TRACES,
-    STREAM_NAME_HEADER_KEY,
-};
+use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
@@ -95,7 +93,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             metadata: String::default(),
         };
         // For internal streams, use old schema
-        event.into_recordbatch(&schema, None, None, SchemaVersion::V0, "")?
+        event.into_recordbatch(&schema, None, None, SchemaVersion::V0, &LogSource::default())?
     };
     event::Event {
         rb,
@@ -127,8 +125,8 @@ pub async fn handle_otel_logs_ingestion(
     let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingLogSource));
     };
-    let log_source = log_source.to_str().unwrap();
-    if log_source != LOG_SOURCE_OTEL_LOGS {
+    let log_source = LogSource::from(log_source.to_str().unwrap());
+    if log_source != LogSource::OtelLogs {
         return Err(PostError::Invalid(anyhow::anyhow!(
             "Please use x-p-log-source: otel-logs for ingesting otel logs"
         )));
@@ -142,7 +140,7 @@ pub async fn handle_otel_logs_ingestion(
     let mut json = flatten_otel_logs(&logs);
     for record in json.iter_mut() {
         let body: Bytes = serde_json::to_vec(record).unwrap().into();
-        push_logs(&stream_name, &req, &body, log_source).await?;
+        push_logs(&stream_name, &req, &body, &log_source).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -161,8 +159,8 @@ pub async fn handle_otel_metrics_ingestion(
     let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingLogSource));
     };
-    let log_source = log_source.to_str().unwrap();
-    if log_source != LOG_SOURCE_OTEL_METRICS {
+    let log_source = LogSource::from(log_source.to_str().unwrap());
+    if log_source != LogSource::OtelMetrics {
         return Err(PostError::Invalid(anyhow::anyhow!(
             "Please use x-p-log-source: otel-metrics for ingesting otel metrics"
         )));
@@ -175,7 +173,7 @@ pub async fn handle_otel_metrics_ingestion(
     let mut json = flatten_otel_metrics(metrics);
     for record in json.iter_mut() {
         let body: Bytes = serde_json::to_vec(record).unwrap().into();
-        push_logs(&stream_name, &req, &body, log_source).await?;
+        push_logs(&stream_name, &req, &body, &log_source).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -195,8 +193,8 @@ pub async fn handle_otel_traces_ingestion(
     let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingLogSource));
     };
-    let log_source = log_source.to_str().unwrap();
-    if log_source != LOG_SOURCE_OTEL_TRACES {
+    let log_source = LogSource::from(log_source.to_str().unwrap());
+    if log_source != LogSource::OtelTraces {
         return Err(PostError::Invalid(anyhow::anyhow!(
             "Please use x-p-log-source: otel-traces for ingesting otel traces"
         )));
@@ -209,7 +207,7 @@ pub async fn handle_otel_traces_ingestion(
     let mut json = flatten_otel_traces(&traces);
     for record in json.iter_mut() {
         let body: Bytes = serde_json::to_vec(record).unwrap().into();
-        push_logs(&stream_name, &req, &body, log_source).await?;
+        push_logs(&stream_name, &req, &body, &log_source).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -371,7 +369,7 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        event,
+        event::{self, format::LogSource},
         handlers::{http::modal::utils::ingest_utils::into_event_batch, PREFIX_META, PREFIX_TAGS},
         metadata::SchemaVersion,
     };
@@ -420,7 +418,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
-            "",
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -471,7 +469,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
-            "",
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -505,8 +503,16 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) =
-            into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
@@ -538,7 +544,16 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").is_err());
+        assert!(into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default()
+        )
+        .is_err());
     }
 
     #[test]
@@ -556,8 +571,16 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) =
-            into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -576,7 +599,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
-            ""
+            &LogSource::default()
         )
         .is_err())
     }
@@ -608,7 +631,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
-            "",
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -665,7 +688,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
-            "",
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -715,8 +738,16 @@ mod tests {
         );
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) =
-            into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -765,7 +796,16 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0, "").is_err());
+        assert!(into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default()
+        )
+        .is_err());
     }
 
     #[test]
@@ -800,7 +840,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
-            "",
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -881,7 +921,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V1,
-            "",
+            &LogSource::default(),
         )
         .unwrap();
 

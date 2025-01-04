@@ -27,11 +27,11 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     event::{
         self,
-        format::{self, EventFormat},
+        format::{self, EventFormat, LogSource},
     },
     handlers::{
         http::{ingest::PostError, kinesis},
-        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+        LOG_SOURCE_KEY, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     },
     metadata::{SchemaVersion, STREAM_INFO},
     storage::StreamType,
@@ -43,26 +43,30 @@ pub async fn flatten_and_push_logs(
     body: Bytes,
     stream_name: &str,
 ) -> Result<(), PostError> {
-    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
-        push_logs(stream_name, &req, &body, "").await?;
-        return Ok(());
-    };
-    let log_source = log_source.to_str().unwrap();
-    if log_source == LOG_SOURCE_KINESIS {
-        let json = kinesis::flatten_kinesis_logs(&body);
-        for record in json.iter() {
-            let body: Bytes = serde_json::to_vec(record).unwrap().into();
-            push_logs(stream_name, &req, &body, "").await?;
-        }
-    } else if log_source.contains("otel") {
-        return Err(PostError::Invalid(anyhow!(
-            "Please use endpoints `/v1/logs` for otel logs, `/v1/metrics` for otel metrics and `/v1/traces` for otel traces"
-        )));
-    } else {
-        tracing::warn!("Unknown log source: {}", log_source);
-        push_logs(stream_name, &req, &body, "").await?;
-    }
+    let log_source = req
+        .headers()
+        .get(LOG_SOURCE_KEY)
+        .map(|h| h.to_str().unwrap_or(""))
+        .map(LogSource::from)
+        .unwrap_or_default();
 
+    match log_source {
+        LogSource::Kinesis => {
+            let json = kinesis::flatten_kinesis_logs(&body);
+            for record in json.iter() {
+                let body: Bytes = serde_json::to_vec(record).unwrap().into();
+                push_logs(stream_name, &req, &body, &LogSource::default()).await?;
+            }
+        }
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
+            return Err(PostError::Invalid(anyhow!(
+                "Please use endpoints `/v1/logs` for otel logs, `/v1/metrics` for otel metrics and `/v1/traces` for otel traces"
+            )));
+        }
+        _ => {
+            push_logs(stream_name, &req, &body, &log_source).await?;
+        }
+    }
     Ok(())
 }
 
@@ -70,7 +74,7 @@ pub async fn push_logs(
     stream_name: &str,
     req: &HttpRequest,
     body: &Bytes,
-    log_source: &str,
+    log_source: &LogSource,
 ) -> Result<(), PostError> {
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
     let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
@@ -254,7 +258,7 @@ pub fn into_event_batch(
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
-    log_source: &str,
+    log_source: &LogSource,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let tags = collect_labelled_headers(req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(req, PREFIX_META, SEPARATOR)?;

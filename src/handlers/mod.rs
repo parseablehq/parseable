@@ -45,17 +45,5 @@ const TRINO_USER: &str = "x-trino-user";
 // constants for log Source values for known sources and formats
 const LOG_SOURCE_KINESIS: &str = "kinesis";
 
-// OpenTelemetry sends logs according to the specification as explained here
-// https://github.com/open-telemetry/opentelemetry-proto/tree/v1.0.0/opentelemetry/proto/logs/v1
-const LOG_SOURCE_OTEL_LOGS: &str = "otel-logs";
-
-// OpenTelemetry sends traces according to the specification as explained here
-// https://github.com/open-telemetry/opentelemetry-proto/tree/v1.0.0/opentelemetry/proto/metrics/v1
-const LOG_SOURCE_OTEL_METRICS: &str = "otel-metrics";
-
-// OpenTelemetry sends traces according to the specification as explained here
-// https://github.com/open-telemetry/opentelemetry-proto/blob/v1.0.0/opentelemetry/proto/trace/v1/trace.proto
-const LOG_SOURCE_OTEL_TRACES: &str = "otel-traces";
-
 // AWS Kinesis constants
 const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";

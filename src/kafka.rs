@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, fmt::Debug};
 use tracing::{debug, error, info, warn};
 
+use crate::event::format::LogSource;
 use crate::option::CONFIG;
 use crate::{
     event::{
@@ -198,7 +199,7 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
             static_schema_flag.as_ref(),
             time_partition.as_ref(),
             schema_version,
-            "",
+            &LogSource::default(),
         )
         .map_err(|err| KafkaError::PostError(PostError::CustomError(err.to_string())))?;
 

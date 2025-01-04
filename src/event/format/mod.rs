@@ -43,6 +43,38 @@ type Tags = String;
 type Metadata = String;
 type EventSchema = Vec<Arc<Field>>;
 
+/// Source of the logs, used to perform special processing for certain sources
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub enum LogSource {
+    // AWS Kinesis sends logs in the format of a json array
+    Kinesis,
+    // OpenTelemetry sends logs according to the specification as explained here
+    // https://github.com/open-telemetry/opentelemetry-proto/tree/v1.0.0/opentelemetry/proto/logs/v1
+    OtelLogs,
+    // OpenTelemetry sends traces according to the specification as explained here
+    // https://github.com/open-telemetry/opentelemetry-proto/blob/v1.0.0/opentelemetry/proto/trace/v1/trace.proto
+    OtelMetrics,
+    // OpenTelemetry sends traces according to the specification as explained here
+    // https://github.com/open-telemetry/opentelemetry-proto/tree/v1.0.0/opentelemetry/proto/metrics/v1
+    OtelTraces,
+    #[default]
+    // Json object or array
+    Json,
+    Custom(String),
+}
+
+impl From<&str> for LogSource {
+    fn from(s: &str) -> Self {
+        match s {
+            "kinesis" => LogSource::Kinesis,
+            "otel-logs" => LogSource::OtelLogs,
+            "otel-metrics" => LogSource::OtelMetrics,
+            "otel-traces" => LogSource::OtelTraces,
+            custom => LogSource::Custom(custom.to_owned()),
+        }
+    }
+}
+
 // Global Trait for event format
 // This trait is implemented by all the event formats
 pub trait EventFormat: Sized {
@@ -54,7 +86,7 @@ pub trait EventFormat: Sized {
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
-        log_source: &str,
+        log_source: &LogSource,
     ) -> Result<(Self::Data, EventSchema, bool, Tags, Metadata), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
@@ -65,7 +97,7 @@ pub trait EventFormat: Sized {
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
-        log_source: &str,
+        log_source: &LogSource,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let (data, mut schema, is_first, tags, metadata) = self.to_data(
             storage_schema,
