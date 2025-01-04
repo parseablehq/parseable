@@ -32,8 +32,9 @@ pub fn flatten_json_body(
     custom_partition: Option<&String>,
     schema_version: SchemaVersion,
     validation_required: bool,
+    log_source: &str,
 ) -> Result<Value, anyhow::Error> {
-    let mut nested_value = if schema_version == SchemaVersion::V1 {
+    let mut nested_value = if schema_version == SchemaVersion::V1 && !log_source.contains("otel") {
         flatten::generic_flattening(body)?
     } else {
         body
@@ -57,6 +58,7 @@ pub fn convert_array_to_object(
     time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
     schema_version: SchemaVersion,
+    log_source: &str,
 ) -> Result<Vec<Value>, anyhow::Error> {
     let data = flatten_json_body(
         body,
@@ -65,6 +67,7 @@ pub fn convert_array_to_object(
         custom_partition,
         schema_version,
         true,
+        log_source,
     )?;
     let value_arr = match data {
         Value::Array(arr) => arr,

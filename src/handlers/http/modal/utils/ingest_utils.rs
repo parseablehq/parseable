@@ -16,8 +16,6 @@
  *
  */
 
-use std::{collections::HashMap, sync::Arc};
-
 use actix_web::HttpRequest;
 use anyhow::anyhow;
 use arrow_schema::Field;
@@ -25,6 +23,7 @@ use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
 use serde_json::Value;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     event::{
@@ -45,20 +44,26 @@ pub async fn flatten_and_push_logs(
     body: Bytes,
     stream_name: &str,
 ) -> Result<(), PostError> {
-    let log_source = req
-        .headers()
-        .get(LOG_SOURCE_KEY)
-        .map(|header| header.to_str().unwrap_or_default())
-        .unwrap_or_default();
+    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
+        push_logs(stream_name, &req, &body, "").await?;
+        return Ok(());
+    };
+    let log_source = log_source.to_str().unwrap();
     if log_source == LOG_SOURCE_KINESIS {
         let json = kinesis::flatten_kinesis_logs(&body);
         for record in json.iter() {
             let body: Bytes = serde_json::to_vec(record).unwrap().into();
-            push_logs(stream_name, &req, &body).await?;
+            push_logs(stream_name, &req, &body, "").await?;
         }
+    } else if log_source.contains("otel") {
+        return Err(PostError::Invalid(anyhow!(
+            "Please use endpoints `/v1/logs` for otel logs, `/v1/metrics` for otel metrics and `/v1/traces` for otel traces"
+        )));
     } else {
-        push_logs(stream_name, &req, &body).await?;
+        tracing::warn!("Unknown log source: {}", log_source);
+        push_logs(stream_name, &req, &body, "").await?;
     }
+
     Ok(())
 }
 
@@ -66,6 +71,7 @@ pub async fn push_logs(
     stream_name: &str,
     req: &HttpRequest,
     body: &Bytes,
+    log_source: &str,
 ) -> Result<(), PostError> {
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
     let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
@@ -79,6 +85,7 @@ pub async fn push_logs(
         time_partition_limit,
         custom_partition.as_ref(),
         schema_version,
+        log_source,
     )?;
 
     for value in data {
@@ -108,6 +115,7 @@ pub async fn push_logs(
             static_schema_flag.as_ref(),
             time_partition.as_ref(),
             schema_version,
+            log_source,
         )?;
 
         Event {
@@ -135,6 +143,7 @@ pub fn into_event_batch(
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
+    log_source: &str,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let tags = collect_labelled_headers(req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(req, PREFIX_META, SEPARATOR)?;
@@ -143,8 +152,13 @@ pub fn into_event_batch(
         tags,
         metadata,
     };
-    let (rb, is_first) =
-        event.into_recordbatch(&schema, static_schema_flag, time_partition, schema_version)?;
+    let (rb, is_first) = event.into_recordbatch(
+        &schema,
+        static_schema_flag,
+        time_partition,
+        schema_version,
+        log_source,
+    )?;
     Ok((rb, is_first))
 }
 

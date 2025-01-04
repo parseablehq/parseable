@@ -16,23 +16,7 @@
  *
  */
 
-/// Common types used across all event types.
-pub mod common {
-    pub mod v1 {
-        include!("opentelemetry.proto.common.v1.rs");
-    }
-}
-
-/// Generated types used for logs.
-pub mod logs {
-    pub mod v1 {
-        include!("opentelemetry.proto.logs.v1.rs");
-    }
-}
-
-/// Generated types used in resources.
-pub mod resource {
-    pub mod v1 {
-        include!("opentelemetry.proto.resource.v1.rs");
-    }
-}
+pub mod logs;
+pub mod metrics;
+pub mod otel_utils;
+pub mod traces;
