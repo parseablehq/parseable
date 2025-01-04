@@ -30,6 +30,7 @@ use trino_response::QueryResponse;
 use crate::{
     handlers::{AUTHORIZATION_KEY, TRINO_CATALOG, TRINO_SCHEMA, TRINO_USER},
     option::CONFIG,
+    HTTP_CLIENT,
 };
 
 use super::query::QueryError;
@@ -131,11 +132,14 @@ pub async fn trino_get(
         let mut records: Vec<Value> = Vec::new();
         let mut fields: Vec<String> = Vec::new();
 
-        let client = reqwest::Client::new();
-
         // loop will handle batches being sent by server
         loop {
-            let res: QueryResultsTrino = client.get(next_uri.clone()).send().await?.json().await?;
+            let res: QueryResultsTrino = HTTP_CLIENT
+                .get(next_uri.clone())
+                .send()
+                .await?
+                .json()
+                .await?;
 
             // check if columns and data present, collate
             // if len of fields is not 0, then don't overwrite
