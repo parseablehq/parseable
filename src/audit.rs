@@ -19,7 +19,6 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
-    sync::Arc,
 };
 
 use crate::about::current;
@@ -38,15 +37,19 @@ use url::Url;
 
 static AUDIT_LOGGER: Lazy<Option<AuditLogger>> = Lazy::new(AuditLogger::new);
 
+// AuditLogger handles sending audit logs to a remote logging system
 pub struct AuditLogger {
     client: Client,
     log_endpoint: Url,
 }
 
 impl AuditLogger {
-    /// Create an audit logger that can be used to capture
-    /// and push audit logs to the appropriate logging system over HTTP
+    /// Create an audit logger that can be used to capture and push 
+    /// audit logs to the appropriate logging system over HTTP
     pub fn new() -> Option<AuditLogger> {
+        // Try to construct the log endpoint URL by joining the base URL 
+        // with the ingest path, This can fail if the URL is not valid, 
+        // when the base URL is not set or the ingest path is not valid
         let log_endpoint = match CONFIG
             .parseable
             .audit_logger
@@ -66,6 +69,7 @@ impl AuditLogger {
         })
     }
 
+    // Sends the audit log to the configured endpoint with proper authentication
     async fn send_log(&self, json: Value) {
         let mut req = self
             .client
@@ -89,6 +93,7 @@ impl AuditLogger {
     }
 }
 
+// Represents the version of the audit log format
 #[non_exhaustive]
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -96,6 +101,7 @@ pub enum AuditLogVersion {
     V1 = 1,
 }
 
+// Contains information about the actor (user) who performed the action
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ActorLog {
@@ -105,6 +111,7 @@ pub struct ActorLog {
     pub authorization_method: String,
 }
 
+// Contains details about the HTTP request that was made
 #[derive(Serialize, Default)]
 pub struct RequestLog {
     pub method: String,
@@ -113,23 +120,15 @@ pub struct RequestLog {
     pub headers: HashMap<String, String>,
 }
 
-#[derive(Serialize)]
+/// Contains information about the response sent back to the client
+#[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseLog {
     pub status_code: u16,
     pub error: Option<String>,
 }
 
-impl Default for ResponseLog {
-    fn default() -> Self {
-        // Server failed to respond
-        ResponseLog {
-            status_code: 500,
-            error: None,
-        }
-    }
-}
-
+/// The main audit log structure that combines all audit information
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditLog {
@@ -145,6 +144,7 @@ pub struct AuditLog {
     pub response: ResponseLog,
 }
 
+/// Builder pattern implementation for constructing audit logs
 pub struct AuditLogBuilder {
     // Used to ensure that log is only constructed if the logger is enabled
     enabled: bool,
@@ -169,6 +169,7 @@ impl Default for AuditLogBuilder {
 }
 
 impl AuditLogBuilder {
+    /// Sets the stream name for the audit log if logger is set
     pub fn set_stream_name(mut self, stream: impl Into<String>) -> Self {
         if !self.enabled {
             return self;
@@ -178,6 +179,7 @@ impl AuditLogBuilder {
         self
     }
 
+    /// Sets the actor details for the audit log if logger is set
     pub fn set_actor(
         mut self,
         host: impl Into<String>,
@@ -198,6 +200,7 @@ impl AuditLogBuilder {
         self
     }
 
+    /// Sets the request details for the audit log if logger is set
     pub fn set_request(
         mut self,
         method: impl Into<String>,
@@ -218,6 +221,7 @@ impl AuditLogBuilder {
         self
     }
 
+    /// Sets the response details for the audit log if logger is set
     pub fn set_response(mut self, status_code: u16, err: impl Display) -> Self {
         if !self.enabled {
             return self;
@@ -229,7 +233,7 @@ impl AuditLogBuilder {
         self
     }
 
-    // NOTE: Ensure that the logger has been constructed by Default
+    /// Sends the audit log to the logging server if configured
     pub async fn send(self) {
         let AuditLogBuilder {
             start_time,
