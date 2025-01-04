@@ -227,7 +227,7 @@ impl AuditLogBuilder {
             return self;
         }
         let error = err.to_string();
-        let error = error.is_empty().then_some(error);
+        let error = (!error.is_empty()).then_some(error);
         self.response = Some(ResponseLog { status_code, error });
 
         self
