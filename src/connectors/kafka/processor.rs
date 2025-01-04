@@ -21,6 +21,7 @@ use crate::connectors::kafka::config::BufferConfig;
 use crate::connectors::kafka::{ConsumerRecord, StreamConsumer, TopicPartition};
 use crate::event::format;
 use crate::event::format::EventFormat;
+use crate::event::Event as ParseableEvent;
 use crate::handlers::http::ingest::create_stream_if_not_exists;
 use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::storage::StreamType;
@@ -41,7 +42,7 @@ impl ParseableSinkProcessor {
     async fn deserialize(
         &self,
         consumer_record: &ConsumerRecord,
-    ) -> anyhow::Result<Option<crate::event::Event>> {
+    ) -> anyhow::Result<Option<ParseableEvent>> {
         let stream_name = consumer_record.topic.as_str();
 
         create_stream_if_not_exists(stream_name, &StreamType::UserDefined.to_string()).await?;
@@ -69,7 +70,7 @@ impl ParseableSinkProcessor {
                 let (record_batch, is_first) =
                     event.into_recordbatch(&schema, None, None, SchemaVersion::V1)?;
 
-                let p_event = crate::event::Event {
+                let p_event = ParseableEvent {
                     rb: record_batch,
                     stream_name: stream_name.to_string(),
                     origin_format: "json",
