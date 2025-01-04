@@ -153,6 +153,8 @@ pub struct AuditLog {
 }
 
 pub struct AuditLogBuilder {
+    // Used to ensure that log is only constructed if the logger is enabled
+    enabled: bool,
     start_time: DateTime<Utc>,
     stream: String,
     pub actor: Option<ActorLog>,
@@ -163,6 +165,7 @@ pub struct AuditLogBuilder {
 impl Default for AuditLogBuilder {
     fn default() -> Self {
         AuditLogBuilder {
+            enabled: AUDIT_LOGGER.is_some(),
             start_time: Utc::now(),
             stream: String::default(),
             actor: None,
@@ -174,7 +177,7 @@ impl Default for AuditLogBuilder {
 
 impl AuditLogBuilder {
     pub fn set_stream_name(mut self, stream: impl Into<String>) -> Self {
-        if AUDIT_LOGGER.is_none() {
+        if !self.enabled {
             return self;
         }
         self.stream = stream.into();
@@ -189,7 +192,7 @@ impl AuditLogBuilder {
         user_agent: impl Into<String>,
         auth_method: impl Into<String>,
     ) -> Self {
-        if AUDIT_LOGGER.is_none() {
+        if !self.enabled {
             return self;
         }
         self.actor = Some(ActorLog {
@@ -209,7 +212,7 @@ impl AuditLogBuilder {
         protocol: impl Into<String>,
         headers: impl IntoIterator<Item = (String, String)>,
     ) -> Self {
-        if AUDIT_LOGGER.is_none() {
+        if !self.enabled {
             return self;
         }
         self.request = Some(RequestLog {
@@ -223,7 +226,7 @@ impl AuditLogBuilder {
     }
 
     pub fn set_response(mut self, status_code: u16, err: impl Display) -> Self {
-        if AUDIT_LOGGER.is_none() {
+        if !self.enabled {
             return self;
         }
         let error = err.to_string();
@@ -241,6 +244,7 @@ impl AuditLogBuilder {
             actor,
             request,
             response,
+            ..
         } = self;
         let Some(logger) = AUDIT_LOGGER.as_ref() else {
             return;
