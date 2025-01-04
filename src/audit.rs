@@ -173,22 +173,24 @@ impl Default for AuditLogBuilder {
 }
 
 impl AuditLogBuilder {
-    pub fn set_stream_name(&mut self, stream: impl Into<String>) {
+    pub fn set_stream_name(mut self, stream: impl Into<String>) -> Self {
         if AUDIT_LOGGER.is_none() {
-            return;
+            return self;
         }
         self.stream = stream.into();
+
+        self
     }
 
     pub fn set_actor(
-        &mut self,
+        mut self,
         host: impl Into<String>,
         username: impl Into<String>,
         user_agent: impl Into<String>,
         auth_method: impl Into<String>,
-    ) {
+    ) -> Self {
         if AUDIT_LOGGER.is_none() {
-            return;
+            return self;
         }
         self.actor = Some(ActorLog {
             remote_host: host.into(),
@@ -196,17 +198,19 @@ impl AuditLogBuilder {
             username: username.into(),
             authorization_method: auth_method.into(),
         });
+
+        self
     }
 
     pub fn set_request(
-        &mut self,
+        mut self,
         method: impl Into<String>,
         path: impl Into<String>,
         protocol: impl Into<String>,
         headers: impl IntoIterator<Item = (String, String)>,
-    ) {
+    ) -> Self {
         if AUDIT_LOGGER.is_none() {
-            return;
+            return self;
         }
         self.request = Some(RequestLog {
             method: method.into(),
@@ -214,15 +218,19 @@ impl AuditLogBuilder {
             protocol: protocol.into(),
             headers: headers.into_iter().collect(),
         });
+
+        self
     }
 
-    pub fn set_response(&mut self, status_code: u16, err: impl Display) {
+    pub fn set_response(mut self, status_code: u16, err: impl Display) -> Self {
         if AUDIT_LOGGER.is_none() {
-            return;
+            return self;
         }
         let error = err.to_string();
         let error = error.is_empty().then_some(error);
         self.response = Some(ResponseLog { status_code, error });
+
+        self
     }
 
     // NOTE: Ensure that the logger has been constructed by Default

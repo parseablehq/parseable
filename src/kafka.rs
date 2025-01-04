@@ -276,23 +276,21 @@ pub async fn setup_integration() {
 
     while let Ok(curr) = stream.next().await.unwrap() {
         // Constructs a log for each kafka request
-        let mut log_builder = AuditLogBuilder::default();
-        log_builder.set_actor(
-            CONFIG.parseable.kafka_host.as_deref().unwrap_or(""),
-            "Kafka Client",
-            "",
-            "",
-        );
-
-        log_builder.set_request("", "", "Kafka", []);
-        log_builder.set_stream_name(curr.topic());
+        let log_builder = AuditLogBuilder::default()
+            .set_actor(
+                CONFIG.parseable.kafka_host.as_deref().unwrap_or(""),
+                "Kafka Client",
+                "",
+                "",
+            )
+            .set_request("", "", "Kafka", [])
+            .set_stream_name(curr.topic());
 
         let Err(err) = ingest_message(curr).await else {
-            log_builder.set_response(200, "");
+            log_builder.set_response(200, "").send().await;
             continue;
         };
-        log_builder.set_response(500, &err);
         error!("Unable to ingest incoming kafka message- {err}");
-        log_builder.send().await;
+        log_builder.set_response(500, &err).send().await;
     }
 }

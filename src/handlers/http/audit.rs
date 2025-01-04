@@ -44,12 +44,12 @@ pub async fn audit_log_middleware(
     {
         let attribute_value: &str = kinesis_common_attributes.to_str().unwrap();
         let message: Message = serde_json::from_str(attribute_value).unwrap();
-        log_builder.set_stream_name(message.common_attributes.x_p_stream);
+        log_builder = log_builder.set_stream_name(message.common_attributes.x_p_stream);
     } else if let Some(stream) = req.match_info().get("logstream") {
-        log_builder.set_stream_name(stream.to_owned());
+        log_builder = log_builder.set_stream_name(stream.to_owned());
     } else if let Some(value) = req.headers().get(STREAM_NAME_HEADER_KEY) {
         if let Ok(stream) = value.to_str() {
-            log_builder.set_stream_name(stream.to_owned());
+            log_builder = log_builder.set_stream_name(stream.to_owned());
         }
     }
     let mut username = "Unknown".to_owned();
@@ -84,24 +84,24 @@ pub async fn audit_log_middleware(
                     .ok()
             }
         });
-    log_builder.set_request(
-        req.method().as_str(),
-        req.path(),
-        req.connection_info().scheme(),
-        headers,
-    );
-
-    log_builder.set_actor(
-        req.connection_info()
-            .realip_remote_addr()
-            .unwrap_or_default(),
-        req.headers()
-            .get("User-Agent")
-            .and_then(|a| a.to_str().ok())
-            .unwrap_or_default(),
-        username,
-        authorization_method,
-    );
+    log_builder = log_builder
+        .set_request(
+            req.method().as_str(),
+            req.path(),
+            req.connection_info().scheme(),
+            headers,
+        )
+        .set_actor(
+            req.connection_info()
+                .realip_remote_addr()
+                .unwrap_or_default(),
+            req.headers()
+                .get("User-Agent")
+                .and_then(|a| a.to_str().ok())
+                .unwrap_or_default(),
+            username,
+            authorization_method,
+        );
 
     let res = next.call(req).await;
 
@@ -111,10 +111,10 @@ pub async fn audit_log_middleware(
             let status = res.status();
             // Use error information from reponse object if an error
             if let Some(err) = res.response().error() {
-                log_builder.set_response(status.as_u16(), err);
+                log_builder = log_builder.set_response(status.as_u16(), err);
             }
         }
-        Err(err) => log_builder.set_response(500, err),
+        Err(err) => log_builder = log_builder.set_response(500, err),
     }
 
     log_builder.send().await;
