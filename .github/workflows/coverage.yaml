@@ -14,7 +14,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -27,9 +27,15 @@ jobs:
         with:
           tool: cargo-hack, cargo-llvm-cov, nextest
 
-      - name: Install dependencies
-        run: sudo apt-get install -y libsasl2-dev || echo "Skipping libsasl2-dev installation"
-        continue-on-error: true
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsasl2-dev \
+            libssl-dev \
+            pkg-config \
+            build-essential
+        if: runner.os == 'Linux'
 
       - name: Check with clippy
         run: cargo hack clippy --verbose --each-feature --no-dev-deps -- -D warnings
