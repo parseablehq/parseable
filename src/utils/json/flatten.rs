@@ -19,7 +19,6 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-use anyhow::anyhow;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::map::Map;
 use serde_json::value::Value;
@@ -50,6 +49,8 @@ pub enum JsonFlattenError {
     ExpectedObjectInArray,
     #[error("Found non-object element while flattening array of objects")]
     NonObjectInArray,
+    #[error("heavily nested, cannot flatten this JSON")]
+    HeavilyNestedJson,
 }
 
 // Recursively flattens JSON objects and arrays, e.g. with the separator `.`, starting from the TOP
@@ -283,15 +284,15 @@ pub fn flatten_array_objects(
 /// 3. `[{"a": [{"b": 1}, {"c": 2}]}]` ~> `[{"a": {"b": 1)}}, {"a": {"c": 2)}}]`
 /// 4. `{"a": [{"b": 1}, {"c": 2}], "d": {"e": 4}}` ~> `[{"a": {"b":1}, "d": {"e":4}}, {"a": {"c":2}, "d": {"e":4}}]`
 /// 5. `{"a":{"b":{"c":{"d":{"e":["a","b"]}}}}}` ~> returns error - heavily nested, cannot flatten this JSON
-fn flattening_helper(value: &Value) -> Result<Vec<Value>, anyhow::Error> {
+pub fn generic_flattening(value: &Value) -> Result<Vec<Value>, JsonFlattenError> {
     if has_more_than_four_levels(value, 1) {
-        return Err(anyhow!("heavily nested, cannot flatten this JSON"));
+        return Err(JsonFlattenError::HeavilyNestedJson);
     }
 
     match value {
         Value::Array(arr) => Ok(arr
             .iter()
-            .flat_map(|flatten_item| flattening_helper(flatten_item).unwrap_or_default())
+            .flat_map(|flatten_item| generic_flattening(flatten_item).unwrap_or_default())
             .collect()),
         Value::Object(map) => {
             let results = map
@@ -299,7 +300,9 @@ fn flattening_helper(value: &Value) -> Result<Vec<Value>, anyhow::Error> {
                 .fold(vec![Map::new()], |results, (key, val)| match val {
                     Value::Array(arr) => arr
                         .iter()
-                        .flat_map(|flatten_item| flattening_helper(flatten_item).unwrap_or_default())
+                        .flat_map(|flatten_item| {
+                            generic_flattening(flatten_item).unwrap_or_default()
+                        })
                         .flat_map(|flattened_item| {
                             results.iter().map(move |result| {
                                 let mut new_obj = result.clone();
@@ -308,7 +311,7 @@ fn flattening_helper(value: &Value) -> Result<Vec<Value>, anyhow::Error> {
                             })
                         })
                         .collect(),
-                    Value::Object(_) => flattening_helper(val)
+                    Value::Object(_) => generic_flattening(val)
                         .unwrap_or_default()
                         .iter()
                         .flat_map(|nested_result| {
@@ -355,9 +358,9 @@ fn has_more_than_four_levels(value: &Value, current_level: usize) -> bool {
 }
 
 // Converts a Vector of values into a `Value::Array`, as long as all of them are objects
-pub fn generic_flattening(json: Value) -> Result<Value, JsonFlattenError> {
-    let mut flattened = Vec::new();
-    for item in flattening_helper(&json).unwrap_or_default() {
+pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, JsonFlattenError> {
+    let mut result = Vec::new();
+    for item in flattened {
         let mut map = Map::new();
         let Some(item) = item.as_object() else {
             return Err(JsonFlattenError::ExpectedObjectInArray);
@@ -365,10 +368,9 @@ pub fn generic_flattening(json: Value) -> Result<Value, JsonFlattenError> {
         for (key, value) in item {
             map.insert(key.clone(), value.clone());
         }
-        flattened.push(Value::Object(map));
+        result.push(Value::Object(map));
     }
-
-    Ok(Value::Array(flattened))
+    Ok(Value::Array(result))
 }
 
 #[cfg(test)]
@@ -649,13 +651,13 @@ mod tests {
     #[test]
     fn flatten_json_success() {
         let value = json!({"a":{"b":{"e":["a","b"]}}});
-        let expected = json!([{"a":{"b":{"e":"a"}}},{"a":{"b":{"e":"b"}}}]);
-        assert_eq!(generic_flattening(value).unwrap(), expected);
+        let expected = vec![json!({"a":{"b":{"e":"a"}}}), json!({"a":{"b":{"e":"b"}}})];
+        assert_eq!(generic_flattening(&value).unwrap(), expected);
     }
 
     #[test]
     fn flatten_json_error() {
         let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
-        assert!(generic_flattening(value).is_err());
+        assert!(generic_flattening(&value).is_err());
     }
 }

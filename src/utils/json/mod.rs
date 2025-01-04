@@ -37,7 +37,9 @@ pub fn flatten_json_body(
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
     let mut nested_value = if schema_version == SchemaVersion::V1 {
-        flatten::generic_flattening(body)?
+        flatten::generic_flattening(&body)
+            .map(flatten::convert_to_array)
+            .unwrap_or(Ok(body))?
     } else {
         body
     };
@@ -105,7 +107,15 @@ mod tests {
         let value = json!({"a":{"b":{"e":["a","b"]}}});
         let expected = json!([{"a_b_e": "a"}, {"a_b_e": "b"}]);
         assert_eq!(
-            flatten_json_body(value, None, None, None, crate::metadata::SchemaVersion::V1, false).unwrap(),
+            flatten_json_body(
+                value,
+                None,
+                None,
+                None,
+                crate::metadata::SchemaVersion::V1,
+                false
+            )
+            .unwrap(),
             expected
         );
     }
@@ -115,7 +125,15 @@ mod tests {
         let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
         let expected = json!({"a_b_c_d_e": ["a","b"]});
         assert_eq!(
-            flatten_json_body(value, None, None, None,crate::metadata::SchemaVersion::V1, false).unwrap(),
+            flatten_json_body(
+                value,
+                None,
+                None,
+                None,
+                crate::metadata::SchemaVersion::V1,
+                false
+            )
+            .unwrap(),
             expected
         );
     }
