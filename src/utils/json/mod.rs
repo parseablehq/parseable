@@ -42,7 +42,7 @@ pub fn flatten_json_body(
     let mut nested_value = if schema_version == SchemaVersion::V1
         && matches!(
             log_source,
-            LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
+            LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis
         ) {
         flatten::generic_flattening(body)?
     } else {
