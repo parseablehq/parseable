@@ -23,6 +23,7 @@ use actix_web::{
     middleware::Next,
 };
 use actix_web_httpauth::extractors::basic::BasicAuth;
+use chrono::Utc;
 use ulid::Ulid;
 
 use crate::{
@@ -37,6 +38,7 @@ pub async fn audit_log_middleware(
     mut req: ServiceRequest,
     next: Next<impl MessageBody>,
 ) -> Result<ServiceResponse<impl MessageBody>, actix_web::Error> {
+    let start_time = Utc::now();
     let mut log_builder = AuditLogBuilder::default();
 
     if let Some(kinesis_common_attributes) =
@@ -44,12 +46,12 @@ pub async fn audit_log_middleware(
     {
         let attribute_value: &str = kinesis_common_attributes.to_str().unwrap();
         let message: Message = serde_json::from_str(attribute_value).unwrap();
-        log_builder = log_builder.set_stream_name(message.common_attributes.x_p_stream);
+        log_builder = log_builder.with_stream(message.common_attributes.x_p_stream);
     } else if let Some(stream) = req.match_info().get("logstream") {
-        log_builder = log_builder.set_stream_name(stream.to_owned());
+        log_builder = log_builder.with_stream(stream);
     } else if let Some(value) = req.headers().get(STREAM_NAME_HEADER_KEY) {
         if let Ok(stream) = value.to_str() {
-            log_builder = log_builder.set_stream_name(stream.to_owned());
+            log_builder = log_builder.with_stream(stream);
         }
     }
     let mut username = "Unknown".to_owned();
@@ -70,39 +72,40 @@ pub async fn audit_log_middleware(
         }
     }
 
-    let headers = req
-        .headers()
-        .iter()
-        .filter_map(|(name, value)| match name.as_str() {
-            // NOTE: drop headers that are not required
-            name if DROP_HEADERS.contains(&name.to_lowercase().as_str()) => None,
-            name => {
-                // NOTE: Drop headers that can't be parsed as string
-                value
-                    .to_str()
-                    .map(|value| (name.to_owned(), value.to_string()))
-                    .ok()
-            }
-        });
     log_builder = log_builder
-        .set_request(
-            req.method().as_str(),
-            req.path(),
-            req.connection_info().scheme(),
-            headers,
-        )
-        .set_actor(
+        .with_host(
             req.connection_info()
                 .realip_remote_addr()
                 .unwrap_or_default(),
+        )
+        .with_user_agent(
             req.headers()
                 .get("User-Agent")
                 .and_then(|a| a.to_str().ok())
                 .unwrap_or_default(),
-            username,
-            authorization_method,
-        );
+        )
+        .with_username(username)
+        .with_auth_method(authorization_method);
 
+    log_builder = log_builder
+        .with_method(req.method().as_str())
+        .with_path(req.path())
+        .with_protocol(req.connection_info().scheme().to_string())
+        .with_headers(
+            req.headers()
+                .iter()
+                .filter_map(|(name, value)| match name.as_str() {
+                    // NOTE: drop headers that are not required
+                    name if DROP_HEADERS.contains(&name.to_lowercase().as_str()) => None,
+                    name => {
+                        // NOTE: Drop headers that can't be parsed as string
+                        value
+                            .to_str()
+                            .map(|value| (name.to_owned(), value.to_string()))
+                            .ok()
+                    }
+                }),
+        );
     let res = next.call(req).await;
 
     // Capture status_code and error information from response
@@ -111,13 +114,13 @@ pub async fn audit_log_middleware(
             let status = res.status();
             // Use error information from reponse object if an error
             if let Some(err) = res.response().error() {
-                log_builder = log_builder.set_response(status.as_u16(), err);
+                log_builder = log_builder.with_status(status.as_u16()).with_error(err);
             }
         }
-        Err(err) => log_builder = log_builder.set_response(500, err),
+        Err(err) => log_builder = log_builder.with_status(500).with_error(err),
     }
 
-    log_builder.send().await;
+    log_builder.with_timing(start_time, Utc::now()).send().await;
 
     res
 }

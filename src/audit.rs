@@ -22,7 +22,6 @@ use std::{
 };
 
 use crate::about::current;
-use crate::handlers::http::modal::utils::rbac_utils::get_metadata;
 
 use super::option::CONFIG;
 use chrono::{DateTime, Utc};
@@ -101,10 +100,22 @@ pub enum AuditLogVersion {
     V1 = 1,
 }
 
+#[derive(Serialize)]
+pub struct AuditDetails {
+    pub version: AuditLogVersion,
+    pub id: Ulid,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct ServerDetails {
+    pub version: String,
+    pub deployment_id: Ulid,
+}
+
 // Contains information about the actor (user) who performed the action
 #[derive(Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ActorLog {
+pub struct ActorDetails {
     pub remote_host: String,
     pub user_agent: String,
     pub username: String,
@@ -113,7 +124,10 @@ pub struct ActorLog {
 
 // Contains details about the HTTP request that was made
 #[derive(Serialize, Default)]
-pub struct RequestLog {
+pub struct RequestDetails {
+    pub stream: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
     pub method: String,
     pub path: String,
     pub protocol: String,
@@ -122,45 +136,34 @@ pub struct RequestLog {
 
 /// Contains information about the response sent back to the client
 #[derive(Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResponseLog {
+pub struct ResponseDetails {
     pub status_code: u16,
     pub error: Option<String>,
 }
 
 /// The main audit log structure that combines all audit information
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AuditLog {
-    pub version: AuditLogVersion,
-    pub parseable_version: String,
-    pub deployment_id: Ulid,
-    pub audit_id: Ulid,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
-    pub stream: String,
-    pub actor: ActorLog,
-    pub request: RequestLog,
-    pub response: ResponseLog,
+    pub audit: AuditDetails,
+    pub parseable_server: ServerDetails,
+    pub actor: ActorDetails,
+    pub request: RequestDetails,
+    pub response: ResponseDetails,
 }
 
 /// Builder pattern implementation for constructing audit logs
 pub struct AuditLogBuilder {
     // Used to ensure that log is only constructed if the logger is enabled
     enabled: bool,
-    start_time: DateTime<Utc>,
-    stream: String,
-    pub actor: Option<ActorLog>,
-    pub request: Option<RequestLog>,
-    pub response: Option<ResponseLog>,
+    pub actor: Option<ActorDetails>,
+    pub request: Option<RequestDetails>,
+    pub response: Option<ResponseDetails>,
 }
 
 impl Default for AuditLogBuilder {
     fn default() -> Self {
         AuditLogBuilder {
             enabled: AUDIT_LOGGER.is_some(),
-            start_time: Utc::now(),
-            stream: String::default(),
             actor: None,
             request: None,
             response: None,
@@ -169,91 +172,159 @@ impl Default for AuditLogBuilder {
 }
 
 impl AuditLogBuilder {
-    /// Sets the stream name for the audit log if logger is set
-    pub fn set_stream_name(mut self, stream: impl Into<String>) -> Self {
-        if !self.enabled {
-            return self;
+    /// Sets the remote host for the audit log
+    pub fn with_host(mut self, host: impl Into<String>) -> Self {
+        if self.enabled {
+            self.actor
+                .get_or_insert_with(ActorDetails::default)
+                .remote_host = host.into();
         }
-        self.stream = stream.into();
-
         self
     }
 
-    /// Sets the actor details for the audit log if logger is set
-    pub fn set_actor(
-        mut self,
-        host: impl Into<String>,
-        username: impl Into<String>,
-        user_agent: impl Into<String>,
-        auth_method: impl Into<String>,
-    ) -> Self {
-        if !self.enabled {
-            return self;
+    /// Sets the username for the audit log
+    pub fn with_username(mut self, username: impl Into<String>) -> Self {
+        if self.enabled {
+            self.actor
+                .get_or_insert_with(ActorDetails::default)
+                .username = username.into();
         }
-        self.actor = Some(ActorLog {
-            remote_host: host.into(),
-            user_agent: user_agent.into(),
-            username: username.into(),
-            authorization_method: auth_method.into(),
-        });
-
         self
     }
 
-    /// Sets the request details for the audit log if logger is set
-    pub fn set_request(
-        mut self,
-        method: impl Into<String>,
-        path: impl Into<String>,
-        protocol: impl Into<String>,
-        headers: impl IntoIterator<Item = (String, String)>,
-    ) -> Self {
-        if !self.enabled {
-            return self;
+    /// Sets the user agent for the audit log
+    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        if self.enabled {
+            self.actor
+                .get_or_insert_with(ActorDetails::default)
+                .user_agent = user_agent.into();
         }
-        self.request = Some(RequestLog {
-            method: method.into(),
-            path: path.into(),
-            protocol: protocol.into(),
-            headers: headers.into_iter().collect(),
-        });
-
         self
     }
 
-    /// Sets the response details for the audit log if logger is set
-    pub fn set_response(mut self, status_code: u16, err: impl Display) -> Self {
-        if !self.enabled {
-            return self;
+    /// Sets the authorization method for the audit log
+    pub fn with_auth_method(mut self, auth_method: impl Into<String>) -> Self {
+        if self.enabled {
+            self.actor
+                .get_or_insert_with(ActorDetails::default)
+                .authorization_method = auth_method.into();
         }
-        let error = err.to_string();
-        let error = (!error.is_empty()).then_some(error);
-        self.response = Some(ResponseLog { status_code, error });
+        self
+    }
 
+    /// Sets the stream for the request details
+    pub fn with_stream(mut self, stream: impl Into<String>) -> Self {
+        if self.enabled {
+            self.request
+                .get_or_insert_with(RequestDetails::default)
+                .stream = stream.into();
+        }
+        self
+    }
+
+    /// Sets the request timing details
+    pub fn with_timing(mut self, start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> Self {
+        if self.enabled {
+            let request = self.request.get_or_insert_with(RequestDetails::default);
+            request.start_time = start_time;
+            request.end_time = end_time;
+        }
+        self
+    }
+
+    /// Sets the request method details
+    pub fn with_method(mut self, method: impl Into<String>) -> Self {
+        if self.enabled {
+            self.request
+                .get_or_insert_with(RequestDetails::default)
+                .method = method.into();
+        }
+        self
+    }
+
+    /// Sets the request path
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        if self.enabled {
+            self.request
+                .get_or_insert_with(RequestDetails::default)
+                .path = path.into();
+        }
+        self
+    }
+
+    /// Sets the request protocol
+    pub fn with_protocol(mut self, protocol: impl Into<String>) -> Self {
+        if self.enabled {
+            self.request
+                .get_or_insert_with(RequestDetails::default)
+                .protocol = protocol.into();
+        }
+        self
+    }
+
+    /// Sets the request headers
+    pub fn with_headers(mut self, headers: impl IntoIterator<Item = (String, String)>) -> Self {
+        if self.enabled {
+            self.request
+                .get_or_insert_with(RequestDetails::default)
+                .headers = headers.into_iter().collect();
+        }
+        self
+    }
+
+    /// Sets the response status code
+    pub fn with_status(mut self, status_code: u16) -> Self {
+        if self.enabled {
+            self.response
+                .get_or_insert_with(ResponseDetails::default)
+                .status_code = status_code;
+        }
+        self
+    }
+
+    /// Sets the response error if any
+    pub fn with_error(mut self, err: impl Display) -> Self {
+        if self.enabled {
+            let error = err.to_string();
+            if !error.is_empty() {
+                self.response
+                    .get_or_insert_with(ResponseDetails::default)
+                    .error = Some(error);
+            }
+        }
         self
     }
 
     /// Sends the audit log to the logging server if configured
     pub async fn send(self) {
+        // ensures that we don't progress if logger is not enabled
+        if !self.enabled {
+            return;
+        }
+
+        // build the audit log
         let AuditLogBuilder {
-            start_time,
-            stream,
             actor,
             request,
             response,
             ..
         } = self;
-        let Some(logger) = AUDIT_LOGGER.as_ref() else {
-            return;
-        };
+
+        // get the logger
+        let logger = AUDIT_LOGGER.as_ref().unwrap();
+
+        // build the audit log
+        let now = Utc::now();
         let audit_log = AuditLog {
-            version: AuditLogVersion::V1,
-            parseable_version: current().released_version.to_string(),
-            deployment_id: get_metadata().await.unwrap().deployment_id,
-            audit_id: Ulid::new(),
-            start_time,
-            end_time: Utc::now(),
-            stream,
+            audit: AuditDetails {
+                version: AuditLogVersion::V1,
+                id: Ulid::new(),
+                generated_at: now,
+            },
+            parseable_server: ServerDetails {
+                version: current().released_version.to_string(),
+                deployment_id: Ulid::new(),
+            },
             actor: actor.unwrap_or_default(),
             request: request.unwrap_or_default(),
             response: response.unwrap_or_default(),
