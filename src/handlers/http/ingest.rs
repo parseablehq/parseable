@@ -93,7 +93,13 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             metadata: String::default(),
         };
         // For internal streams, use old schema
-        event.into_recordbatch(&schema, None, None, SchemaVersion::V0, &LogSource::default())?
+        event.into_recordbatch(
+            &schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default(),
+        )?
     };
     event::Event {
         rb,
