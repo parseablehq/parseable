@@ -98,6 +98,7 @@ pub async fn push_logs(
                 &HashMap::new(),
                 size,
                 schema_version,
+                log_source,
             )
             .await?;
         } else {
@@ -107,6 +108,7 @@ pub async fn push_logs(
                 None,
                 custom_partition.as_ref(),
                 schema_version,
+                log_source,
             )?;
             let custom_partition = custom_partition.unwrap();
             let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
@@ -126,6 +128,7 @@ pub async fn push_logs(
                     &custom_partition_values,
                     size,
                     schema_version,
+                    log_source,
                 )
                 .await?;
             }
@@ -137,6 +140,7 @@ pub async fn push_logs(
             time_partition_limit,
             None,
             schema_version,
+            log_source,
         )?;
         for value in data {
             parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref().unwrap())?;
@@ -151,6 +155,7 @@ pub async fn push_logs(
                 &HashMap::new(),
                 size,
                 schema_version,
+                log_source,
             )
             .await?;
         }
@@ -161,6 +166,7 @@ pub async fn push_logs(
             time_partition_limit,
             custom_partition.as_ref(),
             schema_version,
+            log_source,
         )?;
         let custom_partition = custom_partition.unwrap();
         let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
@@ -181,6 +187,7 @@ pub async fn push_logs(
                 &custom_partition_values,
                 size,
                 schema_version,
+                log_source,
             )
             .await?;
         }
@@ -200,6 +207,7 @@ pub async fn create_process_record_batch(
     custom_partition_values: &HashMap<String, String>,
     origin_size: u64,
     schema_version: SchemaVersion,
+    log_source: &LogSource,
 ) -> Result<(), PostError> {
     let (rb, is_first_event) = get_stream_schema(
         stream_name,
@@ -208,7 +216,7 @@ pub async fn create_process_record_batch(
         static_schema_flag,
         time_partition,
         schema_version,
-            log_source,
+        log_source,
     )?;
     event::Event {
         rb,
@@ -234,6 +242,7 @@ pub fn get_stream_schema(
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
+    log_source: &LogSource,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let hash_map = STREAM_INFO.read().unwrap();
     let schema = hash_map
@@ -248,6 +257,7 @@ pub fn get_stream_schema(
         static_schema_flag,
         time_partition,
         schema_version,
+        log_source,
     )
 }
 

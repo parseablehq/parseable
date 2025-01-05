@@ -39,16 +39,18 @@ pub fn flatten_json_body(
     validation_required: bool,
     log_source: &LogSource,
 ) -> Result<Value, anyhow::Error> {
+    // Flatten the json body only if new schema and has less than 4 levels of nesting
     let mut nested_value = if schema_version == SchemaVersion::V1
+        && !has_more_than_four_levels(&body, 1)
         && matches!(
             log_source,
             LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis
         ) {
-        flatten::generic_flattening(body)?
+        let flattened_json = generic_flattening(&body)?;
+        convert_to_array(flattened_json)?
     } else {
         body
     };
-
     flatten::flatten(
         &mut nested_value,
         "_",
@@ -107,6 +109,8 @@ pub fn convert_to_string(value: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use crate::event::format::LogSource;
+
     use super::flatten_json_body;
     use serde_json::json;
 
@@ -121,7 +125,8 @@ mod tests {
                 None,
                 None,
                 crate::metadata::SchemaVersion::V1,
-                false
+                false,
+                &LogSource::default()
             )
             .unwrap(),
             expected
@@ -139,7 +144,8 @@ mod tests {
                 None,
                 None,
                 crate::metadata::SchemaVersion::V1,
-                false
+                false,
+                &LogSource::default()
             )
             .unwrap(),
             expected
