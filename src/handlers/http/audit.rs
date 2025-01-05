@@ -23,7 +23,6 @@ use actix_web::{
     middleware::Next,
 };
 use actix_web_httpauth::extractors::basic::BasicAuth;
-use chrono::Utc;
 use ulid::Ulid;
 
 use crate::{
@@ -38,7 +37,6 @@ pub async fn audit_log_middleware(
     mut req: ServiceRequest,
     next: Next<impl MessageBody>,
 ) -> Result<ServiceResponse<impl MessageBody>, actix_web::Error> {
-    let start_time = Utc::now();
     let mut log_builder = AuditLogBuilder::default();
 
     if let Some(kinesis_common_attributes) =
@@ -111,16 +109,16 @@ pub async fn audit_log_middleware(
     // Capture status_code and error information from response
     match &res {
         Ok(res) => {
-            let status = res.status();
+            log_builder = log_builder.with_status(res.status().as_u16());
             // Use error information from reponse object if an error
             if let Some(err) = res.response().error() {
-                log_builder = log_builder.with_status(status.as_u16()).with_error(err);
+                log_builder = log_builder.with_error(err);
             }
         }
         Err(err) => log_builder = log_builder.with_status(500).with_error(err),
     }
 
-    log_builder.with_timing(start_time, Utc::now()).send().await;
+    log_builder.send().await;
 
     res
 }

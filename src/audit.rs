@@ -95,12 +95,14 @@ impl AuditLogger {
 // Represents the version of the audit log format
 #[non_exhaustive]
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Default)]
 pub enum AuditLogVersion {
+    // NOTE: default should be latest version
+    #[default]
     V1 = 1,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 pub struct AuditDetails {
     pub version: AuditLogVersion,
     pub id: Ulid,
@@ -166,14 +168,17 @@ impl Default for AuditLogBuilder {
                 audit: AuditDetails {
                     version: AuditLogVersion::V1,
                     id: Ulid::new(),
-                    generated_at: Utc::now(),
+                    ..Default::default()
                 },
                 parseable_server: ServerDetails {
                     version: current().released_version.to_string(),
-                    deployment_id: Ulid::nil(),
+                    ..Default::default()
+                },
+                request: RequestDetails {
+                    start_time: Utc::now(),
+                    ..Default::default()
                 },
                 actor: ActorDetails::default(),
-                request: RequestDetails::default(),
                 response: ResponseDetails::default(),
             },
         }
@@ -217,16 +222,6 @@ impl AuditLogBuilder {
     pub fn with_stream(mut self, stream: impl Into<String>) -> Self {
         if self.enabled {
             self.inner.request.stream = stream.into();
-        }
-        self
-    }
-
-    /// Sets the request timing details
-    pub fn with_timing(mut self, start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> Self {
-        if self.enabled {
-            self.inner.request.start_time = start_time;
-            self.inner.request.end_time = end_time;
-            self.inner.audit.generated_at = start_time;
         }
         self
     }
@@ -301,7 +296,9 @@ impl AuditLogBuilder {
             .await
             .expect("Metadata should have been loaded")
             .deployment_id;
-
+        let now = Utc::now();
+        audit_log.audit.generated_at = now;
+        audit_log.request.end_time = now;
         // get the logger
         let logger = AUDIT_LOGGER.as_ref().unwrap();
 

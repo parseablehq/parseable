@@ -275,7 +275,6 @@ pub async fn setup_integration() {
     let mut stream = consumer.stream();
 
     while let Ok(curr) = stream.next().await.unwrap() {
-        let start_time = Utc::now();
         // Constructs a log for each kafka request
         let log_builder = AuditLogBuilder::default()
             .with_host(CONFIG.parseable.kafka_host.as_deref().unwrap_or(""))
@@ -291,7 +290,6 @@ pub async fn setup_integration() {
         log_builder
             .with_status(500)
             .with_error(err)
-            .with_timing(start_time, Utc::now())
             .with_protocol("Kafka")
             .send()
             .await;
