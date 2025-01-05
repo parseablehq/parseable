@@ -275,10 +275,11 @@ pub async fn setup_integration() {
     let mut stream = consumer.stream();
 
     while let Ok(curr) = stream.next().await.unwrap() {
-        // Constructs a log for each kafka request
+        // TODO: maybe we should not constructs an audit log for each kafka message, but do so at the batch level
         let log_builder = AuditLogBuilder::default()
             .with_host(CONFIG.parseable.kafka_host.as_deref().unwrap_or(""))
             .with_user_agent("Kafka Client")
+            .with_protocol("Kafka")
             .with_stream(curr.topic());
 
         let Err(err) = ingest_message(curr).await else {
@@ -287,11 +288,6 @@ pub async fn setup_integration() {
         };
         error!("Unable to ingest incoming kafka message- {err}");
 
-        log_builder
-            .with_status(500)
-            .with_error(err)
-            .with_protocol("Kafka")
-            .send()
-            .await;
+        log_builder.with_status(500).with_error(err).send().await;
     }
 }

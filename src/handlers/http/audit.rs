@@ -33,12 +33,15 @@ use crate::{
 
 const DROP_HEADERS: [&str; 4] = ["authorization", "cookie", "user-agent", "x-p-stream"];
 
+/// A middleware that logs incoming requests and outgoing responses from parseable's HTTP API to an audit service
 pub async fn audit_log_middleware(
     mut req: ServiceRequest,
     next: Next<impl MessageBody>,
 ) -> Result<ServiceResponse<impl MessageBody>, actix_web::Error> {
+    // Start building the audit log entry
     let mut log_builder = AuditLogBuilder::default();
 
+    // Get stream name from request headers, if available
     if let Some(kinesis_common_attributes) =
         req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
     {
@@ -52,6 +55,8 @@ pub async fn audit_log_middleware(
             log_builder = log_builder.with_stream(stream);
         }
     }
+
+    // Get username and authorization method
     let mut username = "Unknown".to_owned();
     let mut authorization_method = "None".to_owned();
 
@@ -70,6 +75,8 @@ pub async fn audit_log_middleware(
         }
     }
 
+    // Add details to the audit log, based on the incoming request
+    // NOTE: we save on the cost of cloning by doing so only if audit logger is configured
     log_builder = log_builder
         .with_host(
             req.connection_info()
@@ -83,9 +90,7 @@ pub async fn audit_log_middleware(
                 .unwrap_or_default(),
         )
         .with_username(username)
-        .with_auth_method(authorization_method);
-
-    log_builder = log_builder
+        .with_auth_method(authorization_method)
         .with_method(req.method().as_str())
         .with_path(req.path())
         .with_protocol(req.connection_info().scheme().to_string())
@@ -104,9 +109,11 @@ pub async fn audit_log_middleware(
                     }
                 }),
         );
+
+    // forward request to parseable
     let res = next.call(req).await;
 
-    // Capture status_code and error information from response
+    // Capture status_code and error information from outgoing response
     match &res {
         Ok(res) => {
             log_builder = log_builder.with_status(res.status().as_u16());
@@ -118,6 +125,7 @@ pub async fn audit_log_middleware(
         Err(err) => log_builder = log_builder.with_status(500).with_error(err),
     }
 
+    // Send the audit log to audit service, if configured
     log_builder.send().await;
 
     res
