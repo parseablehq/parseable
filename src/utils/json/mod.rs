@@ -18,7 +18,7 @@
 
 use std::num::NonZeroU32;
 
-use flatten::{convert_to_array, generic_flattening};
+use flatten::{convert_to_array, generic_flattening, has_more_than_four_levels};
 use serde_json;
 use serde_json::Value;
 
@@ -37,14 +37,12 @@ pub fn flatten_json_body(
     schema_version: SchemaVersion,
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
-    let mut nested_value = if schema_version == SchemaVersion::V1 {
-        if let Ok(flattened_json) = generic_flattening(&body) {
-            convert_to_array(flattened_json)?
-        } else {
-            body
-        }
-    } else {
+    // Flatten the json body only if new schema and has less than 4 levels of nesting
+    let mut nested_value = if schema_version == SchemaVersion::V0 || has_more_than_four_levels(&body, 1) {
         body
+    } else {
+        let flattened_json = generic_flattening(&body)?;
+        convert_to_array(flattened_json)?
     };
     flatten::flatten(
         &mut nested_value,
