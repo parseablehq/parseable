@@ -38,12 +38,13 @@ pub fn flatten_json_body(
     validation_required: bool,
 ) -> Result<Value, anyhow::Error> {
     // Flatten the json body only if new schema and has less than 4 levels of nesting
-    let mut nested_value = if schema_version == SchemaVersion::V0 || has_more_than_four_levels(&body, 1) {
-        body
-    } else {
-        let flattened_json = generic_flattening(&body)?;
-        convert_to_array(flattened_json)?
-    };
+    let mut nested_value =
+        if schema_version == SchemaVersion::V0 || has_more_than_four_levels(&body, 1) {
+            body
+        } else {
+            let flattened_json = generic_flattening(&body)?;
+            convert_to_array(flattened_json)?
+        };
     flatten::flatten(
         &mut nested_value,
         "_",
