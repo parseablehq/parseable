@@ -49,8 +49,6 @@ pub enum JsonFlattenError {
     ExpectedObjectInArray,
     #[error("Found non-object element while flattening array of objects")]
     NonObjectInArray,
-    #[error("heavily nested, cannot flatten this JSON")]
-    HeavilyNestedJson,
 }
 
 // Recursively flattens JSON objects and arrays, e.g. with the separator `.`, starting from the TOP
@@ -285,10 +283,6 @@ pub fn flatten_array_objects(
 /// 4. `{"a": [{"b": 1}, {"c": 2}], "d": {"e": 4}}` ~> `[{"a": {"b":1}, "d": {"e":4}}, {"a": {"c":2}, "d": {"e":4}}]`
 /// 5. `{"a":{"b":{"c":{"d":{"e":["a","b"]}}}}}` ~> returns error - heavily nested, cannot flatten this JSON
 pub fn generic_flattening(value: &Value) -> Result<Vec<Value>, JsonFlattenError> {
-    if has_more_than_four_levels(value, 1) {
-        return Err(JsonFlattenError::HeavilyNestedJson);
-    }
-
     match value {
         Value::Array(arr) => Ok(arr
             .iter()
@@ -342,7 +336,7 @@ pub fn generic_flattening(value: &Value) -> Result<Vec<Value>, JsonFlattenError>
 /// example -
 /// 1. `{"a":{"b":{"c":{"d":{"e":["a","b"]}}}}}` ~> returns true
 /// 2. `{"a": [{"b": 1}, {"c": 2}], "d": {"e": 4}}` ~> returns false
-fn has_more_than_four_levels(value: &Value, current_level: usize) -> bool {
+pub fn has_more_than_four_levels(value: &Value, current_level: usize) -> bool {
     if current_level > 4 {
         return true;
     }
@@ -649,15 +643,9 @@ mod tests {
     }
 
     #[test]
-    fn flatten_json_success() {
+    fn flatten_json() {
         let value = json!({"a":{"b":{"e":["a","b"]}}});
         let expected = vec![json!({"a":{"b":{"e":"a"}}}), json!({"a":{"b":{"e":"b"}}})];
         assert_eq!(generic_flattening(&value).unwrap(), expected);
-    }
-
-    #[test]
-    fn flatten_json_error() {
-        let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
-        assert!(generic_flattening(&value).is_err());
     }
 }
