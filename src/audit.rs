@@ -21,7 +21,7 @@ use std::{
     fmt::{Debug, Display},
 };
 
-use crate::about::current;
+use crate::{about::current, handlers::http::modal::utils::rbac_utils::get_metadata};
 
 use super::option::CONFIG;
 use chrono::{DateTime, Utc};
@@ -107,7 +107,7 @@ pub struct AuditDetails {
     pub generated_at: DateTime<Utc>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 pub struct ServerDetails {
     pub version: String,
     pub deployment_id: Ulid,
@@ -155,18 +155,27 @@ pub struct AuditLog {
 pub struct AuditLogBuilder {
     // Used to ensure that log is only constructed if the logger is enabled
     enabled: bool,
-    pub actor: Option<ActorDetails>,
-    pub request: Option<RequestDetails>,
-    pub response: Option<ResponseDetails>,
+    inner: AuditLog,
 }
 
 impl Default for AuditLogBuilder {
     fn default() -> Self {
         AuditLogBuilder {
             enabled: AUDIT_LOGGER.is_some(),
-            actor: None,
-            request: None,
-            response: None,
+            inner: AuditLog {
+                audit: AuditDetails {
+                    version: AuditLogVersion::V1,
+                    id: Ulid::new(),
+                    generated_at: Utc::now(),
+                },
+                parseable_server: ServerDetails {
+                    version: current().released_version.to_string(),
+                    deployment_id: Ulid::nil(),
+                },
+                actor: ActorDetails::default(),
+                request: RequestDetails::default(),
+                response: ResponseDetails::default(),
+            },
         }
     }
 }
@@ -175,9 +184,7 @@ impl AuditLogBuilder {
     /// Sets the remote host for the audit log
     pub fn with_host(mut self, host: impl Into<String>) -> Self {
         if self.enabled {
-            self.actor
-                .get_or_insert_with(ActorDetails::default)
-                .remote_host = host.into();
+            self.inner.actor.remote_host = host.into();
         }
         self
     }
@@ -185,9 +192,7 @@ impl AuditLogBuilder {
     /// Sets the username for the audit log
     pub fn with_username(mut self, username: impl Into<String>) -> Self {
         if self.enabled {
-            self.actor
-                .get_or_insert_with(ActorDetails::default)
-                .username = username.into();
+            self.inner.actor.username = username.into();
         }
         self
     }
@@ -195,9 +200,7 @@ impl AuditLogBuilder {
     /// Sets the user agent for the audit log
     pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
         if self.enabled {
-            self.actor
-                .get_or_insert_with(ActorDetails::default)
-                .user_agent = user_agent.into();
+            self.inner.actor.user_agent = user_agent.into();
         }
         self
     }
@@ -205,9 +208,7 @@ impl AuditLogBuilder {
     /// Sets the authorization method for the audit log
     pub fn with_auth_method(mut self, auth_method: impl Into<String>) -> Self {
         if self.enabled {
-            self.actor
-                .get_or_insert_with(ActorDetails::default)
-                .authorization_method = auth_method.into();
+            self.inner.actor.authorization_method = auth_method.into();
         }
         self
     }
@@ -215,9 +216,7 @@ impl AuditLogBuilder {
     /// Sets the stream for the request details
     pub fn with_stream(mut self, stream: impl Into<String>) -> Self {
         if self.enabled {
-            self.request
-                .get_or_insert_with(RequestDetails::default)
-                .stream = stream.into();
+            self.inner.request.stream = stream.into();
         }
         self
     }
@@ -225,9 +224,9 @@ impl AuditLogBuilder {
     /// Sets the request timing details
     pub fn with_timing(mut self, start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> Self {
         if self.enabled {
-            let request = self.request.get_or_insert_with(RequestDetails::default);
-            request.start_time = start_time;
-            request.end_time = end_time;
+            self.inner.request.start_time = start_time;
+            self.inner.request.end_time = end_time;
+            self.inner.audit.generated_at = start_time;
         }
         self
     }
@@ -235,9 +234,7 @@ impl AuditLogBuilder {
     /// Sets the request method details
     pub fn with_method(mut self, method: impl Into<String>) -> Self {
         if self.enabled {
-            self.request
-                .get_or_insert_with(RequestDetails::default)
-                .method = method.into();
+            self.inner.request.method = method.into();
         }
         self
     }
@@ -245,9 +242,7 @@ impl AuditLogBuilder {
     /// Sets the request path
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         if self.enabled {
-            self.request
-                .get_or_insert_with(RequestDetails::default)
-                .path = path.into();
+            self.inner.request.path = path.into();
         }
         self
     }
@@ -255,9 +250,7 @@ impl AuditLogBuilder {
     /// Sets the request protocol
     pub fn with_protocol(mut self, protocol: impl Into<String>) -> Self {
         if self.enabled {
-            self.request
-                .get_or_insert_with(RequestDetails::default)
-                .protocol = protocol.into();
+            self.inner.request.protocol = protocol.into();
         }
         self
     }
@@ -265,9 +258,7 @@ impl AuditLogBuilder {
     /// Sets the request headers
     pub fn with_headers(mut self, headers: impl IntoIterator<Item = (String, String)>) -> Self {
         if self.enabled {
-            self.request
-                .get_or_insert_with(RequestDetails::default)
-                .headers = headers.into_iter().collect();
+            self.inner.request.headers = headers.into_iter().collect();
         }
         self
     }
@@ -275,9 +266,7 @@ impl AuditLogBuilder {
     /// Sets the response status code
     pub fn with_status(mut self, status_code: u16) -> Self {
         if self.enabled {
-            self.response
-                .get_or_insert_with(ResponseDetails::default)
-                .status_code = status_code;
+            self.inner.response.status_code = status_code;
         }
         self
     }
@@ -287,9 +276,7 @@ impl AuditLogBuilder {
         if self.enabled {
             let error = err.to_string();
             if !error.is_empty() {
-                self.response
-                    .get_or_insert_with(ResponseDetails::default)
-                    .error = Some(error);
+                self.inner.response.error = Some(error);
             }
         }
         self
@@ -304,31 +291,19 @@ impl AuditLogBuilder {
 
         // build the audit log
         let AuditLogBuilder {
-            actor,
-            request,
-            response,
+            inner: mut audit_log,
             ..
         } = self;
 
+        // get the deployment id from metadata
+        // NOTE: this fails if the metadata couldn't be loaded due to network issue, etc.
+        audit_log.parseable_server.deployment_id = get_metadata()
+            .await
+            .expect("Metadata should have been loaded")
+            .deployment_id;
+
         // get the logger
         let logger = AUDIT_LOGGER.as_ref().unwrap();
-
-        // build the audit log
-        let now = Utc::now();
-        let audit_log = AuditLog {
-            audit: AuditDetails {
-                version: AuditLogVersion::V1,
-                id: Ulid::new(),
-                generated_at: now,
-            },
-            parseable_server: ServerDetails {
-                version: current().released_version.to_string(),
-                deployment_id: Ulid::new(),
-            },
-            actor: actor.unwrap_or_default(),
-            request: request.unwrap_or_default(),
-            response: response.unwrap_or_default(),
-        };
 
         logger.send_log(json!(audit_log)).await
     }
