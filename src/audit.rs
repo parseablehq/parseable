@@ -21,7 +21,7 @@ use std::{
     fmt::{Debug, Display},
 };
 
-use crate::{about::current, handlers::http::modal::utils::rbac_utils::get_metadata};
+use crate::{about::current, storage::StorageMetadata};
 
 use super::option::CONFIG;
 use chrono::{DateTime, Utc};
@@ -172,7 +172,7 @@ impl Default for AuditLogBuilder {
                 },
                 parseable_server: ServerDetails {
                     version: current().released_version.to_string(),
-                    ..Default::default()
+                    deployment_id: StorageMetadata::global().deployment_id,
                 },
                 request: RequestDetails {
                     start_time: Utc::now(),
@@ -290,18 +290,14 @@ impl AuditLogBuilder {
             ..
         } = self;
 
-        // get the deployment id from metadata
-        // NOTE: this fails if the metadata couldn't be loaded due to network issue, etc.
-        audit_log.parseable_server.deployment_id = get_metadata()
-            .await
-            .expect("Metadata should have been loaded")
-            .deployment_id;
         let now = Utc::now();
         audit_log.audit.generated_at = now;
         audit_log.request.end_time = now;
-        // get the logger
-        let logger = AUDIT_LOGGER.as_ref().unwrap();
 
-        logger.send_log(json!(audit_log)).await
+        AUDIT_LOGGER
+            .as_ref()
+            .unwrap()
+            .send_log(json!(audit_log))
+            .await
     }
 }
