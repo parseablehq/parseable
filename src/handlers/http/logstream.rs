@@ -474,7 +474,7 @@ pub async fn create_stream(
     time_partition: &str,
     time_partition_limit: Option<NonZeroU32>,
     custom_partition: &str,
-    static_schema_flag: &str,
+    static_schema_flag: bool,
     schema: Arc<Schema>,
     stream_type: &str,
 ) -> Result<(), CreateStreamError> {
@@ -514,7 +514,7 @@ pub async fn create_stream(
                 time_partition.to_string(),
                 time_partition_limit,
                 custom_partition.to_string(),
-                static_schema_flag.to_string(),
+                static_schema_flag,
                 static_schema,
                 stream_type,
                 SchemaVersion::V1, // New stream
@@ -567,7 +567,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
             .time_partition_limit
             .map(|limit| limit.to_string()),
         custom_partition: stream_meta.custom_partition.clone(),
-        static_schema_flag: stream_meta.static_schema_flag.clone(),
+        static_schema_flag: stream_meta.static_schema_flag,
     };
 
     // get the other info from

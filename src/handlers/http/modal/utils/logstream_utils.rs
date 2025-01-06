@@ -76,7 +76,7 @@ pub async fn create_update_stream(
             req,
             stream_name,
             &time_partition,
-            &static_schema_flag,
+            static_schema_flag,
             &time_partition_limit,
             &custom_partition,
         )
@@ -102,7 +102,7 @@ pub async fn create_update_stream(
         stream_name,
         &time_partition,
         &custom_partition,
-        &static_schema_flag,
+        static_schema_flag,
     )?;
 
     create_stream(
@@ -110,7 +110,7 @@ pub async fn create_update_stream(
         &time_partition,
         time_partition_in_days,
         &custom_partition,
-        &static_schema_flag,
+        static_schema_flag,
         schema,
         &stream_type,
     )
@@ -123,7 +123,7 @@ async fn update_stream(
     req: &HttpRequest,
     stream_name: &str,
     time_partition: &str,
-    static_schema_flag: &str,
+    static_schema_flag: bool,
     time_partition_limit: &str,
     custom_partition: &str,
 ) -> Result<HeaderMap, StreamError> {
@@ -136,7 +136,7 @@ async fn update_stream(
             status: StatusCode::BAD_REQUEST,
         });
     }
-    if !static_schema_flag.is_empty() {
+    if static_schema_flag {
         return Err(StreamError::Custom {
             msg: "Altering the schema of an existing stream is restricted.".to_string(),
             status: StatusCode::BAD_REQUEST,
@@ -167,11 +167,11 @@ async fn validate_and_update_custom_partition(
 
 pub fn fetch_headers_from_put_stream_request(
     req: &HttpRequest,
-) -> (String, String, String, String, String, String) {
+) -> (String, String, String, bool, String, String) {
     let mut time_partition = String::default();
     let mut time_partition_limit = String::default();
     let mut custom_partition = String::default();
-    let mut static_schema_flag = String::default();
+    let mut static_schema_flag = false;
     let mut update_stream = String::default();
     let mut stream_type = StreamType::UserDefined.to_string();
     req.headers().iter().for_each(|(key, value)| {
@@ -184,8 +184,8 @@ pub fn fetch_headers_from_put_stream_request(
         if key == CUSTOM_PARTITION_KEY {
             custom_partition = value.to_str().unwrap().to_string();
         }
-        if key == STATIC_SCHEMA_FLAG {
-            static_schema_flag = value.to_str().unwrap().to_string();
+        if key == STATIC_SCHEMA_FLAG && value.to_str().unwrap() == "true" {
+            static_schema_flag = true;
         }
         if key == UPDATE_STREAM_KEY {
             update_stream = value.to_str().unwrap().to_string();
@@ -258,9 +258,9 @@ pub fn validate_static_schema(
     stream_name: &str,
     time_partition: &str,
     custom_partition: &str,
-    static_schema_flag: &str,
+    static_schema_flag: bool,
 ) -> Result<Arc<Schema>, CreateStreamError> {
-    if static_schema_flag == "true" {
+    if static_schema_flag {
         if body.is_empty() {
             return Err(CreateStreamError::Custom {
                 msg: format!(
@@ -317,7 +317,7 @@ pub async fn update_custom_partition_in_stream(
 ) -> Result<(), CreateStreamError> {
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name).unwrap();
     let time_partition = STREAM_INFO.get_time_partition(&stream_name).unwrap();
-    if static_schema_flag.is_some() {
+    if static_schema_flag {
         let schema = STREAM_INFO.schema(&stream_name).unwrap();
 
         if !custom_partition.is_empty() {
@@ -383,7 +383,7 @@ pub async fn create_stream(
     time_partition: &str,
     time_partition_limit: Option<NonZeroU32>,
     custom_partition: &str,
-    static_schema_flag: &str,
+    static_schema_flag: bool,
     schema: Arc<Schema>,
     stream_type: &str,
 ) -> Result<(), CreateStreamError> {
@@ -423,7 +423,7 @@ pub async fn create_stream(
                 time_partition.to_string(),
                 time_partition_limit,
                 custom_partition.to_string(),
-                static_schema_flag.to_string(),
+                static_schema_flag,
                 static_schema,
                 stream_type,
                 SchemaVersion::V1, // New stream
@@ -473,7 +473,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             .time_partition_limit
             .and_then(|limit| limit.parse().ok());
         let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
-        let static_schema_flag = stream_metadata.static_schema_flag.as_deref().unwrap_or("");
+        let static_schema_flag = stream_metadata.static_schema_flag;
         let stream_type = stream_metadata.stream_type.as_deref().unwrap_or("");
         let schema_version = stream_metadata.schema_version;
 
@@ -483,7 +483,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             time_partition.to_string(),
             time_partition_limit,
             custom_partition.to_string(),
-            static_schema_flag.to_string(),
+            static_schema_flag,
             static_schema,
             stream_type,
             schema_version,
