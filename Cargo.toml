@@ -125,7 +125,7 @@ arrow = "53.0.0"
 
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.13/build.zip"
-assets-sha1 = "945a54d6330352b05ee7a3b4de9e69ea8f0989e4"
+assets-sha1 = "789e0888883250b928bd71e63522ab8159532992"
 
 [features]
 debug = []
