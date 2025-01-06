@@ -19,6 +19,7 @@
 mod about;
 mod alerts;
 pub mod analytics;
+pub mod audit;
 pub mod banner;
 mod catalog;
 mod cli;
@@ -38,6 +39,7 @@ pub mod metrics;
 pub mod migration;
 mod oidc;
 pub mod option;
+pub mod otel;
 mod query;
 pub mod rbac;
 mod response;
@@ -48,7 +50,6 @@ pub mod sync;
 pub mod users;
 mod utils;
 mod validator;
-
 pub use handlers::http::modal::{
     ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
 };
