@@ -40,6 +40,7 @@ base64 = "0.22.0"
 lazy_static = "1.4"
 bytes = "1.4"
 byteorder = "1.4.3"
+bzip2 = { version = "*", features = ["static"] }
 cookie = "0.18.1"
 chrono = "0.4"
 chrono-humanize = "0.2"
