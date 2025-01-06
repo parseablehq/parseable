@@ -18,9 +18,8 @@
 
 use std::collections::HashSet;
 
-use actix_web::http::header::ContentType;
+use actix_web::{http::header::ContentType, Error};
 use chrono::Utc;
-use correlation_utils::user_auth_for_query;
 use datafusion::error::DataFusionError;
 use http::StatusCode;
 use itertools::Itertools;
@@ -31,11 +30,14 @@ use tokio::sync::RwLock;
 use tracing::{error, trace, warn};
 
 use crate::{
-    handlers::http::rbac::RBACError, option::CONFIG, query::QUERY_SESSION, rbac::map::SessionKey,
-    storage::ObjectStorageError, users::filters::FilterQuery, utils::get_hash,
+    handlers::http::rbac::RBACError,
+    option::CONFIG,
+    query::QUERY_SESSION,
+    rbac::{map::SessionKey, Users},
+    storage::ObjectStorageError,
+    users::filters::FilterQuery,
+    utils::{get_hash, user_auth_for_query},
 };
-
-pub mod correlation_utils;
 
 pub static CORRELATIONS: Lazy<Correlation> = Lazy::new(Correlation::default);
 
@@ -77,11 +79,15 @@ impl Correlation {
         let correlations = self.0.read().await.iter().cloned().collect_vec();
 
         let mut user_correlations = vec![];
+        let permissions = Users.get_permissions(session_key);
+
         for c in correlations {
-            if user_auth_for_query(session_key, &c.table_configs)
-                .await
-                .is_ok()
-            {
+            let tables = &c
+                .table_configs
+                .iter()
+                .map(|t| t.table_name.clone())
+                .collect_vec();
+            if user_auth_for_query(&permissions, tables).is_ok() {
                 user_correlations.push(c);
             }
         }
@@ -220,7 +226,14 @@ impl CorrelationRequest {
         }
 
         // check if user has access to table
-        user_auth_for_query(session_key, &self.table_configs).await?;
+        let permissions = Users.get_permissions(session_key);
+        let tables = &self
+            .table_configs
+            .iter()
+            .map(|t| t.table_name.clone())
+            .collect_vec();
+
+        user_auth_for_query(&permissions, tables)?;
 
         // to validate table config, we need to check whether the mentioned fields
         // are present in the table or not
@@ -271,6 +284,8 @@ pub enum CorrelationError {
     Unauthorized,
     #[error("DataFusion Error: {0}")]
     DataFusion(#[from] DataFusionError),
+    #[error("{0}")]
+    ActixError(#[from] Error),
 }
 
 impl actix_web::ResponseError for CorrelationError {
@@ -283,6 +298,7 @@ impl actix_web::ResponseError for CorrelationError {
             Self::AnyhowError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized => StatusCode::BAD_REQUEST,
             Self::DataFusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ActixError(_) => StatusCode::BAD_REQUEST,
         }
     }
 
