@@ -54,7 +54,11 @@ serde_repr = "0.1.17"
 async-trait = "0.1.82"
 futures = "0.3"
 futures-util = "0.3.28"
-tokio = { version = "1.28", default-features = false, features = ["sync", "macros", "fs"] }
+tokio = { version = "1.28", default-features = false, features = [
+    "sync",
+    "macros",
+    "fs",
+] }
 tokio-stream = { version = "0.1", features = ["fs"] }
 
 # Logging and Metrics
@@ -78,7 +82,15 @@ relative-path = { version = "1.7", features = ["serde"] }
 xz2 = { version = "*", features = ["static"] }
 
 # CLI and System
-clap = { version = "4.1", default-features = false, features = ["std", "color", "help", "derive", "env", "cargo", "error-context"] }
+clap = { version = "4.1", default-features = false, features = [
+    "std",
+    "color",
+    "help",
+    "derive",
+    "env",
+    "cargo",
+    "error-context",
+] }
 crossterm = "0.28.1"
 hostname = "0.4.0"
 human-size = "0.4"
@@ -102,7 +114,10 @@ nom = "7.1.3"
 once_cell = "1.17.1"
 rand = "0.8.5"
 regex = "1.7.3"
-reqwest = { version = "0.11.27", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.11.27", default-features = false, features = [
+    "rustls-tls",
+    "json",
+] }
 semver = "1.0"
 static-files = "0.2"
 thiserror = "2.0.0"
