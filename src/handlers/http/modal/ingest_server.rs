@@ -25,7 +25,6 @@ use super::OpenIdClient;
 use super::ParseableServer;
 use crate::analytics;
 use crate::handlers::airplane;
-use crate::handlers::http::caching_removed;
 use crate::handlers::http::ingest;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::DisAllowRootUser;
@@ -267,13 +266,6 @@ impl IngestServer {
                             .to(logstream::get_stats)
                             .authorize_for_stream(Action::GetStats),
                     ),
-                )
-                .service(
-                    web::resource("/cache")
-                        // PUT "/logstream/{logstream}/cache" ==> caching has been deprecated
-                        .route(web::put().to(caching_removed))
-                        // GET "/logstream/{logstream}/cache" ==> caching has been deprecated
-                        .route(web::get().to(caching_removed)),
                 )
                 .service(
                     web::scope("/retention").service(

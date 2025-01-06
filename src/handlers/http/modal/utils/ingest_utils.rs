@@ -31,11 +31,11 @@ use crate::{
     },
     handlers::{
         http::{ingest::PostError, kinesis},
-        LOG_SOURCE_KEY, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+        LOG_SOURCE_KEY,
     },
     metadata::{SchemaVersion, STREAM_INFO},
     storage::StreamType,
-    utils::{header_parsing::collect_labelled_headers, json::convert_array_to_object},
+    utils::json::convert_array_to_object,
 };
 
 pub async fn flatten_and_push_logs(
@@ -55,7 +55,7 @@ pub async fn flatten_and_push_logs(
             let json = kinesis::flatten_kinesis_logs(&body);
             for record in json.iter() {
                 let body: Bytes = serde_json::to_vec(record).unwrap().into();
-                push_logs(stream_name, &req, &body, &LogSource::default()).await?;
+                push_logs(stream_name, &body, &LogSource::default()).await?;
             }
         }
         LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
@@ -64,7 +64,7 @@ pub async fn flatten_and_push_logs(
             )));
         }
         _ => {
-            push_logs(stream_name, &req, &body, &log_source).await?;
+            push_logs(stream_name, &body, &log_source).await?;
         }
     }
     Ok(())
@@ -72,7 +72,6 @@ pub async fn flatten_and_push_logs(
 
 pub async fn push_logs(
     stream_name: &str,
-    req: &HttpRequest,
     body: &Bytes,
     log_source: &LogSource,
 ) -> Result<(), PostError> {
@@ -90,7 +89,6 @@ pub async fn push_logs(
             let size = size as u64;
             create_process_record_batch(
                 stream_name,
-                req,
                 body_val,
                 static_schema_flag.as_ref(),
                 None,
@@ -120,7 +118,6 @@ pub async fn push_logs(
                 let size = value.to_string().into_bytes().len() as u64;
                 create_process_record_batch(
                     stream_name,
-                    req,
                     value,
                     static_schema_flag.as_ref(),
                     None,
@@ -147,7 +144,6 @@ pub async fn push_logs(
             let size = value.to_string().into_bytes().len() as u64;
             create_process_record_batch(
                 stream_name,
-                req,
                 value,
                 static_schema_flag.as_ref(),
                 time_partition.as_ref(),
@@ -179,7 +175,6 @@ pub async fn push_logs(
             let size = value.to_string().into_bytes().len() as u64;
             create_process_record_batch(
                 stream_name,
-                req,
                 value,
                 static_schema_flag.as_ref(),
                 time_partition.as_ref(),
@@ -199,7 +194,6 @@ pub async fn push_logs(
 #[allow(clippy::too_many_arguments)]
 pub async fn create_process_record_batch(
     stream_name: &str,
-    req: &HttpRequest,
     value: Value,
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
@@ -211,7 +205,6 @@ pub async fn create_process_record_batch(
 ) -> Result<(), PostError> {
     let (rb, is_first_event) = get_stream_schema(
         stream_name,
-        req,
         &value,
         static_schema_flag,
         time_partition,
@@ -237,7 +230,6 @@ pub async fn create_process_record_batch(
 
 pub fn get_stream_schema(
     stream_name: &str,
-    req: &HttpRequest,
     body: &Value,
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
@@ -251,7 +243,6 @@ pub fn get_stream_schema(
         .schema
         .clone();
     into_event_batch(
-        req,
         body,
         schema,
         static_schema_flag,
@@ -262,7 +253,6 @@ pub fn get_stream_schema(
 }
 
 pub fn into_event_batch(
-    req: &HttpRequest,
     body: &Value,
     schema: HashMap<String, Arc<Field>>,
     static_schema_flag: Option<&String>,
@@ -270,12 +260,8 @@ pub fn into_event_batch(
     schema_version: SchemaVersion,
     log_source: &LogSource,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let tags = collect_labelled_headers(req, PREFIX_TAGS, SEPARATOR)?;
-    let metadata = collect_labelled_headers(req, PREFIX_META, SEPARATOR)?;
     let event = format::json::Event {
         data: body.to_owned(),
-        tags,
-        metadata,
     };
     let (rb, is_first) = event.into_recordbatch(
         &schema,

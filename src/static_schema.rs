@@ -16,7 +16,7 @@
  *
  */
 
-use crate::event::{DEFAULT_METADATA_KEY, DEFAULT_TAGS_KEY, DEFAULT_TIMESTAMP_KEY};
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::utils::arrow::get_field;
 use anyhow::{anyhow, Error as AnyError};
 use serde::{Deserialize, Serialize};
@@ -144,16 +144,6 @@ fn add_parseable_fields_to_static_schema(
         let field = Field::new(field.name.clone(), field.data_type.clone(), field.nullable);
         schema.push(Arc::new(field));
     }
-    if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
-        return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
-    };
-
-    if get_field(&schema, DEFAULT_METADATA_KEY).is_some() {
-        return Err(anyhow!(
-            "field {} is a reserved field",
-            DEFAULT_METADATA_KEY
-        ));
-    };
 
     if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
         return Err(anyhow!(
@@ -171,14 +161,6 @@ fn add_parseable_fields_to_static_schema(
             true,
         )),
     );
-
-    // p_tags and p_metadata are added to the end of the schema
-    schema.push(Arc::new(Field::new(DEFAULT_TAGS_KEY, DataType::Utf8, true)));
-    schema.push(Arc::new(Field::new(
-        DEFAULT_METADATA_KEY,
-        DataType::Utf8,
-        true,
-    )));
 
     // prepare the record batch and new fields to be added
     let schema = Arc::new(Schema::new(schema));

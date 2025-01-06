@@ -582,7 +582,6 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
             .time_partition_limit
             .map(|limit| limit.to_string()),
         custom_partition: stream_meta.custom_partition.clone(),
-        cache_enabled: stream_meta.cache_enabled,
         static_schema_flag: stream_meta.static_schema_flag.clone(),
     };
 

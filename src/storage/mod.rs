@@ -96,8 +96,6 @@ pub struct ObjectStoreFormat {
     pub stats: FullStats,
     #[serde(default)]
     pub snapshot: Snapshot,
-    #[serde(default)]
-    pub cache_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention: Option<Retention>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,8 +118,6 @@ pub struct StreamInfo {
     #[serde(rename = "first-event-at")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_event_at: Option<String>,
-    #[serde(default)]
-    pub cache_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -191,7 +187,6 @@ impl Default for ObjectStoreFormat {
             permissions: vec![Permisssion::new("parseable".to_string())],
             stats: FullStats::default(),
             snapshot: Snapshot::default(),
-            cache_enabled: false,
             retention: None,
             time_partition: None,
             time_partition_limit: None,
