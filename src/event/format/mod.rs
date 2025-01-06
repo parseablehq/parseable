@@ -23,24 +23,18 @@ use std::{
 };
 
 use anyhow::{anyhow, Error as AnyError};
-use arrow_array::{RecordBatch, StringArray};
+use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::DateTime;
 use serde_json::Value;
 
-use crate::{
-    metadata::SchemaVersion,
-    utils::{self, arrow::get_field},
-};
+use crate::{metadata::SchemaVersion, utils::arrow::get_field};
 
-use super::{DEFAULT_METADATA_KEY, DEFAULT_TAGS_KEY, DEFAULT_TIMESTAMP_KEY};
+use super::DEFAULT_TIMESTAMP_KEY;
 
 pub mod json;
 
 static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
-
-type Tags = String;
-type Metadata = String;
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
@@ -87,7 +81,7 @@ pub trait EventFormat: Sized {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
         log_source: &LogSource,
-    ) -> Result<(Self::Data, EventSchema, bool, Tags, Metadata), AnyError>;
+    ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
 
@@ -99,25 +93,13 @@ pub trait EventFormat: Sized {
         schema_version: SchemaVersion,
         log_source: &LogSource,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first, tags, metadata) = self.to_data(
+        let (data, mut schema, is_first) = self.to_data(
             storage_schema,
             static_schema_flag,
             time_partition,
             schema_version,
             log_source,
         )?;
-
-        // DEFAULT_TAGS_KEY, DEFAULT_METADATA_KEY and DEFAULT_TIMESTAMP_KEY are reserved field names
-        if get_field(&schema, DEFAULT_TAGS_KEY).is_some() {
-            return Err(anyhow!("field {} is a reserved field", DEFAULT_TAGS_KEY));
-        };
-
-        if get_field(&schema, DEFAULT_METADATA_KEY).is_some() {
-            return Err(anyhow!(
-                "field {} is a reserved field",
-                DEFAULT_METADATA_KEY
-            ));
-        };
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
@@ -136,16 +118,6 @@ pub trait EventFormat: Sized {
             )),
         );
 
-        // p_tags and p_metadata are added to the end of the schema
-        let tags_index = schema.len();
-        let metadata_index = tags_index + 1;
-        schema.push(Arc::new(Field::new(DEFAULT_TAGS_KEY, DataType::Utf8, true)));
-        schema.push(Arc::new(Field::new(
-            DEFAULT_METADATA_KEY,
-            DataType::Utf8,
-            true,
-        )));
-
         // prepare the record batch and new fields to be added
         let mut new_schema = Arc::new(Schema::new(schema));
         if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
@@ -154,16 +126,6 @@ pub trait EventFormat: Sized {
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
         let rb = Self::decode(data, new_schema.clone())?;
-        let tags_arr = StringArray::from_iter_values(std::iter::repeat(&tags).take(rb.num_rows()));
-        let metadata_arr =
-            StringArray::from_iter_values(std::iter::repeat(&metadata).take(rb.num_rows()));
-        // modify the record batch to add fields to respective indexes
-        let rb = utils::arrow::replace_columns(
-            Arc::clone(&new_schema),
-            &rb,
-            &[tags_index, metadata_index],
-            &[Arc::new(tags_arr), Arc::new(metadata_arr)],
-        );
 
         Ok((rb, is_first))
     }

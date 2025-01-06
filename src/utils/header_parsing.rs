@@ -16,43 +16,7 @@
  *
  */
 
-const MAX_HEADERS_ALLOWED: usize = 10;
-use actix_web::{HttpRequest, HttpResponse, ResponseError};
-
-pub fn collect_labelled_headers(
-    req: &HttpRequest,
-    prefix: &str,
-    kv_separator: char,
-) -> Result<String, ParseHeaderError> {
-    // filter out headers which has right prefix label and convert them into str;
-    let headers = req.headers().iter().filter_map(|(key, value)| {
-        let key = key.as_str().strip_prefix(prefix)?;
-        Some((key, value))
-    });
-
-    let mut labels: Vec<String> = Vec::new();
-
-    for (key, value) in headers {
-        let value = value.to_str().map_err(|_| ParseHeaderError::InvalidValue)?;
-        if key.is_empty() {
-            return Err(ParseHeaderError::Emptykey);
-        }
-        if key.contains(kv_separator) {
-            return Err(ParseHeaderError::SeperatorInKey(kv_separator));
-        }
-        if value.contains(kv_separator) {
-            return Err(ParseHeaderError::SeperatorInValue(kv_separator));
-        }
-
-        labels.push(format!("{key}={value}"));
-    }
-
-    if labels.len() > MAX_HEADERS_ALLOWED {
-        return Err(ParseHeaderError::MaxHeadersLimitExceeded);
-    }
-
-    Ok(labels.join(&kv_separator.to_string()))
-}
+use actix_web::{HttpResponse, ResponseError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseHeaderError {
