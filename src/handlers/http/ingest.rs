@@ -20,16 +20,20 @@ use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
+use crate::event::format::LogSource;
 use crate::event::{
     self,
     error::EventError,
     format::{self, EventFormat},
 };
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
-use crate::handlers::STREAM_NAME_HEADER_KEY;
+use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
+use crate::otel::logs::flatten_otel_logs;
+use crate::otel::metrics::flatten_otel_metrics;
+use crate::otel::traces::flatten_otel_traces;
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
@@ -38,6 +42,10 @@ use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
+use nom::AsBytes;
+use opentelemetry_proto::tonic::logs::v1::LogsData;
+use opentelemetry_proto::tonic::metrics::v1::MetricsData;
+use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -85,7 +93,13 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             metadata: String::default(),
         };
         // For internal streams, use old schema
-        event.into_recordbatch(&schema, None, None, SchemaVersion::V0)?
+        event.into_recordbatch(
+            &schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default(),
+        )?
     };
     event::Event {
         rb,
@@ -106,21 +120,102 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
 // Handler for POST /v1/logs to ingest OTEL logs
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn handle_otel_ingestion(
+pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
     body: Bytes,
 ) -> Result<HttpResponse, PostError> {
-    if let Some((_, stream_name)) = req
-        .headers()
-        .iter()
-        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-    {
-        let stream_name = stream_name.to_str().unwrap();
-        create_stream_if_not_exists(stream_name, &StreamType::UserDefined.to_string()).await?;
-        push_logs(stream_name, &req, &body).await?;
-    } else {
+    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    };
+
+    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
+    };
+    let log_source = LogSource::from(log_source.to_str().unwrap());
+    if log_source != LogSource::OtelLogs {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Please use x-p-log-source: otel-logs for ingesting otel logs"
+        )));
     }
+
+    let stream_name = stream_name.to_str().unwrap().to_owned();
+    create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+
+    //custom flattening required for otel logs
+    let logs: LogsData = serde_json::from_slice(body.as_bytes())?;
+    let mut json = flatten_otel_logs(&logs);
+    for record in json.iter_mut() {
+        let body: Bytes = serde_json::to_vec(record).unwrap().into();
+        push_logs(&stream_name, &req, &body, &log_source).await?;
+    }
+
+    Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for POST /v1/metrics to ingest OTEL metrics
+// ingests events by extracting stream name from header
+// creates if stream does not exist
+pub async fn handle_otel_metrics_ingestion(
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<HttpResponse, PostError> {
+    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    };
+    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
+    };
+    let log_source = LogSource::from(log_source.to_str().unwrap());
+    if log_source != LogSource::OtelMetrics {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Please use x-p-log-source: otel-metrics for ingesting otel metrics"
+        )));
+    }
+    let stream_name = stream_name.to_str().unwrap().to_owned();
+    create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+
+    //custom flattening required for otel metrics
+    let metrics: MetricsData = serde_json::from_slice(body.as_bytes())?;
+    let mut json = flatten_otel_metrics(metrics);
+    for record in json.iter_mut() {
+        let body: Bytes = serde_json::to_vec(record).unwrap().into();
+        push_logs(&stream_name, &req, &body, &log_source).await?;
+    }
+
+    Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for POST /v1/traces to ingest OTEL traces
+// ingests events by extracting stream name from header
+// creates if stream does not exist
+pub async fn handle_otel_traces_ingestion(
+    req: HttpRequest,
+    body: Bytes,
+) -> Result<HttpResponse, PostError> {
+    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    };
+
+    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
+    };
+    let log_source = LogSource::from(log_source.to_str().unwrap());
+    if log_source != LogSource::OtelTraces {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Please use x-p-log-source: otel-traces for ingesting otel traces"
+        )));
+    }
+    let stream_name = stream_name.to_str().unwrap().to_owned();
+    create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+
+    //custom flattening required for otel traces
+    let traces: TracesData = serde_json::from_slice(body.as_bytes())?;
+    let mut json = flatten_otel_traces(&traces);
+    for record in json.iter_mut() {
+        let body: Bytes = serde_json::to_vec(record).unwrap().into();
+        push_logs(&stream_name, &req, &body, &log_source).await?;
+    }
+
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -280,7 +375,7 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        event,
+        event::{self, format::LogSource},
         handlers::{http::modal::utils::ingest_utils::into_event_batch, PREFIX_META, PREFIX_TAGS},
         metadata::SchemaVersion,
     };
@@ -329,6 +424,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -379,6 +475,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -412,7 +509,16 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 5);
@@ -444,7 +550,16 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).is_err());
+        assert!(into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default()
+        )
+        .is_err());
     }
 
     #[test]
@@ -462,7 +577,16 @@ mod tests {
 
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -480,7 +604,8 @@ mod tests {
             HashMap::default(),
             None,
             None,
-            SchemaVersion::V0
+            SchemaVersion::V0,
+            &LogSource::default()
         )
         .is_err())
     }
@@ -512,6 +637,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -568,6 +694,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -617,7 +744,16 @@ mod tests {
         );
         let req = TestRequest::default().to_http_request();
 
-        let (rb, _) = into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 6);
@@ -666,7 +802,16 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(&req, &json, schema, None, None, SchemaVersion::V0).is_err());
+        assert!(into_event_batch(
+            &req,
+            &json,
+            schema,
+            None,
+            None,
+            SchemaVersion::V0,
+            &LogSource::default()
+        )
+        .is_err());
     }
 
     #[test]
@@ -701,6 +846,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V0,
+            &LogSource::default(),
         )
         .unwrap();
 
@@ -781,6 +927,7 @@ mod tests {
             None,
             None,
             SchemaVersion::V1,
+            &LogSource::default(),
         )
         .unwrap();
 

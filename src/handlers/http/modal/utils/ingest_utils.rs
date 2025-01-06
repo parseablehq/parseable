@@ -16,23 +16,22 @@
  *
  */
 
-use std::{collections::HashMap, sync::Arc};
-
 use actix_web::HttpRequest;
 use anyhow::anyhow;
 use arrow_schema::Field;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     event::{
         self,
-        format::{self, EventFormat},
+        format::{self, EventFormat, LogSource},
     },
     handlers::{
         http::{ingest::PostError, kinesis},
-        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+        LOG_SOURCE_KEY, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     },
     metadata::{SchemaVersion, STREAM_INFO},
     storage::StreamType,
@@ -47,16 +46,26 @@ pub async fn flatten_and_push_logs(
     let log_source = req
         .headers()
         .get(LOG_SOURCE_KEY)
-        .map(|header| header.to_str().unwrap_or_default())
+        .map(|h| h.to_str().unwrap_or(""))
+        .map(LogSource::from)
         .unwrap_or_default();
-    if log_source == LOG_SOURCE_KINESIS {
-        let json = kinesis::flatten_kinesis_logs(&body);
-        for record in json.iter() {
-            let body: Bytes = serde_json::to_vec(record).unwrap().into();
-            push_logs(stream_name, &req, &body).await?;
+
+    match log_source {
+        LogSource::Kinesis => {
+            let json = kinesis::flatten_kinesis_logs(&body);
+            for record in json.iter() {
+                let body: Bytes = serde_json::to_vec(record).unwrap().into();
+                push_logs(stream_name, &req, &body, &LogSource::default()).await?;
+            }
         }
-    } else {
-        push_logs(stream_name, &req, &body).await?;
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
+            return Err(PostError::Invalid(anyhow!(
+                "Please use endpoints `/v1/logs` for otel logs, `/v1/metrics` for otel metrics and `/v1/traces` for otel traces"
+            )));
+        }
+        _ => {
+            push_logs(stream_name, &req, &body, &log_source).await?;
+        }
     }
     Ok(())
 }
@@ -65,6 +74,7 @@ pub async fn push_logs(
     stream_name: &str,
     req: &HttpRequest,
     body: &Bytes,
+    log_source: &LogSource,
 ) -> Result<(), PostError> {
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
     let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
@@ -88,6 +98,7 @@ pub async fn push_logs(
                 &HashMap::new(),
                 size,
                 schema_version,
+                log_source,
             )
             .await?;
         } else {
@@ -97,6 +108,7 @@ pub async fn push_logs(
                 None,
                 custom_partition.as_ref(),
                 schema_version,
+                log_source,
             )?;
             let custom_partition = custom_partition.unwrap();
             let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
@@ -116,6 +128,7 @@ pub async fn push_logs(
                     &custom_partition_values,
                     size,
                     schema_version,
+                    log_source,
                 )
                 .await?;
             }
@@ -127,6 +140,7 @@ pub async fn push_logs(
             time_partition_limit,
             None,
             schema_version,
+            log_source,
         )?;
         for value in data {
             parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref().unwrap())?;
@@ -141,6 +155,7 @@ pub async fn push_logs(
                 &HashMap::new(),
                 size,
                 schema_version,
+                log_source,
             )
             .await?;
         }
@@ -151,6 +166,7 @@ pub async fn push_logs(
             time_partition_limit,
             custom_partition.as_ref(),
             schema_version,
+            log_source,
         )?;
         let custom_partition = custom_partition.unwrap();
         let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
@@ -171,6 +187,7 @@ pub async fn push_logs(
                 &custom_partition_values,
                 size,
                 schema_version,
+                log_source,
             )
             .await?;
         }
@@ -190,6 +207,7 @@ pub async fn create_process_record_batch(
     custom_partition_values: &HashMap<String, String>,
     origin_size: u64,
     schema_version: SchemaVersion,
+    log_source: &LogSource,
 ) -> Result<(), PostError> {
     let (rb, is_first_event) = get_stream_schema(
         stream_name,
@@ -198,6 +216,7 @@ pub async fn create_process_record_batch(
         static_schema_flag,
         time_partition,
         schema_version,
+        log_source,
     )?;
     event::Event {
         rb,
@@ -223,6 +242,7 @@ pub fn get_stream_schema(
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
+    log_source: &LogSource,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let hash_map = STREAM_INFO.read().unwrap();
     let schema = hash_map
@@ -237,6 +257,7 @@ pub fn get_stream_schema(
         static_schema_flag,
         time_partition,
         schema_version,
+        log_source,
     )
 }
 
@@ -247,6 +268,7 @@ pub fn into_event_batch(
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
+    log_source: &LogSource,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let tags = collect_labelled_headers(req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(req, PREFIX_META, SEPARATOR)?;
@@ -255,8 +277,13 @@ pub fn into_event_batch(
         tags,
         metadata,
     };
-    let (rb, is_first) =
-        event.into_recordbatch(&schema, static_schema_flag, time_partition, schema_version)?;
+    let (rb, is_first) = event.into_recordbatch(
+        &schema,
+        static_schema_flag,
+        time_partition,
+        schema_version,
+        log_source,
+    )?;
     Ok((rb, is_first))
 }
 
