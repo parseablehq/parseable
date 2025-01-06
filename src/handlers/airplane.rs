@@ -34,9 +34,7 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
 use crate::handlers::http::cluster::get_ingestor_info;
-use crate::handlers::http::query::{
-    authorize_and_set_filter_tags, into_query, update_schema_when_distributed,
-};
+use crate::handlers::http::query::{into_query, update_schema_when_distributed};
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::CONFIG;
@@ -46,6 +44,7 @@ use crate::utils::arrow::flight::{
     send_to_ingester,
 };
 use crate::utils::time::TimeRange;
+use crate::utils::user_auth_for_query;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
     FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc,
@@ -157,12 +156,12 @@ impl FlightService for AirServiceImpl {
             .ok_or_else(|| Status::aborted("Malformed SQL Provided, Table Name Not Found"))?
             .to_owned();
 
-        update_schema_when_distributed(streams)
+        update_schema_when_distributed(&streams)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
         // map payload to query
-        let mut query = into_query(&ticket, &session_state, time_range)
+        let query = into_query(&ticket, &session_state, time_range)
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
@@ -202,7 +201,7 @@ impl FlightService for AirServiceImpl {
             rbac::Response::Authorized => (),
             rbac::Response::UnAuthorized => {
                 return Err(Status::permission_denied(
-                    "user is not authenticated to access this resource",
+                    "user is not authorized to access this resource",
                 ))
             }
             rbac::Response::ReloadRequired => {
@@ -212,7 +211,7 @@ impl FlightService for AirServiceImpl {
 
         let permissions = Users.get_permissions(&key);
 
-        authorize_and_set_filter_tags(&mut query, permissions, &stream_name).map_err(|_| {
+        user_auth_for_query(&permissions, &streams).map_err(|_| {
             Status::permission_denied("User Does not have permission to access this")
         })?;
         let time = Instant::now();
