@@ -33,8 +33,6 @@ use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
-pub const DEFAULT_TAGS_KEY: &str = "p_tags";
-pub const DEFAULT_METADATA_KEY: &str = "p_metadata";
 
 #[derive(Clone)]
 pub struct Event {

@@ -20,8 +20,6 @@ pub mod airplane;
 pub mod http;
 pub mod livetail;
 
-const PREFIX_TAGS: &str = "x-p-tag-";
-const PREFIX_META: &str = "x-p-meta-";
 pub const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
 const LOG_SOURCE_KEY: &str = "x-p-log-source";
 const TIME_PARTITION_KEY: &str = "x-p-time-partition";
@@ -29,7 +27,6 @@ const TIME_PARTITION_LIMIT_KEY: &str = "x-p-time-partition-limit";
 const CUSTOM_PARTITION_KEY: &str = "x-p-custom-partition";
 const STATIC_SCHEMA_FLAG: &str = "x-p-static-schema-flag";
 const AUTHORIZATION_KEY: &str = "authorization";
-const SEPARATOR: char = '^';
 const UPDATE_STREAM_KEY: &str = "x-p-update-stream";
 const STREAM_TYPE_KEY: &str = "x-p-stream-type";
 const OIDC_SCOPE: &str = "openid profile email";

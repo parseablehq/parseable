@@ -154,7 +154,6 @@ impl Query {
 
     /// return logical plan with all time filters applied through
     fn final_logical_plan(&self, time_partition: &Option<String>) -> LogicalPlan {
-        let filters = self.filter_tag.clone().and_then(tag_filter);
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -166,7 +165,6 @@ impl Query {
                     plan.plan.as_ref().clone(),
                     self.time_range.start.naive_utc(),
                     self.time_range.end.naive_utc(),
-                    filters,
                     time_partition,
                 );
                 LogicalPlan::Explain(Explain {
@@ -184,7 +182,6 @@ impl Query {
                     x,
                     self.time_range.start.naive_utc(),
                     self.time_range.end.naive_utc(),
-                    filters,
                     time_partition,
                 )
                 .data
@@ -228,21 +225,10 @@ impl TreeNodeVisitor<'_> for TableScanVisitor {
     }
 }
 
-fn tag_filter(filters: Vec<String>) -> Option<Expr> {
-    filters
-        .iter()
-        .map(|literal| {
-            Expr::Column(Column::from_name(event::DEFAULT_TAGS_KEY))
-                .like(lit(format!("%{}%", literal)))
-        })
-        .reduce(or)
-}
-
 fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
-    filters: Option<Expr>,
     time_partition: &Option<String>,
 ) -> Transformed<LogicalPlan> {
     plan.transform(&|plan| match plan {
@@ -284,10 +270,6 @@ fn transform(
 
                 new_filters.push(_start_time_filter);
                 new_filters.push(_end_time_filter);
-            }
-
-            if let Some(tag_filters) = filters.clone() {
-                new_filters.push(tag_filters)
             }
             let new_filter = new_filters.into_iter().reduce(and);
             if let Some(new_filter) = new_filter {
