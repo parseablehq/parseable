@@ -18,13 +18,18 @@
 
 use std::num::NonZeroU32;
 
+use flatten::{convert_to_array, generic_flattening, has_more_than_four_levels};
 use serde_json;
 use serde_json::Value;
 
+use crate::event::format::LogSource;
 use crate::metadata::SchemaVersion;
 
 pub mod flatten;
 
+/// calls the function `flatten_json` which results Vec<Value> or Error
+/// in case when Vec<Value> is returned, converts the Vec<Value> to Value of Array
+/// this is to ensure recursive flattening does not happen for heavily nested jsons
 pub fn flatten_json_body(
     body: Value,
     time_partition: Option<&String>,
@@ -32,13 +37,20 @@ pub fn flatten_json_body(
     custom_partition: Option<&String>,
     schema_version: SchemaVersion,
     validation_required: bool,
+    log_source: &LogSource,
 ) -> Result<Value, anyhow::Error> {
-    let mut nested_value = if schema_version == SchemaVersion::V1 {
-        flatten::generic_flattening(body)?
+    // Flatten the json body only if new schema and has less than 4 levels of nesting
+    let mut nested_value = if schema_version == SchemaVersion::V1
+        && !has_more_than_four_levels(&body, 1)
+        && matches!(
+            log_source,
+            LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis
+        ) {
+        let flattened_json = generic_flattening(&body)?;
+        convert_to_array(flattened_json)?
     } else {
         body
     };
-
     flatten::flatten(
         &mut nested_value,
         "_",
@@ -47,7 +59,6 @@ pub fn flatten_json_body(
         custom_partition,
         validation_required,
     )?;
-
     Ok(nested_value)
 }
 
@@ -57,6 +68,7 @@ pub fn convert_array_to_object(
     time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
     schema_version: SchemaVersion,
+    log_source: &LogSource,
 ) -> Result<Vec<Value>, anyhow::Error> {
     let data = flatten_json_body(
         body,
@@ -65,6 +77,7 @@ pub fn convert_array_to_object(
         custom_partition,
         schema_version,
         true,
+        log_source,
     )?;
     let value_arr = match data {
         Value::Array(arr) => arr,
@@ -91,5 +104,51 @@ pub fn convert_to_string(value: &Value) -> Value {
                 .collect();
             Value::Object(new_map)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::event::format::LogSource;
+
+    use super::flatten_json_body;
+    use serde_json::json;
+
+    #[test]
+    fn hierarchical_json_flattening_success() {
+        let value = json!({"a":{"b":{"e":["a","b"]}}});
+        let expected = json!([{"a_b_e": "a"}, {"a_b_e": "b"}]);
+        assert_eq!(
+            flatten_json_body(
+                value,
+                None,
+                None,
+                None,
+                crate::metadata::SchemaVersion::V1,
+                false,
+                &LogSource::default()
+            )
+            .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn hierarchical_json_flattening_failure() {
+        let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
+        let expected = json!({"a_b_c_d_e": ["a","b"]});
+        assert_eq!(
+            flatten_json_body(
+                value,
+                None,
+                None,
+                None,
+                crate::metadata::SchemaVersion::V1,
+                false,
+                &LogSource::default()
+            )
+            .unwrap(),
+            expected
+        );
     }
 }

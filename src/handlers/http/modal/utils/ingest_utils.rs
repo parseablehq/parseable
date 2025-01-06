@@ -16,24 +16,22 @@
  *
  */
 
-use std::{collections::HashMap, sync::Arc};
-
 use actix_web::HttpRequest;
 use anyhow::anyhow;
 use arrow_schema::Field;
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use itertools::Itertools;
 use serde_json::Value;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     event::{
-        format::{self, EventFormat},
-        Event,
+        self,
+        format::{self, EventFormat, LogSource},
     },
     handlers::{
         http::{ingest::PostError, kinesis},
-        LOG_SOURCE_KEY, LOG_SOURCE_KINESIS, PREFIX_META, PREFIX_TAGS, SEPARATOR,
+        LOG_SOURCE_KEY, PREFIX_META, PREFIX_TAGS, SEPARATOR,
     },
     metadata::{SchemaVersion, STREAM_INFO},
     storage::StreamType,
@@ -48,16 +46,26 @@ pub async fn flatten_and_push_logs(
     let log_source = req
         .headers()
         .get(LOG_SOURCE_KEY)
-        .map(|header| header.to_str().unwrap_or_default())
+        .map(|h| h.to_str().unwrap_or(""))
+        .map(LogSource::from)
         .unwrap_or_default();
-    if log_source == LOG_SOURCE_KINESIS {
-        let json = kinesis::flatten_kinesis_logs(&body);
-        for record in json.iter() {
-            let body: Bytes = serde_json::to_vec(record).unwrap().into();
-            push_logs(stream_name, &req, &body).await?;
+
+    match log_source {
+        LogSource::Kinesis => {
+            let json = kinesis::flatten_kinesis_logs(&body);
+            for record in json.iter() {
+                let body: Bytes = serde_json::to_vec(record).unwrap().into();
+                push_logs(stream_name, &req, &body, &LogSource::default()).await?;
+            }
         }
-    } else {
-        push_logs(stream_name, &req, &body).await?;
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
+            return Err(PostError::Invalid(anyhow!(
+                "Please use endpoints `/v1/logs` for otel logs, `/v1/metrics` for otel metrics and `/v1/traces` for otel traces"
+            )));
+        }
+        _ => {
+            push_logs(stream_name, &req, &body, &log_source).await?;
+        }
     }
     Ok(())
 }
@@ -66,6 +74,7 @@ pub async fn push_logs(
     stream_name: &str,
     req: &HttpRequest,
     body: &Bytes,
+    log_source: &LogSource,
 ) -> Result<(), PostError> {
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
     let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
@@ -73,59 +82,183 @@ pub async fn push_logs(
     let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
     let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
     let body_val: Value = serde_json::from_slice(body)?;
-    let data = convert_array_to_object(
-        body_val,
-        time_partition.as_ref(),
-        time_partition_limit,
-        custom_partition.as_ref(),
-        schema_version,
-    )?;
 
-    for value in data {
-        let origin_size = serde_json::to_vec(&value).unwrap().len() as u64; // string length need not be the same as byte length
-        let parsed_timestamp = match time_partition.as_ref() {
-            Some(time_partition) => get_parsed_timestamp(&value, time_partition)?,
-            _ => Utc::now().naive_utc(),
-        };
-        let custom_partition_values = match custom_partition.as_ref() {
-            Some(custom_partition) => {
-                let custom_partitions = custom_partition.split(',').collect_vec();
-                get_custom_partition_values(&value, &custom_partitions)
+    let size: usize = body.len();
+    let mut parsed_timestamp = Utc::now().naive_utc();
+    if time_partition.is_none() {
+        if custom_partition.is_none() {
+            let size = size as u64;
+            create_process_record_batch(
+                stream_name,
+                req,
+                body_val,
+                static_schema_flag.as_ref(),
+                None,
+                parsed_timestamp,
+                &HashMap::new(),
+                size,
+                schema_version,
+                log_source,
+            )
+            .await?;
+        } else {
+            let data = convert_array_to_object(
+                body_val,
+                None,
+                None,
+                custom_partition.as_ref(),
+                schema_version,
+                log_source,
+            )?;
+            let custom_partition = custom_partition.unwrap();
+            let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
+
+            for value in data {
+                let custom_partition_values =
+                    get_custom_partition_values(&value, &custom_partition_list);
+
+                let size = value.to_string().into_bytes().len() as u64;
+                create_process_record_batch(
+                    stream_name,
+                    req,
+                    value,
+                    static_schema_flag.as_ref(),
+                    None,
+                    parsed_timestamp,
+                    &custom_partition_values,
+                    size,
+                    schema_version,
+                    log_source,
+                )
+                .await?;
             }
-            None => HashMap::new(),
-        };
-        let schema = STREAM_INFO
-            .read()
-            .unwrap()
-            .get(stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
-            .schema
-            .clone();
-        let (rb, is_first_event) = into_event_batch(
-            req,
-            &value,
-            schema,
-            static_schema_flag.as_ref(),
-            time_partition.as_ref(),
-            schema_version,
-        )?;
-
-        Event {
-            rb,
-            stream_name: stream_name.to_owned(),
-            origin_format: "json",
-            origin_size,
-            is_first_event,
-            parsed_timestamp,
-            time_partition: time_partition.clone(),
-            custom_partition_values,
-            stream_type: StreamType::UserDefined,
         }
-        .process()
-        .await?;
+    } else if custom_partition.is_none() {
+        let data = convert_array_to_object(
+            body_val,
+            time_partition.as_ref(),
+            time_partition_limit,
+            None,
+            schema_version,
+            log_source,
+        )?;
+        for value in data {
+            parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref().unwrap())?;
+            let size = value.to_string().into_bytes().len() as u64;
+            create_process_record_batch(
+                stream_name,
+                req,
+                value,
+                static_schema_flag.as_ref(),
+                time_partition.as_ref(),
+                parsed_timestamp,
+                &HashMap::new(),
+                size,
+                schema_version,
+                log_source,
+            )
+            .await?;
+        }
+    } else {
+        let data = convert_array_to_object(
+            body_val,
+            time_partition.as_ref(),
+            time_partition_limit,
+            custom_partition.as_ref(),
+            schema_version,
+            log_source,
+        )?;
+        let custom_partition = custom_partition.unwrap();
+        let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
+
+        for value in data {
+            let custom_partition_values =
+                get_custom_partition_values(&value, &custom_partition_list);
+
+            parsed_timestamp = get_parsed_timestamp(&value, time_partition.as_ref().unwrap())?;
+            let size = value.to_string().into_bytes().len() as u64;
+            create_process_record_batch(
+                stream_name,
+                req,
+                value,
+                static_schema_flag.as_ref(),
+                time_partition.as_ref(),
+                parsed_timestamp,
+                &custom_partition_values,
+                size,
+                schema_version,
+                log_source,
+            )
+            .await?;
+        }
     }
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create_process_record_batch(
+    stream_name: &str,
+    req: &HttpRequest,
+    value: Value,
+    static_schema_flag: Option<&String>,
+    time_partition: Option<&String>,
+    parsed_timestamp: NaiveDateTime,
+    custom_partition_values: &HashMap<String, String>,
+    origin_size: u64,
+    schema_version: SchemaVersion,
+    log_source: &LogSource,
+) -> Result<(), PostError> {
+    let (rb, is_first_event) = get_stream_schema(
+        stream_name,
+        req,
+        &value,
+        static_schema_flag,
+        time_partition,
+        schema_version,
+        log_source,
+    )?;
+    event::Event {
+        rb,
+        stream_name: stream_name.to_owned(),
+        origin_format: "json",
+        origin_size,
+        is_first_event,
+        parsed_timestamp,
+        time_partition: time_partition.cloned(),
+        custom_partition_values: custom_partition_values.clone(),
+        stream_type: StreamType::UserDefined,
+    }
+    .process()
+    .await?;
+
+    Ok(())
+}
+
+pub fn get_stream_schema(
+    stream_name: &str,
+    req: &HttpRequest,
+    body: &Value,
+    static_schema_flag: Option<&String>,
+    time_partition: Option<&String>,
+    schema_version: SchemaVersion,
+    log_source: &LogSource,
+) -> Result<(arrow_array::RecordBatch, bool), PostError> {
+    let hash_map = STREAM_INFO.read().unwrap();
+    let schema = hash_map
+        .get(stream_name)
+        .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
+        .schema
+        .clone();
+    into_event_batch(
+        req,
+        body,
+        schema,
+        static_schema_flag,
+        time_partition,
+        schema_version,
+        log_source,
+    )
 }
 
 pub fn into_event_batch(
@@ -135,6 +268,7 @@ pub fn into_event_batch(
     static_schema_flag: Option<&String>,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
+    log_source: &LogSource,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let tags = collect_labelled_headers(req, PREFIX_TAGS, SEPARATOR)?;
     let metadata = collect_labelled_headers(req, PREFIX_META, SEPARATOR)?;
@@ -143,8 +277,13 @@ pub fn into_event_batch(
         tags,
         metadata,
     };
-    let (rb, is_first) =
-        event.into_recordbatch(&schema, static_schema_flag, time_partition, schema_version)?;
+    let (rb, is_first) = event.into_recordbatch(
+        &schema,
+        static_schema_flag,
+        time_partition,
+        schema_version,
+        log_source,
+    )?;
     Ok((rb, is_first))
 }
 
