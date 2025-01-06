@@ -20,10 +20,10 @@ use crate::connectors::common::processor::Processor;
 use crate::connectors::kafka::config::BufferConfig;
 use crate::connectors::kafka::{ConsumerRecord, StreamConsumer, TopicPartition};
 use crate::event::format;
-use crate::event::format::EventFormat;
+use crate::event::format::{EventFormat, LogSource};
 use crate::event::Event as ParseableEvent;
 use crate::handlers::http::ingest::create_stream_if_not_exists;
-use crate::metadata::{SchemaVersion, STREAM_INFO};
+use crate::metadata::STREAM_INFO;
 use crate::storage::StreamType;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -59,19 +59,22 @@ impl ParseableSinkProcessor {
             }
             Some(payload) => {
                 let data: Value = serde_json::from_slice(payload.as_ref())?;
+                let json_event = format::json::Event { data };
 
-                let event = format::json::Event {
-                    data,
-                    tags: String::default(),
-                    metadata: String::default(),
-                };
+                let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
+                let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
+                let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
 
-                // TODO: Implement a buffer (e.g., a wrapper around [Box<dyn ArrayBuilder>]) to optimize the creation of ParseableEvent by compacting the internal RecordBatch.
-                let (record_batch, is_first) =
-                    event.into_recordbatch(&schema, None, None, SchemaVersion::V1)?;
+                let (rb, is_first) = json_event.into_recordbatch(
+                    &schema,
+                    static_schema_flag.as_ref(),
+                    time_partition.as_ref(),
+                    schema_version,
+                    &LogSource::Json,
+                )?;
 
                 let p_event = ParseableEvent {
-                    rb: record_batch,
+                    rb,
                     stream_name: stream_name.to_string(),
                     origin_format: "json",
                     origin_size: payload.len() as u64,

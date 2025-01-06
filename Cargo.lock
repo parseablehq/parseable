@@ -3334,6 +3334,7 @@ dependencies = [
  "base64 0.22.1",
  "byteorder",
  "bytes",
+ "bzip2",
  "cargo_toml",
  "chrono",
  "chrono-humanize",
