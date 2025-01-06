@@ -50,7 +50,6 @@ pub struct Metrics {
     event_time: NaiveDateTime,
     commit: String,
     staging: String,
-    cache: String,
 }
 
 #[derive(Debug, Serialize, Default, Clone)]
@@ -85,7 +84,6 @@ impl Default for Metrics {
             event_time: Utc::now().naive_utc(),
             commit: "".to_string(),
             staging: "".to_string(),
-            cache: "".to_string(),
         }
     }
 }
@@ -109,7 +107,6 @@ impl Metrics {
             event_time: Utc::now().naive_utc(),
             commit: "".to_string(),
             staging: "".to_string(),
-            cache: "".to_string(),
         }
     }
 }
@@ -206,7 +203,7 @@ impl Metrics {
                 }
             }
         }
-        let (commit_id, staging, cache) = Self::from_about_api_response(ingestor_metadata.clone())
+        let (commit_id, staging) = Self::from_about_api_response(ingestor_metadata.clone())
             .await
             .map_err(|err| {
                 error!("Fatal: failed to get ingestor info: {:?}", err);
@@ -215,14 +212,13 @@ impl Metrics {
 
         prom_dress.commit = commit_id;
         prom_dress.staging = staging;
-        prom_dress.cache = cache;
 
         Ok(prom_dress)
     }
 
     pub async fn from_about_api_response(
         ingestor_metadata: IngestorMetadata,
-    ) -> Result<(String, String, String), PostError> {
+    ) -> Result<(String, String), PostError> {
         let uri = Url::parse(&format!(
             "{}{}/about",
             &ingestor_metadata.domain_name,
@@ -249,15 +245,7 @@ impl Metrics {
                 .get("staging")
                 .and_then(|x| x.as_str())
                 .unwrap_or_default();
-            let cache = about_api_json
-                .get("cache")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default();
-            Ok((
-                commit_id.to_string(),
-                staging.to_string(),
-                cache.to_string(),
-            ))
+            Ok((commit_id.to_string(), staging.to_string()))
         } else {
             warn!(
                 "Failed to fetch about API response from ingestor: {}\n",

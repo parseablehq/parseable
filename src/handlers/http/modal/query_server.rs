@@ -18,11 +18,11 @@
 
 use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
+use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{self, role};
-use crate::handlers::http::{base_path, caching_removed};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
@@ -54,7 +54,6 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_correlation_webscope())
                     .service(Server::get_query_factory())
                     .service(Server::get_trino_factory())
-                    .service(Server::get_cache_webscope())
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
                     .service(Server::get_about_factory())
@@ -330,13 +329,6 @@ impl QueryServer {
                                     .to(logstream::get_retention)
                                     .authorize_for_stream(Action::GetRetention),
                             ),
-                    )
-                    .service(
-                        web::resource("/cache")
-                            // PUT "/logstream/{logstream}/cache" ==> caching has been deprecated
-                            .route(web::put().to(caching_removed))
-                            // GET "/logstream/{logstream}/cache" ==> caching has been deprecated
-                            .route(web::get().to(caching_removed)),
                     )
                     .service(
                         web::resource("/hottier")
