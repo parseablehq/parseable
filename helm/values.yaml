@@ -381,7 +381,7 @@ fluent-bit:
 
       # [INPUT]
       #     Name tail
-      #     Path /var/log/containers/{{ NGINX_POD_NAME }}-*.log
+      #     Path /var/log/containers/{NGINX_POD_NAME}-*.log
       #     Parser nginx_access
       #     Tag kube.*
       #     Mem_Buf_Limit 5MB
@@ -389,7 +389,7 @@ fluent-bit:
 
       # [INPUT]
       #     Name tail
-      #     Path /var/log/containers/{{ NGINX_POD_NAME }}-*.log
+      #     Path /var/log/containers/{NGINX_POD_NAME}-*.log
       #     Parser nginx_error
       #     Tag kube.*
       #     Mem_Buf_Limit 5MB
