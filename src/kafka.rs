@@ -186,8 +186,6 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
     let schema = resolve_schema(stream_name)?;
     let event = format::json::Event {
         data: serde_json::from_slice(payload)?,
-        tags: String::default(),
-        metadata: String::default(),
     };
 
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
