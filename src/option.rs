@@ -37,8 +37,6 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub const MIN_CACHE_SIZE_BYTES: u64 = 1073741824; // 1 GiB
-
 pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
 pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));

@@ -39,7 +39,6 @@ use std::path::PathBuf;
 ///     "license": "AGPL-3.0-only",
 ///     "mode": mode,
 ///     "staging": staging,
-///     "cache": cache_details,
 ///     "grpcPort": grpc_port,
 ///     "store": {
 ///         "type": CONFIG.get_storage_mode_string(),

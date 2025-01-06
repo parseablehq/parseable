@@ -114,6 +114,11 @@ pub struct Cli {
     pub trino_auth: Option<String>,
     pub trino_schema: Option<String>,
     pub trino_catalog: Option<String>,
+
+    // Audit Logging env vars
+    pub audit_logger: Option<Url>,
+    pub audit_username: Option<String>,
+    pub audit_password: Option<String>,
 }
 
 impl Cli {
@@ -155,6 +160,10 @@ impl Cli {
     pub const TRINO_AUTHORIZATION: &'static str = "p-trino-authorization";
     pub const TRINO_SCHEMA: &'static str = "p-trino-schema";
 
+    pub const AUDIT_LOGGER: &'static str = "audit-logger";
+    pub const AUDIT_USERNAME: &'static str = "audit-username";
+    pub const AUDIT_PASSWORD: &'static str = "audit-password";
+
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
     }
@@ -169,6 +178,29 @@ impl Cli {
     pub fn create_cli_command_with_clap(name: &'static str) -> Command {
         let command = Command::new(name)
             .next_line_help(false)
+            .arg(
+                Arg::new(Self::AUDIT_LOGGER)
+                    .long(Self::AUDIT_LOGGER)
+                    .env("P_AUDIT_LOGGER")
+                    .value_name("URL")
+                    .required(false)
+                    .value_parser(validation::url)
+                    .help("Audit logger endpoint"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_USERNAME)
+                    .long(Self::AUDIT_USERNAME)
+                    .env("P_AUDIT_USERNAME")
+                    .value_name("STRING")
+                    .help("Audit logger username"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_PASSWORD)
+                    .long(Self::AUDIT_PASSWORD)
+                    .env("P_AUDIT_PASSWORD")
+                    .value_name("STRING")
+                    .help("Audit logger password"),
+            )
             .arg(
                 Arg::new(Self::TRINO_ENDPOINT)
                     .long(Self::TRINO_ENDPOINT)
@@ -489,6 +521,10 @@ impl FromArgMatches for Cli {
         self.trino_auth = m.get_one::<String>(Self::TRINO_AUTHORIZATION).cloned();
         self.trino_schema = m.get_one::<String>(Self::TRINO_SCHEMA).cloned();
         self.trino_username = m.get_one::<String>(Self::TRINO_USER_NAME).cloned();
+
+        self.audit_logger = m.get_one::<Url>(Self::AUDIT_LOGGER).cloned();
+        self.audit_username = m.get_one::<String>(Self::AUDIT_USERNAME).cloned();
+        self.audit_password = m.get_one::<String>(Self::AUDIT_PASSWORD).cloned();
 
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();

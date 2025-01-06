@@ -21,7 +21,6 @@ use crate::correlation::CORRELATIONS;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
-use crate::handlers::http::caching_removed;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
 use crate::handlers::http::trino;
@@ -72,7 +71,6 @@ impl ParseableServer for Server {
                     .service(Self::get_correlation_webscope())
                     .service(Self::get_query_factory())
                     .service(Self::get_trino_factory())
-                    .service(Self::get_cache_webscope())
                     .service(Self::get_ingest_factory())
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
@@ -282,18 +280,6 @@ impl Server {
         web::resource("/query").route(web::post().to(query::query).authorize(Action::Query))
     }
 
-    pub fn get_cache_webscope() -> Scope {
-        web::scope("/cache").service(
-            web::scope("/{user_id}").service(
-                web::scope("/{stream}").service(
-                    web::resource("")
-                        .route(web::get().to(caching_removed))
-                        .route(web::post().to(caching_removed)),
-                ),
-            ),
-        )
-    }
-
     // get the logstream web scope
     pub fn get_logstream_webscope() -> Scope {
         web::scope("/logstream")
@@ -392,13 +378,6 @@ impl Server {
                             ),
                     )
                     .service(
-                        web::resource("/cache")
-                            // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
-                            .route(web::put().to(caching_removed))
-                            // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
-                            .route(web::get().to(caching_removed)),
-                    )
-                    .service(
                         web::resource("/hottier")
                             // PUT "/logstream/{logstream}/hottier" ==> Set hottier for given logstream
                             .route(
@@ -438,7 +417,7 @@ impl Server {
                 web::resource("/logs")
                     .route(
                         web::post()
-                            .to(ingest::handle_otel_ingestion)
+                            .to(ingest::handle_otel_logs_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
@@ -447,7 +426,7 @@ impl Server {
                 web::resource("/metrics")
                     .route(
                         web::post()
-                            .to(ingest::handle_otel_ingestion)
+                            .to(ingest::handle_otel_metrics_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
@@ -456,7 +435,7 @@ impl Server {
                 web::resource("/traces")
                     .route(
                         web::post()
-                            .to(ingest::handle_otel_ingestion)
+                            .to(ingest::handle_otel_traces_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),

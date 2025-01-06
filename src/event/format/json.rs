@@ -29,7 +29,7 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
-use super::{EventFormat, Metadata, Tags};
+use super::{EventFormat, LogSource};
 use crate::{
     metadata::SchemaVersion,
     utils::{arrow::get_field, json::flatten_json_body},
@@ -37,8 +37,6 @@ use crate::{
 
 pub struct Event {
     pub data: Value,
-    pub tags: Tags,
-    pub metadata: Metadata,
 }
 
 impl EventFormat for Event {
@@ -52,8 +50,17 @@ impl EventFormat for Event {
         static_schema_flag: Option<&String>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
-    ) -> Result<(Self::Data, Vec<Arc<Field>>, bool, Tags, Metadata), anyhow::Error> {
-        let data = flatten_json_body(self.data, None, None, None, schema_version, false)?;
+        log_source: &LogSource,
+    ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
+        let data = flatten_json_body(
+            self.data,
+            None,
+            None,
+            None,
+            schema_version,
+            false,
+            log_source,
+        )?;
         let stream_schema = schema;
 
         // incoming event may be a single json or a json array
@@ -110,7 +117,7 @@ impl EventFormat for Event {
             ));
         }
 
-        Ok((value_arr, schema, is_first, self.tags, self.metadata))
+        Ok((value_arr, schema, is_first))
     }
 
     // Convert the Data type (defined above) to arrow record batch
