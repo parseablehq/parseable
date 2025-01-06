@@ -50,7 +50,7 @@ pub async fn create_update_stream(
         stream_type,
     ) = fetch_headers_from_put_stream_request(req);
 
-    if metadata::STREAM_INFO.stream_exists(stream_name) && update_stream_flag != "true" {
+    if metadata::STREAM_INFO.stream_exists(stream_name) && !update_stream_flag {
         return Err(StreamError::Custom {
             msg: format!(
                 "Logstream {stream_name} already exists, please create a new log stream with unique name"
@@ -71,7 +71,7 @@ pub async fn create_update_stream(
         });
     }
 
-    if update_stream_flag == "true" {
+    if update_stream_flag {
         return update_stream(
             req,
             stream_name,
@@ -167,12 +167,12 @@ async fn validate_and_update_custom_partition(
 
 pub fn fetch_headers_from_put_stream_request(
     req: &HttpRequest,
-) -> (String, String, String, bool, String, String) {
+) -> (String, String, String, bool, bool, String) {
     let mut time_partition = String::default();
     let mut time_partition_limit = String::default();
     let mut custom_partition = String::default();
     let mut static_schema_flag = false;
-    let mut update_stream = String::default();
+    let mut update_stream_flag = false;
     let mut stream_type = StreamType::UserDefined.to_string();
     req.headers().iter().for_each(|(key, value)| {
         if key == TIME_PARTITION_KEY {
@@ -187,8 +187,8 @@ pub fn fetch_headers_from_put_stream_request(
         if key == STATIC_SCHEMA_FLAG && value.to_str().unwrap() == "true" {
             static_schema_flag = true;
         }
-        if key == UPDATE_STREAM_KEY {
-            update_stream = value.to_str().unwrap().to_string();
+        if key == UPDATE_STREAM_KEY && value.to_str().unwrap() == "true" {
+            update_stream_flag = true;
         }
         if key == STREAM_TYPE_KEY {
             stream_type = value.to_str().unwrap().to_string();
@@ -200,7 +200,7 @@ pub fn fetch_headers_from_put_stream_request(
         time_partition_limit,
         custom_partition,
         static_schema_flag,
-        update_stream,
+        update_stream_flag,
         stream_type,
     )
 }
