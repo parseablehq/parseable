@@ -22,6 +22,7 @@ use flatten::{convert_to_array, generic_flattening, has_more_than_four_levels};
 use serde_json;
 use serde_json::Value;
 
+use crate::event::format::LogSource;
 use crate::metadata::SchemaVersion;
 
 pub mod flatten;
@@ -36,15 +37,20 @@ pub fn flatten_json_body(
     custom_partition: Option<&String>,
     schema_version: SchemaVersion,
     validation_required: bool,
+    log_source: &LogSource,
 ) -> Result<Value, anyhow::Error> {
     // Flatten the json body only if new schema and has less than 4 levels of nesting
-    let mut nested_value =
-        if schema_version == SchemaVersion::V0 || has_more_than_four_levels(&body, 1) {
-            body
-        } else {
-            let flattened_json = generic_flattening(&body)?;
-            convert_to_array(flattened_json)?
-        };
+    let mut nested_value = if schema_version == SchemaVersion::V1
+        && !has_more_than_four_levels(&body, 1)
+        && matches!(
+            log_source,
+            LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis
+        ) {
+        let flattened_json = generic_flattening(&body)?;
+        convert_to_array(flattened_json)?
+    } else {
+        body
+    };
     flatten::flatten(
         &mut nested_value,
         "_",
@@ -62,6 +68,7 @@ pub fn convert_array_to_object(
     time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
     schema_version: SchemaVersion,
+    log_source: &LogSource,
 ) -> Result<Vec<Value>, anyhow::Error> {
     let data = flatten_json_body(
         body,
@@ -70,6 +77,7 @@ pub fn convert_array_to_object(
         custom_partition,
         schema_version,
         true,
+        log_source,
     )?;
     let value_arr = match data {
         Value::Array(arr) => arr,
@@ -101,6 +109,8 @@ pub fn convert_to_string(value: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use crate::event::format::LogSource;
+
     use super::flatten_json_body;
     use serde_json::json;
 
@@ -115,7 +125,8 @@ mod tests {
                 None,
                 None,
                 crate::metadata::SchemaVersion::V1,
-                false
+                false,
+                &LogSource::default()
             )
             .unwrap(),
             expected
@@ -133,7 +144,8 @@ mod tests {
                 None,
                 None,
                 crate::metadata::SchemaVersion::V1,
-                false
+                false,
+                &LogSource::default()
             )
             .unwrap(),
             expected
