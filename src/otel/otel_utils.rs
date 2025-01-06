@@ -31,7 +31,7 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> BTreeMap<Strin
             value_json.insert(key.to_string(), Value::Bool(bool_val));
         }
         OtelValue::IntValue(int_val) => {
-            value_json.insert(key.to_string(), Value::Number(int_val.into()));
+            value_json.insert(key.to_string(), Value::String(int_val.to_string()));
         }
         OtelValue::DoubleValue(double_val) => {
             if let Some(number) = serde_json::Number::from_f64(double_val) {
