@@ -42,7 +42,6 @@ pub mod oidc;
 pub mod query;
 pub mod rbac;
 pub mod role;
-pub mod trino;
 pub mod users;
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "api";
