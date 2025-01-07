@@ -29,11 +29,8 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
-use super::{EventFormat, LogSource};
-use crate::{
-    metadata::SchemaVersion,
-    utils::{arrow::get_field, json::flatten_json_body},
-};
+use super::EventFormat;
+use crate::{metadata::SchemaVersion, utils::arrow::get_field};
 
 pub struct Event {
     pub data: Value,
@@ -50,23 +47,13 @@ impl EventFormat for Event {
         static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
-        log_source: &LogSource,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
-        let data = flatten_json_body(
-            self.data,
-            None,
-            None,
-            None,
-            schema_version,
-            false,
-            log_source,
-        )?;
         let stream_schema = schema;
 
         // incoming event may be a single json or a json array
         // but Data (type defined above) is a vector of json values
         // hence we need to convert the incoming event to a vector of json values
-        let value_arr = match data {
+        let value_arr = match self.data {
             Value::Array(arr) => arr,
             value @ Value::Object(_) => vec![value],
             _ => unreachable!("flatten would have failed beforehand"),

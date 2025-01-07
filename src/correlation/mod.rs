@@ -150,6 +150,7 @@ pub enum CorrelationVersion {
 #[serde(rename_all = "camelCase")]
 pub struct CorrelationConfig {
     pub version: CorrelationVersion,
+    pub title: String,
     pub id: String,
     pub table_configs: Vec<TableConfig>,
     pub join_config: JoinConfig,
@@ -164,6 +165,7 @@ impl CorrelationConfig {}
 #[serde(rename_all = "camelCase")]
 pub struct CorrelationRequest {
     pub version: CorrelationVersion,
+    pub title: String,
     pub table_configs: Vec<TableConfig>,
     pub join_config: JoinConfig,
     pub filter: Option<FilterQuery>,
@@ -175,6 +177,7 @@ impl From<CorrelationRequest> for CorrelationConfig {
     fn from(val: CorrelationRequest) -> Self {
         Self {
             version: val.version,
+            title: val.title,
             id: get_hash(Utc::now().timestamp_micros().to_string().as_str()),
             table_configs: val.table_configs,
             join_config: val.join_config,
@@ -189,6 +192,7 @@ impl CorrelationRequest {
     pub fn generate_correlation_config(self, id: String) -> CorrelationConfig {
         CorrelationConfig {
             version: self.version,
+            title: self.title,
             id,
             table_configs: self.table_configs,
             join_config: self.join_config,

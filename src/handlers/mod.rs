@@ -34,11 +34,6 @@ const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";
 const USER_COOKIE_NAME: &str = "username";
 
-//constants for trino
-const TRINO_SCHEMA: &str = "x-trino-schema";
-const TRINO_CATALOG: &str = "x-trino-catalog";
-const TRINO_USER: &str = "x-trino-user";
-
 // constants for log Source values for known sources and formats
 const LOG_SOURCE_KINESIS: &str = "kinesis";
 

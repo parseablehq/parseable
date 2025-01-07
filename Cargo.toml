@@ -73,6 +73,8 @@ relative-path = { version = "1.7", features = ["serde"] }
 reqwest = { version = "0.11.27", default-features = false, features = [
     "rustls-tls",
     "json",
+    "gzip",
+    "brotli",
 ] } # cannot update cause rustls is not latest `see rustls`
 rustls = "0.22.4" # cannot update to 0.23 actix has not caught up yet
 rustls-pemfile = "2.1.2"

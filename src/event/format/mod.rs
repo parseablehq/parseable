@@ -80,7 +80,6 @@ pub trait EventFormat: Sized {
         static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
-        log_source: &LogSource,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
@@ -91,14 +90,12 @@ pub trait EventFormat: Sized {
         static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
-        log_source: &LogSource,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let (data, mut schema, is_first) = self.to_data(
             storage_schema,
             static_schema_flag,
             time_partition,
             schema_version,
-            log_source,
         )?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
