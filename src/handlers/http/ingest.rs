@@ -36,6 +36,7 @@ use crate::otel::metrics::flatten_otel_metrics;
 use crate::otel::traces::flatten_otel_traces;
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
+use crate::utils::json::flatten::JsonFlattenError;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
@@ -89,13 +90,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             .clone();
         let event = format::json::Event { data: body_val };
         // For internal streams, use old schema
-        event.into_recordbatch(
-            &schema,
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default(),
-        )?
+        event.into_recordbatch(&schema, None, None, SchemaVersion::V0)?
     };
     event::Event {
         rb,
@@ -328,6 +323,8 @@ pub enum PostError {
     DashboardError(#[from] DashboardError),
     #[error("Error: {0}")]
     StreamError(#[from] StreamError),
+    #[error("Error: {0}")]
+    JsonFlattenError(#[from] JsonFlattenError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -349,6 +346,7 @@ impl actix_web::ResponseError for PostError {
             PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::JsonFlattenError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -369,8 +367,9 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use crate::{
-        event::format::LogSource, handlers::http::modal::utils::ingest_utils::into_event_batch,
+        handlers::http::modal::utils::ingest_utils::into_event_batch,
         metadata::SchemaVersion,
+        utils::json::{convert_array_to_object, flatten::convert_to_array},
     };
 
     trait TestExt {
@@ -405,15 +404,8 @@ mod tests {
             "b": "hello",
         });
 
-        let (rb, _) = into_event_batch(
-            &json,
-            HashMap::default(),
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default(),
-        )
-        .unwrap();
+        let (rb, _) =
+            into_event_batch(&json, HashMap::default(), None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 4);
@@ -439,15 +431,8 @@ mod tests {
             "c": null
         });
 
-        let (rb, _) = into_event_batch(
-            &json,
-            HashMap::default(),
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default(),
-        )
-        .unwrap();
+        let (rb, _) =
+            into_event_batch(&json, HashMap::default(), None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -477,15 +462,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(
-            &json,
-            schema,
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default(),
-        )
-        .unwrap();
+        let (rb, _) = into_event_batch(&json, schema, None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -515,15 +492,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(
-            &json,
-            schema,
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default()
-        )
-        .is_err());
+        assert!(into_event_batch(&json, schema, None, None, SchemaVersion::V0,).is_err());
     }
 
     #[test]
@@ -539,15 +508,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(
-            &json,
-            schema,
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default(),
-        )
-        .unwrap();
+        let (rb, _) = into_event_batch(&json, schema, None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 1);
@@ -556,14 +517,13 @@ mod tests {
     #[test]
     fn non_object_arr_is_err() {
         let json = json!([1]);
-
-        assert!(into_event_batch(
-            &json,
-            HashMap::default(),
+        assert!(convert_array_to_object(
+            json,
+            None,
             None,
             None,
             SchemaVersion::V0,
-            &LogSource::default()
+            &crate::event::format::LogSource::default()
         )
         .is_err())
     }
@@ -586,15 +546,8 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = into_event_batch(
-            &json,
-            HashMap::default(),
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default(),
-        )
-        .unwrap();
+        let (rb, _) =
+            into_event_batch(&json, HashMap::default(), None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -640,15 +593,8 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = into_event_batch(
-            &json,
-            HashMap::default(),
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default(),
-        )
-        .unwrap();
+        let (rb, _) =
+            into_event_batch(&json, HashMap::default(), None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -695,15 +641,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(
-            &json,
-            schema,
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default(),
-        )
-        .unwrap();
+        let (rb, _) = into_event_batch(&json, schema, None, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -750,15 +688,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(
-            &json,
-            schema,
-            None,
-            None,
-            SchemaVersion::V0,
-            &LogSource::default()
-        )
-        .is_err());
+        assert!(into_event_batch(&json, schema, None, None, SchemaVersion::V0,).is_err());
     }
 
     #[test]
@@ -783,17 +713,27 @@ mod tests {
                 "c": [{"a": 1, "b": 2}]
             },
         ]);
+        let flattened_json = convert_to_array(
+            convert_array_to_object(
+                json,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &crate::event::format::LogSource::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
 
         let (rb, _) = into_event_batch(
-            &json,
+            &flattened_json,
             HashMap::default(),
             None,
             None,
             SchemaVersion::V0,
-            &LogSource::default(),
         )
         .unwrap();
-
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);
         assert_eq!(
@@ -861,14 +801,25 @@ mod tests {
                 "c": [{"a": 1, "b": 2}]
             },
         ]);
+        let flattened_json = convert_to_array(
+            convert_array_to_object(
+                json,
+                None,
+                None,
+                None,
+                SchemaVersion::V1,
+                &crate::event::format::LogSource::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
 
         let (rb, _) = into_event_batch(
-            &json,
+            &flattened_json,
             HashMap::default(),
             None,
             None,
             SchemaVersion::V1,
-            &LogSource::default(),
         )
         .unwrap();
 
