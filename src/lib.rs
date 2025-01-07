@@ -48,6 +48,7 @@ mod validator;
 
 use std::time::Duration;
 
+pub use audit::AuditLogger;
 pub use handlers::http::modal::{
     ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
 };

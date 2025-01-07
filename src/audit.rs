@@ -27,47 +27,58 @@ use super::option::CONFIG;
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
 use serde::Serialize;
-use serde_json::{json, Value};
 use tracing::error;
 
+use tokio::{sync::Mutex, time::interval};
 use ulid::Ulid;
 use url::Url;
 
-static AUDIT_LOGGER: Lazy<Option<AuditLogger>> = Lazy::new(AuditLogger::new);
+// Shared audit logger instance to batch and send audit logs
+static AUDIT_LOGGER: Lazy<AuditLogger> = Lazy::new(AuditLogger::new);
 
 // AuditLogger handles sending audit logs to a remote logging system
 pub struct AuditLogger {
-    log_endpoint: Url,
+    log_endpoint: Option<Url>,
+    batch: Mutex<Vec<AuditLog>>,
 }
 
 impl AuditLogger {
     /// Create an audit logger that can be used to capture and push
     /// audit logs to the appropriate logging system over HTTP
-    pub fn new() -> Option<AuditLogger> {
+    fn new() -> AuditLogger {
         // Try to construct the log endpoint URL by joining the base URL
         // with the ingest path, This can fail if the URL is not valid,
         // when the base URL is not set or the ingest path is not valid
-        let log_endpoint = match CONFIG
-            .parseable
-            .audit_logger
-            .as_ref()?
-            .join("/api/v1/ingest")
-        {
-            Ok(url) => url,
-            Err(err) => {
-                eprintln!("Couldn't setup audit logger: {err}");
-                return None;
-            }
-        };
+        let log_endpoint = CONFIG.parseable.audit_logger.as_ref().and_then(|endpoint| {
+            endpoint
+                .join("/api/v1/ingest")
+                .inspect_err(|err| eprintln!("Couldn't setup audit logger: {err}"))
+                .ok()
+        });
 
-        Some(AuditLogger { log_endpoint })
+        AuditLogger {
+            log_endpoint,
+            batch: Mutex::new(Vec::with_capacity(CONFIG.parseable.audit_batch_size * 10)), // 10x batch size seems to be a safe default to save on reallocations
+        }
     }
 
-    // Sends the audit log to the configured endpoint with proper authentication
-    async fn send_log(&self, json: Value) {
+    /// Flushes audit logs to the remote logging system
+    async fn flush(&self) {
+        let Some(endpoint) = self.log_endpoint.as_ref() else {
+            return;
+        };
+
+        let logs_to_send = {
+            let mut batch = self.batch.lock().await;
+            if batch.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *batch)
+        };
+
         let mut req = HTTP_CLIENT
-            .post(self.log_endpoint.as_str())
-            .json(&json)
+            .post(endpoint.as_str())
+            .json(&logs_to_send)
             .header("x-p-stream", "audit_log");
 
         // Use basic auth if credentials are configured
@@ -75,14 +86,47 @@ impl AuditLogger {
             req = req.basic_auth(username, CONFIG.parseable.audit_password.as_ref())
         }
 
-        match req.send().await {
-            Ok(r) => {
-                if let Err(e) = r.error_for_status() {
-                    error!("{e}")
-                }
-            }
-            Err(e) => error!("Failed to send audit event: {}", e),
+        // Send batched logs to the audit logging backend
+        let err = match req.send().await {
+            Ok(r) => match r.error_for_status() {
+                Err(e) => e,
+                _ => return,
+            },
+            Err(e) => e,
+        };
+
+        // Attempt to recover the logs on facing an error
+        error!("Failed to send batch of audit logs: {}", err);
+        let mut batch = self.batch.lock().await;
+        batch.extend(logs_to_send);
+    }
+
+    /// Inserts an audit log into the batch, and flushes the batch if it exceeds the configured batch size
+    async fn insert(&self, log: AuditLog) {
+        let mut batch = self.batch.lock().await;
+        batch.push(log);
+
+        // Flush if batch size exceeds threshold
+        if batch.len() >= CONFIG.parseable.audit_batch_size {
+            drop(batch); // ensure the lock is released
+            tokio::spawn(async move {
+                AUDIT_LOGGER.flush().await;
+            });
         }
+    }
+
+    /// Spawns a background task for periodic flushing of audit logs, if configured
+    pub async fn batcher() {
+        if AUDIT_LOGGER.log_endpoint.is_none() {
+            return;
+        }
+        tokio::spawn(async move {
+            let mut interval = interval(CONFIG.parseable.audit_flush_interval_secs);
+            loop {
+                interval.tick().await;
+                AUDIT_LOGGER.flush().await;
+            }
+        });
     }
 }
 
@@ -157,7 +201,7 @@ pub struct AuditLogBuilder {
 impl Default for AuditLogBuilder {
     fn default() -> Self {
         AuditLogBuilder {
-            enabled: AUDIT_LOGGER.is_some(),
+            enabled: AUDIT_LOGGER.log_endpoint.is_some(),
             inner: AuditLog {
                 audit: AuditDetails {
                     version: AuditLogVersion::V1,
@@ -288,10 +332,6 @@ impl AuditLogBuilder {
         audit_log.audit.generated_at = now;
         audit_log.request.end_time = now;
 
-        AUDIT_LOGGER
-            .as_ref()
-            .unwrap()
-            .send_log(json!(audit_log))
-            .await
+        AUDIT_LOGGER.insert(audit_log).await
     }
 }

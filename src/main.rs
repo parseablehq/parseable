@@ -19,7 +19,7 @@
 use parseable::{
     banner, kafka,
     option::{Mode, CONFIG},
-    rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
+    rbac, storage, AuditLogger, IngestServer, ParseableServer, QueryServer, Server,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -29,6 +29,9 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .compact()
         .init();
+
+    // spawn audit log batcher
+    AuditLogger::batcher().await;
 
     // these are empty ptrs so mem footprint should be minimal
     let server: Box<dyn ParseableServer> = match CONFIG.parseable.mode {

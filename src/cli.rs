@@ -17,7 +17,7 @@
  */
 
 use clap::{value_parser, Arg, ArgGroup, Command, FromArgMatches};
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use url::Url;
 
@@ -114,6 +114,8 @@ pub struct Cli {
     pub audit_logger: Option<Url>,
     pub audit_username: Option<String>,
     pub audit_password: Option<String>,
+    pub audit_batch_size: usize,
+    pub audit_flush_interval_secs: Duration,
 }
 
 impl Cli {
@@ -159,6 +161,8 @@ impl Cli {
     pub const AUDIT_LOGGER: &'static str = "audit-logger";
     pub const AUDIT_USERNAME: &'static str = "audit-username";
     pub const AUDIT_PASSWORD: &'static str = "audit-password";
+    pub const AUDIT_BATCH_SIZE: &'static str = "audit-batch-size";
+    pub const AUDIT_FLUSH_INTERVAL: &'static str = "audit-flush-interval";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -237,6 +241,24 @@ impl Cli {
                     .env("P_AUDIT_PASSWORD")
                     .value_name("STRING")
                     .help("Audit logger password"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_BATCH_SIZE)
+                    .long(Self::AUDIT_BATCH_SIZE)
+                    .env("P_AUDIT_BATCH_SIZE")
+                    .value_name("NUMBER")
+                    .default_value("100")
+                    .value_parser(value_parser!(usize))
+                    .help("Audit logger batch size"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_FLUSH_INTERVAL)
+                    .long(Self::AUDIT_FLUSH_INTERVAL)
+                    .env("P_AUDIT_FLUSH_INTERVAL")
+                    .value_name("SECONDS")
+                    .default_value("5")
+                    .value_parser(value_parser!(u64))
+                    .help("Audit logger flush interval in seconds"),
             )
              .arg(
                  Arg::new(Self::TLS_CERT)
@@ -516,6 +538,14 @@ impl FromArgMatches for Cli {
         self.audit_logger = m.get_one::<Url>(Self::AUDIT_LOGGER).cloned();
         self.audit_username = m.get_one::<String>(Self::AUDIT_USERNAME).cloned();
         self.audit_password = m.get_one::<String>(Self::AUDIT_PASSWORD).cloned();
+        self.audit_batch_size = m
+            .get_one::<usize>(Self::AUDIT_BATCH_SIZE)
+            .cloned()
+            .expect("default for audit batch size");
+        self.audit_flush_interval_secs = m
+            .get_one::<u64>(Self::AUDIT_FLUSH_INTERVAL)
+            .map(|d| Duration::from_secs(*d))
+            .expect("default for audit flush interval");
 
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
