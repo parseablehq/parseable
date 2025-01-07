@@ -16,8 +16,11 @@
  *
  */
 
-use crate::handlers::http::{
-    base_path_without_preceding_slash, logstream::error::StreamError, modal::IngestorMetadata,
+use crate::{
+    handlers::http::{
+        base_path_without_preceding_slash, logstream::error::StreamError, modal::IngestorMetadata,
+    },
+    HTTP_CLIENT,
 };
 use actix_web::http::header;
 use chrono::{DateTime, Utc};
@@ -235,13 +238,13 @@ pub async fn check_liveness(domain_name: &str) -> bool {
         }
     };
 
-    let reqw = reqwest::Client::new()
+    let req = HTTP_CLIENT
         .get(uri)
         .header(header::CONTENT_TYPE, "application/json")
         .send()
         .await;
 
-    reqw.is_ok()
+    req.is_ok()
 }
 
 /// send a request to the ingestor to fetch its stats
@@ -255,8 +258,7 @@ pub async fn send_stats_request(
         return Ok(None);
     }
 
-    let client = reqwest::Client::new();
-    let res = client
+    let res = HTTP_CLIENT
         .get(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, ingestor.token)
