@@ -27,6 +27,7 @@ pub mod correlation;
 mod event;
 pub mod handlers;
 pub mod hottier;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod kafka;
 mod livetail;
 mod metadata;
