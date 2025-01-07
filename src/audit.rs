@@ -121,7 +121,7 @@ impl AuditLogger {
             return;
         }
         tokio::spawn(async move {
-            let mut interval = interval(CONFIG.parseable.audit_flush_interval_secs);
+            let mut interval = interval(CONFIG.parseable.audit_flush_interval);
             loop {
                 interval.tick().await;
                 AUDIT_LOGGER.flush().await;

@@ -115,7 +115,7 @@ pub struct Cli {
     pub audit_username: Option<String>,
     pub audit_password: Option<String>,
     pub audit_batch_size: usize,
-    pub audit_flush_interval_secs: Duration,
+    pub audit_flush_interval: Duration,
 }
 
 impl Cli {
@@ -542,7 +542,7 @@ impl FromArgMatches for Cli {
             .get_one::<usize>(Self::AUDIT_BATCH_SIZE)
             .cloned()
             .expect("default for audit batch size");
-        self.audit_flush_interval_secs = m
+        self.audit_flush_interval = m
             .get_one::<u64>(Self::AUDIT_FLUSH_INTERVAL)
             .map(|d| Duration::from_secs(*d))
             .expect("default for audit flush interval");
