@@ -143,8 +143,10 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, CorrelationError
 
     // Delete from disk
     let store = CONFIG.storage().get_object_store();
-    let path =
-        RelativePathBuf::from_iter([CORRELATIONS_ROOT_DIRECTORY, &correlation.id.to_string()]);
+    let path = RelativePathBuf::from_iter([
+        CORRELATIONS_ROOT_DIRECTORY,
+        &format!("{}.json", correlation_id),
+    ]);
     store.delete_object(&path).await?;
 
     // Delete from memory
