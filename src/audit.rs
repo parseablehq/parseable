@@ -109,18 +109,16 @@ impl AuditLogger {
         // Flush if batch size exceeds threshold
         if batch.len() >= CONFIG.parseable.audit_batch_size {
             drop(batch); // ensure the lock is released
-            tokio::spawn(async move {
-                AUDIT_LOGGER.flush().await;
-            });
+            tokio::spawn(AUDIT_LOGGER.flush());
         }
     }
 
     /// Spawns a background task for periodic flushing of audit logs, if configured
-    pub async fn batcher() {
+    pub async fn spawn_batcher() {
         if AUDIT_LOGGER.log_endpoint.is_none() {
             return;
         }
-        tokio::spawn(async move {
+        tokio::spawn(async {
             let mut interval = interval(CONFIG.parseable.audit_flush_interval);
             loop {
                 interval.tick().await;
