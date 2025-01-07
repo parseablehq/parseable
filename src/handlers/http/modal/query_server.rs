@@ -54,7 +54,6 @@ impl ParseableServer for QueryServer {
                 web::scope(&base_path())
                     .service(Server::get_correlation_webscope())
                     .service(Server::get_query_factory())
-                    .service(Server::get_trino_factory())
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
                     .service(Server::get_about_factory())
