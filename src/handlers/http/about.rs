@@ -17,7 +17,7 @@
  */
 
 use actix_web::web::Json;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{
     about::{self, get_latest_release},
@@ -45,7 +45,7 @@ use std::path::PathBuf;
 ///         "path": store_endpoint
 ///     }
 /// }
-pub async fn about() -> Json<serde_json::Value> {
+pub async fn about() -> Json<Value> {
     let meta = StorageMetadata::global();
 
     let current_release = about::current();
@@ -109,6 +109,5 @@ pub async fn about() -> Json<serde_json::Value> {
         "analytics": {
             "clarityTag": ms_clarity_tag
         },
-        "queryEngine": "Parseable"
     }))
 }
