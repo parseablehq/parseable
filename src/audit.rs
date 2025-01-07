@@ -21,12 +21,11 @@ use std::{
     fmt::{Debug, Display},
 };
 
-use crate::{about::current, storage::StorageMetadata};
+use crate::{about::current, storage::StorageMetadata, HTTP_CLIENT};
 
 use super::option::CONFIG;
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
-use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tracing::error;
@@ -38,7 +37,6 @@ static AUDIT_LOGGER: Lazy<Option<AuditLogger>> = Lazy::new(AuditLogger::new);
 
 // AuditLogger handles sending audit logs to a remote logging system
 pub struct AuditLogger {
-    client: Client,
     log_endpoint: Url,
 }
 
@@ -62,16 +60,12 @@ impl AuditLogger {
             }
         };
 
-        Some(AuditLogger {
-            client: reqwest::Client::new(),
-            log_endpoint,
-        })
+        Some(AuditLogger { log_endpoint })
     }
 
     // Sends the audit log to the configured endpoint with proper authentication
     async fn send_log(&self, json: Value) {
-        let mut req = self
-            .client
+        let mut req = HTTP_CLIENT
             .post(self.log_endpoint.as_str())
             .json(&json)
             .header("x-p-stream", "audit_log");

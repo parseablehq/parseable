@@ -22,8 +22,8 @@ use crate::handlers::http::cluster::utils::check_liveness;
 use crate::handlers::http::{base_path_without_preceding_slash, cluster};
 use crate::handlers::STREAM_NAME_HEADER_KEY;
 use crate::option::{Mode, CONFIG};
-use crate::storage;
 use crate::{metadata, stats};
+use crate::{storage, HTTP_CLIENT};
 
 use crate::stats::Stats;
 use actix_web::{web, HttpRequest, Responder};
@@ -132,9 +132,7 @@ impl Report {
     }
 
     pub async fn send(&self) {
-        let client = reqwest::Client::new();
-
-        let _ = client
+        let _ = HTTP_CLIENT
             .post(ANALYTICS_SERVER_URL)
             .header(STREAM_NAME_HEADER_KEY, "serverusageevent")
             .json(&self)
@@ -240,7 +238,7 @@ async fn fetch_ingestors_metrics(
             ))
             .expect("Should be a valid URL");
 
-            let resp = reqwest::Client::new()
+            let resp = HTTP_CLIENT
                 .get(uri)
                 .header(header::AUTHORIZATION, im.token.clone())
                 .header(header::CONTENT_TYPE, "application/json")
