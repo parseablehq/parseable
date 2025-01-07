@@ -23,7 +23,6 @@ use crate::handlers::http::about;
 use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
-use crate::handlers::http::trino;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
 use crate::hottier::HotTierManager;
@@ -69,7 +68,6 @@ impl ParseableServer for Server {
                 web::scope(&base_path())
                     .service(Self::get_correlation_webscope())
                     .service(Self::get_query_factory())
-                    .service(Self::get_trino_factory())
                     .service(Self::get_ingest_factory())
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
@@ -163,12 +161,6 @@ impl ParseableServer for Server {
 }
 
 impl Server {
-    // get the trino factory
-    pub fn get_trino_factory() -> Resource {
-        web::resource("/trinoquery")
-            .route(web::post().to(trino::trino_query).authorize(Action::Query))
-    }
-
     pub fn get_metrics_webscope() -> Scope {
         web::scope("/metrics").service(
             web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),
