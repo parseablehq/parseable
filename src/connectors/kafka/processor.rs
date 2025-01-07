@@ -20,7 +20,7 @@ use crate::connectors::common::processor::Processor;
 use crate::connectors::kafka::config::BufferConfig;
 use crate::connectors::kafka::{ConsumerRecord, StreamConsumer, TopicPartition};
 use crate::event::format;
-use crate::event::format::{EventFormat, LogSource};
+use crate::event::format::EventFormat;
 use crate::event::Event as ParseableEvent;
 use crate::handlers::http::ingest::create_stream_if_not_exists;
 use crate::metadata::STREAM_INFO;
@@ -70,7 +70,6 @@ impl ParseableSinkProcessor {
                     static_schema_flag.as_ref(),
                     time_partition.as_ref(),
                     schema_version,
-                    &LogSource::Json,
                 )?;
 
                 let p_event = ParseableEvent {
