@@ -31,7 +31,7 @@ use std::fmt::Debug;
 mod azure_blob;
 mod localfs;
 mod metrics_layer;
-pub(crate) mod object_storage;
+pub mod object_storage;
 pub mod retention;
 mod s3;
 pub mod staging;
