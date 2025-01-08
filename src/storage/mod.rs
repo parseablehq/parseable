@@ -20,9 +20,11 @@ use crate::{
     catalog::snapshot::Snapshot,
     metadata::{error::stream_info::MetadataError, SchemaVersion},
     stats::FullStats,
+    utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
 
 use chrono::Local;
+use serde::{Deserialize, Serialize};
 
 use std::fmt::Debug;
 
@@ -76,7 +78,7 @@ const ACCESS_ALL: &str = "all";
 pub const CURRENT_OBJECT_STORE_VERSION: &str = "v5";
 pub const CURRENT_SCHEMA_VERSION: &str = "v5";
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
     /// Version of schema registry
     pub version: String,
@@ -104,14 +106,19 @@ pub struct ObjectStoreFormat {
     pub time_partition_limit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_partition: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub static_schema_flag: Option<String>,
+    #[serde(
+        default,    // sets to false if not configured
+        deserialize_with = "deserialize_string_as_true",
+        serialize_with = "serialize_bool_as_true",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub static_schema_flag: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hot_tier_enabled: Option<bool>,
     pub stream_type: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamInfo {
     #[serde(rename = "created-at")]
     pub created_at: String,
@@ -124,8 +131,13 @@ pub struct StreamInfo {
     pub time_partition_limit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_partition: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub static_schema_flag: Option<String>,
+    #[serde(
+        default,    // sets to false if not configured
+        deserialize_with = "deserialize_string_as_true",
+        serialize_with = "serialize_bool_as_true",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub static_schema_flag: bool,
     pub stream_type: Option<String>,
 }
 
@@ -191,7 +203,7 @@ impl Default for ObjectStoreFormat {
             time_partition: None,
             time_partition_limit: None,
             custom_partition: None,
-            static_schema_flag: None,
+            static_schema_flag: false,
             hot_tier_enabled: None,
         }
     }

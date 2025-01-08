@@ -30,6 +30,7 @@ use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use datafusion::catalog::Session;
 use datafusion::common::stats::Precision;
 use datafusion::logical_expr::utils::conjunction;
+use datafusion::physical_expr::LexOrdering;
 use datafusion::{
     catalog::SchemaProvider,
     common::{
@@ -73,6 +74,7 @@ use super::listing_table_builder::ListingTableBuilder;
 use crate::catalog::Snapshot as CatalogSnapshot;
 
 // schema provider for stream based on global data
+#[derive(Debug)]
 pub struct GlobalSchemaProvider {
     pub storage: Arc<dyn ObjectStorage>,
 }
@@ -159,7 +161,7 @@ impl StandardTableProvider {
                     statistics,
                     projection: projection.cloned(),
                     limit,
-                    output_ordering: vec![vec![sort_expr]],
+                    output_ordering: vec![LexOrdering::from_iter([sort_expr])],
                     table_partition_cols: Vec::new(),
                 },
                 filters.as_ref(),
@@ -301,7 +303,9 @@ impl StandardTableProvider {
             #[cfg(windows)]
             {
                 if CONFIG.storage_name.eq("drive") {
-                    file_path = object_store::path::Path::from_absolute_path(file_path).unwrap();
+                    file_path = object_store::path::Path::from_absolute_path(file_path)
+                        .unwrap()
+                        .to_string();
                 }
             }
             let pf = PartitionedFile::new(file_path, file.file_size);

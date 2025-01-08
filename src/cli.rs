@@ -22,10 +22,15 @@ use std::{path::PathBuf, time::Duration};
 use url::Url;
 
 use crate::{
-    kafka::SslProtocol,
     oidc::{self, OpenidConfig},
     option::{validation, Compression, Mode},
 };
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use crate::kafka::SslProtocol as KafkaSslProtocol;
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+use std::string::String as KafkaSslProtocol;
 
 #[derive(Debug, Default)]
 pub struct Cli {
@@ -107,7 +112,7 @@ pub struct Cli {
     pub kafka_host: Option<String>,
     pub kafka_group: Option<String>,
     pub kafka_client_id: Option<String>,
-    pub kafka_security_protocol: Option<SslProtocol>,
+    pub kafka_security_protocol: Option<KafkaSslProtocol>,
     pub kafka_partitions: Option<String>,
 
     // Audit Logging env vars
@@ -533,16 +538,17 @@ impl FromArgMatches for Cli {
     }
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
-        self.kafka_topics = m.get_one::<String>(Self::KAFKA_TOPICS).cloned();
-        self.kafka_security_protocol = m
-            .get_one::<SslProtocol>(Self::KAFKA_SECURITY_PROTOCOL)
-            .cloned();
-        self.kafka_group = m.get_one::<String>(Self::KAFKA_GROUP).cloned();
-        self.kafka_client_id = m.get_one::<String>(Self::KAFKA_CLIENT_ID).cloned();
-        self.kafka_security_protocol = m
-            .get_one::<SslProtocol>(Self::KAFKA_SECURITY_PROTOCOL)
-            .cloned();
-        self.kafka_partitions = m.get_one::<String>(Self::KAFKA_PARTITIONS).cloned();
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            self.kafka_topics = m.get_one::<String>(Self::KAFKA_TOPICS).cloned();
+            self.kafka_security_protocol = m
+                .get_one::<KafkaSslProtocol>(Self::KAFKA_SECURITY_PROTOCOL)
+                .cloned();
+            self.kafka_group = m.get_one::<String>(Self::KAFKA_GROUP).cloned();
+            self.kafka_client_id = m.get_one::<String>(Self::KAFKA_CLIENT_ID).cloned();
+            self.kafka_host = m.get_one::<String>(Self::KAFKA_HOST).cloned();
+            self.kafka_partitions = m.get_one::<String>(Self::KAFKA_PARTITIONS).cloned();
+        }
 
         self.audit_logger = m.get_one::<Url>(Self::AUDIT_LOGGER).cloned();
         self.audit_username = m.get_one::<String>(Self::AUDIT_USERNAME).cloned();
