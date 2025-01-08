@@ -116,6 +116,7 @@ pub struct Cli {
     pub audit_password: Option<String>,
     pub audit_batch_size: usize,
     pub audit_flush_interval: Duration,
+    pub audit_log_dir: PathBuf,
 }
 
 impl Cli {
@@ -163,7 +164,7 @@ impl Cli {
     pub const AUDIT_PASSWORD: &'static str = "audit-password";
     pub const AUDIT_BATCH_SIZE: &'static str = "audit-batch-size";
     pub const AUDIT_FLUSH_INTERVAL: &'static str = "audit-flush-interval";
-
+    pub const AUDIT_LOG_DIR: &'static str = "audit-log-file";
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
     }
@@ -224,7 +225,7 @@ impl Cli {
                     .long(Self::AUDIT_LOGGER)
                     .env("P_AUDIT_LOGGER")
                     .value_name("URL")
-                    .required(false)
+                    .requires(Self::AUDIT_LOG_DIR)
                     .value_parser(validation::url)
                     .help("Audit logger endpoint"),
             )
@@ -259,6 +260,14 @@ impl Cli {
                     .default_value("5")
                     .value_parser(value_parser!(u64))
                     .help("Audit logger flush interval in seconds"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_LOG_DIR)
+                    .long(Self::AUDIT_LOG_DIR)
+                    .env("P_AUDIT_LOG_DIR")
+                    .value_name("PATH")
+                    .value_parser(validation::file_path)
+                    .help("Local path on this device where audit logs are stored"),
             )
              .arg(
                  Arg::new(Self::TLS_CERT)
@@ -546,7 +555,10 @@ impl FromArgMatches for Cli {
             .get_one::<u64>(Self::AUDIT_FLUSH_INTERVAL)
             .map(|d| Duration::from_secs(*d))
             .expect("default for audit flush interval");
-
+        self.audit_log_dir = m
+            .get_one::<PathBuf>(Self::AUDIT_LOG_DIR)
+            .cloned()
+            .expect("audit file path should be set");
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.trusted_ca_certs_path = m.get_one::<PathBuf>(Self::TRUSTED_CA_CERTS_PATH).cloned();
