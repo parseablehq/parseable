@@ -36,10 +36,10 @@ pub struct AuditLogger {
     oldest_log_file_id: usize,
 }
 
-impl AuditLogger {
+impl Default for AuditLogger {
     /// Create an audit logger that can be used to capture and push
     /// audit logs to the appropriate logging system over HTTP
-    pub fn new() -> AuditLogger {
+    fn default() -> Self {
         // Try to construct the log endpoint URL by joining the base URL
         // with the ingest path, This can fail if the URL is not valid,
         // when the base URL is not set or the ingest path is not valid
@@ -85,7 +85,9 @@ impl AuditLogger {
             oldest_log_file_id,
         }
     }
+}
 
+impl AuditLogger {
     /// Flushes audit logs to the remote logging system
     async fn flush(&mut self) {
         if self.batch.is_empty() {
@@ -97,10 +99,10 @@ impl AuditLogger {
         std::mem::swap(&mut self.batch, &mut logs_to_send);
 
         // send the logs to the remote logging system, if no backlog, else write to disk
-        if self.oldest_log_file_id >= self.next_log_file_id {
-            if self.send_logs_to_remote(&logs_to_send).await.is_ok() {
-                return;
-            }
+        if self.oldest_log_file_id >= self.next_log_file_id
+            && self.send_logs_to_remote(&logs_to_send).await.is_ok()
+        {
+            return;
         }
 
         // write the logs to the next log file
@@ -110,6 +112,7 @@ impl AuditLogger {
             .join(format!("{}.json", self.next_log_file_id));
         let mut log_file = OpenOptions::new()
             .create(true)
+            .truncate(true)
             .open(log_file_path)
             .await
             .expect("Failed to open audit log file");

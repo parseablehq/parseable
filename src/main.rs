@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // spawn audit log batcher
-    AuditLogger::new().spawn_batcher().await;
+    AuditLogger::default().spawn_batcher().await;
 
     // these are empty ptrs so mem footprint should be minimal
     let server: Box<dyn ParseableServer> = match CONFIG.parseable.mode {
