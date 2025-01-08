@@ -3248,7 +3248,7 @@ dependencies = [
 
 [[package]]
 name = "parseable"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "actix-cors",
  "actix-web",
@@ -3268,7 +3268,7 @@ dependencies = [
  "base64 0.22.0",
  "byteorder",
  "bytes",
- "bzip2 0.5.0",
+ "bzip2 0.4.4",
  "cargo_toml",
  "chrono",
  "chrono-humanize",
