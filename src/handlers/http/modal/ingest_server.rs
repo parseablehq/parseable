@@ -151,7 +151,7 @@ impl ParseableServer for IngestServer {
 }
 
 impl IngestServer {
-    fn analytics_factory() -> Scope {
+    pub fn analytics_factory() -> Scope {
         web::scope("/analytics").service(
             // GET "/analytics" ==> Get analytics data
             web::resource("").route(
@@ -163,7 +163,7 @@ impl IngestServer {
     }
 
     // get the role webscope
-    fn get_user_role_webscope() -> Scope {
+    pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
             // GET Role List
             .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
@@ -185,7 +185,7 @@ impl IngestServer {
             )
     }
     // get the user webscope
-    fn get_user_webscope() -> Scope {
+    pub fn get_user_webscope() -> Scope {
         web::scope("/user")
             .service(
                 web::resource("/{username}/sync")
@@ -224,7 +224,7 @@ impl IngestServer {
                     ),
             )
     }
-    fn logstream_api() -> Scope {
+    pub fn logstream_api() -> Scope {
         web::scope("/logstream").service(
             web::scope("/{logstream}")
                 .service(
