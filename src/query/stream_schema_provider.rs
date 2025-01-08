@@ -301,7 +301,9 @@ impl StandardTableProvider {
             #[cfg(windows)]
             {
                 if CONFIG.storage_name.eq("drive") {
-                    file_path = object_store::path::Path::from_absolute_path(file_path).unwrap();
+                    file_path = object_store::path::Path::from_absolute_path(file_path)
+                        .unwrap()
+                        .to_string();
                 }
             }
             let pf = PartitionedFile::new(file_path, file.file_size);
