@@ -44,7 +44,7 @@ impl EventFormat for Event {
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: Option<&String>,
+        static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
@@ -94,7 +94,7 @@ impl EventFormat for Event {
             }
         };
 
-        if static_schema_flag.is_none()
+        if !static_schema_flag
             && value_arr
                 .iter()
                 .any(|value| fields_mismatch(&schema, value, schema_version))

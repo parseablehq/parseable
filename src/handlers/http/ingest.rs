@@ -90,7 +90,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             .clone();
         let event = format::json::Event { data: body_val };
         // For internal streams, use old schema
-        event.into_recordbatch(&schema, None, None, SchemaVersion::V0)?
+        event.into_recordbatch(&schema, false, None, SchemaVersion::V0)?
     };
     event::Event {
         rb,
@@ -285,7 +285,7 @@ pub async fn create_stream_if_not_exists(
         "",
         None,
         "",
-        "",
+        false,
         Arc::new(Schema::empty()),
         stream_type,
     )
@@ -405,7 +405,7 @@ mod tests {
         });
 
         let (rb, _) =
-            into_event_batch(&json, HashMap::default(), None, None, SchemaVersion::V0).unwrap();
+            into_event_batch(&json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 4);
@@ -432,7 +432,7 @@ mod tests {
         });
 
         let (rb, _) =
-            into_event_batch(&json, HashMap::default(), None, None, SchemaVersion::V0).unwrap();
+            into_event_batch(&json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -462,7 +462,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(&json, schema, None, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = into_event_batch(&json, schema, false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -492,7 +492,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(&json, schema, None, None, SchemaVersion::V0,).is_err());
+        assert!(into_event_batch(&json, schema, false, None, SchemaVersion::V0,).is_err());
     }
 
     #[test]
@@ -508,7 +508,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(&json, schema, None, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = into_event_batch(&json, schema, false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 1);
@@ -517,6 +517,7 @@ mod tests {
     #[test]
     fn non_object_arr_is_err() {
         let json = json!([1]);
+
         assert!(convert_array_to_object(
             json,
             None,
@@ -547,7 +548,7 @@ mod tests {
         ]);
 
         let (rb, _) =
-            into_event_batch(&json, HashMap::default(), None, None, SchemaVersion::V0).unwrap();
+            into_event_batch(&json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -594,7 +595,7 @@ mod tests {
         ]);
 
         let (rb, _) =
-            into_event_batch(&json, HashMap::default(), None, None, SchemaVersion::V0).unwrap();
+            into_event_batch(&json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -641,7 +642,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(&json, schema, None, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = into_event_batch(&json, schema, false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -688,7 +689,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(&json, schema, None, None, SchemaVersion::V0,).is_err());
+        assert!(into_event_batch(&json, schema, false, None, SchemaVersion::V0,).is_err());
     }
 
     #[test]
@@ -729,7 +730,7 @@ mod tests {
         let (rb, _) = into_event_batch(
             &flattened_json,
             HashMap::default(),
-            None,
+            false,
             None,
             SchemaVersion::V0,
         )
@@ -817,7 +818,7 @@ mod tests {
         let (rb, _) = into_event_batch(
             &flattened_json,
             HashMap::default(),
-            None,
+            false,
             None,
             SchemaVersion::V1,
         )

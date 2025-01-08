@@ -77,7 +77,7 @@ pub trait EventFormat: Sized {
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: Option<&String>,
+        static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
@@ -87,7 +87,7 @@ pub trait EventFormat: Sized {
     fn into_recordbatch(
         self,
         storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: Option<&String>,
+        static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(RecordBatch, bool), AnyError> {
@@ -130,9 +130,9 @@ pub trait EventFormat: Sized {
     fn is_schema_matching(
         new_schema: Arc<Schema>,
         storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: Option<&String>,
+        static_schema_flag: bool,
     ) -> bool {
-        if static_schema_flag.is_none() {
+        if !static_schema_flag {
             return true;
         }
         for field in new_schema.fields() {

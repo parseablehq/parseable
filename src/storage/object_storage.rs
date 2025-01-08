@@ -151,7 +151,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
         time_partition: &str,
         time_partition_limit: Option<NonZeroU32>,
         custom_partition: &str,
-        static_schema_flag: &str,
+        static_schema_flag: bool,
         schema: Arc<Schema>,
         stream_type: &str,
     ) -> Result<String, ObjectStorageError> {
@@ -162,8 +162,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
             time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
             time_partition_limit: time_partition_limit.map(|limit| limit.to_string()),
             custom_partition: (!custom_partition.is_empty()).then(|| custom_partition.to_string()),
-            static_schema_flag: (static_schema_flag == "true")
-                .then(|| static_schema_flag.to_string()),
+            static_schema_flag,
             schema_version: SchemaVersion::V1, // NOTE: Newly created streams are all V1
             owner: Owner {
                 id: CONFIG.parseable.username.clone(),
@@ -560,7 +559,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 let static_schema_flag = STREAM_INFO
                     .get_static_schema_flag(stream)
                     .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-                if static_schema_flag.is_none() {
+                if !static_schema_flag {
                     commit_schema_to_storage(stream, schema).await?;
                 }
             }
