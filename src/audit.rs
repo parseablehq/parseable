@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt::{Debug, Display},
 };
 
@@ -39,7 +39,7 @@ static AUDIT_LOGGER: Lazy<AuditLogger> = Lazy::new(AuditLogger::new);
 // AuditLogger handles sending audit logs to a remote logging system
 pub struct AuditLogger {
     log_endpoint: Option<Url>,
-    batch: Mutex<Vec<AuditLog>>,
+    batch: Mutex<VecDeque<AuditLog>>,
 }
 
 impl AuditLogger {
@@ -58,7 +58,9 @@ impl AuditLogger {
 
         AuditLogger {
             log_endpoint,
-            batch: Mutex::new(Vec::with_capacity(CONFIG.parseable.audit_batch_size * 10)), // 10x batch size seems to be a safe default to save on reallocations
+            batch: Mutex::new(VecDeque::with_capacity(
+                CONFIG.parseable.audit_batch_size * 10,
+            )),
         }
     }
 
@@ -68,13 +70,15 @@ impl AuditLogger {
             return;
         };
 
-        let logs_to_send = {
+        let mut logs_to_send = VecDeque::with_capacity(CONFIG.parseable.audit_batch_size * 10);
+        {
             let mut batch = self.batch.lock().await;
             if batch.is_empty() {
                 return;
             }
-            std::mem::take(&mut *batch)
-        };
+
+            std::mem::swap(&mut *batch, &mut logs_to_send)
+        }
 
         let mut req = HTTP_CLIENT
             .post(endpoint.as_str())
@@ -104,7 +108,7 @@ impl AuditLogger {
     /// Inserts an audit log into the batch, and flushes the batch if it exceeds the configured batch size
     async fn insert(&self, log: AuditLog) {
         let mut batch = self.batch.lock().await;
-        batch.push(log);
+        batch.push_back(log);
 
         // Flush if batch size exceeds threshold
         if batch.len() >= CONFIG.parseable.audit_batch_size {
