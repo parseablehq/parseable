@@ -12,6 +12,8 @@ parseable:
     ingestor: 
       port: 8000
       podAnnotations: {}
+      nodeSelector: {}
+      tolerations: []
       labels:
         app: parseable
         component: ingestor
@@ -79,7 +81,7 @@ parseable:
       enabled: false
       storageClass: ""
       accessMode: ReadWriteOnce
-      size: 20Gi
+      size: 100Gi
   ## comment out the secrets depending upon deployment option
   ## localModeSecret if store is set to local
   ## blobModeSecret if store is set to blob-store
@@ -151,6 +153,7 @@ parseable:
     httpGet:
       path: /api/v1/readiness
       port: 8000
+  toleration: []
   resources:
     limits:
       cpu: 500m

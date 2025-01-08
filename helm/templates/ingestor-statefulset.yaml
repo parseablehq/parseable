@@ -52,6 +52,14 @@ spec:
               exit 1
       terminationGracePeriodSeconds: 10
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
+      {{- with .Values.parseable.highAvailability.ingestor.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.parseable.highAvailability.ingestor.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: {{ .Chart.Name }}
         securityContext:
