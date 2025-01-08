@@ -318,33 +318,32 @@ pub struct Options {
 
     // Kafka configuration (conditionally compiled)
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    #[arg(
-        long,env = "P_KAFKA_TOPICS", help = "Kafka topics to subscribe to")]
+    #[arg(long, env = "P_KAFKA_TOPICS", help = "Kafka topics to subscribe to")]
     pub kafka_topics: Option<String>,
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    #[arg(
-        long,env = "P_KAFKA_HOST", help = "Address and port for Kafka server")]
+    #[arg(long, env = "P_KAFKA_HOST", help = "Address and port for Kafka server")]
     pub kafka_host: Option<String>,
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    #[arg(
-        long,env = "P_KAFKA_GROUP", help = "Kafka group")]
+    #[arg(long, env = "P_KAFKA_GROUP", help = "Kafka group")]
     pub kafka_group: Option<String>,
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    #[arg(
-        long,env = "P_KAFKA_CLIENT_ID", help = "Kafka client id")]
+    #[arg(long, env = "P_KAFKA_CLIENT_ID", help = "Kafka client id")]
     pub kafka_client_id: Option<String>,
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[arg(
-        long,env = "P_KAFKA_SECURITY_PROTOCOL", help = "Kafka security protocol")]
+        long,
+        env = "P_KAFKA_SECURITY_PROTOCOL",
+        value_parser = validation::kafka_security_protocol,
+        help = "Kafka security protocol"
+    )]
     pub kafka_security_protocol: Option<KafkaSslProtocol>,
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    #[arg(
-        long,env = "P_KAFKA_PARTITIONS", help = "Kafka partitions")]
+    #[arg(long, env = "P_KAFKA_PARTITIONS", help = "Kafka partitions")]
     pub kafka_partitions: Option<String>,
 
     // Audit logging
