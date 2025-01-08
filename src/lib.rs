@@ -16,7 +16,7 @@
  *
  */
 
-mod about;
+pub mod about;
 mod alerts;
 pub mod analytics;
 pub mod audit;
