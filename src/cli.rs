@@ -230,6 +230,7 @@ impl Cli {
                     .long(Self::AUDIT_LOGGER)
                     .env("P_AUDIT_LOGGER")
                     .value_name("URL")
+                    .required(false)
                     .requires(Self::AUDIT_LOG_DIR)
                     .value_parser(validation::url)
                     .help("Audit logger endpoint"),
@@ -561,10 +562,12 @@ impl FromArgMatches for Cli {
             .get_one::<u64>(Self::AUDIT_FLUSH_INTERVAL)
             .map(|d| Duration::from_secs(*d))
             .expect("default for audit flush interval");
-        self.audit_log_dir = m
-            .get_one::<PathBuf>(Self::AUDIT_LOG_DIR)
-            .cloned()
-            .expect("audit file path should be set");
+        if self.audit_logger.is_some() {
+            self.audit_log_dir = m
+                .get_one::<PathBuf>(Self::AUDIT_LOG_DIR)
+                .cloned()
+                .expect("audit file path should be set");
+        }
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();
         self.trusted_ca_certs_path = m.get_one::<PathBuf>(Self::TRUSTED_CA_CERTS_PATH).cloned();

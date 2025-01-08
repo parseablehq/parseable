@@ -40,15 +40,24 @@ impl Default for AuditLogger {
     /// Create an audit logger that can be used to capture and push
     /// audit logs to the appropriate logging system over HTTP
     fn default() -> Self {
+        let mut logger = AuditLogger {
+            log_endpoint: None,
+            batch: Vec::with_capacity(CONFIG.parseable.audit_batch_size),
+            next_log_file_id: 0,
+            oldest_log_file_id: 0,
+        };
+
         // Try to construct the log endpoint URL by joining the base URL
         // with the ingest path, This can fail if the URL is not valid,
         // when the base URL is not set or the ingest path is not valid
-        let log_endpoint = CONFIG.parseable.audit_logger.as_ref().and_then(|endpoint| {
-            endpoint
-                .join("/api/v1/ingest")
-                .inspect_err(|err| eprintln!("Couldn't setup audit logger: {err}"))
-                .ok()
-        });
+        let Some(url) = CONFIG.parseable.audit_logger.as_ref() else {
+            return logger;
+        };
+
+        logger.log_endpoint = url
+            .join("/api/v1/ingest")
+            .inspect_err(|err| eprintln!("Couldn't setup audit logger: {err}"))
+            .ok();
 
         // Created directory for audit logs if it doesn't exist
         std::fs::create_dir_all(&CONFIG.parseable.audit_log_dir)
@@ -57,8 +66,8 @@ impl Default for AuditLogger {
         // Figure out the latest and oldest log file in directory
         let files = std::fs::read_dir(&CONFIG.parseable.audit_log_dir)
             .expect("Failed to read audit log directory");
-        let (mut oldest_log_file_id, next_log_file_id) =
-            files.fold((usize::MAX, 0), |(oldest, next), r| {
+        let (oldest_log_file_id, latest_log_file_id) =
+            files.fold((usize::MAX, 0), |(oldest, latest), r| {
                 let file_name = r.unwrap().file_name();
                 let Ok(file_id) = file_name
                     .to_str()
@@ -69,21 +78,17 @@ impl Default for AuditLogger {
                     .parse::<usize>()
                     .inspect_err(|e| warn!("Unexpected file in logs directory: {e}"))
                 else {
-                    return (oldest, next);
+                    return (oldest, latest);
                 };
-                (oldest.min(file_id), next.max(file_id))
+                (oldest.min(file_id), latest.max(file_id))
             });
 
-        if oldest_log_file_id == usize::MAX {
-            oldest_log_file_id = 0;
+        logger.next_log_file_id = latest_log_file_id + 1;
+        if oldest_log_file_id != usize::MAX {
+            logger.oldest_log_file_id = oldest_log_file_id;
         }
 
-        AuditLogger {
-            log_endpoint,
-            batch: Vec::with_capacity(CONFIG.parseable.audit_batch_size),
-            next_log_file_id,
-            oldest_log_file_id,
-        }
+        logger
     }
 }
 
