@@ -124,10 +124,6 @@ spec:
             name: data-volume
           - mountPath: "/parseable/staging"
             name: stage-volume
-      {{- with .Values.parseable.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       volumes:
       {{- if .Values.parseable.persistence.staging.enabled }}
       - name: stage-volume
@@ -144,5 +140,13 @@ spec:
       {{- else }}
       - name: data-volume
         emptyDir: {}
+      {{- end }}
+      {{- with .Values.parseable.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.parseable.toleration }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
 {{- end }}  # Closing for "if eq .Values.parseable.highAvailability.enabled false"
