@@ -72,7 +72,7 @@ pub struct LogStreamMetadata {
     pub time_partition: Option<String>,
     pub time_partition_limit: Option<NonZeroU32>,
     pub custom_partition: Option<String>,
-    pub static_schema_flag: Option<String>,
+    pub static_schema_flag: bool,
     pub hot_tier_enabled: Option<bool>,
     pub stream_type: Option<String>,
 }
@@ -144,14 +144,11 @@ impl StreamInfo {
             .map(|metadata| metadata.custom_partition.clone())
     }
 
-    pub fn get_static_schema_flag(
-        &self,
-        stream_name: &str,
-    ) -> Result<Option<String>, MetadataError> {
+    pub fn get_static_schema_flag(&self, stream_name: &str) -> Result<bool, MetadataError> {
         let map = self.read().expect(LOCK_EXPECT);
         map.get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.static_schema_flag.clone())
+            .map(|metadata| metadata.static_schema_flag)
     }
 
     pub fn get_retention(&self, stream_name: &str) -> Result<Option<Retention>, MetadataError> {
@@ -285,7 +282,7 @@ impl StreamInfo {
         time_partition: String,
         time_partition_limit: Option<NonZeroU32>,
         custom_partition: String,
-        static_schema_flag: String,
+        static_schema_flag: bool,
         static_schema: HashMap<String, Arc<Field>>,
         stream_type: &str,
         schema_version: SchemaVersion,
@@ -308,11 +305,7 @@ impl StreamInfo {
             } else {
                 Some(custom_partition)
             },
-            static_schema_flag: if static_schema_flag != "true" {
-                None
-            } else {
-                Some(static_schema_flag)
-            },
+            static_schema_flag,
             schema: if static_schema.is_empty() {
                 HashMap::new()
             } else {
