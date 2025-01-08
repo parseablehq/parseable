@@ -158,7 +158,7 @@ impl ParseableServer for QueryServer {
 
 impl QueryServer {
     // get the role webscope
-    fn get_user_role_webscope() -> Scope {
+    pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
             // GET Role List
             .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
@@ -178,7 +178,7 @@ impl QueryServer {
     }
 
     // get the user webscope
-    fn get_user_webscope() -> Scope {
+    pub fn get_user_webscope() -> Scope {
         web::scope("/user")
             .service(
                 web::resource("")
@@ -233,7 +233,7 @@ impl QueryServer {
     }
 
     // get the logstream web scope
-    fn get_logstream_webscope() -> Scope {
+    pub fn get_logstream_webscope() -> Scope {
         web::scope("/logstream")
             .service(
                 // GET "/logstream" ==> Get list of all Log Streams on the server
@@ -351,7 +351,7 @@ impl QueryServer {
             )
     }
 
-    fn get_cluster_web_scope() -> actix_web::Scope {
+    pub fn get_cluster_web_scope() -> actix_web::Scope {
         web::scope("/cluster")
             .service(
                 // GET "/cluster/info" ==> Get info of the cluster

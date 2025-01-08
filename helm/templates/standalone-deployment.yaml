@@ -145,11 +145,7 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.parseable.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.parseable.tolerations }}
+      {{- with .Values.parseable.toleration }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

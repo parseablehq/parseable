@@ -46,13 +46,14 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
-use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
+use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use tracing::error;
 
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::num::NonZeroU32;
 use std::{
     collections::HashMap,
@@ -63,7 +64,7 @@ use std::{
 };
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
-    fn get_datafusion_runtime(&self) -> RuntimeConfig;
+    fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder;
     fn construct_client(&self) -> Arc<dyn ObjectStorage>;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
         static STORE: OnceCell<Arc<dyn ObjectStorage>> = OnceCell::new();
@@ -75,7 +76,7 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
 }
 
 #[async_trait]
-pub trait ObjectStorage: Send + Sync + 'static {
+pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(

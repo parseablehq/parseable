@@ -27,7 +27,6 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
-use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::{Explain, Filter, LogicalPlan, PlanType, ToStringifiedPlan};
 use datafusion::prelude::*;
@@ -77,7 +76,7 @@ impl Query {
         };
 
         let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
-        let runtime = Arc::new(RuntimeEnv::new(runtime_config).unwrap());
+        let runtime = Arc::new(runtime_config.build().unwrap());
 
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)

@@ -25,7 +25,7 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
+use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
 use futures::{stream::FuturesUnordered, TryStreamExt};
 use relative_path::{RelativePath, RelativePathBuf};
@@ -64,8 +64,8 @@ pub struct FSConfig {
 }
 
 impl ObjectStorageProvider for FSConfig {
-    fn get_datafusion_runtime(&self) -> RuntimeConfig {
-        RuntimeConfig::new()
+    fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
+        RuntimeEnvBuilder::new()
     }
 
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
@@ -81,6 +81,7 @@ impl ObjectStorageProvider for FSConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct LocalFS {
     // absolute path of the data directory
     root: PathBuf,

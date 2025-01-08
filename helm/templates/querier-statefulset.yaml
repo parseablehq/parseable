@@ -37,6 +37,10 @@ spec:
     spec:
       terminationGracePeriodSeconds: 10
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
+      {{- with .Values.parseable.toleration }}
+      tolerations:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: {{ .Chart.Name }}
         securityContext:
@@ -55,6 +59,8 @@ spec:
           {{- if .Values.parseable.persistence.querier.enabled }}
           - name: P_HOT_TIER_DIR
             value: "/parseable/hot-tier"
+          - name: P_MAX_DISK_USAGE_PERCENT
+            value: "95.0"
           {{- end }}
           {{- range $key, $value :=  .Values.parseable.env }}
           - name: {{ $key }}
@@ -113,7 +119,7 @@ spec:
           {{- end }}
         ports:
           - containerPort: 8000
-        {{- with .Values.readinessProbe }}
+        {{- with .Values.parseable.readinessProbe }}
         readinessProbe:
           {{ toYaml . | nindent 12 }}
         {{- end }}
@@ -159,6 +165,15 @@ spec:
       resources:
         requests:
           storage: {{ .Values.parseable.persistence.querier.size | quote }}
+  - metadata:
+      name: stage-volume
+    spec:
+      accessModes:
+      - {{ .Values.parseable.persistence.querier.accessMode | quote }}
+      storageClassName: {{ .Values.parseable.persistence.querier.storageClass | quote }}
+      resources:
+        requests:
+          storage: 5Gi
   {{- end }}
   {{- if .Values.parseable.sidecar.enabled}}
     {{- .Values.parseable.sidecar.volumeClaimTemplates | toYaml | nindent 4 }}
