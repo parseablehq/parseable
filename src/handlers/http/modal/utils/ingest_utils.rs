@@ -126,7 +126,7 @@ pub async fn push_logs(
         let (rb, is_first_event) = into_event_batch(
             &value,
             schema,
-            static_schema_flag.as_ref(),
+            static_schema_flag,
             time_partition.as_ref(),
             schema_version,
         )?;
@@ -151,7 +151,7 @@ pub async fn push_logs(
 pub fn into_event_batch(
     body: &Value,
     schema: HashMap<String, Arc<Field>>,
-    static_schema_flag: Option<&String>,
+    static_schema_flag: bool,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {

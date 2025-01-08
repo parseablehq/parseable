@@ -194,7 +194,7 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
     let (rb, is_first) = event
         .into_recordbatch(
             &schema,
-            static_schema_flag.as_ref(),
+            static_schema_flag,
             time_partition.as_ref(),
             schema_version,
         )
