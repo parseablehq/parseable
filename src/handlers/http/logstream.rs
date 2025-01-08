@@ -138,7 +138,7 @@ pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     match STREAM_INFO.schema(&stream_name) {
         Ok(_) => {}
-        Err(_) if CONFIG.parseable.mode == Mode::Query => {
+        Err(_) if CONFIG.options.mode == Mode::Query => {
             if !create_stream_and_schema_from_storage(&stream_name).await? {
                 return Err(StreamError::StreamNotFound(stream_name.clone()));
             }
@@ -223,7 +223,7 @@ pub async fn put_alert(
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -271,7 +271,7 @@ pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamErr
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -304,7 +304,7 @@ pub async fn put_retention(
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -368,7 +368,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if cfg!(not(test)) && CONFIG.parseable.mode == Mode::Query {
+        if cfg!(not(test)) && CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -545,7 +545,7 @@ pub async fn create_stream(
 pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !STREAM_INFO.stream_exists(&stream_name) {
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -599,7 +599,7 @@ pub async fn put_stream_hot_tier(
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -615,7 +615,7 @@ pub async fn put_stream_hot_tier(
             status: StatusCode::BAD_REQUEST,
         });
     }
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+    if CONFIG.options.hot_tier_storage_path.is_none() {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 
@@ -659,7 +659,7 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -669,7 +669,7 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
         }
     }
 
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+    if CONFIG.options.hot_tier_storage_path.is_none() {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 
@@ -694,7 +694,7 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -704,7 +704,7 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
         }
     }
 
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+    if CONFIG.options.hot_tier_storage_path.is_none() {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 

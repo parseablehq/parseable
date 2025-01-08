@@ -226,7 +226,7 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
         // For distributed deployments, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode != Mode::All {
+        if CONFIG.options.mode != Mode::All {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(PostError::StreamNotFound(stream_name.clone())),
@@ -274,7 +274,7 @@ pub async fn create_stream_if_not_exists(
     // For distributed deployments, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if CONFIG.parseable.mode != Mode::All
+    if CONFIG.options.mode != Mode::All
         && create_stream_and_schema_from_storage(stream_name).await?
     {
         return Ok(stream_exists);

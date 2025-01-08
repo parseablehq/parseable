@@ -65,7 +65,7 @@ impl Query {
             .get_datafusion_runtime()
             .with_disk_manager(DiskManagerConfig::NewOs);
 
-        let (pool_size, fraction) = match CONFIG.parseable.query_memory_pool_size {
+        let (pool_size, fraction) = match CONFIG.options.query_memory_pool_size {
             Some(size) => (size, 1.),
             None => {
                 let mut system = System::new();

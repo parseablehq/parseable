@@ -110,8 +110,8 @@ pub fn init(metadata: &StorageMetadata) {
     sessions.track_new(
         admin_username,
         SessionKey::BasicAuth {
-            username: CONFIG.parseable.username.clone(),
-            password: CONFIG.parseable.password.clone(),
+            username: CONFIG.options.username.clone(),
+            password: CONFIG.options.password.clone(),
         },
         chrono::DateTime::<Utc>::MAX_UTC,
         admin_permissions,

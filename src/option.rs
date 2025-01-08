@@ -16,18 +16,15 @@
  *
  */
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Options, StorageOptions, DEFAULT_PASSWORD, DEFAULT_USERNAME};
 use crate::storage::object_storage::parseable_json_path;
-use crate::storage::{
-    AzureBlobConfig, FSConfig, ObjectStorageError, ObjectStorageProvider, S3Config,
-};
+use crate::storage::{ObjectStorageError, ObjectStorageProvider};
 use bytes::Bytes;
 use clap::error::ErrorKind;
-use clap::{command, Args, Command, FromArgMatches};
+use clap::Parser;
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -37,101 +34,47 @@ pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
 
 #[derive(Debug)]
 pub struct Config {
-    pub parseable: Cli,
+    pub options: Options,
     storage: Arc<dyn ObjectStorageProvider>,
     pub storage_name: &'static str,
 }
 
 impl Config {
     fn new() -> Self {
-        let cli = create_parseable_cli_command()
-            .name("Parseable")
-            .about(
-                r#"
-Cloud Native, log analytics platform for modern applications.
-
-Usage: 
-parseable [command] [options..]
-
-
-Help:
-parseable [command] --help
-
-"#,
-            )
-            .arg_required_else_help(true)
-            .subcommand_required(true)
-            .color(clap::ColorChoice::Always)
-            .get_matches();
-
-        match cli.subcommand() {
-            Some(("local-store", m)) => {
-                let cli = match Cli::from_arg_matches(m) {
-                    Ok(cli) => cli,
-                    Err(err) => err.exit(),
-                };
-                let storage = match FSConfig::from_arg_matches(m) {
-                    Ok(storage) => storage,
-                    Err(err) => err.exit(),
-                };
-
-                if cli.local_staging_path == storage.root {
-                    create_parseable_cli_command()
-                        .error(
-                            ErrorKind::ValueValidation,
-                            "Cannot use same path for storage and staging",
-                        )
-                        .exit()
+        match Cli::parse().storage {
+            StorageOptions::Local(args) => {
+                if args.options.local_staging_path == args.storage.root {
+                    clap::Error::raw(
+                        ErrorKind::ValueValidation,
+                        "Cannot use same path for storage and staging",
+                    )
+                    .exit();
                 }
 
-                if cli.hot_tier_storage_path.is_some() {
-                    create_parseable_cli_command()
-                        .error(
-                            ErrorKind::ValueValidation,
-                            "Cannot use hot tier with local-store subcommand.",
-                        )
-                        .exit()
+                if args.options.hot_tier_storage_path.is_some() {
+                    clap::Error::raw(
+                        ErrorKind::ValueValidation,
+                        "Cannot use hot tier with local-store subcommand.",
+                    )
+                    .exit();
                 }
 
                 Config {
-                    parseable: cli,
-                    storage: Arc::new(storage),
+                    options: args.options,
+                    storage: Arc::new(args.storage),
                     storage_name: "drive",
                 }
             }
-            Some(("s3-store", m)) => {
-                let cli = match Cli::from_arg_matches(m) {
-                    Ok(cli) => cli,
-                    Err(err) => err.exit(),
-                };
-                let storage = match S3Config::from_arg_matches(m) {
-                    Ok(storage) => storage,
-                    Err(err) => err.exit(),
-                };
-
-                Config {
-                    parseable: cli,
-                    storage: Arc::new(storage),
-                    storage_name: "s3",
-                }
-            }
-            Some(("blob-store", m)) => {
-                let cli = match Cli::from_arg_matches(m) {
-                    Ok(cli) => cli,
-                    Err(err) => err.exit(),
-                };
-                let storage = match AzureBlobConfig::from_arg_matches(m) {
-                    Ok(storage) => storage,
-                    Err(err) => err.exit(),
-                };
-
-                Config {
-                    parseable: cli,
-                    storage: Arc::new(storage),
-                    storage_name: "blob_store",
-                }
-            }
-            _ => unreachable!(),
+            StorageOptions::S3(args) => Config {
+                options: args.options,
+                storage: Arc::new(args.storage),
+                storage_name: "s3",
+            },
+            StorageOptions::Blob(args) => Config {
+                options: args.options,
+                storage: Arc::new(args.storage),
+                storage_name: "blob_store",
+            },
         }
     }
 
@@ -174,16 +117,15 @@ parseable [command] --help
     }
 
     pub fn staging_dir(&self) -> &PathBuf {
-        &self.parseable.local_staging_path
+        &self.options.local_staging_path
     }
 
     pub fn hot_tier_dir(&self) -> &Option<PathBuf> {
-        &self.parseable.hot_tier_storage_path
+        &self.options.hot_tier_storage_path
     }
 
     pub fn is_default_creds(&self) -> bool {
-        self.parseable.username == Cli::DEFAULT_USERNAME
-            && self.parseable.password == Cli::DEFAULT_PASSWORD
+        self.options.username == DEFAULT_USERNAME && self.options.password == DEFAULT_PASSWORD
     }
 
     // returns the string representation of the storage mode
@@ -202,46 +144,12 @@ parseable [command] --help
     }
 
     pub fn get_server_mode_string(&self) -> &str {
-        match self.parseable.mode {
+        match self.options.mode {
             Mode::Query => "Distributed (Query)",
             Mode::Ingest => "Distributed (Ingest)",
             Mode::All => "Standalone",
         }
     }
-}
-
-fn create_parseable_cli_command() -> Command {
-    let local = Cli::create_cli_command_with_clap("local-store");
-    let local = <FSConfig as Args>::augment_args_for_update(local);
-
-    let local = local
-        .mut_arg(Cli::USERNAME, |arg| {
-            arg.required(false).default_value(Cli::DEFAULT_USERNAME)
-        })
-        .mut_arg(Cli::PASSWORD, |arg| {
-            arg.required(false).default_value(Cli::DEFAULT_PASSWORD)
-        });
-    let s3 = Cli::create_cli_command_with_clap("s3-store");
-    let s3 = <S3Config as Args>::augment_args_for_update(s3);
-
-    let azureblob = Cli::create_cli_command_with_clap("blob-store");
-    let azureblob = <AzureBlobConfig as Args>::augment_args_for_update(azureblob);
-
-    command!()
-        .name("Parseable")
-        .bin_name("parseable")
-        .propagate_version(true)
-        .next_line_help(false)
-        .help_template(
-            r#"{name} v{version}
-{about}
-Join the community at https://logg.ing/community.
-
-{all-args}
-        "#,
-        )
-        .subcommand_required(true)
-        .subcommands([local, s3, azureblob])
 }
 
 #[derive(Debug, Default, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -291,6 +199,8 @@ pub mod validation {
 
     use human_size::{multiples, SpecificSize};
 
+    use super::{Compression, Mode};
+
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
             return Err("empty path".to_owned());
@@ -331,6 +241,28 @@ pub mod validation {
 
     pub fn url(s: &str) -> Result<url::Url, String> {
         url::Url::parse(s).map_err(|_| "Invalid URL provided".to_string())
+    }
+
+    pub fn mode(s: &str) -> Result<Mode, String> {
+        match s {
+            "query" => Ok(Mode::Query),
+            "ingest" => Ok(Mode::Ingest),
+            "all" => Ok(Mode::All),
+            _ => Err("Invalid MODE provided".to_string()),
+        }
+    }
+
+    pub fn compression(s: &str) -> Result<Compression, String> {
+        match s {
+            "uncompressed" => Ok(Compression::Uncompressed),
+            "snappy" => Ok(Compression::Snappy),
+            "gzip" => Ok(Compression::Gzip),
+            "lzo" => Ok(Compression::Lzo),
+            "brotli" => Ok(Compression::Brotli),
+            "lz4" => Ok(Compression::Lz4),
+            "zstd" => Ok(Compression::Zstd),
+            _ => Err("Invalid COMPRESSION provided".to_string()),
+        }
     }
 
     pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {

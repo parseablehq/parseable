@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // these are empty ptrs so mem footprint should be minimal
-    let server: Box<dyn ParseableServer> = match CONFIG.parseable.mode {
+    let server: Box<dyn ParseableServer> = match CONFIG.options.mode {
         Mode::Query => Box::new(QueryServer),
         Mode::Ingest => Box::new(IngestServer),
         Mode::All => Box::new(Server),
@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     // load kafka server
-    if CONFIG.parseable.mode != Mode::Query {
+    if CONFIG.options.mode != Mode::Query {
         tokio::task::spawn(kafka::setup_integration());
     }
 

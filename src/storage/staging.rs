@@ -62,7 +62,7 @@ pub struct StorageDir {
 
 impl StorageDir {
     pub fn new(stream_name: &str) -> Self {
-        let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
+        let data_path = CONFIG.options.local_stream_data_path(stream_name);
 
         Self { data_path }
     }
@@ -80,7 +80,7 @@ impl StorageDir {
         }
         let local_uri = str::replace(&uri, "/", ".");
         let hostname = hostname_unchecked();
-        if CONFIG.parseable.mode == Mode::Ingest {
+        if CONFIG.options.mode == Mode::Ingest {
             let id = INGESTOR_META.get_ingestor_id();
             format!("{local_uri}{hostname}{id}.{extention}")
         } else {
@@ -217,7 +217,7 @@ impl StorageDir {
 }
 
 // pub fn to_parquet_path(stream_name: &str, time: NaiveDateTime) -> PathBuf {
-//     let data_path = CONFIG.parseable.local_stream_data_path(stream_name);
+//     let data_path = CONFIG.options.local_stream_data_path(stream_name);
 //     let dir = StorageDir::file_time_suffix(time, &HashMap::new(), PARQUET_FILE_EXTENSION);
 //
 //     data_path.join(dir)
@@ -336,8 +336,8 @@ pub fn parquet_writer_props(
         nulls_first: true,
     });
     let mut props = WriterProperties::builder()
-        .set_max_row_group_size(CONFIG.parseable.row_group_size)
-        .set_compression(CONFIG.parseable.parquet_compression.into())
+        .set_max_row_group_size(CONFIG.options.row_group_size)
+        .set_compression(CONFIG.options.parquet_compression.into())
         .set_column_encoding(
             ColumnPath::new(vec![time_partition_field]),
             Encoding::DELTA_BINARY_PACKED,
@@ -360,7 +360,7 @@ pub fn parquet_writer_props(
 }
 
 pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
-    let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
+    let path = PathBuf::from(&CONFIG.options.local_staging_path);
 
     // all the files should be in the staging directory root
     let entries = std::fs::read_dir(path)?;
@@ -391,7 +391,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
             if obj.get("flight_port").is_none() {
                 obj.insert(
                     "flight_port".to_owned(),
-                    JsonValue::String(CONFIG.parseable.flight_port.to_string()),
+                    JsonValue::String(CONFIG.options.flight_port.to_string()),
                 );
             }
 
@@ -413,7 +413,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 
             let token = base64::prelude::BASE64_STANDARD.encode(format!(
                 "{}:{}",
-                CONFIG.parseable.username, CONFIG.parseable.password
+                CONFIG.options.username, CONFIG.options.password
             ));
 
             let token = format!("Basic {}", token);
@@ -438,10 +438,10 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
         url,
         DEFAULT_VERSION.to_string(),
         store.get_bucket_name(),
-        &CONFIG.parseable.username,
-        &CONFIG.parseable.password,
+        &CONFIG.options.username,
+        &CONFIG.options.password,
         get_ingestor_id(),
-        CONFIG.parseable.flight_port.to_string(),
+        CONFIG.options.flight_port.to_string(),
     );
 
     put_ingestor_info(out.clone())?;
@@ -455,7 +455,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 ///
 /// * `ingestor_info`: The ingestor info to be stored.
 pub fn put_ingestor_info(info: IngestorMetadata) -> anyhow::Result<()> {
-    let path = PathBuf::from(&CONFIG.parseable.local_staging_path);
+    let path = PathBuf::from(&CONFIG.options.local_staging_path);
     let file_name = format!("ingestor.{}.json", info.ingestor_id);
     let file_path = path.join(file_name);
 

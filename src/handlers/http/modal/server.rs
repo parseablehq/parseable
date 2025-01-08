@@ -117,14 +117,14 @@ impl ParseableServer for Server {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
 
-        if CONFIG.parseable.send_analytics {
+        if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
 
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+        let app = self.start(prometheus, CONFIG.options.openid());
 
         tokio::pin!(app);
 

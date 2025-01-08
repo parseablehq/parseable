@@ -91,9 +91,9 @@ pub trait ParseableServer {
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
-            &CONFIG.parseable.tls_cert_path,
-            &CONFIG.parseable.tls_key_path,
-            &CONFIG.parseable.trusted_ca_certs_path,
+            &CONFIG.options.tls_cert_path,
+            &CONFIG.options.tls_key_path,
+            &CONFIG.options.trusted_ca_certs_path,
         )?;
 
         // fn that creates the app
@@ -129,10 +129,10 @@ pub trait ParseableServer {
         // Start the server with or without TLS
         let srv = if let Some(config) = ssl {
             http_server
-                .bind_rustls_0_22(&CONFIG.parseable.address, config)?
+                .bind_rustls_0_22(&CONFIG.options.address, config)?
                 .run()
         } else {
-            http_server.bind(&CONFIG.parseable.address)?.run()
+            http_server.bind(&CONFIG.options.address)?.run()
         };
 
         // Graceful shutdown handling

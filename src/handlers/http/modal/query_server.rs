@@ -104,7 +104,7 @@ impl ParseableServer for QueryServer {
 
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
-        if CONFIG.parseable.send_analytics {
+        if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
@@ -121,7 +121,7 @@ impl ParseableServer for QueryServer {
             sync::object_store_sync().await;
 
         tokio::spawn(airplane::server());
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+        let app = self.start(prometheus, CONFIG.options.openid());
 
         tokio::pin!(app);
         loop {

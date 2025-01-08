@@ -92,18 +92,18 @@ pub enum KafkaError {
 }
 
 fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
-    if let Some(topics) = &CONFIG.parseable.kafka_topics {
+    if let Some(topics) = &CONFIG.options.kafka_topics {
         // topics can be a comma separated list of topics to subscribe to
         let topics = topics.split(',').map(|v| v.to_owned()).collect_vec();
 
-        let host = if CONFIG.parseable.kafka_host.is_some() {
-            CONFIG.parseable.kafka_host.as_ref()
+        let host = if CONFIG.options.kafka_host.is_some() {
+            CONFIG.options.kafka_host.as_ref()
         } else {
             return Err(KafkaError::NoVarError("P_KAKFA_HOST"));
         };
 
-        let group = if CONFIG.parseable.kafka_group.is_some() {
-            CONFIG.parseable.kafka_group.as_ref()
+        let group = if CONFIG.options.kafka_group.is_some() {
+            CONFIG.options.kafka_group.as_ref()
         } else {
             return Err(KafkaError::NoVarError("P_KAKFA_GROUP"));
         };
@@ -112,18 +112,18 @@ fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
         conf.set("bootstrap.servers", host.unwrap());
         conf.set("group.id", group.unwrap());
 
-        if let Some(val) = CONFIG.parseable.kafka_client_id.as_ref() {
+        if let Some(val) = CONFIG.options.kafka_client_id.as_ref() {
             conf.set("client.id", val);
         }
 
-        if let Some(ssl_protocol) = CONFIG.parseable.kafka_security_protocol.as_ref() {
+        if let Some(ssl_protocol) = CONFIG.options.kafka_security_protocol.as_ref() {
             conf.set("security.protocol", serde_json::to_string(&ssl_protocol)?);
         }
 
         let consumer: StreamConsumer = conf.create()?;
         consumer.subscribe(&topics.iter().map(|v| v.as_str()).collect_vec())?;
 
-        if let Some(vals_raw) = CONFIG.parseable.kafka_partitions.as_ref() {
+        if let Some(vals_raw) = CONFIG.options.kafka_partitions.as_ref() {
             // partitions is a comma separated pairs of topic:partitions
             let mut topic_partition_pairs = Vec::new();
             let mut set = true;
@@ -239,7 +239,7 @@ pub async fn setup_integration() {
     while let Ok(curr) = stream.next().await.unwrap() {
         // TODO: maybe we should not constructs an audit log for each kafka message, but do so at the batch level
         let log_builder = AuditLogBuilder::default()
-            .with_host(CONFIG.parseable.kafka_host.as_deref().unwrap_or(""))
+            .with_host(CONFIG.options.kafka_host.as_deref().unwrap_or(""))
             .with_user_agent("Kafka Client")
             .with_protocol("Kafka")
             .with_stream(curr.topic());

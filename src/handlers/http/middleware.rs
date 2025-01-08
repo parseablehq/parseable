@@ -246,7 +246,7 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let username = req.match_info().get("username").unwrap_or("");
-        let is_root = username == CONFIG.parseable.username;
+        let is_root = username == CONFIG.options.username;
         let fut = self.service.call(req);
 
         Box::pin(async move {
@@ -300,7 +300,7 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let path = req.path();
-        let mode = &CONFIG.parseable.mode;
+        let mode = &CONFIG.options.mode;
         // change error messages based on mode
         match mode {
             Mode::Query => {
