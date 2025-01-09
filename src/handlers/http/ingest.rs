@@ -68,7 +68,12 @@ pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostE
                 stream_name
             )));
         }
-        create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+        create_stream_if_not_exists(
+            &stream_name,
+            &StreamType::UserDefined.to_string(),
+            LogSource::default(),
+        )
+        .await?;
 
         flatten_and_push_logs(req, body, &stream_name).await?;
         Ok(HttpResponse::Ok().finish())
@@ -130,7 +135,12 @@ pub async fn handle_otel_logs_ingestion(
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+    create_stream_if_not_exists(
+        &stream_name,
+        &StreamType::UserDefined.to_string(),
+        LogSource::OtelLogs,
+    )
+    .await?;
 
     //custom flattening required for otel logs
     let logs: LogsData = serde_json::from_slice(body.as_bytes())?;
@@ -163,7 +173,12 @@ pub async fn handle_otel_metrics_ingestion(
         )));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+    create_stream_if_not_exists(
+        &stream_name,
+        &StreamType::UserDefined.to_string(),
+        LogSource::OtelMetrics,
+    )
+    .await?;
 
     //custom flattening required for otel metrics
     let metrics: MetricsData = serde_json::from_slice(body.as_bytes())?;
@@ -197,7 +212,12 @@ pub async fn handle_otel_traces_ingestion(
         )));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(&stream_name, &StreamType::UserDefined.to_string()).await?;
+    create_stream_if_not_exists(
+        &stream_name,
+        &StreamType::UserDefined.to_string(),
+        LogSource::OtelTraces,
+    )
+    .await?;
 
     //custom flattening required for otel traces
     let traces: TracesData = serde_json::from_slice(body.as_bytes())?;
@@ -264,6 +284,7 @@ pub async fn push_logs_unchecked(
 pub async fn create_stream_if_not_exists(
     stream_name: &str,
     stream_type: &str,
+    log_source: LogSource,
 ) -> Result<bool, PostError> {
     let mut stream_exists = false;
     if STREAM_INFO.stream_exists(stream_name) {
@@ -288,6 +309,7 @@ pub async fn create_stream_if_not_exists(
         false,
         Arc::new(Schema::empty()),
         stream_type,
+        log_source,
     )
     .await?;
 

@@ -24,10 +24,11 @@ use bytes::Bytes;
 use http::StatusCode;
 
 use crate::{
+    event::format::LogSource,
     handlers::{
         http::logstream::error::{CreateStreamError, StreamError},
-        CUSTOM_PARTITION_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY, TIME_PARTITION_KEY,
-        TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
+        CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
+        TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
     },
     metadata::{self, SchemaVersion, STREAM_INFO},
     option::{Mode, CONFIG},
@@ -48,6 +49,7 @@ pub async fn create_update_stream(
         static_schema_flag,
         update_stream_flag,
         stream_type,
+        log_source,
     ) = fetch_headers_from_put_stream_request(req);
 
     if metadata::STREAM_INFO.stream_exists(stream_name) && !update_stream_flag {
@@ -113,6 +115,7 @@ pub async fn create_update_stream(
         static_schema_flag,
         schema,
         &stream_type,
+        log_source,
     )
     .await?;
 
@@ -167,13 +170,14 @@ async fn validate_and_update_custom_partition(
 
 pub fn fetch_headers_from_put_stream_request(
     req: &HttpRequest,
-) -> (String, String, String, bool, bool, String) {
+) -> (String, String, String, bool, bool, String, LogSource) {
     let mut time_partition = String::default();
     let mut time_partition_limit = String::default();
     let mut custom_partition = String::default();
     let mut static_schema_flag = false;
     let mut update_stream_flag = false;
     let mut stream_type = StreamType::UserDefined.to_string();
+    let mut log_source = LogSource::default();
     req.headers().iter().for_each(|(key, value)| {
         if key == TIME_PARTITION_KEY {
             time_partition = value.to_str().unwrap().to_string();
@@ -193,6 +197,9 @@ pub fn fetch_headers_from_put_stream_request(
         if key == STREAM_TYPE_KEY {
             stream_type = value.to_str().unwrap().to_string();
         }
+        if key == LOG_SOURCE_KEY {
+            log_source = LogSource::from(value.to_str().unwrap());
+        }
     });
 
     (
@@ -202,6 +209,7 @@ pub fn fetch_headers_from_put_stream_request(
         static_schema_flag,
         update_stream_flag,
         stream_type,
+        log_source,
     )
 }
 
@@ -378,6 +386,7 @@ pub async fn update_custom_partition_in_stream(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
@@ -386,6 +395,7 @@ pub async fn create_stream(
     static_schema_flag: bool,
     schema: Arc<Schema>,
     stream_type: &str,
+    log_source: LogSource,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     if stream_type != StreamType::Internal.to_string() {
@@ -403,6 +413,7 @@ pub async fn create_stream(
             static_schema_flag,
             schema.clone(),
             stream_type,
+            log_source.clone(),
         )
         .await
     {
@@ -427,6 +438,7 @@ pub async fn create_stream(
                 static_schema,
                 stream_type,
                 SchemaVersion::V1, // New stream
+                log_source,
             );
         }
         Err(err) => {
@@ -476,7 +488,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
         let static_schema_flag = stream_metadata.static_schema_flag;
         let stream_type = stream_metadata.stream_type.as_deref().unwrap_or("");
         let schema_version = stream_metadata.schema_version;
-
+        let log_source = stream_metadata.log_source;
         metadata::STREAM_INFO.add_stream(
             stream_name.to_string(),
             stream_metadata.created_at,
@@ -487,6 +499,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             static_schema,
             stream_type,
             schema_version,
+            log_source,
         );
     } else {
         return Ok(false);

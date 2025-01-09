@@ -34,6 +34,7 @@ use std::{collections::HashMap, fmt::Debug};
 use tracing::{debug, error, info, warn};
 
 use crate::audit::AuditLogBuilder;
+use crate::event::format::LogSource;
 use crate::option::CONFIG;
 use crate::{
     event::{
@@ -180,7 +181,12 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
     let stream_name = msg.topic();
 
     // stream should get created only if there is an incoming event, not before that
-    create_stream_if_not_exists(stream_name, &StreamType::UserDefined.to_string()).await?;
+    create_stream_if_not_exists(
+        stream_name,
+        &StreamType::UserDefined.to_string(),
+        LogSource::default(),
+    )
+    .await?;
 
     let schema = resolve_schema(stream_name)?;
     let event = format::json::Event {
