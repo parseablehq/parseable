@@ -53,7 +53,7 @@ pub async fn check_shutdown_middleware(
     }
 }
 
-pub async fn handle_signals(shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()>>>>) {
+pub async fn handle_signals(shutdown_signal: oneshot::Sender<()>) {
     #[cfg(windows)]
     {
         tokio::select! {
@@ -80,7 +80,7 @@ pub async fn handle_signals(shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()
     }
 }
 
-async fn shutdown(shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()>>>>) {
+async fn shutdown(shutdown_signal: oneshot::Sender<()>) {
     // Set the shutdown flag to true
     let mut shutdown_flag = SIGNAL_RECEIVED.lock().await;
     *shutdown_flag = true;
@@ -89,10 +89,9 @@ async fn shutdown(shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()>>>>) {
     crate::event::STREAM_WRITERS.unset_all();
 
     // Trigger graceful shutdown
-    if let Some(shutdown_sender) = shutdown_signal.lock().await.take() {
-        let _ = shutdown_sender.send(());
-    }
+    shutdown_signal.send(()).unwrap();
 }
+
 pub async fn readiness() -> HttpResponse {
     // Check the object store connection
     if CONFIG.storage().get_object_store().check().await.is_ok() {

@@ -38,7 +38,7 @@ use openid::Discovered;
 use serde::Deserialize;
 use serde::Serialize;
 use ssl_acceptor::get_ssl_acceptor;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use super::audit;
@@ -110,14 +110,10 @@ pub trait ParseableServer {
 
         // Create a channel to trigger server shutdown
         let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
-        let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
-
-        // Clone the shutdown signal for the signal handler
-        let shutdown_signal = server_shutdown_signal.clone();
 
         // Spawn the signal handler task
         let signal_task = tokio::spawn(async move {
-            health_check::handle_signals(shutdown_signal).await;
+            health_check::handle_signals(shutdown_trigger).await;
             println!("Received shutdown signal, notifying server to shut down...");
         });
 
