@@ -129,7 +129,7 @@ impl StorageDir {
         let paths = dir
             .flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().map_or(false, |ext| ext.eq("arrows")))
+            .filter(|file| file.extension().is_some_and(|ext| ext.eq("arrows")))
             .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
             .collect();
 
@@ -199,7 +199,7 @@ impl StorageDir {
 
         dir.flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().map_or(false, |ext| ext.eq("parquet")))
+            .filter(|file| file.extension().is_some_and(|ext| ext.eq("parquet")))
             .collect()
     }
 
