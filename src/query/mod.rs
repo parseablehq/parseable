@@ -20,7 +20,7 @@ mod filter_optimizer;
 mod listing_table_builder;
 pub mod stream_schema_provider;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use chrono::{NaiveDateTime, TimeZone};
 use datafusion::arrow::record_batch::RecordBatch;
 
@@ -32,8 +32,14 @@ use datafusion::logical_expr::{Explain, Filter, LogicalPlan, PlanType, ToStringi
 use datafusion::prelude::*;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use tracing::warn;
+use crate::catalog::snapshot::Snapshot;
+use crate::catalog::Snapshot as _;
+use relative_path::RelativePathBuf;
 use serde_json::{json, Value};
+use stream_schema_provider::collect_manifest_files;
 use std::collections::HashMap;
+use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sysinfo::System;
@@ -42,9 +48,10 @@ use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
 use crate::event;
+use crate::handlers::http::query::{DateBin, DateBinRecord, QueryError};
 use crate::metadata::STREAM_INFO;
-use crate::option::CONFIG;
-use crate::storage::{ObjectStorageProvider, StorageDir};
+use crate::option::{Mode, CONFIG};
+use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, StorageDir, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
@@ -193,6 +200,265 @@ impl Query {
         let _ = self.raw_logical_plan.visit(&mut visitor);
         visitor.into_inner().pop()
     }
+}
+
+impl DateBin {
+    /// This function is supposed to read maninfest files for the given stream,
+    /// get the sum of `num_rows` between the `startTime` and `endTime`,
+    /// divide that by number of bins and return in a manner acceptable for the console
+    pub async fn get_bin_density(&self) -> Result<Vec<DateBinRecord>, QueryError> {
+        let time_partition = STREAM_INFO.get_time_partition(&self.stream)
+            .map_err(|err|anyhow::Error::msg(err.to_string()))?
+            .unwrap_or(event::DEFAULT_TIMESTAMP_KEY.to_owned());
+
+        let glob_storage = CONFIG.storage().get_object_store();
+
+        let object_store = QUERY_SESSION.state()
+            .runtime_env()
+            .object_store_registry
+            .get_store(&glob_storage.store_url())
+            .unwrap();
+
+        // get time range
+        let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
+
+        if time_range.start > time_range.end {
+            todo!()
+        }
+
+        // get object store
+        let object_store_format = glob_storage
+            .get_object_store_format(&self.stream)
+            .await
+            .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+
+        // all the manifests will go here
+        let mut merged_snapshot: Snapshot = Snapshot::default();
+        
+        // get a list of manifests
+        if CONFIG.parseable.mode == Mode::Query {
+            let path = RelativePathBuf::from_iter([&self.stream, STREAM_ROOT_DIRECTORY]);
+            let obs = glob_storage
+                .get_objects(
+                    Some(&path),
+                    Box::new(|file_name| file_name.ends_with("stream.json")),
+                )
+                .await;
+            if let Ok(obs) = obs {
+                for ob in obs {
+                    if let Ok(object_store_format) =
+                        serde_json::from_slice::<ObjectStoreFormat>(&ob)
+                    {
+                        let snapshot = object_store_format.snapshot;
+                        for manifest in snapshot.manifest_list {
+                            merged_snapshot.manifest_list.push(manifest);
+                        }
+                    }
+                }
+            }
+        } else {
+            merged_snapshot = object_store_format.snapshot;
+        }
+
+        // get final date bins
+        let final_date_bins = self.get_bins(&time_range);
+
+        // Download all the manifest files
+        let time_filter = [
+            PartialTimeFilter::Low(
+                Bound::Included(time_range.start.naive_utc())
+            ),
+            PartialTimeFilter::High(
+                Bound::Included(time_range.end.naive_utc())
+            )
+        ];
+
+        let start = Utc::now();
+        let all_manifest_files = collect_manifest_files(
+            object_store,
+            merged_snapshot.manifests(&time_filter)
+                .into_iter()
+                .sorted_by_key(|file| file.time_lower_bound)
+                .map(|item| item.manifest_path)
+                .collect(),
+        )
+        .await
+        .map_err(|err|anyhow::Error::msg(err.to_string()))?;
+        let end = Utc::now();
+        warn!("time taken fetch menifest files- {:?}",end.signed_duration_since(start));
+
+        // we have start and end times for each bin
+        // we also have all the manifest files for the given time range
+        // now we iterate over start and end times for each bin
+        // then we iterate over the manifest files which are within that time range
+        // we sum up the num_rows
+        let mut date_bin_records = Vec::new();
+
+        let start = Utc::now();
+        for bin in final_date_bins {
+            // warn!("bin-\n{bin:?}\n");
+            let date_bin_timestamp = match &bin[0] {
+                PartialTimeFilter::Low(bound) => {
+                    match bound {
+                        Bound::Included(ts) => ts.and_utc().timestamp_millis(),
+                        _ => unreachable!()
+                    }
+                },
+                _ => unreachable!()
+            };
+
+            // extract start and end time to compare
+            let bin_start = match &bin[0] {
+                PartialTimeFilter::Low(bound) => {
+                    match bound {
+                        Bound::Included(ts) => ts,
+                        _ => unreachable!()
+                    }
+                },
+                _ => unreachable!()
+            };
+            let bin_end = match &bin[1] {
+                PartialTimeFilter::High(bound) => {
+                    match bound {
+                        Bound::Included(ts)|
+                        Bound::Excluded(ts) => ts,
+                        _ => unreachable!()
+                    }
+                },
+                _ => unreachable!()
+            };
+
+            let manifests_for_time_range = merged_snapshot.manifests(&bin);
+            // warn!("manifests_for_time_range-\n{manifests_for_time_range:?}\n");
+
+            let total_num_rows = all_manifest_files
+                .iter()
+                .map(|m| {
+                    m.files
+                        .iter()
+                        .filter(|f| {
+                            let mut default = false;
+                            // warn!("Entering new file with num_rows- {}\n",f.num_rows);
+                            for c in &f.columns {
+                                default = if c.name == time_partition {
+                                    match &c.stats {
+                                        Some(stats) => {
+                                            match stats {
+                                                crate::catalog::column::TypedStatistics::Int(int64_type) => {
+                                                    let min = DateTime::from_timestamp_millis(int64_type.min).unwrap().naive_utc();
+                                                    let max = DateTime::from_timestamp_millis(int64_type.max).unwrap().naive_utc();
+                                                    
+                                                    if (bin_start <= &min) && (bin_end >= &min) {
+                                                        // warn!("true for\nmin- {min:?}\nmax- {max:?}\n");
+                                                        true
+                                                    } else {
+                                                        // warn!("false for\nmin- {min:?}\nmax- {max:?}\n");
+                                                        false
+                                                    }
+                                                },
+                                                _ => false
+                                            }
+                                        },
+                                        None => false,
+                                    }
+                                } else {
+                                    default
+                                };
+                                if default {
+                                    break
+                                }
+                            }
+                            default
+                        })
+                        .map(|f|f.num_rows)
+                        .sum::<u64>()
+                })
+                .sum::<u64>();
+            
+            date_bin_records.push(
+                DateBinRecord{
+                    date_bin_timestamp: DateTime::from_timestamp_millis(date_bin_timestamp).unwrap().to_rfc3339(),
+                    log_count: total_num_rows,
+                }
+            );
+            // warn!("\ntotal_num_rows- {total_num_rows}");
+        }
+        let end = Utc::now();
+        warn!("time taken by for loop- {:?}",end.signed_duration_since(start));
+
+        let min = 1736063097889;
+        let max = 1736063100024;
+        warn!("p_timestamp\nmin- {:?}\nmax- {:?}", DateTime::from_timestamp_millis(min),DateTime::from_timestamp_millis(max));
+
+        Ok(date_bin_records)
+    }
+
+    /// calculate the endTime for each bin based on num bins
+    fn get_bins(&self, time_range: &TimeRange) -> Vec<[PartialTimeFilter; 2]> {        
+        // get total minutes elapsed between start and end time
+        let total_minutes = time_range.end.signed_duration_since(time_range.start)
+            .num_minutes() as u64;
+
+        // divide minutes by num bins to get minutes per bin
+        let quotient = (total_minutes / self.num_bins) as i64;
+        let remainder = (total_minutes % self.num_bins) as i64;
+        let have_remainder = remainder > 0;
+
+        warn!("get_bins");
+        warn!("quotient- {quotient}\nremainder- {remainder}\n");
+
+        // now create multiple bins [startTime, endTime)
+        // Should we exclude the last one???
+        let mut final_date_bins = vec![];
+        
+        let mut start = time_range.start;
+        
+        let loop_end = if have_remainder {
+            self.num_bins
+        } else {
+            self.num_bins - 1
+        };
+
+        for _ in 0..loop_end {
+            let bin_end = start + Duration::minutes(quotient);
+            final_date_bins.push([
+                PartialTimeFilter::Low(
+                    Bound::Included(start.naive_utc())
+                ),
+                PartialTimeFilter::High(
+                    Bound::Excluded(bin_end.naive_utc())
+                )
+            ]);
+
+            start = bin_end;
+        }
+
+        // construct the last bin
+        // if we have remainder, then the last bin will be as long as the remainder
+        // else it will be as long as the quotient
+        if have_remainder {
+            final_date_bins.push([
+                PartialTimeFilter::Low(
+                    Bound::Included(start.naive_utc())
+                ),
+                PartialTimeFilter::High(
+                    Bound::Included((start + Duration::minutes(remainder)).naive_utc())
+                )
+            ]);
+        } else {
+            final_date_bins.push([
+                PartialTimeFilter::Low(
+                    Bound::Included(start.naive_utc())
+                ),
+                PartialTimeFilter::High(
+                    Bound::Included((start + Duration::minutes(quotient)).naive_utc())
+                )
+            ]);
+        }
+        
+        final_date_bins
+    } 
+
 }
 
 #[derive(Debug, Default)]
