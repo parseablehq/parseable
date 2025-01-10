@@ -75,9 +75,8 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(windows)]
 /// Asynchronously blocks until a shutdown signal is received
 pub async fn block_until_shutdown_signal() {
-    if let Ok(()) = ctrl_c().await {
-        info!("Received a CTRL+C event");
-    }
+    _ = ctrl_c().await;
+    info!("Received a CTRL+C event");
 }
 
 #[cfg(unix)]
