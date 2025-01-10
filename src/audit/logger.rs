@@ -56,7 +56,7 @@ impl Default for AuditLogger {
 
         logger.log_endpoint = url
             .join("/api/v1/ingest")
-            .inspect_err(|err| eprintln!("Couldn't setup audit logger: {err}"))
+            .inspect_err(|err| error!("Couldn't setup audit logger: {err}"))
             .ok();
 
         // Created directory for audit logs if it doesn't exist
@@ -122,7 +122,9 @@ impl AuditLogger {
             .await
             .expect("Failed to open audit log file");
         let buf = serde_json::to_vec(&logs_to_send).expect("Failed to serialize audit logs");
-        log_file.write_all(&buf).await.unwrap();
+        if let Err(e) = log_file.write_all(&buf).await {
+            error!("Failed to write audit logs to file: {e}");
+        }
 
         // increment the next log file id
         self.next_log_file_id += 1;
@@ -139,7 +141,7 @@ impl AuditLogger {
     }
 
     /// Reads the oldest log file and sends it to the audit logging backend
-    async fn send_logs(&self) -> Result<(), anyhow::Error> {
+    async fn send_logs(&self) -> anyhow::Result<()> {
         // if there are no logs to send, do nothing
         if self.oldest_log_file_id >= self.next_log_file_id {
             return Ok(());
@@ -160,7 +162,7 @@ impl AuditLogger {
         Ok(())
     }
 
-    async fn send_logs_to_remote(&self, logs: &Vec<AuditLog>) -> Result<(), anyhow::Error> {
+    async fn send_logs_to_remote(&self, logs: &Vec<AuditLog>) -> anyhow::Result<()> {
         // send the logs to the audit logging backend
         let log_endpoint = self
             .log_endpoint
