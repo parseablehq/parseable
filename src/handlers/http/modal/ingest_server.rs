@@ -45,7 +45,6 @@ use crate::{handlers::http::base_path, option::CONFIG};
 use actix_web::web;
 use actix_web::web::resource;
 use actix_web::Scope;
-use anyhow::anyhow;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
@@ -292,9 +291,7 @@ pub async fn set_ingestor_metadata() -> anyhow::Result<()> {
     let path = ingestor_metadata_path(None);
 
     // we are considering that we can always get from object store
-    if storage_ingestor_metadata.is_some() {
-        let mut store_data = storage_ingestor_metadata.unwrap();
-
+    if let Some(mut store_data) = storage_ingestor_metadata {
         if store_data.domain_name != INGESTOR_META.domain_name {
             store_data
                 .domain_name
@@ -304,10 +301,7 @@ pub async fn set_ingestor_metadata() -> anyhow::Result<()> {
             let resource = Bytes::from(serde_json::to_vec(&store_data)?);
 
             // if pushing to object store fails propagate the error
-            return store
-                .put_object(&path, resource)
-                .await
-                .map_err(|err| anyhow!(err));
+            store.put_object(&path, resource).await?;
         }
     } else {
         let resource = Bytes::from(serde_json::to_vec(&resource)?);
@@ -324,18 +318,19 @@ async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageErr
     // how do we check for querier state?
     // based on the work flow of the system, the querier will always need to start first
     // i.e the querier will create the `.parseable.json` file
+    let parseable_json = CONFIG
+        .storage()
+        .get_object_store()
+        .get_object(&parseable_json_path())
+        .await
+        .map_err(|_| {
+            ObjectStorageError::Custom(
+                "Query Server has not been started yet. Please start the querier server first."
+                    .to_string(),
+            )
+        })?;
 
-    let store = CONFIG.storage().get_object_store();
-    let path = parseable_json_path();
-
-    let parseable_json = store.get_object(&path).await;
-    match parseable_json {
-        Ok(_) => Ok(Some(parseable_json.unwrap())),
-        Err(_) => Err(ObjectStorageError::Custom(
-            "Query Server has not been started yet. Please start the querier server first."
-                .to_string(),
-        )),
-    }
+    Ok(Some(parseable_json))
 }
 
 async fn validate_credentials() -> anyhow::Result<()> {
