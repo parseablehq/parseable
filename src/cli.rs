@@ -26,10 +26,16 @@ use crate::{
     option::{validation, Compression, Mode},
 };
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 use crate::kafka::SslProtocol as KafkaSslProtocol;
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
 use std::string::String as KafkaSslProtocol;
 
 #[derive(Debug, Default)]
@@ -507,7 +513,10 @@ impl FromArgMatches for Cli {
     }
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
         {
             self.kafka_topics = m.get_one::<String>(Self::KAFKA_TOPICS).cloned();
             self.kafka_security_protocol = m
