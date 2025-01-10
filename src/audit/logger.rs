@@ -16,13 +16,19 @@
  *
  */
 
-use std::fs::File;
+use std::{fs::File, sync::Arc};
 
-use tokio::{fs::OpenOptions, io::AsyncWriteExt, select, sync::mpsc::channel, time::interval};
-use tracing::{error, warn};
+use tokio::{
+    fs::OpenOptions,
+    io::AsyncWriteExt,
+    select,
+    sync::{mpsc::channel, oneshot, Mutex},
+    time::interval,
+};
+use tracing::{error, info, warn};
 use url::Url;
 
-use crate::{option::CONFIG, HTTP_CLIENT};
+use crate::{handlers::http::health_check, option::CONFIG, HTTP_CLIENT};
 
 use super::{AuditLog, AUDIT_LOG_TX};
 
@@ -196,6 +202,13 @@ impl AuditLogger {
             .set(audit_log_tx)
             .expect("Failed to set audit logger tx");
 
+        // to handle shutdown signal
+        let (shutdown_trigger, mut shutdown_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            health_check::handle_signals(Arc::new(Mutex::new(Some(shutdown_trigger)))).await;
+            println!("Received shutdown signal, shutting down audit logger...");
+        });
+
         // spawn the batcher
         tokio::spawn(async move {
             let mut interval = interval(CONFIG.parseable.audit_flush_interval);
@@ -216,6 +229,12 @@ impl AuditLogger {
                         }
                         self.oldest_log_file_id += 1;
                     },
+
+                    _ = &mut shutdown_rx => {
+                        self.flush().await;
+                        info!("Audit logger shutting down");
+                        break;
+                    }
                 }
             }
         });
