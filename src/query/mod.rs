@@ -206,34 +206,32 @@ impl Query {
     ) -> Result<(), Unauthorized> {
         // check authorization of this query if it references physical table;
         let mut authorized = false;
-        let mut tags = Vec::new();
 
         // in permission check if user can run query on the stream.
         // also while iterating add any filter tags for this stream
         for permission in permissions {
             match permission {
+                // Full access to all actions on stream
                 Permission::Stream(Action::All, _) => {
                     authorized = true;
                     break;
                 }
+                // Query access to specific stream or all streams (*)
                 Permission::StreamWithTag(Action::Query, ref stream, tag)
                     if stream == table_name || stream == "*" =>
                 {
-                    authorized = true;
+                    // add filter tags for this stream from permission
                     if let Some(tag) = tag {
-                        tags.push(tag)
+                        self.filter_tag.get_or_insert_with(Vec::new).push(tag)
                     }
                 }
+                // Other permissions are ignored
                 _ => (),
             }
         }
 
         if !authorized {
             return Err(Unauthorized);
-        }
-
-        if !tags.is_empty() {
-            self.filter_tag = Some(tags)
         }
 
         Ok(())
