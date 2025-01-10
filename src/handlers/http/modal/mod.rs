@@ -67,11 +67,12 @@ pub trait ParseableServer {
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>>;
 
     /// code that describes starting and setup procedures for each type of server
-    async fn init(&self) -> anyhow::Result<()>;
+    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()>;
 
     /// configure the server
     async fn start(
         &self,
+        shutdown_rx: oneshot::Receiver<()>,
         prometheus: PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()>
@@ -108,15 +109,6 @@ pub trait ParseableServer {
                 .wrap(cross_origin_config())
         };
 
-        // Create a channel to trigger server shutdown
-        let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
-
-        // Spawn the signal handler task
-        let signal_task = tokio::spawn(async move {
-            health_check::handle_signals(shutdown_trigger).await;
-            println!("Received shutdown signal, notifying server to shut down...");
-        });
-
         // Create the HTTP server
         let http_server = HttpServer::new(create_app_fn)
             .workers(num_cpus::get())
@@ -138,6 +130,8 @@ pub trait ParseableServer {
             // Wait for the shutdown signal
             let _ = shutdown_rx.await;
 
+            health_check::shutdown().await;
+
             // Perform S3 sync and wait for completion
             info!("Starting data sync to S3...");
             if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
@@ -153,11 +147,6 @@ pub trait ParseableServer {
 
         // Await the HTTP server to run
         let server_result = srv.await;
-
-        // Await the signal handler to ensure proper cleanup
-        if let Err(e) = signal_task.await {
-            error!("Error in signal handler: {:?}", e);
-        }
 
         // Wait for the sync task to complete before exiting
         if let Err(e) = sync_task.await {

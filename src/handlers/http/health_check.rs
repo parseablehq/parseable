@@ -25,10 +25,7 @@ use actix_web::middleware::Next;
 use actix_web::{Error, HttpResponse};
 use lazy_static::lazy_static;
 use std::sync::Arc;
-use tokio::signal::ctrl_c;
-use tracing::info;
-
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::Mutex;
 
 // Create a global variable to store signal status
 lazy_static! {
@@ -53,43 +50,14 @@ pub async fn check_shutdown_middleware(
     }
 }
 
-pub async fn handle_signals(shutdown_signal: oneshot::Sender<()>) {
-    #[cfg(windows)]
-    {
-        tokio::select! {
-            _ = ctrl_c() => {
-                info!("Received SIGINT signal at Readiness Probe Handler");
-                shutdown(shutdown_signal).await;
-            }
-        }
-    }
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate()).unwrap();
-        tokio::select! {
-            _ = ctrl_c() => {
-                info!("Received SIGINT signal at Readiness Probe Handler");
-                shutdown(shutdown_signal).await;
-            },
-            _ = sigterm.recv() => {
-                info!("Received SIGTERM signal at Readiness Probe Handler");
-                shutdown(shutdown_signal).await;
-            }
-        }
-    }
-}
-
-async fn shutdown(shutdown_signal: oneshot::Sender<()>) {
+// This function is called when the server is shutting down
+pub async fn shutdown() {
     // Set the shutdown flag to true
     let mut shutdown_flag = SIGNAL_RECEIVED.lock().await;
     *shutdown_flag = true;
 
     // Sync to local
     crate::event::STREAM_WRITERS.unset_all();
-
-    // Trigger graceful shutdown
-    shutdown_signal.send(()).unwrap();
 }
 
 pub async fn readiness() -> HttpResponse {

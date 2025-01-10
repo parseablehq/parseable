@@ -21,6 +21,8 @@ use parseable::{
     option::{Mode, CONFIG},
     rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
+use tokio::sync::oneshot;
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -55,7 +57,41 @@ async fn main() -> anyhow::Result<()> {
         tokio::task::spawn(kafka::setup_integration());
     }
 
-    server.init().await?;
+    // Spawn a task to trigger graceful shutdown on appropriate signal
+    let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        block_until_shutdown_signal().await;
+
+        // Trigger graceful shutdown
+        println!("Received shutdown signal, notifying server to shut down...");
+        shutdown_trigger.send(()).unwrap();
+    });
+
+    server.init(shutdown_rx).await?;
 
     Ok(())
+}
+
+#[cfg(windows)]
+/// Asynchronously blocks until a shutdown signal is received
+pub async fn block_until_shutdown_signal() {
+    if let Ok(()) = ctrl_c().await {
+        info!("Received a CTRL+C event");
+    }
+}
+
+#[cfg(unix)]
+/// Asynchronously blocks until a shutdown signal is received
+pub async fn block_until_shutdown_signal() {
+    use tokio::signal::{
+        ctrl_c,
+        unix::{signal, SignalKind},
+    };
+    let mut sigterm =
+        signal(SignalKind::terminate()).expect("Failed to create SIGTERM signal handler");
+
+    tokio::select! {
+        _ = ctrl_c() => info!("Received SIGINT signal"),
+        _ = sigterm.recv() => info!("Received SIGTERM signal"),
+    }
 }
