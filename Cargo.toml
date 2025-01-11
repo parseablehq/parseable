@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "1.7.1"
+version = "1.7.2"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2021"
 rust-version = "1.83.0"
@@ -99,9 +99,6 @@ sysinfo = "0.31.4"
 thread-priority = "1.0.0"
 uptime_lib = "0.3.0"
 
-# Kafka
-rdkafka = { version = "0.36.2", default-features = false, features = ["tokio"] }
-
 # Utility Libraries
 anyhow = { version = "1.0", features = ["backtrace"] }
 bytes = "1.4"
@@ -142,8 +139,8 @@ rstest = "0.23.0"
 arrow = "53.0.0"
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.15/build.zip"
-assets-sha1 = "1ef784c0a26d6ec9facf5ed59c6c391612525b72"
+assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.16/build.zip"
+assets-sha1 = "cb9af17fc1af07e590e839fc0ef4db18c323fc48"
 
 [features]
 debug = []
@@ -155,4 +152,7 @@ codegen-units = 1
 
 # adding rdkafka here because, for unsupported platforms, cargo skips other deps which come after this
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+rdkafka = { version = "0.36.2", default-features = false, features = ["tokio"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 rdkafka = { version = "0.36.2", default-features = false, features = ["tokio"] }

@@ -199,7 +199,10 @@ pub mod validation {
 
     use human_size::{multiples, SpecificSize};
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
     use crate::kafka::SslProtocol;
 
     use super::{Compression, Mode};
@@ -246,7 +249,10 @@ pub mod validation {
         url::Url::parse(s).map_err(|_| "Invalid URL provided".to_string())
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
     pub fn kafka_security_protocol(s: &str) -> Result<SslProtocol, String> {
         match s {
             "plaintext" => Ok(SslProtocol::Plaintext),
