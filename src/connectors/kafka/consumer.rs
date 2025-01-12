@@ -106,7 +106,7 @@ impl KafkaStreams {
         let tokio_handle = tokio::runtime::Handle::current();
         let shutdown_handle = self.shutdown_handle.clone();
 
-        std::thread::spawn(move || {
+        std::thread::Builder::new().name("kafka-streams-thread".to_string()).spawn(move || {
             tokio_handle.block_on(async move {
                 loop {
                     let result: Result<(), ConnectorError> = tokio::select! {
@@ -146,7 +146,7 @@ impl KafkaStreams {
 
                 info!("Kafka stream processing terminated");
             });
-        });
+        }).expect("Failed to spawn Kafka partitioned stream thread");
 
         ReceiverStream::new(stream_rx)
     }
