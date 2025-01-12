@@ -118,6 +118,7 @@ pub struct Query {
     pub raw_logical_plan: LogicalPlan,
     pub time_range: TimeRange,
     pub filter_tag: Option<Vec<String>>,
+    pub stream_names: Vec<String>,
 }
 
 impl Query {
@@ -184,10 +185,8 @@ impl Query {
         }
     }
 
-    pub fn first_table_name(&self) -> Option<String> {
-        let mut visitor = TableScanVisitor::default();
-        let _ = self.raw_logical_plan.visit(&mut visitor);
-        visitor.into_inner().pop()
+    pub fn stream_names(&self) -> &[String] {
+        &self.stream_names
     }
 }
 

@@ -21,7 +21,6 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::PollInfo;
 use arrow_schema::ArrowError;
 
-use datafusion::common::tree_node::TreeNode;
 use serde_json::json;
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -34,17 +33,13 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
 use crate::handlers::http::cluster::get_ingestor_info;
-use crate::handlers::http::query::{into_query, update_schema_when_distributed};
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::CONFIG;
-use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
     send_to_ingester,
 };
-use crate::utils::time::TimeRange;
-use crate::utils::user_auth_for_query;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
     FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc,
@@ -127,55 +122,41 @@ impl FlightService for AirServiceImpl {
     async fn do_get(&self, req: Request<Ticket>) -> Result<Response<Self::DoGetStream>, Status> {
         let key = extract_session_key(req.metadata())?;
 
-        let ticket = get_query_from_ticket(&req)?;
+        // try authorize
+        match Users.authorize(key.clone(), rbac::role::Action::Query, None, None) {
+            rbac::Response::Authorized => (),
+            rbac::Response::UnAuthorized => {
+                return Err(Status::permission_denied(
+                    "user is not authorized to access this resource",
+                ))
+            }
+            rbac::Response::ReloadRequired => {
+                return Err(Status::unauthenticated("reload required"))
+            }
+        }
 
-        info!("query requested to airplane: {:?}", ticket);
-
-        // get the query session_state
-        let session_state = QUERY_SESSION.state();
-
-        // get the logical plan and extract the table name
-        let raw_logical_plan = session_state
-            .create_logical_plan(&ticket.query)
-            .await
-            .map_err(|err| {
-                error!("Datafusion Error: Failed to create logical plan: {}", err);
-                Status::internal("Failed to create logical plan")
-            })?;
-
-        let time_range = TimeRange::parse_human_time(&ticket.start_time, &ticket.end_time)
-            .map_err(|e| Status::internal(e.to_string()))?;
-        // create a visitor to extract the table name
-        let mut visitor = TableScanVisitor::default();
-        let _ = raw_logical_plan.visit(&mut visitor);
-
-        let streams = visitor.into_inner();
-
-        let stream_name = streams
-            .first()
-            .ok_or_else(|| Status::aborted("Malformed SQL Provided, Table Name Not Found"))?
-            .to_owned();
-
-        update_schema_when_distributed(&streams)
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+        let query_request = get_query_from_ticket(&req)?;
+        info!("query requested to airplane: {:?}", query_request);
 
         // map payload to query
-        let query = into_query(&ticket, &session_state, time_range)
-            .await
-            .map_err(|_| Status::internal("Failed to parse query"))?;
+        let query = query_request.into_query(key).await.map_err(|e| {
+            error!("Error faced while constructing logical query: {e}");
+            Status::internal(format!("Failed to process query: {e}"))
+        })?;
+
+        let stream_names = query.stream_names();
+        let stream_name = stream_names
+            .first()
+            .ok_or_else(|| Status::internal("Failed to get stream name from query"))?;
 
         let event = if send_to_ingester(
             query.time_range.start.timestamp_millis(),
             query.time_range.end.timestamp_millis(),
         ) {
-            let sql = format!("select * from {}", &stream_name);
-            let start_time = ticket.start_time.clone();
-            let end_time = ticket.end_time.clone();
             let out_ticket = json!({
-                "query": sql,
-                "startTime": start_time,
-                "endTime": end_time
+                "query": format!("select * from {stream_name}"),
+                "startTime": query_request.start_time,
+                "endTime":  query_request.end_time,
             })
             .to_string();
 
@@ -190,30 +171,12 @@ impl FlightService for AirServiceImpl {
                 }
             }
             let mr = minute_result.iter().collect::<Vec<_>>();
-            let event = append_temporary_events(&stream_name, mr).await?;
+            let event = append_temporary_events(stream_name, mr).await?;
             Some(event)
         } else {
             None
         };
 
-        // try authorize
-        match Users.authorize(key.clone(), rbac::role::Action::Query, None, None) {
-            rbac::Response::Authorized => (),
-            rbac::Response::UnAuthorized => {
-                return Err(Status::permission_denied(
-                    "user is not authorized to access this resource",
-                ))
-            }
-            rbac::Response::ReloadRequired => {
-                return Err(Status::unauthenticated("reload required"))
-            }
-        }
-
-        let permissions = Users.get_permissions(&key);
-
-        user_auth_for_query(&permissions, &streams).map_err(|_| {
-            Status::permission_denied("User Does not have permission to access this")
-        })?;
         let time = Instant::now();
         let (records, _) = query
             .execute(stream_name.clone())
@@ -234,7 +197,7 @@ impl FlightService for AirServiceImpl {
         let out = into_flight_data(records);
 
         if let Some(event) = event {
-            event.clear(&stream_name);
+            event.clear(stream_name);
         }
 
         let time = time.elapsed().as_secs_f64();

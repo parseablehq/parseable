@@ -18,7 +18,7 @@
 
 use crate::event::Event;
 use crate::handlers::http::ingest::push_logs_unchecked;
-use crate::handlers::http::query::Query as QueryJson;
+use crate::handlers::http::query::QueryRequest;
 use crate::metadata::STREAM_INFO;
 use crate::query::stream_schema_provider::include_now;
 use crate::{
@@ -44,8 +44,8 @@ use tonic::transport::{Channel, Uri};
 
 pub type DoGetStream = stream::BoxStream<'static, Result<FlightData, Status>>;
 
-pub fn get_query_from_ticket(req: &Request<Ticket>) -> Result<QueryJson, Status> {
-    serde_json::from_slice::<QueryJson>(&req.get_ref().ticket)
+pub fn get_query_from_ticket(req: &Request<Ticket>) -> Result<QueryRequest, Status> {
+    serde_json::from_slice::<QueryRequest>(&req.get_ref().ticket)
         .map_err(|err| Status::internal(err.to_string()))
 }
 
