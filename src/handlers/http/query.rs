@@ -25,7 +25,6 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use futures_util::Future;
 use http::StatusCode;
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -153,13 +152,22 @@ pub async fn create_streams_for_querier() {
     }
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryParams {
+    #[serde(default)]
+    fields: bool,
+    #[serde(default)]
+    send_null: bool,
+}
+
 impl FromRequest for Query {
     type Error = actix_web::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
 
     fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
         let query = Json::<Query>::from_request(req, payload);
-        let params = web::Query::<HashMap<String, bool>>::from_request(req, payload)
+        let params = web::Query::<QueryParams>::from_request(req, payload)
             .into_inner()
             .map(|x| x.0)
             .unwrap_or_default();
@@ -167,10 +175,10 @@ impl FromRequest for Query {
         let fut = async move {
             let mut query = query.await?.into_inner();
             // format output json to include field names
-            query.fields = params.get("fields").cloned().unwrap_or(false);
+            query.fields = params.fields;
 
             if !query.send_null {
-                query.send_null = params.get("sendNull").cloned().unwrap_or(false);
+                query.send_null = params.send_null;
             }
 
             Ok(query)
