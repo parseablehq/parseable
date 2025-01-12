@@ -131,14 +131,12 @@ pub async fn query(
 ) -> Result<impl Responder, QueryError> {
     let key = extract_session_key_from_req(&req)?;
     let query = query_request.into_query(key).await?;
-
-    let stream_names = query.stream_names();
-    let first_stream_name = stream_names
-        .first()
+    let first_stream_name = query
+        .first_stream_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
 
     let time = Instant::now();
-    let (records, fields) = query.execute(first_stream_name.clone()).await?;
+    let (records, fields) = query.execute().await?;
 
     let response = QueryResponse {
         records,

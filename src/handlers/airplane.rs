@@ -144,9 +144,8 @@ impl FlightService for AirServiceImpl {
             Status::internal(format!("Failed to process query: {e}"))
         })?;
 
-        let stream_names = query.stream_names();
-        let stream_name = stream_names
-            .first()
+        let stream_name = query
+            .first_stream_name()
             .ok_or_else(|| Status::internal("Failed to get stream name from query"))?;
 
         let event = if send_to_ingester(
@@ -179,7 +178,7 @@ impl FlightService for AirServiceImpl {
 
         let time = Instant::now();
         let (records, _) = query
-            .execute(stream_name.clone())
+            .execute()
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
