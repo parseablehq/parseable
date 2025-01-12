@@ -13,29 +13,31 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
-import sys
-import time
 import json
 import logging
+import os
+import random
+import sys
+import time
+import uuid
 from datetime import datetime, timezone
-from random import choice, randint
-from uuid import uuid4
+from typing import Dict, Any
 
 from confluent_kafka import Producer
 from confluent_kafka.admin import AdminClient
 from confluent_kafka.cimpl import NewTopic
+from faker import Faker
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout)  # Log to stdout
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 
 logger = logging.getLogger(__name__)
+fake = Faker()
 
+# Kafka Configuration
 KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "local-logs-stream")
 NUM_PARTITIONS = int(os.getenv("NUM_PARTITIONS", "6"))  # Default partitions
@@ -43,6 +45,17 @@ REPLICATION_FACTOR = int(os.getenv("REPLICATION_FACTOR", "1"))  # Default RF
 TOTAL_LOGS = int(os.getenv("TOTAL_LOGS", "100"))  # Total logs to produce
 LOG_RATE = int(os.getenv("LOG_RATE", "50"))  # Logs per second
 REPORT_EVERY = 5_000  # Progress report frequency
+
+# Kubernetes Configuration
+K8S_NAMESPACES = ["default", "kube-system", "monitoring", "logging", "app"]
+CONTAINER_IMAGES = [
+    "parseable/parseable:v1.8.1",
+    "parseable/query-service:v1.8.1",
+    "parseable/ingester:v1.8.1",
+    "parseable/frontend:v1.8.1"
+]
+NODE_TYPES = ["compute", "storage", "ingestion"]
+COMPONENTS = ["query", "storage", "ingestion", "frontend"]
 
 producer_conf = {
     "bootstrap.servers": KAFKA_BROKERS,
@@ -59,19 +72,76 @@ producer_conf = {
 admin_client = AdminClient({"bootstrap.servers": KAFKA_BROKERS})
 producer = Producer(producer_conf)
 
-LOG_TEMPLATE = {
-    "timestamp": "",
-    "correlation_id": "",
-    "level": "INFO",
-    "message": "",
-    "pod": {"name": "", "namespace": "", "node": ""},
-    "request": {"method": "", "path": "", "remote_address": ""},
-    "response": {"status_code": 200, "latency_ms": 0},
-    "metadata": {"container_id": "", "image": "", "environment": ""},
-}
+
+def generate_kubernetes_metadata() -> Dict[str, str]:
+    namespace = random.choice(K8S_NAMESPACES)
+    sts_name = f"parseable-{random.choice(COMPONENTS)}"
+    pod_index = str(random.randint(0, 5))
+    pod_name = f"{sts_name}-{pod_index}"
+
+    return {
+        "kubernetes_namespace_name": namespace,
+        "kubernetes_pod_name": pod_name,
+        "kubernetes_pod_id": str(uuid.uuid4()),
+        "kubernetes_pod_ip": f"10.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(0, 255)}",
+        "kubernetes_host": f"ip-10-0-{random.randint(0, 255)}-{random.randint(0, 255)}.ec2.internal",
+        "kubernetes_container_name": random.choice(COMPONENTS),
+        "kubernetes_container_image": random.choice(CONTAINER_IMAGES),
+        "kubernetes_container_hash": fake.sha256(),
+        "kubernetes_docker_id": fake.sha256()[:12],
+        "kubernetes_labels_app": "parseable",
+        "kubernetes_labels_component": random.choice(COMPONENTS),
+        "kubernetes_labels_pbc_nodetype": random.choice(NODE_TYPES),
+        "kubernetes_labels_spot": random.choice(["true", "false"]),
+        "kubernetes_labels_sts_name": sts_name,
+        "kubernetes_labels_statefulset.kubernetes.io/pod-name": pod_name,
+        "kubernetes_labels_apps.kubernetes.io/pod-index": pod_index,
+        "kubernetes_labels_controller-revision-hash": fake.sha256()[:10],
+        "kubernetes_labels_original_sts_name": sts_name,
+        "kubernetes_labels_parseable_cr": "parseable-cluster"
+    }
 
 
-def create_topic(topic_name, num_partitions, replication_factor):
+def generate_log_entry() -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+
+    # Generate request-related data
+    status_code = random.choice([200, 200, 200, 201, 400, 401, 403, 404, 500])
+    response_time = random.randint(10, 2000)
+
+    # Basic log structure
+    log_entry = {
+        "app_meta": json.dumps({"version": "v0.8.0", "component": random.choice(COMPONENTS)}),
+        "device_id": random.randint(1000, 9999),
+        "host": f"ip-{random.randint(0, 255)}-{random.randint(0, 255)}-{random.randint(0, 255)}-{random.randint(0, 255)}",
+        "level": random.choice(["INFO", "INFO", "INFO", "WARN", "ERROR"]),
+        "location": fake.city(),
+        "message": fake.sentence(),
+        "os": random.choice(["linux/amd64", "linux/arm64"]),
+        "process_id": random.randint(1, 65535),
+        "request_body": json.dumps({"query": "SELECT * FROM logs LIMIT 100"}),
+        "response_time": response_time,
+        "runtime": "python3.9",
+        "session_id": str(uuid.uuid4()),
+        "source": "application",
+        "source_time": now.isoformat(),
+        "status_code": status_code,
+        "stream": "stdout",
+        "time": int(now.timestamp() * 1000),
+        "timezone": "UTC",
+        "user_agent": fake.user_agent(),
+        "user_id": random.randint(1000, 9999),
+        "uuid": str(uuid.uuid4()),
+        "version": "v0.8.0"
+    }
+
+    # Add Kubernetes metadata
+    log_entry.update(generate_kubernetes_metadata())
+
+    return log_entry
+
+
+def create_topic(topic_name: str, num_partitions: int, replication_factor: int) -> None:
     new_topic = NewTopic(
         topic=topic_name,
         num_partitions=num_partitions,
@@ -99,56 +169,6 @@ def delivery_report(err, msg):
         logger.debug(f"Message delivered to {msg.topic()} [{msg.partition()}]")
 
 
-def generate_log():
-    log = LOG_TEMPLATE.copy()
-
-    # Timestamp & correlation
-    log["timestamp"] = datetime.now(timezone.utc).isoformat()
-    log["correlation_id"] = str(uuid4())
-
-    # Random level/message
-    levels = ["INFO", "WARNING", "ERROR", "DEBUG"]
-    messages = [
-        "Received incoming HTTP request",
-        "Processed request successfully",
-        "Failed to process request",
-        "Request timeout encountered",
-        "Service unavailable",
-    ]
-    log["level"] = choice(levels)
-    log["message"] = choice(messages)
-
-    # Populate request fields
-    methods = ["GET", "POST", "PUT", "DELETE"]
-    paths = ["/api/resource", "/api/login", "/api/logout", "/api/data"]
-    log["request"] = {
-        "method": choice(methods),
-        "path": choice(paths),
-        "remote_address": f"192.168.1.{randint(1, 255)}",
-    }
-
-    # Populate response fields
-    log["response"] = {
-        "status_code": choice([200, 201, 400, 401, 403, 404, 500]),
-        "latency_ms": randint(10, 1000),
-    }
-
-    # Populate pod and metadata fields
-    log["pod"] = {
-        "name": f"pod-{randint(1, 100)}",
-        "namespace": choice(["default", "kube-system", "production", "staging"]),
-        "node": f"node-{randint(1, 10)}",
-    }
-
-    log["metadata"] = {
-        "container_id": f"container-{randint(1000, 9999)}",
-        "image": f"example/image:{randint(1, 5)}.0",
-        "environment": choice(["dev", "staging", "prod"]),
-    }
-
-    return log
-
-
 def main():
     logger.info("Starting continuous log producer...")
     create_topic(KAFKA_TOPIC, NUM_PARTITIONS, REPLICATION_FACTOR)
@@ -165,7 +185,7 @@ def main():
 
             if not limit_reached:
                 if message_count < TOTAL_LOGS:
-                    log_data = generate_log()
+                    log_data = generate_log_entry()
                     log_str = json.dumps(log_data)
 
                     # Send to Kafka
@@ -196,9 +216,6 @@ def main():
 
             if limit_reached:
                 time.sleep(5)
-                total_elapsed = current_time - start_time
-                if total_elapsed % 60 < 5:
-                    logger.info(f"Total messages sent: {message_count}")
             else:
                 # Sleep to maintain the logs/second rate
                 time.sleep(1 / LOG_RATE)
@@ -213,6 +230,7 @@ def main():
     finally:
         logger.info("Flushing producer...")
         producer.flush()
+        logger.info("Generator stopped.")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip install confluent-kafka
+RUN pip install faker
 
 WORKDIR /app
 COPY kafka_log_stream_generator.py /app/
