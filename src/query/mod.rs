@@ -44,11 +44,73 @@ pub use self::stream_schema_provider::PartialTimeFilter;
 use crate::event;
 use crate::metadata::STREAM_INFO;
 use crate::option::CONFIG;
-use crate::storage::{ObjectStorageProvider, StorageDir};
+use crate::storage::StorageDir;
 use crate::utils::time::TimeRange;
 
-pub static QUERY_SESSION: Lazy<SessionContext> =
-    Lazy::new(|| Query::create_session_context(CONFIG.storage()));
+pub static QUERY_SESSION: Lazy<SessionContext> = Lazy::new(|| {
+    let storage = CONFIG.storage();
+    let (pool_size, fraction) = match CONFIG.parseable.query_memory_pool_size {
+        Some(size) => (size, 1.),
+        None => {
+            let mut system = System::new();
+            system.refresh_memory();
+            let available_mem = system.available_memory();
+            (available_mem as usize, 0.85)
+        }
+    };
+
+    let runtime_config = storage
+        .get_datafusion_runtime()
+        .with_disk_manager(DiskManagerConfig::NewOs)
+        .with_memory_limit(pool_size, fraction);
+    let runtime = Arc::new(runtime_config.build().unwrap());
+
+    let mut config = SessionConfig::default()
+        .with_parquet_pruning(true)
+        .with_prefer_existing_sort(true)
+        .with_round_robin_repartition(true);
+
+    // For more details refer https://datafusion.apache.org/user-guide/configs.html
+
+    // Reduce the number of rows read (if possible)
+    config.options_mut().execution.parquet.enable_page_index = true;
+
+    // Pushdown filters allows DF to push the filters as far down in the plan as possible
+    // and thus, reducing the number of rows decoded
+    config.options_mut().execution.parquet.pushdown_filters = true;
+
+    // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
+    config.options_mut().execution.parquet.reorder_filters = true;
+
+    // Enable StringViewArray
+    // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
+    config
+        .options_mut()
+        .execution
+        .parquet
+        .schema_force_view_types = true;
+
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_config(config)
+        .with_runtime_env(runtime)
+        .build();
+
+    let schema_provider = Arc::new(GlobalSchemaProvider {
+        storage: storage.get_object_store(),
+    });
+    state
+        .catalog_list()
+        .catalog(&state.config_options().catalog.default_catalog)
+        .expect("default catalog is provided by datafusion")
+        .register_schema(
+            &state.config_options().catalog.default_schema,
+            schema_provider,
+        )
+        .unwrap();
+
+    SessionContext::new_with_state(state)
+});
 
 // A query request by client
 #[derive(Debug)]
@@ -59,72 +121,6 @@ pub struct Query {
 }
 
 impl Query {
-    // create session context for this query
-    pub fn create_session_context(storage: Arc<dyn ObjectStorageProvider>) -> SessionContext {
-        let runtime_config = storage
-            .get_datafusion_runtime()
-            .with_disk_manager(DiskManagerConfig::NewOs);
-
-        let (pool_size, fraction) = match CONFIG.parseable.query_memory_pool_size {
-            Some(size) => (size, 1.),
-            None => {
-                let mut system = System::new();
-                system.refresh_memory();
-                let available_mem = system.available_memory();
-                (available_mem as usize, 0.85)
-            }
-        };
-
-        let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
-        let runtime = Arc::new(runtime_config.build().unwrap());
-
-        let mut config = SessionConfig::default()
-            .with_parquet_pruning(true)
-            .with_prefer_existing_sort(true)
-            .with_round_robin_repartition(true);
-
-        // For more details refer https://datafusion.apache.org/user-guide/configs.html
-
-        // Reduce the number of rows read (if possible)
-        config.options_mut().execution.parquet.enable_page_index = true;
-
-        // Pushdown filters allows DF to push the filters as far down in the plan as possible
-        // and thus, reducing the number of rows decoded
-        config.options_mut().execution.parquet.pushdown_filters = true;
-
-        // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
-        config.options_mut().execution.parquet.reorder_filters = true;
-
-        // Enable StringViewArray
-        // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
-        config
-            .options_mut()
-            .execution
-            .parquet
-            .schema_force_view_types = true;
-
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .with_runtime_env(runtime)
-            .build();
-
-        let schema_provider = Arc::new(GlobalSchemaProvider {
-            storage: storage.get_object_store(),
-        });
-        state
-            .catalog_list()
-            .catalog(&state.config_options().catalog.default_catalog)
-            .expect("default catalog is provided by datafusion")
-            .register_schema(
-                &state.config_options().catalog.default_schema,
-                schema_provider,
-            )
-            .unwrap();
-
-        SessionContext::new_with_state(state)
-    }
-
     pub async fn execute(
         &self,
         stream_name: String,
