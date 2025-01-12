@@ -55,7 +55,7 @@ pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
                         info!("Connector received shutdown signal!");
                     }
                 });
-                
+
                 match connectors.connectors {
                     Connectors::KafkaSink(config) => {
                         run_kafka2parseable(config, registry, processor, shutdown_handle).await?
