@@ -209,7 +209,7 @@ impl Default for ObjectStoreFormat {
     }
 }
 
-#[derive(serde::Serialize, PartialEq, Debug)]
+#[derive(serde::Serialize, Debug)]
 pub struct LogStream {
     pub name: String,
 }
