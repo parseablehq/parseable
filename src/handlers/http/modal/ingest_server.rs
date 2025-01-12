@@ -42,10 +42,8 @@ use crate::sync;
 
 use crate::{handlers::http::base_path, option::CONFIG};
 use actix_web::web;
-use actix_web::web::resource;
 use actix_web::Scope;
 use actix_web_prometheus::PrometheusMetrics;
-use anyhow::anyhow;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
@@ -90,9 +88,9 @@ impl ParseableServer for IngestServer {
         }
 
         // check for querier state. Is it there, or was it there in the past
-        let parseable_json = self.check_querier_state().await?;
+        let parseable_json = check_querier_state().await?;
         // to get the .parseable.json file in staging
-        self.validate_credentials().await?;
+        validate_credentials().await?;
 
         Ok(parseable_json)
     }
@@ -111,7 +109,7 @@ impl ParseableServer for IngestServer {
         tokio::spawn(airplane::server());
 
         // set the ingestor metadata
-        self.set_ingestor_metadata().await?;
+        set_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
         let app = self.start(prometheus.clone(), None);
@@ -144,7 +142,7 @@ impl ParseableServer for IngestServer {
                     (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
                 }
 
-            };
+            }
         }
     }
 }
@@ -165,21 +163,21 @@ impl IngestServer {
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
             // GET Role List
-            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+            .service(web::resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
             .service(
                 // PUT and GET Default Role
-                resource("/default")
+                web::resource("/default")
                     .route(web::put().to(role::put_default).authorize(Action::PutRole))
                     .route(web::get().to(role::get_default).authorize(Action::GetRole)),
             )
             .service(
                 // PUT, GET, DELETE Roles
-                resource("/{name}")
+                web::resource("/{name}")
                     .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
             )
             .service(
-                resource("/{name}/sync")
+                web::resource("/{name}/sync")
                     .route(web::put().to(ingestor_role::put).authorize(Action::PutRole)),
             )
     }
@@ -277,96 +275,92 @@ impl IngestServer {
                 ),
         )
     }
+}
 
-    // create the ingestor metadata and put the .ingestor.json file in the object store
-    async fn set_ingestor_metadata(&self) -> anyhow::Result<()> {
-        let storage_ingestor_metadata = migrate_ingester_metadata().await?;
-        let store = CONFIG.storage().get_object_store();
+// create the ingestor metadata and put the .ingestor.json file in the object store
+pub async fn set_ingestor_metadata() -> anyhow::Result<()> {
+    let storage_ingestor_metadata = migrate_ingester_metadata().await?;
+    let store = CONFIG.storage().get_object_store();
 
-        // find the meta file in staging if not generate new metadata
-        let resource = INGESTOR_META.clone();
-        // use the id that was generated/found in the staging and
-        // generate the path for the object store
-        let path = ingestor_metadata_path(None);
+    // find the meta file in staging if not generate new metadata
+    let resource = INGESTOR_META.clone();
+    // use the id that was generated/found in the staging and
+    // generate the path for the object store
+    let path = ingestor_metadata_path(None);
 
-        // we are considering that we can always get from object store
-        if storage_ingestor_metadata.is_some() {
-            let mut store_data = storage_ingestor_metadata.unwrap();
+    // we are considering that we can always get from object store
+    if let Some(mut store_data) = storage_ingestor_metadata {
+        if store_data.domain_name != INGESTOR_META.domain_name {
+            store_data
+                .domain_name
+                .clone_from(&INGESTOR_META.domain_name);
+            store_data.port.clone_from(&INGESTOR_META.port);
 
-            if store_data.domain_name != INGESTOR_META.domain_name {
-                store_data
-                    .domain_name
-                    .clone_from(&INGESTOR_META.domain_name);
-                store_data.port.clone_from(&INGESTOR_META.port);
+            let resource = Bytes::from(serde_json::to_vec(&store_data)?);
 
-                let resource = Bytes::from(serde_json::to_vec(&store_data)?);
-
-                // if pushing to object store fails propagate the error
-                return store
-                    .put_object(&path, resource)
-                    .await
-                    .map_err(|err| anyhow!(err));
-            }
-        } else {
-            let resource = Bytes::from(serde_json::to_vec(&resource)?);
-
+            // if pushing to object store fails propagate the error
             store.put_object(&path, resource).await?;
         }
+    } else {
+        let resource = Bytes::from(serde_json::to_vec(&resource)?);
 
-        Ok(())
+        store.put_object(&path, resource).await?;
     }
 
-    // check for querier state. Is it there, or was it there in the past
-    // this should happen before the set the ingestor metadata
-    async fn check_querier_state(&self) -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
-        // how do we check for querier state?
-        // based on the work flow of the system, the querier will always need to start first
-        // i.e the querier will create the `.parseable.json` file
+    Ok(())
+}
 
-        let store = CONFIG.storage().get_object_store();
-        let path = parseable_json_path();
-
-        let parseable_json = store.get_object(&path).await;
-        match parseable_json {
-            Ok(_) => Ok(Some(parseable_json.unwrap())),
-            Err(_) => Err(ObjectStorageError::Custom(
+// check for querier state. Is it there, or was it there in the past
+// this should happen before the set the ingestor metadata
+async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
+    // how do we check for querier state?
+    // based on the work flow of the system, the querier will always need to start first
+    // i.e the querier will create the `.parseable.json` file
+    let parseable_json = CONFIG
+        .storage()
+        .get_object_store()
+        .get_object(&parseable_json_path())
+        .await
+        .map_err(|_| {
+            ObjectStorageError::Custom(
                 "Query Server has not been started yet. Please start the querier server first."
                     .to_string(),
-            )),
-        }
-    }
-
-    async fn validate_credentials(&self) -> anyhow::Result<()> {
-        // check if your creds match with others
-        let store = CONFIG.storage().get_object_store();
-        let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-        let ingestor_metadata = store
-            .get_objects(
-                Some(&base_path),
-                Box::new(|file_name| file_name.starts_with("ingestor")),
             )
-            .await?;
-        if !ingestor_metadata.is_empty() {
-            let ingestor_metadata_value: Value =
-                serde_json::from_slice(&ingestor_metadata[0]).expect("ingestor.json is valid json");
-            let check = ingestor_metadata_value
-                .as_object()
-                .and_then(|meta| meta.get("token"))
-                .and_then(|token| token.as_str())
-                .unwrap();
+        })?;
 
-            let token = base64::prelude::BASE64_STANDARD.encode(format!(
-                "{}:{}",
-                CONFIG.parseable.username, CONFIG.parseable.password
-            ));
+    Ok(Some(parseable_json))
+}
 
-            let token = format!("Basic {}", token);
+async fn validate_credentials() -> anyhow::Result<()> {
+    // check if your creds match with others
+    let store = CONFIG.storage().get_object_store();
+    let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
+    let ingestor_metadata = store
+        .get_objects(
+            Some(&base_path),
+            Box::new(|file_name| file_name.starts_with("ingestor")),
+        )
+        .await?;
+    if !ingestor_metadata.is_empty() {
+        let ingestor_metadata_value: Value =
+            serde_json::from_slice(&ingestor_metadata[0]).expect("ingestor.json is valid json");
+        let check = ingestor_metadata_value
+            .as_object()
+            .and_then(|meta| meta.get("token"))
+            .and_then(|token| token.as_str())
+            .unwrap();
 
-            if check != token {
-                return Err(anyhow::anyhow!("Credentials do not match with other ingestors. Please check your credentials and try again."));
-            }
+        let token = base64::prelude::BASE64_STANDARD.encode(format!(
+            "{}:{}",
+            CONFIG.parseable.username, CONFIG.parseable.password
+        ));
+
+        let token = format!("Basic {}", token);
+
+        if check != token {
+            return Err(anyhow::anyhow!("Credentials do not match with other ingestors. Please check your credentials and try again."));
         }
-
-        Ok(())
     }
+
+    Ok(())
 }
