@@ -50,19 +50,36 @@ use crate::utils::user_auth_for_query;
 
 use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
-/// Query Request through http endpoint.
+/// Can be optionally be accepted as query params in the query request
+/// NOTE: ensure that the fields param is not set based on request body
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryParams {
+    #[serde(default)]
+    fields: bool,
+    #[serde(default)]
+    send_null: bool,
+}
+
+/// Query Request in json format.
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     pub query: String,
     pub start_time: String,
     pub end_time: String,
-    #[serde(default)]
-    pub send_null: bool,
-    #[serde(skip)]
-    pub fields: bool,
+    #[serde(default, flatten)]
+    pub params: QueryParams,
     #[serde(skip)]
     pub filter_tags: Option<Vec<String>>,
+}
+
+impl Query {
+    // fields param is set based only on query param and send_null is set to true if either body or query param is true
+    fn update_params(&mut self, QueryParams { fields, send_null }: QueryParams) {
+        self.params.fields = fields;
+        self.params.send_null |= send_null;
+    }
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
@@ -107,8 +124,8 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let response = QueryResponse {
         records,
         fields,
-        fill_null: query_request.send_null,
-        with_fields: query_request.fields,
+        fill_null: query_request.params.send_null,
+        with_fields: query_request.params.fields,
     }
     .to_http()?;
 
@@ -152,15 +169,6 @@ pub async fn create_streams_for_querier() {
     }
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct QueryParams {
-    #[serde(default)]
-    fields: bool,
-    #[serde(default)]
-    send_null: bool,
-}
-
 impl FromRequest for Query {
     type Error = actix_web::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
@@ -174,12 +182,7 @@ impl FromRequest for Query {
 
         let fut = async move {
             let mut query = query.await?.into_inner();
-            // format output json to include field names
-            query.fields = params.fields;
-
-            if !query.send_null {
-                query.send_null = params.send_null;
-            }
+            query.update_params(params);
 
             Ok(query)
         };
@@ -227,7 +230,7 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
         return None;
     }
 
-    let end_time: DateTime<Utc> = if query.end_time == "now" {
+    let end_time = if query.end_time == "now" {
         Utc::now()
     } else {
         DateTime::parse_from_rfc3339(&query.end_time)
@@ -237,14 +240,10 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
 
     let start_time = end_time - chrono::Duration::minutes(1);
     // when transforming the query, the ingestors are forced to return an array of values
-    let q = Query {
-        query: query.query.clone(),
-        fields: false,
-        filter_tags: query.filter_tags.clone(),
-        send_null: query.send_null,
-        start_time: start_time.to_rfc3339(),
-        end_time: end_time.to_rfc3339(),
-    };
+    let mut q = query.clone();
+    q.params.fields = false;
+    q.start_time = start_time.to_rfc3339();
+    q.end_time = end_time.to_rfc3339();
 
     Some(q)
 }
