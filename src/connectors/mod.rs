@@ -40,6 +40,9 @@ pub mod kafka;
 pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
     if matches!(CONFIG.parseable.mode, Mode::Ingest | Mode::All) {
         match CONFIG.connector_config.clone() {
+            None => {
+                warn!("Kafka connector configuration is missing. Skipping Kafka pipeline.");
+            }
             Some(connectors) => {
                 let shutdown_handle = Shutdown::default();
                 let registry = prometheus.registry.clone();
@@ -52,14 +55,12 @@ pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
                         info!("Connector received shutdown signal!");
                     }
                 });
+                
                 match connectors.connectors {
                     Connectors::KafkaSink(config) => {
                         run_kafka2parseable(config, registry, processor, shutdown_handle).await?
                     }
                 }
-            }
-            None => {
-                warn!("Kafka connector configuration is missing. Skipping Kafka pipeline.");
             }
         }
     }
