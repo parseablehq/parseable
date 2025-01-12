@@ -28,7 +28,7 @@ pub fn main() -> Result<()> {
     Emitter::default()
         .add_instructions(&BuildBuilder::all_build()?)?
         .add_instructions(&CargoBuilder::all_cargo()?)?
-        .add_instructions(&GitclBuilder::all_git()?)?
+        .add_instructions(&GitclBuilder::default().all().sha(true).build()?)?
         .add_instructions(&RustcBuilder::all_rustc()?)?
         .add_instructions(&SysinfoBuilder::all_sysinfo()?)?
         .emit()?;
