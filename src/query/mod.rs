@@ -228,6 +228,7 @@ impl TreeNodeVisitor<'_> for TableScanVisitor {
     }
 }
 
+// transform the plan to apply time filters
 fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
@@ -235,13 +236,13 @@ fn transform(
     time_partitions: &HashMap<String, String>,
 ) -> Transformed<LogicalPlan> {
     plan.transform(|plan| {
-        let LogicalPlan::TableScan(table) = plan else {
+        let LogicalPlan::TableScan(table) = &plan else {
             return Ok(Transformed::no(plan));
         };
 
         // Early return if filters already exist
         if query_can_be_filtered_on_stream_time_partition(&table, time_partitions) {
-            return Ok(Transformed::no(LogicalPlan::TableScan(table)));
+            return Ok(Transformed::no(plan));
         }
 
         let stream = table.table_name.clone();
@@ -249,9 +250,7 @@ fn transform(
             .get(stream.table())
             .map(|x| x.as_str())
             .unwrap_or(event::DEFAULT_TIMESTAMP_KEY);
-
-        // Create column expression once
-        let column_expr = Expr::Column(Column::new(Some(stream.clone()), time_partition));
+        let column_expr = Expr::Column(Column::new(Some(stream), time_partition));
 
         // Build filters
         let low_filter = PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
@@ -259,11 +258,9 @@ fn transform(
         let high_filter =
             PartialTimeFilter::High(std::ops::Bound::Excluded(end_time)).binary_expr(column_expr);
 
-        // Combine filters
-        let new_filter = and(low_filter, high_filter);
-        let filter = Filter::try_new(new_filter, Arc::new(LogicalPlan::TableScan(table))).unwrap();
-
-        Ok(Transformed::yes(LogicalPlan::Filter(filter)))
+        Ok(Transformed::yes(LogicalPlan::Filter(
+            Filter::try_new(and(low_filter, high_filter), Arc::new(plan)).unwrap(),
+        )))
     })
     .expect("transform only transforms the tablescan")
 }
