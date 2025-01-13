@@ -115,7 +115,7 @@ pub static QUERY_SESSION: Lazy<SessionContext> = Lazy::new(|| {
 // A query request by client
 #[derive(Debug)]
 pub struct Query {
-    pub raw_logical_plan: LogicalPlan,
+    pub plan: LogicalPlan,
     pub time_range: TimeRange,
     pub filter_tag: Option<Vec<String>>,
     pub stream_names: Vec<String>,
@@ -163,7 +163,7 @@ impl Query {
         // transform cannot modify stringified plans by itself
         // we by knowing this plan is not in the optimization procees chose to overwrite the stringified plan
 
-        match self.raw_logical_plan.clone() {
+        match self.plan.clone() {
             LogicalPlan::Explain(plan) => {
                 let transformed = transform(
                     plan.plan.as_ref().clone(),

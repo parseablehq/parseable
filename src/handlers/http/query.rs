@@ -96,18 +96,17 @@ impl QueryRequest {
         }
 
         let session_state = QUERY_SESSION.state();
-        let raw_logical_plan = match session_state.create_logical_plan(&self.query).await {
-            Ok(raw_logical_plan) => raw_logical_plan,
-            Err(_) => {
-                //if logical plan creation fails, create streams and try again
-                create_streams_for_querier().await;
-                session_state.create_logical_plan(&self.query).await?
-            }
+        let plan = if let Ok(plan) = session_state.create_logical_plan(&self.query).await {
+            plan
+        } else {
+            //if logical plan creation fails, create streams and try again
+            create_streams_for_querier().await;
+            session_state.create_logical_plan(&self.query).await?
         };
 
         // create a visitor to extract the table names present in query
         let mut visitor = TableScanVisitor::default();
-        let _ = raw_logical_plan.visit(&mut visitor);
+        let _ = plan.visit(&mut visitor);
         let stream_names = visitor.into_inner();
         let permissions = Users.get_permissions(&key);
         user_auth_for_query(&permissions, &stream_names)?;
@@ -117,7 +116,7 @@ impl QueryRequest {
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
 
         Ok(crate::query::Query {
-            raw_logical_plan,
+            plan,
             time_range,
             filter_tag: self.filter_tags.clone(),
             stream_names,
