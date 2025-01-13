@@ -31,7 +31,10 @@ use crate::{
         Event,
     },
     handlers::{
-        http::{ingest::PostError, kinesis},
+        http::{
+            ingest::PostError,
+            kinesis::{flatten_kinesis_logs, Message},
+        },
         LOG_SOURCE_KEY,
     },
     metadata::{SchemaVersion, STREAM_INFO},
@@ -53,9 +56,9 @@ pub async fn flatten_and_push_logs(
 
     match log_source {
         LogSource::Kinesis => {
-            let json = kinesis::flatten_kinesis_logs(&body);
-            for record in json.iter() {
-                let body: Bytes = serde_json::to_vec(record).unwrap().into();
+            let message: Message = serde_json::from_slice(&body)?;
+            for record in flatten_kinesis_logs(message) {
+                let body: Bytes = serde_json::to_vec(&record).unwrap().into();
                 push_logs(stream_name, &body, &LogSource::default()).await?;
             }
         }
