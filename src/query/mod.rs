@@ -241,7 +241,7 @@ fn transform(
         };
 
         // Early return if filters already exist
-        if query_can_be_filtered_on_stream_time_partition(&table, time_partitions) {
+        if query_can_be_filtered_on_stream_time_partition(table, time_partitions) {
             return Ok(Transformed::no(plan));
         }
 
