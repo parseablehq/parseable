@@ -19,6 +19,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Display,
     sync::Arc,
 };
 
@@ -70,6 +71,19 @@ impl From<&str> for LogSource {
             "pmeta" => LogSource::Pmeta,
             _ => LogSource::Json,
         }
+    }
+}
+
+impl Display for LogSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            LogSource::Kinesis => "kinesis",
+            LogSource::OtelLogs => "otel-logs",
+            LogSource::OtelMetrics => "otel-metrics",
+            LogSource::OtelTraces => "otel-traces",
+            LogSource::Json => "json",
+            LogSource::Custom(custom) => custom,
+        })
     }
 }
 

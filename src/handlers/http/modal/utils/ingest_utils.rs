@@ -16,7 +16,6 @@
  *
  */
 
-use anyhow::anyhow;
 use arrow_schema::Field;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
@@ -51,9 +50,7 @@ pub async fn flatten_and_push_logs(
             }
         }
         LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
-            return Err(PostError::Invalid(anyhow!(
-                "Please use endpoints `/v1/logs` for otel logs, `/v1/metrics` for otel metrics and `/v1/traces` for otel traces"
-            )));
+            return Err(PostError::OtelNotSupported);
         }
         _ => {
             push_logs(stream_name, json, log_source).await?;
@@ -175,12 +172,9 @@ pub fn get_custom_partition_values(
 }
 
 fn get_parsed_timestamp(json: &Value, time_partition: &str) -> Result<NaiveDateTime, PostError> {
-    let current_time = json.get(time_partition).ok_or_else(|| {
-        anyhow!(
-            "Missing field for time partition from json: {:?}",
-            time_partition
-        )
-    })?;
+    let current_time = json
+        .get(time_partition)
+        .ok_or_else(|| PostError::MissingTimePartition(time_partition.to_string()))?;
     let parsed_time: DateTime<Utc> = serde_json::from_value(current_time.clone())?;
 
     Ok(parsed_time.naive_utc())
@@ -208,7 +202,7 @@ mod tests {
         let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
         let parsed = get_parsed_timestamp(&json, "timestamp");
 
-        matches!(parsed, Err(PostError::Invalid(_)));
+        matches!(parsed, Err(PostError::MissingTimePartition(_)));
     }
 
     #[test]

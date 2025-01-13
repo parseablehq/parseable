@@ -62,10 +62,7 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     let stream_name = stream_name.to_str().unwrap().to_owned();
     let internal_stream_names = STREAM_INFO.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "The stream {} is reserved for internal use and cannot be ingested into",
-            stream_name
-        )));
+        return Err(PostError::InternalStream(stream_name));
     }
     create_stream_if_not_exists(
         &stream_name,
@@ -131,9 +128,7 @@ pub async fn handle_otel_logs_ingestion(
     };
     let log_source = LogSource::from(log_source.to_str().unwrap());
     if log_source != LogSource::OtelLogs {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Please use x-p-log-source: otel-logs for ingesting otel logs"
-        )));
+        return Err(PostError::IncorrectLogSource(LogSource::OtelLogs));
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
@@ -168,9 +163,7 @@ pub async fn handle_otel_metrics_ingestion(
     };
     let log_source = LogSource::from(log_source.to_str().unwrap());
     if log_source != LogSource::OtelMetrics {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Please use x-p-log-source: otel-metrics for ingesting otel metrics"
-        )));
+        return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
     create_stream_if_not_exists(
@@ -205,9 +198,7 @@ pub async fn handle_otel_traces_ingestion(
     };
     let log_source = LogSource::from(log_source.to_str().unwrap());
     if log_source != LogSource::OtelTraces {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Please use x-p-log-source: otel-traces for ingesting otel traces"
-        )));
+        return Err(PostError::IncorrectLogSource(LogSource::OtelTraces));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
     create_stream_if_not_exists(
@@ -236,10 +227,7 @@ pub async fn post_event(
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     let internal_stream_names = STREAM_INFO.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Stream {} is an internal stream and cannot be ingested into",
-            stream_name
-        )));
+        return Err(PostError::InternalStream(stream_name));
     }
     if !STREAM_INFO.stream_exists(&stream_name) {
         // For distributed deployments, if the stream not found in memory map,
@@ -352,6 +340,18 @@ pub enum PostError {
     StreamError(#[from] StreamError),
     #[error("Error: {0}")]
     JsonFlattenError(#[from] JsonFlattenError),
+    #[error(
+        "Use the endpoints `/v1/logs` for otel logs, `/v1/metrics` for otel metrics and `/v1/traces` for otel traces"
+    )]
+    OtelNotSupported,
+    #[error("The stream {0} is reserved for internal use and cannot be ingested into")]
+    InternalStream(String),
+    #[error(r#"Please use "x-p-log-source: {0}" for ingesting otel logs"#)]
+    IncorrectLogSource(LogSource),
+    #[error("Ingestion is not allowed in Query mode")]
+    IngestionNotAllowed,
+    #[error("Missing field for time partition in json: {0}")]
+    MissingTimePartition(String),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -374,6 +374,11 @@ impl actix_web::ResponseError for PostError {
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::JsonFlattenError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::OtelNotSupported => StatusCode::BAD_REQUEST,
+            PostError::InternalStream(_) => StatusCode::BAD_REQUEST,
+            PostError::IncorrectLogSource(_) => StatusCode::BAD_REQUEST,
+            PostError::IngestionNotAllowed => StatusCode::BAD_REQUEST,
+            PostError::MissingTimePartition(_) => StatusCode::BAD_REQUEST,
         }
     }
 

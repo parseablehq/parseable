@@ -25,7 +25,5 @@ use bytes::Bytes;
 // fails if the logstream does not exist
 #[allow(unused)]
 pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
-    Err(PostError::Invalid(anyhow::anyhow!(
-        "Ingestion is not allowed in Query mode"
-    )))
+    Err(PostError::IngestionNotAllowed)
 }
