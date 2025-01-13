@@ -258,13 +258,12 @@ fn query_can_be_filtered_on_stream_time_partition(
             Expr::BinaryExpr(binexpr) => Some(binexpr),
             _ => None,
         })
-        .any(|expr| match &*expr.left {
-            Expr::Column(Column {
-                name: column_name, ..
-            }) => {
-                time_partition.map_or(event::DEFAULT_TIMESTAMP_KEY, |x| x.as_str()) == column_name
-            }
-            _ => false,
+        .any(|expr| {
+            matches!(
+                &*expr.left,
+                Expr::Column(Column { name, .. })
+                    if time_partition.map_or(event::DEFAULT_TIMESTAMP_KEY, |n| n.as_str()) ==  name
+            )
         })
 }
 
