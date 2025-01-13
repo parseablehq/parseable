@@ -54,6 +54,8 @@ use self::target::Target;
 pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
 pub type ScheduledTasks = RwLock<HashMap<String, ScheduledTaskHandlers>>;
 
+pub const CURRENT_ALERTS_VERSION: &str = "v1";
+
 pub static ALERTS: Lazy<Alerts> = Lazy::new(Alerts::default);
 
 #[derive(Debug, Default)]
@@ -67,6 +69,15 @@ pub struct Alerts {
 pub enum AlertVerison {
     #[default]
     V1,
+}
+
+impl From<&str> for AlertVerison {
+    fn from(value: &str) -> Self {
+        match value {
+            "v1" => Self::V1,
+            _ => unreachable!()
+        }
+    }
 }
 
 #[async_trait]
@@ -369,7 +380,6 @@ impl Display for Severity {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AlertRequest {
-    pub version: AlertVerison,
     #[serde(default = "Severity::default")]
     pub severity: Severity,
     pub title: String,
@@ -398,7 +408,7 @@ impl FromRequest for AlertRequest {
 impl AlertRequest {
     pub fn modify(self, alert: AlertConfig) -> AlertConfig {
         AlertConfig {
-            version: self.version,
+            version: alert.version,
             id: alert.id,
             severity: alert.severity,
             title: self.title,
@@ -415,7 +425,7 @@ impl AlertRequest {
 impl From<AlertRequest> for AlertConfig {
     fn from(val: AlertRequest) -> AlertConfig {
         AlertConfig {
-            version: val.version,
+            version: AlertVerison::from(CURRENT_ALERTS_VERSION),
             id: get_hash(Utc::now().timestamp_micros().to_string().as_str()),
             severity: val.severity,
             title: val.title,
