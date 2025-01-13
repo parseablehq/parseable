@@ -2,8 +2,8 @@ apiVersion: v2
 name: parseable
 description: Helm chart for Parseable Server
 type: application
-version: 1.7.1
-appVersion: "v1.7.1"
+version: 1.7.2
+appVersion: "v1.7.2"
 icon: "https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg"
 maintainers:
   - name: Parseable Team

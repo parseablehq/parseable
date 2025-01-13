@@ -23,7 +23,10 @@ use parseable::{
 };
 use tracing_subscriber::EnvFilter;
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 use parseable::kafka;
 
 #[actix_web::main]
@@ -52,7 +55,10 @@ async fn main() -> anyhow::Result<()> {
     // keep metadata info in mem
     metadata.set_global();
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
     // load kafka server
     if CONFIG.parseable.mode != Mode::Query {
         tokio::task::spawn(kafka::setup_integration());
