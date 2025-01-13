@@ -117,7 +117,7 @@ impl QueryRequest {
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
 
         Ok(crate::query::Query {
-            raw_logical_plan: session_state.create_logical_plan(&self.query).await?,
+            raw_logical_plan,
             time_range,
             filter_tag: self.filter_tags.clone(),
             stream_names,
