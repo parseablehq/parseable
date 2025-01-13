@@ -55,11 +55,10 @@ use std::sync::Arc;
 // ingests events by extracting stream name from header
 // creates if stream does not exist
 pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpResponse, PostError> {
-    if let Some((_, stream_name)) = req
-        .headers()
-        .iter()
-        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-    {
+    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    };
+
         let stream_name = stream_name.to_str().unwrap().to_owned();
         let internal_stream_names = STREAM_INFO.list_internal_streams();
         if internal_stream_names.contains(&stream_name) {
@@ -77,9 +76,6 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
 
         flatten_and_push_logs(req, json, &stream_name).await?;
         Ok(HttpResponse::Ok().finish())
-    } else {
-        Err(PostError::Header(ParseHeaderError::MissingStreamName))
-    }
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
