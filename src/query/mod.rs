@@ -28,7 +28,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, Tr
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::logical_expr::{Explain, Filter, LogicalPlan, PlanType, ToStringifiedPlan};
+use datafusion::logical_expr::{Filter, LogicalPlan, PlanType, ToStringifiedPlan};
 use datafusion::prelude::*;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
@@ -123,7 +123,7 @@ pub struct Query {
 }
 
 impl Query {
-    pub async fn execute(&self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    pub async fn execute(self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
         let time_partitions = self.get_time_partitions()?;
         let logical_plan = self.final_logical_plan(time_partitions);
         let df = QUERY_SESSION.execute_logical_plan(logical_plan).await?;
@@ -158,39 +158,33 @@ impl Query {
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self, time_partitions: HashMap<String, String>) -> LogicalPlan {
+    fn final_logical_plan(self, time_partitions: HashMap<String, String>) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
         // we by knowing this plan is not in the optimization procees chose to overwrite the stringified plan
-        match self.plan.clone() {
-            LogicalPlan::Explain(plan) => {
-                let transformed = transform(
-                    plan.plan.as_ref().clone(),
-                    self.time_range.start.naive_utc(),
-                    self.time_range.end.naive_utc(),
-                    &time_partitions,
-                );
-                LogicalPlan::Explain(Explain {
-                    verbose: plan.verbose,
-                    stringified_plans: vec![transformed
-                        .data
-                        .to_stringified(PlanType::InitialLogicalPlan)],
-                    plan: Arc::new(transformed.data),
-                    schema: plan.schema,
-                    logical_optimization_succeeded: plan.logical_optimization_succeeded,
-                })
-            }
-            x => {
-                transform(
-                    x,
-                    self.time_range.start.naive_utc(),
-                    self.time_range.end.naive_utc(),
-                    &time_partitions,
-                )
-                .data
-            }
-        }
+        let LogicalPlan::Explain(mut explain) = self.plan else {
+            return transform(
+                self.plan,
+                self.time_range.start.naive_utc(),
+                self.time_range.end.naive_utc(),
+                &time_partitions,
+            )
+            .data;
+        };
+
+        let transformed = transform(
+            explain.plan.as_ref().clone(),
+            self.time_range.start.naive_utc(),
+            self.time_range.end.naive_utc(),
+            &time_partitions,
+        );
+        explain.stringified_plans = vec![transformed
+            .data
+            .to_stringified(PlanType::InitialLogicalPlan)];
+        explain.plan = Arc::new(transformed.data);
+
+        LogicalPlan::Explain(explain)
     }
 
     // name of the main/first stream in the query

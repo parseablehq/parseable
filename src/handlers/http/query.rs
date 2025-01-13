@@ -133,6 +133,7 @@ pub async fn query(
     let first_stream_name = query
         .first_stream_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
+    let histogram = QUERY_EXECUTE_TIME.with_label_values(&[first_stream_name]);
 
     let time = Instant::now();
     let (records, fields) = query.execute().await?;
@@ -147,9 +148,7 @@ pub async fn query(
 
     let time = time.elapsed().as_secs_f64();
 
-    QUERY_EXECUTE_TIME
-        .with_label_values(&[first_stream_name])
-        .observe(time);
+    histogram.observe(time);
 
     Ok(response)
 }

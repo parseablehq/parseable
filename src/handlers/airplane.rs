@@ -146,7 +146,8 @@ impl FlightService for AirServiceImpl {
 
         let stream_name = query
             .first_stream_name()
-            .ok_or_else(|| Status::internal("Failed to get stream name from query"))?;
+            .ok_or_else(|| Status::internal("Failed to get stream name from query"))?
+            .to_owned();
 
         let event = if send_to_ingester(
             query.time_range.start.timestamp_millis(),
@@ -170,7 +171,7 @@ impl FlightService for AirServiceImpl {
                 }
             }
             let mr = minute_result.iter().collect::<Vec<_>>();
-            let event = append_temporary_events(stream_name, mr).await?;
+            let event = append_temporary_events(stream_name.as_str(), mr).await?;
             Some(event)
         } else {
             None
@@ -193,18 +194,17 @@ impl FlightService for AirServiceImpl {
             .collect::<Vec<_>>();
         let schema = Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
          */
-        let out = into_flight_data(records);
 
         if let Some(event) = event {
-            event.clear(stream_name);
+            event.clear(&stream_name);
         }
 
         let time = time.elapsed().as_secs_f64();
         QUERY_EXECUTE_TIME
-            .with_label_values(&[&format!("flight-query-{}", stream_name)])
+            .with_label_values(&[&stream_name])
             .observe(time);
 
-        out
+        into_flight_data(records)
     }
 
     async fn do_put(
