@@ -22,10 +22,21 @@ use std::path::PathBuf;
 use url::Url;
 
 use crate::{
-    kafka::SslProtocol,
     oidc::{self, OpenidConfig},
     option::{validation, Compression, Mode},
 };
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+use crate::kafka::SslProtocol as KafkaSslProtocol;
+
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
+use std::string::String as KafkaSslProtocol;
 
 #[derive(Debug, Default)]
 pub struct Cli {
@@ -102,20 +113,18 @@ pub struct Cli {
 
     pub ms_clarity_tag: Option<String>,
 
-    // Trino vars
-    pub trino_endpoint: Option<String>,
-    pub trino_username: Option<String>,
-    pub trino_auth: Option<String>,
-    pub trino_schema: Option<String>,
-    pub trino_catalog: Option<String>,
-
     // Kafka specific env vars
     pub kafka_topics: Option<String>,
     pub kafka_host: Option<String>,
     pub kafka_group: Option<String>,
     pub kafka_client_id: Option<String>,
-    pub kafka_security_protocol: Option<SslProtocol>,
+    pub kafka_security_protocol: Option<KafkaSslProtocol>,
     pub kafka_partitions: Option<String>,
+
+    // Audit Logging env vars
+    pub audit_logger: Option<Url>,
+    pub audit_username: Option<String>,
+    pub audit_password: Option<String>,
 }
 
 impl Cli {
@@ -150,13 +159,6 @@ impl Cli {
     pub const MAX_DISK_USAGE: &'static str = "max-disk-usage";
     pub const MS_CLARITY_TAG: &'static str = "ms-clarity-tag";
 
-    // Trino specific env vars
-    pub const TRINO_ENDPOINT: &'static str = "p-trino-end-point";
-    pub const TRINO_CATALOG_NAME: &'static str = "p-trino-catalog-name";
-    pub const TRINO_USER_NAME: &'static str = "p-trino-user-name";
-    pub const TRINO_AUTHORIZATION: &'static str = "p-trino-authorization";
-    pub const TRINO_SCHEMA: &'static str = "p-trino-schema";
-
     // Kafka specific env vars
     pub const KAFKA_TOPICS: &'static str = "kafka-topics";
     pub const KAFKA_HOST: &'static str = "kafka-host";
@@ -164,6 +166,10 @@ impl Cli {
     pub const KAFKA_CLIENT_ID: &'static str = "kafka-client-id";
     pub const KAFKA_SECURITY_PROTOCOL: &'static str = "kafka-security-protocol";
     pub const KAFKA_PARTITIONS: &'static str = "kafka-partitions";
+
+    pub const AUDIT_LOGGER: &'static str = "audit-logger";
+    pub const AUDIT_USERNAME: &'static str = "audit-username";
+    pub const AUDIT_PASSWORD: &'static str = "audit-password";
 
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -220,41 +226,29 @@ impl Cli {
                     .value_name("STRING")
                     .help("Kafka partitions"),
             )
-             .arg(
-                 Arg::new(Self::TRINO_ENDPOINT)
-                     .long(Self::TRINO_ENDPOINT)
-                     .env("P_TRINO_ENDPOINT")
-                     .value_name("STRING")
-                     .help("Address and port for Trino HTTP(s) server"),
-             )
-             .arg(
-                 Arg::new(Self::TRINO_CATALOG_NAME)
-                     .long(Self::TRINO_CATALOG_NAME)
-                     .env("P_TRINO_CATALOG_NAME")
-                     .value_name("STRING")
-                     .help("Name of the catalog to be queried (Translates to X-Trino-Catalog)"),
-             )
-             .arg(
-                 Arg::new(Self::TRINO_SCHEMA)
-                     .long(Self::TRINO_SCHEMA)
-                     .env("P_TRINO_SCHEMA")
-                     .value_name("STRING")
-                     .help("Name of schema to be queried (Translates to X-Trino-Schema)"),
-             )
-             .arg(
-                 Arg::new(Self::TRINO_USER_NAME)
-                     .long(Self::TRINO_USER_NAME)
-                     .env("P_TRINO_USER_NAME")
-                     .value_name("STRING")
-                     .help("Name of Trino user (Translates to X-Trino-User)"),
-             )
-             .arg(
-                 Arg::new(Self::TRINO_AUTHORIZATION)
-                     .long(Self::TRINO_AUTHORIZATION)
-                     .env("P_TRINO_AUTHORIZATION")
-                     .value_name("STRING")
-                     .help("Base 64 encoded in the format username:password"),
-             )
+            .arg(
+                Arg::new(Self::AUDIT_LOGGER)
+                    .long(Self::AUDIT_LOGGER)
+                    .env("P_AUDIT_LOGGER")
+                    .value_name("URL")
+                    .required(false)
+                    .value_parser(validation::url)
+                    .help("Audit logger endpoint"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_USERNAME)
+                    .long(Self::AUDIT_USERNAME)
+                    .env("P_AUDIT_USERNAME")
+                    .value_name("STRING")
+                    .help("Audit logger username"),
+            )
+            .arg(
+                Arg::new(Self::AUDIT_PASSWORD)
+                    .long(Self::AUDIT_PASSWORD)
+                    .env("P_AUDIT_PASSWORD")
+                    .value_name("STRING")
+                    .help("Audit logger password"),
+            )
              .arg(
                  Arg::new(Self::TLS_CERT)
                      .long(Self::TLS_CERT)
@@ -519,20 +513,24 @@ impl FromArgMatches for Cli {
     }
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
-        self.trino_catalog = m.get_one::<String>(Self::TRINO_CATALOG_NAME).cloned();
-        self.trino_endpoint = m.get_one::<String>(Self::TRINO_ENDPOINT).cloned();
-        self.trino_auth = m.get_one::<String>(Self::TRINO_AUTHORIZATION).cloned();
-        self.trino_schema = m.get_one::<String>(Self::TRINO_SCHEMA).cloned();
-        self.trino_username = m.get_one::<String>(Self::TRINO_USER_NAME).cloned();
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        {
+            self.kafka_topics = m.get_one::<String>(Self::KAFKA_TOPICS).cloned();
+            self.kafka_security_protocol = m
+                .get_one::<KafkaSslProtocol>(Self::KAFKA_SECURITY_PROTOCOL)
+                .cloned();
+            self.kafka_group = m.get_one::<String>(Self::KAFKA_GROUP).cloned();
+            self.kafka_client_id = m.get_one::<String>(Self::KAFKA_CLIENT_ID).cloned();
+            self.kafka_host = m.get_one::<String>(Self::KAFKA_HOST).cloned();
+            self.kafka_partitions = m.get_one::<String>(Self::KAFKA_PARTITIONS).cloned();
+        }
 
-        self.kafka_topics = m.get_one::<String>(Self::KAFKA_TOPICS).cloned();
-        self.kafka_host = m.get_one::<String>(Self::KAFKA_HOST).cloned();
-        self.kafka_group = m.get_one::<String>(Self::KAFKA_GROUP).cloned();
-        self.kafka_client_id = m.get_one::<String>(Self::KAFKA_CLIENT_ID).cloned();
-        self.kafka_security_protocol = m
-            .get_one::<SslProtocol>(Self::KAFKA_SECURITY_PROTOCOL)
-            .cloned();
-        self.kafka_partitions = m.get_one::<String>(Self::KAFKA_PARTITIONS).cloned();
+        self.audit_logger = m.get_one::<Url>(Self::AUDIT_LOGGER).cloned();
+        self.audit_username = m.get_one::<String>(Self::AUDIT_USERNAME).cloned();
+        self.audit_password = m.get_one::<String>(Self::AUDIT_PASSWORD).cloned();
 
         self.tls_cert_path = m.get_one::<PathBuf>(Self::TLS_CERT).cloned();
         self.tls_key_path = m.get_one::<PathBuf>(Self::TLS_KEY).cloned();

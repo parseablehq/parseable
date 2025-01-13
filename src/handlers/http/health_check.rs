@@ -58,7 +58,7 @@ pub async fn handle_signals(shutdown_signal: Arc<Mutex<Option<oneshot::Sender<()
     {
         tokio::select! {
             _ = ctrl_c() => {
-                log::info!("Received SIGINT signal at Readiness Probe Handler");
+                info!("Received SIGINT signal at Readiness Probe Handler");
                 shutdown(shutdown_signal).await;
             }
         }

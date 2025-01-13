@@ -21,7 +21,7 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    ALERTS_ROOT_DIRECTORY, CORRELATIONS_ROOT_DIRECTORY, MANIFEST_FILE,
+    Owner, ALERTS_ROOT_DIRECTORY, CORRELATIONS_ROOT_DIRECTORY, MANIFEST_FILE,
     PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
     STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
@@ -30,6 +30,7 @@ use crate::alerts::AlertConfig;
 use crate::correlation::{CorrelationConfig, CorrelationError};
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
+use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
 use crate::{
@@ -46,13 +47,14 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
-use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
+use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use tracing::error;
 
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::num::NonZeroU32;
 use std::{
     collections::HashMap,
@@ -63,7 +65,7 @@ use std::{
 };
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
-    fn get_datafusion_runtime(&self) -> RuntimeConfig;
+    fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder;
     fn construct_client(&self) -> Arc<dyn ObjectStorage>;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
         static STORE: OnceCell<Arc<dyn ObjectStorage>> = OnceCell::new();
@@ -75,7 +77,7 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
 }
 
 #[async_trait]
-pub trait ObjectStorage: Send + Sync + 'static {
+pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(
@@ -151,32 +153,25 @@ pub trait ObjectStorage: Send + Sync + 'static {
         time_partition: &str,
         time_partition_limit: Option<NonZeroU32>,
         custom_partition: &str,
-        static_schema_flag: &str,
+        static_schema_flag: bool,
         schema: Arc<Schema>,
         stream_type: &str,
     ) -> Result<String, ObjectStorageError> {
-        let mut format = ObjectStoreFormat::default();
-        format.set_id(CONFIG.parseable.username.clone());
-        let permission = Permisssion::new(CONFIG.parseable.username.clone());
-        format.permissions = vec![permission];
-        format.created_at = Local::now().to_rfc3339();
-        format.stream_type = Some(stream_type.to_string());
-        if time_partition.is_empty() {
-            format.time_partition = None;
-        } else {
-            format.time_partition = Some(time_partition.to_string());
-        }
-        format.time_partition_limit = time_partition_limit.map(|limit| limit.to_string());
-        if custom_partition.is_empty() {
-            format.custom_partition = None;
-        } else {
-            format.custom_partition = Some(custom_partition.to_string());
-        }
-        if static_schema_flag != "true" {
-            format.static_schema_flag = None;
-        } else {
-            format.static_schema_flag = Some(static_schema_flag.to_string());
-        }
+        let format = ObjectStoreFormat {
+            created_at: Local::now().to_rfc3339(),
+            permissions: vec![Permisssion::new(CONFIG.parseable.username.clone())],
+            stream_type: Some(stream_type.to_string()),
+            time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
+            time_partition_limit: time_partition_limit.map(|limit| limit.to_string()),
+            custom_partition: (!custom_partition.is_empty()).then(|| custom_partition.to_string()),
+            static_schema_flag,
+            schema_version: SchemaVersion::V1, // NOTE: Newly created streams are all V1
+            owner: Owner {
+                id: CONFIG.parseable.username.clone(),
+                group: CONFIG.parseable.username.clone(),
+            },
+            ..Default::default()
+        };
         let format_json = to_bytes(&format);
         self.put_object(&schema_path(stream_name), to_bytes(&schema))
             .await?;
@@ -561,7 +556,7 @@ pub trait ObjectStorage: Send + Sync + 'static {
                 let static_schema_flag = STREAM_INFO
                     .get_static_schema_flag(stream)
                     .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-                if static_schema_flag.is_none() {
+                if !static_schema_flag {
                     commit_schema_to_storage(stream, schema).await?;
                 }
             }

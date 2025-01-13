@@ -281,7 +281,11 @@ mod tests {
         let mut buf = Vec::new();
         let rb1 = rb(1);
 
-        let schema = data_gen.schema_to_bytes(&rb1.schema(), &options);
+        let schema = data_gen.schema_to_bytes_with_dictionary_tracker(
+            &rb1.schema(),
+            &mut dictionary_tracker,
+            &options,
+        );
         write_message(&mut buf, schema, &options).unwrap();
 
         for i in (1..=3).cycle().skip(1).take(10000) {
@@ -291,7 +295,11 @@ mod tests {
             write_message(&mut buf, encoded_message, &options).unwrap();
         }
 
-        let schema = data_gen.schema_to_bytes(&rb1.schema(), &options);
+        let schema = data_gen.schema_to_bytes_with_dictionary_tracker(
+            &rb1.schema(),
+            &mut dictionary_tracker,
+            &options,
+        );
         write_message(&mut buf, schema, &options).unwrap();
 
         let buf = Cursor::new(buf);

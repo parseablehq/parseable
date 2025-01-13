@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{error, trace};
+use tracing::error;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
@@ -41,13 +41,13 @@ use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
 use crate::query::Query as LogicalQuery;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
+use crate::utils::user_auth_for_query;
 
 use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
@@ -91,7 +91,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 
     let tables = visitor.into_inner();
     update_schema_when_distributed(&tables).await?;
-    let mut query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
+    let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
 
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
@@ -100,7 +100,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
         .first_table_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
 
-    authorize_and_set_filter_tags(&mut query, permissions, &tables)?;
+    user_auth_for_query(&permissions, &tables)?;
 
     let time = Instant::now();
     let (records, fields) = query.execute(table_name.clone()).await?;
@@ -151,50 +151,6 @@ pub async fn create_streams_for_querier() {
             let _ = create_stream_and_schema_from_storage(&stream_name).await;
         }
     }
-}
-
-pub fn authorize_and_set_filter_tags(
-    query: &mut LogicalQuery,
-    permissions: Vec<Permission>,
-    tables: &Vec<String>,
-) -> Result<(), QueryError> {
-    // check authorization of this query if it references physical table;
-    let mut authorized = false;
-
-    trace!("table names in auth- {tables:?}");
-    for table_name in tables.iter() {
-        let mut tags = Vec::new();
-
-        // in permission check if user can run query on the stream.
-        // also while iterating add any filter tags for this stream
-        for permission in &permissions {
-            match permission {
-                Permission::Stream(Action::All, _) => {
-                    authorized = true;
-                    break;
-                }
-                Permission::StreamWithTag(Action::Query, ref stream, tag)
-                    if stream == table_name || stream == "*" =>
-                {
-                    authorized = true;
-                    if let Some(tag) = tag {
-                        tags.push(tag.clone())
-                    }
-                }
-                _ => (),
-            }
-        }
-
-        if !authorized {
-            return Err(QueryError::Unauthorized);
-        }
-
-        if !tags.is_empty() {
-            query.filter_tag = Some(tags)
-        }
-    }
-
-    Ok(())
 }
 
 impl FromRequest for Query {

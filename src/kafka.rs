@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, fmt::Debug};
 use tracing::{debug, error, info, warn};
 
+use crate::audit::AuditLogBuilder;
 use crate::option::CONFIG;
 use crate::{
     event::{
@@ -90,38 +91,6 @@ pub enum KafkaError {
     DoNotPrintError,
 }
 
-// // Commented out functions
-// // Might come in handy later
-// fn parse_auto_env<T>(key: &'static str) -> Result<Option<T>, <T as FromStr>::Err>
-// where
-//     T: FromStr,
-// {
-//     Ok(if let Ok(val) = env::var(key) {
-//         Some(val.parse::<T>()?)
-//     } else {
-//         None
-//     })
-// }
-
-// fn handle_duration_env_prefix(key: &'static str) -> Result<Option<Duration>, ParseIntError> {
-//     if let Ok(raw_secs) = env::var(format!("{key}_S")) {
-//         Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)?)))
-//     } else if let Ok(raw_secs) = env::var(format!("{key}_M")) {
-//         Ok(Some(Duration::from_secs(u64::from_str(&raw_secs)? * 60)))
-//     } else {
-//         Ok(None)
-//     }
-// }
-
-// fn parse_i32_env(key: &'static str) -> Result<Option<i32>, KafkaError> {
-//     parse_auto_env::<i32>(key).map_err(|raw| KafkaError::ParseIntError(key, raw))
-// }
-
-// fn parse_duration_env_prefixed(key_prefix: &'static str) -> Result<Option<Duration>, KafkaError> {
-//     handle_duration_env_prefix(key_prefix)
-//         .map_err(|raw| KafkaError::ParseDurationError(key_prefix, raw))
-// }
-
 fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
     if let Some(topics) = &CONFIG.parseable.kafka_topics {
         // topics can be a comma separated list of topics to subscribe to
@@ -146,10 +115,6 @@ fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
         if let Some(val) = CONFIG.parseable.kafka_client_id.as_ref() {
             conf.set("client.id", val);
         }
-
-        // if let Some(val) = get_flag_env_val("a")? {
-        //     conf.set("api.version.request", val.to_string());
-        // }
 
         if let Some(ssl_protocol) = CONFIG.parseable.kafka_security_protocol.as_ref() {
             conf.set("security.protocol", serde_json::to_string(&ssl_protocol)?);
@@ -220,18 +185,18 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
     let schema = resolve_schema(stream_name)?;
     let event = format::json::Event {
         data: serde_json::from_slice(payload)?,
-        tags: String::default(),
-        metadata: String::default(),
     };
 
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
+    let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
 
     let (rb, is_first) = event
         .into_recordbatch(
             &schema,
-            static_schema_flag.as_ref(),
+            static_schema_flag,
             time_partition.as_ref(),
+            schema_version,
         )
         .map_err(|err| KafkaError::PostError(PostError::CustomError(err.to_string())))?;
 
@@ -272,8 +237,19 @@ pub async fn setup_integration() {
     let mut stream = consumer.stream();
 
     while let Ok(curr) = stream.next().await.unwrap() {
-        if let Err(err) = ingest_message(curr).await {
-            error!("Unable to ingest incoming kafka message- {err}")
-        }
+        // TODO: maybe we should not constructs an audit log for each kafka message, but do so at the batch level
+        let log_builder = AuditLogBuilder::default()
+            .with_host(CONFIG.parseable.kafka_host.as_deref().unwrap_or(""))
+            .with_user_agent("Kafka Client")
+            .with_protocol("Kafka")
+            .with_stream(curr.topic());
+
+        let Err(err) = ingest_message(curr).await else {
+            log_builder.with_status(200).send().await;
+            continue;
+        };
+        error!("Unable to ingest incoming kafka message- {err}");
+
+        log_builder.with_status(500).with_error(err).send().await;
     }
 }

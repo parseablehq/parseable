@@ -93,7 +93,7 @@ This section elaborates available options to run Parseable in production or deve
 ## Features :rocket:
 
 - [High availability & Cluster mode ↗︎](https://www.parseable.com/docs/concepts/distributed-architecture)
-- [Local cache ↗︎](https://www.parseable.com/docs/features/tiering)
+- [Hot Tier ↗︎](https://www.parseable.com/docs/features/tiering)
 - [Alerts ↗︎](https://www.parseable.com/docs/alerts)
 - [Role based access control ↗︎](https://www.parseable.com/docs/rbac)
 - [OAuth2 support ↗︎](https://www.parseable.com/docs/oidc)

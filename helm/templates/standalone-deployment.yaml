@@ -61,6 +61,15 @@ spec:
             {{- end }}
             {{- end }}
 
+            {{- if .Values.parseable.auditLogging.enabled }}
+            - name: P_AUDIT_LOGGER
+              value: {{ .Values.parseable.auditLogging.p_server | quote }}
+            - name: P_AUDIT_USERNAME
+              value: {{ .Values.parseable.auditLogging.p_username | quote }}
+            - name: P_AUDIT_PASSWORD
+              value: {{ .Values.parseable.auditLogging.p_password | quote }}
+            {{- end }}
+
             {{- if and .Values.parseable.s3ModeSecret .Values.parseable.s3ModeSecret.enabled }}
             {{- range $secret := .Values.parseable.s3ModeSecret.secrets }}
             {{- range $key := $secret.keys }}
@@ -136,11 +145,7 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.parseable.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.parseable.tolerations }}
+      {{- with .Values.parseable.toleration }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

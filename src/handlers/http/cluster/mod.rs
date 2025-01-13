@@ -33,6 +33,7 @@ use crate::stats::Stats;
 use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
 use crate::storage::{ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY};
+use crate::HTTP_CLIENT;
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::{HttpRequest, Responder};
 use bytes::Bytes;
@@ -76,8 +77,6 @@ pub async fn sync_streams_with_ingestors(
         StreamError::Anyhow(err)
     })?;
 
-    let client = reqwest::Client::new();
-
     for ingestor in ingestor_infos {
         if !utils::check_liveness(&ingestor.domain_name).await {
             warn!("Ingestor {} is not live", ingestor.domain_name);
@@ -89,7 +88,7 @@ pub async fn sync_streams_with_ingestors(
             base_path_without_preceding_slash(),
             stream_name
         );
-        let res = client
+        let res = HTTP_CLIENT
             .put(url)
             .headers(reqwest_headers.clone())
             .header(header::AUTHORIZATION, &ingestor.token)
@@ -126,7 +125,6 @@ pub async fn sync_users_with_roles_with_ingestors(
         RBACError::Anyhow(err)
     })?;
 
-    let client = reqwest::Client::new();
     let role = to_vec(&role.clone()).map_err(|err| {
         error!("Fatal: failed to serialize role: {:?}", err);
         RBACError::SerdeError(err)
@@ -143,7 +141,7 @@ pub async fn sync_users_with_roles_with_ingestors(
             username
         );
 
-        let res = client
+        let res = HTTP_CLIENT
             .put(url)
             .header(header::AUTHORIZATION, &ingestor.token)
             .header(header::CONTENT_TYPE, "application/json")
@@ -177,7 +175,6 @@ pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), 
         RBACError::Anyhow(err)
     })?;
 
-    let client = reqwest::Client::new();
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
             warn!("Ingestor {} is not live", ingestor.domain_name);
@@ -190,7 +187,7 @@ pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), 
             username
         );
 
-        let res = client
+        let res = HTTP_CLIENT
             .delete(url)
             .header(header::AUTHORIZATION, &ingestor.token)
             .send()
@@ -231,7 +228,6 @@ pub async fn sync_user_creation_with_ingestors(
         user.roles.clone_from(role);
     }
     let username = user.username();
-    let client = reqwest::Client::new();
 
     let user = to_vec(&user).map_err(|err| {
         error!("Fatal: failed to serialize user: {:?}", err);
@@ -250,7 +246,7 @@ pub async fn sync_user_creation_with_ingestors(
             username
         );
 
-        let res = client
+        let res = HTTP_CLIENT
             .post(url)
             .header(header::AUTHORIZATION, &ingestor.token)
             .header(header::CONTENT_TYPE, "application/json")
@@ -283,7 +279,6 @@ pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(),
         error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
-    let client = reqwest::Client::new();
 
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
@@ -297,7 +292,7 @@ pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(),
             username
         );
 
-        let res = client
+        let res = HTTP_CLIENT
             .post(url)
             .header(header::AUTHORIZATION, &ingestor.token)
             .header(header::CONTENT_TYPE, "application/json")
@@ -338,7 +333,6 @@ pub async fn sync_role_update_with_ingestors(
         RoleError::SerdeError(err)
     })?;
     let roles = Bytes::from(roles);
-    let client = reqwest::Client::new();
 
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
@@ -352,7 +346,7 @@ pub async fn sync_role_update_with_ingestors(
             name
         );
 
-        let res = client
+        let res = HTTP_CLIENT
             .put(url)
             .header(header::AUTHORIZATION, &ingestor.token)
             .header(header::CONTENT_TYPE, "application/json")
@@ -401,7 +395,7 @@ pub async fn fetch_daily_stats_from_ingestors(
             StreamError::Anyhow(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
         })?;
 
-        let res = reqwest::Client::new()
+        let res = HTTP_CLIENT
             .get(uri)
             .header(header::AUTHORIZATION, &ingestor.token)
             .header(header::CONTENT_TYPE, "application/json")
@@ -512,8 +506,7 @@ pub async fn send_stream_delete_request(
     if !utils::check_liveness(&ingestor.domain_name).await {
         return Ok(());
     }
-    let client = reqwest::Client::new();
-    let resp = client
+    let resp = HTTP_CLIENT
         .delete(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, ingestor.token)
@@ -551,8 +544,7 @@ pub async fn send_retention_cleanup_request(
     if !utils::check_liveness(&ingestor.domain_name).await {
         return Ok(first_event_at);
     }
-    let client = reqwest::Client::new();
-    let resp = client
+    let resp = HTTP_CLIENT
         .post(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, ingestor.token)
@@ -603,7 +595,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         ))
         .expect("should always be a valid url");
 
-        let resp = reqwest::Client::new()
+        let resp = HTTP_CLIENT
             .get(uri)
             .header(header::AUTHORIZATION, ingestor.token.clone())
             .header(header::CONTENT_TYPE, "application/json")
@@ -752,7 +744,7 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
             PostError::Invalid(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
         })?;
 
-        let res = reqwest::Client::new()
+        let res = HTTP_CLIENT
             .get(uri)
             .header(header::AUTHORIZATION, &ingestor.token)
             .header(header::CONTENT_TYPE, "application/json")

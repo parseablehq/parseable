@@ -17,7 +17,7 @@
  */
 
 use actix_web::web::Json;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{
     about::{self, get_latest_release},
@@ -39,14 +39,13 @@ use std::path::PathBuf;
 ///     "license": "AGPL-3.0-only",
 ///     "mode": mode,
 ///     "staging": staging,
-///     "cache": cache_details,
 ///     "grpcPort": grpc_port,
 ///     "store": {
 ///         "type": CONFIG.get_storage_mode_string(),
 ///         "path": store_endpoint
 ///     }
 /// }
-pub async fn about() -> Json<serde_json::Value> {
+pub async fn about() -> Json<Value> {
     let meta = StorageMetadata::global();
 
     let current_release = about::current();
@@ -87,16 +86,6 @@ pub async fn about() -> Json<serde_json::Value> {
     };
 
     let ms_clarity_tag = &CONFIG.parseable.ms_clarity_tag;
-    let mut query_engine = "Parseable".to_string();
-    if let (Some(_), Some(_), Some(_), Some(_)) = (
-        CONFIG.parseable.trino_endpoint.as_ref(),
-        CONFIG.parseable.trino_catalog.as_ref(),
-        CONFIG.parseable.trino_schema.as_ref(),
-        CONFIG.parseable.trino_username.as_ref(),
-    ) {
-        // Trino is enabled
-        query_engine = "Trino".to_string();
-    }
 
     Json(json!({
         "version": current_version,
@@ -120,7 +109,5 @@ pub async fn about() -> Json<serde_json::Value> {
         "analytics": {
             "clarityTag": ms_clarity_tag
         },
-        "queryEngine": query_engine
-
     }))
 }
