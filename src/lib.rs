@@ -33,13 +33,13 @@ pub mod hottier;
 ))]
 pub mod kafka;
 mod livetail;
-mod metadata;
+pub mod metadata;
 pub mod metrics;
 pub mod migration;
 mod oidc;
 pub mod option;
 pub mod otel;
-mod query;
+pub mod query;
 pub mod rbac;
 mod response;
 mod static_schema;
