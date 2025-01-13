@@ -34,6 +34,7 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sysinfo::System;
@@ -162,7 +163,6 @@ impl Query {
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
         // we by knowing this plan is not in the optimization procees chose to overwrite the stringified plan
-
         match self.plan.clone() {
             LogicalPlan::Explain(plan) => {
                 let transformed = transform(
@@ -251,15 +251,14 @@ fn transform(
             .map_or(event::DEFAULT_TIMESTAMP_KEY, |x| x.as_str());
         let column_expr = Expr::Column(Column::new(Some(stream), time_partition));
 
-        // Build filters
-        let low_filter = PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
-            .binary_expr(column_expr.clone());
+        // Reconstruct plan with start and end time filters
+        let low_filter =
+            PartialTimeFilter::Low(Bound::Included(start_time)).binary_expr(column_expr.clone());
         let high_filter =
-            PartialTimeFilter::High(std::ops::Bound::Excluded(end_time)).binary_expr(column_expr);
+            PartialTimeFilter::High(Bound::Excluded(end_time)).binary_expr(column_expr);
+        let filter = Filter::try_new(and(low_filter, high_filter), Arc::new(plan))?;
 
-        Ok(Transformed::yes(LogicalPlan::Filter(
-            Filter::try_new(and(low_filter, high_filter), Arc::new(plan)).unwrap(),
-        )))
+        Ok(Transformed::yes(LogicalPlan::Filter(filter)))
     })
     .expect("transform only transforms the tablescan")
 }
