@@ -248,8 +248,7 @@ fn transform(
         let stream = table.table_name.clone();
         let time_partition = time_partitions
             .get(stream.table())
-            .map(|x| x.as_str())
-            .unwrap_or(event::DEFAULT_TIMESTAMP_KEY);
+            .map_or(event::DEFAULT_TIMESTAMP_KEY, |x| x.as_str());
         let column_expr = Expr::Column(Column::new(Some(stream), time_partition));
 
         // Build filters
@@ -283,8 +282,7 @@ fn query_can_be_filtered_on_stream_time_partition(
             }) => {
                 time_partitions
                     .get(table.table_name.table())
-                    .map(|x| x.as_str())
-                    .unwrap_or(event::DEFAULT_TIMESTAMP_KEY)
+                    .map_or(event::DEFAULT_TIMESTAMP_KEY, |x| x.as_str())
                     == column_name
             }
             _ => false,
