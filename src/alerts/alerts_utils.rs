@@ -195,7 +195,7 @@ pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
         crate::alerts::Aggregations::Single(agg) => {
             let (agg_expr, filter) = &agg_filter_exprs[0];
             let filtered_df = if let Some(filter) = filter {
-                base_df.clone().filter(filter.clone())?
+                base_df.filter(filter.clone())?
             } else {
                 base_df
             };
@@ -389,7 +389,7 @@ fn get_filter_expr(where_clause: &Conditions) -> Expr {
             expr
         }
         crate::alerts::Conditions::OR((expr1, expr2)) => {
-            let mut expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
+            let mut expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(false)));
             for e in [expr1, expr2] {
                 let ex = match e.operator {
                     AlertOperator::GreaterThan => col(&e.column).gt(lit(&e.value)),

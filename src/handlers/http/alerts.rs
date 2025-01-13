@@ -65,7 +65,7 @@ pub async fn post(req: HttpRequest, alert: AlertRequest) -> Result<impl Responde
 
     ALERTS.update_task(&alert.id, handle, rx, tx).await;
 
-    Ok(format!("alert created with ID- {}", alert.id))
+    Ok(web::Json(alert))
 }
 
 // GET /alerts/{alert_id}
@@ -159,7 +159,7 @@ pub async fn modify(req: HttpRequest, alert: AlertRequest) -> Result<impl Respon
 
     ALERTS.update_task(&alert.id, handle, rx, tx).await;
 
-    Ok(format!("Modified alert {}", alert.id))
+    Ok(web::Json(alert))
 }
 
 // PUT /alerts/{alert_id}/update_state

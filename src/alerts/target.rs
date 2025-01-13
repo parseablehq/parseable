@@ -70,6 +70,9 @@ impl Target {
         match resolves {
             AlertState::Triggered => {
                 if !state.timed_out {
+                    // call once and then start sleeping
+                    // reduce repeats by 1
+                    call_target(self.target.clone(), context.clone());
                     trace!("state not timed out- {state:?}");
                     // set state
                     state.timed_out = true;
@@ -140,7 +143,7 @@ impl Target {
                     }
                 },
                 Retry::Finite(times) => {
-                    for _ in 0..times {
+                    for _ in 0..(times - 1) {
                         let current_state = if let Ok(state) = ALERTS.get_state(&alert_id).await {
                             state
                         } else {
