@@ -82,7 +82,7 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Corre
     // Save to memory
     CORRELATIONS.update(&correlation).await?;
 
-    Ok(format!("Saved correlation with ID- {}", correlation.id))
+    Ok(web::Json(correlation))
 }
 
 pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, CorrelationError> {
@@ -117,7 +117,7 @@ pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, Cor
     // Save to memory
     CORRELATIONS.update(&correlation).await?;
 
-    Ok(format!("Modified correlation with ID- {}", correlation.id))
+    Ok(web::Json(correlation))
 }
 
 pub async fn delete(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
