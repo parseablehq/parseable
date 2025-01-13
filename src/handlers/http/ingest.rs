@@ -144,9 +144,8 @@ pub async fn handle_otel_logs_ingestion(
 
     //custom flattening required for otel logs
     let logs: LogsData = serde_json::from_slice(body.as_bytes())?;
-    let mut json = flatten_otel_logs(&logs);
-    for record in json.iter_mut() {
-        let body: Bytes = serde_json::to_vec(record).unwrap().into();
+    for record in flatten_otel_logs(&logs) {
+        let body: Bytes = serde_json::to_vec(&record).unwrap().into();
         push_logs(&stream_name, &body, &log_source).await?;
     }
 
@@ -182,9 +181,8 @@ pub async fn handle_otel_metrics_ingestion(
 
     //custom flattening required for otel metrics
     let metrics: MetricsData = serde_json::from_slice(body.as_bytes())?;
-    let mut json = flatten_otel_metrics(metrics);
-    for record in json.iter_mut() {
-        let body: Bytes = serde_json::to_vec(record).unwrap().into();
+    for record in flatten_otel_metrics(metrics) {
+        let body: Bytes = serde_json::to_vec(&record).unwrap().into();
         push_logs(&stream_name, &body, &log_source).await?;
     }
 
@@ -221,9 +219,8 @@ pub async fn handle_otel_traces_ingestion(
 
     //custom flattening required for otel traces
     let traces: TracesData = serde_json::from_slice(body.as_bytes())?;
-    let mut json = flatten_otel_traces(&traces);
-    for record in json.iter_mut() {
-        let body: Bytes = serde_json::to_vec(record).unwrap().into();
+    for record in flatten_otel_traces(&traces) {
+        let body: Bytes = serde_json::to_vec(&record).unwrap().into();
         push_logs(&stream_name, &body, &log_source).await?;
     }
 
