@@ -21,6 +21,7 @@ use parseable::{
     option::{Mode, CONFIG},
     rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
+use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -88,10 +89,7 @@ pub async fn block_until_shutdown_signal() {
 #[cfg(unix)]
 /// Asynchronously blocks until a shutdown signal is received
 pub async fn block_until_shutdown_signal() {
-    use tokio::signal::{
-        ctrl_c,
-        unix::{signal, SignalKind},
-    };
+    use tokio::signal::unix::{signal, SignalKind};
     let mut sigterm =
         signal(SignalKind::terminate()).expect("Failed to create SIGTERM signal handler");
 
