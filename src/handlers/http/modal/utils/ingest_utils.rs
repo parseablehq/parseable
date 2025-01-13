@@ -27,7 +27,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     event::{
-        format::{self, EventFormat, LogSource},
+        format::{json, EventFormat, LogSource},
         Event,
     },
     handlers::{
@@ -127,7 +127,7 @@ pub async fn push_logs(
             .schema
             .clone();
         let (rb, is_first_event) = into_event_batch(
-            &value,
+            value,
             schema,
             static_schema_flag,
             time_partition.as_ref(),
@@ -152,17 +152,18 @@ pub async fn push_logs(
 }
 
 pub fn into_event_batch(
-    body: &Value,
+    data: Value,
     schema: HashMap<String, Arc<Field>>,
     static_schema_flag: bool,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let event = format::json::Event {
-        data: body.to_owned(),
-    };
-    let (rb, is_first) =
-        event.into_recordbatch(&schema, static_schema_flag, time_partition, schema_version)?;
+    let (rb, is_first) = json::Event { data }.into_recordbatch(
+        &schema,
+        static_schema_flag,
+        time_partition,
+        schema_version,
+    )?;
     Ok((rb, is_first))
 }
 
