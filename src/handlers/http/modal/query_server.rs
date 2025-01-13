@@ -20,7 +20,6 @@ use crate::alerts::ALERTS;
 use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
 use crate::handlers::http::base_path;
-use crate::handlers::http::caching_removed;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_scheduler};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
@@ -55,8 +54,6 @@ impl ParseableServer for QueryServer {
                 web::scope(&base_path())
                     .service(Server::get_correlation_webscope())
                     .service(Server::get_query_factory())
-                    .service(Server::get_trino_factory())
-                    .service(Server::get_cache_webscope())
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
                     .service(Server::get_about_factory())
@@ -173,7 +170,7 @@ impl ParseableServer for QueryServer {
 
 impl QueryServer {
     // get the role webscope
-    fn get_user_role_webscope() -> Scope {
+    pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
             // GET Role List
             .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
@@ -193,7 +190,7 @@ impl QueryServer {
     }
 
     // get the user webscope
-    fn get_user_webscope() -> Scope {
+    pub fn get_user_webscope() -> Scope {
         web::scope("/user")
             .service(
                 web::resource("")
@@ -248,7 +245,7 @@ impl QueryServer {
     }
 
     // get the logstream web scope
-    fn get_logstream_webscope() -> Scope {
+    pub fn get_logstream_webscope() -> Scope {
         web::scope("/logstream")
             .service(
                 // GET "/logstream" ==> Get list of all Log Streams on the server
@@ -330,13 +327,6 @@ impl QueryServer {
                             ),
                     )
                     .service(
-                        web::resource("/cache")
-                            // PUT "/logstream/{logstream}/cache" ==> caching has been deprecated
-                            .route(web::put().to(caching_removed))
-                            // GET "/logstream/{logstream}/cache" ==> caching has been deprecated
-                            .route(web::get().to(caching_removed)),
-                    )
-                    .service(
                         web::resource("/hottier")
                             // PUT "/logstream/{logstream}/hottier" ==> Set hottier for given logstream
                             .route(
@@ -358,7 +348,7 @@ impl QueryServer {
             )
     }
 
-    fn get_cluster_web_scope() -> actix_web::Scope {
+    pub fn get_cluster_web_scope() -> actix_web::Scope {
         web::scope("/cluster")
             .service(
                 // GET "/cluster/info" ==> Get info of the cluster

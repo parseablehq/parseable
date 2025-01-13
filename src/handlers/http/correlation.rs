@@ -18,17 +18,17 @@
 
 use actix_web::{web, HttpRequest, Responder};
 use bytes::Bytes;
+use itertools::Itertools;
 use relative_path::RelativePathBuf;
 
+use crate::rbac::Users;
+use crate::utils::user_auth_for_query;
 use crate::{
     option::CONFIG, storage::CORRELATIONS_ROOT_DIRECTORY,
     utils::actix::extract_session_key_from_req,
 };
 
-use crate::correlation::{
-    correlation_utils::user_auth_for_query, CorrelationConfig, CorrelationError,
-    CorrelationRequest, CORRELATIONS,
-};
+use crate::correlation::{CorrelationConfig, CorrelationError, CorrelationRequest, CORRELATIONS};
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
@@ -52,14 +52,17 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
 
     let correlation = CORRELATIONS.get_correlation_by_id(correlation_id).await?;
 
-    if user_auth_for_query(&session_key, &correlation.table_configs)
-        .await
-        .is_ok()
-    {
-        Ok(web::Json(correlation))
-    } else {
-        Err(CorrelationError::Unauthorized)
-    }
+    let permissions = Users.get_permissions(&session_key);
+
+    let tables = &correlation
+        .table_configs
+        .iter()
+        .map(|t| t.table_name.clone())
+        .collect_vec();
+
+    user_auth_for_query(&permissions, tables)?;
+
+    Ok(web::Json(correlation))
 }
 
 pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, CorrelationError> {
@@ -93,7 +96,14 @@ pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, Cor
 
     // validate whether user has access to this correlation object or not
     let correlation = CORRELATIONS.get_correlation_by_id(correlation_id).await?;
-    user_auth_for_query(&session_key, &correlation.table_configs).await?;
+    let permissions = Users.get_permissions(&session_key);
+    let tables = &correlation
+        .table_configs
+        .iter()
+        .map(|t| t.table_name.clone())
+        .collect_vec();
+
+    user_auth_for_query(&permissions, tables)?;
 
     let correlation_request: CorrelationRequest = serde_json::from_slice(&body)?;
     correlation_request.validate(&session_key).await?;
@@ -122,12 +132,21 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, CorrelationError
     let correlation = CORRELATIONS.get_correlation_by_id(correlation_id).await?;
 
     // validate user's query auth
-    user_auth_for_query(&session_key, &correlation.table_configs).await?;
+    let permissions = Users.get_permissions(&session_key);
+    let tables = &correlation
+        .table_configs
+        .iter()
+        .map(|t| t.table_name.clone())
+        .collect_vec();
+
+    user_auth_for_query(&permissions, tables)?;
 
     // Delete from disk
     let store = CONFIG.storage().get_object_store();
-    let path =
-        RelativePathBuf::from_iter([CORRELATIONS_ROOT_DIRECTORY, &correlation.id.to_string()]);
+    let path = RelativePathBuf::from_iter([
+        CORRELATIONS_ROOT_DIRECTORY,
+        &format!("{}.json", correlation_id),
+    ]);
     store.delete_object(&path).await?;
 
     // Delete from memory

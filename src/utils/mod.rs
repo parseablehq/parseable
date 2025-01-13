@@ -25,6 +25,7 @@ pub mod uid;
 pub mod update;
 use crate::handlers::http::rbac::RBACError;
 use crate::option::CONFIG;
+use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use actix::extract_session_key_from_req;
 use actix_web::HttpRequest;
@@ -342,6 +343,40 @@ pub fn get_hash(key: &str) -> String {
     hasher.update(key);
     let result = format!("{:x}", hasher.finalize());
     result
+}
+
+pub fn user_auth_for_query(
+    permissions: &[Permission],
+    tables: &[String],
+) -> Result<(), actix_web::error::Error> {
+    for table_name in tables {
+        let mut authorized = false;
+
+        // in permission check if user can run query on the stream.
+        // also while iterating add any filter tags for this stream
+        for permission in permissions.iter() {
+            match permission {
+                Permission::Stream(Action::All, _) => {
+                    authorized = true;
+                    break;
+                }
+                Permission::StreamWithTag(Action::Query, ref stream, _)
+                    if stream == table_name || stream == "*" =>
+                {
+                    authorized = true;
+                }
+                _ => (),
+            }
+        }
+
+        if !authorized {
+            return Err(actix_web::error::ErrorUnauthorized(format!(
+                "User does not have access to stream- {table_name}"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

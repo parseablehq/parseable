@@ -23,12 +23,13 @@ use http::StatusCode;
 use itertools::Itertools;
 use serde_json::Value;
 
-use crate::{option::CONFIG, storage::STREAM_ROOT_DIRECTORY};
+use crate::{option::CONFIG, storage::STREAM_ROOT_DIRECTORY, HTTP_CLIENT};
 
 use self::{cluster::get_ingestor_info, query::Query};
 
 pub mod about;
 pub mod alerts;
+mod audit;
 pub mod cluster;
 pub mod correlation;
 pub mod health_check;
@@ -42,7 +43,6 @@ pub mod oidc;
 pub mod query;
 pub mod rbac;
 pub mod role;
-pub mod trino;
 pub mod users;
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "api";
@@ -110,7 +110,7 @@ pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec
             base_path_without_preceding_slash(),
             "query"
         );
-        let reqw = reqwest::Client::new()
+        let reqw = HTTP_CLIENT
             .post(uri)
             .json(query)
             .header(http::header::AUTHORIZATION, im.token.clone())

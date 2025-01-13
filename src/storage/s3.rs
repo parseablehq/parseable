@@ -22,7 +22,7 @@ use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
 };
-use datafusion::execution::runtime_env::RuntimeConfig;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
@@ -285,7 +285,7 @@ impl S3Config {
 }
 
 impl ObjectStorageProvider for S3Config {
-    fn get_datafusion_runtime(&self) -> RuntimeConfig {
+    fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
@@ -296,7 +296,7 @@ impl ObjectStorageProvider for S3Config {
         let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(s3));
 
-        RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry))
+        RuntimeEnvBuilder::new().with_object_store_registry(Arc::new(object_store_registry))
     }
 
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
@@ -325,6 +325,7 @@ fn to_object_store_path(path: &RelativePath) -> StorePath {
     StorePath::from(path.as_str())
 }
 
+#[derive(Debug)]
 pub struct S3 {
     client: LimitStore<AmazonS3>,
     bucket: String,
