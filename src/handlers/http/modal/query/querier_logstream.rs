@@ -110,7 +110,7 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
     let _ = CREATE_STREAM_LOCK.lock().await;
-    let headers = create_update_stream(&req, &body, &stream_name).await?;
+    let headers = create_update_stream(req.headers(), &body, &stream_name).await?;
 
     sync_streams_with_ingestors(headers, body, &stream_name).await?;
 

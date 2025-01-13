@@ -193,7 +193,7 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    create_update_stream(&req, &body, &stream_name).await?;
+    create_update_stream(req.headers(), &body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
@@ -903,7 +903,7 @@ pub mod error {
 mod tests {
     use crate::handlers::http::logstream::error::StreamError;
     use crate::handlers::http::logstream::get_stats;
-    use crate::handlers::http::modal::utils::logstream_utils::fetch_headers_from_put_stream_request;
+    use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
     use actix_web::test::TestRequest;
     use anyhow::bail;
     #[actix_web::test]
@@ -928,7 +928,7 @@ mod tests {
     #[actix_web::test]
     async fn header_without_log_source() {
         let req = TestRequest::default().to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::Json);
     }
 
@@ -937,19 +937,19 @@ mod tests {
         let mut req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "pmeta"))
             .to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::Pmeta);
 
         req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "otel-logs"))
             .to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::OtelLogs);
 
         req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "kinesis"))
             .to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::Kinesis);
     }
 
@@ -958,7 +958,7 @@ mod tests {
         let req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "teststream"))
             .to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::Json);
     }
 }

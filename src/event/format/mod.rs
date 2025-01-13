@@ -82,6 +82,7 @@ impl Display for LogSource {
             LogSource::OtelMetrics => "otel-metrics",
             LogSource::OtelTraces => "otel-traces",
             LogSource::Json => "json",
+            LogSource::Pmeta => "pmeta",
             LogSource::Custom(custom) => custom,
         })
     }

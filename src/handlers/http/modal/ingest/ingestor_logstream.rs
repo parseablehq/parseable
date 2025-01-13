@@ -83,7 +83,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
 pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
 
-    create_update_stream(&req, &body, &stream_name).await?;
+    create_update_stream(req.headers(), &body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
