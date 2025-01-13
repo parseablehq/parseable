@@ -124,8 +124,12 @@ pub struct Query {
 
 impl Query {
     pub async fn execute(self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let time_partitions = self.get_time_partitions()?;
-        let logical_plan = self.final_logical_plan(time_partitions);
+        let stream_name = self
+            .stream_names
+            .first()
+            .ok_or_else(|| ExecuteError::NoStream)?;
+        let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
+        let logical_plan = self.final_logical_plan(time_partition.as_ref());
         let df = QUERY_SESSION.execute_logical_plan(logical_plan).await?;
 
         let fields = df
@@ -144,21 +148,8 @@ impl Query {
         Ok((results, fields))
     }
 
-    /// Get the time partitions for the streams mentioned in the query
-    fn get_time_partitions(&self) -> Result<HashMap<String, String>, ExecuteError> {
-        let mut time_partitions = HashMap::default();
-        for stream_name in self.stream_names.iter() {
-            let Some(time_partition) = STREAM_INFO.get_time_partition(stream_name)? else {
-                continue;
-            };
-            time_partitions.insert(stream_name.clone(), time_partition);
-        }
-
-        Ok(time_partitions)
-    }
-
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(self, time_partitions: HashMap<String, String>) -> LogicalPlan {
+    fn final_logical_plan(self, time_partition: Option<&String>) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -168,7 +159,7 @@ impl Query {
                 self.plan,
                 self.time_range.start.naive_utc(),
                 self.time_range.end.naive_utc(),
-                &time_partitions,
+                time_partition,
             )
             .data;
         };
@@ -177,7 +168,7 @@ impl Query {
             explain.plan.as_ref().clone(),
             self.time_range.start.naive_utc(),
             self.time_range.end.naive_utc(),
-            &time_partitions,
+            time_partition,
         );
         explain.stringified_plans = vec![transformed
             .data
@@ -227,7 +218,7 @@ fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
-    time_partitions: &HashMap<String, String>,
+    time_partition: Option<&String>,
 ) -> Transformed<LogicalPlan> {
     plan.transform(|plan| {
         let LogicalPlan::TableScan(table) = &plan else {
@@ -235,14 +226,12 @@ fn transform(
         };
 
         // Early return if filters already exist
-        if query_can_be_filtered_on_stream_time_partition(table, time_partitions) {
+        if query_can_be_filtered_on_stream_time_partition(table, time_partition) {
             return Ok(Transformed::no(plan));
         }
 
         let stream = table.table_name.clone();
-        let time_partition = time_partitions
-            .get(stream.table())
-            .map_or(event::DEFAULT_TIMESTAMP_KEY, |x| x.as_str());
+        let time_partition = time_partition.map_or(event::DEFAULT_TIMESTAMP_KEY, |x| x.as_str());
         let column_expr = Expr::Column(Column::new(Some(stream), time_partition));
 
         // Reconstruct plan with start and end time filters
@@ -260,7 +249,7 @@ fn transform(
 // check if the query contains the streams's time partition as filter
 fn query_can_be_filtered_on_stream_time_partition(
     table: &datafusion::logical_expr::TableScan,
-    time_partitions: &HashMap<String, String>,
+    time_partition: Option<&String>,
 ) -> bool {
     table
         .filters
@@ -273,10 +262,7 @@ fn query_can_be_filtered_on_stream_time_partition(
             Expr::Column(Column {
                 name: column_name, ..
             }) => {
-                time_partitions
-                    .get(table.table_name.table())
-                    .map_or(event::DEFAULT_TIMESTAMP_KEY, |x| x.as_str())
-                    == column_name
+                time_partition.map_or(event::DEFAULT_TIMESTAMP_KEY, |x| x.as_str()) == column_name
             }
             _ => false,
         })
@@ -381,6 +367,8 @@ pub mod error {
         Datafusion(#[from] DataFusionError),
         #[error("Query Execution failed due to error in fetching metadata: {0}")]
         Metadata(#[from] MetadataError),
+        #[error("Query Execution failed due to missing stream name in query")]
+        NoStream,
     }
 }
 
