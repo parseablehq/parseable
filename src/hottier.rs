@@ -373,7 +373,7 @@ impl HotTierManager {
         *parquet_file_size += parquet_file.file_size;
         stream_hot_tier.used_size = *parquet_file_size;
 
-        stream_hot_tier.available_size = stream_hot_tier.available_size - parquet_file.file_size;
+        stream_hot_tier.available_size -= parquet_file.file_size;
         self.put_hot_tier(stream, &mut stream_hot_tier).await?;
         file_processed = true;
         let path = self.get_stream_path_for_date(stream, &date);
@@ -400,7 +400,7 @@ impl HotTierManager {
         dates: &[NaiveDate],
     ) -> Result<(), HotTierError> {
         for date in dates.iter() {
-            let path = self.get_stream_path_for_date(stream, &date);
+            let path = self.get_stream_path_for_date(stream, date);
             if path.exists() {
                 fs::remove_dir_all(path.clone()).await?;
             }
@@ -594,8 +594,8 @@ impl HotTierManager {
                         fs::remove_dir_all(path_to_delete.parent().unwrap()).await?;
                         delete_empty_directory_hot_tier(path_to_delete.parent().unwrap()).await?;
 
-                        stream_hot_tier.used_size = stream_hot_tier.used_size - file_size;
-                        stream_hot_tier.available_size = stream_hot_tier.available_size + file_size;
+                        stream_hot_tier.used_size -= file_size;
+                        stream_hot_tier.available_size += file_size;
                         self.put_hot_tier(stream, stream_hot_tier).await?;
                         delete_successful = true;
 

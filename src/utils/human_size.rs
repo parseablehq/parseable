@@ -55,5 +55,5 @@ where
     D: Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
-    human_size_to_bytes(&s).map_err(|e| de::Error::custom(e))
+    human_size_to_bytes(&s).map_err(de::Error::custom)
 }
