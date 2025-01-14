@@ -17,13 +17,12 @@
  */
 
 use crate::analytics;
+use crate::correlation::CORRELATIONS;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::base_path;
-use crate::handlers::http::caching_removed;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
-use crate::handlers::http::trino;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
 use crate::hottier::HotTierManager;
@@ -41,6 +40,7 @@ use actix_web::Scope;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::oneshot;
 use tracing::error;
 
 use crate::{
@@ -67,9 +67,8 @@ impl ParseableServer for Server {
         config
             .service(
                 web::scope(&base_path())
+                    .service(Self::get_correlation_webscope())
                     .service(Self::get_query_factory())
-                    .service(Self::get_trino_factory())
-                    .service(Self::get_cache_webscope())
                     .service(Self::get_ingest_factory())
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
@@ -96,12 +95,15 @@ impl ParseableServer for Server {
     }
 
     // configure the server and start an instance of the single server setup
-    async fn init(&self) -> anyhow::Result<()> {
+    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
         migration::run_migration(&CONFIG).await?;
 
+        if let Err(e) = CORRELATIONS.load().await {
+            error!("{e}");
+        }
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
 
@@ -116,14 +118,14 @@ impl ParseableServer for Server {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
 
-        if CONFIG.parseable.send_analytics {
+        if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
 
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+        let app = self.start(shutdown_rx, prometheus, CONFIG.options.openid());
 
         tokio::pin!(app);
 
@@ -160,16 +162,45 @@ impl ParseableServer for Server {
 }
 
 impl Server {
-    // get the trino factory
-    pub fn get_trino_factory() -> Resource {
-        web::resource("/trinoquery")
-            .route(web::post().to(trino::trino_query).authorize(Action::Query))
-    }
-
     pub fn get_metrics_webscope() -> Scope {
         web::scope("/metrics").service(
             web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),
         )
+    }
+
+    pub fn get_correlation_webscope() -> Scope {
+        web::scope("/correlation")
+            .service(
+                web::resource("")
+                    .route(
+                        web::get()
+                            .to(http::correlation::list)
+                            .authorize(Action::GetCorrelation),
+                    )
+                    .route(
+                        web::post()
+                            .to(http::correlation::post)
+                            .authorize(Action::CreateCorrelation),
+                    ),
+            )
+            .service(
+                web::resource("/{correlation_id}")
+                    .route(
+                        web::get()
+                            .to(http::correlation::get)
+                            .authorize(Action::GetCorrelation),
+                    )
+                    .route(
+                        web::put()
+                            .to(http::correlation::modify)
+                            .authorize(Action::PutCorrelation),
+                    )
+                    .route(
+                        web::delete()
+                            .to(http::correlation::delete)
+                            .authorize(Action::DeleteCorrelation),
+                    ),
+            )
     }
 
     // get the dashboards web scope
@@ -240,18 +271,6 @@ impl Server {
     // POST "/query" ==> Get results of the SQL query passed in request body
     pub fn get_query_factory() -> Resource {
         web::resource("/query").route(web::post().to(query::query).authorize(Action::Query))
-    }
-
-    pub fn get_cache_webscope() -> Scope {
-        web::scope("/cache").service(
-            web::scope("/{user_id}").service(
-                web::scope("/{stream}").service(
-                    web::resource("")
-                        .route(web::get().to(caching_removed))
-                        .route(web::post().to(caching_removed)),
-                ),
-            ),
-        )
     }
 
     // get the logstream web scope
@@ -352,13 +371,6 @@ impl Server {
                             ),
                     )
                     .service(
-                        web::resource("/cache")
-                            // PUT "/logstream/{logstream}/cache" ==> Set retention for given logstream
-                            .route(web::put().to(caching_removed))
-                            // GET "/logstream/{logstream}/cache" ==> Get retention for given logstream
-                            .route(web::get().to(caching_removed)),
-                    )
-                    .service(
                         web::resource("/hottier")
                             // PUT "/logstream/{logstream}/hottier" ==> Set hottier for given logstream
                             .route(
@@ -398,7 +410,7 @@ impl Server {
                 web::resource("/logs")
                     .route(
                         web::post()
-                            .to(ingest::handle_otel_ingestion)
+                            .to(ingest::handle_otel_logs_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
@@ -407,7 +419,7 @@ impl Server {
                 web::resource("/metrics")
                     .route(
                         web::post()
-                            .to(ingest::handle_otel_ingestion)
+                            .to(ingest::handle_otel_metrics_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
@@ -416,7 +428,7 @@ impl Server {
                 web::resource("/traces")
                     .route(
                         web::post()
-                            .to(ingest::handle_otel_ingestion)
+                            .to(ingest::handle_otel_traces_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
                     .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
@@ -458,7 +470,7 @@ impl Server {
     }
 
     // get the user webscope
-    fn get_user_webscope() -> Scope {
+    pub fn get_user_webscope() -> Scope {
         web::scope("/user")
             .service(
                 web::resource("")

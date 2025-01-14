@@ -197,7 +197,7 @@ pub async fn reply_login(
     let redirect_url = login_query
         .state
         .clone()
-        .unwrap_or_else(|| CONFIG.parseable.address.to_string());
+        .unwrap_or_else(|| CONFIG.options.address.to_string());
 
     Ok(redirect_to_client(
         &redirect_url,

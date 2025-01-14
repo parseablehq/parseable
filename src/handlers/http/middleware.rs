@@ -23,7 +23,7 @@ use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
     http::header::{self, HeaderName},
-    Error, Route,
+    Error, HttpMessage, Route,
 };
 use futures_util::future::LocalBoxFuture;
 
@@ -44,17 +44,17 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Message {
-    #[serde(rename = "commonAttributes")]
-    common_attributes: CommonAttributes,
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    pub common_attributes: CommonAttributes,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct CommonAttributes {
+pub struct CommonAttributes {
     #[serde(rename = "Authorization")]
     authorization: String,
     #[serde(rename = "X-P-Stream")]
-    x_p_stream: String,
+    pub x_p_stream: String,
 }
 
 pub trait RouteExt {
@@ -137,23 +137,18 @@ where
         For requests made from other clients, no change.
 
          ## Section start */
-        if let Some((_, kinesis_common_attributes)) = req
-            .request()
-            .headers()
-            .iter()
-            .find(|&(key, _)| key == KINESIS_COMMON_ATTRIBUTES_KEY)
+        if let Some(kinesis_common_attributes) =
+            req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
         {
             let attribute_value: &str = kinesis_common_attributes.to_str().unwrap();
             let message: Message = serde_json::from_str(attribute_value).unwrap();
             req.headers_mut().insert(
                 HeaderName::from_static(AUTHORIZATION_KEY),
-                header::HeaderValue::from_str(&message.common_attributes.authorization.clone())
-                    .unwrap(),
+                header::HeaderValue::from_str(&message.common_attributes.authorization).unwrap(),
             );
             req.headers_mut().insert(
                 HeaderName::from_static(STREAM_NAME_HEADER_KEY),
-                header::HeaderValue::from_str(&message.common_attributes.x_p_stream.clone())
-                    .unwrap(),
+                header::HeaderValue::from_str(&message.common_attributes.x_p_stream).unwrap(),
             );
             req.headers_mut().insert(
                 HeaderName::from_static(LOG_SOURCE_KEY),
@@ -164,6 +159,7 @@ where
         /* ## Section end */
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
+
         let fut = self.service.call(req);
         Box::pin(async move {
             match auth_result? {
@@ -175,6 +171,7 @@ where
                 ),
                 _ => {}
             }
+
             fut.await
         })
     }
@@ -192,11 +189,7 @@ pub fn auth_stream_context(
     let creds = extract_session_key(req);
     let mut stream = req.match_info().get("logstream");
     if stream.is_none() {
-        if let Some((_, stream_name)) = req
-            .headers()
-            .iter()
-            .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-        {
+        if let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) {
             stream = Some(stream_name.to_str().unwrap());
         }
     }
@@ -253,7 +246,7 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let username = req.match_info().get("username").unwrap_or("");
-        let is_root = username == CONFIG.parseable.username;
+        let is_root = username == CONFIG.options.username;
         let fut = self.service.call(req);
 
         Box::pin(async move {
@@ -307,7 +300,7 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let path = req.path();
-        let mode = &CONFIG.parseable.mode;
+        let mode = &CONFIG.options.mode;
         // change error messages based on mode
         match mode {
             Mode::Query => {

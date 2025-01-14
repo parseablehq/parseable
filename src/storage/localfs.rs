@@ -25,7 +25,7 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeConfig};
+use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
 use futures::{stream::FuturesUnordered, TryStreamExt};
 use relative_path::{RelativePath, RelativePathBuf};
@@ -39,8 +39,9 @@ use crate::{
 };
 
 use super::{
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
-    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
+    CORRELATIONS_ROOT_DIRECTORY, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -63,11 +64,11 @@ pub struct FSConfig {
 }
 
 impl ObjectStorageProvider for FSConfig {
-    fn get_datafusion_runtime(&self) -> RuntimeConfig {
-        RuntimeConfig::new()
+    fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
+        RuntimeEnvBuilder::new()
     }
 
-    fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
+    fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         Arc::new(LocalFS::new(self.root.clone()))
     }
 
@@ -80,6 +81,7 @@ impl ObjectStorageProvider for FSConfig {
     }
 }
 
+#[derive(Debug)]
 pub struct LocalFS {
     // absolute path of the data directory
     root: PathBuf,
@@ -295,7 +297,12 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY, USERS_ROOT_DIR];
+        let ignore_dir = &[
+            "lost+found",
+            PARSEABLE_ROOT_DIRECTORY,
+            USERS_ROOT_DIR,
+            CORRELATIONS_ROOT_DIRECTORY,
+        ];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
@@ -315,7 +322,11 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY];
+        let ignore_dir = &[
+            "lost+found",
+            PARSEABLE_ROOT_DIRECTORY,
+            CORRELATIONS_ROOT_DIRECTORY,
+        ];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries

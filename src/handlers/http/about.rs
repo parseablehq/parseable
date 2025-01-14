@@ -17,7 +17,7 @@
  */
 
 use actix_web::web::Json;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{
     about::{self, get_latest_release},
@@ -39,14 +39,13 @@ use std::path::PathBuf;
 ///     "license": "AGPL-3.0-only",
 ///     "mode": mode,
 ///     "staging": staging,
-///     "cache": cache_details,
 ///     "grpcPort": grpc_port,
 ///     "store": {
 ///         "type": CONFIG.get_storage_mode_string(),
 ///         "path": store_endpoint
 ///     }
 /// }
-pub async fn about() -> Json<serde_json::Value> {
+pub async fn about() -> Json<Value> {
     let meta = StorageMetadata::global();
 
     let current_release = about::current();
@@ -63,17 +62,17 @@ pub async fn about() -> Json<serde_json::Value> {
     let commit = current_release.commit_hash;
     let deployment_id = meta.deployment_id.to_string();
     let mode = CONFIG.get_server_mode_string();
-    let staging = if CONFIG.parseable.mode == Mode::Query {
+    let staging = if CONFIG.options.mode == Mode::Query {
         "".to_string()
     } else {
         CONFIG.staging_dir().display().to_string()
     };
-    let grpc_port = CONFIG.parseable.grpc_port;
+    let grpc_port = CONFIG.options.grpc_port;
 
     let store_endpoint = CONFIG.storage().get_endpoint();
-    let is_llm_active = &CONFIG.parseable.open_ai_key.is_some();
+    let is_llm_active = &CONFIG.options.open_ai_key.is_some();
     let llm_provider = is_llm_active.then_some("OpenAI");
-    let is_oidc_active = CONFIG.parseable.openid.is_some();
+    let is_oidc_active = CONFIG.options.openid().is_some();
     let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
     let hot_tier_details: String = if CONFIG.hot_tier_dir().is_none() {
@@ -86,17 +85,7 @@ pub async fn about() -> Json<serde_json::Value> {
         )
     };
 
-    let ms_clarity_tag = &CONFIG.parseable.ms_clarity_tag;
-    let mut query_engine = "Parseable".to_string();
-    if let (Some(_), Some(_), Some(_), Some(_)) = (
-        CONFIG.parseable.trino_endpoint.as_ref(),
-        CONFIG.parseable.trino_catalog.as_ref(),
-        CONFIG.parseable.trino_schema.as_ref(),
-        CONFIG.parseable.trino_username.as_ref(),
-    ) {
-        // Trino is enabled
-        query_engine = "Trino".to_string();
-    }
+    let ms_clarity_tag = &CONFIG.options.ms_clarity_tag;
 
     Json(json!({
         "version": current_version,
@@ -120,7 +109,5 @@ pub async fn about() -> Json<serde_json::Value> {
         "analytics": {
             "clarityTag": ms_clarity_tag
         },
-        "queryEngine": query_engine
-
     }))
 }

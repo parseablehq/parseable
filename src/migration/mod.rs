@@ -137,7 +137,7 @@ pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
     let streams = storage.list_streams().await?;
     for stream in streams {
         migration_stream(&stream.name, &*storage).await?;
-        if CONFIG.parseable.hot_tier_storage_path.is_some() {
+        if CONFIG.options.hot_tier_storage_path.is_some() {
             migration_hot_tier(&stream.name).await?;
         }
     }
@@ -155,16 +155,13 @@ async fn migration_hot_tier(stream: &str) -> anyhow::Result<()> {
                 stream_hot_tier.size = human_size_to_bytes(&stream_hot_tier.size)
                     .unwrap()
                     .to_string();
-                stream_hot_tier.available_size = Some(
-                    human_size_to_bytes(&stream_hot_tier.available_size.unwrap())
+                stream_hot_tier.available_size =
+                    human_size_to_bytes(&stream_hot_tier.available_size)
                         .unwrap()
-                        .to_string(),
-                );
-                stream_hot_tier.used_size = Some(
-                    human_size_to_bytes(&stream_hot_tier.used_size.unwrap())
-                        .unwrap()
-                        .to_string(),
-                );
+                        .to_string();
+                stream_hot_tier.used_size = human_size_to_bytes(&stream_hot_tier.used_size)
+                    .unwrap()
+                    .to_string();
                 hot_tier_manager
                     .put_hot_tier(stream, &mut stream_hot_tier)
                     .await?;
@@ -221,7 +218,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
 
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
-        if CONFIG.parseable.mode != Mode::Ingest {
+        if CONFIG.options.mode != Mode::Ingest {
             return Ok(());
         }
         stream_meta_found = false;

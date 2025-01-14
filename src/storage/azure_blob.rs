@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use datafusion::datasource::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
 };
-use datafusion::execution::runtime_env::RuntimeConfig;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use object_store::azure::{MicrosoftAzure, MicrosoftAzureBuilder};
 use object_store::{BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig};
 use relative_path::{RelativePath, RelativePathBuf};
@@ -150,7 +150,7 @@ impl AzureBlobConfig {
 }
 
 impl ObjectStorageProvider for AzureBlobConfig {
-    fn get_datafusion_runtime(&self) -> RuntimeConfig {
+    fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
         let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);
@@ -161,10 +161,10 @@ impl ObjectStorageProvider for AzureBlobConfig {
             .unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(azure));
 
-        RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry))
+        RuntimeEnvBuilder::new().with_object_store_registry(Arc::new(object_store_registry))
     }
 
-    fn get_object_store(&self) -> Arc<dyn super::ObjectStorage> {
+    fn construct_client(&self) -> Arc<dyn super::ObjectStorage> {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
         let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);
@@ -191,6 +191,7 @@ pub fn to_object_store_path(path: &RelativePath) -> StorePath {
 
 // ObjStoreClient is generic client to enable interactions with different cloudprovider's
 // object store such as S3 and Azure Blob
+#[derive(Debug)]
 pub struct BlobStore {
     client: LimitStore<MicrosoftAzure>,
     account: String,

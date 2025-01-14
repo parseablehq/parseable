@@ -26,15 +26,18 @@ use super::modal::utils::logstream_utils::{
 use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
 use crate::catalog::get_first_event;
-use crate::event::format::update_data_type_to_datetime;
+use crate::event::format::override_data_type;
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
-use crate::metadata::STREAM_INFO;
+use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
+use crate::rbac::role::Action;
+use crate::rbac::Users;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::StreamType;
 use crate::storage::{retention::Retention, StorageDir, StreamInfo};
+use crate::utils::actix::extract_session_key_from_req;
 use crate::{event, stats};
 
 use crate::{metadata, validator};
@@ -46,9 +49,11 @@ use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderName, HeaderValue};
+use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
+use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -85,16 +90,27 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
-pub async fn list(_: HttpRequest) -> impl Responder {
-    //list all streams from storage
+pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    let key = extract_session_key_from_req(&req)
+        .map_err(|err| StreamError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+
+    // list all streams from storage
     let res = CONFIG
         .storage()
         .get_object_store()
         .list_streams()
         .await
-        .unwrap();
+        .unwrap()
+        .into_iter()
+        .filter(|logstream| {
+            warn!("logstream-\n{logstream:?}");
 
-    web::Json(res)
+            Users.authorize(key.clone(), Action::ListStream, Some(&logstream.name), None)
+                == crate::rbac::Response::Authorized
+        })
+        .collect_vec();
+
+    Ok(web::Json(res))
 }
 
 pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
@@ -110,9 +126,9 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
         }
     };
 
-    let mut schema = infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap();
+    let mut schema = Arc::new(infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap());
     for log_record in log_records {
-        schema = update_data_type_to_datetime(schema, log_record, Vec::new());
+        schema = override_data_type(schema, log_record, SchemaVersion::V1);
     }
     Ok((web::Json(schema), StatusCode::OK))
 }
@@ -122,14 +138,14 @@ pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     match STREAM_INFO.schema(&stream_name) {
         Ok(_) => {}
-        Err(_) if CONFIG.parseable.mode == Mode::Query => {
+        Err(_) if CONFIG.options.mode == Mode::Query => {
             if !create_stream_and_schema_from_storage(&stream_name).await? {
                 return Err(StreamError::StreamNotFound(stream_name.clone()));
             }
         }
         Err(err) => return Err(StreamError::from(err)),
     };
-    match update_schema_when_distributed(vec![stream_name.clone()]).await {
+    match update_schema_when_distributed(&vec![stream_name.clone()]).await {
         Ok(_) => {
             let schema = STREAM_INFO.schema(&stream_name)?;
             Ok((web::Json(schema), StatusCode::OK))
@@ -207,7 +223,7 @@ pub async fn put_alert(
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -255,7 +271,7 @@ pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamErr
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -288,7 +304,7 @@ pub async fn put_retention(
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -352,7 +368,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if cfg!(not(test)) && CONFIG.parseable.mode == Mode::Query {
+        if cfg!(not(test)) && CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -471,9 +487,9 @@ fn remove_id_from_alerts(value: &mut Value) {
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
-    time_partition_limit: &str,
+    time_partition_limit: Option<NonZeroU32>,
     custom_partition: &str,
-    static_schema_flag: &str,
+    static_schema_flag: bool,
     schema: Arc<Schema>,
     stream_type: &str,
 ) -> Result<(), CreateStreamError> {
@@ -511,11 +527,12 @@ pub async fn create_stream(
                 stream_name.to_string(),
                 created_at,
                 time_partition.to_string(),
-                time_partition_limit.to_string(),
+                time_partition_limit,
                 custom_partition.to_string(),
-                static_schema_flag.to_string(),
+                static_schema_flag,
                 static_schema,
                 stream_type,
+                SchemaVersion::V1, // New stream
             );
         }
         Err(err) => {
@@ -528,7 +545,7 @@ pub async fn create_stream(
 pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
     if !STREAM_INFO.stream_exists(&stream_name) {
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -561,10 +578,11 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
         created_at: stream_meta.created_at.clone(),
         first_event_at: stream_meta.first_event_at.clone(),
         time_partition: stream_meta.time_partition.clone(),
-        time_partition_limit: stream_meta.time_partition_limit.clone(),
+        time_partition_limit: stream_meta
+            .time_partition_limit
+            .map(|limit| limit.to_string()),
         custom_partition: stream_meta.custom_partition.clone(),
-        cache_enabled: stream_meta.cache_enabled,
-        static_schema_flag: stream_meta.static_schema_flag.clone(),
+        static_schema_flag: stream_meta.static_schema_flag,
     };
 
     // get the other info from
@@ -581,7 +599,7 @@ pub async fn put_stream_hot_tier(
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -597,7 +615,7 @@ pub async fn put_stream_hot_tier(
             status: StatusCode::BAD_REQUEST,
         });
     }
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+    if CONFIG.options.hot_tier_storage_path.is_none() {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 
@@ -614,8 +632,8 @@ pub async fn put_stream_hot_tier(
         let existing_hot_tier_used_size = hot_tier_manager
             .validate_hot_tier_size(&stream_name, &hottier.size)
             .await?;
-        hottier.used_size = Some(existing_hot_tier_used_size.to_string());
-        hottier.available_size = Some(hottier.size.clone());
+        hottier.used_size = existing_hot_tier_used_size.to_string();
+        hottier.available_size = hottier.size.to_string();
         hottier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
         hot_tier_manager
             .put_hot_tier(&stream_name, &mut hottier)
@@ -641,7 +659,7 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -651,15 +669,15 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
         }
     }
 
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+    if CONFIG.options.hot_tier_storage_path.is_none() {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 
     if let Some(hot_tier_manager) = HotTierManager::global() {
         let mut hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
         hot_tier.size = format!("{} {}", hot_tier.size, "Bytes");
-        hot_tier.used_size = Some(format!("{} {}", hot_tier.used_size.unwrap(), "Bytes"));
-        hot_tier.available_size = Some(format!("{} {}", hot_tier.available_size.unwrap(), "Bytes"));
+        hot_tier.used_size = format!("{} Bytes", hot_tier.used_size);
+        hot_tier.available_size = format!("{} Bytes", hot_tier.available_size);
         Ok((web::Json(hot_tier), StatusCode::OK))
     } else {
         Err(StreamError::Custom {
@@ -676,7 +694,7 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
@@ -686,7 +704,7 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
         }
     }
 
-    if CONFIG.parseable.hot_tier_storage_path.is_none() {
+    if CONFIG.options.hot_tier_storage_path.is_none() {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 

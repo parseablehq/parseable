@@ -22,8 +22,8 @@ use crate::handlers::http::cluster::utils::check_liveness;
 use crate::handlers::http::{base_path_without_preceding_slash, cluster};
 use crate::handlers::STREAM_NAME_HEADER_KEY;
 use crate::option::{Mode, CONFIG};
-use crate::storage;
 use crate::{metadata, stats};
+use crate::{storage, HTTP_CLIENT};
 
 use crate::stats::Stats;
 use actix_web::{web, HttpRequest, Responder};
@@ -64,7 +64,7 @@ pub struct Report {
     memory_total_bytes: u64,
     platform: String,
     storage_mode: String,
-    server_mode: String,
+    server_mode: Mode,
     version: String,
     commit_hash: String,
     active_ingestors: u64,
@@ -112,7 +112,7 @@ impl Report {
             memory_total_bytes: mem_total,
             platform: platform().to_string(),
             storage_mode: CONFIG.get_storage_mode_string().to_string(),
-            server_mode: CONFIG.parseable.mode.to_string(),
+            server_mode: CONFIG.options.mode,
             version: current().released_version.to_string(),
             commit_hash: current().commit_hash,
             active_ingestors: ingestor_metrics.0,
@@ -132,9 +132,7 @@ impl Report {
     }
 
     pub async fn send(&self) {
-        let client = reqwest::Client::new();
-
-        let _ = client
+        let _ = HTTP_CLIENT
             .post(ANALYTICS_SERVER_URL)
             .header(STREAM_NAME_HEADER_KEY, "serverusageevent")
             .json(&self)
@@ -221,7 +219,7 @@ async fn fetch_ingestors_metrics(
     let mut vec = vec![];
     let mut active_ingestors = 0u64;
     let mut offline_ingestors = 0u64;
-    if CONFIG.parseable.mode == Mode::Query {
+    if CONFIG.options.mode == Mode::Query {
         // send analytics for ingest servers
 
         // ingestor infos should be valid here, if not some thing is wrong
@@ -240,7 +238,7 @@ async fn fetch_ingestors_metrics(
             ))
             .expect("Should be a valid URL");
 
-            let resp = reqwest::Client::new()
+            let resp = HTTP_CLIENT
                 .get(uri)
                 .header(header::AUTHORIZATION, im.token.clone())
                 .header(header::CONTENT_TYPE, "application/json")

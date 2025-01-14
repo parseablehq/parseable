@@ -37,10 +37,14 @@ spec:
     spec:
       terminationGracePeriodSeconds: 10
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
+      {{- with .Values.parseable.toleration }}
+      tolerations:
+        {{ toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: {{ .Chart.Name }}
         securityContext:
-          {{- toYaml .Values.parseable.securityContext | nindent 8 }}
+          {{- toYaml .Values.parseable.securityContext | nindent 10 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
         args: ["/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
@@ -52,9 +56,24 @@ spec:
                 fieldPath: metadata.name
           - name: P_MODE
             value: "query"
+          {{- if .Values.parseable.persistence.querier.enabled }}
+          - name: P_HOT_TIER_DIR
+            value: "/parseable/hot-tier"
+          - name: P_MAX_DISK_USAGE_PERCENT
+            value: "95.0"
+          {{- end }}
           {{- range $key, $value :=  .Values.parseable.env }}
           - name: {{ $key }}
             value: {{ tpl $value $ | quote }}
+          {{- end }}
+
+          {{- if .Values.parseable.auditLogging.enabled }}
+          - name: P_AUDIT_LOGGER
+            value: {{ .Values.parseable.auditLogging.p_server | quote }}
+          - name: P_AUDIT_USERNAME
+            value: {{ .Values.parseable.auditLogging.p_username | quote }}
+          - name: P_AUDIT_PASSWORD
+            value: {{ .Values.parseable.auditLogging.p_password | quote }}
           {{- end }}
 
           {{- if and .Values.parseable.s3ModeSecret .Values.parseable.s3ModeSecret.enabled }}
@@ -100,7 +119,7 @@ spec:
           {{- end }}
         ports:
           - containerPort: 8000
-        {{- with .Values.readinessProbe }}
+        {{- with .Values.parseable.readinessProbe }}
         readinessProbe:
           {{ toYaml . | nindent 12 }}
         {{- end }}
@@ -146,6 +165,15 @@ spec:
       resources:
         requests:
           storage: {{ .Values.parseable.persistence.querier.size | quote }}
+  - metadata:
+      name: stage-volume
+    spec:
+      accessModes:
+      - {{ .Values.parseable.persistence.querier.accessMode | quote }}
+      storageClassName: {{ .Values.parseable.persistence.querier.storageClass | quote }}
+      resources:
+        requests:
+          storage: 5Gi
   {{- end }}
   {{- if .Values.parseable.sidecar.enabled}}
     {{- .Values.parseable.sidecar.volumeClaimTemplates | toYaml | nindent 4 }}

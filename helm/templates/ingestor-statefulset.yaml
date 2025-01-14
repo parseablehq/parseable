@@ -32,12 +32,38 @@ spec:
         {{- .Values.parseable.highAvailability.ingestor.labels | toYaml | nindent 8 }}
         {{- include "parseable.ingestorLabelsSelector" . | nindent 8 }}
     spec:
+      initContainers:
+        - name: wait-for-query-service
+          image: curlimages/curl:latest # Lightweight image with curl
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for query service readiness at /api/v1/readiness..."
+              for i in $(seq 1 60); do
+                if curl -sf http://{{ include "parseable.fullname" . }}-querier-service.{{ .Release.Namespace }}/api/v1/readiness; then
+                  echo "Query service is ready!"
+                  exit 0
+                fi
+                echo "Query service is not ready yet. Retrying in 2 seconds..."
+                sleep 2
+              done
+              echo "Query service did not become ready in time. Exiting."
+              exit 1
       terminationGracePeriodSeconds: 10
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
+      {{- with .Values.parseable.highAvailability.ingestor.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.parseable.highAvailability.ingestor.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: {{ .Chart.Name }}
         securityContext:
-          {{- toYaml .Values.parseable.securityContext | nindent 8 }}
+          {{- toYaml .Values.parseable.securityContext | nindent 10 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
         args:
@@ -55,6 +81,15 @@ spec:
                 fieldPath: metadata.name
           {{- end }}
           
+          {{- if .Values.parseable.auditLogging.enabled }}
+          - name: P_AUDIT_LOGGER
+            value: {{ .Values.parseable.auditLogging.p_server | quote }}
+          - name: P_AUDIT_USERNAME
+            value: {{ .Values.parseable.auditLogging.p_username | quote }}
+          - name: P_AUDIT_PASSWORD
+            value: {{ .Values.parseable.auditLogging.p_password | quote }}
+          {{- end }}
+
           {{- if and .Values.parseable.s3ModeSecret .Values.parseable.s3ModeSecret.enabled }}
           {{- range $secret := .Values.parseable.s3ModeSecret.secrets }}
           {{- range $key := $secret.keys }}

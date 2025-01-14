@@ -17,10 +17,14 @@
  */
 
 use crate::{
-    catalog::snapshot::Snapshot, metadata::error::stream_info::MetadataError, stats::FullStats,
+    catalog::snapshot::Snapshot,
+    metadata::{error::stream_info::MetadataError, SchemaVersion},
+    stats::FullStats,
+    utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
 
 use chrono::Local;
+use serde::{Deserialize, Serialize};
 
 use std::fmt::Debug;
 
@@ -51,6 +55,7 @@ pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
 pub const SCHEMA_FILE_NAME: &str = ".schema";
 pub const ALERT_FILE_NAME: &str = ".alert.json";
 pub const MANIFEST_FILE: &str = "manifest.json";
+pub const CORRELATIONS_ROOT_DIRECTORY: &str = ".correlations";
 
 /// local sync interval to move data.records to /tmp dir of that stream.
 /// 60 sec is a reasonable value.
@@ -73,10 +78,13 @@ const ACCESS_ALL: &str = "all";
 pub const CURRENT_OBJECT_STORE_VERSION: &str = "v5";
 pub const CURRENT_SCHEMA_VERSION: &str = "v5";
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
     /// Version of schema registry
     pub version: String,
+    /// Version of schema, defaults to v0 if not set
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
     /// Version for change in the way how parquet are generated/stored.
     #[serde(rename = "objectstore-format")]
     pub objectstore_format: String,
@@ -90,8 +98,6 @@ pub struct ObjectStoreFormat {
     pub stats: FullStats,
     #[serde(default)]
     pub snapshot: Snapshot,
-    #[serde(default)]
-    pub cache_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention: Option<Retention>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,30 +106,38 @@ pub struct ObjectStoreFormat {
     pub time_partition_limit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_partition: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub static_schema_flag: Option<String>,
+    #[serde(
+        default,    // sets to false if not configured
+        deserialize_with = "deserialize_string_as_true",
+        serialize_with = "serialize_bool_as_true",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub static_schema_flag: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hot_tier_enabled: Option<bool>,
     pub stream_type: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamInfo {
     #[serde(rename = "created-at")]
     pub created_at: String,
     #[serde(rename = "first-event-at")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_event_at: Option<String>,
-    #[serde(default)]
-    pub cache_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition_limit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_partition: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub static_schema_flag: Option<String>,
+    #[serde(
+        default,    // sets to false if not configured
+        deserialize_with = "deserialize_string_as_true",
+        serialize_with = "serialize_bool_as_true",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub static_schema_flag: bool,
     pub stream_type: Option<String>,
 }
 
@@ -176,6 +190,7 @@ impl Default for ObjectStoreFormat {
     fn default() -> Self {
         Self {
             version: CURRENT_SCHEMA_VERSION.to_string(),
+            schema_version: SchemaVersion::V1, // Newly created streams should be v1
             objectstore_format: CURRENT_OBJECT_STORE_VERSION.to_string(),
             stream_type: Some(StreamType::UserDefined.to_string()),
             created_at: Local::now().to_rfc3339(),
@@ -184,25 +199,17 @@ impl Default for ObjectStoreFormat {
             permissions: vec![Permisssion::new("parseable".to_string())],
             stats: FullStats::default(),
             snapshot: Snapshot::default(),
-            cache_enabled: false,
             retention: None,
             time_partition: None,
             time_partition_limit: None,
             custom_partition: None,
-            static_schema_flag: None,
+            static_schema_flag: false,
             hot_tier_enabled: None,
         }
     }
 }
 
-impl ObjectStoreFormat {
-    fn set_id(&mut self, id: String) {
-        self.owner.id.clone_from(&id);
-        self.owner.group = id;
-    }
-}
-
-#[derive(serde::Serialize, PartialEq)]
+#[derive(serde::Serialize, PartialEq, Debug)]
 pub struct LogStream {
     pub name: String,
 }

@@ -16,12 +16,13 @@
  *
  */
 
+use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
+use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{self, role};
-use crate::handlers::http::{base_path, caching_removed};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
@@ -33,6 +34,7 @@ use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::oneshot;
 use tracing::{error, info};
 
 use crate::{option::CONFIG, ParseableServer};
@@ -50,9 +52,8 @@ impl ParseableServer for QueryServer {
         config
             .service(
                 web::scope(&base_path())
+                    .service(Server::get_correlation_webscope())
                     .service(Server::get_query_factory())
-                    .service(Server::get_trino_factory())
-                    .service(Server::get_cache_webscope())
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
                     .service(Server::get_about_factory())
@@ -85,7 +86,7 @@ impl ParseableServer for QueryServer {
     }
 
     /// initialize the server, run migrations as needed and start an instance
-    async fn init(&self) -> anyhow::Result<()> {
+    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -94,6 +95,9 @@ impl ParseableServer for QueryServer {
         //create internal stream at server start
         create_internal_stream_if_not_exists().await?;
 
+        if let Err(e) = CORRELATIONS.load().await {
+            error!("{e}");
+        }
         FILTERS.load().await?;
         DASHBOARDS.load().await?;
         // track all parquet files already in the data directory
@@ -101,7 +105,7 @@ impl ParseableServer for QueryServer {
 
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
-        if CONFIG.parseable.send_analytics {
+        if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
@@ -118,7 +122,7 @@ impl ParseableServer for QueryServer {
             sync::object_store_sync().await;
 
         tokio::spawn(airplane::server());
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+        let app = self.start(shutdown_rx, prometheus, CONFIG.options.openid());
 
         tokio::pin!(app);
         loop {
@@ -155,7 +159,7 @@ impl ParseableServer for QueryServer {
 
 impl QueryServer {
     // get the role webscope
-    fn get_user_role_webscope() -> Scope {
+    pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
             // GET Role List
             .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
@@ -175,7 +179,7 @@ impl QueryServer {
     }
 
     // get the user webscope
-    fn get_user_webscope() -> Scope {
+    pub fn get_user_webscope() -> Scope {
         web::scope("/user")
             .service(
                 web::resource("")
@@ -230,7 +234,7 @@ impl QueryServer {
     }
 
     // get the logstream web scope
-    fn get_logstream_webscope() -> Scope {
+    pub fn get_logstream_webscope() -> Scope {
         web::scope("/logstream")
             .service(
                 // GET "/logstream" ==> Get list of all Log Streams on the server
@@ -327,13 +331,6 @@ impl QueryServer {
                             ),
                     )
                     .service(
-                        web::resource("/cache")
-                            // PUT "/logstream/{logstream}/cache" ==> caching has been deprecated
-                            .route(web::put().to(caching_removed))
-                            // GET "/logstream/{logstream}/cache" ==> caching has been deprecated
-                            .route(web::get().to(caching_removed)),
-                    )
-                    .service(
                         web::resource("/hottier")
                             // PUT "/logstream/{logstream}/hottier" ==> Set hottier for given logstream
                             .route(
@@ -355,7 +352,7 @@ impl QueryServer {
             )
     }
 
-    fn get_cluster_web_scope() -> actix_web::Scope {
+    pub fn get_cluster_web_scope() -> actix_web::Scope {
         web::scope("/cluster")
             .service(
                 // GET "/cluster/info" ==> Get info of the cluster

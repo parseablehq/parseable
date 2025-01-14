@@ -22,7 +22,7 @@ use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
 };
-use datafusion::execution::runtime_env::RuntimeConfig;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
@@ -157,31 +157,40 @@ pub enum SSECEncryptionKey {
     },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum SSEError {
+    #[error("Expected SSE-C:AES256:<base64_encryption_key>")]
+    UnexpectedKey,
+    #[error("Only SSE-C is supported for object encryption for now")]
+    UnexpectedProtocol,
+    #[error("Invalid SSE algorithm. Following are supported: AES256")]
+    InvalidAlgorithm,
+}
+
 impl FromStr for SSECEncryptionKey {
-    type Err = String;
+    type Err = SSEError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = s.split(':').collect::<Vec<_>>();
-        if parts.len() == 3 {
-            let sse_type = parts[0];
-            if sse_type != "SSE-C" {
-                return Err("Only SSE-C is supported for object encryption for now".into());
-            }
-
-            let algorithm = parts[1];
-            let encryption_key = parts[2];
-
-            let alg = ObjectEncryptionAlgorithm::from_str(algorithm)?;
-
-            Ok(match alg {
-                ObjectEncryptionAlgorithm::Aes256 => SSECEncryptionKey::SseC {
-                    _algorithm: alg,
-                    base64_encryption_key: encryption_key.to_owned(),
-                },
-            })
-        } else {
-            Err("Expected SSE-C:AES256:<base64_encryption_key>".into())
+        if parts.len() != 3 {
+            return Err(SSEError::UnexpectedKey);
         }
+        let sse_type = parts[0];
+        if sse_type != "SSE-C" {
+            return Err(SSEError::UnexpectedProtocol);
+        }
+
+        let algorithm = parts[1];
+        let encryption_key = parts[2];
+
+        let alg = ObjectEncryptionAlgorithm::from_str(algorithm)?;
+
+        Ok(match alg {
+            ObjectEncryptionAlgorithm::Aes256 => SSECEncryptionKey::SseC {
+                _algorithm: alg,
+                base64_encryption_key: encryption_key.to_owned(),
+            },
+        })
     }
 }
 
@@ -191,12 +200,12 @@ pub enum ObjectEncryptionAlgorithm {
 }
 
 impl FromStr for ObjectEncryptionAlgorithm {
-    type Err = String;
+    type Err = SSEError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "AES256" => Ok(ObjectEncryptionAlgorithm::Aes256),
-            _ => Err("Invalid SSE algorithm. Following are supported: AES256".into()),
+            _ => Err(SSEError::InvalidAlgorithm),
         }
     }
 }
@@ -276,7 +285,7 @@ impl S3Config {
 }
 
 impl ObjectStorageProvider for S3Config {
-    fn get_datafusion_runtime(&self) -> RuntimeConfig {
+    fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
@@ -287,10 +296,10 @@ impl ObjectStorageProvider for S3Config {
         let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(s3));
 
-        RuntimeConfig::new().with_object_store_registry(Arc::new(object_store_registry))
+        RuntimeEnvBuilder::new().with_object_store_registry(Arc::new(object_store_registry))
     }
 
-    fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
+    fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
@@ -316,6 +325,7 @@ fn to_object_store_path(path: &RelativePath) -> StorePath {
     StorePath::from(path.as_str())
 }
 
+#[derive(Debug)]
 pub struct S3 {
     client: LimitStore<AmazonS3>,
     bucket: String,
