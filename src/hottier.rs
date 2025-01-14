@@ -133,7 +133,9 @@ impl HotTierManager {
             total_space,
             used_space,
             ..
-        } = get_disk_usage().expect("Codepath should only be hit if hottier is enabled");
+        } = self
+            .get_disk_usage()
+            .expect("Codepath should only be hit if hottier is enabled");
 
         let (total_hot_tier_size, total_hot_tier_used_size) =
             self.get_hot_tiers_size(stream).await?;
@@ -642,7 +644,7 @@ impl HotTierManager {
             total_space,
             available_space,
             used_space,
-        }) = get_disk_usage()
+        }) = self.get_disk_usage()
         {
             if available_space < size_to_download {
                 return Ok(false);
@@ -726,6 +728,34 @@ impl HotTierManager {
         }
         Ok(())
     }
+
+    /// Get the disk usage for the hot tier storage path. If we have a three disk paritions
+    /// mounted as follows:
+    /// 1. /
+    /// 2. /home/parseable
+    /// 3. /home/example/ignore
+    ///
+    /// And parseable is running with `P_HOT_TIER_DIR` pointing to a directory in
+    /// `/home/parseable`, we should return the usage stats of the disk mounted there.
+    fn get_disk_usage(&self) -> Option<DiskUtil> {
+        let mut disks = Disks::new_with_refreshed_list();
+        // Order the disk partitions by decreasing length of mount path
+        disks.sort_by_key(|disk| disk.mount_point().to_str().unwrap().len());
+        disks.reverse();
+
+        for disk in disks.iter() {
+            // Returns disk utilisation of first matching mount point
+            if self.hot_tier_path.starts_with(disk.mount_point()) {
+                return Some(DiskUtil {
+                    total_space: disk.total_space(),
+                    available_space: disk.available_space(),
+                    used_space: disk.total_space() - disk.available_space(),
+                });
+            }
+        }
+
+        None
+    }
 }
 
 /// get the hot tier file path for the stream
@@ -741,35 +771,6 @@ struct DiskUtil {
     total_space: u64,
     available_space: u64,
     used_space: u64,
-}
-
-/// Get the disk usage for the hot tier storage path. If we have a three disk paritions
-/// mounted as follows:
-/// 1. /
-/// 2. /home/parseable
-/// 3. /home/example/ignore
-///
-/// And parseable is running with `P_HOT_TIER_DIR` pointing to a directory in
-/// `/home/parseable`, we should return the usage stats of the disk mounted there.
-fn get_disk_usage() -> Option<DiskUtil> {
-    let path = CONFIG.options.hot_tier_storage_path.as_ref()?;
-    let mut disks = Disks::new_with_refreshed_list();
-    // Order the disk partitions by decreasing length of mount path
-    disks.sort_by_key(|disk| disk.mount_point().to_str().unwrap().len());
-    disks.reverse();
-
-    for disk in disks.iter() {
-        // Returns disk utilisation of first matching mount point
-        if path.starts_with(disk.mount_point()) {
-            return Some(DiskUtil {
-                total_space: disk.total_space(),
-                available_space: disk.available_space(),
-                used_space: disk.total_space() - disk.available_space(),
-            });
-        }
-    }
-
-    None
 }
 
 async fn delete_empty_directory_hot_tier(path: &Path) -> io::Result<()> {
