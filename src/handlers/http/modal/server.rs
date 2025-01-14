@@ -268,8 +268,8 @@ impl Server {
             )
     }
     pub fn get_date_bin() -> Resource {
-        web::resource("/datebin").route(web::post().to(query::get_date_bin).authorize(Action::Query)
-    )
+        web::resource("/datebin")
+            .route(web::post().to(query::get_date_bin).authorize(Action::Query))
     }
 
     // get the query factory

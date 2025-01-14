@@ -18,14 +18,19 @@
 
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, Responder};
+use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
+use datafusion::common::Column;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
+use datafusion::logical_expr::expr::Alias;
+use datafusion::logical_expr::{Aggregate, LogicalPlan, Projection};
+use datafusion::prelude::Expr;
 use futures_util::Future;
 use http::StatusCode;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -67,7 +72,6 @@ pub struct Query {
     pub filter_tags: Option<Vec<String>>,
 }
 
-
 /// DateBin Request.
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -75,24 +79,24 @@ pub struct DateBin {
     pub stream: String,
     pub start_time: String,
     pub end_time: String,
-    pub  num_bins: u64
+    pub num_bins: u64,
 }
 
 /// DateBinRecord
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 pub struct DateBinRecord {
     pub date_bin_timestamp: String,
-    pub log_count: u64
+    pub log_count: u64,
 }
 
 /// DateBin Response.
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 pub struct DateBinResponse {
     pub fields: Vec<String>,
-    pub records: Vec<DateBinRecord>
+    pub records: Vec<DateBinRecord>,
 }
 
-pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
+pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
     let session_state = QUERY_SESSION.state();
     let raw_logical_plan = match session_state
         .create_logical_plan(&query_request.query)
@@ -107,11 +111,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
                 .await?
         }
     };
-
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
 
-    // create a visitor to extract the table names present in query
+    // Create a visitor to extract the table names present in query
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
 
@@ -125,10 +128,36 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     let table_name = query
         .first_table_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
+    let time = Instant::now();
+
+    if let (true, column_name) = is_logical_plan_aggregate_without_filters(&raw_logical_plan) {
+        let date_bin_request = DateBin {
+            stream: table_name.clone(),
+            start_time: query_request.start_time.clone(),
+            end_time: query_request.end_time.clone(),
+            num_bins: 1,
+        };
+        let date_bin_records = date_bin_request.get_bin_density().await?;
+        let response = if query_request.fields {
+            json!({
+                "fields": vec![&column_name],
+                "records": vec![json!({&column_name: date_bin_records[0].log_count})]
+            })
+        } else {
+            Value::Array(vec![json!({&column_name: date_bin_records[0].log_count})])
+        };
+
+        let time = time.elapsed().as_secs_f64();
+
+        QUERY_EXECUTE_TIME
+            .with_label_values(&[&table_name])
+            .observe(time);
+
+        return Ok(HttpResponse::Ok().json(response));
+    }
 
     user_auth_for_query(&permissions, &tables)?;
 
-    let time = Instant::now();
     let (records, fields) = query.execute(table_name.clone()).await?;
 
     let response = QueryResponse {
@@ -149,16 +178,15 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 }
 
 pub async fn get_date_bin(req: HttpRequest, body: Bytes) -> Result<impl Responder, QueryError> {
-
-    let date_bin_request: DateBin = serde_json::from_slice(&body)
-        .map_err(|err| anyhow::Error::msg(err.to_string()))?;
+    let date_bin_request: DateBin =
+        serde_json::from_slice(&body).map_err(|err| anyhow::Error::msg(err.to_string()))?;
 
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
     // does user have access to table?
     user_auth_for_query(&permissions, &[date_bin_request.stream.clone()])?;
-    
+
     let date_bin_records = date_bin_request.get_bin_density().await?;
 
     Ok(web::Json(DateBinResponse {
@@ -196,6 +224,37 @@ pub async fn create_streams_for_querier() {
             let _ = create_stream_and_schema_from_storage(&stream_name).await;
         }
     }
+}
+
+fn is_logical_plan_aggregate_without_filters(plan: &LogicalPlan) -> (bool, String) {
+    match plan {
+        LogicalPlan::Projection(Projection { input, expr, .. }) => {
+            if let LogicalPlan::Aggregate(Aggregate { input, .. }) = &**input {
+                if let LogicalPlan::TableScan { .. } = &**input {
+                    if expr.len() == 1 {
+                        return match &expr[0] {
+                            Expr::Column(Column { name, .. }) => (name == "count(*)", name.clone()),
+                            Expr::Alias(Alias {
+                                expr: inner_expr,
+                                name,
+                                ..
+                            }) => {
+                                let alias_name = name;
+                                if let Expr::Column(Column { name, .. }) = &**inner_expr {
+                                    (name == "count(*)", alias_name.to_string())
+                                } else {
+                                    (false, "".to_string())
+                                }
+                            }
+                            _ => (false, "".to_string()),
+                        };
+                    }
+                }
+            }
+        }
+        _ => return (false, "".to_string()),
+    }
+    (false, "".to_string())
 }
 
 impl FromRequest for Query {
