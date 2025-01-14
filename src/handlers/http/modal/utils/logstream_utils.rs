@@ -60,7 +60,7 @@ pub async fn create_update_stream(
     }
 
     if !metadata::STREAM_INFO.stream_exists(stream_name)
-        && CONFIG.parseable.mode == Mode::Query
+        && CONFIG.options.mode == Mode::Query
         && create_stream_and_schema_from_storage(stream_name).await?
     {
         return Err(StreamError::Custom {

@@ -62,17 +62,17 @@ pub async fn about() -> Json<Value> {
     let commit = current_release.commit_hash;
     let deployment_id = meta.deployment_id.to_string();
     let mode = CONFIG.get_server_mode_string();
-    let staging = if CONFIG.parseable.mode == Mode::Query {
+    let staging = if CONFIG.options.mode == Mode::Query {
         "".to_string()
     } else {
         CONFIG.staging_dir().display().to_string()
     };
-    let grpc_port = CONFIG.parseable.grpc_port;
+    let grpc_port = CONFIG.options.grpc_port;
 
     let store_endpoint = CONFIG.storage().get_endpoint();
-    let is_llm_active = &CONFIG.parseable.open_ai_key.is_some();
+    let is_llm_active = &CONFIG.options.open_ai_key.is_some();
     let llm_provider = is_llm_active.then_some("OpenAI");
-    let is_oidc_active = CONFIG.parseable.openid.is_some();
+    let is_oidc_active = CONFIG.options.openid().is_some();
     let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
     let hot_tier_details: String = if CONFIG.hot_tier_dir().is_none() {
@@ -85,7 +85,7 @@ pub async fn about() -> Json<Value> {
         )
     };
 
-    let ms_clarity_tag = &CONFIG.parseable.ms_clarity_tag;
+    let ms_clarity_tag = &CONFIG.options.ms_clarity_tag;
 
     Json(json!({
         "version": current_version,

@@ -34,6 +34,7 @@ use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::oneshot;
 use tracing::{error, info};
 
 use crate::{option::CONFIG, ParseableServer};
@@ -85,7 +86,7 @@ impl ParseableServer for QueryServer {
     }
 
     /// initialize the server, run migrations as needed and start an instance
-    async fn init(&self) -> anyhow::Result<()> {
+    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -104,7 +105,7 @@ impl ParseableServer for QueryServer {
 
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
-        if CONFIG.parseable.send_analytics {
+        if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
@@ -121,7 +122,7 @@ impl ParseableServer for QueryServer {
             sync::object_store_sync().await;
 
         tokio::spawn(airplane::server());
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+        let app = self.start(shutdown_rx, prometheus, CONFIG.options.openid());
 
         tokio::pin!(app);
         loop {

@@ -87,7 +87,7 @@ fn build_request_body(ai_prompt: String) -> impl serde::Serialize {
 }
 
 pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse, LLMError> {
-    let api_key = match &CONFIG.parseable.open_ai_key {
+    let api_key = match &CONFIG.options.open_ai_key {
         Some(api_key) if api_key.len() > 3 => api_key,
         _ => return Err(LLMError::InvalidAPIKey),
     };

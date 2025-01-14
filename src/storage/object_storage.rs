@@ -158,7 +158,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<String, ObjectStorageError> {
         let format = ObjectStoreFormat {
             created_at: Local::now().to_rfc3339(),
-            permissions: vec![Permisssion::new(CONFIG.parseable.username.clone())],
+            permissions: vec![Permisssion::new(CONFIG.options.username.clone())],
             stream_type: Some(stream_type.to_string()),
             time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
             time_partition_limit: time_partition_limit.map(|limit| limit.to_string()),
@@ -166,8 +166,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             static_schema_flag,
             schema_version: SchemaVersion::V1, // NOTE: Newly created streams are all V1
             owner: Owner {
-                id: CONFIG.parseable.username.clone(),
-                group: CONFIG.parseable.username.clone(),
+                id: CONFIG.options.username.clone(),
+                group: CONFIG.options.username.clone(),
             },
             ..Default::default()
         };
@@ -331,7 +331,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 let mut config = serde_json::from_slice::<ObjectStoreFormat>(&bytes)
                     .expect("parseable config is valid json");
 
-                if CONFIG.parseable.mode == Mode::Ingest {
+                if CONFIG.options.mode == Mode::Ingest {
                     config.stats = FullStats::default();
                     config.snapshot.manifest_list = vec![];
                 }
@@ -665,7 +665,7 @@ pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
 }
 
 pub fn schema_path(stream_name: &str) -> RelativePathBuf {
-    match CONFIG.parseable.mode {
+    match CONFIG.options.mode {
         Mode::Ingest => {
             let file_name = format!(
                 ".ingestor.{}{}",
@@ -683,7 +683,7 @@ pub fn schema_path(stream_name: &str) -> RelativePathBuf {
 
 #[inline(always)]
 pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
-    match &CONFIG.parseable.mode {
+    match &CONFIG.options.mode {
         Mode::Ingest => {
             let file_name = format!(
                 ".ingestor.{}{}",
@@ -732,7 +732,7 @@ fn alert_json_path(stream_name: &str) -> RelativePathBuf {
 
 #[inline(always)]
 pub fn manifest_path(prefix: &str) -> RelativePathBuf {
-    if CONFIG.parseable.mode == Mode::Ingest {
+    if CONFIG.options.mode == Mode::Ingest {
         let manifest_file_name = format!(
             "ingestor.{}.{}",
             INGESTOR_META.get_ingestor_id(),

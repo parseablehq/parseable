@@ -136,7 +136,7 @@ fn print_latest_release(latest_release: update::LatestRelease) {
 pub async fn print(config: &Config, meta: &StorageMetadata) {
     // print current version
     let current = current();
-    let latest_release = if config.parseable.check_update {
+    let latest_release = if config.options.check_update {
         update::get_latest(&meta.deployment_id).await.ok()
     } else {
         None

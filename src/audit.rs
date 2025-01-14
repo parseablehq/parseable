@@ -47,12 +47,7 @@ impl AuditLogger {
         // Try to construct the log endpoint URL by joining the base URL
         // with the ingest path, This can fail if the URL is not valid,
         // when the base URL is not set or the ingest path is not valid
-        let log_endpoint = match CONFIG
-            .parseable
-            .audit_logger
-            .as_ref()?
-            .join("/api/v1/ingest")
-        {
+        let log_endpoint = match CONFIG.options.audit_logger.as_ref()?.join("/api/v1/ingest") {
             Ok(url) => url,
             Err(err) => {
                 eprintln!("Couldn't setup audit logger: {err}");
@@ -71,8 +66,8 @@ impl AuditLogger {
             .header("x-p-stream", "audit_log");
 
         // Use basic auth if credentials are configured
-        if let Some(username) = CONFIG.parseable.audit_username.as_ref() {
-            req = req.basic_auth(username, CONFIG.parseable.audit_password.as_ref())
+        if let Some(username) = CONFIG.options.audit_username.as_ref() {
+            req = req.basic_auth(username, CONFIG.options.audit_password.as_ref())
         }
 
         match req.send().await {

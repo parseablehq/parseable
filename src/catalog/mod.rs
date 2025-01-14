@@ -335,7 +335,7 @@ pub async fn remove_manifest_from_snapshot(
         STREAM_INFO.set_first_event_at(stream_name, None)?;
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
-    match CONFIG.parseable.mode {
+    match CONFIG.options.mode {
         Mode::All | Mode::Ingest => {
             Ok(get_first_event(storage.clone(), stream_name, Vec::new()).await?)
         }
@@ -349,7 +349,7 @@ pub async fn get_first_event(
     dates: Vec<String>,
 ) -> Result<Option<String>, ObjectStorageError> {
     let mut first_event_at: String = String::default();
-    match CONFIG.parseable.mode {
+    match CONFIG.options.mode {
         Mode::All | Mode::Ingest => {
             // get current snapshot
             let stream_first_event = STREAM_INFO.get_first_event(stream_name)?;

@@ -246,12 +246,12 @@ impl FlightService for AirServiceImpl {
 
 pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send {
     let mut addr: SocketAddr = CONFIG
-        .parseable
+        .options
         .address
         .parse()
         .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as a socket address. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-CONFIG.parseable.address, err));
-    addr.set_port(CONFIG.parseable.flight_port);
+CONFIG.options.address, err));
+    addr.set_port(CONFIG.options.flight_port);
 
     let service = AirServiceImpl {};
 
@@ -263,10 +263,7 @@ CONFIG.parseable.address, err));
 
     let cors = cross_origin_config();
 
-    let identity = match (
-        &CONFIG.parseable.tls_cert_path,
-        &CONFIG.parseable.tls_key_path,
-    ) {
+    let identity = match (&CONFIG.options.tls_cert_path, &CONFIG.options.tls_key_path) {
         (Some(cert), Some(key)) => {
             match (std::fs::read_to_string(cert), std::fs::read_to_string(key)) {
                 (Ok(cert_file), Ok(key_file)) => {

@@ -50,7 +50,11 @@ use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> = Lazy::new(|| {
     let storage = CONFIG.storage();
-    let (pool_size, fraction) = match CONFIG.parseable.query_memory_pool_size {
+    let runtime_config = storage
+        .get_datafusion_runtime()
+        .with_disk_manager(DiskManagerConfig::NewOs);
+
+    let (pool_size, fraction) = match CONFIG.options.query_memory_pool_size {
         Some(size) => (size, 1.),
         None => {
             let mut system = System::new();
@@ -60,10 +64,7 @@ pub static QUERY_SESSION: Lazy<SessionContext> = Lazy::new(|| {
         }
     };
 
-    let runtime_config = storage
-        .get_datafusion_runtime()
-        .with_disk_manager(DiskManagerConfig::NewOs)
-        .with_memory_limit(pool_size, fraction);
+    let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
     let runtime = Arc::new(runtime_config.build().unwrap());
 
     let mut config = SessionConfig::default()

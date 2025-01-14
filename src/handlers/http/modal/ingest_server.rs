@@ -51,6 +51,7 @@ use bytes::Bytes;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
+use tokio::sync::oneshot;
 use tracing::error;
 
 /// ! have to use a guard before using it
@@ -97,7 +98,7 @@ impl ParseableServer for IngestServer {
     }
 
     /// configure the server and start an instance to ingest data
-    async fn init(&self) -> anyhow::Result<()> {
+    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -114,7 +115,7 @@ impl ParseableServer for IngestServer {
         set_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
-        let app = self.start(prometheus, None);
+        let app = self.start(shutdown_rx, prometheus, None);
 
         tokio::pin!(app);
         loop {
@@ -354,7 +355,7 @@ async fn validate_credentials() -> anyhow::Result<()> {
 
         let token = base64::prelude::BASE64_STANDARD.encode(format!(
             "{}:{}",
-            CONFIG.parseable.username, CONFIG.parseable.password
+            CONFIG.options.username, CONFIG.options.password
         ));
 
         let token = format!("Basic {}", token);
