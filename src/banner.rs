@@ -25,7 +25,7 @@ use crate::{option::Config, storage::StorageMetadata};
 
 pub async fn print(config: &Config, meta: &StorageMetadata) {
     print_ascii_art();
-    let scheme = config.parseable.get_scheme();
+    let scheme = config.options.get_scheme();
     status_info(config, &scheme, meta.deployment_id);
     storage_info(config).await;
     about::print(config, meta).await;
@@ -50,10 +50,10 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     let address = format!(
         "\"{}://{}\" ({}), \":{}\" (livetail), \":{}\" (flight protocol)",
         scheme,
-        config.parseable.address,
+        config.options.address,
         scheme.to_ascii_uppercase(),
-        config.parseable.grpc_port,
-        config.parseable.flight_port
+        config.options.grpc_port,
+        config.options.flight_port
     );
 
     let mut credentials =
@@ -63,7 +63,7 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
         credentials = "\"Using default creds admin, admin. Please set credentials with P_USERNAME and P_PASSWORD.\"".red().to_string();
     }
 
-    let llm_status = match &config.parseable.open_ai_key {
+    let llm_status = match &config.options.open_ai_key {
         Some(_) => "OpenAI Configured".green(),
         None => "Not Configured".grey(),
     };
@@ -107,7 +107,7 @@ async fn storage_info(config: &Config) {
         config.staging_dir().to_string_lossy(),
     );
 
-    if let Some(path) = &config.parseable.hot_tier_storage_path {
+    if let Some(path) = &config.options.hot_tier_storage_path {
         eprintln!(
             "\
         {:8}Hot Tier:           \"Enabled, Path: {}\"",

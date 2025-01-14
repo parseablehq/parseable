@@ -103,8 +103,8 @@ impl Alert {
     ) -> Context {
         let deployment_instance = format!(
             "{}://{}",
-            CONFIG.parseable.get_scheme(),
-            CONFIG.parseable.address
+            CONFIG.options.get_scheme(),
+            CONFIG.options.address
         );
         let deployment_id = storage::StorageMetadata::global().deployment_id;
         let deployment_mode = storage::StorageMetadata::global().mode.to_string();

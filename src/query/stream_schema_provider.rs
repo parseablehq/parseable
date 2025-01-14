@@ -193,7 +193,7 @@ impl StandardTableProvider {
             .into_iter()
             .map(|mut file| {
                 let path = CONFIG
-                    .parseable
+                    .options
                     .hot_tier_storage_path
                     .as_ref()
                     .unwrap()
@@ -452,7 +452,7 @@ impl TableProvider for StandardTableProvider {
             }
         };
         let mut merged_snapshot: snapshot::Snapshot = Snapshot::default();
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             let path = RelativePathBuf::from_iter([&self.stream, STREAM_ROOT_DIRECTORY]);
             let obs = glob_storage
                 .get_objects(

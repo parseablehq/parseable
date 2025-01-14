@@ -123,7 +123,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
 }
 
 pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), QueryError> {
-    if CONFIG.parseable.mode == Mode::Query {
+    if CONFIG.options.mode == Mode::Query {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
                 // commit schema merges the schema internally and updates the schema in storage.

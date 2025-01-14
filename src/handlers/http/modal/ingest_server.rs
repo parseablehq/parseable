@@ -355,7 +355,7 @@ async fn validate_credentials() -> anyhow::Result<()> {
 
         let token = base64::prelude::BASE64_STANDARD.encode(format!(
             "{}:{}",
-            CONFIG.parseable.username, CONFIG.parseable.password
+            CONFIG.options.username, CONFIG.options.password
         ));
 
         let token = format!("Basic {}", token);
