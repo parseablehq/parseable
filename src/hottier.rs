@@ -72,18 +72,19 @@ impl HotTierManager {
     pub fn global() -> Option<&'static HotTierManager> {
         static INSTANCE: OnceCell<HotTierManager> = OnceCell::new();
 
-        let hot_tier_path = &CONFIG.options.hot_tier_storage_path;
-        if hot_tier_path.is_none() {
-            return None;
-        }
-        Some(INSTANCE.get_or_init(|| {
-            let hot_tier_path = hot_tier_path.as_ref().unwrap().clone();
+        CONFIG
+            .options
+            .hot_tier_storage_path
+            .clone()
+            .map(|hot_tier_path| {
+                INSTANCE.get_or_init(|| {
             std::fs::create_dir_all(&hot_tier_path).unwrap();
             HotTierManager {
                 filesystem: LocalFileSystem::new(),
                 hot_tier_path,
             }
-        }))
+                })
+            })
     }
 
     ///get the total hot tier size for all streams
