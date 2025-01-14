@@ -78,11 +78,11 @@ impl HotTierManager {
             .clone()
             .map(|hot_tier_path| {
                 INSTANCE.get_or_init(|| {
-            std::fs::create_dir_all(&hot_tier_path).unwrap();
-            HotTierManager {
-                filesystem: LocalFileSystem::new(),
-                hot_tier_path,
-            }
+                    std::fs::create_dir_all(&hot_tier_path).unwrap();
+                    HotTierManager {
+                        filesystem: LocalFileSystem::new(),
+                        hot_tier_path,
+                    }
                 })
             })
     }
@@ -391,9 +391,8 @@ impl HotTierManager {
             .sort_by_key(|file| file.file_path.clone());
         // write the manifest file to the hot tier directory
         let manifest_path = self
-            .hot_tier_path
-            .join(stream)
-            .join(format!("date={}/hottier.manifest.json", date));
+            .get_stream_path_for_date(stream, &date)
+            .join("hottier.manifest.json");
         fs::create_dir_all(manifest_path.parent().unwrap()).await?;
         fs::write(manifest_path, serde_json::to_vec(&hot_tier_manifest)?).await?;
         Ok(file_processed)
@@ -408,7 +407,7 @@ impl HotTierManager {
         dates: &[NaiveDate],
     ) -> Result<(), HotTierError> {
         for date in dates.iter() {
-            let path = self.hot_tier_path.join(format!("{}/date={}", stream, date));
+            let path = self.get_stream_path_for_date(stream, &date);
             if path.exists() {
                 fs::remove_dir_all(path.clone()).await?;
             }
@@ -562,11 +561,7 @@ impl HotTierManager {
         let mut delete_successful = false;
         let dates = self.fetch_hot_tier_dates(stream).await?;
         'loop_dates: for date in dates {
-            let date_str = date.to_string();
-            let path = &self
-                .hot_tier_path
-                .join(stream)
-                .join(format!("date={}", date_str));
+            let path = self.get_stream_path_for_date(stream, &date);
             if !path.exists() {
                 continue;
             }
@@ -588,12 +583,7 @@ impl HotTierManager {
 
                 'loop_files: while let Some(file_to_delete) = manifest.files.pop() {
                     let file_size = file_to_delete.file_size;
-                    let path_to_delete = CONFIG
-                        .options
-                        .hot_tier_storage_path
-                        .as_ref()
-                        .unwrap()
-                        .join(&file_to_delete.file_path);
+                    let path_to_delete = self.hot_tier_path.join(&file_to_delete.file_path);
 
                     if path_to_delete.exists() {
                         if let (Some(download_date_time), Some(delete_date_time)) = (
@@ -670,11 +660,7 @@ impl HotTierManager {
         }
 
         for date in date_list {
-            let path = self
-                .hot_tier_path
-                .join(stream)
-                .join(format!("date={}", date));
-
+            let path = self.get_stream_path_for_date(stream, &date);
             let hours_dir = ReadDirStream::new(fs::read_dir(&path).await?);
             let mut hours: Vec<DirEntry> = hours_dir.try_collect().await?;
             hours.retain(|entry| {
