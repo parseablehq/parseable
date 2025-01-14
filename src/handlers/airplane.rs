@@ -201,7 +201,7 @@ impl FlightService for AirServiceImpl {
 
         let time = time.elapsed().as_secs_f64();
         QUERY_EXECUTE_TIME
-            .with_label_values(&[&stream_name])
+            .with_label_values(&[&format!("flight-query-{stream_name}")])
             .observe(time);
 
         into_flight_data(records)
