@@ -230,25 +230,23 @@ fn is_logical_plan_aggregate_without_filters(plan: &LogicalPlan) -> (bool, Strin
     match plan {
         LogicalPlan::Projection(Projection { input, expr, .. }) => {
             if let LogicalPlan::Aggregate(Aggregate { input, .. }) = &**input {
-                if let LogicalPlan::TableScan { .. } = &**input {
-                    if expr.len() == 1 {
-                        return match &expr[0] {
-                            Expr::Column(Column { name, .. }) => (name == "count(*)", name.clone()),
-                            Expr::Alias(Alias {
-                                expr: inner_expr,
-                                name,
-                                ..
-                            }) => {
-                                let alias_name = name;
-                                if let Expr::Column(Column { name, .. }) = &**inner_expr {
-                                    (name == "count(*)", alias_name.to_string())
-                                } else {
-                                    (false, "".to_string())
-                                }
+                if matches!(&**input, LogicalPlan::TableScan { .. }) && expr.len() == 1 {
+                    return match &expr[0] {
+                        Expr::Column(Column { name, .. }) => (name == "count(*)", name.clone()),
+                        Expr::Alias(Alias {
+                            expr: inner_expr,
+                            name,
+                            ..
+                        }) => {
+                            let alias_name = name;
+                            if let Expr::Column(Column { name, .. }) = &**inner_expr {
+                                (name == "count(*)", alias_name.to_string())
+                            } else {
+                                (false, "".to_string())
                             }
-                            _ => (false, "".to_string()),
-                        };
-                    }
+                        }
+                        _ => (false, "".to_string()),
+                    };
                 }
             }
         }

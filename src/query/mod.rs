@@ -209,14 +209,11 @@ impl DateBin {
         let time_partition = STREAM_INFO
             .get_time_partition(&self.stream.clone())
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
-            .unwrap_or(event::DEFAULT_TIMESTAMP_KEY.to_owned());
+            .unwrap_or_else(|| event::DEFAULT_TIMESTAMP_KEY.to_owned());
 
         // get time range
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
         let all_manifest_files = get_manifest_list(&self.stream, &time_range).await?;
-        if time_range.start > time_range.end {
-            todo!()
-        }
         // get final date bins
         let final_date_bins = self.get_bins(&time_range);
 
@@ -383,7 +380,7 @@ pub async fn get_manifest_list(
     let mut merged_snapshot: Snapshot = Snapshot::default();
 
     // get a list of manifests
-    if CONFIG.parseable.mode == Mode::Query {
+    if CONFIG.options.mode == Mode::Query {
         let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
         let obs = glob_storage
             .get_objects(
