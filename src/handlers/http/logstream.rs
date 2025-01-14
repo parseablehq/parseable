@@ -50,7 +50,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderName, HeaderValue};
 use itertools::Itertools;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::num::NonZeroU32;
@@ -630,10 +630,10 @@ pub async fn put_stream_hot_tier(
     STREAM_INFO.set_hot_tier(&stream_name, true)?;
     if let Some(hot_tier_manager) = HotTierManager::global() {
         let existing_hot_tier_used_size = hot_tier_manager
-            .validate_hot_tier_size(&stream_name, &hottier.size)
+            .validate_hot_tier_size(&stream_name, hottier.size)
             .await?;
-        hottier.used_size = existing_hot_tier_used_size.to_string();
-        hottier.available_size = hottier.size.to_string();
+        hottier.used_size = existing_hot_tier_used_size;
+        hottier.available_size = hottier.size;
         hottier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
         hot_tier_manager
             .put_hot_tier(&stream_name, &mut hottier)
@@ -674,11 +674,23 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
     }
 
     if let Some(hot_tier_manager) = HotTierManager::global() {
-        let mut hot_tier = hot_tier_manager.get_hot_tier(&stream_name).await?;
-        hot_tier.size = format!("{} {}", hot_tier.size, "Bytes");
-        hot_tier.used_size = format!("{} Bytes", hot_tier.used_size);
-        hot_tier.available_size = format!("{} Bytes", hot_tier.available_size);
-        Ok((web::Json(hot_tier), StatusCode::OK))
+        let StreamHotTier {
+            version,
+            size,
+            used_size,
+            available_size,
+            oldest_date_time_entry,
+        } = hot_tier_manager.get_hot_tier(&stream_name).await?;
+        let mut json = json!({
+            "version": version,
+            "size": format!("{size} Bytes"),
+            "used_size": format!("{used_size} Bytes"),
+            "available_size": format!("{available_size} Bytes"),
+        });
+        if let Some(entry) = oldest_date_time_entry {
+            json["oldest_date_time_entry"] = serde_json::Value::String(entry);
+        }
+        Ok((web::Json(json), StatusCode::OK))
     } else {
         Err(StreamError::Custom {
             msg: format!("hot tier not initialised for stream {}", stream_name),

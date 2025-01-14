@@ -27,9 +27,9 @@ use crate::{
     catalog::manifest::{File, Manifest},
     handlers::http::cluster::INTERNAL_STREAM_NAME,
     metadata::{error::stream_info::MetadataError, STREAM_INFO},
-    option::{validation::bytes_to_human_size, CONFIG},
+    option::CONFIG,
     storage::{ObjectStorage, ObjectStorageError},
-    utils::extract_datetime,
+    utils::{extract_datetime, human_size::bytes_to_human_size},
     validator::error::HotTierValidationError,
 };
 use chrono::NaiveDate;
@@ -56,10 +56,12 @@ pub const CURRENT_HOT_TIER_VERSION: &str = "v2";
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct StreamHotTier {
     pub version: Option<String>,
-    pub size: String,
-    pub used_size: String,
-    pub available_size: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(with = "crate::utils::human_size")]
+    pub size: u64,
+    #[serde(with = "crate::utils::human_size")]
+    pub used_size: u64,
+    #[serde(with = "crate::utils::human_size")]
+    pub available_size: u64,
     pub oldest_date_time_entry: Option<String>,
 }
 
@@ -97,8 +99,8 @@ impl HotTierManager {
         for stream in STREAM_INFO.list_streams() {
             if self.check_stream_hot_tier_exists(&stream) && stream != current_stream {
                 let stream_hot_tier = self.get_hot_tier(&stream).await?;
-                total_hot_tier_size += &stream_hot_tier.size.parse::<u64>().unwrap();
-                total_hot_tier_used_size += stream_hot_tier.used_size.parse::<u64>().unwrap();
+                total_hot_tier_size += &stream_hot_tier.size;
+                total_hot_tier_used_size += stream_hot_tier.used_size;
             }
         }
         Ok((total_hot_tier_size, total_hot_tier_used_size))
@@ -111,14 +113,13 @@ impl HotTierManager {
     pub async fn validate_hot_tier_size(
         &self,
         stream: &str,
-        stream_hot_tier_size: &str,
+        stream_hot_tier_size: u64,
     ) -> Result<u64, HotTierError> {
-        let stream_hot_tier_size = stream_hot_tier_size.parse::<u64>().unwrap();
         let mut existing_hot_tier_used_size = 0;
         if self.check_stream_hot_tier_exists(stream) {
             //delete existing hot tier if its size is less than the updated hot tier size else return error
             let existing_hot_tier = self.get_hot_tier(stream).await?;
-            existing_hot_tier_used_size = existing_hot_tier.used_size.parse::<u64>().unwrap();
+            existing_hot_tier_used_size = existing_hot_tier.used_size;
 
             if stream_hot_tier_size < existing_hot_tier_used_size {
                 return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
@@ -169,20 +170,17 @@ impl HotTierManager {
             ));
         }
         let path = hot_tier_file_path(&self.hot_tier_path, stream)?;
-        let res = self
+        let bytes = self
             .filesystem
             .get(&path)
             .and_then(|resp| resp.bytes())
-            .await;
-        match res {
-            Ok(bytes) => {
-                let mut stream_hot_tier: StreamHotTier = serde_json::from_slice(&bytes)?;
-                let oldest_date_time_entry = self.get_oldest_date_time_entry(stream).await?;
-                stream_hot_tier.oldest_date_time_entry = oldest_date_time_entry;
-                Ok(stream_hot_tier)
-            }
-            Err(err) => Err(err.into()),
-        }
+            .await?;
+
+        let mut stream_hot_tier: StreamHotTier = serde_json::from_slice(&bytes)?;
+        let oldest_date_time_entry = self.get_oldest_date_time_entry(stream).await?;
+        stream_hot_tier.oldest_date_time_entry = oldest_date_time_entry;
+
+        Ok(stream_hot_tier)
     }
 
     pub async fn delete_hot_tier(&self, stream: &str) -> Result<(), HotTierError> {
@@ -256,7 +254,7 @@ impl HotTierManager {
     /// delete the files from the hot tier directory if the available date range is outside the hot tier range
     async fn process_stream(&self, stream: String) -> Result<(), HotTierError> {
         let stream_hot_tier = self.get_hot_tier(&stream).await?;
-        let mut parquet_file_size = stream_hot_tier.used_size.parse::<u64>().unwrap();
+        let mut parquet_file_size = stream_hot_tier.used_size;
 
         let object_store = CONFIG.storage().get_object_store();
         let mut s3_manifest_file_list = object_store.list_manifest_files(&stream).await?;
@@ -348,7 +346,7 @@ impl HotTierManager {
         let mut file_processed = false;
         let mut stream_hot_tier = self.get_hot_tier(stream).await?;
         if !self.is_disk_available(parquet_file.file_size).await?
-            || stream_hot_tier.available_size.parse::<u64>().unwrap() <= parquet_file.file_size
+            || stream_hot_tier.available_size <= parquet_file.file_size
         {
             if !self
                 .cleanup_hot_tier_old_data(
@@ -361,7 +359,7 @@ impl HotTierManager {
             {
                 return Ok(file_processed);
             }
-            *parquet_file_size = stream_hot_tier.used_size.parse::<u64>().unwrap();
+            *parquet_file_size = stream_hot_tier.used_size;
         }
         let parquet_file_path = RelativePathBuf::from(parquet_file.file_path.clone());
         fs::create_dir_all(parquet_path.parent().unwrap()).await?;
@@ -373,11 +371,9 @@ impl HotTierManager {
             .await?;
         file.write_all(&parquet_data).await?;
         *parquet_file_size += parquet_file.file_size;
-        stream_hot_tier.used_size = parquet_file_size.to_string();
+        stream_hot_tier.used_size = *parquet_file_size;
 
-        stream_hot_tier.available_size = (stream_hot_tier.available_size.parse::<u64>().unwrap()
-            - parquet_file.file_size)
-            .to_string();
+        stream_hot_tier.available_size = stream_hot_tier.available_size - parquet_file.file_size;
         self.put_hot_tier(stream, &mut stream_hot_tier).await?;
         file_processed = true;
         let path = self.get_stream_path_for_date(stream, &date);
@@ -598,18 +594,12 @@ impl HotTierManager {
                         fs::remove_dir_all(path_to_delete.parent().unwrap()).await?;
                         delete_empty_directory_hot_tier(path_to_delete.parent().unwrap()).await?;
 
-                        stream_hot_tier.used_size =
-                            (stream_hot_tier.used_size.parse::<u64>().unwrap() - file_size)
-                                .to_string();
-                        stream_hot_tier.available_size =
-                            (stream_hot_tier.available_size.parse::<u64>().unwrap() + file_size)
-                                .to_string();
+                        stream_hot_tier.used_size = stream_hot_tier.used_size - file_size;
+                        stream_hot_tier.available_size = stream_hot_tier.available_size + file_size;
                         self.put_hot_tier(stream, stream_hot_tier).await?;
                         delete_successful = true;
 
-                        if stream_hot_tier.available_size.parse::<u64>().unwrap()
-                            <= parquet_file_size
-                        {
+                        if stream_hot_tier.available_size <= parquet_file_size {
                             continue 'loop_files;
                         } else {
                             break 'loop_dates;
@@ -699,9 +689,9 @@ impl HotTierManager {
         if !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME) {
             let mut stream_hot_tier = StreamHotTier {
                 version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
-                size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES.to_string(),
-                used_size: "0".to_string(),
-                available_size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES.to_string(),
+                size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
+                used_size: 0,
+                available_size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
                 oldest_date_time_entry: None,
             };
             self.put_hot_tier(INTERNAL_STREAM_NAME, &mut stream_hot_tier)

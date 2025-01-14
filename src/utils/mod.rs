@@ -19,10 +19,12 @@
 pub mod actix;
 pub mod arrow;
 pub mod header_parsing;
+pub mod human_size;
 pub mod json;
 pub mod time;
 pub mod uid;
 pub mod update;
+
 use crate::handlers::http::rbac::RBACError;
 use crate::option::CONFIG;
 use crate::rbac::role::{Action, Permission};

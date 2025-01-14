@@ -192,12 +192,9 @@ pub mod validation {
         env, io,
         net::ToSocketAddrs,
         path::{Path, PathBuf},
-        str::FromStr,
     };
 
     use path_clean::PathClean;
-
-    use human_size::{multiples, SpecificSize};
 
     #[cfg(any(
         all(target_os = "linux", target_arch = "x86_64"),
@@ -282,45 +279,6 @@ pub mod validation {
             "lz4" => Ok(Compression::Lz4),
             "zstd" => Ok(Compression::Zstd),
             _ => Err("Invalid COMPRESSION provided".to_string()),
-        }
-    }
-
-    pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
-        fn parse_and_map<T: human_size::Multiple>(
-            s: &str,
-        ) -> Result<u64, human_size::ParsingError> {
-            SpecificSize::<T>::from_str(s).map(|x| x.to_bytes())
-        }
-
-        let size = parse_and_map::<multiples::Mebibyte>(s)
-            .or(parse_and_map::<multiples::Megabyte>(s))
-            .or(parse_and_map::<multiples::Gigibyte>(s))
-            .or(parse_and_map::<multiples::Gigabyte>(s))
-            .or(parse_and_map::<multiples::Tebibyte>(s))
-            .or(parse_and_map::<multiples::Terabyte>(s))
-            .map_err(|_| "Could not parse given size".to_string())?;
-        Ok(size)
-    }
-
-    pub fn bytes_to_human_size(bytes: u64) -> String {
-        const KIB: u64 = 1024;
-        const MIB: u64 = KIB * 1024;
-        const GIB: u64 = MIB * 1024;
-        const TIB: u64 = GIB * 1024;
-        const PIB: u64 = TIB * 1024;
-
-        if bytes < KIB {
-            format!("{} B", bytes)
-        } else if bytes < MIB {
-            format!("{:.2} KB", bytes as f64 / KIB as f64)
-        } else if bytes < GIB {
-            format!("{:.2} MiB", bytes as f64 / MIB as f64)
-        } else if bytes < TIB {
-            format!("{:.2} GiB", bytes as f64 / GIB as f64)
-        } else if bytes < PIB {
-            format!("{:.2} TiB", bytes as f64 / TIB as f64)
-        } else {
-            format!("{:.2} PiB", bytes as f64 / PIB as f64)
         }
     }
 
