@@ -713,9 +713,7 @@ impl HotTierManager {
     }
 
     pub async fn put_internal_stream_hot_tier(&self) -> Result<(), HotTierError> {
-        if CONFIG.options.hot_tier_storage_path.is_some()
-            && !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME)
-        {
+        if !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME) {
             let mut stream_hot_tier = StreamHotTier {
                 version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
                 size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES.to_string(),
