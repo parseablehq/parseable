@@ -311,14 +311,14 @@ impl DateBin {
         if have_remainder {
             final_date_bins.push([
                 PartialTimeFilter::Low(Bound::Included(start.naive_utc())),
-                PartialTimeFilter::High(Bound::Included(
+                PartialTimeFilter::High(Bound::Excluded(
                     (start + Duration::minutes(remainder)).naive_utc(),
                 )),
             ]);
         } else {
             final_date_bins.push([
                 PartialTimeFilter::Low(Bound::Included(start.naive_utc())),
-                PartialTimeFilter::High(Bound::Included(
+                PartialTimeFilter::High(Bound::Excluded(
                     (start + Duration::minutes(quotient)).naive_utc(),
                 )),
             ]);
