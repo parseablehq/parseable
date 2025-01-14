@@ -236,17 +236,14 @@ impl HotTierManager {
 
     ///sync the hot tier files from S3 to the hot tier directory for all streams
     async fn sync_hot_tier(&self) -> Result<(), HotTierError> {
-        let streams = STREAM_INFO.list_streams();
-        let sync_hot_tier_tasks = FuturesUnordered::new();
-        for stream in streams {
+        let mut sync_hot_tier_tasks = FuturesUnordered::new();
+        for stream in STREAM_INFO.list_streams() {
             if self.check_stream_hot_tier_exists(&stream) {
-                sync_hot_tier_tasks.push(async move { self.process_stream(stream).await });
-                //self.process_stream(stream).await?;
+                sync_hot_tier_tasks.push(self.process_stream(stream));
             }
         }
 
-        let res: Vec<_> = sync_hot_tier_tasks.collect().await;
-        for res in res {
+        while let Some(res) = sync_hot_tier_tasks.next().await {
             if let Err(err) = res {
                 error!("Failed to run hot tier sync task {err:?}");
                 return Err(err);
