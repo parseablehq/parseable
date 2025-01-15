@@ -250,6 +250,11 @@ pub struct DateBinRecord {
     pub log_count: u64,
 }
 
+struct DateBinBounds {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+}
+
 /// DateBin Request.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -284,20 +289,8 @@ impl DateBinRequest {
         let mut date_bin_records = Vec::new();
 
         for bin in final_date_bins {
-            let date_bin_timestamp = match &bin[0] {
-                PartialTimeFilter::Low(Bound::Included(ts)) => ts.and_utc().timestamp_millis(),
-                _ => unreachable!(),
-            };
-
             // extract start and end time to compare
-            let bin_start = match &bin[0] {
-                PartialTimeFilter::Low(Bound::Included(ts)) => ts,
-                _ => unreachable!(),
-            };
-            let bin_end = match &bin[1] {
-                PartialTimeFilter::High(Bound::Included(ts) | Bound::Excluded(ts)) => ts,
-                _ => unreachable!(),
-            };
+            let date_bin_timestamp = bin.start.timestamp_millis();
 
             let total_num_rows: u64 = all_manifest_files
                 .iter()
@@ -307,10 +300,9 @@ impl DateBinRequest {
                         c.name == time_partition
                             && match &c.stats {
                                 Some(crate::catalog::column::TypedStatistics::Int(int64_type)) => {
-                                    let min = DateTime::from_timestamp_millis(int64_type.min)
-                                        .unwrap()
-                                        .naive_utc();
-                                    bin_start <= &min && bin_end >= &min
+                                    let min =
+                                        DateTime::from_timestamp_millis(int64_type.min).unwrap();
+                                    bin.start <= min && bin.end >= min
                                 }
                                 _ => false,
                             }
@@ -329,9 +321,8 @@ impl DateBinRequest {
         Ok(date_bin_records)
     }
 
-    /// calculate the endTime for each bin based on num bins
-    fn get_bins(&self, time_range: &TimeRange) -> Vec<[PartialTimeFilter; 2]> {
-        // get total minutes elapsed between start and end time
+    /// Calculate the end time for each bin based on the number of bins
+    fn get_bins(&self, time_range: &TimeRange) -> Vec<DateBinBounds> {
         let total_minutes = time_range
             .end
             .signed_duration_since(time_range.start)
@@ -354,33 +345,24 @@ impl DateBinRequest {
             self.num_bins - 1
         };
 
+        // Create bins for all but the last date
         for _ in 0..loop_end {
-            let bin_end = start + Duration::minutes(quotient as i64);
-            final_date_bins.push([
-                PartialTimeFilter::Low(Bound::Included(start.naive_utc())),
-                PartialTimeFilter::High(Bound::Excluded(bin_end.naive_utc())),
-            ]);
-
-            start = bin_end;
+            let end = start + Duration::minutes(quotient as i64);
+            final_date_bins.push(DateBinBounds { start, end });
+            start = end;
         }
 
-        // construct the last bin
-        // if we have remainder, then the last bin will be as long as the remainder
-        // else it will be as long as the quotient
+        // Add the last bin, accounting for any remainder, should we include it?
         if have_remainder {
-            final_date_bins.push([
-                PartialTimeFilter::Low(Bound::Included(start.naive_utc())),
-                PartialTimeFilter::High(Bound::Excluded(
-                    (start + Duration::minutes(remainder as i64)).naive_utc(),
-                )),
-            ]);
+            final_date_bins.push(DateBinBounds {
+                start,
+                end: start + Duration::minutes(remainder as i64),
+            });
         } else {
-            final_date_bins.push([
-                PartialTimeFilter::Low(Bound::Included(start.naive_utc())),
-                PartialTimeFilter::High(Bound::Excluded(
-                    (start + Duration::minutes(quotient as i64)).naive_utc(),
-                )),
-            ]);
+            final_date_bins.push(DateBinBounds {
+                start,
+                end: start + Duration::minutes(quotient as i64),
+            });
         }
 
         final_date_bins
