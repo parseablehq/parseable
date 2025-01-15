@@ -338,8 +338,8 @@ impl DateBinRequest {
             .num_minutes() as u64;
 
         // divide minutes by num bins to get minutes per bin
-        let quotient = (total_minutes / self.num_bins) as i64;
-        let remainder = (total_minutes % self.num_bins) as i64;
+        let quotient = total_minutes / self.num_bins;
+        let remainder = total_minutes % self.num_bins;
         let have_remainder = remainder > 0;
 
         // now create multiple bins [startTime, endTime)
@@ -355,7 +355,7 @@ impl DateBinRequest {
         };
 
         for _ in 0..loop_end {
-            let bin_end = start + Duration::minutes(quotient);
+            let bin_end = start + Duration::minutes(quotient as i64);
             final_date_bins.push([
                 PartialTimeFilter::Low(Bound::Included(start.naive_utc())),
                 PartialTimeFilter::High(Bound::Excluded(bin_end.naive_utc())),
@@ -371,14 +371,14 @@ impl DateBinRequest {
             final_date_bins.push([
                 PartialTimeFilter::Low(Bound::Included(start.naive_utc())),
                 PartialTimeFilter::High(Bound::Excluded(
-                    (start + Duration::minutes(remainder)).naive_utc(),
+                    (start + Duration::minutes(remainder as i64)).naive_utc(),
                 )),
             ]);
         } else {
             final_date_bins.push([
                 PartialTimeFilter::Low(Bound::Included(start.naive_utc())),
                 PartialTimeFilter::High(Bound::Excluded(
-                    (start + Duration::minutes(quotient)).naive_utc(),
+                    (start + Duration::minutes(quotient as i64)).naive_utc(),
                 )),
             ]);
         }
