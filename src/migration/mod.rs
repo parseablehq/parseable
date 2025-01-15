@@ -141,14 +141,6 @@ pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct StreamHotTier {
-    pub version: Option<String>,
-    pub size: String,
-    pub used_size: String,
-    pub available_size: String,
-}
-
 async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
     let mut arrow_schema: Schema = Schema::empty();
 
