@@ -48,6 +48,7 @@ use sysinfo::System;
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
+use crate::catalog::column::{Int64Type, TypedStatistics};
 use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
 use crate::catalog::Snapshot as CatalogSnapshot;
@@ -292,23 +293,26 @@ impl DateBinRequest {
             // extract start and end time to compare
             let date_bin_timestamp = bin.start.timestamp_millis();
 
+            // Sum up the number of rows that fall within the bin
             let total_num_rows: u64 = all_manifest_files
                 .iter()
                 .flat_map(|m| &m.files)
-                .filter(|f| {
-                    f.columns.iter().any(|c| {
+                .filter_map(|f| {
+                    if f.columns.iter().any(|c| {
                         c.name == time_partition
-                            && match &c.stats {
-                                Some(crate::catalog::column::TypedStatistics::Int(int64_type)) => {
-                                    let min =
-                                        DateTime::from_timestamp_millis(int64_type.min).unwrap();
-                                    bin.start <= min && bin.end >= min
+                            && c.stats.as_ref().is_some_and(|stats| match stats {
+                                TypedStatistics::Int(Int64Type { min, .. }) => {
+                                    let min = DateTime::from_timestamp_millis(*min).unwrap();
+                                    bin.start <= min && bin.end >= min // Determines if a column matches the bin's time range.
                                 }
                                 _ => false,
-                            }
-                    })
+                            })
+                    }) {
+                        Some(f.num_rows)
+                    } else {
+                        None
+                    }
                 })
-                .map(|f| f.num_rows)
                 .sum();
 
             date_bin_records.push(DateBinRecord {
