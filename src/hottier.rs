@@ -388,6 +388,7 @@ impl HotTierManager {
             .join("hottier.manifest.json");
         fs::create_dir_all(manifest_path.parent().unwrap()).await?;
         fs::write(manifest_path, serde_json::to_vec(&hot_tier_manifest)?).await?;
+
         Ok(file_processed)
     }
 
@@ -413,21 +414,28 @@ impl HotTierManager {
     pub async fn fetch_hot_tier_dates(&self, stream: &str) -> Result<Vec<NaiveDate>, HotTierError> {
         let mut date_list = Vec::new();
         let path = self.hot_tier_path.join(stream);
-        if path.exists() {
-            let directories = ReadDirStream::new(fs::read_dir(&path).await?);
-            let dates: Vec<DirEntry> = directories.try_collect().await?;
-            for date in dates {
-                if !date.path().is_dir() {
-                    continue;
-                }
-                let date = date.file_name().into_string().unwrap();
-                date_list.push(
-                    NaiveDate::parse_from_str(date.trim_start_matches("date="), "%Y-%m-%d")
-                        .unwrap(),
-                );
+        if !path.exists() {
+            return Ok(date_list);
+        }
+
+        let directories = fs::read_dir(&path).await?;
+        let mut dates = ReadDirStream::new(directories);
+        while let Some(date) = dates.next().await {
+            let date = date?;
+            if !date.path().is_dir() {
+                continue;
             }
+            let date = NaiveDate::parse_from_str(
+                date.file_name()
+                    .to_string_lossy()
+                    .trim_start_matches("date="),
+                "%Y-%m-%d",
+            )
+            .unwrap();
+            date_list.push(date);
         }
         date_list.sort();
+
         Ok(date_list)
     }
 
