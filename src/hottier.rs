@@ -753,35 +753,35 @@ struct DiskUtil {
 }
 
 async fn delete_empty_directory_hot_tier(path: &Path) -> io::Result<()> {
-    async fn delete_helper(path: &Path) -> io::Result<()> {
-        if path.is_dir() {
-            let mut read_dir = fs::read_dir(path).await?;
-            let mut subdirs = vec![];
-
-            while let Some(entry) = read_dir.next_entry().await? {
-                let entry_path = entry.path();
-                if entry_path.is_dir() {
-                    subdirs.push(entry_path);
-                }
-            }
-            let mut tasks = vec![];
-            for subdir in &subdirs {
-                tasks.push(delete_empty_directory_hot_tier(subdir));
-            }
-            futures::stream::iter(tasks)
-                .buffer_unordered(10)
-                .try_collect::<Vec<_>>()
-                .await?;
-
-            // Re-check the directory after deleting its subdirectories
-            let mut read_dir = fs::read_dir(path).await?;
-            if read_dir.next_entry().await?.is_none() {
-                fs::remove_dir(path).await?;
-            }
-        }
-        Ok(())
+    if !path.is_dir() {
+        return Ok(());
     }
-    delete_helper(path).await
+    let mut read_dir = fs::read_dir(path).await?;
+    let mut subdirs = vec![];
+
+    while let Some(entry) = read_dir.next_entry().await? {
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            subdirs.push(entry_path);
+        }
+    }
+
+    let mut tasks = vec![];
+    for subdir in &subdirs {
+        tasks.push(delete_empty_directory_hot_tier(subdir));
+    }
+    futures::stream::iter(tasks)
+        .buffer_unordered(10)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    // Re-check the directory after deleting its subdirectories
+    let mut read_dir = fs::read_dir(path).await?;
+    if read_dir.next_entry().await?.is_none() {
+        fs::remove_dir(path).await?;
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
