@@ -177,17 +177,17 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     Ok(response)
 }
 
-pub async fn get_date_bin(req: HttpRequest, body: Bytes) -> Result<impl Responder, QueryError> {
-    let date_bin_request: DateBin =
-        serde_json::from_slice(&body).map_err(|err| anyhow::Error::msg(err.to_string()))?;
-
+pub async fn get_date_bin(
+    req: HttpRequest,
+    date_bin: Json<DateBinRequest>,
+) -> Result<impl Responder, QueryError> {
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
     // does user have access to table?
-    user_auth_for_query(&permissions, &[date_bin_request.stream.clone()])?;
+    user_auth_for_query(&permissions, &[date_bin.stream.clone()])?;
 
-    let date_bin_records = date_bin_request.get_bin_density().await?;
+    let date_bin_records = date_bin.get_bin_density().await?;
 
     Ok(web::Json(DateBinResponse {
         fields: vec!["date_bin_timestamp".into(), "log_count".into()],
