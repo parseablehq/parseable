@@ -54,7 +54,7 @@ pub const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 pub const STREAM_ROOT_DIRECTORY: &str = ".stream";
 pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
 pub const SCHEMA_FILE_NAME: &str = ".schema";
-pub const ALERT_FILE_NAME: &str = ".alert.json";
+pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
 /// local sync interval to move data.records to /tmp dir of that stream.
