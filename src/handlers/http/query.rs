@@ -19,7 +19,6 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::Column;
@@ -30,6 +29,7 @@ use datafusion::logical_expr::{Aggregate, LogicalPlan, Projection};
 use datafusion::prelude::Expr;
 use futures_util::Future;
 use http::StatusCode;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -45,7 +45,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::Query as LogicalQuery;
+use crate::query::{DateBinRecord, DateBinRequest, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -58,7 +58,7 @@ use crate::utils::user_auth_for_query;
 use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
 /// Query Request through http endpoint.
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     pub query: String,
@@ -71,26 +71,8 @@ pub struct Query {
     #[serde(skip)]
     pub filter_tags: Option<Vec<String>>,
 }
-
-/// DateBin Request.
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct DateBin {
-    pub stream: String,
-    pub start_time: String,
-    pub end_time: String,
-    pub num_bins: u64,
-}
-
-/// DateBinRecord
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
-pub struct DateBinRecord {
-    pub date_bin_timestamp: String,
-    pub log_count: u64,
-}
-
 /// DateBin Response.
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct DateBinResponse {
     pub fields: Vec<String>,
     pub records: Vec<DateBinRecord>,
@@ -131,7 +113,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let time = Instant::now();
 
     if let (true, column_name) = is_logical_plan_aggregate_without_filters(&raw_logical_plan) {
-        let date_bin_request = DateBin {
+        let date_bin_request = DateBinRequest {
             stream: table_name.clone(),
             start_time: query_request.start_time.clone(),
             end_time: query_request.end_time.clone(),

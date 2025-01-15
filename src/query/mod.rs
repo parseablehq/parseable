@@ -33,6 +33,7 @@ use datafusion::prelude::*;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::ops::Bound;
@@ -48,7 +49,7 @@ use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
 use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::event;
-use crate::handlers::http::query::{DateBin, DateBinRecord, QueryError};
+use crate::handlers::http::query::QueryError;
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, StorageDir, STREAM_ROOT_DIRECTORY};
@@ -201,7 +202,24 @@ impl Query {
     }
 }
 
-impl DateBin {
+/// DateBinRecord
+#[derive(Debug, Serialize, Clone)]
+pub struct DateBinRecord {
+    pub date_bin_timestamp: String,
+    pub log_count: u64,
+}
+
+/// DateBin Request.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DateBinRequest {
+    pub stream: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub num_bins: u64,
+}
+
+impl DateBinRequest {
     /// This function is supposed to read maninfest files for the given stream,
     /// get the sum of `num_rows` between the `startTime` and `endTime`,
     /// divide that by number of bins and return in a manner acceptable for the console
