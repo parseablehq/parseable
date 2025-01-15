@@ -21,12 +21,8 @@ use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
-use datafusion::common::Column;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
-use datafusion::logical_expr::expr::Alias;
-use datafusion::logical_expr::{Aggregate, LogicalPlan, Projection};
-use datafusion::prelude::Expr;
 use futures_util::Future;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -112,7 +108,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
     let time = Instant::now();
 
-    if let (true, column_name) = is_logical_plan_aggregate_without_filters(&raw_logical_plan) {
+    if let Some(column_name) = query.is_logical_plan_count_without_filters() {
         let date_bin_request = DateBinRequest {
             stream: table_name.clone(),
             start_time: query_request.start_time.clone(),
@@ -123,10 +119,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         let response = if query_request.fields {
             json!({
                 "fields": vec![&column_name],
-                "records": vec![json!({&column_name: date_bin_records[0].log_count})]
+                "records": vec![json!({column_name: date_bin_records[0].log_count})]
             })
         } else {
-            Value::Array(vec![json!({&column_name: date_bin_records[0].log_count})])
+            Value::Array(vec![json!({column_name: date_bin_records[0].log_count})])
         };
 
         let time = time.elapsed().as_secs_f64();
@@ -206,35 +202,6 @@ pub async fn create_streams_for_querier() {
             let _ = create_stream_and_schema_from_storage(&stream_name).await;
         }
     }
-}
-
-fn is_logical_plan_aggregate_without_filters(plan: &LogicalPlan) -> (bool, String) {
-    match plan {
-        LogicalPlan::Projection(Projection { input, expr, .. }) => {
-            if let LogicalPlan::Aggregate(Aggregate { input, .. }) = &**input {
-                if matches!(&**input, LogicalPlan::TableScan { .. }) && expr.len() == 1 {
-                    return match &expr[0] {
-                        Expr::Column(Column { name, .. }) => (name == "count(*)", name.clone()),
-                        Expr::Alias(Alias {
-                            expr: inner_expr,
-                            name,
-                            ..
-                        }) => {
-                            let alias_name = name;
-                            if let Expr::Column(Column { name, .. }) = &**inner_expr {
-                                (name == "count(*)", alias_name.to_string())
-                            } else {
-                                (false, "".to_string())
-                            }
-                        }
-                        _ => (false, "".to_string()),
-                    };
-                }
-            }
-        }
-        _ => return (false, "".to_string()),
-    }
-    (false, "".to_string())
 }
 
 impl FromRequest for Query {

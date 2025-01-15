@@ -28,7 +28,10 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, Tr
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::logical_expr::{Explain, Filter, LogicalPlan, PlanType, ToStringifiedPlan};
+use datafusion::logical_expr::expr::Alias;
+use datafusion::logical_expr::{
+    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
+};
 use datafusion::prelude::*;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
@@ -199,6 +202,44 @@ impl Query {
         let mut visitor = TableScanVisitor::default();
         let _ = self.raw_logical_plan.visit(&mut visitor);
         visitor.into_inner().pop()
+    }
+
+    /// Evaluates to Some("count(*)") | Some("column_name") if the logical plan is a Projection: SELECT COUNT(*) | SELECT COUNT(*) as column_name
+    pub fn is_logical_plan_count_without_filters(&self) -> Option<&String> {
+        // Check if the raw logical plan is a Projection: SELECT
+        let LogicalPlan::Projection(Projection { input, expr, .. }) = &self.raw_logical_plan else {
+            return None;
+        };
+        // Check if the input of the Projection is an Aggregate: COUNT(*)
+        let LogicalPlan::Aggregate(Aggregate { input, .. }) = &**input else {
+            return None;
+        };
+
+        // Ensure the input of the Aggregate is a TableScan and there is exactly one expression: SELECT COUNT(*)
+        if !matches!(&**input, LogicalPlan::TableScan { .. }) || expr.len() == 1 {
+            return None;
+        }
+
+        // Check if the expression is a column or an alias for COUNT(*)
+        match &expr[0] {
+            // Direct column check
+            Expr::Column(Column { name, .. }) if name == "count(*)" => Some(name),
+            // Alias for COUNT(*)
+            Expr::Alias(Alias {
+                expr: inner_expr,
+                name: alias_name,
+                ..
+            }) => {
+                if let Expr::Column(Column { name, .. }) = &**inner_expr {
+                    if name == "count(*)" {
+                        return Some(alias_name);
+                    }
+                }
+                None
+            }
+            // Unsupported expression type
+            _ => None,
+        }
     }
 }
 
