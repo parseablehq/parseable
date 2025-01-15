@@ -539,7 +539,7 @@ pub async fn send_stream_delete_request(
 pub async fn send_retention_cleanup_request(
     url: &str,
     ingestor: IngestorMetadata,
-    body: Bytes,
+    dates: &Vec<String>,
 ) -> Result<String, ObjectStorageError> {
     let mut first_event_at: String = String::default();
     if !utils::check_liveness(&ingestor.domain_name).await {
@@ -549,7 +549,7 @@ pub async fn send_retention_cleanup_request(
         .post(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, ingestor.token)
-        .body(body)
+        .json(dates)
         .send()
         .await
         .map_err(|err| {

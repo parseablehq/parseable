@@ -16,7 +16,10 @@
  *
  */
 
-use actix_web::{web::Path, HttpRequest, Responder};
+use actix_web::{
+    web::{Json, Path},
+    HttpRequest, Responder,
+};
 use bytes::Bytes;
 use http::StatusCode;
 use tracing::warn;
@@ -37,7 +40,7 @@ use crate::{
 
 pub async fn retention_cleanup(
     stream_name: Path<String>,
-    body: Bytes,
+    Json(date_list): Json<Vec<String>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let storage = CONFIG.storage().get_object_store();
@@ -52,7 +55,6 @@ pub async fn retention_cleanup(
         return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
 
-    let date_list: Vec<String> = serde_json::from_slice(&body).unwrap();
     let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
     let first_event_at: Option<String> = res.unwrap_or_default();
 
