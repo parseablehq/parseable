@@ -387,6 +387,13 @@ impl DateBinRequest {
     }
 }
 
+/// DateBin Response.
+#[derive(Debug, Serialize, Clone)]
+pub struct DateBinResponse {
+    pub fields: Vec<String>,
+    pub records: Vec<DateBinRecord>,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct TableScanVisitor {
     tables: Vec<String>,

@@ -41,7 +41,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::{DateBinRecord, DateBinRequest, Query as LogicalQuery};
+use crate::query::{DateBinRequest, DateBinResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -66,12 +66,6 @@ pub struct Query {
     pub fields: bool,
     #[serde(skip)]
     pub filter_tags: Option<Vec<String>>,
-}
-/// DateBin Response.
-#[derive(Debug, Serialize, Clone)]
-pub struct DateBinResponse {
-    pub fields: Vec<String>,
-    pub records: Vec<DateBinRecord>,
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
