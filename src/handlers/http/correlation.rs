@@ -16,7 +16,7 @@
  *
  */
 
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
@@ -151,5 +151,5 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, CorrelationError
 
     // Delete from memory
     CORRELATIONS.delete(correlation_id).await?;
-    Ok(format!("Deleted correlation with ID- {correlation_id}"))
+    Ok(HttpResponse::Ok().finish())
 }

@@ -23,7 +23,8 @@ use url::Url;
 
 use crate::{
     oidc::{self, OpenidConfig},
-    option::{validation, Compression, Mode}, storage::{AzureBlobConfig, FSConfig, S3Config},
+    option::{validation, Compression, Mode},
+    storage::{AzureBlobConfig, FSConfig, S3Config},
 };
 
 #[cfg(any(
@@ -42,7 +43,6 @@ use std::string::String as KafkaSslProtocol;
 /// NOTE: obviously not recommended for production
 pub const DEFAULT_USERNAME: &str = "admin";
 pub const DEFAULT_PASSWORD: &str = "admin";
-
 
 #[derive(Parser)]
 #[command(
@@ -81,11 +81,11 @@ pub struct Cli {
 #[derive(Parser)]
 pub enum StorageOptions {
     #[command(name = "local-store")]
-     Local(LocalStoreArgs),
-    
+    Local(LocalStoreArgs),
+
     #[command(name = "s3-store")]
     S3(S3StoreArgs),
-    
+
     #[command(name = "blob-store")]
     Blob(BlobStoreArgs),
 }
@@ -125,7 +125,7 @@ pub struct Options {
 
     // Server configuration
     #[arg(
-        long, 
+        long,
         env = "P_ADDR", 
         default_value = "0.0.0.0:8000",
         value_parser = validation::socket_addr,
@@ -381,13 +381,13 @@ pub struct Options {
     )]
     pub audit_logger: Option<Url>,
 
-    #[arg(long ,env = "P_AUDIT_USERNAME", help = "Audit logger username")]
+    #[arg(long, env = "P_AUDIT_USERNAME", help = "Audit logger username")]
     pub audit_username: Option<String>,
 
-    #[arg(long ,env = "P_AUDIT_PASSWORD", help = "Audit logger password")]
+    #[arg(long, env = "P_AUDIT_PASSWORD", help = "Audit logger password")]
     pub audit_password: Option<String>,
 
-    #[arg(long ,env = "P_MS_CLARITY_TAG", help = "Tag for MS Clarity")]
+    #[arg(long, env = "P_MS_CLARITY_TAG", help = "Tag for MS Clarity")]
     pub ms_clarity_tag: Option<String>,
 }
 
@@ -405,7 +405,11 @@ impl Options {
     }
 
     pub fn openid(&self) -> Option<OpenidConfig> {
-        match (&self.oidc_client_id, &self.oidc_client_secret, &self.oidc_issuer) {
+        match (
+            &self.oidc_client_id,
+            &self.oidc_client_secret,
+            &self.oidc_issuer,
+        ) {
             (Some(id), Some(secret), Some(issuer)) => {
                 let origin = if let Some(url) = self.domain_address.clone() {
                     oidc::Origin::Production(url)
