@@ -100,8 +100,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let table_name = query
         .first_table_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
-    let time = Instant::now();
 
+    user_auth_for_query(&permissions, &tables)?;
+
+    let time = Instant::now();
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
         let date_bin_request = DateBinRequest {
             stream: table_name.clone(),
@@ -127,9 +129,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
 
         return Ok(HttpResponse::Ok().json(response));
     }
-
-    user_auth_for_query(&permissions, &tables)?;
-
     let (records, fields) = query.execute(table_name.clone()).await?;
 
     let response = QueryResponse {

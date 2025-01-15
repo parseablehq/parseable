@@ -217,14 +217,14 @@ impl Query {
         };
 
         // Ensure the input of the Aggregate is a TableScan and there is exactly one expression: SELECT COUNT(*)
-        if !matches!(&**input, LogicalPlan::TableScan { .. }) || expr.len() == 1 {
+        if !matches!(&**input, LogicalPlan::TableScan { .. }) || expr.len() != 1 {
             return None;
         }
 
         // Check if the expression is a column or an alias for COUNT(*)
         match &expr[0] {
             // Direct column check
-            Expr::Column(Column { name, .. }) if name == "count(*)" => Some(name),
+            Expr::Column(Column { name, .. }) if name.to_lowercase() == "count(*)" => Some(name),
             // Alias for COUNT(*)
             Expr::Alias(Alias {
                 expr: inner_expr,
@@ -232,7 +232,7 @@ impl Query {
                 ..
             }) => {
                 if let Expr::Column(Column { name, .. }) = &**inner_expr {
-                    if name == "count(*)" {
+                    if name.to_lowercase() == "count(*)" {
                         return Some(alias_name);
                     }
                 }
