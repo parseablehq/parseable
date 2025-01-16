@@ -799,7 +799,7 @@ fn extract_timestamp_bound(
     }
 }
 
-async fn collect_manifest_files(
+pub async fn collect_manifest_files(
     storage: Arc<dyn ObjectStore>,
     manifest_urls: Vec<String>,
 ) -> Result<Vec<Manifest>, object_store::Error> {
