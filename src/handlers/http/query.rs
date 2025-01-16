@@ -104,6 +104,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     user_auth_for_query(&permissions, &tables)?;
 
     let time = Instant::now();
+    // Intercept `count(*)`` queries and use the counts API
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
         let counts_req = CountsRequest {
             stream: table_name.clone(),
