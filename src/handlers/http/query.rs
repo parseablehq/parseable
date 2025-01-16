@@ -41,7 +41,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::{DateBinRequest, DateBinResponse, Query as LogicalQuery};
+use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -104,21 +104,24 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     user_auth_for_query(&permissions, &tables)?;
 
     let time = Instant::now();
+    // Intercept `count(*)`` queries and use the counts API
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
-        let date_bin_request = DateBinRequest {
+        let counts_req = CountsRequest {
             stream: table_name.clone(),
             start_time: query_request.start_time.clone(),
             end_time: query_request.end_time.clone(),
             num_bins: 1,
         };
-        let date_bin_records = date_bin_request.get_bin_density().await?;
+        let count_records = counts_req.get_bin_density().await?;
+        // NOTE: this should not panic, since there is atleast one bin, always
+        let log_count = count_records[0].log_count;
         let response = if query_request.fields {
             json!({
-                "fields": vec![&column_name],
-                "records": vec![json!({column_name: date_bin_records[0].log_count})]
+                "fields": [&column_name],
+                "records": [json!({column_name: log_count})]
             })
         } else {
-            Value::Array(vec![json!({column_name: date_bin_records[0].log_count})])
+            Value::Array(vec![json!({column_name: log_count})])
         };
 
         let time = time.elapsed().as_secs_f64();
@@ -148,21 +151,21 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     Ok(response)
 }
 
-pub async fn get_date_bin(
+pub async fn get_counts(
     req: HttpRequest,
-    date_bin: Json<DateBinRequest>,
+    counts_request: Json<CountsRequest>,
 ) -> Result<impl Responder, QueryError> {
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
     // does user have access to table?
-    user_auth_for_query(&permissions, &[date_bin.stream.clone()])?;
+    user_auth_for_query(&permissions, &[counts_request.stream.clone()])?;
 
-    let date_bin_records = date_bin.get_bin_density().await?;
+    let records = counts_request.get_bin_density().await?;
 
-    Ok(web::Json(DateBinResponse {
-        fields: vec!["date_bin_timestamp".into(), "log_count".into()],
-        records: date_bin_records,
+    Ok(web::Json(CountsResponse {
+        fields: vec!["counts_timestamp".into(), "log_count".into()],
+        records,
     }))
 }
 
