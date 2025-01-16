@@ -142,9 +142,6 @@ arrow = "53.0.0"
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.16/build.zip"
 assets-sha1 = "cb9af17fc1af07e590e839fc0ef4db18c323fc48"
 
-[features]
-debug = []
-
 [profile.release-lto]
 inherits = "release"
 lto = "fat"
