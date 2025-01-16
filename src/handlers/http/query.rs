@@ -113,13 +113,15 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
             num_bins: 1,
         };
         let count_records = counts_req.get_bin_density().await?;
+        // NOTE: this should not panic, since there is atleast one bin, always
+        let log_count = count_records[0].log_count;
         let response = if query_request.fields {
             json!({
-                "fields": vec![&column_name],
-                "records": vec![json!({column_name: count_records[0].log_count})]
+                "fields": [&column_name],
+                "records": [json!({column_name: log_count})]
             })
         } else {
-            Value::Array(vec![json!({column_name: count_records[0].log_count})])
+            Value::Array(vec![json!({column_name: log_count})])
         };
 
         let time = time.elapsed().as_secs_f64();
