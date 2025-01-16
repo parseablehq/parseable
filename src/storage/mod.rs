@@ -18,6 +18,7 @@
 
 use crate::{
     catalog::snapshot::Snapshot,
+    event::format::LogSource,
     metadata::{error::stream_info::MetadataError, SchemaVersion},
     stats::FullStats,
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
@@ -116,6 +117,8 @@ pub struct ObjectStoreFormat {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hot_tier_enabled: Option<bool>,
     pub stream_type: Option<String>,
+    #[serde(default)]
+    pub log_source: LogSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +142,7 @@ pub struct StreamInfo {
     )]
     pub static_schema_flag: bool,
     pub stream_type: Option<String>,
+    pub log_source: LogSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -205,6 +209,7 @@ impl Default for ObjectStoreFormat {
             custom_partition: None,
             static_schema_flag: false,
             hot_tier_enabled: None,
+            log_source: LogSource::default(),
         }
     }
 }

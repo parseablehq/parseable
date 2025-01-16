@@ -27,6 +27,7 @@ use super::{
 };
 
 use crate::correlation::{CorrelationConfig, CorrelationError};
+use crate::event::format::LogSource;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metadata::SchemaVersion;
@@ -155,6 +156,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         static_schema_flag: bool,
         schema: Arc<Schema>,
         stream_type: &str,
+        log_source: LogSource,
     ) -> Result<String, ObjectStorageError> {
         let format = ObjectStoreFormat {
             created_at: Local::now().to_rfc3339(),
@@ -169,6 +171,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 id: CONFIG.options.username.clone(),
                 group: CONFIG.options.username.clone(),
             },
+            log_source,
             ..Default::default()
         };
         let format_json = to_bytes(&format);
