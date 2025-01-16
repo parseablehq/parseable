@@ -46,7 +46,9 @@ pub fn serialize<S>(bytes: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let human_readable = bytes_to_human_size(*bytes);
+    // let human_readable = bytes_to_human_size(*bytes);
+    // NOTE: frontend expects the size in bytes
+    let human_readable = format!("{bytes} Bytes");
     serializer.serialize_str(&human_readable)
 }
 
