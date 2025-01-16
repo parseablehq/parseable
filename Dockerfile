@@ -14,19 +14,22 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # build stage
-FROM rust:1.83.0-bookworm as builder
+FROM rust:1.83.0-alpine AS builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
 LABEL org.opencontainers.image.vendor="Parseable Inc"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
+# Install dependencies for build
+RUN apk add --no-cache musl-dev gcc git
+
 WORKDIR /parseable
 COPY . .
 RUN cargo build --release
 
-# final stage
-FROM gcr.io/distroless/cc-debian12:latest
+# Final stage with a minimal runtime image
+FROM alpine:latest
 
 WORKDIR /parseable
 
