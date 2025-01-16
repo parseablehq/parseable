@@ -22,7 +22,7 @@ LABEL org.opencontainers.image.vendor="Parseable Inc"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 # Install dependencies for build
-RUN apk add --no-cache musl-dev gcc git
+RUN apk add --no-cache musl-dev gcc git bash
 
 WORKDIR /parseable
 COPY . .
