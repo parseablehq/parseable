@@ -159,11 +159,11 @@ pub async fn get_counts(
     // does user have access to table?
     user_auth_for_query(&permissions, &[counts_request.stream.clone()])?;
 
-    let count_records = counts_request.get_bin_density().await?;
+    let records = counts_request.get_bin_density().await?;
 
     Ok(web::Json(CountsResponse {
         fields: vec!["counts_timestamp".into(), "log_count".into()],
-        records: count_records,
+        records,
     }))
 }
 
