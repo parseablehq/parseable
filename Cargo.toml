@@ -151,8 +151,5 @@ lto = "fat"
 codegen-units = 1
 
 # adding rdkafka here because, for unsupported platforms, cargo skips other deps which come after this
-[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
-rdkafka = { version = "0.36.2", default-features = false, features = ["tokio"] }
-
-[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+[target.'cfg(unix)'.dependencies]
 rdkafka = { version = "0.36.2", default-features = false, features = ["tokio"] }

@@ -27,16 +27,10 @@ use crate::{
     storage::{AzureBlobConfig, FSConfig, S3Config},
 };
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
+#[cfg(unix)]
 use crate::kafka::SslProtocol as KafkaSslProtocol;
 
-#[cfg(not(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-)))]
+#[cfg(not(unix))]
 use std::string::String as KafkaSslProtocol;
 
 /// Default username and password for Parseable server, used by default for local mode.
