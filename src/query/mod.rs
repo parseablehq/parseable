@@ -244,33 +244,33 @@ impl Query {
     }
 }
 
-/// DateBinRecord
+/// Record of counts for a given time bin.
 #[derive(Debug, Serialize, Clone)]
-pub struct DateBinRecord {
-    pub date_bin_timestamp: String,
+pub struct CountsRecord {
+    pub counts_timestamp: String,
     pub log_count: u64,
 }
 
-struct DateBinBounds {
+struct TimeBounds {
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 }
 
-/// DateBin Request.
+/// Request for counts, received from API/SQL query.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct DateBinRequest {
+pub struct CountsRequest {
     pub stream: String,
     pub start_time: String,
     pub end_time: String,
     pub num_bins: u64,
 }
 
-impl DateBinRequest {
+impl CountsRequest {
     /// This function is supposed to read maninfest files for the given stream,
     /// get the sum of `num_rows` between the `startTime` and `endTime`,
     /// divide that by number of bins and return in a manner acceptable for the console
-    pub async fn get_bin_density(&self) -> Result<Vec<DateBinRecord>, QueryError> {
+    pub async fn get_bin_density(&self) -> Result<Vec<CountsRecord>, QueryError> {
         let time_partition = STREAM_INFO
             .get_time_partition(&self.stream.clone())
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
@@ -280,18 +280,18 @@ impl DateBinRequest {
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
         let all_manifest_files = get_manifest_list(&self.stream, &time_range).await?;
         // get final date bins
-        let final_date_bins = self.get_bins(&time_range);
+        let counts = self.get_bins(&time_range);
 
         // we have start and end times for each bin
         // we also have all the manifest files for the given time range
         // now we iterate over start and end times for each bin
         // then we iterate over the manifest files which are within that time range
         // we sum up the num_rows
-        let mut date_bin_records = Vec::new();
+        let mut counts_records = Vec::new();
 
-        for bin in final_date_bins {
+        for bin in counts {
             // extract start and end time to compare
-            let date_bin_timestamp = bin.start.timestamp_millis();
+            let counts_timestamp = bin.start.timestamp_millis();
 
             // Sum up the number of rows that fall within the bin
             let total_num_rows: u64 = all_manifest_files
@@ -315,18 +315,18 @@ impl DateBinRequest {
                 })
                 .sum();
 
-            date_bin_records.push(DateBinRecord {
-                date_bin_timestamp: DateTime::from_timestamp_millis(date_bin_timestamp)
+            counts_records.push(CountsRecord {
+                counts_timestamp: DateTime::from_timestamp_millis(counts_timestamp)
                     .unwrap()
                     .to_rfc3339(),
                 log_count: total_num_rows,
             });
         }
-        Ok(date_bin_records)
+        Ok(counts_records)
     }
 
     /// Calculate the end time for each bin based on the number of bins
-    fn get_bins(&self, time_range: &TimeRange) -> Vec<DateBinBounds> {
+    fn get_bins(&self, time_range: &TimeRange) -> Vec<TimeBounds> {
         let total_minutes = time_range
             .end
             .signed_duration_since(time_range.start)
@@ -339,7 +339,7 @@ impl DateBinRequest {
 
         // now create multiple bins [startTime, endTime)
         // Should we exclude the last one???
-        let mut final_date_bins = vec![];
+        let mut counts = vec![];
 
         let mut start = time_range.start;
 
@@ -352,32 +352,32 @@ impl DateBinRequest {
         // Create bins for all but the last date
         for _ in 0..loop_end {
             let end = start + Duration::minutes(quotient as i64);
-            final_date_bins.push(DateBinBounds { start, end });
+            counts.push(TimeBounds { start, end });
             start = end;
         }
 
         // Add the last bin, accounting for any remainder, should we include it?
         if have_remainder {
-            final_date_bins.push(DateBinBounds {
+            counts.push(TimeBounds {
                 start,
                 end: start + Duration::minutes(remainder as i64),
             });
         } else {
-            final_date_bins.push(DateBinBounds {
+            counts.push(TimeBounds {
                 start,
                 end: start + Duration::minutes(quotient as i64),
             });
         }
 
-        final_date_bins
+        counts
     }
 }
 
-/// DateBin Response.
+/// Response for the counts API
 #[derive(Debug, Serialize, Clone)]
-pub struct DateBinResponse {
+pub struct CountsResponse {
     pub fields: Vec<String>,
-    pub records: Vec<DateBinRecord>,
+    pub records: Vec<CountsRecord>,
 }
 
 #[derive(Debug, Default)]
