@@ -1,0 +1,76 @@
+on:
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "helm/**"
+      - "assets/**"
+      - "**.md"
+  push:
+    branches:
+      - main
+
+name: Ensure parseable builds on all release targets
+jobs:
+  build-linux:
+    name: Build for ${{matrix.target}}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu # linux(arm)
+          - x86_64-unknown-linux-gnu # linux(64 bit)
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal # minimal component installation (ie, no documentation)
+          target: ${{ matrix.target }}
+          override: true
+
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --target ${{matrix.target}}
+
+  build-windows:
+    name: Build for windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal # minimal component installation (ie, no documentation)
+          default: true
+          override: true
+
+      - name: Build on windows
+        run: cargo build --target x86_64-pc-windows-msvc
+
+  build-macos:
+    name: Build for ${{matrix.target}}
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          - aarch64-apple-darwin # macos(arm)
+          - x86_64-apple-darwin # macos(intel 64 bit)
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Build on ${{ matrix.target }}
+        run: cargo build --target ${{ matrix.target }}

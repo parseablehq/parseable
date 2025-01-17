@@ -1,8 +1,3 @@
-use bytes::Bytes;
-use datafusion::datasource::listing::ListingTableUrl;
-use futures::stream::FuturesUnordered;
-use futures::{StreamExt, TryStreamExt};
-use tracing::{error, info};
 /*
  * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
@@ -26,14 +21,19 @@ use super::{
     SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 use async_trait::async_trait;
+use bytes::Bytes;
+use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
 };
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use futures::stream::FuturesUnordered;
+use futures::{StreamExt, TryStreamExt};
 use object_store::azure::{MicrosoftAzure, MicrosoftAzureBuilder};
 use object_store::{BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig};
 use relative_path::{RelativePath, RelativePathBuf};
 use std::path::Path as StdPath;
+use tracing::{error, info};
 use url::Url;
 
 use super::metrics_layer::MetricLayer;
@@ -678,10 +678,8 @@ impl ObjectStorage for BlobStore {
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>();
         for user in users {
-            let user_dashboard_path = object_store::path::Path::from(format!(
-                "{}/{}/{}",
-                USERS_ROOT_DIR, user, "dashboards"
-            ));
+            let user_dashboard_path =
+                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/dashboards"));
             let dashboards_path = RelativePathBuf::from(&user_dashboard_path);
             let dashboard_bytes = self
                 .get_objects(
@@ -716,10 +714,8 @@ impl ObjectStorage for BlobStore {
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>();
         for user in users {
-            let user_filters_path = object_store::path::Path::from(format!(
-                "{}/{}/{}",
-                USERS_ROOT_DIR, user, "filters"
-            ));
+            let user_filters_path =
+                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/filters",));
             let resp = self
                 .client
                 .list_with_delimiter(Some(&user_filters_path))
@@ -747,6 +743,43 @@ impl ObjectStorage for BlobStore {
         Ok(filters)
     }
 
+    ///fetch all correlations uploaded in object store
+    /// return the correlation file path and all correlation json bytes for each file path
+    async fn get_all_correlations(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
+        let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
+        let resp = self
+            .client
+            .list_with_delimiter(Some(&users_root_path))
+            .await?;
+
+        let users = resp
+            .common_prefixes
+            .iter()
+            .flat_map(|path| path.parts())
+            .filter(|name| name.as_ref() != USERS_ROOT_DIR)
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>();
+        for user in users {
+            let user_correlation_path =
+                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/correlations"));
+            let correlations_path = RelativePathBuf::from(&user_correlation_path);
+            let correlation_bytes = self
+                .get_objects(
+                    Some(&correlations_path),
+                    Box::new(|file_name| file_name.ends_with(".json")),
+                )
+                .await?;
+
+            correlations
+                .entry(correlations_path)
+                .or_default()
+                .extend(correlation_bytes);
+        }
+        Ok(correlations)
+    }
     fn get_bucket_name(&self) -> String {
         self.container.clone()
     }
