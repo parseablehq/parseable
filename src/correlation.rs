@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use actix_web::{http::header::ContentType, Error};
 use chrono::Utc;
@@ -24,13 +24,17 @@ use datafusion::error::DataFusionError;
 use http::StatusCode;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Error as SerdeError;
 use tokio::sync::RwLock;
-use tracing::{error, trace, warn};
+use tracing::error;
 
 use crate::{
-    handlers::http::rbac::RBACError,
+    handlers::http::{
+        rbac::RBACError,
+        users::{CORRELATION_DIR, USERS_ROOT_DIR},
+    },
     option::CONFIG,
     query::QUERY_SESSION,
     rbac::{map::SessionKey, Users},
@@ -41,8 +45,10 @@ use crate::{
 
 pub static CORRELATIONS: Lazy<Correlation> = Lazy::new(Correlation::default);
 
+type CorrelationMap = HashMap<CorrelationId, CorrelationConfig>;
+
 #[derive(Debug, Default, derive_more::Deref)]
-pub struct Correlation(RwLock<Vec<CorrelationConfig>>);
+pub struct Correlation(RwLock<HashMap<UserId, CorrelationMap>>);
 
 impl Correlation {
     // Load correlations from storage
@@ -50,19 +56,21 @@ impl Correlation {
         let store = CONFIG.storage().get_object_store();
         let all_correlations = store.get_all_correlations().await.unwrap_or_default();
 
-        let correlations: Vec<CorrelationConfig> = all_correlations
-            .into_iter()
-            .flat_map(|(_, correlations_bytes)| correlations_bytes)
-            .filter_map(|correlation| {
-                serde_json::from_slice(&correlation)
-                    .inspect_err(|e| {
-                        error!("Unable to load correlation: {e}");
-                    })
-                    .ok()
-            })
-            .collect();
+        for correlations_bytes in all_correlations.values().flatten() {
+            let Ok(correlation) = serde_json::from_slice::<CorrelationConfig>(correlations_bytes)
+                .inspect_err(|e| {
+                    error!("Unable to load correlation file : {e}");
+                })
+            else {
+                continue;
+            };
 
-        self.write().await.extend(correlations);
+            self.write()
+                .await
+                .entry(correlation.user_id.to_owned())
+                .or_insert_with(HashMap::new)
+                .insert(correlation.id.to_owned(), correlation);
+        }
 
         Ok(())
     }
@@ -72,21 +80,26 @@ impl Correlation {
         session_key: &SessionKey,
         user_id: &str,
     ) -> Result<Vec<CorrelationConfig>, CorrelationError> {
-        let correlations = self.read().await.iter().cloned().collect_vec();
+        let Some(correlations) = self.read().await.get(user_id).cloned() else {
+            return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
+                "Unable to find correlations for user - {user_id}"
+            ))));
+        };
 
         let mut user_correlations = vec![];
         let permissions = Users.get_permissions(session_key);
 
-        for c in correlations {
-            let tables = &c
+        for correlation in correlations.values() {
+            let tables = &correlation
                 .table_configs
                 .iter()
                 .map(|t| t.table_name.clone())
                 .collect_vec();
-            if user_auth_for_query(&permissions, tables).is_ok() && c.user_id == user_id {
-                user_correlations.push(c);
+            if user_auth_for_query(&permissions, tables).is_ok() && correlation.user_id == user_id {
+                user_correlations.push(correlation.clone());
             }
         }
+
         Ok(user_correlations)
     }
 
@@ -95,45 +108,57 @@ impl Correlation {
         correlation_id: &str,
         user_id: &str,
     ) -> Result<CorrelationConfig, CorrelationError> {
-        let read = self.read().await;
-        let correlation = read
-            .iter()
-            .find(|c| c.id == correlation_id && c.user_id == user_id)
-            .cloned();
-
-        correlation.ok_or_else(|| {
-            CorrelationError::AnyhowError(anyhow::Error::msg(format!(
-                "Unable to find correlation with ID- {correlation_id}"
-            )))
-        })
+        self.read()
+            .await
+            .get(user_id)
+            .and_then(|correlations| correlations.get(correlation_id))
+            .cloned()
+            .ok_or_else(|| {
+                CorrelationError::AnyhowError(anyhow::Error::msg(format!(
+                    "Unable to find correlation with ID- {correlation_id}"
+                )))
+            })
     }
 
+    /// Insert new or replace existing correlation for the user and with the same ID
     pub async fn update(&self, correlation: &CorrelationConfig) -> Result<(), CorrelationError> {
-        // save to memory
-        let mut s = self.write().await;
-        s.retain(|c| c.id != correlation.id);
-        s.push(correlation.clone());
+        // Update in storage
+        let correlation_bytes = serde_json::to_vec(&correlation)?.into();
+        let path = correlation.path();
+        CONFIG
+            .storage()
+            .get_object_store()
+            .put_object(&path, correlation_bytes)
+            .await?;
+
+        // Update in memory
+        self.write()
+            .await
+            .entry(correlation.user_id.to_owned())
+            .or_insert_with(HashMap::new)
+            .insert(correlation.id.to_owned(), correlation.clone());
+
         Ok(())
     }
 
-    pub async fn delete(&self, correlation_id: &str) -> Result<(), CorrelationError> {
-        // now delete from memory
-        let read_access = self.read().await;
+    /// Delete correlation from memory and storage
+    pub async fn delete(&self, correlation: &CorrelationConfig) -> Result<(), CorrelationError> {
+        // Delete from memory
+        self.write()
+            .await
+            .entry(correlation.user_id.to_owned())
+            .and_modify(|correlations| {
+                correlations.remove(&correlation.id);
+            });
 
-        let index = read_access
-            .iter()
-            .enumerate()
-            .find(|(_, c)| c.id == correlation_id)
-            .to_owned();
+        // Delete from storage
+        let path = correlation.path();
+        CONFIG
+            .storage()
+            .get_object_store()
+            .delete_object(&path)
+            .await?;
 
-        if let Some((index, _)) = index {
-            // drop the read access in order to get exclusive write access
-            drop(read_access);
-            self.0.write().await.remove(index);
-            trace!("removed correlation from memory");
-        } else {
-            warn!("Correlation ID- {correlation_id} not found in memory!");
-        }
         Ok(())
     }
 }
@@ -144,13 +169,16 @@ pub enum CorrelationVersion {
     V1,
 }
 
+type CorrelationId = String;
+type UserId = String;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorrelationConfig {
     pub version: CorrelationVersion,
     pub title: String,
-    pub id: String,
-    pub user_id: String,
+    pub id: CorrelationId,
+    pub user_id: UserId,
     pub table_configs: Vec<TableConfig>,
     pub join_config: JoinConfig,
     pub filter: Option<FilterQuery>,
@@ -158,7 +186,16 @@ pub struct CorrelationConfig {
     pub end_time: Option<String>,
 }
 
-impl CorrelationConfig {}
+impl CorrelationConfig {
+    pub fn path(&self) -> RelativePathBuf {
+        RelativePathBuf::from_iter([
+            USERS_ROOT_DIR,
+            &self.user_id,
+            CORRELATION_DIR,
+            &format!("{}.json", self.id),
+        ])
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
