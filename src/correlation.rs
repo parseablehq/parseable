@@ -43,14 +43,14 @@ use crate::{
     utils::{get_hash, user_auth_for_query},
 };
 
-pub static CORRELATIONS: Lazy<Correlation> = Lazy::new(Correlation::default);
+pub static CORRELATIONS: Lazy<Correlations> = Lazy::new(Correlations::default);
 
 type CorrelationMap = HashMap<CorrelationId, CorrelationConfig>;
 
 #[derive(Debug, Default, derive_more::Deref)]
-pub struct Correlation(RwLock<HashMap<UserId, CorrelationMap>>);
+pub struct Correlations(RwLock<HashMap<UserId, CorrelationMap>>);
 
-impl Correlation {
+impl Correlations {
     // Load correlations from storage
     pub async fn load(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
