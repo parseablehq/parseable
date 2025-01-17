@@ -85,7 +85,7 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Corre
     correlation_request.validate(&session_key).await?;
 
     let mut correlation: CorrelationConfig = correlation_request.into();
-    correlation.user_id = user_id.clone();
+    correlation.user_id.clone_from(&user_id);
     let correlation_id = &correlation.id;
     let path = correlation_path(&user_id, &format!("{}.json", correlation_id));
 
