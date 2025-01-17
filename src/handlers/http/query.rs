@@ -164,7 +164,11 @@ pub async fn get_counts(
     let records = counts_request.get_bin_density().await?;
 
     Ok(web::Json(CountsResponse {
-        fields: vec!["counts_timestamp".into(), "log_count".into()],
+        fields: vec![
+            "counts_start_timestamp".into(),
+            "counts_end_timestamp".into(),
+            "log_count".into(),
+        ],
         records,
     }))
 }
