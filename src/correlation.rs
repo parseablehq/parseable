@@ -41,11 +41,11 @@ use crate::{
 
 pub static CORRELATIONS: Lazy<Correlation> = Lazy::new(Correlation::default);
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, derive_more::Deref)]
 pub struct Correlation(RwLock<Vec<CorrelationConfig>>);
 
 impl Correlation {
-    //load correlations from storage
+    // Load correlations from storage
     pub async fn load(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
         let all_correlations = store.get_all_correlations().await.unwrap_or_default();
@@ -62,8 +62,8 @@ impl Correlation {
             })
             .collect();
 
-        let mut s = self.0.write().await;
-        s.extend(correlations);
+        self.write().await.extend(correlations);
+
         Ok(())
     }
 
@@ -72,7 +72,7 @@ impl Correlation {
         session_key: &SessionKey,
         user_id: &str,
     ) -> Result<Vec<CorrelationConfig>, CorrelationError> {
-        let correlations = self.0.read().await.iter().cloned().collect_vec();
+        let correlations = self.read().await.iter().cloned().collect_vec();
 
         let mut user_correlations = vec![];
         let permissions = Users.get_permissions(session_key);
@@ -95,7 +95,7 @@ impl Correlation {
         correlation_id: &str,
         user_id: &str,
     ) -> Result<CorrelationConfig, CorrelationError> {
-        let read = self.0.read().await;
+        let read = self.read().await;
         let correlation = read
             .iter()
             .find(|c| c.id == correlation_id && c.user_id == user_id)
@@ -110,7 +110,7 @@ impl Correlation {
 
     pub async fn update(&self, correlation: &CorrelationConfig) -> Result<(), CorrelationError> {
         // save to memory
-        let mut s = self.0.write().await;
+        let mut s = self.write().await;
         s.retain(|c| c.id != correlation.id);
         s.push(correlation.clone());
         Ok(())
@@ -118,7 +118,7 @@ impl Correlation {
 
     pub async fn delete(&self, correlation_id: &str) -> Result<(), CorrelationError> {
         // now delete from memory
-        let read_access = self.0.read().await;
+        let read_access = self.read().await;
 
         let index = read_access
             .iter()
