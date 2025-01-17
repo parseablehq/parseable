@@ -57,12 +57,13 @@ impl Correlations {
         let all_correlations = store.get_all_correlations().await.unwrap_or_default();
 
         for correlations_bytes in all_correlations.values().flatten() {
-            let Ok(correlation) = serde_json::from_slice::<CorrelationConfig>(correlations_bytes)
-                .inspect_err(|e| {
+            let correlation = match serde_json::from_slice::<CorrelationConfig>(correlations_bytes)
+            {
+                Ok(c) => c,
+                Err(e) => {
                     error!("Unable to load correlation file : {e}");
-                })
-            else {
-                continue;
+                    continue;
+                }
             };
 
             self.write()
