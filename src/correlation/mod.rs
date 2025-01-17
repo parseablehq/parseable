@@ -45,36 +45,38 @@ pub static CORRELATIONS: Lazy<Correlation> = Lazy::new(Correlation::default);
 pub struct Correlation(RwLock<Vec<CorrelationConfig>>);
 
 impl Correlation {
-    pub async fn load(&self) -> Result<(), CorrelationError> {
-        // lead correlations from storage
+    //load correlations from storage
+    pub async fn load(&self) -> anyhow::Result<()> {
         let store = CONFIG.storage().get_object_store();
-        let all_correlations = store.get_correlations().await.unwrap_or_default();
+        let all_correlations = store.get_all_correlations().await.unwrap_or_default();
 
-        let mut correlations = vec![];
-        for corr in all_correlations {
-            if corr.is_empty() {
-                continue;
-            }
-
-            let correlation: CorrelationConfig = match serde_json::from_slice(&corr) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Unable to load correlation- {e}");
-                    continue;
+        let correlations: Vec<CorrelationConfig> = all_correlations
+            .into_iter()
+            .flat_map(|(_, correlations_bytes)| correlations_bytes)
+            .filter_map(|correlation| {
+                if correlation.is_empty() {
+                    None
+                } else {
+                    match serde_json::from_slice(&correlation) {
+                        Ok(correlation_config) => Some(correlation_config),
+                        Err(e) => {
+                            error!("Unable to load correlation: {e}");
+                            None
+                        }
+                    }
                 }
-            };
-
-            correlations.push(correlation);
-        }
+            })
+            .collect();
 
         let mut s = self.0.write().await;
-        s.append(&mut correlations.clone());
+        s.extend(correlations);
         Ok(())
     }
 
     pub async fn list_correlations_for_user(
         &self,
         session_key: &SessionKey,
+        user_id: &str,
     ) -> Result<Vec<CorrelationConfig>, CorrelationError> {
         let correlations = self.0.read().await.iter().cloned().collect_vec();
 
@@ -87,19 +89,23 @@ impl Correlation {
                 .iter()
                 .map(|t| t.table_name.clone())
                 .collect_vec();
-            if user_auth_for_query(&permissions, tables).is_ok() {
+            if user_auth_for_query(&permissions, tables).is_ok() && c.user_id == user_id {
                 user_correlations.push(c);
             }
         }
         Ok(user_correlations)
     }
 
-    pub async fn get_correlation_by_id(
+    pub async fn get_correlation(
         &self,
         correlation_id: &str,
+        user_id: &str,
     ) -> Result<CorrelationConfig, CorrelationError> {
         let read = self.0.read().await;
-        let correlation = read.iter().find(|c| c.id == correlation_id).cloned();
+        let correlation = read
+            .iter()
+            .find(|c| c.id == correlation_id && c.user_id == user_id)
+            .cloned();
 
         if let Some(c) = correlation {
             Ok(c)
@@ -152,6 +158,7 @@ pub struct CorrelationConfig {
     pub version: CorrelationVersion,
     pub title: String,
     pub id: String,
+    pub user_id: String,
     pub table_configs: Vec<TableConfig>,
     pub join_config: JoinConfig,
     pub filter: Option<FilterQuery>,
@@ -164,7 +171,6 @@ impl CorrelationConfig {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorrelationRequest {
-    pub version: CorrelationVersion,
     pub title: String,
     pub table_configs: Vec<TableConfig>,
     pub join_config: JoinConfig,
@@ -176,9 +182,10 @@ pub struct CorrelationRequest {
 impl From<CorrelationRequest> for CorrelationConfig {
     fn from(val: CorrelationRequest) -> Self {
         Self {
-            version: val.version,
+            version: CorrelationVersion::V1,
             title: val.title,
             id: get_hash(Utc::now().timestamp_micros().to_string().as_str()),
+            user_id: String::default(),
             table_configs: val.table_configs,
             join_config: val.join_config,
             filter: val.filter,
@@ -189,11 +196,12 @@ impl From<CorrelationRequest> for CorrelationConfig {
 }
 
 impl CorrelationRequest {
-    pub fn generate_correlation_config(self, id: String) -> CorrelationConfig {
+    pub fn generate_correlation_config(self, id: String, user_id: String) -> CorrelationConfig {
         CorrelationConfig {
-            version: self.version,
+            version: CorrelationVersion::V1,
             title: self.title,
             id,
+            user_id,
             table_configs: self.table_configs,
             join_config: self.join_config,
             filter: self.filter,

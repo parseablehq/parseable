@@ -880,6 +880,46 @@ impl ObjectStorage for S3 {
         Ok(filters)
     }
 
+    ///fetch all correlations stored in object store
+    /// return the correlation file path and all correlation json bytes for each file path
+    async fn get_all_correlations(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
+        let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
+        let resp = self
+            .client
+            .list_with_delimiter(Some(&users_root_path))
+            .await?;
+
+        let users = resp
+            .common_prefixes
+            .iter()
+            .flat_map(|path| path.parts())
+            .filter(|name| name.as_ref() != USERS_ROOT_DIR)
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>();
+        for user in users {
+            let user_correlation_path = object_store::path::Path::from(format!(
+                "{}/{}/{}",
+                USERS_ROOT_DIR, user, "correlations"
+            ));
+            let correlations_path = RelativePathBuf::from(&user_correlation_path);
+            let correlation_bytes = self
+                .get_objects(
+                    Some(&correlations_path),
+                    Box::new(|file_name| file_name.ends_with(".json")),
+                )
+                .await?;
+
+            correlations
+                .entry(correlations_path)
+                .or_default()
+                .extend(correlation_bytes);
+        }
+        Ok(correlations)
+    }
+
     fn get_bucket_name(&self) -> String {
         self.bucket.clone()
     }

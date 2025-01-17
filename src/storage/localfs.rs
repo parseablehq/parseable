@@ -39,9 +39,8 @@ use crate::{
 };
 
 use super::{
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
-    CORRELATIONS_ROOT_DIRECTORY, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
+    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -297,12 +296,7 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let ignore_dir = &[
-            "lost+found",
-            PARSEABLE_ROOT_DIRECTORY,
-            USERS_ROOT_DIR,
-            CORRELATIONS_ROOT_DIRECTORY,
-        ];
+        let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY, USERS_ROOT_DIR];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
@@ -322,11 +316,7 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let ignore_dir = &[
-            "lost+found",
-            PARSEABLE_ROOT_DIRECTORY,
-            CORRELATIONS_ROOT_DIRECTORY,
-        ];
+        let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
@@ -431,6 +421,38 @@ impl ObjectStorage for LocalFS {
             }
         }
         Ok(filters)
+    }
+
+    ///fetch all correlations stored in disk
+    /// return the correlation file path and all correlation json bytes for each file path
+    async fn get_all_correlations(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
+        let users_root_path = self.root.join(USERS_ROOT_DIR);
+        let directories = ReadDirStream::new(fs::read_dir(&users_root_path).await?);
+        let users: Vec<DirEntry> = directories.try_collect().await?;
+        for user in users {
+            if !user.path().is_dir() {
+                continue;
+            }
+            let correlations_path = users_root_path.join(user.path()).join("correlations");
+            let directories = ReadDirStream::new(fs::read_dir(&correlations_path).await?);
+            let correlations_files: Vec<DirEntry> = directories.try_collect().await?;
+            for correlation in correlations_files {
+                let correlation_absolute_path = correlation.path();
+                let file = fs::read(correlation_absolute_path.clone()).await?;
+                let correlation_relative_path = correlation_absolute_path
+                    .strip_prefix(self.root.as_path())
+                    .unwrap();
+
+                correlations
+                    .entry(RelativePathBuf::from_path(correlation_relative_path).unwrap())
+                    .or_default()
+                    .push(file.into());
+            }
+        }
+        Ok(correlations)
     }
 
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
