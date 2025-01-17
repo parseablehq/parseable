@@ -811,10 +811,8 @@ impl ObjectStorage for S3 {
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>();
         for user in users {
-            let user_dashboard_path = object_store::path::Path::from(format!(
-                "{}/{}/{}",
-                USERS_ROOT_DIR, user, "dashboards"
-            ));
+            let user_dashboard_path =
+                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/dashboards"));
             let dashboards_path = RelativePathBuf::from(&user_dashboard_path);
             let dashboard_bytes = self
                 .get_objects(
@@ -849,10 +847,8 @@ impl ObjectStorage for S3 {
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>();
         for user in users {
-            let user_filters_path = object_store::path::Path::from(format!(
-                "{}/{}/{}",
-                USERS_ROOT_DIR, user, "filters"
-            ));
+            let user_filters_path =
+                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/filters",));
             let resp = self
                 .client
                 .list_with_delimiter(Some(&user_filters_path))
@@ -900,10 +896,8 @@ impl ObjectStorage for S3 {
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>();
         for user in users {
-            let user_correlation_path = object_store::path::Path::from(format!(
-                "{}/{}/{}",
-                USERS_ROOT_DIR, user, "correlations"
-            ));
+            let user_correlation_path =
+                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/correlations",));
             let correlations_path = RelativePathBuf::from(&user_correlation_path);
             let correlation_bytes = self
                 .get_objects(

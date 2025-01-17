@@ -54,17 +54,11 @@ impl Correlation {
             .into_iter()
             .flat_map(|(_, correlations_bytes)| correlations_bytes)
             .filter_map(|correlation| {
-                if correlation.is_empty() {
-                    None
-                } else {
-                    match serde_json::from_slice(&correlation) {
-                        Ok(correlation_config) => Some(correlation_config),
-                        Err(e) => {
-                            error!("Unable to load correlation: {e}");
-                            None
-                        }
-                    }
-                }
+                serde_json::from_slice(&correlation)
+                    .inspect_err(|e| {
+                        error!("Unable to load correlation: {e}");
+                    })
+                    .ok()
             })
             .collect();
 
@@ -107,13 +101,11 @@ impl Correlation {
             .find(|c| c.id == correlation_id && c.user_id == user_id)
             .cloned();
 
-        if let Some(c) = correlation {
-            Ok(c)
-        } else {
-            Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
+        correlation.ok_or_else(|| {
+            CorrelationError::AnyhowError(anyhow::Error::msg(format!(
                 "Unable to find correlation with ID- {correlation_id}"
-            ))))
-        }
+            )))
+        })
     }
 
     pub async fn update(&self, correlation: &CorrelationConfig) -> Result<(), CorrelationError> {

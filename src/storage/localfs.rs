@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
-use futures::{stream::FuturesUnordered, TryStreamExt};
+use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
@@ -430,17 +430,16 @@ impl ObjectStorage for LocalFS {
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
         let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
         let users_root_path = self.root.join(USERS_ROOT_DIR);
-        let directories = ReadDirStream::new(fs::read_dir(&users_root_path).await?);
-        let users: Vec<DirEntry> = directories.try_collect().await?;
-        for user in users {
+        let mut directories = ReadDirStream::new(fs::read_dir(&users_root_path).await?);
+        while let Some(user) = directories.next().await {
+            let user = user?;
             if !user.path().is_dir() {
                 continue;
             }
             let correlations_path = users_root_path.join(user.path()).join("correlations");
-            let directories = ReadDirStream::new(fs::read_dir(&correlations_path).await?);
-            let correlations_files: Vec<DirEntry> = directories.try_collect().await?;
-            for correlation in correlations_files {
-                let correlation_absolute_path = correlation.path();
+            let mut files = ReadDirStream::new(fs::read_dir(&correlations_path).await?);
+            while let Some(correlation) = files.next().await {
+                let correlation_absolute_path = correlation?.path();
                 let file = fs::read(correlation_absolute_path.clone()).await?;
                 let correlation_relative_path = correlation_absolute_path
                     .strip_prefix(self.root.as_path())
