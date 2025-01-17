@@ -31,8 +31,11 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
-      - name: Build on ${{ matrix.target }}
-        run: cargo build --target ${{ matrix.target }}
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --profile release-lto --target ${{matrix.target}}
 
   build-windows:
     name: Build for windows
