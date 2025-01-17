@@ -35,7 +35,7 @@ jobs:
         run: cargo build --target ${{ matrix.target }}
 
   build-windows:
-    name: Build for ${{matrix.target}}
+    name: Build for windows
     runs-on: windows-latest
 
     steps:
