@@ -35,7 +35,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --profile release-lto --target ${{matrix.target}}
+          args: --target ${{matrix.target}}
 
   build-windows:
     name: Build for windows
