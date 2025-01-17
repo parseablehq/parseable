@@ -52,10 +52,7 @@ async fn main() -> anyhow::Result<()> {
     // keep metadata info in mem
     metadata.set_global();
 
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
+    #[cfg(unix)]
     // load kafka server
     if CONFIG.options.mode != Mode::Query {
         tokio::task::spawn(kafka::setup_integration());
