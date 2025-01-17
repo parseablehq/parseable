@@ -16,22 +16,20 @@
  *
  */
 
-use actix_web::web::Path;
+use actix_web::web::{Json, Path};
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use anyhow::Error;
-use bytes::Bytes;
 use itertools::Itertools;
 
 use crate::rbac::Users;
+use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::{get_hash, get_user_from_request, user_auth_for_query};
-use crate::{option::CONFIG, utils::actix::extract_session_key_from_req};
 
 use crate::correlation::{CorrelationConfig, CorrelationError, CorrelationRequest, CORRELATIONS};
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
-
     let user_id = get_user_from_request(&req)
         .map(|s| get_hash(&s.to_string()))
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
@@ -43,21 +41,19 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, CorrelationError> 
     Ok(web::Json(correlations))
 }
 
-pub async fn get(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
+pub async fn get(
+    req: HttpRequest,
+    correlation_id: Path<String>,
+) -> Result<impl Responder, CorrelationError> {
+    let correlation_id = correlation_id.into_inner();
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
-
     let user_id = get_user_from_request(&req)
         .map(|s| get_hash(&s.to_string()))
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    let correlation_id = req
-        .match_info()
-        .get("correlation_id")
-        .ok_or(CorrelationError::Metadata("No correlation ID Provided"))?;
-
     let correlation = CORRELATIONS
-        .get_correlation(correlation_id, &user_id)
+        .get_correlation(&correlation_id, &user_id)
         .await?;
 
     let permissions = Users.get_permissions(&session_key);
@@ -73,37 +69,35 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
     Ok(web::Json(correlation))
 }
 
-pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, CorrelationError> {
+pub async fn post(
+    req: HttpRequest,
+    Json(correlation_request): Json<CorrelationRequest>,
+) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
-
-    let correlation_request: CorrelationRequest = serde_json::from_slice(&body)?;
-
     correlation_request.validate(&session_key).await?;
 
     let correlation: CorrelationConfig = correlation_request.into();
-
-    // Save to memory
     CORRELATIONS.update(&correlation).await?;
 
     Ok(web::Json(correlation))
 }
 
-pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, CorrelationError> {
+pub async fn modify(
+    req: HttpRequest,
+    correlation_id: Path<String>,
+    Json(correlation_request): Json<CorrelationRequest>,
+) -> Result<impl Responder, CorrelationError> {
+    let correlation_id = correlation_id.into_inner();
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
     let user_id = get_user_from_request(&req)
         .map(|s| get_hash(&s.to_string()))
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    let correlation_id = req
-        .match_info()
-        .get("correlation_id")
-        .ok_or(CorrelationError::Metadata("No correlation ID Provided"))?;
-
     // validate whether user has access to this correlation object or not
-    let correlation = CORRELATIONS
-        .get_correlation(correlation_id, &user_id)
+    let mut correlation = CORRELATIONS
+        .get_correlation(&correlation_id, &user_id)
         .await?;
     let permissions = Users.get_permissions(&session_key);
     let tables = &correlation
@@ -111,15 +105,10 @@ pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, Cor
         .iter()
         .map(|t| t.table_name.clone())
         .collect_vec();
-
     user_auth_for_query(&permissions, tables)?;
-
-    let correlation_request: CorrelationRequest = serde_json::from_slice(&body)?;
     correlation_request.validate(&session_key).await?;
 
-    let correlation =
-        correlation_request.generate_correlation_config(correlation_id.to_owned(), user_id.clone());
-
+    correlation.update(correlation_request);
     CORRELATIONS.update(&correlation).await?;
 
     Ok(web::Json(correlation))

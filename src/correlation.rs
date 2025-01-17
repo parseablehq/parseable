@@ -195,6 +195,15 @@ impl CorrelationConfig {
             &format!("{}.json", self.id),
         ])
     }
+
+    pub fn update(&mut self, correlation_request: CorrelationRequest) {
+        self.title = correlation_request.title;
+        self.table_configs = correlation_request.table_configs;
+        self.join_config = correlation_request.join_config;
+        self.filter = correlation_request.filter;
+        self.start_time = correlation_request.start_time;
+        self.end_time = correlation_request.end_time;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,20 +234,6 @@ impl From<CorrelationRequest> for CorrelationConfig {
 }
 
 impl CorrelationRequest {
-    pub fn generate_correlation_config(self, id: String, user_id: String) -> CorrelationConfig {
-        CorrelationConfig {
-            version: CorrelationVersion::V1,
-            title: self.title,
-            id,
-            user_id,
-            table_configs: self.table_configs,
-            join_config: self.join_config,
-            filter: self.filter,
-            start_time: self.start_time,
-            end_time: self.end_time,
-        }
-    }
-
     /// This function will validate the TableConfigs, JoinConfig, and user auth
     pub async fn validate(&self, session_key: &SessionKey) -> Result<(), CorrelationError> {
         let ctx = &QUERY_SESSION;
