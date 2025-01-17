@@ -248,7 +248,9 @@ impl Query {
 #[derive(Debug, Serialize, Clone)]
 pub struct CountsRecord {
     /// Start time of the bin
-    pub counts_timestamp: String,
+    pub counts_start_timestamp: String,
+    /// End time of the bin
+    pub counts_end_timestamp: String,
     /// Number of logs in the bin
     pub log_count: u64,
 }
@@ -297,8 +299,8 @@ impl CountsRequest {
 
         for bin in counts {
             // extract start and end time to compare
-            let counts_timestamp = bin.start.timestamp_millis();
-
+            let counts_start_timestamp = bin.start.timestamp_millis();
+            let counts_end_timestamp = bin.end.timestamp_millis();
             // Sum up the number of rows that fall within the bin
             let log_count: u64 = all_manifest_files
                 .iter()
@@ -322,7 +324,10 @@ impl CountsRequest {
                 .sum();
 
             counts_records.push(CountsRecord {
-                counts_timestamp: DateTime::from_timestamp_millis(counts_timestamp)
+                counts_start_timestamp: DateTime::from_timestamp_millis(counts_start_timestamp)
+                    .unwrap()
+                    .to_rfc3339(),
+                counts_end_timestamp: DateTime::from_timestamp_millis(counts_end_timestamp)
                     .unwrap()
                     .to_rfc3339(),
                 log_count,
