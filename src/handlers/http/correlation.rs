@@ -120,15 +120,6 @@ pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, Cor
     let correlation =
         correlation_request.generate_correlation_config(correlation_id.to_owned(), user_id.clone());
 
-    let path = correlation.path();
-
-    let store = CONFIG.storage().get_object_store();
-    let correlation_bytes = serde_json::to_vec(&correlation)?;
-    store
-        .put_object(&path, Bytes::from(correlation_bytes))
-        .await?;
-
-    // Save to memory
     CORRELATIONS.update(&correlation).await?;
 
     Ok(web::Json(correlation))
