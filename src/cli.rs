@@ -319,38 +319,23 @@ pub struct Options {
     oidc_issuer: Option<Url>,
 
     // Kafka configuration (conditionally compiled)
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
+    #[cfg(unix)]
     #[arg(long, env = "P_KAFKA_TOPICS", help = "Kafka topics to subscribe to")]
     pub kafka_topics: Option<String>,
 
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
+    #[cfg(unix)]
     #[arg(long, env = "P_KAFKA_HOST", help = "Address and port for Kafka server")]
     pub kafka_host: Option<String>,
 
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
+    #[cfg(unix)]
     #[arg(long, env = "P_KAFKA_GROUP", help = "Kafka group")]
     pub kafka_group: Option<String>,
 
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
+    #[cfg(unix)]
     #[arg(long, env = "P_KAFKA_CLIENT_ID", help = "Kafka client id")]
     pub kafka_client_id: Option<String>,
 
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
+    #[cfg(unix)]
     #[arg(
         long,
         env = "P_KAFKA_SECURITY_PROTOCOL",
@@ -359,10 +344,7 @@ pub struct Options {
     )]
     pub kafka_security_protocol: Option<KafkaSslProtocol>,
 
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
+    #[cfg(unix)]
     #[arg(long, env = "P_KAFKA_PARTITIONS", help = "Kafka partitions")]
     pub kafka_partitions: Option<String>,
 
