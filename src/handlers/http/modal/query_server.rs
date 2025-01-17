@@ -52,7 +52,6 @@ impl ParseableServer for QueryServer {
         config
             .service(
                 web::scope(&base_path())
-                    .service(Server::get_date_bin())
                     .service(Server::get_correlation_webscope())
                     .service(Server::get_query_factory())
                     .service(Server::get_liveness_factory())
@@ -65,6 +64,7 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
+                    .service(Server::get_counts_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
