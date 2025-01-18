@@ -299,8 +299,6 @@ pub struct Options {
         long,
         long = "oidc-client",
         env = "P_OIDC_CLIENT_ID",
-        requires = "oidc",
-        group = "oidc",
         help = "Client id for OIDC provider"
     )]
     oidc_client_id: Option<String>,
@@ -308,8 +306,6 @@ pub struct Options {
     #[arg(
         long,
         env = "P_OIDC_CLIENT_SECRET",
-        requires = "oidc",
-        group = "oidc",
         help = "Client secret for OIDC provider"
     )]
     oidc_client_secret: Option<String>,
@@ -318,8 +314,6 @@ pub struct Options {
         long,
         env = "P_OIDC_ISSUER",
         value_parser = validation::url,
-        requires = "oidc",
-        group = "oidc",
         help = "OIDC provider's host address"
     )]
     oidc_issuer: Option<Url>,
