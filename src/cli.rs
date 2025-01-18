@@ -53,7 +53,7 @@ pub const DEFAULT_PASSWORD: &str = "admin";
     long_about = r#"
 Cloud Native, log analytics platform for modern applications.
 
-Usage: 
+Usage:
 parseable [command] [options..]
 
 
@@ -81,6 +81,7 @@ pub struct Cli {
 
 #[derive(Parser)]
 pub enum StorageOptions {
+    #[command(name = "local-store")]
     Local(LocalStoreArgs),
 
     #[command(name = "s3-store")]
@@ -126,7 +127,7 @@ pub struct Options {
     // Server configuration
     #[arg(
         long,
-        env = "P_ADDR", 
+        env = "P_ADDR",
         default_value = "0.0.0.0:8000",
         value_parser = validation::socket_addr,
         help = "Address and port for Parseable HTTP(s) server"
