@@ -173,11 +173,11 @@ impl FlightService for FlightServiceImpl {
 
 pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send {
     let mut addr: SocketAddr = CONFIG
-        .parseable
+        .options
         .address
         .parse()
         .expect("valid socket address");
-    addr.set_port(CONFIG.parseable.grpc_port);
+    addr.set_port(CONFIG.options.grpc_port);
 
     let service = FlightServiceImpl {};
 
@@ -185,10 +185,7 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let cors = cross_origin_config();
 
-    let identity = match (
-        &CONFIG.parseable.tls_cert_path,
-        &CONFIG.parseable.tls_key_path,
-    ) {
+    let identity = match (&CONFIG.options.tls_cert_path, &CONFIG.options.tls_key_path) {
         (Some(cert), Some(key)) => {
             match (std::fs::read_to_string(cert), std::fs::read_to_string(key)) {
                 (Ok(cert_file), Ok(key_file)) => {

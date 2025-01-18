@@ -137,7 +137,7 @@ pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
     let streams = storage.list_streams().await?;
     for stream in streams {
         migration_stream(&stream.name, &*storage).await?;
-        if CONFIG.parseable.hot_tier_storage_path.is_some() {
+        if CONFIG.options.hot_tier_storage_path.is_some() {
             migration_hot_tier(&stream.name).await?;
         }
     }
@@ -218,7 +218,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
 
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
-        if CONFIG.parseable.mode != Mode::Ingest {
+        if CONFIG.options.mode != Mode::Ingest {
             return Ok(());
         }
         stream_meta_found = false;

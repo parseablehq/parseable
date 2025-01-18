@@ -35,6 +35,7 @@ use actix_web::{web, Scope};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::oneshot;
 use tracing::{error, info};
 
 use crate::{option::CONFIG, ParseableServer};
@@ -64,6 +65,7 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
+                    .service(Server::get_counts_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
@@ -86,7 +88,11 @@ impl ParseableServer for QueryServer {
     }
 
     /// initialize the server, run migrations as needed and start an instance
-    async fn init(&self, prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
         CONFIG.storage().register_store_metrics(prometheus);
 
         migration::run_migration(&CONFIG).await?;
@@ -104,7 +110,7 @@ impl ParseableServer for QueryServer {
 
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
-        if CONFIG.parseable.send_analytics {
+        if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
@@ -121,7 +127,7 @@ impl ParseableServer for QueryServer {
             sync::object_store_sync().await;
 
         tokio::spawn(airplane::server());
-        let app = self.start(prometheus.clone(), CONFIG.parseable.openid.clone());
+        let app = self.start(shutdown_rx, prometheus.clone(), CONFIG.options.openid());
 
         tokio::pin!(app);
         loop {

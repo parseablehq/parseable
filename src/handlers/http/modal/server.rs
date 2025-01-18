@@ -41,6 +41,7 @@ use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::oneshot;
 use tracing::error;
 
 use crate::{
@@ -80,6 +81,7 @@ impl ParseableServer for Server {
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
+                    .service(Self::get_counts_webscope())
                     .service(Self::get_metrics_webscope()),
             )
             .service(Self::get_ingest_otel_factory())
@@ -95,7 +97,11 @@ impl ParseableServer for Server {
     }
 
     // configure the server and start an instance of the single server setup
-    async fn init(&self, prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
         CONFIG.storage().register_store_metrics(prometheus);
 
         migration::run_migration(&CONFIG).await?;
@@ -117,14 +123,14 @@ impl ParseableServer for Server {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
 
-        if CONFIG.parseable.send_analytics {
+        if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
 
-        let app = self.start(prometheus.clone(), CONFIG.parseable.openid.clone());
+        let app = self.start(shutdown_rx, prometheus.clone(), CONFIG.options.openid());
 
         tokio::pin!(app);
 
@@ -264,6 +270,9 @@ impl Server {
                             .authorize(Action::CreateFilter),
                     ),
             )
+    }
+    pub fn get_counts_webscope() -> Resource {
+        web::resource("/counts").route(web::post().to(query::get_counts).authorize(Action::Query))
     }
 
     // get the query factory

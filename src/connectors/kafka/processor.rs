@@ -19,8 +19,8 @@
 use crate::connectors::common::processor::Processor;
 use crate::connectors::kafka::config::BufferConfig;
 use crate::connectors::kafka::{ConsumerRecord, StreamConsumer, TopicPartition};
-use crate::event::format;
 use crate::event::format::EventFormat;
+use crate::event::format::{self, LogSource};
 use crate::event::Event as ParseableEvent;
 use crate::handlers::http::ingest::create_stream_if_not_exists;
 use crate::metadata::STREAM_INFO;
@@ -45,7 +45,12 @@ impl ParseableSinkProcessor {
     ) -> anyhow::Result<Option<ParseableEvent>> {
         let stream_name = consumer_record.topic.as_str();
 
-        create_stream_if_not_exists(stream_name, &StreamType::UserDefined.to_string()).await?;
+        create_stream_if_not_exists(
+            stream_name,
+            &StreamType::UserDefined.to_string(),
+            LogSource::default(),
+        )
+        .await?;
         let schema = STREAM_INFO.schema_raw(stream_name)?;
 
         match &consumer_record.payload {

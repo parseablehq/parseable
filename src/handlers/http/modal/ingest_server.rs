@@ -39,8 +39,8 @@ use crate::storage::staging;
 use crate::storage::ObjectStorageError;
 use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::sync;
-
 use crate::{handlers::http::base_path, option::CONFIG};
+
 use actix_web::web;
 use actix_web::Scope;
 use actix_web_prometheus::PrometheusMetrics;
@@ -50,6 +50,7 @@ use bytes::Bytes;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
+use tokio::sync::oneshot;
 use tracing::error;
 
 /// ! have to use a guard before using it
@@ -96,7 +97,11 @@ impl ParseableServer for IngestServer {
     }
 
     /// configure the server and start an instance to ingest data
-    async fn init(&self, prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
         CONFIG.storage().register_store_metrics(prometheus);
 
         migration::run_migration(&CONFIG).await?;
@@ -112,7 +117,7 @@ impl ParseableServer for IngestServer {
         set_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
-        let app = self.start(prometheus.clone(), None);
+        let app = self.start(shutdown_rx, prometheus.clone(), None);
 
         tokio::pin!(app);
         loop {
@@ -352,7 +357,7 @@ async fn validate_credentials() -> anyhow::Result<()> {
 
         let token = base64::prelude::BASE64_STANDARD.encode(format!(
             "{}:{}",
-            CONFIG.parseable.username, CONFIG.parseable.password
+            CONFIG.options.username, CONFIG.options.password
         ));
 
         let token = format!("Basic {}", token);

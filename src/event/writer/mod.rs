@@ -138,7 +138,7 @@ impl WriterTable {
         custom_partition_values: &HashMap<String, String>,
         stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
-        if CONFIG.parseable.mode != Mode::Query || *stream_type == StreamType::Internal {
+        if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
             stream_writer.lock().unwrap().push(
                 stream_name,
                 schema_key,
@@ -169,7 +169,7 @@ impl WriterTable {
     ) -> Result<(), StreamWriterError> {
         match map.get(stream_name) {
             Some(writer) => {
-                if CONFIG.parseable.mode != Mode::Query || *stream_type == StreamType::Internal {
+                if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
                     writer.lock().unwrap().push(
                         stream_name,
                         schema_key,
@@ -182,7 +182,7 @@ impl WriterTable {
                 }
             }
             None => {
-                if CONFIG.parseable.mode != Mode::Query || *stream_type == StreamType::Internal {
+                if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
                     let mut writer = Writer::default();
                     writer.push(
                         stream_name,

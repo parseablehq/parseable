@@ -112,7 +112,7 @@ impl Report {
             memory_total_bytes: mem_total,
             platform: platform().to_string(),
             storage_mode: CONFIG.get_storage_mode_string().to_string(),
-            server_mode: CONFIG.parseable.mode,
+            server_mode: CONFIG.options.mode,
             version: current().released_version.to_string(),
             commit_hash: current().commit_hash,
             active_ingestors: ingestor_metrics.0,
@@ -219,7 +219,7 @@ async fn fetch_ingestors_metrics(
     let mut vec = vec![];
     let mut active_ingestors = 0u64;
     let mut offline_ingestors = 0u64;
-    if CONFIG.parseable.mode == Mode::Query {
+    if CONFIG.options.mode == Mode::Query {
         // send analytics for ingest servers
 
         // ingestor infos should be valid here, if not some thing is wrong
