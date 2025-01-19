@@ -52,7 +52,7 @@ pub const DEFAULT_PASSWORD: &str = "admin";
     long_about = r#"
 Cloud Native, log analytics platform for modern applications.
 
-Usage: 
+Usage:
 parseable [command] [options..]
 
 
@@ -126,7 +126,7 @@ pub struct Options {
     // Server configuration
     #[arg(
         long,
-        env = "P_ADDR", 
+        env = "P_ADDR",
         default_value = "0.0.0.0:8000",
         value_parser = validation::socket_addr,
         help = "Address and port for Parseable HTTP(s) server"
@@ -294,29 +294,8 @@ pub struct Options {
     )]
     pub ingestor_endpoint: String,
 
-    // OIDC Configuration
-    #[arg(
-        long,
-        long = "oidc-client",
-        env = "P_OIDC_CLIENT_ID",
-        help = "Client id for OIDC provider"
-    )]
-    oidc_client_id: Option<String>,
-
-    #[arg(
-        long,
-        env = "P_OIDC_CLIENT_SECRET",
-        help = "Client secret for OIDC provider"
-    )]
-    oidc_client_secret: Option<String>,
-
-    #[arg(
-        long,
-        env = "P_OIDC_ISSUER",
-        value_parser = validation::url,
-        help = "OIDC provider's host address"
-    )]
-    oidc_issuer: Option<Url>,
+    #[command(flatten)]
+    oidc: Option<OidcConfig>,
 
     // Kafka configuration (conditionally compiled)
     #[cfg(any(
@@ -385,6 +364,31 @@ pub struct Options {
     pub ms_clarity_tag: Option<String>,
 }
 
+#[derive(Parser, Debug)]
+pub struct OidcConfig {
+    #[arg(
+        long = "oidc-client-id",
+        env = "P_OIDC_CLIENT_ID",
+        help = "Client id for OIDC provider"
+    )]
+    pub client_id: String,
+
+    #[arg(
+        long = "oidc-client-secret",
+        env = "P_OIDC_CLIENT_SECRET",
+        help = "Client secret for OIDC provider"
+    )]
+    pub secret: String,
+
+    #[arg(
+        long = "oidc-issuer",
+        env = "P_OIDC_ISSUER",
+        value_parser = validation::url,
+        help = "OIDC provider's host address"
+    )]
+    pub issuer: Url,
+}
+
 impl Options {
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -399,28 +403,24 @@ impl Options {
     }
 
     pub fn openid(&self) -> Option<OpenidConfig> {
-        match (
-            &self.oidc_client_id,
-            &self.oidc_client_secret,
-            &self.oidc_issuer,
-        ) {
-            (Some(id), Some(secret), Some(issuer)) => {
-                let origin = if let Some(url) = self.domain_address.clone() {
-                    oidc::Origin::Production(url)
-                } else {
-                    oidc::Origin::Local {
-                        socket_addr: self.address.clone(),
-                        https: self.tls_cert_path.is_some() && self.tls_key_path.is_some(),
-                    }
-                };
-                Some(OpenidConfig {
-                    id: id.clone(),
-                    secret: secret.clone(),
-                    issuer: issuer.clone(),
-                    origin,
-                })
+        let OidcConfig {
+            secret,
+            client_id,
+            issuer,
+        } = self.oidc.as_ref()?;
+        let origin = if let Some(url) = self.domain_address.clone() {
+            oidc::Origin::Production(url)
+        } else {
+            oidc::Origin::Local {
+                socket_addr: self.address.clone(),
+                https: self.tls_cert_path.is_some() && self.tls_key_path.is_some(),
             }
-            _ => None,
-        }
+        };
+        Some(OpenidConfig {
+            id: client_id.clone(),
+            secret: secret.clone(),
+            issuer: issuer.clone(),
+            origin,
+        })
     }
 }
