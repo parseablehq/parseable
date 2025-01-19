@@ -248,9 +248,11 @@ impl Query {
 #[derive(Debug, Serialize, Clone)]
 pub struct CountsRecord {
     /// Start time of the bin
-    pub counts_timestamp: String,
+    pub start_time: String,
+    /// End time of the bin
+    pub end_time: String,
     /// Number of logs in the bin
-    pub log_count: u64,
+    pub count: u64,
 }
 
 struct TimeBounds {
@@ -297,10 +299,8 @@ impl CountsRequest {
 
         for bin in counts {
             // extract start and end time to compare
-            let counts_timestamp = bin.start.timestamp_millis();
-
             // Sum up the number of rows that fall within the bin
-            let log_count: u64 = all_manifest_files
+            let count: u64 = all_manifest_files
                 .iter()
                 .flat_map(|m| &m.files)
                 .filter_map(|f| {
@@ -322,10 +322,9 @@ impl CountsRequest {
                 .sum();
 
             counts_records.push(CountsRecord {
-                counts_timestamp: DateTime::from_timestamp_millis(counts_timestamp)
-                    .unwrap()
-                    .to_rfc3339(),
-                log_count,
+                start_time: bin.start.to_rfc3339(),
+                end_time: bin.end.to_rfc3339(),
+                count,
             });
         }
         Ok(counts_records)
