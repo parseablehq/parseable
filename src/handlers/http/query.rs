@@ -18,12 +18,14 @@
 
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, Responder};
+use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use futures_util::Future;
 use http::StatusCode;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -37,7 +39,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::Query as LogicalQuery;
+use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::rbac::Users;
@@ -52,7 +54,7 @@ use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
 /// Can be optionally be accepted as query params in the query request
 /// NOTE: ensure that the fields param is not set based on request body
-#[derive(Debug, Default, serde::Deserialize, serde::Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryParams {
     #[serde(default)]
@@ -62,7 +64,7 @@ pub struct QueryParams {
 }
 
 /// Query Request in json format.
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
     pub query: String,
@@ -81,7 +83,7 @@ impl QueryRequest {
         self.params.send_null |= send_null;
     }
 
-    // Constructs a query from the
+    // Constructs a query from the http request
     pub async fn into_query(&self, key: SessionKey) -> Result<LogicalQuery, QueryError> {
         if self.query.is_empty() {
             return Err(QueryError::EmptyQuery);
@@ -136,8 +138,37 @@ pub async fn query(
     let histogram = QUERY_EXECUTE_TIME.with_label_values(&[first_stream_name]);
 
     let time = Instant::now();
-    let (records, fields) = query.execute().await?;
 
+    // Intercept `count(*)`` queries and use the counts API
+    if let Some(column_name) = query.is_logical_plan_count_without_filters() {
+        let counts_req = CountsRequest {
+            stream: first_stream_name.to_owned(),
+            start_time: query_request.start_time.clone(),
+            end_time: query_request.end_time.clone(),
+            num_bins: 1,
+        };
+        let count_records = counts_req.get_bin_density().await?;
+        // NOTE: this should not panic, since there is atleast one bin, always
+        let count = count_records[0].count;
+        let response = if query_request.params.fields {
+            json!({
+                "fields": [&column_name],
+                "records": [json!({column_name: count})]
+            })
+        } else {
+            Value::Array(vec![json!({column_name: count})])
+        };
+
+        let time = time.elapsed().as_secs_f64();
+
+        QUERY_EXECUTE_TIME
+            .with_label_values(&[first_stream_name])
+            .observe(time);
+
+        return Ok(HttpResponse::Ok().json(response));
+    }
+
+    let (records, fields) = query.execute().await?;
     let response = QueryResponse {
         records,
         fields,
@@ -151,6 +182,24 @@ pub async fn query(
     histogram.observe(time);
 
     Ok(response)
+}
+
+pub async fn get_counts(
+    req: HttpRequest,
+    counts_request: Json<CountsRequest>,
+) -> Result<impl Responder, QueryError> {
+    let creds = extract_session_key_from_req(&req)?;
+    let permissions = Users.get_permissions(&creds);
+
+    // does user have access to table?
+    user_auth_for_query(&permissions, &[counts_request.stream.clone()])?;
+
+    let records = counts_request.get_bin_density().await?;
+
+    Ok(web::Json(CountsResponse {
+        fields: vec!["start_time".into(), "end_time".into(), "count".into()],
+        records,
+    }))
 }
 
 pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), QueryError> {

@@ -26,7 +26,7 @@ use super::modal::utils::logstream_utils::{
 use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
 use crate::catalog::get_first_event;
-use crate::event::format::override_data_type;
+use crate::event::format::{override_data_type, LogSource};
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::{SchemaVersion, STREAM_INFO};
@@ -35,8 +35,8 @@ use crate::option::{Mode, CONFIG};
 use crate::rbac::role::Action;
 use crate::rbac::Users;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
-use crate::storage::StreamType;
-use crate::storage::{retention::Retention, StorageDir, StreamInfo};
+use crate::storage::{retention::Retention, StorageDir};
+use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::{event, stats};
 
@@ -484,6 +484,7 @@ fn remove_id_from_alerts(value: &mut Value) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_stream(
     stream_name: String,
     time_partition: &str,
@@ -492,6 +493,7 @@ pub async fn create_stream(
     static_schema_flag: bool,
     schema: Arc<Schema>,
     stream_type: &str,
+    log_source: LogSource,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
     if stream_type != StreamType::Internal.to_string() {
@@ -509,6 +511,7 @@ pub async fn create_stream(
             static_schema_flag,
             schema.clone(),
             stream_type,
+            log_source.clone(),
         )
         .await
     {
@@ -533,6 +536,7 @@ pub async fn create_stream(
                 static_schema,
                 stream_type,
                 SchemaVersion::V1, // New stream
+                log_source,
             );
         }
         Err(err) => {
@@ -583,6 +587,7 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
             .map(|limit| limit.to_string()),
         custom_partition: stream_meta.custom_partition.clone(),
         static_schema_flag: stream_meta.static_schema_flag,
+        log_source: stream_meta.log_source.clone(),
     };
 
     // get the other info from
@@ -725,8 +730,12 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
 }
 
 pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
-    if let Ok(stream_exists) =
-        create_stream_if_not_exists(INTERNAL_STREAM_NAME, &StreamType::Internal.to_string()).await
+    if let Ok(stream_exists) = create_stream_if_not_exists(
+        INTERNAL_STREAM_NAME,
+        &StreamType::Internal.to_string(),
+        LogSource::Pmeta,
+    )
+    .await
     {
         if stream_exists {
             return Ok(());
@@ -894,9 +903,9 @@ pub mod error {
 mod tests {
     use crate::handlers::http::logstream::error::StreamError;
     use crate::handlers::http::logstream::get_stats;
+    use crate::handlers::http::modal::utils::logstream_utils::fetch_headers_from_put_stream_request;
     use actix_web::test::TestRequest;
     use anyhow::bail;
-
     #[actix_web::test]
     #[should_panic]
     async fn get_stats_panics_without_logstream() {
@@ -914,5 +923,42 @@ mod tests {
             Err(StreamError::StreamNotFound(_)) => Ok(()),
             _ => bail!("expected StreamNotFound error"),
         }
+    }
+
+    #[actix_web::test]
+    async fn header_without_log_source() {
+        let req = TestRequest::default().to_http_request();
+        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        assert_eq!(log_source, crate::event::format::LogSource::Json);
+    }
+
+    #[actix_web::test]
+    async fn header_with_known_log_source() {
+        let mut req = TestRequest::default()
+            .insert_header(("X-P-Log-Source", "pmeta"))
+            .to_http_request();
+        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        assert_eq!(log_source, crate::event::format::LogSource::Pmeta);
+
+        req = TestRequest::default()
+            .insert_header(("X-P-Log-Source", "otel-logs"))
+            .to_http_request();
+        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        assert_eq!(log_source, crate::event::format::LogSource::OtelLogs);
+
+        req = TestRequest::default()
+            .insert_header(("X-P-Log-Source", "kinesis"))
+            .to_http_request();
+        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        assert_eq!(log_source, crate::event::format::LogSource::Kinesis);
+    }
+
+    #[actix_web::test]
+    async fn header_with_unknown_log_source() {
+        let req = TestRequest::default()
+            .insert_header(("X-P-Log-Source", "teststream"))
+            .to_http_request();
+        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        assert_eq!(log_source, crate::event::format::LogSource::Json);
     }
 }

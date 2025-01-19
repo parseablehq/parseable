@@ -21,14 +21,13 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    Owner, ALERT_FILE_NAME, CORRELATIONS_ROOT_DIRECTORY, MANIFEST_FILE,
-    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    Owner, ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
+    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
-use crate::correlation::{CorrelationConfig, CorrelationError};
+use crate::event::format::LogSource;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
-use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
+use crate::handlers::http::users::{CORRELATION_DIR, DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
@@ -101,6 +100,9 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn get_all_dashboards(
         &self,
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
+    async fn get_all_correlations(
+        &self,
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn list_manifest_files(
         &self,
@@ -155,6 +157,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         static_schema_flag: bool,
         schema: Arc<Schema>,
         stream_type: &str,
+        log_source: LogSource,
     ) -> Result<String, ObjectStorageError> {
         let format = ObjectStoreFormat {
             created_at: Local::now().to_rfc3339(),
@@ -169,6 +172,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 id: CONFIG.options.username.clone(),
                 group: CONFIG.options.username.clone(),
             },
+            log_source,
             ..Default::default()
         };
         let format_json = to_bytes(&format);
@@ -621,30 +625,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
     // pick a better name
     fn get_bucket_name(&self) -> String;
-
-    async fn put_correlation(
-        &self,
-        correlation: &CorrelationConfig,
-    ) -> Result<(), ObjectStorageError> {
-        let path = RelativePathBuf::from_iter([
-            CORRELATIONS_ROOT_DIRECTORY,
-            &format!("{}.json", correlation.id),
-        ]);
-        self.put_object(&path, to_bytes(correlation)).await?;
-        Ok(())
-    }
-
-    async fn get_correlations(&self) -> Result<Vec<Bytes>, CorrelationError> {
-        let correlation_path = RelativePathBuf::from_iter([CORRELATIONS_ROOT_DIRECTORY]);
-        let correlation_bytes = self
-            .get_objects(
-                Some(&correlation_path),
-                Box::new(|file_name| file_name.ends_with(".json")),
-            )
-            .await?;
-
-        Ok(correlation_bytes)
-    }
 }
 
 pub async fn commit_schema_to_storage(
@@ -715,6 +695,15 @@ pub fn filter_path(user_id: &str, stream_name: &str, filter_file_name: &str) -> 
         FILTER_DIR,
         stream_name,
         filter_file_name,
+    ])
+}
+
+pub fn correlation_path(user_id: &str, correlation_file_name: &str) -> RelativePathBuf {
+    RelativePathBuf::from_iter([
+        USERS_ROOT_DIR,
+        user_id,
+        CORRELATION_DIR,
+        correlation_file_name,
     ])
 }
 

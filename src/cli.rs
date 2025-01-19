@@ -23,7 +23,8 @@ use url::Url;
 
 use crate::{
     oidc::{self, OpenidConfig},
-    option::{validation, Compression, Mode}, storage::{AzureBlobConfig, FSConfig, S3Config},
+    option::{validation, Compression, Mode},
+    storage::{AzureBlobConfig, FSConfig, S3Config},
 };
 
 #[cfg(any(
@@ -43,7 +44,6 @@ use std::string::String as KafkaSslProtocol;
 pub const DEFAULT_USERNAME: &str = "admin";
 pub const DEFAULT_PASSWORD: &str = "admin";
 
-
 #[derive(Parser)]
 #[command(
     name = "parseable",
@@ -52,7 +52,7 @@ pub const DEFAULT_PASSWORD: &str = "admin";
     long_about = r#"
 Cloud Native, log analytics platform for modern applications.
 
-Usage: 
+Usage:
 parseable [command] [options..]
 
 
@@ -81,11 +81,11 @@ pub struct Cli {
 #[derive(Parser)]
 pub enum StorageOptions {
     #[command(name = "local-store")]
-     Local(LocalStoreArgs),
-    
+    Local(LocalStoreArgs),
+
     #[command(name = "s3-store")]
     S3(S3StoreArgs),
-    
+
     #[command(name = "blob-store")]
     Blob(BlobStoreArgs),
 }
@@ -125,8 +125,8 @@ pub struct Options {
 
     // Server configuration
     #[arg(
-        long, 
-        env = "P_ADDR", 
+        long,
+        env = "P_ADDR",
         default_value = "0.0.0.0:8000",
         value_parser = validation::socket_addr,
         help = "Address and port for Parseable HTTP(s) server"
@@ -294,35 +294,8 @@ pub struct Options {
     )]
     pub ingestor_endpoint: String,
 
-    // OIDC Configuration
-    #[arg(
-        long,
-        long = "oidc-client",
-        env = "P_OIDC_CLIENT_ID",
-        requires = "oidc",
-        group = "oidc",
-        help = "Client id for OIDC provider"
-    )]
-    oidc_client_id: Option<String>,
-
-    #[arg(
-        long,
-        env = "P_OIDC_CLIENT_SECRET",
-        requires = "oidc",
-        group = "oidc",
-        help = "Client secret for OIDC provider"
-    )]
-    oidc_client_secret: Option<String>,
-
-    #[arg(
-        long,
-        env = "P_OIDC_ISSUER",
-        value_parser = validation::url,
-        requires = "oidc",
-        group = "oidc",
-        help = "OIDC provider's host address"
-    )]
-    oidc_issuer: Option<Url>,
+    #[command(flatten)]
+    oidc: Option<OidcConfig>,
 
     // Kafka configuration (conditionally compiled)
     #[cfg(any(
@@ -381,14 +354,45 @@ pub struct Options {
     )]
     pub audit_logger: Option<Url>,
 
-    #[arg(long ,env = "P_AUDIT_USERNAME", help = "Audit logger username")]
+    #[arg(long, env = "P_AUDIT_USERNAME", help = "Audit logger username")]
     pub audit_username: Option<String>,
 
-    #[arg(long ,env = "P_AUDIT_PASSWORD", help = "Audit logger password")]
+    #[arg(long, env = "P_AUDIT_PASSWORD", help = "Audit logger password")]
     pub audit_password: Option<String>,
 
-    #[arg(long ,env = "P_MS_CLARITY_TAG", help = "Tag for MS Clarity")]
+    #[arg(long, env = "P_MS_CLARITY_TAG", help = "Tag for MS Clarity")]
     pub ms_clarity_tag: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct OidcConfig {
+    #[arg(
+        long = "oidc-client",
+        name = "oidc-client",
+        env = "P_OIDC_CLIENT_ID",
+        required = false,
+        help = "Client id for OIDC provider"
+    )]
+    pub client_id: String,
+
+    #[arg(
+        long = "oidc-client-secret",
+        name = "oidc-client-secret",
+        env = "P_OIDC_CLIENT_SECRET",
+        required = false,
+        help = "Client secret for OIDC provider"
+    )]
+    pub secret: String,
+
+    #[arg(
+        long = "oidc-issuer",
+        name = "oidc-issuer",
+        env = "P_OIDC_ISSUER",
+        required = false,
+        value_parser = validation::url,
+        help = "OIDC provider's host address"
+    )]
+    pub issuer: Url,
 }
 
 impl Options {
@@ -405,24 +409,24 @@ impl Options {
     }
 
     pub fn openid(&self) -> Option<OpenidConfig> {
-        match (&self.oidc_client_id, &self.oidc_client_secret, &self.oidc_issuer) {
-            (Some(id), Some(secret), Some(issuer)) => {
-                let origin = if let Some(url) = self.domain_address.clone() {
-                    oidc::Origin::Production(url)
-                } else {
-                    oidc::Origin::Local {
-                        socket_addr: self.address.clone(),
-                        https: self.tls_cert_path.is_some() && self.tls_key_path.is_some(),
-                    }
-                };
-                Some(OpenidConfig {
-                    id: id.clone(),
-                    secret: secret.clone(),
-                    issuer: issuer.clone(),
-                    origin,
-                })
+        let OidcConfig {
+            secret,
+            client_id,
+            issuer,
+        } = self.oidc.as_ref()?;
+        let origin = if let Some(url) = self.domain_address.clone() {
+            oidc::Origin::Production(url)
+        } else {
+            oidc::Origin::Local {
+                socket_addr: self.address.clone(),
+                https: self.tls_cert_path.is_some() && self.tls_key_path.is_some(),
             }
-            _ => None,
-        }
+        };
+        Some(OpenidConfig {
+            id: client_id.clone(),
+            secret: secret.clone(),
+            issuer: issuer.clone(),
+            origin,
+        })
     }
 }
