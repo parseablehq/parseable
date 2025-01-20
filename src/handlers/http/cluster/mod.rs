@@ -35,7 +35,8 @@ use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
 use crate::storage::{ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY};
 use crate::HTTP_CLIENT;
 use actix_web::http::header::{self, HeaderMap};
-use actix_web::{HttpRequest, Responder};
+use actix_web::web::Path;
+use actix_web::Responder;
 use bytes::Bytes;
 use chrono::Utc;
 use http::{header as http_header, StatusCode};
@@ -676,9 +677,8 @@ pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
     Ok(arr)
 }
 
-pub async fn remove_ingestor(req: HttpRequest) -> Result<impl Responder, PostError> {
-    let domain_name: String = req.match_info().get("ingestor").unwrap().parse().unwrap();
-    let domain_name = to_url_string(domain_name);
+pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, PostError> {
+    let domain_name = to_url_string(ingestor.into_inner());
 
     if check_liveness(&domain_name).await {
         return Err(PostError::Invalid(anyhow::anyhow!(

@@ -19,7 +19,10 @@
 use core::str;
 use std::fs;
 
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{
+    web::{self, Path},
+    HttpRequest, Responder,
+};
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
@@ -49,8 +52,8 @@ use crate::{
     storage::{StorageDir, StreamType},
 };
 
-pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
 
     // if the stream not found in memory map,
     //check if it exists in the storage
@@ -106,9 +109,12 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
-pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
+pub async fn put_stream(
+    req: HttpRequest,
+    stream_name: Path<String>,
+    body: Bytes,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
     let _ = CREATE_STREAM_LOCK.lock().await;
     let headers = create_update_stream(req.headers(), &body, &stream_name).await?;
 
@@ -117,9 +123,11 @@ pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder,
     Ok(("Log stream created", StatusCode::OK))
 }
 
-pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
+pub async fn get_stats(
+    req: HttpRequest,
+    stream_name: Path<String>,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage

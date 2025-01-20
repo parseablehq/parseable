@@ -16,7 +16,7 @@
  *
  */
 
-use actix_web::{HttpRequest, Responder};
+use actix_web::{web::Path, HttpRequest, Responder};
 use bytes::Bytes;
 use http::StatusCode;
 use tracing::warn;
@@ -36,10 +36,10 @@ use crate::{
 };
 
 pub async fn retention_cleanup(
-    req: HttpRequest,
+    stream_name: Path<String>,
     body: Bytes,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let stream_name = stream_name.into_inner();
     let storage = CONFIG.storage().get_object_store();
     // if the stream not found in memory map,
     //check if it exists in the storage
@@ -59,8 +59,8 @@ pub async fn retention_cleanup(
     Ok((first_event_at, StatusCode::OK))
 }
 
-pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
@@ -80,9 +80,12 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
-pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
+pub async fn put_stream(
+    req: HttpRequest,
+    stream_name: Path<String>,
+    body: Bytes,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
     create_update_stream(req.headers(), &body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))

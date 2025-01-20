@@ -23,7 +23,7 @@ use crate::{
     users::dashboards::{Dashboard, CURRENT_DASHBOARD_VERSION, DASHBOARDS},
     utils::{get_hash, get_user_from_request},
 };
-use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{http::header::ContentType, web, web::Path, HttpRequest, HttpResponse, Responder};
 use bytes::Bytes;
 use rand::distributions::DistString;
 
@@ -38,14 +38,14 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, DashboardError> {
     Ok((web::Json(dashboards), StatusCode::OK))
 }
 
-pub async fn get(req: HttpRequest) -> Result<impl Responder, DashboardError> {
+pub async fn get(
+    req: HttpRequest,
+    dashboard_id: Path<String>,
+) -> Result<impl Responder, DashboardError> {
     let user_id = get_user_from_request(&req)?;
-    let dashboard_id = req
-        .match_info()
-        .get("dashboard_id")
-        .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
+    let dashboard_id = dashboard_id.into_inner();
 
-    if let Some(dashboard) = DASHBOARDS.get_dashboard(dashboard_id, &get_hash(&user_id)) {
+    if let Some(dashboard) = DASHBOARDS.get_dashboard(&dashboard_id, &get_hash(&user_id)) {
         return Ok((web::Json(dashboard), StatusCode::OK));
     }
 
@@ -84,15 +84,16 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Dashb
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
-pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, DashboardError> {
+pub async fn update(
+    req: HttpRequest,
+    dashboard_id: Path<String>,
+    body: Bytes,
+) -> Result<impl Responder, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let dashboard_id = req
-        .match_info()
-        .get("dashboard_id")
-        .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
+    let dashboard_id = dashboard_id.into_inner();
 
-    if DASHBOARDS.get_dashboard(dashboard_id, &user_id).is_none() {
+    if DASHBOARDS.get_dashboard(&dashboard_id, &user_id).is_none() {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
     let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
@@ -117,21 +118,21 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, Das
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
-pub async fn delete(req: HttpRequest) -> Result<HttpResponse, DashboardError> {
+pub async fn delete(
+    req: HttpRequest,
+    dashboard_id: Path<String>,
+) -> Result<HttpResponse, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let dashboard_id = req
-        .match_info()
-        .get("dashboard_id")
-        .ok_or(DashboardError::Metadata("No Dashboard Id Provided"))?;
-    if DASHBOARDS.get_dashboard(dashboard_id, &user_id).is_none() {
+    let dashboard_id = dashboard_id.into_inner();
+    if DASHBOARDS.get_dashboard(&dashboard_id, &user_id).is_none() {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
     let store = CONFIG.storage().get_object_store();
     store.delete_object(&path).await?;
 
-    DASHBOARDS.delete_dashboard(dashboard_id);
+    DASHBOARDS.delete_dashboard(&dashboard_id);
 
     Ok(HttpResponse::Ok().finish())
 }

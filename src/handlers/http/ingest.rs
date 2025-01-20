@@ -37,7 +37,7 @@ use crate::otel::traces::flatten_otel_traces;
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
-use actix_web::web::Json;
+use actix_web::web::{Json, Path};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
@@ -222,9 +222,10 @@ pub async fn handle_otel_traces_ingestion(
 // fails if the logstream does not exist
 pub async fn post_event(
     req: HttpRequest,
+    stream_name: Path<String>,
     Json(json): Json<Value>,
 ) -> Result<HttpResponse, PostError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let stream_name = stream_name.into_inner();
     let internal_stream_names = STREAM_INFO.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
