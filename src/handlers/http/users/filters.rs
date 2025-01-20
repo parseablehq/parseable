@@ -25,7 +25,7 @@ use crate::{
 };
 use actix_web::{
     http::header::ContentType,
-    web::{self, Path},
+    web::{self, Json, Path},
     HttpRequest, HttpResponse, Responder,
 };
 use bytes::Bytes;
@@ -53,10 +53,12 @@ pub async fn get(
     Err(FiltersError::Metadata("Filter does not exist"))
 }
 
-pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, FiltersError> {
+pub async fn post(
+    req: HttpRequest,
+    Json(mut filter): Json<Filter>,
+) -> Result<impl Responder, FiltersError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let mut filter: Filter = serde_json::from_slice(&body)?;
     let filter_id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
@@ -79,7 +81,7 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Filte
 pub async fn update(
     req: HttpRequest,
     filter_id: Path<String>,
-    body: Bytes,
+    Json(mut filter): Json<Filter>,
 ) -> Result<impl Responder, FiltersError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
@@ -87,7 +89,6 @@ pub async fn update(
     if FILTERS.get_filter(&filter_id, &user_id).is_none() {
         return Err(FiltersError::Metadata("Filter does not exist"));
     }
-    let mut filter: Filter = serde_json::from_slice(&body)?;
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
