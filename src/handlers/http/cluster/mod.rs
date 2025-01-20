@@ -322,18 +322,12 @@ pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(),
 // forward the put role request to all ingestors to keep them in sync
 pub async fn sync_role_update_with_ingestors(
     name: String,
-    body: Vec<DefaultPrivilege>,
+    privileges: Vec<DefaultPrivilege>,
 ) -> Result<(), RoleError> {
     let ingestor_infos = get_ingestor_info().await.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
         RoleError::Anyhow(err)
     })?;
-
-    let roles = to_vec(&body).map_err(|err| {
-        error!("Fatal: failed to serialize roles: {:?}", err);
-        RoleError::SerdeError(err)
-    })?;
-    let roles = Bytes::from(roles);
 
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
@@ -351,7 +345,7 @@ pub async fn sync_role_update_with_ingestors(
             .put(url)
             .header(header::AUTHORIZATION, &ingestor.token)
             .header(header::CONTENT_TYPE, "application/json")
-            .body(roles.clone())
+            .json(&privileges)
             .send()
             .await
             .map_err(|err| {
