@@ -16,7 +16,10 @@
  *
  */
 
-use actix_web::{HttpRequest, Responder};
+use actix_web::{
+    web::{Json, Path},
+    HttpRequest, Responder,
+};
 use bytes::Bytes;
 use http::StatusCode;
 use tracing::warn;
@@ -32,6 +35,7 @@ use crate::{
     },
     metadata,
     option::CONFIG,
+    static_schema::StaticSchema,
     stats,
 };
 
@@ -80,10 +84,13 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
-pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
-    create_update_stream(&req, &body, &stream_name).await?;
+pub async fn put_stream(
+    req: HttpRequest,
+    stream_name: Path<String>,
+    static_schema: Option<Json<StaticSchema>>,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
+    create_update_stream(&req, static_schema.as_ref().map(|Json(s)| s), &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }

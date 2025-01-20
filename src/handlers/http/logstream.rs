@@ -34,6 +34,7 @@ use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STO
 use crate::option::{Mode, CONFIG};
 use crate::rbac::role::Action;
 use crate::rbac::Users;
+use crate::static_schema::StaticSchema;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::{retention::Retention, StorageDir};
 use crate::storage::{StreamInfo, StreamType};
@@ -43,6 +44,7 @@ use crate::{event, stats};
 use crate::{metadata, validator};
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::http::StatusCode;
+use actix_web::web::{Json, Path};
 use actix_web::{web, HttpRequest, Responder};
 use arrow_json::reader::infer_json_schema_from_iterator;
 use arrow_schema::{Field, Schema};
@@ -190,10 +192,14 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
     Ok((web::Json(alerts), StatusCode::OK))
 }
 
-pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn put_stream(
+    req: HttpRequest,
+    stream_name: Path<String>,
+    static_schema: Option<Json<StaticSchema>>,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
 
-    create_update_stream(&req, &body, &stream_name).await?;
+    create_update_stream(&req, static_schema.as_ref().map(|Json(s)| s), &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
@@ -730,27 +736,26 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
 }
 
 pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
-    if let Ok(stream_exists) = create_stream_if_not_exists(
+    let Ok(false) = create_stream_if_not_exists(
         INTERNAL_STREAM_NAME,
         &StreamType::Internal.to_string(),
         LogSource::Pmeta,
     )
     .await
-    {
-        if stream_exists {
-            return Ok(());
-        }
-        let mut header_map = HeaderMap::new();
-        header_map.insert(
-            HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
-            HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
-        );
-        header_map.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
-        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME).await?;
-    }
+    else {
+        return Ok(());
+    };
+    let mut header_map = HeaderMap::new();
+    header_map.insert(
+        HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
+        HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
+    );
+    header_map.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    sync_streams_with_ingestors(header_map, None, INTERNAL_STREAM_NAME).await?;
+
     Ok(())
 }
 #[allow(unused)]

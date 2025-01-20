@@ -19,8 +19,10 @@
 use core::str;
 use std::fs;
 
-use actix_web::{web, HttpRequest, Responder};
-use bytes::Bytes;
+use actix_web::{
+    web::{self, Json, Path},
+    HttpRequest, Responder,
+};
 use chrono::Utc;
 use http::StatusCode;
 use tokio::sync::Mutex;
@@ -45,6 +47,7 @@ use crate::{
     hottier::HotTierManager,
     metadata::{self, STREAM_INFO},
     option::CONFIG,
+    static_schema::StaticSchema,
     stats::{self, Stats},
     storage::{StorageDir, StreamType},
 };
@@ -106,13 +109,17 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
-pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
+pub async fn put_stream(
+    req: HttpRequest,
+    stream_name: Path<String>,
+    static_schema: Option<Json<StaticSchema>>,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
+    let static_schema = static_schema.map(|Json(s)| s);
     let _ = CREATE_STREAM_LOCK.lock().await;
-    let headers = create_update_stream(&req, &body, &stream_name).await?;
+    let headers = create_update_stream(&req, static_schema.as_ref(), &stream_name).await?;
 
-    sync_streams_with_ingestors(headers, body, &stream_name).await?;
+    sync_streams_with_ingestors(headers, static_schema, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }

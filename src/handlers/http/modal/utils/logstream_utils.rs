@@ -20,7 +20,6 @@ use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 
 use actix_web::{http::header::HeaderMap, HttpRequest};
 use arrow_schema::{Field, Schema};
-use bytes::Bytes;
 use http::StatusCode;
 
 use crate::{
@@ -39,7 +38,7 @@ use crate::{
 
 pub async fn create_update_stream(
     req: &HttpRequest,
-    body: &Bytes,
+    static_schema: Option<&StaticSchema>,
     stream_name: &str,
 ) -> Result<HeaderMap, StreamError> {
     let (
@@ -100,7 +99,7 @@ pub async fn create_update_stream(
     }
 
     let schema = validate_static_schema(
-        body,
+        static_schema,
         stream_name,
         &time_partition,
         &custom_partition,
@@ -262,31 +261,28 @@ pub fn validate_time_with_custom_partition(
 }
 
 pub fn validate_static_schema(
-    body: &Bytes,
+    static_schema: Option<&StaticSchema>,
     stream_name: &str,
     time_partition: &str,
     custom_partition: &str,
     static_schema_flag: bool,
 ) -> Result<Arc<Schema>, CreateStreamError> {
     if static_schema_flag {
-        if body.is_empty() {
-            return Err(CreateStreamError::Custom {
-                msg: format!(
-                    "Please provide schema in the request body for static schema logstream {stream_name}"
-                ),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
-
-        let static_schema: StaticSchema = serde_json::from_slice(body)?;
-        let parsed_schema =
-            convert_static_schema_to_arrow_schema(static_schema, time_partition, custom_partition)
-                .map_err(|_| CreateStreamError::Custom {
-                    msg: format!(
-                        "Unable to commit static schema, logstream {stream_name} not created"
-                    ),
-                    status: StatusCode::BAD_REQUEST,
-                })?;
+        let static_schema = static_schema.ok_or_else(||  CreateStreamError::Custom {
+            msg: format!(
+                "Please provide schema in the request body for static schema logstream {stream_name}"
+            ),
+            status: StatusCode::BAD_REQUEST,
+        })?;
+        let parsed_schema = convert_static_schema_to_arrow_schema(
+            static_schema.clone(),
+            time_partition,
+            custom_partition,
+        )
+        .map_err(|_| CreateStreamError::Custom {
+            msg: format!("Unable to commit static schema, logstream {stream_name} not created"),
+            status: StatusCode::BAD_REQUEST,
+        })?;
 
         return Ok(parsed_schema);
     }
