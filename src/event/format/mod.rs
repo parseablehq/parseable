@@ -81,7 +81,6 @@ pub trait EventFormat: Sized {
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
@@ -97,7 +96,6 @@ pub trait EventFormat: Sized {
     ) -> Result<(RecordBatch, bool), AnyError> {
         let (data, mut schema, is_first) = self.to_data(
             storage_schema,
-            static_schema_flag,
             time_partition,
             schema_version,
         )?;

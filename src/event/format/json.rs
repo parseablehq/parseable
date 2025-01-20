@@ -44,7 +44,6 @@ impl EventFormat for Event {
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
