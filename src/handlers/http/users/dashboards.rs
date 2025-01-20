@@ -23,7 +23,11 @@ use crate::{
     users::dashboards::{Dashboard, CURRENT_DASHBOARD_VERSION, DASHBOARDS},
     utils::{get_hash, get_user_from_request},
 };
-use actix_web::{http::header::ContentType, web, web::Path, HttpRequest, HttpResponse, Responder};
+use actix_web::{
+    http::header::ContentType,
+    web::{self, Json, Path},
+    HttpRequest, HttpResponse, Responder,
+};
 use bytes::Bytes;
 use rand::distributions::DistString;
 
@@ -52,10 +56,12 @@ pub async fn get(
     Err(DashboardError::Metadata("Dashboard does not exist"))
 }
 
-pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, DashboardError> {
+pub async fn post(
+    req: HttpRequest,
+    Json(mut dashboard): Json<Dashboard>,
+) -> Result<impl Responder, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
     let dashboard_id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
     dashboard.dashboard_id = Some(dashboard_id.clone());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
@@ -87,7 +93,7 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Dashb
 pub async fn update(
     req: HttpRequest,
     dashboard_id: Path<String>,
-    body: Bytes,
+    Json(mut dashboard): Json<Dashboard>,
 ) -> Result<impl Responder, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
@@ -96,7 +102,6 @@ pub async fn update(
     if DASHBOARDS.get_dashboard(&dashboard_id, &user_id).is_none() {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
-    let mut dashboard: Dashboard = serde_json::from_slice(&body)?;
     dashboard.dashboard_id = Some(dashboard_id.to_string());
     dashboard.user_id = Some(user_id.clone());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
