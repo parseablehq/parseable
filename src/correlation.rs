@@ -164,21 +164,29 @@ impl Correlations {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CorrelationVersion {
+    #[default]
     V1,
 }
 
 type CorrelationId = String;
 type UserId = String;
 
+fn generate_correlation_id() -> CorrelationId {
+    get_hash(Utc::now().timestamp_micros().to_string().as_str())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorrelationConfig {
+    #[serde(skip_deserializing)]
     pub version: CorrelationVersion,
     pub title: String,
+    #[serde(skip_deserializing, default = "generate_correlation_id")]
     pub id: CorrelationId,
+    #[serde(skip_deserializing)]
     pub user_id: UserId,
     pub table_configs: Vec<TableConfig>,
     pub join_config: JoinConfig,
@@ -197,44 +205,15 @@ impl CorrelationConfig {
         ])
     }
 
-    pub fn update(&mut self, correlation_request: CorrelationRequest) {
-        self.title = correlation_request.title;
-        self.table_configs = correlation_request.table_configs;
-        self.join_config = correlation_request.join_config;
-        self.filter = correlation_request.filter;
-        self.start_time = correlation_request.start_time;
-        self.end_time = correlation_request.end_time;
+    pub fn update(&mut self, update: Self) {
+        self.title = update.title;
+        self.table_configs = update.table_configs;
+        self.join_config = update.join_config;
+        self.filter = update.filter;
+        self.start_time = update.start_time;
+        self.end_time = update.end_time;
     }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CorrelationRequest {
-    pub title: String,
-    pub table_configs: Vec<TableConfig>,
-    pub join_config: JoinConfig,
-    pub filter: Option<FilterQuery>,
-    pub start_time: Option<String>,
-    pub end_time: Option<String>,
-}
-
-impl From<CorrelationRequest> for CorrelationConfig {
-    fn from(val: CorrelationRequest) -> Self {
-        Self {
-            version: CorrelationVersion::V1,
-            title: val.title,
-            id: get_hash(Utc::now().timestamp_micros().to_string().as_str()),
-            user_id: String::default(),
-            table_configs: val.table_configs,
-            join_config: val.join_config,
-            filter: val.filter,
-            start_time: val.start_time,
-            end_time: val.end_time,
-        }
-    }
-}
-
-impl CorrelationRequest {
     /// This function will validate the TableConfigs, JoinConfig, and user auth
     pub async fn validate(&self, session_key: &SessionKey) -> Result<(), CorrelationError> {
         let ctx = &QUERY_SESSION;

@@ -25,7 +25,7 @@ use crate::rbac::Users;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::{get_hash, get_user_from_request, user_auth_for_query};
 
-use crate::correlation::{CorrelationConfig, CorrelationError, CorrelationRequest, CORRELATIONS};
+use crate::correlation::{CorrelationConfig, CorrelationError, CORRELATIONS};
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
@@ -71,7 +71,7 @@ pub async fn get(
 
 pub async fn post(
     req: HttpRequest,
-    Json(correlation_request): Json<CorrelationRequest>,
+    Json(correlation_request): Json<CorrelationConfig>,
 ) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
@@ -86,7 +86,7 @@ pub async fn post(
 pub async fn modify(
     req: HttpRequest,
     correlation_id: Path<String>,
-    Json(correlation_request): Json<CorrelationRequest>,
+    Json(correlation_request): Json<CorrelationConfig>,
 ) -> Result<impl Responder, CorrelationError> {
     let correlation_id = correlation_id.into_inner();
     let session_key = extract_session_key_from_req(&req)
