@@ -59,23 +59,29 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
 
-        let stream_name = stream_name.to_str().unwrap().to_owned();
-        let internal_stream_names = STREAM_INFO.list_internal_streams();
-        if internal_stream_names.contains(&stream_name) {
-            return Err(PostError::Invalid(anyhow::anyhow!(
-                "The stream {} is reserved for internal use and cannot be ingested into",
-                stream_name
-            )));
-        }
-        create_stream_if_not_exists(
-            &stream_name,
-            &StreamType::UserDefined.to_string(),
-            LogSource::default(),
-        )
-        .await?;
+    let stream_name = stream_name.to_str().unwrap().to_owned();
+    let internal_stream_names = STREAM_INFO.list_internal_streams();
+    if internal_stream_names.contains(&stream_name) {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "The stream {} is reserved for internal use and cannot be ingested into",
+            stream_name
+        )));
+    }
+    create_stream_if_not_exists(
+        &stream_name,
+        &StreamType::UserDefined.to_string(),
+        LogSource::default(),
+    )
+    .await?;
 
-        flatten_and_push_logs(req, json, &stream_name).await?;
-        Ok(HttpResponse::Ok().finish())
+    let log_source = req
+        .headers()
+        .get(LOG_SOURCE_KEY)
+        .and_then(|h| h.to_str().ok())
+        .map_or(LogSource::default(), LogSource::from);
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+
+    Ok(HttpResponse::Ok().finish())
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
@@ -249,7 +255,13 @@ pub async fn post_event(
         }
     }
 
-    flatten_and_push_logs(req, json, &stream_name).await?;
+    let log_source = req
+        .headers()
+        .get(LOG_SOURCE_KEY)
+        .and_then(|h| h.to_str().ok())
+        .map_or(LogSource::default(), LogSource::from);
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+
     Ok(HttpResponse::Ok().finish())
 }
 

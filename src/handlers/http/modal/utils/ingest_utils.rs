@@ -16,7 +16,6 @@
  *
  */
 
-use actix_web::HttpRequest;
 use anyhow::anyhow;
 use arrow_schema::Field;
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -29,12 +28,9 @@ use crate::{
         format::{json, EventFormat, LogSource},
         Event,
     },
-    handlers::{
-        http::{
-            ingest::PostError,
-            kinesis::{flatten_kinesis_logs, Message},
-        },
-        LOG_SOURCE_KEY,
+    handlers::http::{
+        ingest::PostError,
+        kinesis::{flatten_kinesis_logs, Message},
     },
     metadata::{SchemaVersion, STREAM_INFO},
     storage::StreamType,
@@ -42,17 +38,10 @@ use crate::{
 };
 
 pub async fn flatten_and_push_logs(
-    req: HttpRequest,
     json: Value,
     stream_name: &str,
+    log_source: &LogSource,
 ) -> Result<(), PostError> {
-    let log_source = req
-        .headers()
-        .get(LOG_SOURCE_KEY)
-        .map(|h| h.to_str().unwrap_or(""))
-        .map(LogSource::from)
-        .unwrap_or_default();
-
     match log_source {
         LogSource::Kinesis => {
             let message: Message = serde_json::from_value(json)?;
@@ -67,7 +56,7 @@ pub async fn flatten_and_push_logs(
             )));
         }
         _ => {
-            push_logs(stream_name, json, &log_source).await?;
+            push_logs(stream_name, json, log_source).await?;
         }
     }
     Ok(())
