@@ -426,8 +426,8 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
 }
 
 /// this function performs the custom flattening of the otel metrics
-/// and returns a `Vec` of `Map` of the flattened json
-pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Map<String, Value>> {
+/// and returns a `Vec` of `Value::Object` of the flattened json
+pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
     for record in &message.resource_metrics {
         let mut resource_metrics_json = Map::new();
@@ -479,7 +479,7 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Map<String, Value>> {
         }
         vec_otel_json.extend(vec_scope_metrics_json);
     }
-    vec_otel_json
+    vec_otel_json.into_iter().map(Value::Object).collect()
 }
 
 /// otel metrics event has json object for aggregation temporality

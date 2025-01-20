@@ -19,7 +19,6 @@
 use actix_web::HttpRequest;
 use anyhow::anyhow;
 use arrow_schema::Field;
-use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
 use serde_json::Value;
@@ -44,7 +43,7 @@ use crate::{
 
 pub async fn flatten_and_push_logs(
     req: HttpRequest,
-    body: Bytes,
+    json: Value,
     stream_name: &str,
 ) -> Result<(), PostError> {
     let log_source = req
@@ -56,10 +55,10 @@ pub async fn flatten_and_push_logs(
 
     match log_source {
         LogSource::Kinesis => {
-            let message: Message = serde_json::from_slice(&body)?;
-            for record in flatten_kinesis_logs(message) {
-                let body: Bytes = serde_json::to_vec(&record).unwrap().into();
-                push_logs(stream_name, &body, &LogSource::default()).await?;
+            let message: Message = serde_json::from_value(json)?;
+            let json = flatten_kinesis_logs(message);
+            for record in json {
+                push_logs(stream_name, record, &LogSource::default()).await?;
             }
         }
         LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
@@ -68,7 +67,7 @@ pub async fn flatten_and_push_logs(
             )));
         }
         _ => {
-            push_logs(stream_name, &body, &log_source).await?;
+            push_logs(stream_name, json, &log_source).await?;
         }
     }
     Ok(())
@@ -76,7 +75,7 @@ pub async fn flatten_and_push_logs(
 
 pub async fn push_logs(
     stream_name: &str,
-    body: &Bytes,
+    json: Value,
     log_source: &LogSource,
 ) -> Result<(), PostError> {
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
@@ -84,11 +83,10 @@ pub async fn push_logs(
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
     let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
     let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
-    let body_val: Value = serde_json::from_slice(body)?;
 
     let data = if time_partition.is_some() || custom_partition.is_some() {
         convert_array_to_object(
-            body_val,
+            json,
             time_partition.as_ref(),
             time_partition_limit,
             custom_partition.as_ref(),
@@ -97,7 +95,7 @@ pub async fn push_logs(
         )?
     } else {
         vec![convert_to_array(convert_array_to_object(
-            body_val,
+            json,
             None,
             None,
             None,
@@ -168,12 +166,12 @@ pub fn into_event_batch(
 }
 
 pub fn get_custom_partition_values(
-    body: &Value,
+    json: &Value,
     custom_partition_list: &[&str],
 ) -> HashMap<String, String> {
     let mut custom_partition_values: HashMap<String, String> = HashMap::new();
     for custom_partition_field in custom_partition_list {
-        let custom_partition_value = body.get(custom_partition_field.trim()).unwrap().to_owned();
+        let custom_partition_value = json.get(custom_partition_field.trim()).unwrap().to_owned();
         let custom_partition_value = match custom_partition_value {
             e @ Value::Number(_) | e @ Value::Bool(_) => e.to_string(),
             Value::String(s) => s,
@@ -187,8 +185,8 @@ pub fn get_custom_partition_values(
     custom_partition_values
 }
 
-fn get_parsed_timestamp(body: &Value, time_partition: &str) -> Result<NaiveDateTime, PostError> {
-    let current_time = body.get(time_partition).ok_or_else(|| {
+fn get_parsed_timestamp(json: &Value, time_partition: &str) -> Result<NaiveDateTime, PostError> {
+    let current_time = json.get(time_partition).ok_or_else(|| {
         anyhow!(
             "Missing field for time partition from json: {:?}",
             time_partition

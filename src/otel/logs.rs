@@ -128,8 +128,8 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
 }
 
 /// this function performs the custom flattening of the otel logs
-/// and returns a `Vec` of `Map` of the flattened json
-pub fn flatten_otel_logs(message: &LogsData) -> Vec<Map<String, Value>> {
+/// and returns a `Vec` of `Value::Object` of the flattened json
+pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
     for record in &message.resource_logs {
         let mut resource_log_json = Map::new();
@@ -158,5 +158,5 @@ pub fn flatten_otel_logs(message: &LogsData) -> Vec<Map<String, Value>> {
         vec_otel_json.extend(vec_resource_logs_json);
     }
 
-    vec_otel_json
+    vec_otel_json.into_iter().map(Value::Object).collect()
 }
