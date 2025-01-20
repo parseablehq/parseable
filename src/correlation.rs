@@ -48,7 +48,7 @@ pub static CORRELATIONS: Lazy<Correlations> = Lazy::new(Correlations::default);
 type CorrelationMap = HashMap<CorrelationId, CorrelationConfig>;
 
 #[derive(Debug, Default, derive_more::Deref)]
-pub struct Correlations(RwLock<HashMap<UserId, CorrelationMap>>);
+pub struct Correlations(RwLock<CorrelationMap>);
 
 impl Correlations {
     // Load correlations from storage
@@ -68,35 +68,26 @@ impl Correlations {
 
             self.write()
                 .await
-                .entry(correlation.user_id.to_owned())
-                .or_insert_with(HashMap::new)
                 .insert(correlation.id.to_owned(), correlation);
         }
 
         Ok(())
     }
 
-    pub async fn list_correlations_for_user(
+    pub async fn list_correlations(
         &self,
         session_key: &SessionKey,
-        user_id: &str,
     ) -> Result<Vec<CorrelationConfig>, CorrelationError> {
-        let Some(correlations) = self.read().await.get(user_id).cloned() else {
-            return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
-                "Unable to find correlations for user - {user_id}"
-            ))));
-        };
-
         let mut user_correlations = vec![];
         let permissions = Users.get_permissions(session_key);
 
-        for correlation in correlations.values() {
+        for correlation in self.read().await.values() {
             let tables = &correlation
                 .table_configs
                 .iter()
                 .map(|t| t.table_name.clone())
                 .collect_vec();
-            if user_auth_for_query(&permissions, tables).is_ok() && correlation.user_id == user_id {
+            if user_auth_for_query(&permissions, tables).is_ok() {
                 user_correlations.push(correlation.clone());
             }
         }
@@ -107,12 +98,10 @@ impl Correlations {
     pub async fn get_correlation(
         &self,
         correlation_id: &str,
-        user_id: &str,
     ) -> Result<CorrelationConfig, CorrelationError> {
         self.read()
             .await
-            .get(user_id)
-            .and_then(|correlations| correlations.get(correlation_id))
+            .get(correlation_id)
             .cloned()
             .ok_or_else(|| {
                 CorrelationError::AnyhowError(anyhow::Error::msg(format!(
@@ -121,8 +110,15 @@ impl Correlations {
             })
     }
 
-    /// Insert new or replace existing correlation for the user and with the same ID
-    pub async fn update(&self, correlation: &CorrelationConfig) -> Result<(), CorrelationError> {
+    /// Create correlation associated with the user
+    pub async fn create(
+        &self,
+        mut correlation: CorrelationConfig,
+        session_key: &SessionKey,
+    ) -> Result<CorrelationConfig, CorrelationError> {
+        correlation.id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
+        correlation.validate(&session_key).await?;
+
         // Update in storage
         let correlation_bytes = serde_json::to_vec(&correlation)?.into();
         let path = correlation.path();
@@ -133,24 +129,65 @@ impl Correlations {
             .await?;
 
         // Update in memory
-        self.write()
-            .await
-            .entry(correlation.user_id.to_owned())
-            .or_insert_with(HashMap::new)
-            .insert(correlation.id.to_owned(), correlation.clone());
+        self.write().await.insert(
+            correlation.id.to_owned(),
+            correlation.clone(),
+        );
 
-        Ok(())
+        Ok(correlation)
+    }
+
+    /// Update existing correlation for the user and with the same ID
+    pub async fn update(
+        &self,
+        mut updated_correlation: CorrelationConfig,
+        session_key: &SessionKey,
+    ) -> Result<CorrelationConfig, CorrelationError> {
+        // validate whether user has access to this correlation object or not
+        let correlation = self.get_correlation(&updated_correlation.id).await?;
+        if correlation.user_id != updated_correlation.user_id {
+            return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
+                r#"User "{}" isn't authorized to update correlation with ID - {}"#,
+                updated_correlation.user_id, correlation.id
+            ))));
+        }
+
+        correlation.validate(&session_key).await?;
+        updated_correlation.update(correlation);
+
+        // Update in storage
+        let correlation_bytes = serde_json::to_vec(&updated_correlation)?.into();
+        let path = updated_correlation.path();
+        CONFIG
+            .storage()
+            .get_object_store()
+            .put_object(&path, correlation_bytes)
+            .await?;
+
+        // Update in memory
+        self.write().await.insert(
+            updated_correlation.id.to_owned(),
+            updated_correlation.clone(),
+        );
+
+        Ok(updated_correlation)
     }
 
     /// Delete correlation from memory and storage
-    pub async fn delete(&self, correlation: &CorrelationConfig) -> Result<(), CorrelationError> {
+    pub async fn delete(
+        &self,
+        correlation_id: &str,
+        user_id: &str,
+    ) -> Result<(), CorrelationError> {
+        let correlation = CORRELATIONS.get_correlation(&correlation_id).await?;
+        if correlation.user_id != user_id {
+            return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
+                r#"User "{user_id}" isn't authorized to delete correlation with ID - {correlation_id}"#
+            ))));
+        }
+
         // Delete from memory
-        self.write()
-            .await
-            .entry(correlation.user_id.to_owned())
-            .and_modify(|correlations| {
-                correlations.remove(&correlation.id);
-            });
+        self.write().await.remove(&correlation.id);
 
         // Delete from storage
         let path = correlation.path();
@@ -174,17 +211,13 @@ pub enum CorrelationVersion {
 type CorrelationId = String;
 type UserId = String;
 
-fn generate_correlation_id() -> CorrelationId {
-    get_hash(Utc::now().timestamp_micros().to_string().as_str())
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorrelationConfig {
     #[serde(skip_deserializing)]
     pub version: CorrelationVersion,
     pub title: String,
-    #[serde(skip_deserializing, default = "generate_correlation_id")]
+    #[serde(skip_deserializing)]
     pub id: CorrelationId,
     #[serde(skip_deserializing)]
     pub user_id: UserId,

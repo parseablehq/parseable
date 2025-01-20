@@ -30,13 +30,8 @@ use crate::correlation::{CorrelationConfig, CorrelationError, CORRELATIONS};
 pub async fn list(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
-    let user_id = get_user_from_request(&req)
-        .map(|s| get_hash(&s.to_string()))
-        .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    let correlations = CORRELATIONS
-        .list_correlations_for_user(&session_key, &user_id)
-        .await?;
+    let correlations = CORRELATIONS.list_correlations(&session_key).await?;
 
     Ok(web::Json(correlations))
 }
@@ -48,13 +43,8 @@ pub async fn get(
     let correlation_id = correlation_id.into_inner();
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
-    let user_id = get_user_from_request(&req)
-        .map(|s| get_hash(&s.to_string()))
-        .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    let correlation = CORRELATIONS
-        .get_correlation(&correlation_id, &user_id)
-        .await?;
+    let correlation = CORRELATIONS.get_correlation(&correlation_id).await?;
 
     let permissions = Users.get_permissions(&session_key);
 
@@ -80,8 +70,7 @@ pub async fn post(
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
     correlation.user_id = user_id;
 
-    correlation.validate(&session_key).await?;
-    CORRELATIONS.update(&correlation).await?;
+    let correlation = CORRELATIONS.create(correlation, &session_key).await?;
 
     Ok(web::Json(correlation))
 }
@@ -89,30 +78,17 @@ pub async fn post(
 pub async fn modify(
     req: HttpRequest,
     correlation_id: Path<String>,
-    Json(correlation_request): Json<CorrelationConfig>,
+    Json(mut correlation): Json<CorrelationConfig>,
 ) -> Result<impl Responder, CorrelationError> {
-    let correlation_id = correlation_id.into_inner();
-    let session_key = extract_session_key_from_req(&req)
-        .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
-    let user_id = get_user_from_request(&req)
+    correlation.id = correlation_id.into_inner();
+    correlation.user_id = get_user_from_request(&req)
         .map(|s| get_hash(&s.to_string()))
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    // validate whether user has access to this correlation object or not
-    let mut correlation = CORRELATIONS
-        .get_correlation(&correlation_id, &user_id)
-        .await?;
-    let permissions = Users.get_permissions(&session_key);
-    let tables = &correlation
-        .table_configs
-        .iter()
-        .map(|t| t.table_name.clone())
-        .collect_vec();
-    user_auth_for_query(&permissions, tables)?;
-    correlation_request.validate(&session_key).await?;
+    let session_key = extract_session_key_from_req(&req)
+        .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
 
-    correlation.update(correlation_request);
-    CORRELATIONS.update(&correlation).await?;
+    let correlation = CORRELATIONS.update(correlation, &session_key).await?;
 
     Ok(web::Json(correlation))
 }
@@ -122,27 +98,11 @@ pub async fn delete(
     correlation_id: Path<String>,
 ) -> Result<impl Responder, CorrelationError> {
     let correlation_id = correlation_id.into_inner();
-    let session_key = extract_session_key_from_req(&req)
-        .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
     let user_id = get_user_from_request(&req)
         .map(|s| get_hash(&s.to_string()))
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    let correlation = CORRELATIONS
-        .get_correlation(&correlation_id, &user_id)
-        .await?;
-
-    // validate user's query auth
-    let permissions = Users.get_permissions(&session_key);
-    let tables = &correlation
-        .table_configs
-        .iter()
-        .map(|t| t.table_name.clone())
-        .collect_vec();
-
-    user_auth_for_query(&permissions, tables)?;
-
-    CORRELATIONS.delete(&correlation).await?;
+    CORRELATIONS.delete(&correlation_id, &user_id).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
