@@ -94,8 +94,7 @@ impl EventFormat for Event {
             }
         };
 
-        if !static_schema_flag
-            && value_arr
+        if value_arr
                 .iter()
                 .any(|value| fields_mismatch(&schema, value, schema_version))
         {
