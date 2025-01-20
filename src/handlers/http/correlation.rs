@@ -71,13 +71,16 @@ pub async fn get(
 
 pub async fn post(
     req: HttpRequest,
-    Json(correlation_request): Json<CorrelationConfig>,
+    Json(mut correlation): Json<CorrelationConfig>,
 ) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
-    correlation_request.validate(&session_key).await?;
+    let user_id = get_user_from_request(&req)
+        .map(|s| get_hash(&s.to_string()))
+        .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
+    correlation.user_id = user_id;
 
-    let correlation: CorrelationConfig = correlation_request.into();
+    correlation.validate(&session_key).await?;
     CORRELATIONS.update(&correlation).await?;
 
     Ok(web::Json(correlation))
