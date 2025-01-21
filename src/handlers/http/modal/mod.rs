@@ -38,7 +38,7 @@ use openid::Discovered;
 use serde::Deserialize;
 use serde::Serialize;
 use ssl_acceptor::get_ssl_acceptor;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use super::audit;
@@ -66,12 +66,17 @@ pub trait ParseableServer {
     /// load metadata/configuration from persistence for previous sessions of parseable
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>>;
 
-    /// code that describes starting and setup procedures for each type of server with prometheus
-    async fn init(&self, prometheus: &PrometheusMetrics) -> anyhow::Result<()>;
+    /// code that describes starting and setup procedures for each type of server
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()>;
 
     /// configure the server
     async fn start(
         &self,
+        shutdown_rx: oneshot::Receiver<()>,
         prometheus: PrometheusMetrics,
         oidc_client: Option<crate::oidc::OpenidConfig>,
     ) -> anyhow::Result<()>
@@ -91,9 +96,9 @@ pub trait ParseableServer {
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
-            &CONFIG.parseable.tls_cert_path,
-            &CONFIG.parseable.tls_key_path,
-            &CONFIG.parseable.trusted_ca_certs_path,
+            &CONFIG.options.tls_cert_path,
+            &CONFIG.options.tls_key_path,
+            &CONFIG.options.trusted_ca_certs_path,
         )?;
 
         // fn that creates the app
@@ -108,19 +113,6 @@ pub trait ParseableServer {
                 .wrap(cross_origin_config())
         };
 
-        // Create a channel to trigger server shutdown
-        let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
-        let server_shutdown_signal = Arc::new(Mutex::new(Some(shutdown_trigger)));
-
-        // Clone the shutdown signal for the signal handler
-        let shutdown_signal = server_shutdown_signal.clone();
-
-        // Spawn the signal handler task
-        let signal_task = tokio::spawn(async move {
-            health_check::handle_signals(shutdown_signal).await;
-            info!("Received shutdown signal, notifying server to shut down...");
-        });
-
         // Create the HTTP server
         let http_server = HttpServer::new(create_app_fn)
             .workers(num_cpus::get())
@@ -129,10 +121,10 @@ pub trait ParseableServer {
         // Start the server with or without TLS
         let srv = if let Some(config) = ssl {
             http_server
-                .bind_rustls_0_22(&CONFIG.parseable.address, config)?
+                .bind_rustls_0_22(&CONFIG.options.address, config)?
                 .run()
         } else {
-            http_server.bind(&CONFIG.parseable.address)?.run()
+            http_server.bind(&CONFIG.options.address)?.run()
         };
 
         // Graceful shutdown handling
@@ -141,6 +133,8 @@ pub trait ParseableServer {
         let sync_task = tokio::spawn(async move {
             // Wait for the shutdown signal
             let _ = shutdown_rx.await;
+
+            health_check::shutdown().await;
 
             // Perform S3 sync and wait for completion
             info!("Starting data sync to S3...");
@@ -157,11 +151,6 @@ pub trait ParseableServer {
 
         // Await the HTTP server to run
         let server_result = srv.await;
-
-        // Await the signal handler to ensure proper cleanup
-        if let Err(e) = signal_task.await {
-            error!("Error in signal handler: {:?}", e);
-        }
 
         // Wait for the sync task to complete before exiting
         if let Err(e) = sync_task.await {

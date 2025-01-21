@@ -38,8 +38,8 @@ pub mod common;
 pub mod kafka;
 
 pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
-    if matches!(CONFIG.parseable.mode, Mode::Ingest | Mode::All) {
-        match CONFIG.connector_config.clone() {
+    if matches!(CONFIG.options.mode, Mode::Ingest | Mode::All) {
+        match CONFIG.options.connector.clone() {
             None => {
                 warn!("Kafka connector configuration is missing. Skipping Kafka pipeline.");
             }

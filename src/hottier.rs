@@ -72,7 +72,7 @@ impl HotTierManager {
     pub fn global() -> Option<&'static HotTierManager> {
         static INSTANCE: OnceCell<HotTierManager> = OnceCell::new();
 
-        let hot_tier_path = &CONFIG.parseable.hot_tier_storage_path;
+        let hot_tier_path = &CONFIG.options.hot_tier_storage_path;
         if hot_tier_path.is_none() {
             return None;
         }
@@ -136,7 +136,7 @@ impl HotTierManager {
 
         let (total_hot_tier_size, total_hot_tier_used_size) =
             self.get_hot_tiers_size(stream).await?;
-        let disk_threshold = (CONFIG.parseable.max_disk_usage * total_space as f64) / 100.0;
+        let disk_threshold = (CONFIG.options.max_disk_usage * total_space as f64) / 100.0;
         let max_allowed_hot_tier_size = disk_threshold
             - total_hot_tier_size as f64
             - (used_space as f64
@@ -570,7 +570,7 @@ impl HotTierManager {
                 'loop_files: while let Some(file_to_delete) = manifest.files.pop() {
                     let file_size = file_to_delete.file_size;
                     let path_to_delete = CONFIG
-                        .parseable
+                        .options
                         .hot_tier_storage_path
                         .as_ref()
                         .unwrap()
@@ -632,7 +632,7 @@ impl HotTierManager {
             }
 
             if ((used_space + size_to_download) as f64 * 100.0 / total_space as f64)
-                > CONFIG.parseable.max_disk_usage
+                > CONFIG.options.max_disk_usage
             {
                 return Ok(false);
             }
@@ -694,7 +694,7 @@ impl HotTierManager {
     }
 
     pub async fn put_internal_stream_hot_tier(&self) -> Result<(), HotTierError> {
-        if CONFIG.parseable.hot_tier_storage_path.is_some()
+        if CONFIG.options.hot_tier_storage_path.is_some()
             && !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME)
         {
             let mut stream_hot_tier = StreamHotTier {
@@ -735,7 +735,7 @@ struct DiskUtil {
 /// And parseable is running with `P_HOT_TIER_DIR` pointing to a directory in
 /// `/home/parseable`, we should return the usage stats of the disk mounted there.
 fn get_disk_usage() -> Option<DiskUtil> {
-    let path = CONFIG.parseable.hot_tier_storage_path.as_ref()?;
+    let path = CONFIG.options.hot_tier_storage_path.as_ref()?;
     let mut disks = Disks::new_with_refreshed_list();
     // Order the disk partitions by decreasing length of mount path
     disks.sort_by_key(|disk| disk.mount_point().to_str().unwrap().len());

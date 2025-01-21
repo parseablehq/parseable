@@ -27,6 +27,9 @@ use parseable::{
     option::{Mode, CONFIG},
     rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
+use tokio::signal::ctrl_c;
+use tokio::sync::oneshot;
+use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -37,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     init_logger(LevelFilter::DEBUG);
 
     // these are empty ptrs so mem footprint should be minimal
-    let server: Box<dyn ParseableServer> = match CONFIG.parseable.mode {
+    let server: Box<dyn ParseableServer> = match CONFIG.options.mode {
         Mode::Query => Box::new(QueryServer),
         Mode::Ingest => Box::new(IngestServer),
         Mode::All => Box::new(Server),
@@ -52,8 +55,18 @@ async fn main() -> anyhow::Result<()> {
     // keep metadata info in mem
     metadata.set_global();
 
+    // Spawn a task to trigger graceful shutdown on appropriate signal
+    let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        block_until_shutdown_signal().await;
+
+        // Trigger graceful shutdown
+        println!("Received shutdown signal, notifying server to shut down...");
+        shutdown_trigger.send(()).unwrap();
+    });
+
     let prometheus = metrics::build_metrics_handler();
-    let parseable_server = server.init(&prometheus);
+    let parseable_server = server.init(&prometheus, shutdown_rx);
 
     #[cfg(any(
         feature = "rdkafka-ssl",
@@ -61,8 +74,13 @@ async fn main() -> anyhow::Result<()> {
         feature = "rdkafka-sasl"
     ))]
     {
-        let connectors_task = connectors::init(&prometheus);
-        tokio::try_join!(parseable_server, connectors_task)?;
+        // load kafka server
+        if CONFIG.options.mode != Mode::Query {
+            let connectors_task = connectors::init(&prometheus);
+            tokio::try_join!(parseable_server, connectors_task)?;
+        } else {
+            parseable_server.await?;
+        }
     }
 
     #[cfg(not(any(
@@ -92,4 +110,24 @@ pub fn init_logger(default_level: LevelFilter) {
         .with(filter_layer)
         .with(fmt_layer)
         .init();
+}
+
+#[cfg(windows)]
+/// Asynchronously blocks until a shutdown signal is received
+pub async fn block_until_shutdown_signal() {
+    _ = ctrl_c().await;
+    info!("Received a CTRL+C event");
+}
+
+#[cfg(unix)]
+/// Asynchronously blocks until a shutdown signal is received
+pub async fn block_until_shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigterm =
+        signal(SignalKind::terminate()).expect("Failed to create SIGTERM signal handler");
+
+    tokio::select! {
+        _ = ctrl_c() => info!("Received SIGINT signal"),
+        _ = sigterm.recv() => info!("Received SIGTERM signal"),
+    }
 }
