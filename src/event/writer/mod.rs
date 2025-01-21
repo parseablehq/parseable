@@ -22,7 +22,7 @@ mod mem_writer;
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock, RwLockWriteGuard},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use crate::{
@@ -75,7 +75,7 @@ impl Writer {
 pub struct WriterTable(RwLock<HashMap<String, Mutex<Writer>>>);
 
 impl WriterTable {
-    // append to a existing stream
+    // Concatenates record batches and puts them in memory store for each event.
     pub fn append_to_local(
         &self,
         stream_name: &str,
@@ -85,43 +85,33 @@ impl WriterTable {
         custom_partition_values: &HashMap<String, String>,
         stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
-        let hashmap_guard = self.read().unwrap();
-
-        match hashmap_guard.get(stream_name) {
-            Some(stream_writer) => {
-                self.handle_existing_writer(
-                    stream_writer,
-                    stream_name,
-                    schema_key,
-                    record,
-                    parsed_timestamp,
+        let has_stream = self.read().unwrap().contains_key(stream_name);
+        if has_stream {
+            self.handle_existing_writer(
+                stream_name,
+                schema_key,
+                record,
+                parsed_timestamp,
                 custom_partition_values,
-                    stream_type,
-                )?;
-            }
-            None => {
-                drop(hashmap_guard);
-                let map = self.write().unwrap();
-                // check for race condition
-                // if map contains entry then just
-                self.handle_missing_writer(
-                    map,
-                    stream_name,
-                    schema_key,
-                    record,
-                    parsed_timestamp,
+                stream_type,
+            )?;
+        } else {
+            self.handle_missing_writer(
+                stream_name,
+                schema_key,
+                record,
+                parsed_timestamp,
                 custom_partition_values,
-                    stream_type,
-                )?;
-            }
+                stream_type,
+            )?;
         };
+
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Update writer for stream when it already exists
     fn handle_existing_writer(
         &self,
-        stream_writer: &Mutex<Writer>,
         stream_name: &str,
         schema_key: &str,
         record: &RecordBatch,
@@ -129,8 +119,14 @@ impl WriterTable {
         custom_partition_values: &HashMap<String, String>,
         stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
+        let hashmap_guard = self.read().unwrap();
+        let mut stream_writer = hashmap_guard
+            .get(stream_name)
+            .expect("Stream exists")
+            .lock()
+            .unwrap();
         if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
-            stream_writer.lock().unwrap().push(
+            stream_writer.push(
                 stream_name,
                 schema_key,
                 record,
@@ -138,19 +134,17 @@ impl WriterTable {
                 custom_partition_values,
             )?;
         } else {
-            stream_writer
-                .lock()
-                .unwrap()
-                .push_mem(stream_name, record)?;
+            stream_writer.push_mem(stream_name, record)?;
         }
 
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Construct a writer for new stream of data
+    ///
+    /// TODO: verify with model checker
     fn handle_missing_writer(
         &self,
-        mut map: RwLockWriteGuard<HashMap<String, Mutex<Writer>>>,
         stream_name: &str,
         schema_key: &str,
         record: &RecordBatch,
@@ -158,38 +152,26 @@ impl WriterTable {
         custom_partition_values: &HashMap<String, String>,
         stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
-        match map.get(stream_name) {
-            Some(writer) => {
-                if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
-                    writer.lock().unwrap().push(
-                        stream_name,
-                        schema_key,
-                        record,
-                        parsed_timestamp,
-                        custom_partition_values,
-                    )?;
-                } else {
-                    writer.lock().unwrap().push_mem(stream_name, record)?;
-                }
-            }
-            None => {
-                if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
-                    let mut writer = Writer::default();
-                    writer.push(
-                        stream_name,
-                        schema_key,
-                        record,
-                        parsed_timestamp,
-                        custom_partition_values,
-                    )?;
-                    map.insert(stream_name.to_owned(), Mutex::new(writer));
-                } else {
-                    let mut writer = Writer::default();
-                    writer.push_mem(schema_key, record)?;
-                    map.insert(stream_name.to_owned(), Mutex::new(writer));
-                }
-            }
+        // Gets write privileges only for inserting a writer
+        self.write()
+            .unwrap()
+            .insert(stream_name.to_owned(), Mutex::new(Writer::default()));
+        // Updates the writer with read privileges
+        let hashmap_guard = self.read().unwrap();
+        let writer = hashmap_guard.get(stream_name).expect("Stream exists");
+
+        if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
+            writer.lock().unwrap().push(
+                stream_name,
+                schema_key,
+                record,
+                parsed_timestamp,
+                custom_partition_values,
+            )?;
+        } else {
+            writer.lock().unwrap().push_mem(stream_name, record)?;
         }
+
         Ok(())
     }
 
