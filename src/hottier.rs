@@ -57,7 +57,9 @@ pub const CURRENT_HOT_TIER_VERSION: &str = "v2";
 pub struct StreamHotTier {
     pub version: Option<String>,
     pub size: String,
+    #[serde(default)]
     pub used_size: String,
+    #[serde(default)]
     pub available_size: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oldest_date_time_entry: Option<String>,
