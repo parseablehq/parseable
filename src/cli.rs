@@ -44,7 +44,7 @@ use std::string::String as KafkaSslProtocol;
 pub const DEFAULT_USERNAME: &str = "admin";
 pub const DEFAULT_PASSWORD: &str = "admin";
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(
     name = "parseable",
     bin_name = "parseable",
@@ -73,13 +73,88 @@ Join the community at https://logg.ing/community.
         "#,
     subcommand_required = true,
 )]
-pub struct Cli {
-    #[command(subcommand)]
-    pub storage: StorageOptions,
+pub enum Cli {
+    #[clap(name = "storage")]
+    /// Storage options
+    Storage(StorageOptions),
+
+    /// Generate shell completions
+    #[clap(name = "completions")]
+    Completion(CommandCompletionOptions),
 }
 
-#[derive(Parser)]
-pub enum StorageOptions {
+// taken generously from https://github.com/jj-vcs/jj/blob/be32d4e3efbb9a51deadcc63635a5fb1526d0d6c/cli/src/commands/util/completion.rs#L23C1-L47C36
+// Using an explicit `doc` attribute prevents rustfmt from mangling the list
+// formatting without disabling rustfmt for the entire struct.
+#[doc = r#"Print a command-line-completion script
+
+Apply it by running one of these:
+
+- Bash: `source <(pb util completion bash)`
+- Fish: `pb util completion fish | source`
+- Nushell:
+     ```nu
+     pb util completion nushell | save "completions-pb.nu"
+     use "completions-pb.nu" *  # Or `source "completions-pb.nu"`
+     ```
+- Zsh:
+     ```shell
+     autoload -U compinit
+     compinit
+     source <(pb util completion zsh)
+     ```
+"#]
+
+#[derive(clap::Args, Debug)]
+#[command(verbatim_doc_comment)]
+pub struct CommandCompletionOptions {
+    pub shell: Option<ShellCompletion>,
+}
+
+/// Available shell completions
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ShellCompletion {
+    Bash,
+    Elvish,
+    Fish,
+    // Nushell,
+    PowerShell,
+    Zsh,
+}
+
+impl ShellCompletion {
+    pub fn generate(&self, cmd: &mut clap::Command) -> Vec<u8> {
+        use clap_complete::generate;
+        use clap_complete::Shell;
+        // use clap_complete_nushell::Nushell;
+
+        let mut buf = Vec::new();
+
+        let bin_name = "pb";
+
+        match self {
+            Self::Bash => generate(Shell::Bash, cmd, bin_name, &mut buf),
+            Self::Elvish => generate(Shell::Elvish, cmd, bin_name, &mut buf),
+            Self::Fish => generate(Shell::Fish, cmd, bin_name, &mut buf),
+            // Self::Nushell => generate(Nushell, cmd, bin_name, &mut buf),
+            Self::PowerShell => generate(Shell::PowerShell, cmd, bin_name, &mut buf),
+            Self::Zsh => generate(Shell::Zsh, cmd, bin_name, &mut buf),
+        }
+
+        buf
+    }
+}
+
+// todo remove caution
+#[derive(clap::Args, Debug)]
+pub struct StorageOptions {
+    #[command(subcommand)]
+    pub storage: StorageOptionsEnum,
+}
+
+// todo remove caution
+#[derive(clap::Subcommand, Debug)]
+pub enum StorageOptionsEnum {
     #[command(name = "local-store")]
     Local(LocalStoreArgs),
 
@@ -90,7 +165,7 @@ pub enum StorageOptions {
     Blob(BlobStoreArgs),
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 pub struct LocalStoreArgs {
     #[command(flatten)]
     pub options: Options,
@@ -98,7 +173,7 @@ pub struct LocalStoreArgs {
     pub storage: FSConfig,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 pub struct S3StoreArgs {
     #[command(flatten)]
     pub options: Options,
@@ -106,7 +181,7 @@ pub struct S3StoreArgs {
     pub storage: S3Config,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 pub struct BlobStoreArgs {
     #[command(flatten)]
     pub options: Options,
