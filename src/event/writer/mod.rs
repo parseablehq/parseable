@@ -85,26 +85,22 @@ impl WriterTable {
         custom_partition_values: &HashMap<String, String>,
         stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
-        let has_stream = self.read().unwrap().contains_key(stream_name);
-        if has_stream {
-            self.handle_existing_writer(
-                stream_name,
-                schema_key,
-                record,
-                parsed_timestamp,
-                custom_partition_values,
-                stream_type,
-            )?;
-        } else {
-            self.handle_missing_writer(
-                stream_name,
-                schema_key,
-                record,
-                parsed_timestamp,
-                custom_partition_values,
-                stream_type,
-            )?;
-        };
+        if !self.read().unwrap().contains_key(stream_name) {
+            // Gets write privileges only for inserting a writer
+            self.write()
+                .unwrap()
+                .insert(stream_name.to_owned(), Mutex::new(Writer::default()));
+        }
+
+        // Updates the writer with only read privileges
+        self.handle_existing_writer(
+            stream_name,
+            schema_key,
+            record,
+            parsed_timestamp,
+            custom_partition_values,
+            stream_type,
+        )?;
 
         Ok(())
     }
@@ -120,13 +116,13 @@ impl WriterTable {
         stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
         let hashmap_guard = self.read().unwrap();
-        let mut stream_writer = hashmap_guard
+        let mut writer = hashmap_guard
             .get(stream_name)
             .expect("Stream exists")
             .lock()
             .unwrap();
         if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
-            stream_writer.push(
+            writer.push(
                 stream_name,
                 schema_key,
                 record,
@@ -134,42 +130,7 @@ impl WriterTable {
                 custom_partition_values,
             )?;
         } else {
-            stream_writer.push_mem(stream_name, record)?;
-        }
-
-        Ok(())
-    }
-
-    /// Construct a writer for new stream of data
-    ///
-    /// TODO: verify with model checker
-    fn handle_missing_writer(
-        &self,
-        stream_name: &str,
-        schema_key: &str,
-        record: &RecordBatch,
-        parsed_timestamp: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
-        stream_type: &StreamType,
-    ) -> Result<(), StreamWriterError> {
-        // Gets write privileges only for inserting a writer
-        self.write()
-            .unwrap()
-            .insert(stream_name.to_owned(), Mutex::new(Writer::default()));
-        // Updates the writer with read privileges
-        let hashmap_guard = self.read().unwrap();
-        let writer = hashmap_guard.get(stream_name).expect("Stream exists");
-
-        if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
-            writer.lock().unwrap().push(
-                stream_name,
-                schema_key,
-                record,
-                parsed_timestamp,
-                custom_partition_values,
-            )?;
-        } else {
-            writer.lock().unwrap().push_mem(stream_name, record)?;
+            writer.push_mem(stream_name, record)?;
         }
 
         Ok(())
