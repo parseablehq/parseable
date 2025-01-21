@@ -50,14 +50,14 @@ impl Writer {
         &mut self,
         stream_name: &str,
         schema_key: &str,
-        rb: RecordBatch,
+        rb: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
         self.disk.push(
             stream_name,
             schema_key,
-            &rb,
+            rb,
             parsed_timestamp,
             custom_partition_values,
         )?;
@@ -65,7 +65,7 @@ impl Writer {
         Ok(())
     }
 
-    fn push_mem(&mut self, schema_key: &str, rb: RecordBatch) -> Result<(), StreamWriterError> {
+    fn push_mem(&mut self, schema_key: &str, rb: &RecordBatch) -> Result<(), StreamWriterError> {
         self.mem.push(schema_key, rb);
         Ok(())
     }
@@ -80,9 +80,9 @@ impl WriterTable {
         &self,
         stream_name: &str,
         schema_key: &str,
-        record: RecordBatch,
+        record: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
-        custom_partition_values: HashMap<String, String>,
+        custom_partition_values: &HashMap<String, String>,
         stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
         let hashmap_guard = self.read().unwrap();
@@ -95,7 +95,7 @@ impl WriterTable {
                     schema_key,
                     record,
                     parsed_timestamp,
-                    &custom_partition_values,
+                custom_partition_values,
                     stream_type,
                 )?;
             }
@@ -110,7 +110,7 @@ impl WriterTable {
                     schema_key,
                     record,
                     parsed_timestamp,
-                    &custom_partition_values,
+                custom_partition_values,
                     stream_type,
                 )?;
             }
@@ -124,7 +124,7 @@ impl WriterTable {
         stream_writer: &Mutex<Writer>,
         stream_name: &str,
         schema_key: &str,
-        record: RecordBatch,
+        record: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
         stream_type: &StreamType,
@@ -153,7 +153,7 @@ impl WriterTable {
         mut map: RwLockWriteGuard<HashMap<String, Mutex<Writer>>>,
         stream_name: &str,
         schema_key: &str,
-        record: RecordBatch,
+        record: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
         stream_type: &StreamType,
