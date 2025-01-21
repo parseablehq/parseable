@@ -342,7 +342,7 @@ impl StreamInfo {
         stream_name: &str,
         origin: &'static str,
         size: u64,
-        num_rows: u64,
+        num_rows: usize,
         parsed_timestamp: NaiveDateTime,
     ) -> Result<(), MetadataError> {
         let parsed_date = parsed_timestamp.date().to_string();

@@ -25,8 +25,7 @@ use crate::{
     option::{Config, Mode},
     storage::OBJECT_STORE_DATA_GRANULARITY,
     utils::{
-        self, arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url,
-        hostname_unchecked,
+        arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url, minute_to_slot,
     },
 };
 use anyhow::anyhow;
@@ -69,70 +68,28 @@ impl<'a> StorageDir<'a> {
             options,
         }
     }
-
-    pub fn file_time_suffix(
-        options: &Options,
-        time: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
-        extention: &str,
-    ) -> String {
-        let mut uri = utils::date_to_prefix(time.date())
-            + &utils::hour_to_prefix(time.hour())
-            + &utils::minute_to_prefix(time.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap();
-        if !custom_partition_values.is_empty() {
-            uri = uri + &utils::custom_partition_to_prefix(custom_partition_values);
-        }
-        let local_uri = str::replace(&uri, "/", ".");
-        let hostname = hostname_unchecked();
-        if options.mode == Mode::Ingest {
-            let id = INGESTOR_META.get_ingestor_id();
-            format!("{local_uri}{hostname}{id}.{extention}")
-        } else {
-            format!("{local_uri}{hostname}.{extention}")
-        }
-    }
-
-    fn filename_by_time(
-        options: &Options,
-        stream_hash: &str,
-        time: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
-    ) -> String {
-        format!(
-            "{}.{}",
-            stream_hash,
-            Self::file_time_suffix(options, time, custom_partition_values, ARROW_FILE_EXTENSION)
-        )
-    }
-
-    fn filename_by_current_time(
-        options: &Options,
-        stream_hash: &str,
-        parsed_timestamp: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
-    ) -> String {
-        Self::filename_by_time(
-            options,
-            stream_hash,
-            parsed_timestamp,
-            custom_partition_values,
-        )
-    }
-
     pub fn path_by_current_time(
         &self,
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
     ) -> PathBuf {
-        let server_time_in_min = Utc::now().format("%Y%m%dT%H%M").to_string();
-        let mut filename = Self::filename_by_current_time(
-            &self.options,
-            stream_hash,
-            parsed_timestamp,
-            custom_partition_values,
+        let mut hostname = hostname::get().unwrap().into_string().unwrap();
+        if self.options.mode == Mode::Ingest {
+            hostname.push_str(&INGESTOR_META.get_ingestor_id());
+        }
+        let filename = format!(
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{hostname}.{ARROW_FILE_EXTENSION}",
+            Utc::now().format("%Y%m%dT%H%M"),
+            parsed_timestamp.date(),
+            parsed_timestamp.hour(),
+            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            custom_partition_values
+                .iter()
+                .sorted_by_key(|v| v.0)
+                .map(|(key, value)| format!("{key}={value}"))
+                .join(".")
         );
-        filename = format!("{}{}", server_time_in_min, filename);
         self.data_path.join(filename)
     }
 
@@ -157,7 +114,7 @@ impl<'a> StorageDir<'a> {
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let arrow_files = self.arrow_files();
         for arrow_file_path in arrow_files {
-            let key = Self::arrow_path_to_parquet(&arrow_file_path, String::default());
+            let key = Self::arrow_path_to_parquet(&arrow_file_path, "");
             grouped_arrow_file
                 .entry(key)
                 .or_default()
@@ -197,7 +154,7 @@ impl<'a> StorageDir<'a> {
                 );
                 fs::remove_file(&arrow_file_path).unwrap();
             } else {
-                let key = Self::arrow_path_to_parquet(&arrow_file_path, random_string.clone());
+                let key = Self::arrow_path_to_parquet(&arrow_file_path, &random_string);
                 grouped_arrow_file
                     .entry(key)
                     .or_default()
@@ -218,12 +175,11 @@ impl<'a> StorageDir<'a> {
             .collect()
     }
 
-    fn arrow_path_to_parquet(path: &Path, random_string: String) -> PathBuf {
+    fn arrow_path_to_parquet(path: &Path, random_string: &str) -> PathBuf {
         let filename = path.file_stem().unwrap().to_str().unwrap();
         let (_, filename) = filename.split_once('.').unwrap();
-        let filename = filename.rsplit_once('.').expect("contains the delim `.`");
-        let filename = format!("{}.{}", filename.0, filename.1);
-        let filename_with_random_number = format!("{}.{}.{}", filename, random_string, "arrows");
+        assert!(filename.contains('.'), "contains the delim `.`");
+        let filename_with_random_number = format!("{filename}.{random_string}.arrows");
         let mut parquet_path = path.to_owned();
         parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
@@ -497,7 +453,6 @@ pub enum MoveDataError {
 mod tests {
     use chrono::NaiveDate;
     use temp_dir::TempDir;
-    use utils::minute_to_slot;
 
     use super::*;
 

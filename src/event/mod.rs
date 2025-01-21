@@ -53,18 +53,15 @@ impl Event {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
-            key = format!("{key}{parsed_timestamp_to_min}");
+            key.push_str(&parsed_timestamp_to_min);
         }
 
         if !self.custom_partition_values.is_empty() {
-            let mut custom_partition_key = String::default();
             for (k, v) in self.custom_partition_values.iter().sorted_by_key(|v| v.0) {
-                custom_partition_key = format!("{custom_partition_key}&{k}={v}");
+                key.push_str(&format!("&{k}={v}"));
             }
-            key = format!("{key}{custom_partition_key}");
         }
 
-        let num_rows = self.rb.num_rows() as u64;
         if self.is_first_event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
@@ -82,7 +79,7 @@ impl Event {
             &self.stream_name,
             self.origin_format,
             self.origin_size,
-            num_rows,
+            self.rb.num_rows(),
             self.parsed_timestamp,
         )?;
 
