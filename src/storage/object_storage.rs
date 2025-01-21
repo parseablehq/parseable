@@ -550,7 +550,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             let custom_partition = STREAM_INFO
                 .get_custom_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let dir = StorageDir::new(stream);
+            let dir = StorageDir::new(&CONFIG.options, stream);
             let schema = convert_disk_files_to_parquet(
                 stream,
                 &dir,

@@ -197,7 +197,7 @@ pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetada
     let bytes = Bytes::from(serde_json::to_vec(&json)?);
 
     let resource: IngestorMetadata = serde_json::from_value(json)?;
-    staging::put_ingestor_info(resource.clone())?;
+    staging::put_ingestor_info(&CONFIG, resource.clone())?;
 
     CONFIG
         .storage()

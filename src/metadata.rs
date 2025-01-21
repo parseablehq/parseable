@@ -36,6 +36,7 @@ use crate::metrics::{
     EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED,
     LIFETIME_EVENTS_INGESTED_SIZE,
 };
+use crate::option::CONFIG;
 use crate::storage::retention::Retention;
 use crate::storage::{ObjectStorage, ObjectStoreFormat, StorageDir, StreamType};
 use crate::utils::arrow::MergedRecordReader;
@@ -368,7 +369,7 @@ impl StreamInfo {
 }
 
 fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Schema {
-    let staging_files = StorageDir::new(stream_name).arrow_files();
+    let staging_files = StorageDir::new(&CONFIG.options, stream_name).arrow_files();
     let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
     if record_reader.readers.is_empty() {
         return current_schema;

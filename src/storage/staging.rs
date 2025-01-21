@@ -18,10 +18,11 @@
  */
 
 use crate::{
+    cli::Options,
     event::DEFAULT_TIMESTAMP_KEY,
     handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, DEFAULT_VERSION},
     metrics,
-    option::{Mode, CONFIG},
+    option::{Config, Mode},
     storage::OBJECT_STORE_DATA_GRANULARITY,
     utils::{
         self, arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url,
@@ -56,18 +57,21 @@ const ARROW_FILE_EXTENSION: &str = "data.arrows";
 // const PARQUET_FILE_EXTENSION: &str = "data.parquet";
 
 #[derive(Debug)]
-pub struct StorageDir {
+pub struct StorageDir<'a> {
     pub data_path: PathBuf,
+    pub options: &'a Options,
 }
 
-impl StorageDir {
-    pub fn new(stream_name: &str) -> Self {
-        let data_path = CONFIG.options.local_stream_data_path(stream_name);
-
-        Self { data_path }
+impl<'a> StorageDir<'a> {
+    pub fn new(options: &'a Options, stream_name: &str) -> Self {
+        Self {
+            data_path: options.local_stream_data_path(stream_name),
+            options,
+        }
     }
 
     pub fn file_time_suffix(
+        options: &Options,
         time: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
         extention: &str,
@@ -80,7 +84,7 @@ impl StorageDir {
         }
         let local_uri = str::replace(&uri, "/", ".");
         let hostname = hostname_unchecked();
-        if CONFIG.options.mode == Mode::Ingest {
+        if options.mode == Mode::Ingest {
             let id = INGESTOR_META.get_ingestor_id();
             format!("{local_uri}{hostname}{id}.{extention}")
         } else {
@@ -89,6 +93,7 @@ impl StorageDir {
     }
 
     fn filename_by_time(
+        options: &Options,
         stream_hash: &str,
         time: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
@@ -96,16 +101,22 @@ impl StorageDir {
         format!(
             "{}.{}",
             stream_hash,
-            Self::file_time_suffix(time, custom_partition_values, ARROW_FILE_EXTENSION)
+            Self::file_time_suffix(options, time, custom_partition_values, ARROW_FILE_EXTENSION)
         )
     }
 
     fn filename_by_current_time(
+        options: &Options,
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
     ) -> String {
-        Self::filename_by_time(stream_hash, parsed_timestamp, custom_partition_values)
+        Self::filename_by_time(
+            options,
+            stream_hash,
+            parsed_timestamp,
+            custom_partition_values,
+        )
     }
 
     pub fn path_by_current_time(
@@ -115,8 +126,12 @@ impl StorageDir {
         custom_partition_values: &HashMap<String, String>,
     ) -> PathBuf {
         let server_time_in_min = Utc::now().format("%Y%m%dT%H%M").to_string();
-        let mut filename =
-            Self::filename_by_current_time(stream_hash, parsed_timestamp, custom_partition_values);
+        let mut filename = Self::filename_by_current_time(
+            &self.options,
+            stream_hash,
+            parsed_timestamp,
+            custom_partition_values,
+        );
         filename = format!("{}{}", server_time_in_min, filename);
         self.data_path.join(filename)
     }
@@ -216,8 +231,8 @@ impl StorageDir {
     }
 }
 
-// pub fn to_parquet_path(stream_name: &str, time: NaiveDateTime) -> PathBuf {
-//     let data_path = CONFIG.options.local_stream_data_path(stream_name);
+// pub fn to_parquet_path(options: &Options, stream_name: &str, time: NaiveDateTime) -> PathBuf {
+//     let data_path = options.local_stream_data_path(stream_name);
 //     let dir = StorageDir::file_time_suffix(time, &HashMap::new(), PARQUET_FILE_EXTENSION);
 //
 //     data_path.join(dir)
@@ -276,6 +291,7 @@ pub fn convert_disk_files_to_parquet(
             }
         }
         let props = parquet_writer_props(
+            dir.options,
             time_partition.clone(),
             index_time_partition,
             custom_partition_fields,
@@ -320,6 +336,7 @@ pub fn convert_disk_files_to_parquet(
 }
 
 pub fn parquet_writer_props(
+    options: &Options,
     time_partition: Option<String>,
     index_time_partition: usize,
     custom_partition_fields: HashMap<String, usize>,
@@ -336,8 +353,8 @@ pub fn parquet_writer_props(
         nulls_first: true,
     });
     let mut props = WriterProperties::builder()
-        .set_max_row_group_size(CONFIG.options.row_group_size)
-        .set_compression(CONFIG.options.parquet_compression.into())
+        .set_max_row_group_size(options.row_group_size)
+        .set_compression(options.parquet_compression.into())
         .set_column_encoding(
             ColumnPath::new(vec![time_partition_field]),
             Encoding::DELTA_BINARY_PACKED,
@@ -359,8 +376,8 @@ pub fn parquet_writer_props(
     props
 }
 
-pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
-    let path = PathBuf::from(&CONFIG.options.local_staging_path);
+pub fn get_ingestor_info(config: &Config) -> anyhow::Result<IngestorMetadata> {
+    let path = PathBuf::from(&config.options.local_staging_path);
 
     // all the files should be in the staging directory root
     let entries = std::fs::read_dir(path)?;
@@ -391,7 +408,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
             if obj.get("flight_port").is_none() {
                 obj.insert(
                     "flight_port".to_owned(),
-                    JsonValue::String(CONFIG.options.flight_port.to_string()),
+                    JsonValue::String(config.options.flight_port.to_string()),
                 );
             }
 
@@ -413,7 +430,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 
             let token = base64::prelude::BASE64_STANDARD.encode(format!(
                 "{}:{}",
-                CONFIG.options.username, CONFIG.options.password
+                config.options.username, config.options.password
             ));
 
             let token = format!("Basic {}", token);
@@ -427,24 +444,24 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
                 meta.token = token;
             }
 
-            put_ingestor_info(meta.clone())?;
+            put_ingestor_info(config, meta.clone())?;
             return Ok(meta);
         }
     }
 
-    let store = CONFIG.storage().get_object_store();
+    let store = config.storage().get_object_store();
     let out = IngestorMetadata::new(
         port,
         url,
         DEFAULT_VERSION.to_string(),
         store.get_bucket_name(),
-        &CONFIG.options.username,
-        &CONFIG.options.password,
+        &config.options.username,
+        &config.options.password,
         get_ingestor_id(),
-        CONFIG.options.flight_port.to_string(),
+        config.options.flight_port.to_string(),
     );
 
-    put_ingestor_info(out.clone())?;
+    put_ingestor_info(config, out.clone())?;
     Ok(out)
 }
 
@@ -454,8 +471,8 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
 /// # Parameters
 ///
 /// * `ingestor_info`: The ingestor info to be stored.
-pub fn put_ingestor_info(info: IngestorMetadata) -> anyhow::Result<()> {
-    let path = PathBuf::from(&CONFIG.options.local_staging_path);
+pub fn put_ingestor_info(config: &Config, info: IngestorMetadata) -> anyhow::Result<()> {
+    let path = PathBuf::from(&config.options.local_staging_path);
     let file_name = format!("ingestor.{}.json", info.ingestor_id);
     let file_path = path.join(file_name);
 
@@ -474,4 +491,113 @@ pub enum MoveDataError {
     ObjectStorage(#[from] std::io::Error),
     #[error("Could not generate parquet file")]
     Create,
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::NaiveDate;
+    use temp_dir::TempDir;
+    use utils::minute_to_slot;
+
+    use super::*;
+
+    #[test]
+    fn test_storage_dir_new_with_valid_stream() {
+        let stream_name = "test_stream";
+
+        let options = Options::default();
+        let storage_dir = StorageDir::new(&options, stream_name);
+
+        assert_eq!(
+            storage_dir.data_path,
+            options.local_stream_data_path(stream_name)
+        );
+    }
+
+    #[test]
+    fn test_storage_dir_with_special_characters() {
+        let stream_name = "test_stream_!@#$%^&*()";
+
+        let options = Options::default();
+        let storage_dir = StorageDir::new(&options, stream_name);
+
+        assert_eq!(
+            storage_dir.data_path,
+            options.local_stream_data_path(stream_name)
+        );
+    }
+
+    #[test]
+    fn test_storage_dir_data_path_initialization() {
+        let stream_name = "example_stream";
+
+        let options = Options::default();
+        let storage_dir = StorageDir::new(&options, stream_name);
+
+        assert_eq!(
+            storage_dir.data_path,
+            options.local_stream_data_path(stream_name)
+        );
+    }
+
+    #[test]
+    fn test_storage_dir_with_alphanumeric_stream_name() {
+        let stream_name = "test123stream";
+
+        let options = Options::default();
+        let storage_dir = StorageDir::new(&options, stream_name);
+
+        assert_eq!(
+            storage_dir.data_path,
+            options.local_stream_data_path(stream_name)
+        );
+    }
+
+    #[test]
+    fn test_arrow_files_empty_directory() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let options = Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let storage_dir = StorageDir::new(&options, "test_stream");
+
+        let files = storage_dir.arrow_files();
+
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn generate_correct_path_with_current_time_and_valid_parameters() {
+        let stream_name = "test_stream";
+        let stream_hash = "abc123";
+        let parsed_timestamp = NaiveDate::from_ymd_opt(2023, 10, 1)
+            .unwrap()
+            .and_hms_opt(12, 30, 0)
+            .unwrap();
+        let mut custom_partition_values = HashMap::new();
+        custom_partition_values.insert("key1".to_string(), "value1".to_string());
+        custom_partition_values.insert("key2".to_string(), "value2".to_string());
+
+        let options = Options::default();
+        let storage_dir = StorageDir::new(&options, stream_name);
+
+        let expected_path = storage_dir.data_path.join(format!(
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.arrows",
+            Utc::now().format("%Y%m%dT%H%M"),
+            parsed_timestamp.date(),
+            parsed_timestamp.hour(),
+            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            hostname::get().unwrap().into_string().unwrap()
+        ));
+
+        let generated_path = storage_dir.path_by_current_time(
+            stream_hash,
+            parsed_timestamp,
+            &custom_partition_values,
+        );
+
+        assert_eq!(generated_path, expected_path);
+    }
 }

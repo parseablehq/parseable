@@ -56,7 +56,7 @@ use tracing::error;
 
 /// ! have to use a guard before using it
 pub static INGESTOR_META: Lazy<IngestorMetadata> =
-    Lazy::new(|| staging::get_ingestor_info().expect("Should Be valid Json"));
+    Lazy::new(|| staging::get_ingestor_info(&CONFIG).expect("Should Be valid Json"));
 
 pub struct IngestServer;
 

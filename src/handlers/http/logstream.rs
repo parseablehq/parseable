@@ -67,7 +67,7 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let objectstore = CONFIG.storage().get_object_store();
 
     objectstore.delete_stream(&stream_name).await?;
-    let stream_dir = StorageDir::new(&stream_name);
+    let stream_dir = StorageDir::new(&CONFIG.options, &stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
         warn!(
             "failed to delete local data for stream {}. Clean {} manually",

@@ -569,7 +569,7 @@ fn get_staging_prefixes(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) -> HashMap<PathBuf, Vec<PathBuf>> {
-    let dir = StorageDir::new(stream_name);
+    let dir = StorageDir::new(&CONFIG.options, stream_name);
     let mut files = dir.arrow_files_grouped_by_time();
     files.retain(|k, _| path_intersects_query(k, start, end));
     files
