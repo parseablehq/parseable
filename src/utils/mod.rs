@@ -106,23 +106,21 @@ impl TimePeriod {
     }
 
     pub fn generate_prefixes(&self) -> Vec<String> {
-        let end_minute = self.end.minute() + u32::from(self.end.second() > 0);
-        self.generate_date_prefixes(
-            self.start.date_naive(),
-            self.end.date_naive(),
-            (self.start.hour(), self.start.minute()),
-            (self.end.hour(), end_minute),
-        )
+        let mut prefixes = vec![];
+        self.generate_date_prefixes(&mut prefixes);
+
+        prefixes
     }
 
-    pub fn generate_minute_prefixes(
+    fn generate_minute_prefixes(
         &self,
+        prefixes: &mut Vec<String>,
         prefix: &str,
         start_minute: u32,
         end_minute: u32,
-    ) -> Vec<String> {
+    ) {
         if start_minute == end_minute {
-            return vec![];
+            return;
         }
 
         let (start_block, end_block) = (
@@ -134,83 +132,76 @@ impl TimePeriod {
 
         // ensure both start and end are within the same hour, else return prefix as is
         if end_block - start_block >= forbidden_block {
-            return vec![prefix.to_owned()];
+            prefixes.push(prefix.to_owned());
+            return;
         }
 
-        let mut prefixes = vec![];
-
         let push_prefix = |block: u32, prefixes: &mut Vec<_>| {
-            if let Some(minute_prefix) =
-                minute_to_prefix(block * self.data_granularity, self.data_granularity)
+            if let Some(minute_slot) =
+                minute_to_slot(block * self.data_granularity, self.data_granularity)
             {
-                let prefix = prefix.to_owned() + &minute_prefix;
+                let prefix = prefix.to_owned() + &format!("minute={minute_slot}/",);
                 prefixes.push(prefix);
             }
         };
 
         for block in start_block..end_block {
-            push_prefix(block, &mut prefixes);
+            push_prefix(block, prefixes);
         }
 
         // NOTE: for block sizes larger than a minute ensure
         // ensure last block is considered
         if self.data_granularity > 1 {
-            push_prefix(end_block, &mut prefixes);
+            push_prefix(end_block, prefixes);
         }
-
-        prefixes
     }
 
-    pub fn generate_hour_prefixes(
+    fn generate_hour_prefixes(
         &self,
+        prefixes: &mut Vec<String>,
         prefix: &str,
         start_hour: u32,
         start_minute: u32,
         end_hour: u32,
         end_minute: u32,
-    ) -> Vec<String> {
+    ) {
         // ensure both start and end are within the same day
         if end_hour - start_hour >= 24 {
-            return vec![prefix.to_owned()];
+            prefixes.push(prefix.to_owned());
+            return;
         }
-
-        let mut prefixes = vec![];
 
         for hour in start_hour..=end_hour {
             if hour == 24 {
                 break;
             }
-            let prefix = prefix.to_owned() + &hour_to_prefix(hour);
+            let prefix = prefix.to_owned() + &format!("hour={hour:02}/");
             let is_start = hour == start_hour;
             let is_end = hour == end_hour;
 
             if is_start || is_end {
-                let minute_prefixes = self.generate_minute_prefixes(
+                self.generate_minute_prefixes(
+                    prefixes,
                     &prefix,
                     if is_start { start_minute } else { 0 },
                     if is_end { end_minute } else { 60 },
                 );
-                prefixes.extend(minute_prefixes);
             } else {
                 prefixes.push(prefix);
             }
         }
-
-        prefixes
     }
 
-    pub fn generate_date_prefixes(
-        &self,
-        start_date: NaiveDate,
-        end_date: NaiveDate,
-        start_time: (u32, u32),
-        end_time: (u32, u32),
-    ) -> Vec<String> {
-        let mut prefixes = vec![];
+    fn generate_date_prefixes(&self, prefixes: &mut Vec<String>) {
+        let end_minute = self.end.minute() + u32::from(self.end.second() > 0);
+        let start_date = self.start.date_naive();
+        let end_date = self.end.date_naive();
+        let start_time = (self.start.hour(), self.start.minute());
+        let end_time = (self.end.hour(), end_minute);
         let mut date = start_date;
 
         while date <= end_date {
-            let prefix = date_to_prefix(date);
+            let prefix = format!("date={date}/");
             let is_start = date == start_date;
             let is_end = date == end_date;
 
@@ -219,21 +210,19 @@ impl TimePeriod {
                     if is_start { start_time } else { (0, 0) },
                     if is_end { end_time } else { (24, 60) },
                 );
-                let hour_prefixes = self.generate_hour_prefixes(
+                self.generate_hour_prefixes(
+                    prefixes,
                     &prefix,
                     start_hour,
                     start_minute,
                     end_hour,
                     end_minute,
                 );
-                prefixes.extend(hour_prefixes);
             } else {
                 prefixes.push(prefix);
             }
             date = date.succ_opt().unwrap();
         }
-
-        prefixes
     }
 }
 
