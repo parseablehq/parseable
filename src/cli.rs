@@ -289,35 +289,8 @@ pub struct Options {
     )]
     pub ingestor_endpoint: String,
 
-    // OIDC Configuration
-    #[arg(
-        long,
-        long = "oidc-client",
-        env = "P_OIDC_CLIENT_ID",
-        requires = "oidc",
-        group = "oidc",
-        help = "Client id for OIDC provider"
-    )]
-    oidc_client_id: Option<String>,
-
-    #[arg(
-        long,
-        env = "P_OIDC_CLIENT_SECRET",
-        requires = "oidc",
-        group = "oidc",
-        help = "Client secret for OIDC provider"
-    )]
-    oidc_client_secret: Option<String>,
-
-    #[arg(
-        long,
-        env = "P_OIDC_ISSUER",
-        value_parser = validation::url,
-        requires = "oidc",
-        group = "oidc",
-        help = "OIDC provider's host address"
-    )]
-    oidc_issuer: Option<Url>,
+    #[command(flatten)]
+    oidc: Option<OidcConfig>,
 
     // Audit logging
     #[arg(
@@ -346,6 +319,37 @@ pub struct Options {
     pub connector: Option<ConnectorConfig>,
 }
 
+#[derive(Parser, Debug)]
+pub struct OidcConfig {
+    #[arg(
+        long = "oidc-client",
+        name = "oidc-client",
+        env = "P_OIDC_CLIENT_ID",
+        required = false,
+        help = "Client id for OIDC provider"
+    )]
+    pub client_id: String,
+
+    #[arg(
+        long = "oidc-client-secret",
+        name = "oidc-client-secret",
+        env = "P_OIDC_CLIENT_SECRET",
+        required = false,
+        help = "Client secret for OIDC provider"
+    )]
+    pub secret: String,
+
+    #[arg(
+        long = "oidc-issuer",
+        name = "oidc-issuer",
+        env = "P_OIDC_ISSUER",
+        required = false,
+        value_parser = validation::url,
+        help = "OIDC provider's host address"
+    )]
+    pub issuer: Url,
+}
+
 impl Options {
     pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
         self.local_staging_path.join(stream_name)
@@ -360,28 +364,24 @@ impl Options {
     }
 
     pub fn openid(&self) -> Option<OpenidConfig> {
-        match (
-            &self.oidc_client_id,
-            &self.oidc_client_secret,
-            &self.oidc_issuer,
-        ) {
-            (Some(id), Some(secret), Some(issuer)) => {
-                let origin = if let Some(url) = self.domain_address.clone() {
-                    oidc::Origin::Production(url)
-                } else {
-                    oidc::Origin::Local {
-                        socket_addr: self.address.clone(),
-                        https: self.tls_cert_path.is_some() && self.tls_key_path.is_some(),
-                    }
-                };
-                Some(OpenidConfig {
-                    id: id.clone(),
-                    secret: secret.clone(),
-                    issuer: issuer.clone(),
-                    origin,
-                })
+        let OidcConfig {
+            secret,
+            client_id,
+            issuer,
+        } = self.oidc.as_ref()?;
+        let origin = if let Some(url) = self.domain_address.clone() {
+            oidc::Origin::Production(url)
+        } else {
+            oidc::Origin::Local {
+                socket_addr: self.address.clone(),
+                https: self.tls_cert_path.is_some() && self.tls_key_path.is_some(),
             }
-            _ => None,
-        }
+        };
+        Some(OpenidConfig {
+            id: client_id.clone(),
+            secret: secret.clone(),
+            issuer: issuer.clone(),
+            origin,
+        })
     }
 }
