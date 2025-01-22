@@ -114,7 +114,7 @@ pub async fn create_update_stream(
         &custom_partition,
         static_schema_flag,
         schema,
-        &stream_type,
+        stream_type,
         log_source,
     )
     .await?;
@@ -175,7 +175,7 @@ pub struct PutStreamHeaders {
     pub custom_partition: String,
     pub static_schema_flag: bool,
     pub update_stream_flag: bool,
-    pub stream_type: String,
+    pub stream_type: StreamType,
     pub log_source: LogSource,
 }
 
@@ -202,8 +202,8 @@ impl From<&HeaderMap> for PutStreamHeaders {
                 .is_some_and(|v| v.to_str().unwrap() == "true"),
             stream_type: headers
                 .get(STREAM_TYPE_KEY)
-                .map_or("", |v| v.to_str().unwrap())
-                .to_string(),
+                .map(|v| StreamType::from(v.to_str().unwrap()))
+                .unwrap_or_default(),
             log_source: headers
                 .get(LOG_SOURCE_KEY)
                 .map_or(LogSource::default(), |v| v.to_str().unwrap().into()),
@@ -392,11 +392,11 @@ pub async fn create_stream(
     custom_partition: &str,
     static_schema_flag: bool,
     schema: Arc<Schema>,
-    stream_type: &str,
+    stream_type: StreamType,
     log_source: LogSource,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
-    if stream_type != StreamType::Internal.to_string() {
+    if stream_type != StreamType::Internal {
         validator::stream_name(&stream_name, stream_type)?;
     }
     // Proceed to create log stream if it doesn't exist
@@ -484,7 +484,10 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             .and_then(|limit| limit.parse().ok());
         let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
         let static_schema_flag = stream_metadata.static_schema_flag;
-        let stream_type = stream_metadata.stream_type.as_deref().unwrap_or("");
+        let stream_type = stream_metadata
+            .stream_type
+            .map(|s| StreamType::from(s.as_str()))
+            .unwrap_or_default();
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
         metadata::STREAM_INFO.add_stream(

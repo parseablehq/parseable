@@ -496,11 +496,11 @@ pub async fn create_stream(
     custom_partition: &str,
     static_schema_flag: bool,
     schema: Arc<Schema>,
-    stream_type: &str,
+    stream_type: StreamType,
     log_source: LogSource,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
-    if stream_type != StreamType::Internal.to_string() {
+    if stream_type != StreamType::Internal {
         validator::stream_name(&stream_name, stream_type)?;
     }
     // Proceed to create log stream if it doesn't exist
@@ -735,12 +735,9 @@ pub async fn delete_stream_hot_tier(
 }
 
 pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
-    if let Ok(stream_exists) = create_stream_if_not_exists(
-        INTERNAL_STREAM_NAME,
-        &StreamType::Internal.to_string(),
-        LogSource::Pmeta,
-    )
-    .await
+    if let Ok(stream_exists) =
+        create_stream_if_not_exists(INTERNAL_STREAM_NAME, StreamType::Internal, LogSource::Pmeta)
+            .await
     {
         if stream_exists {
             return Ok(());

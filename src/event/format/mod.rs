@@ -30,7 +30,10 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{metadata::SchemaVersion, utils::arrow::{get_field, get_timestamp_array, replace_columns}};
+use crate::{
+    metadata::SchemaVersion,
+    utils::arrow::{get_field, get_timestamp_array, replace_columns},
+};
 
 use super::DEFAULT_TIMESTAMP_KEY;
 
@@ -141,7 +144,7 @@ pub trait EventFormat: Sized {
         }
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
-        
+
         let mut rb = Self::decode(data, new_schema.clone())?;
         rb = replace_columns(
             rb.schema(),

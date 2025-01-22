@@ -127,13 +127,13 @@ pub fn get_field<'a>(
 }
 
 /// Constructs an array of the current timestamp.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `size` - The number of rows for which timestamp values are to be added.
-/// 
+///
 /// # Returns
-/// 
+///
 /// A column in arrow, containing the current timestamp in millis.
 pub fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
     TimestampMillisecondArray::from_value(Utc::now().timestamp_millis(), size)

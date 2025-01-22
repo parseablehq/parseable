@@ -64,12 +64,8 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    create_stream_if_not_exists(
-        &stream_name,
-        &StreamType::UserDefined.to_string(),
-        LogSource::default(),
-    )
-    .await?;
+    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
+        .await?;
 
     let log_source = req
         .headers()
@@ -132,12 +128,7 @@ pub async fn handle_otel_logs_ingestion(
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(
-        &stream_name,
-        &StreamType::UserDefined.to_string(),
-        LogSource::OtelLogs,
-    )
-    .await?;
+    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs).await?;
 
     //custom flattening required for otel logs
     let logs: LogsData = serde_json::from_value(json)?;
@@ -168,7 +159,7 @@ pub async fn handle_otel_metrics_ingestion(
     let stream_name = stream_name.to_str().unwrap().to_owned();
     create_stream_if_not_exists(
         &stream_name,
-        &StreamType::UserDefined.to_string(),
+        StreamType::UserDefined,
         LogSource::OtelMetrics,
     )
     .await?;
@@ -201,12 +192,8 @@ pub async fn handle_otel_traces_ingestion(
         return Err(PostError::IncorrectLogSource(LogSource::OtelTraces));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(
-        &stream_name,
-        &StreamType::UserDefined.to_string(),
-        LogSource::OtelTraces,
-    )
-    .await?;
+    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
+        .await?;
 
     //custom flattening required for otel traces
     let traces: TracesData = serde_json::from_value(json)?;
@@ -277,7 +264,7 @@ pub async fn push_logs_unchecked(
 // Check if the stream exists and create a new stream if doesn't exist
 pub async fn create_stream_if_not_exists(
     stream_name: &str,
-    stream_type: &str,
+    stream_type: StreamType,
     log_source: LogSource,
 ) -> Result<bool, PostError> {
     let mut stream_exists = false;
