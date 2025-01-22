@@ -212,13 +212,50 @@ impl StreamInfo {
     pub fn set_first_event_at(
         &self,
         stream_name: &str,
-        first_event_at: Option<String>,
+        first_event_at: &str,
     ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
-                metadata.first_event_at = first_event_at;
+                metadata.first_event_at = Some(first_event_at.to_owned());
+            })
+    }
+
+    /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
+    ///
+    /// This function acquires a write lock, retrieves the LogStreamMetadata for the given stream,
+    /// and removes the `first_event_at` timestamp if it exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream for which the `first_event_at` timestamp is to be removed.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), MetadataError>` - Returns `Ok(())` if the `first_event_at` timestamp is successfully removed,
+    ///   or a `MetadataError` if the stream metadata is not found.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if:
+    /// * The stream metadata cannot be found.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// ```rust
+    /// let result = metadata.remove_first_event_at("my_stream");
+    /// match result {
+    ///     Ok(()) => println!("first-event-at removed successfully"),
+    ///     Err(e) => eprintln!("Error removing first-event-at from STREAM_INFO: {}", e),
+    /// }
+    /// ```
+    pub fn reset_first_event_at(&self, stream_name: &str) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        map.get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.first_event_at.take();
             })
     }
 

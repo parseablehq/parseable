@@ -21,11 +21,11 @@ use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, St
 use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::ingest::create_stream_if_not_exists;
 use super::modal::utils::logstream_utils::{
-    create_stream_and_schema_from_storage, create_update_stream,
+    create_stream_and_schema_from_storage, create_update_stream, update_first_event_at,
 };
 use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
-use crate::catalog::get_first_event;
+use crate::catalog::get_first_event_from_storage;
 use crate::event::format::{override_data_type, LogSource};
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
@@ -57,7 +57,7 @@ use std::fs;
 use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{error, warn};
+use tracing::warn;
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
@@ -551,18 +551,16 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         }
     }
 
-    let store = CONFIG.storage().get_object_store();
-    let dates: Vec<String> = Vec::new();
-    if let Ok(Some(first_event_at)) = get_first_event(store, &stream_name, dates).await {
-        if let Err(err) =
-            metadata::STREAM_INFO.set_first_event_at(&stream_name, Some(first_event_at))
-        {
-            error!(
-                "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
-                stream_name
-            );
-        }
-    }
+    // if first_event_at is not found in memory map, check if it exists in the storage
+    // if it exists in the storage, update the first_event_at in memory map
+    let stream_first_event_at =
+        if let Ok(Some(first_event_at)) = STREAM_INFO.get_first_event(&stream_name) {
+            Some(first_event_at)
+        } else if let Ok(Some(first_event_at)) = get_first_event_from_storage(&stream_name).await {
+            update_first_event_at(&stream_name, &first_event_at).await
+        } else {
+            None
+        };
 
     let hash_map = STREAM_INFO.read().unwrap();
     let stream_meta = &hash_map
@@ -572,7 +570,7 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
     let stream_info: StreamInfo = StreamInfo {
         stream_type: stream_meta.stream_type.clone(),
         created_at: stream_meta.created_at.clone(),
-        first_event_at: stream_meta.first_event_at.clone(),
+        first_event_at: stream_first_event_at,
         time_partition: stream_meta.time_partition.clone(),
         time_partition_limit: stream_meta
             .time_partition_limit
@@ -581,8 +579,6 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         static_schema_flag: stream_meta.static_schema_flag,
         log_source: stream_meta.log_source.clone(),
     };
-
-    // get the other info from
 
     Ok((web::Json(stream_info), StatusCode::OK))
 }

@@ -27,6 +27,7 @@ use crate::option::{Mode, CONFIG};
 use crate::stats::{
     event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats,
 };
+use crate::storage::object_storage::get_stream_meta_from_storage;
 use crate::{
     catalog::manifest::Manifest,
     event::DEFAULT_TIMESTAMP_KEY,
@@ -279,7 +280,9 @@ async fn create_manifest(
                 }
             };
             first_event_at = Some(lower_bound.with_timezone(&Local).to_rfc3339());
-            if let Err(err) = STREAM_INFO.set_first_event_at(stream_name, first_event_at.clone()) {
+            if let Err(err) =
+                STREAM_INFO.set_first_event_at(stream_name, first_event_at.as_ref().unwrap())
+            {
                 error!(
                     "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
                     stream_name
@@ -330,8 +333,8 @@ pub async fn remove_manifest_from_snapshot(
         let manifests = &mut meta.snapshot.manifest_list;
         // Filter out items whose manifest_path contains any of the dates_to_delete
         manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
+        STREAM_INFO.reset_first_event_at(stream_name)?;
         meta.first_event_at = None;
-        STREAM_INFO.set_first_event_at(stream_name, None)?;
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
     match CONFIG.options.mode {
@@ -391,7 +394,7 @@ pub async fn get_first_event(
                     first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
                     meta.first_event_at = Some(first_event_at.clone());
                     storage.put_stream_manifest(stream_name, &meta).await?;
-                    STREAM_INFO.set_first_event_at(stream_name, Some(first_event_at.clone()))?;
+                    STREAM_INFO.set_first_event_at(stream_name, &first_event_at)?;
                 }
             }
         }
@@ -429,6 +432,58 @@ pub async fn get_first_event(
         }
     }
 
+    Ok(Some(first_event_at))
+}
+
+/// Retrieves the earliest first-event-at from the storage for the specified stream.
+///
+/// This function fetches the object-store format from all the stream.json files for the given stream from the storage,
+/// extracts the `first_event_at` timestamps, and returns the earliest `first_event_at`.
+///
+/// # Arguments
+///
+/// * `stream_name` - The name of the stream for which `first_event_at` is to be retrieved.
+///
+/// # Returns
+///
+/// * `Result<Option<String>, ObjectStorageError>` - Returns `Ok(Some(String))` with the earliest
+///   first event timestamp if found, `Ok(None)` if no timestamps are found, or an `ObjectStorageError`
+///   if an error occurs.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// * The stream metadata cannot be retrieved from the storage.
+///
+/// # Examples
+/// ```ignore
+/// ```rust
+/// let result = get_first_event_from_storage("my_stream").await;
+/// match result {
+///     Ok(Some(first_event)) => println!("first-event-at: {}", first_event),
+///     Ok(None) => println!("first-event-at not found"),
+///     Err(e) => eprintln!("Error retrieving first-event-at from storage: {}", e),
+/// }
+/// ```
+pub async fn get_first_event_from_storage(
+    stream_name: &str,
+) -> Result<Option<String>, ObjectStorageError> {
+    let mut all_first_events = vec![];
+    let stream_metas = get_stream_meta_from_storage(stream_name).await;
+    if let Ok(stream_metas) = stream_metas {
+        for stream_meta in stream_metas.iter() {
+            if let Some(first_event) = &stream_meta.first_event_at {
+                let first_event = DateTime::parse_from_rfc3339(first_event).unwrap();
+                let first_event = first_event.with_timezone(&Utc);
+                all_first_events.push(first_event);
+            }
+        }
+    }
+
+    if all_first_events.is_empty() {
+        return Ok(None);
+    }
+    let first_event_at = all_first_events.iter().min().unwrap().to_rfc3339();
     Ok(Some(first_event_at))
 }
 

@@ -217,6 +217,42 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(())
     }
 
+    /// Updates the first event timestamp in the object store for the specified stream.
+    ///
+    /// This function retrieves the current object-store format for the given stream,
+    /// updates the `first_event_at` field with the provided timestamp, and then
+    /// stores the updated format back in the object store.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream to update.
+    /// * `first_event` - The timestamp of the first event to set.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), ObjectStorageError>` - Returns `Ok(())` if the update is successful,
+    ///   or an `ObjectStorageError` if an error occurs.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// ```rust
+    /// let result = object_store.update_first_event_in_stream("my_stream", "2023-01-01T00:00:00Z").await;
+    /// assert!(result.is_ok());
+    /// ```
+    async fn update_first_event_in_stream(
+        &self,
+        stream_name: &str,
+        first_event: &str,
+    ) -> Result<(), ObjectStorageError> {
+        let mut format = self.get_object_store_format(stream_name).await?;
+        format.first_event_at = Some(first_event.to_string());
+        let format_json = to_bytes(&format);
+        self.put_object(&stream_json_path(stream_name), format_json)
+            .await?;
+
+        Ok(())
+    }
+
     async fn put_alerts(
         &self,
         stream_name: &str,
@@ -746,4 +782,28 @@ pub fn ingestor_metadata_path(id: Option<&str>) -> RelativePathBuf {
         PARSEABLE_ROOT_DIRECTORY,
         &format!("ingestor.{}.json", INGESTOR_META.get_ingestor_id()),
     ])
+}
+
+pub async fn get_stream_meta_from_storage(
+    stream_name: &str,
+) -> Result<Vec<ObjectStoreFormat>, ObjectStorageError> {
+    let storage = CONFIG.storage().get_object_store();
+    let mut stream_metas = vec![];
+    let stream_meta_bytes = storage
+        .get_objects(
+            Some(&RelativePathBuf::from_iter([
+                stream_name,
+                STREAM_ROOT_DIRECTORY,
+            ])),
+            Box::new(|file_name| file_name.ends_with("stream.json")),
+        )
+        .await;
+    if let Ok(stream_meta_bytes) = stream_meta_bytes {
+        for stream_meta in stream_meta_bytes {
+            let stream_meta_ob = serde_json::from_slice::<ObjectStoreFormat>(&stream_meta)?;
+            stream_metas.push(stream_meta_ob);
+        }
+    }
+
+    Ok(stream_metas)
 }
