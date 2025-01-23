@@ -93,7 +93,7 @@ impl MergedReverseRecordReader {
             readers.push(reader);
         }
 
-    Self { readers }
+        Self { readers }
     }
 
     pub fn merged_iter(
