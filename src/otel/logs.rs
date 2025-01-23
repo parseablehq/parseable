@@ -20,8 +20,8 @@ use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
 use opentelemetry_proto::tonic::logs::v1::ScopeLogs;
 use opentelemetry_proto::tonic::logs::v1::SeverityNumber;
+use serde_json::Map;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
@@ -31,8 +31,8 @@ use super::otel_utils::insert_attributes;
 /// there is a mapping of severity number to severity text provided in proto
 /// this function fetches the severity text from the severity number
 /// and adds it to the flattened json
-fn flatten_severity(severity_number: i32) -> BTreeMap<String, Value> {
-    let mut severity_json: BTreeMap<String, Value> = BTreeMap::new();
+fn flatten_severity(severity_number: i32) -> Map<String, Value> {
+    let mut severity_json: Map<String, Value> = Map::new();
     severity_json.insert(
         "severity_number".to_string(),
         Value::Number(severity_number.into()),
@@ -46,10 +46,10 @@ fn flatten_severity(severity_number: i32) -> BTreeMap<String, Value> {
 }
 
 /// this function flattens the `LogRecord` object
-/// and returns a `BTreeMap` of the flattened json
+/// and returns a `Map` of the flattened json
 /// this function is called recursively for each log record object in the otel logs
-pub fn flatten_log_record(log_record: &LogRecord) -> BTreeMap<String, Value> {
-    let mut log_record_json: BTreeMap<String, Value> = BTreeMap::new();
+pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
+    let mut log_record_json: Map<String, Value> = Map::new();
     log_record_json.insert(
         "time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -95,10 +95,10 @@ pub fn flatten_log_record(log_record: &LogRecord) -> BTreeMap<String, Value> {
 }
 
 /// this function flattens the `ScopeLogs` object
-/// and returns a `Vec` of `BTreeMap` of the flattened json
-fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<BTreeMap<String, Value>> {
+/// and returns a `Vec` of `Map` of the flattened json
+fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
     let mut vec_scope_log_json = Vec::new();
-    let mut scope_log_json = BTreeMap::new();
+    let mut scope_log_json = Map::new();
 
     if let Some(scope) = &scope_log.scope {
         scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
@@ -128,11 +128,11 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<BTreeMap<String, Value>> {
 }
 
 /// this function performs the custom flattening of the otel logs
-/// and returns a `Vec` of `BTreeMap` of the flattened json
-pub fn flatten_otel_logs(message: &LogsData) -> Vec<BTreeMap<String, Value>> {
+/// and returns a `Vec` of `Value::Object` of the flattened json
+pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
     for record in &message.resource_logs {
-        let mut resource_log_json = BTreeMap::new();
+        let mut resource_log_json = Map::new();
 
         if let Some(resource) = &record.resource {
             insert_attributes(&mut resource_log_json, &resource.attributes);
@@ -158,5 +158,5 @@ pub fn flatten_otel_logs(message: &LogsData) -> Vec<BTreeMap<String, Value>> {
         vec_otel_json.extend(vec_resource_logs_json);
     }
 
-    vec_otel_json
+    vec_otel_json.into_iter().map(Value::Object).collect()
 }

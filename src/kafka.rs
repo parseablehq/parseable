@@ -55,7 +55,6 @@ pub enum SslProtocol {
     SaslSsl,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaError {
     #[error("Please set env var {0} (To use Kafka integration env vars P_KAFKA_TOPICS, P_KAFKA_HOST, and P_KAFKA_GROUP are mandatory)")]
@@ -181,12 +180,7 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
     let stream_name = msg.topic();
 
     // stream should get created only if there is an incoming event, not before that
-    create_stream_if_not_exists(
-        stream_name,
-        &StreamType::UserDefined.to_string(),
-        LogSource::default(),
-    )
-    .await?;
+    create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::default()).await?;
 
     let schema = resolve_schema(stream_name)?;
     let event = format::json::Event {

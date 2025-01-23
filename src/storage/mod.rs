@@ -144,11 +144,21 @@ pub struct StreamInfo {
     pub log_source: LogSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum StreamType {
     #[default]
     UserDefined,
     Internal,
+}
+
+impl From<&str> for StreamType {
+    fn from(stream_type: &str) -> Self {
+        match stream_type {
+            "UserDefined" => Self::UserDefined,
+            "Internal" => Self::Internal,
+            t => panic!("Unexpected stream type: {t}"),
+        }
+    }
 }
 
 impl std::fmt::Display for StreamType {
@@ -248,8 +258,4 @@ pub enum ObjectStorageError {
     PathError(relative_path::FromPathError),
     #[error("Error: {0}")]
     MetadataError(#[from] MetadataError),
-
-    #[allow(dead_code)]
-    #[error("Authentication Error: {0}")]
-    AuthenticationError(Box<dyn std::error::Error + Send + Sync + 'static>),
 }

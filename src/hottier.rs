@@ -397,24 +397,6 @@ impl HotTierManager {
         Ok(file_processed)
     }
 
-    #[allow(dead_code)]
-    ///delete the files for the date range given from the hot tier directory for the stream
-    /// update the used and available size in the hot tier metadata
-    pub async fn delete_files_from_hot_tier(
-        &self,
-        stream: &str,
-        dates: &[NaiveDate],
-    ) -> Result<(), HotTierError> {
-        for date in dates.iter() {
-            let path = self.hot_tier_path.join(format!("{}/date={}", stream, date));
-            if path.exists() {
-                fs::remove_dir_all(path.clone()).await?;
-            }
-        }
-
-        Ok(())
-    }
-
     ///fetch the list of dates available in the hot tier directory for the stream and sort them
     pub async fn fetch_hot_tier_dates(&self, stream: &str) -> Result<Vec<NaiveDate>, HotTierError> {
         let mut date_list = Vec::new();

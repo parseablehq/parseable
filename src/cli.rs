@@ -367,7 +367,8 @@ pub struct Options {
 #[derive(Parser, Debug)]
 pub struct OidcConfig {
     #[arg(
-        long = "oidc-client-id",
+        long = "oidc-client",
+        name = "oidc-client",
         env = "P_OIDC_CLIENT_ID",
         required = false,
         help = "Client id for OIDC provider"
@@ -376,6 +377,7 @@ pub struct OidcConfig {
 
     #[arg(
         long = "oidc-client-secret",
+        name = "oidc-client-secret",
         env = "P_OIDC_CLIENT_SECRET",
         required = false,
         help = "Client secret for OIDC provider"
@@ -384,6 +386,7 @@ pub struct OidcConfig {
 
     #[arg(
         long = "oidc-issuer",
+        name = "oidc-issuer",
         env = "P_OIDC_ISSUER",
         required = false,
         value_parser = validation::url,
