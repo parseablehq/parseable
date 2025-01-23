@@ -29,8 +29,6 @@ use crate::storage::staging::StorageDir;
 use chrono::NaiveDateTime;
 
 pub struct ArrowWriter {
-    #[allow(dead_code)]
-    pub file_path: PathBuf,
     pub writer: StreamWriter<File>,
 }
 
@@ -54,20 +52,14 @@ impl FileWriter {
             // entry is not present thus we create it
             None => {
                 // this requires mutable borrow of the map so we drop this read lock and wait for write lock
-                let (path, writer) = init_new_stream_writer_file(
+                let (_, writer) = init_new_stream_writer_file(
                     stream_name,
                     schema_key,
                     record,
                     parsed_timestamp,
                     custom_partition_values,
                 )?;
-                self.insert(
-                    schema_key.to_owned(),
-                    ArrowWriter {
-                        file_path: path,
-                        writer,
-                    },
-                );
+                self.insert(schema_key.to_owned(), ArrowWriter { writer });
             }
         };
 
