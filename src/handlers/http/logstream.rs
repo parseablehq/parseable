@@ -43,6 +43,7 @@ use crate::{event, stats};
 use crate::{metadata, validator};
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::http::StatusCode;
+use actix_web::web::{Json, Path};
 use actix_web::{web, HttpRequest, Responder};
 use arrow_json::reader::infer_json_schema_from_iterator;
 use arrow_schema::{Field, Schema};
@@ -58,8 +59,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{error, warn};
 
-pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
     if !metadata::STREAM_INFO.stream_exists(&stream_name) {
         return Err(StreamError::StreamNotFound(stream_name));
     }
@@ -113,9 +114,8 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
     Ok(web::Json(res))
 }
 
-pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
-    let body_val: Value = serde_json::from_slice(&body)?;
-    let log_records: Vec<Value> = match body_val {
+pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, StreamError> {
+    let log_records: Vec<Value> = match json {
         Value::Array(arr) => arr,
         value @ Value::Object(_) => vec![value],
         _ => {
@@ -133,8 +133,8 @@ pub async fn detect_schema(body: Bytes) -> Result<impl Responder, StreamError> {
     Ok((web::Json(schema), StatusCode::OK))
 }
 
-pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn schema(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
 
     match STREAM_INFO.schema(&stream_name) {
         Ok(_) => {}
@@ -157,8 +157,8 @@ pub async fn schema(req: HttpRequest) -> Result<impl Responder, StreamError> {
     }
 }
 
-pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn get_alert(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
 
     let alerts = metadata::STREAM_INFO
         .read()
@@ -190,24 +190,26 @@ pub async fn get_alert(req: HttpRequest) -> Result<impl Responder, StreamError> 
     Ok((web::Json(alerts), StatusCode::OK))
 }
 
-pub async fn put_stream(req: HttpRequest, body: Bytes) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn put_stream(
+    req: HttpRequest,
+    stream_name: Path<String>,
+    body: Bytes,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
 
-    create_update_stream(&req, &body, &stream_name).await?;
+    create_update_stream(req.headers(), &body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
 
 pub async fn put_alert(
-    req: HttpRequest,
-    body: web::Json<serde_json::Value>,
+    stream_name: Path<String>,
+    Json(mut json): Json<Value>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let stream_name = stream_name.into_inner();
 
-    let mut body = body.into_inner();
-    remove_id_from_alerts(&mut body);
-
-    let alerts: Alerts = match serde_json::from_value(body) {
+    remove_id_from_alerts(&mut json);
+    let alerts: Alerts = match serde_json::from_value(json) {
         Ok(alerts) => alerts,
         Err(err) => {
             return Err(StreamError::BadAlertJson {
@@ -265,8 +267,8 @@ pub async fn put_alert(
     ))
 }
 
-pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn get_retention(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
     if !STREAM_INFO.stream_exists(&stream_name) {
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
@@ -295,10 +297,10 @@ pub async fn get_retention(req: HttpRequest) -> Result<impl Responder, StreamErr
 }
 
 pub async fn put_retention(
-    req: HttpRequest,
-    body: web::Json<serde_json::Value>,
+    stream_name: Path<String>,
+    Json(json): Json<Value>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let stream_name = stream_name.into_inner();
 
     if !STREAM_INFO.stream_exists(&stream_name) {
         // For query mode, if the stream not found in memory map,
@@ -314,9 +316,7 @@ pub async fn put_retention(
         }
     }
 
-    let body = body.into_inner();
-
-    let retention: Retention = match serde_json::from_value(body) {
+    let retention: Retention = match serde_json::from_value(json) {
         Ok(retention) => retention,
         Err(err) => return Err(StreamError::InvalidRetentionConfig(err)),
     };
@@ -361,8 +361,11 @@ pub async fn get_stats_date(stream_name: &str, date: &str) -> Result<Stats, Stre
     Ok(stats)
 }
 
-pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn get_stats(
+    req: HttpRequest,
+    stream_name: Path<String>,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
 
     if !STREAM_INFO.stream_exists(&stream_name) {
         // For query mode, if the stream not found in memory map,
@@ -380,8 +383,9 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
 
     let query_string = req.query_string();
     if !query_string.is_empty() {
-        let date_key = query_string.split('=').collect::<Vec<&str>>()[0];
-        let date_value = query_string.split('=').collect::<Vec<&str>>()[1];
+        let tokens = query_string.split('=').collect::<Vec<&str>>();
+        let date_key = tokens[0];
+        let date_value = tokens[1];
         if date_key != "date" {
             return Err(StreamError::Custom {
                 msg: "Invalid query parameter".to_string(),
@@ -461,18 +465,6 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
     Ok((web::Json(stats), StatusCode::OK))
 }
 
-// Check if the first_event_at is empty
-#[allow(dead_code)]
-pub fn first_event_at_empty(stream_name: &str) -> bool {
-    let hash_map = STREAM_INFO.read().unwrap();
-    if let Some(stream_info) = hash_map.get(stream_name) {
-        if let Some(first_event_at) = &stream_info.first_event_at {
-            return first_event_at.is_empty();
-        }
-    }
-    true
-}
-
 fn remove_id_from_alerts(value: &mut Value) {
     if let Some(Value::Array(alerts)) = value.get_mut("alerts") {
         alerts
@@ -492,11 +484,11 @@ pub async fn create_stream(
     custom_partition: &str,
     static_schema_flag: bool,
     schema: Arc<Schema>,
-    stream_type: &str,
+    stream_type: StreamType,
     log_source: LogSource,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
-    if stream_type != StreamType::Internal.to_string() {
+    if stream_type != StreamType::Internal {
         validator::stream_name(&stream_name, stream_type)?;
     }
     // Proceed to create log stream if it doesn't exist
@@ -546,8 +538,8 @@ pub async fn create_stream(
     Ok(())
 }
 
-pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
     if !STREAM_INFO.stream_exists(&stream_name) {
         if CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
@@ -596,10 +588,10 @@ pub async fn get_stream_info(req: HttpRequest) -> Result<impl Responder, StreamE
 }
 
 pub async fn put_stream_hot_tier(
-    req: HttpRequest,
-    body: web::Json<serde_json::Value>,
+    stream_name: Path<String>,
+    Json(json): Json<Value>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let stream_name = stream_name.into_inner();
     if !STREAM_INFO.stream_exists(&stream_name) {
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
@@ -624,8 +616,7 @@ pub async fn put_stream_hot_tier(
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
 
-    let body = body.into_inner();
-    let mut hottier: StreamHotTier = match serde_json::from_value(body) {
+    let mut hottier: StreamHotTier = match serde_json::from_value(json) {
         Ok(hottier) => hottier,
         Err(err) => return Err(StreamError::InvalidHotTierConfig(err)),
     };
@@ -657,8 +648,8 @@ pub async fn put_stream_hot_tier(
     ))
 }
 
-pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn get_stream_hot_tier(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
 
     if !STREAM_INFO.stream_exists(&stream_name) {
         // For query mode, if the stream not found in memory map,
@@ -692,8 +683,10 @@ pub async fn get_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, Str
     }
 }
 
-pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn delete_stream_hot_tier(
+    stream_name: Path<String>,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
 
     if !STREAM_INFO.stream_exists(&stream_name) {
         // For query mode, if the stream not found in memory map,
@@ -730,12 +723,9 @@ pub async fn delete_stream_hot_tier(req: HttpRequest) -> Result<impl Responder, 
 }
 
 pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
-    if let Ok(stream_exists) = create_stream_if_not_exists(
-        INTERNAL_STREAM_NAME,
-        &StreamType::Internal.to_string(),
-        LogSource::Pmeta,
-    )
-    .await
+    if let Ok(stream_exists) =
+        create_stream_if_not_exists(INTERNAL_STREAM_NAME, StreamType::Internal, LogSource::Pmeta)
+            .await
     {
         if stream_exists {
             return Ok(());
@@ -903,23 +893,24 @@ pub mod error {
 mod tests {
     use crate::handlers::http::logstream::error::StreamError;
     use crate::handlers::http::logstream::get_stats;
-    use crate::handlers::http::modal::utils::logstream_utils::fetch_headers_from_put_stream_request;
+    use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
     use actix_web::test::TestRequest;
+    use actix_web::web;
     use anyhow::bail;
-    #[actix_web::test]
-    #[should_panic]
-    async fn get_stats_panics_without_logstream() {
-        let req = TestRequest::default().to_http_request();
-        let _ = get_stats(req).await;
-    }
+
+    // TODO: Fix this test with routes
+    // #[actix_web::test]
+    // #[should_panic]
+    // async fn get_stats_panics_without_logstream() {
+    //     let req = TestRequest::default().to_http_request();
+    //     let _ = get_stats(req).await;
+    // }
 
     #[actix_web::test]
     async fn get_stats_stream_not_found_error_for_unknown_logstream() -> anyhow::Result<()> {
-        let req = TestRequest::default()
-            .param("logstream", "test")
-            .to_http_request();
+        let req = TestRequest::default().to_http_request();
 
-        match get_stats(req).await {
+        match get_stats(req, web::Path::from("test".to_string())).await {
             Err(StreamError::StreamNotFound(_)) => Ok(()),
             _ => bail!("expected StreamNotFound error"),
         }
@@ -928,7 +919,7 @@ mod tests {
     #[actix_web::test]
     async fn header_without_log_source() {
         let req = TestRequest::default().to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::Json);
     }
 
@@ -937,19 +928,19 @@ mod tests {
         let mut req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "pmeta"))
             .to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::Pmeta);
 
         req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "otel-logs"))
             .to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::OtelLogs);
 
         req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "kinesis"))
             .to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::Kinesis);
     }
 
@@ -958,7 +949,7 @@ mod tests {
         let req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "teststream"))
             .to_http_request();
-        let (_, _, _, _, _, _, log_source) = fetch_headers_from_put_stream_request(&req);
+        let PutStreamHeaders { log_source, .. } = req.headers().into();
         assert_eq!(log_source, crate::event::format::LogSource::Json);
     }
 }

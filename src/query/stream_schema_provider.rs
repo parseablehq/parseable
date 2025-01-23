@@ -679,6 +679,10 @@ fn return_listing_time_filters(
     manifest_list: &[ManifestItem],
     time_filters: &mut Vec<PartialTimeFilter>,
 ) -> Option<Vec<PartialTimeFilter>> {
+    if manifest_list.is_empty() {
+        return Some(time_filters.clone());
+    }
+
     // vec to hold timestamps for listing
     let mut vec_listing_timestamps = Vec::new();
 

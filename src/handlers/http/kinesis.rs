@@ -17,15 +17,13 @@
  */
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::BTreeMap;
+use serde_json::{Map, Value};
 use std::str;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct Message {
+pub struct Message {
     records: Vec<Data>,
     request_id: String,
     timestamp: u64,
@@ -59,16 +57,14 @@ struct Data {
 //     "requestId": "b858288a-f5d8-4181-a746-3f3dd716be8a",
 //     "timestamp": "1704964113659"
 // }
-pub fn flatten_kinesis_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
-    let body_str = std::str::from_utf8(body).unwrap();
-    let message: Message = serde_json::from_str(body_str).unwrap();
-    let mut vec_kinesis_json: Vec<BTreeMap<String, Value>> = Vec::new();
+pub fn flatten_kinesis_logs(message: Message) -> Vec<Value> {
+    let mut vec_kinesis_json = Vec::new();
 
     for record in message.records.iter() {
         let bytes = STANDARD.decode(record.data.clone()).unwrap();
         let json_string: String = String::from_utf8(bytes).unwrap();
         let json: serde_json::Value = serde_json::from_str(&json_string).unwrap();
-        let mut kinesis_json: BTreeMap<String, Value> = match serde_json::from_value(json) {
+        let mut kinesis_json: Map<String, Value> = match serde_json::from_value(json) {
             Ok(value) => value,
             Err(error) => panic!("Failed to deserialize JSON: {}", error),
         };
@@ -82,7 +78,8 @@ pub fn flatten_kinesis_logs(body: &Bytes) -> Vec<BTreeMap<String, Value>> {
             Value::String(message.timestamp.to_string()),
         );
 
-        vec_kinesis_json.push(kinesis_json);
+        vec_kinesis_json.push(Value::Object(kinesis_json));
     }
+
     vec_kinesis_json
 }

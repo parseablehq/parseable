@@ -100,7 +100,7 @@ impl ListingTableBuilder {
         let mut all_resolve = Vec::new();
         for prefix in prefixes {
             let path = relative_path::RelativePathBuf::from(format!("{}/{}", &self.stream, prefix));
-            storage.absolute_url(path.as_relative_path()).to_string();
+            let prefix = storage.absolute_url(path.as_relative_path()).to_string();
             if let Some(pos) = prefix.rfind("minute") {
                 let hour_prefix = &prefix[..pos];
                 minute_resolve
