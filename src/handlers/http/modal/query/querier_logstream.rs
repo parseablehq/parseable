@@ -32,7 +32,7 @@ use tracing::{error, warn};
 static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 use crate::{
-    event, handlers::http::{
+    handlers::http::{
         base_path_without_preceding_slash,
         cluster::{
             self, fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors,
@@ -43,7 +43,13 @@ use crate::{
         modal::utils::logstream_utils::{
             create_stream_and_schema_from_storage, create_update_stream,
         },
-    }, hottier::HotTierManager, metadata::{self, STREAM_INFO}, option::CONFIG, staging::Staging, stats::{self, Stats}, storage::StreamType
+    },
+    hottier::HotTierManager,
+    metadata::{self, STREAM_INFO},
+    option::CONFIG,
+    staging::{Staging, STREAM_WRITERS},
+    stats::{self, Stats},
+    storage::StreamType,
 };
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -96,7 +102,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
-    event::STREAM_WRITERS.delete_stream(&stream_name);
+    STREAM_WRITERS.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 

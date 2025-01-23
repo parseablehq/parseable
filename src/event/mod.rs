@@ -18,7 +18,6 @@
 */
 
 pub mod format;
-mod writer;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
@@ -27,8 +26,7 @@ use std::sync::Arc;
 use tracing::error;
 
 use self::error::EventError;
-pub use self::writer::STREAM_WRITERS;
-use crate::{metadata, storage::StreamType};
+use crate::{metadata, staging::STREAM_WRITERS, storage::StreamType};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
@@ -143,9 +141,8 @@ pub mod error {
     use arrow_schema::ArrowError;
 
     use crate::metadata::error::stream_info::MetadataError;
+    use crate::staging::StreamWriterError;
     use crate::storage::ObjectStorageError;
-
-    use super::writer::errors::StreamWriterError;
 
     #[derive(Debug, thiserror::Error)]
     pub enum EventError {

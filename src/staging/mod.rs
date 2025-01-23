@@ -18,13 +18,22 @@
  */
 
 use crate::{
-    cli::Options, event::DEFAULT_TIMESTAMP_KEY, handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, DEFAULT_VERSION}, metrics, option::{Config, Mode}, storage::OBJECT_STORE_DATA_GRANULARITY, utils::{arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url, minute_to_slot}
+    cli::Options,
+    event::DEFAULT_TIMESTAMP_KEY,
+    handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, DEFAULT_VERSION},
+    metrics,
+    option::{Config, Mode},
+    storage::OBJECT_STORE_DATA_GRANULARITY,
+    utils::{
+        arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url, minute_to_slot,
+    },
 };
 use anyhow::anyhow;
 use arrow_schema::{ArrowError, Schema};
 use base64::Engine;
 use chrono::{NaiveDateTime, Timelike, Utc};
 use itertools::Itertools;
+use once_cell::sync::Lazy;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -35,10 +44,22 @@ use parquet::{
 };
 use rand::distributions::DistString;
 use serde_json::Value as JsonValue;
-use std::{collections::HashMap, fs, path::{Path, PathBuf}, process, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    process,
+    sync::Arc,
+};
 use tracing::{error, info};
+pub use writer::StreamWriterError;
+use writer::WriterTable;
+
+mod writer;
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
+
+pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 
 #[derive(Debug, thiserror::Error)]
 pub enum MoveDataError {
@@ -183,7 +204,6 @@ impl<'a> Staging<'a> {
         parquet_path
     }
 }
-
 
 pub fn convert_disk_files_to_parquet(
     stream: &str,
@@ -535,4 +555,3 @@ mod tests {
         assert_eq!(generated_path, expected_path);
     }
 }
-

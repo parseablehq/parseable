@@ -34,12 +34,12 @@ use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STO
 use crate::option::{Mode, CONFIG};
 use crate::rbac::role::Action;
 use crate::rbac::Users;
-use crate::staging::Staging;
+use crate::staging::{Staging, STREAM_WRITERS};
+use crate::stats;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::retention::Retention;
 use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
-use crate::{event, stats};
 
 use crate::{metadata, validator};
 use actix_web::http::header::{self, HeaderMap};
@@ -85,7 +85,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
-    event::STREAM_WRITERS.delete_stream(&stream_name);
+    STREAM_WRITERS.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 

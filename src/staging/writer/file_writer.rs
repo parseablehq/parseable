@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 
-use super::errors::StreamWriterError;
+use super::StreamWriterError;
 use crate::option::CONFIG;
 use crate::staging::Staging;
 use chrono::NaiveDateTime;

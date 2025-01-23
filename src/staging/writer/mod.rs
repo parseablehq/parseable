@@ -30,14 +30,19 @@ use crate::{
     storage::StreamType,
 };
 
-use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
+use self::{file_writer::FileWriter, mem_writer::MemWriter};
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use chrono::NaiveDateTime;
 use derive_more::{Deref, DerefMut};
-use once_cell::sync::Lazy;
 
-pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
+#[derive(Debug, thiserror::Error)]
+pub enum StreamWriterError {
+    #[error("Arrow writer failed: {0}")]
+    Writer(#[from] arrow_schema::ArrowError),
+    #[error("Io Error when creating new file: {0}")]
+    Io(#[from] std::io::Error),
+}
 
 #[derive(Default)]
 pub struct Writer {
@@ -174,16 +179,5 @@ impl WriterTable {
             .recordbatch_cloned(schema);
 
         Some(records)
-    }
-}
-
-pub mod errors {
-
-    #[derive(Debug, thiserror::Error)]
-    pub enum StreamWriterError {
-        #[error("Arrow writer failed: {0}")]
-        Writer(#[from] arrow_schema::ArrowError),
-        #[error("Io Error when creating new file: {0}")]
-        Io(#[from] std::io::Error),
     }
 }
