@@ -19,6 +19,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Display,
     sync::Arc,
 };
 
@@ -29,7 +30,10 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{metadata::SchemaVersion, utils::arrow::get_field};
+use crate::{
+    metadata::SchemaVersion,
+    utils::arrow::{get_field, get_timestamp_array, replace_columns},
+};
 
 use super::DEFAULT_TIMESTAMP_KEY;
 
@@ -70,6 +74,20 @@ impl From<&str> for LogSource {
             "pmeta" => LogSource::Pmeta,
             _ => LogSource::Json,
         }
+    }
+}
+
+impl Display for LogSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            LogSource::Kinesis => "kinesis",
+            LogSource::OtelLogs => "otel-logs",
+            LogSource::OtelMetrics => "otel-metrics",
+            LogSource::OtelTraces => "otel-traces",
+            LogSource::Json => "json",
+            LogSource::Pmeta => "pmeta",
+            LogSource::Custom(custom) => custom,
+        })
     }
 }
 
@@ -126,7 +144,14 @@ pub trait EventFormat: Sized {
         }
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
-        let rb = Self::decode(data, new_schema.clone())?;
+
+        let mut rb = Self::decode(data, new_schema.clone())?;
+        rb = replace_columns(
+            rb.schema(),
+            &rb,
+            &[0],
+            &[Arc::new(get_timestamp_array(rb.num_rows()))],
+        );
 
         Ok((rb, is_first))
     }
