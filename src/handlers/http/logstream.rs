@@ -466,18 +466,6 @@ pub async fn get_stats(
     Ok((web::Json(stats), StatusCode::OK))
 }
 
-// Check if the first_event_at is empty
-#[allow(dead_code)]
-pub fn first_event_at_empty(stream_name: &str) -> bool {
-    let hash_map = STREAM_INFO.read().unwrap();
-    if let Some(stream_info) = hash_map.get(stream_name) {
-        if let Some(first_event_at) = &stream_info.first_event_at {
-            return first_event_at.is_empty();
-        }
-    }
-    true
-}
-
 fn remove_id_from_alerts(value: &mut Value) {
     if let Some(Value::Array(alerts)) = value.get_mut("alerts") {
         alerts

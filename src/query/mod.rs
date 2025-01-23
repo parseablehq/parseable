@@ -20,8 +20,8 @@ mod filter_optimizer;
 mod listing_table_builder;
 pub mod stream_schema_provider;
 
+use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
-use chrono::{NaiveDateTime, TimeZone};
 use datafusion::arrow::record_batch::RecordBatch;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
@@ -38,9 +38,7 @@ use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::ops::Bound;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
@@ -56,7 +54,6 @@ use crate::event;
 use crate::handlers::http::query::QueryError;
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
-use crate::staging::Stream;
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
 pub static QUERY_SESSION: Lazy<SessionContext> =
@@ -397,10 +394,6 @@ impl TableScanVisitor {
     pub fn into_inner(self) -> Vec<String> {
         self.tables
     }
-    #[allow(dead_code)]
-    pub fn top(&self) -> Option<&str> {
-        self.tables.first().map(|s| s.as_ref())
-    }
 }
 
 impl TreeNodeVisitor<'_> for TableScanVisitor {
@@ -564,47 +557,6 @@ fn table_contains_any_time_filters(
         })
 }
 
-#[allow(dead_code)]
-fn get_staging_prefixes(
-    stream_name: &str,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-) -> HashMap<PathBuf, Vec<PathBuf>> {
-    let dir = Stream::new(&CONFIG.options, stream_name);
-    let mut files = dir.arrow_files_grouped_by_time();
-    files.retain(|k, _| path_intersects_query(k, start, end));
-    files
-}
-
-fn path_intersects_query(path: &Path, starttime: DateTime<Utc>, endtime: DateTime<Utc>) -> bool {
-    let time = time_from_path(path);
-    starttime <= time && time <= endtime
-}
-
-fn time_from_path(path: &Path) -> DateTime<Utc> {
-    let prefix = path
-        .file_name()
-        .expect("all given path are file")
-        .to_str()
-        .expect("filename is valid");
-
-    // Next three in order will be date, hour and minute
-    let mut components = prefix.splitn(3, '.');
-
-    let date = components.next().expect("date=xxxx-xx-xx");
-    let hour = components.next().expect("hour=xx");
-    let minute = components.next().expect("minute=xx");
-
-    let year = date[5..9].parse().unwrap();
-    let month = date[10..12].parse().unwrap();
-    let day = date[13..15].parse().unwrap();
-    let hour = hour[5..7].parse().unwrap();
-    let minute = minute[7..9].parse().unwrap();
-
-    Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
-        .unwrap()
-}
-
 /// unused for now might need it later
 #[allow(unused)]
 pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
@@ -671,16 +623,6 @@ mod tests {
     use serde_json::json;
 
     use crate::query::flatten_objects_for_count;
-
-    use super::time_from_path;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_time_from_parquet_path() {
-        let path = PathBuf::from("date=2022-01-01.hour=00.minute=00.hostname.data.parquet");
-        let time = time_from_path(path.as_path());
-        assert_eq!(time.timestamp(), 1640995200);
-    }
 
     #[test]
     fn test_flat_simple() {

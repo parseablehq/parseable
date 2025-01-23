@@ -256,8 +256,4 @@ pub enum ObjectStorageError {
     PathError(relative_path::FromPathError),
     #[error("Error: {0}")]
     MetadataError(#[from] MetadataError),
-
-    #[allow(dead_code)]
-    #[error("Authentication Error: {0}")]
-    AuthenticationError(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
