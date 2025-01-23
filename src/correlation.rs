@@ -117,7 +117,7 @@ impl Correlations {
         session_key: &SessionKey,
     ) -> Result<CorrelationConfig, CorrelationError> {
         correlation.id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
-        correlation.validate(&session_key).await?;
+        correlation.validate(session_key).await?;
 
         // Update in storage
         let correlation_bytes = serde_json::to_vec(&correlation)?.into();
@@ -152,7 +152,7 @@ impl Correlations {
             ))));
         }
 
-        correlation.validate(&session_key).await?;
+        correlation.validate(session_key).await?;
         updated_correlation.update(correlation);
 
         // Update in storage
@@ -179,7 +179,7 @@ impl Correlations {
         correlation_id: &str,
         user_id: &str,
     ) -> Result<(), CorrelationError> {
-        let correlation = CORRELATIONS.get_correlation(&correlation_id).await?;
+        let correlation = CORRELATIONS.get_correlation(correlation_id).await?;
         if correlation.user_id != user_id {
             return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
                 r#"User "{user_id}" isn't authorized to delete correlation with ID - {correlation_id}"#
