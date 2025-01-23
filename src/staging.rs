@@ -18,15 +18,7 @@
  */
 
 use crate::{
-    cli::Options,
-    event::DEFAULT_TIMESTAMP_KEY,
-    handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, DEFAULT_VERSION},
-    metrics,
-    option::{Config, Mode},
-    storage::OBJECT_STORE_DATA_GRANULARITY,
-    utils::{
-        arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url, minute_to_slot,
-    },
+    cli::Options, event::DEFAULT_TIMESTAMP_KEY, handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, DEFAULT_VERSION}, metrics, option::{Config, Mode}, storage::OBJECT_STORE_DATA_GRANULARITY, utils::{arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url, minute_to_slot}
 };
 use anyhow::anyhow;
 use arrow_schema::{ArrowError, Schema};
@@ -43,25 +35,30 @@ use parquet::{
 };
 use rand::distributions::DistString;
 use serde_json::Value as JsonValue;
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    process,
-    sync::Arc,
-};
+use std::{collections::HashMap, fs, path::{Path, PathBuf}, process, sync::Arc};
 use tracing::{error, info};
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
-// const PARQUET_FILE_EXTENSION: &str = "data.parquet";
+
+#[derive(Debug, thiserror::Error)]
+pub enum MoveDataError {
+    #[error("Unable to create recordbatch stream")]
+    Arrow(#[from] ArrowError),
+    #[error("Could not generate parquet file")]
+    Parquet(#[from] ParquetError),
+    #[error("IO Error {0}")]
+    ObjectStorage(#[from] std::io::Error),
+    #[error("Could not generate parquet file")]
+    Create,
+}
 
 #[derive(Debug)]
-pub struct StorageDir<'a> {
+pub struct Staging<'a> {
     pub data_path: PathBuf,
     pub options: &'a Options,
 }
 
-impl<'a> StorageDir<'a> {
+impl<'a> Staging<'a> {
     pub fn new(options: &'a Options, stream_name: &str) -> Self {
         Self {
             data_path: options.local_stream_data_path(stream_name),
@@ -187,16 +184,10 @@ impl<'a> StorageDir<'a> {
     }
 }
 
-// pub fn to_parquet_path(options: &Options, stream_name: &str, time: NaiveDateTime) -> PathBuf {
-//     let data_path = options.local_stream_data_path(stream_name);
-//     let dir = StorageDir::file_time_suffix(time, &HashMap::new(), PARQUET_FILE_EXTENSION);
-//
-//     data_path.join(dir)
-// }
 
 pub fn convert_disk_files_to_parquet(
     stream: &str,
-    dir: &StorageDir,
+    dir: &Staging,
     time_partition: Option<String>,
     custom_partition: Option<String>,
     shutdown_signal: bool,
@@ -437,18 +428,6 @@ pub fn put_ingestor_info(config: &Config, info: IngestorMetadata) -> anyhow::Res
     Ok(())
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum MoveDataError {
-    #[error("Unable to create recordbatch stream")]
-    Arrow(#[from] ArrowError),
-    #[error("Could not generate parquet file")]
-    Parquet(#[from] ParquetError),
-    #[error("IO Error {0}")]
-    ObjectStorage(#[from] std::io::Error),
-    #[error("Could not generate parquet file")]
-    Create,
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
@@ -461,7 +440,7 @@ mod tests {
         let stream_name = "test_stream";
 
         let options = Options::default();
-        let storage_dir = StorageDir::new(&options, stream_name);
+        let storage_dir = Staging::new(&options, stream_name);
 
         assert_eq!(
             storage_dir.data_path,
@@ -474,7 +453,7 @@ mod tests {
         let stream_name = "test_stream_!@#$%^&*()";
 
         let options = Options::default();
-        let storage_dir = StorageDir::new(&options, stream_name);
+        let storage_dir = Staging::new(&options, stream_name);
 
         assert_eq!(
             storage_dir.data_path,
@@ -487,7 +466,7 @@ mod tests {
         let stream_name = "example_stream";
 
         let options = Options::default();
-        let storage_dir = StorageDir::new(&options, stream_name);
+        let storage_dir = Staging::new(&options, stream_name);
 
         assert_eq!(
             storage_dir.data_path,
@@ -500,7 +479,7 @@ mod tests {
         let stream_name = "test123stream";
 
         let options = Options::default();
-        let storage_dir = StorageDir::new(&options, stream_name);
+        let storage_dir = Staging::new(&options, stream_name);
 
         assert_eq!(
             storage_dir.data_path,
@@ -516,7 +495,7 @@ mod tests {
             local_staging_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
-        let storage_dir = StorageDir::new(&options, "test_stream");
+        let storage_dir = Staging::new(&options, "test_stream");
 
         let files = storage_dir.arrow_files();
 
@@ -536,7 +515,7 @@ mod tests {
         custom_partition_values.insert("key2".to_string(), "value2".to_string());
 
         let options = Options::default();
-        let storage_dir = StorageDir::new(&options, stream_name);
+        let storage_dir = Staging::new(&options, stream_name);
 
         let expected_path = storage_dir.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.arrows",
@@ -556,3 +535,4 @@ mod tests {
         assert_eq!(generated_path, expected_path);
     }
 }
+

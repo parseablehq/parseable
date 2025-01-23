@@ -26,7 +26,7 @@ use std::path::PathBuf;
 
 use super::errors::StreamWriterError;
 use crate::option::CONFIG;
-use crate::staging::StorageDir;
+use crate::staging::Staging;
 use chrono::NaiveDateTime;
 
 pub struct ArrowWriter {
@@ -89,7 +89,7 @@ fn init_new_stream_writer_file(
     parsed_timestamp: NaiveDateTime,
     custom_partition_values: &HashMap<String, String>,
 ) -> Result<(PathBuf, StreamWriter<std::fs::File>), StreamWriterError> {
-    let dir = StorageDir::new(&CONFIG.options, stream_name);
+    let dir = Staging::new(&CONFIG.options, stream_name);
     let path = dir.path_by_current_time(schema_key, parsed_timestamp, custom_partition_values);
     std::fs::create_dir_all(dir.data_path)?;
 
