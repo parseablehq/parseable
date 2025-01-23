@@ -26,7 +26,7 @@ use std::path::PathBuf;
 
 use super::errors::StreamWriterError;
 use crate::option::CONFIG;
-use crate::storage::staging::StorageDir;
+use crate::staging::StorageDir;
 use chrono::NaiveDateTime;
 
 pub struct ArrowWriter {

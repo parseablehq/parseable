@@ -56,7 +56,8 @@ use crate::event;
 use crate::handlers::http::query::QueryError;
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
-use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, StorageDir, STREAM_ROOT_DIRECTORY};
+use crate::staging::StorageDir;
+use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(CONFIG.storage()));

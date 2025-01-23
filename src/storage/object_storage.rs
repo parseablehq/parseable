@@ -17,8 +17,8 @@
  */
 
 use super::{
-    retention::Retention, staging::convert_disk_files_to_parquet, LogStream, ObjectStorageError,
-    ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
+    retention::Retention, LogStream, ObjectStorageError, ObjectStoreFormat, Permisssion,
+    StorageMetadata,
 };
 use super::{
     Owner, StreamType, ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
@@ -31,6 +31,7 @@ use crate::handlers::http::users::{CORRELATION_DIR, DASHBOARDS_DIR, FILTER_DIR, 
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
+use crate::staging::{convert_disk_files_to_parquet, StorageDir};
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},

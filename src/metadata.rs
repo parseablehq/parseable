@@ -37,8 +37,9 @@ use crate::metrics::{
     LIFETIME_EVENTS_INGESTED_SIZE,
 };
 use crate::option::CONFIG;
+use crate::staging::StorageDir;
 use crate::storage::retention::Retention;
-use crate::storage::{ObjectStorage, ObjectStoreFormat, StorageDir, StreamType};
+use crate::storage::{ObjectStorage, ObjectStoreFormat, StreamType};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
 

@@ -32,8 +32,7 @@ use tracing::{error, warn};
 static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 use crate::{
-    event,
-    handlers::http::{
+    event, handlers::http::{
         base_path_without_preceding_slash,
         cluster::{
             self, fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors,
@@ -44,12 +43,7 @@ use crate::{
         modal::utils::logstream_utils::{
             create_stream_and_schema_from_storage, create_update_stream,
         },
-    },
-    hottier::HotTierManager,
-    metadata::{self, STREAM_INFO},
-    option::CONFIG,
-    stats::{self, Stats},
-    storage::{StorageDir, StreamType},
+    }, hottier::HotTierManager, metadata::{self, STREAM_INFO}, option::CONFIG, staging::StorageDir, stats::{self, Stats}, storage::StreamType
 };
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {

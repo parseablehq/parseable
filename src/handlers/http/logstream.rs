@@ -34,8 +34,9 @@ use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STO
 use crate::option::{Mode, CONFIG};
 use crate::rbac::role::Action;
 use crate::rbac::Users;
+use crate::staging::StorageDir;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
-use crate::storage::{retention::Retention, StorageDir};
+use crate::storage::retention::Retention;
 use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::{event, stats};
