@@ -221,7 +221,7 @@ pub fn convert_disk_files_to_parquet(
                 .add(file_size as i64);
         }
 
-        let record_reader = MergedReverseRecordReader::try_new(&files).unwrap();
+        let record_reader = MergedReverseRecordReader::try_new(&files);
         if record_reader.readers.is_empty() {
             continue;
         }

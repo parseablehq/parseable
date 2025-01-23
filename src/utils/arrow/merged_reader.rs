@@ -80,7 +80,7 @@ pub struct MergedReverseRecordReader {
 }
 
 impl MergedReverseRecordReader {
-    pub fn try_new(files: &[PathBuf]) -> Result<Self, ()> {
+    pub fn try_new(files: &[PathBuf]) -> Self {
         let mut readers = Vec::with_capacity(files.len());
         for file in files {
             let Ok(reader) =
@@ -93,7 +93,7 @@ impl MergedReverseRecordReader {
             readers.push(reader);
         }
 
-        Ok(Self { readers })
+    Self { readers }
     }
 
     pub fn merged_iter(
