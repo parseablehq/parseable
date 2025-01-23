@@ -21,8 +21,8 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    Owner, ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    Owner, StreamType, ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
+    PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 use crate::event::format::LogSource;
@@ -156,7 +156,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         custom_partition: &str,
         static_schema_flag: bool,
         schema: Arc<Schema>,
-        stream_type: &str,
+        stream_type: StreamType,
         log_source: LogSource,
     ) -> Result<String, ObjectStorageError> {
         let format = ObjectStoreFormat {

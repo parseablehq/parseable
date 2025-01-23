@@ -272,7 +272,7 @@ impl StreamInfo {
         custom_partition: String,
         static_schema_flag: bool,
         static_schema: HashMap<String, Arc<Field>>,
-        stream_type: &str,
+        stream_type: StreamType,
         schema_version: SchemaVersion,
         log_source: LogSource,
     ) {

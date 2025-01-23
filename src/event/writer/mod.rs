@@ -22,20 +22,18 @@ mod mem_writer;
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock, RwLockWriteGuard},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use crate::{
     option::{Mode, CONFIG},
     storage::StreamType,
-    utils,
 };
 
 use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
-use arrow_array::{RecordBatch, TimestampMillisecondArray};
+use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use chrono::NaiveDateTime;
-use chrono::Utc;
 use derive_more::{Deref, DerefMut};
 use once_cell::sync::Lazy;
 
@@ -52,21 +50,14 @@ impl Writer {
         &mut self,
         stream_name: &str,
         schema_key: &str,
-        rb: RecordBatch,
+        rb: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
     ) -> Result<(), StreamWriterError> {
-        let rb = utils::arrow::replace_columns(
-            rb.schema(),
-            &rb,
-            &[0],
-            &[Arc::new(get_timestamp_array(rb.num_rows()))],
-        );
-
         self.disk.push(
             stream_name,
             schema_key,
-            &rb,
+            rb,
             parsed_timestamp,
             custom_partition_values,
         )?;
@@ -74,7 +65,7 @@ impl Writer {
         Ok(())
     }
 
-    fn push_mem(&mut self, schema_key: &str, rb: RecordBatch) -> Result<(), StreamWriterError> {
+    fn push_mem(&mut self, schema_key: &str, rb: &RecordBatch) -> Result<(), StreamWriterError> {
         self.mem.push(schema_key, rb);
         Ok(())
     }
@@ -84,62 +75,54 @@ impl Writer {
 pub struct WriterTable(RwLock<HashMap<String, Mutex<Writer>>>);
 
 impl WriterTable {
-    // append to a existing stream
+    // Concatenates record batches and puts them in memory store for each event.
     pub fn append_to_local(
         &self,
         stream_name: &str,
         schema_key: &str,
-        record: RecordBatch,
-        parsed_timestamp: NaiveDateTime,
-        custom_partition_values: HashMap<String, String>,
-        stream_type: &StreamType,
-    ) -> Result<(), StreamWriterError> {
-        let hashmap_guard = self.read().unwrap();
-
-        match hashmap_guard.get(stream_name) {
-            Some(stream_writer) => {
-                self.handle_existing_writer(
-                    stream_writer,
-                    stream_name,
-                    schema_key,
-                    record,
-                    parsed_timestamp,
-                    &custom_partition_values,
-                    stream_type,
-                )?;
-            }
-            None => {
-                drop(hashmap_guard);
-                let map = self.write().unwrap();
-                // check for race condition
-                // if map contains entry then just
-                self.handle_missing_writer(
-                    map,
-                    stream_name,
-                    schema_key,
-                    record,
-                    parsed_timestamp,
-                    &custom_partition_values,
-                    stream_type,
-                )?;
-            }
-        };
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn handle_existing_writer(
-        &self,
-        stream_writer: &Mutex<Writer>,
-        stream_name: &str,
-        schema_key: &str,
-        record: RecordBatch,
+        record: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
         stream_type: &StreamType,
     ) -> Result<(), StreamWriterError> {
+        if !self.read().unwrap().contains_key(stream_name) {
+            // Gets write privileges only for inserting a writer
+            self.write()
+                .unwrap()
+                .insert(stream_name.to_owned(), Mutex::new(Writer::default()));
+        }
+
+        // Updates the writer with only read privileges
+        self.handle_existing_writer(
+            stream_name,
+            schema_key,
+            record,
+            parsed_timestamp,
+            custom_partition_values,
+            stream_type,
+        )?;
+
+        Ok(())
+    }
+
+    /// Update writer for stream when it already exists
+    fn handle_existing_writer(
+        &self,
+        stream_name: &str,
+        schema_key: &str,
+        record: &RecordBatch,
+        parsed_timestamp: NaiveDateTime,
+        custom_partition_values: &HashMap<String, String>,
+        stream_type: &StreamType,
+    ) -> Result<(), StreamWriterError> {
+        let hashmap_guard = self.read().unwrap();
+        let mut writer = hashmap_guard
+            .get(stream_name)
+            .expect("Stream exists")
+            .lock()
+            .unwrap();
         if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
-            stream_writer.lock().unwrap().push(
+            writer.push(
                 stream_name,
                 schema_key,
                 record,
@@ -147,58 +130,9 @@ impl WriterTable {
                 custom_partition_values,
             )?;
         } else {
-            stream_writer
-                .lock()
-                .unwrap()
-                .push_mem(stream_name, record)?;
+            writer.push_mem(stream_name, record)?;
         }
 
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn handle_missing_writer(
-        &self,
-        mut map: RwLockWriteGuard<HashMap<String, Mutex<Writer>>>,
-        stream_name: &str,
-        schema_key: &str,
-        record: RecordBatch,
-        parsed_timestamp: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
-        stream_type: &StreamType,
-    ) -> Result<(), StreamWriterError> {
-        match map.get(stream_name) {
-            Some(writer) => {
-                if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
-                    writer.lock().unwrap().push(
-                        stream_name,
-                        schema_key,
-                        record,
-                        parsed_timestamp,
-                        custom_partition_values,
-                    )?;
-                } else {
-                    writer.lock().unwrap().push_mem(stream_name, record)?;
-                }
-            }
-            None => {
-                if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
-                    let mut writer = Writer::default();
-                    writer.push(
-                        stream_name,
-                        schema_key,
-                        record,
-                        parsed_timestamp,
-                        custom_partition_values,
-                    )?;
-                    map.insert(stream_name.to_owned(), Mutex::new(writer));
-                } else {
-                    let mut writer = Writer::default();
-                    writer.push_mem(schema_key, record)?;
-                    map.insert(stream_name.to_owned(), Mutex::new(writer));
-                }
-            }
-        }
         Ok(())
     }
 
@@ -241,10 +175,6 @@ impl WriterTable {
 
         Some(records)
     }
-}
-
-fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
-    TimestampMillisecondArray::from_value(Utc::now().timestamp_millis(), size)
 }
 
 pub mod errors {
