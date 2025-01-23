@@ -16,10 +16,7 @@
  *
  */
 
-use actix_web::HttpRequest;
-use anyhow::anyhow;
 use arrow_schema::Field;
-use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
 use serde_json::Value;
@@ -27,12 +24,12 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     event::{
-        format::{self, EventFormat, LogSource},
+        format::{json, EventFormat, LogSource},
         Event,
     },
-    handlers::{
-        http::{ingest::PostError, kinesis},
-        LOG_SOURCE_KEY,
+    handlers::http::{
+        ingest::PostError,
+        kinesis::{flatten_kinesis_logs, Message},
     },
     metadata::{SchemaVersion, STREAM_INFO},
     storage::StreamType,
@@ -40,32 +37,23 @@ use crate::{
 };
 
 pub async fn flatten_and_push_logs(
-    req: HttpRequest,
-    body: Bytes,
+    json: Value,
     stream_name: &str,
+    log_source: &LogSource,
 ) -> Result<(), PostError> {
-    let log_source = req
-        .headers()
-        .get(LOG_SOURCE_KEY)
-        .map(|h| h.to_str().unwrap_or(""))
-        .map(LogSource::from)
-        .unwrap_or_default();
-
     match log_source {
         LogSource::Kinesis => {
-            let json = kinesis::flatten_kinesis_logs(&body);
-            for record in json.iter() {
-                let body: Bytes = serde_json::to_vec(record).unwrap().into();
-                push_logs(stream_name, &body, &LogSource::default()).await?;
+            let message: Message = serde_json::from_value(json)?;
+            let json = flatten_kinesis_logs(message);
+            for record in json {
+                push_logs(stream_name, record, &LogSource::default()).await?;
             }
         }
         LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
-            return Err(PostError::Invalid(anyhow!(
-                "Please use endpoints `/v1/logs` for otel logs, `/v1/metrics` for otel metrics and `/v1/traces` for otel traces"
-            )));
+            return Err(PostError::OtelNotSupported);
         }
         _ => {
-            push_logs(stream_name, &body, &log_source).await?;
+            push_logs(stream_name, json, log_source).await?;
         }
     }
     Ok(())
@@ -73,7 +61,7 @@ pub async fn flatten_and_push_logs(
 
 pub async fn push_logs(
     stream_name: &str,
-    body: &Bytes,
+    json: Value,
     log_source: &LogSource,
 ) -> Result<(), PostError> {
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
@@ -81,11 +69,10 @@ pub async fn push_logs(
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
     let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
     let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
-    let body_val: Value = serde_json::from_slice(body)?;
 
     let data = if time_partition.is_some() || custom_partition.is_some() {
         convert_array_to_object(
-            body_val,
+            json,
             time_partition.as_ref(),
             time_partition_limit,
             custom_partition.as_ref(),
@@ -94,7 +81,7 @@ pub async fn push_logs(
         )?
     } else {
         vec![convert_to_array(convert_array_to_object(
-            body_val,
+            json,
             None,
             None,
             None,
@@ -124,7 +111,7 @@ pub async fn push_logs(
             .schema
             .clone();
         let (rb, is_first_event) = into_event_batch(
-            &value,
+            value,
             schema,
             static_schema_flag,
             time_partition.as_ref(),
@@ -149,27 +136,28 @@ pub async fn push_logs(
 }
 
 pub fn into_event_batch(
-    body: &Value,
+    data: Value,
     schema: HashMap<String, Arc<Field>>,
     static_schema_flag: bool,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let event = format::json::Event {
-        data: body.to_owned(),
-    };
-    let (rb, is_first) =
-        event.into_recordbatch(&schema, static_schema_flag, time_partition, schema_version)?;
+    let (rb, is_first) = json::Event { data }.into_recordbatch(
+        &schema,
+        static_schema_flag,
+        time_partition,
+        schema_version,
+    )?;
     Ok((rb, is_first))
 }
 
 pub fn get_custom_partition_values(
-    body: &Value,
+    json: &Value,
     custom_partition_list: &[&str],
 ) -> HashMap<String, String> {
     let mut custom_partition_values: HashMap<String, String> = HashMap::new();
     for custom_partition_field in custom_partition_list {
-        let custom_partition_value = body.get(custom_partition_field.trim()).unwrap().to_owned();
+        let custom_partition_value = json.get(custom_partition_field.trim()).unwrap().to_owned();
         let custom_partition_value = match custom_partition_value {
             e @ Value::Number(_) | e @ Value::Bool(_) => e.to_string(),
             Value::String(s) => s,
@@ -183,13 +171,10 @@ pub fn get_custom_partition_values(
     custom_partition_values
 }
 
-fn get_parsed_timestamp(body: &Value, time_partition: &str) -> Result<NaiveDateTime, PostError> {
-    let current_time = body.get(time_partition).ok_or_else(|| {
-        anyhow!(
-            "Missing field for time partition from json: {:?}",
-            time_partition
-        )
-    })?;
+fn get_parsed_timestamp(json: &Value, time_partition: &str) -> Result<NaiveDateTime, PostError> {
+    let current_time = json
+        .get(time_partition)
+        .ok_or_else(|| PostError::MissingTimePartition(time_partition.to_string()))?;
     let parsed_time: DateTime<Utc> = serde_json::from_value(current_time.clone())?;
 
     Ok(parsed_time.naive_utc())
@@ -217,7 +202,7 @@ mod tests {
         let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
         let parsed = get_parsed_timestamp(&json, "timestamp");
 
-        matches!(parsed, Err(PostError::Invalid(_)));
+        matches!(parsed, Err(PostError::MissingTimePartition(_)));
     }
 
     #[test]

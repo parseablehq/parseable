@@ -22,17 +22,16 @@ use opentelemetry_proto::tonic::trace::v1::ScopeSpans;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use opentelemetry_proto::tonic::trace::v1::Status;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
-use serde_json::Value;
-use std::collections::BTreeMap;
+use serde_json::{Map, Value};
 
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 
 /// this function flattens the `ScopeSpans` object
-/// and returns a `Vec` of `BTreeMap` of the flattened json
-fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<BTreeMap<String, Value>> {
+/// and returns a `Vec` of `Map` of the flattened json
+fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
     let mut vec_scope_span_json = Vec::new();
-    let mut scope_span_json = BTreeMap::new();
+    let mut scope_span_json = Map::new();
 
     for span in &scope_span.spans {
         let span_record_json = flatten_span_record(span);
@@ -69,12 +68,12 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<BTreeMap<String, Value>> {
 }
 
 /// this function performs the custom flattening of the otel traces event
-/// and returns a `Vec` of `BTreeMap` of the flattened json
-pub fn flatten_otel_traces(message: &TracesData) -> Vec<BTreeMap<String, Value>> {
+/// and returns a `Vec` of `Value::Object` of the flattened json
+pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
 
     for record in &message.resource_spans {
-        let mut resource_span_json = BTreeMap::new();
+        let mut resource_span_json = Map::new();
 
         if let Some(resource) = &record.resource {
             insert_attributes(&mut resource_span_json, &resource.attributes);
@@ -104,17 +103,17 @@ pub fn flatten_otel_traces(message: &TracesData) -> Vec<BTreeMap<String, Value>>
         vec_otel_json.extend(vec_resource_spans_json);
     }
 
-    vec_otel_json
+    vec_otel_json.into_iter().map(Value::Object).collect()
 }
 
 /// otel traces has json array of events
 /// this function flattens the `Event` object
-/// and returns a `Vec` of `BTreeMap` of the flattened json
-fn flatten_events(events: &[Event]) -> Vec<BTreeMap<String, Value>> {
+/// and returns a `Vec` of `Map` of the flattened json
+fn flatten_events(events: &[Event]) -> Vec<Map<String, Value>> {
     events
         .iter()
         .map(|event| {
-            let mut event_json = BTreeMap::new();
+            let mut event_json = Map::new();
             event_json.insert(
                 "event_time_unix_nano".to_string(),
                 Value::String(
@@ -134,12 +133,12 @@ fn flatten_events(events: &[Event]) -> Vec<BTreeMap<String, Value>> {
 
 /// otel traces has json array of links
 /// this function flattens the `Link` object
-/// and returns a `Vec` of `BTreeMap` of the flattened json
-fn flatten_links(links: &[Link]) -> Vec<BTreeMap<String, Value>> {
+/// and returns a `Vec` of `Map` of the flattened json
+fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
     links
         .iter()
         .map(|link| {
-            let mut link_json = BTreeMap::new();
+            let mut link_json = Map::new();
             link_json.insert(
                 "link_span_id".to_string(),
                 Value::String(hex::encode(&link.span_id)),
@@ -163,8 +162,8 @@ fn flatten_links(links: &[Link]) -> Vec<BTreeMap<String, Value>> {
 /// there is a mapping of status code to status description provided in proto
 /// this function fetches the status description from the status code
 /// and adds it to the flattened json
-fn flatten_status(status: &Status) -> BTreeMap<String, Value> {
-    let mut status_json = BTreeMap::new();
+fn flatten_status(status: &Status) -> Map<String, Value> {
+    let mut status_json = Map::new();
     status_json.insert(
         "span_status_message".to_string(),
         Value::String(status.message.clone()),
@@ -191,8 +190,8 @@ fn flatten_status(status: &Status) -> BTreeMap<String, Value> {
 /// there is a mapping of flags to flags description provided in proto
 /// this function fetches the flags description from the flags
 /// and adds it to the flattened json
-fn flatten_flags(flags: u32) -> BTreeMap<String, Value> {
-    let mut flags_json = BTreeMap::new();
+fn flatten_flags(flags: u32) -> Map<String, Value> {
+    let mut flags_json = Map::new();
     flags_json.insert("span_flags".to_string(), Value::Number(flags.into()));
     let description = match flags {
         0 => "SPAN_FLAGS_DO_NOT_USE",
@@ -213,8 +212,8 @@ fn flatten_flags(flags: u32) -> BTreeMap<String, Value> {
 /// there is a mapping of kind to kind description provided in proto
 /// this function fetches the kind description from the kind
 /// and adds it to the flattened json
-fn flatten_kind(kind: i32) -> BTreeMap<String, Value> {
-    let mut kind_json = BTreeMap::new();
+fn flatten_kind(kind: i32) -> Map<String, Value> {
+    let mut kind_json = Map::new();
     kind_json.insert("span_kind".to_string(), Value::Number(kind.into()));
     let description = match kind {
         0 => "SPAN_KIND_UNSPECIFIED",
@@ -234,12 +233,12 @@ fn flatten_kind(kind: i32) -> BTreeMap<String, Value> {
 }
 
 /// this function flattens the `Span` object
-/// and returns a `Vec` of `BTreeMap` of the flattened json
+/// and returns a `Vec` of `Map` of the flattened json
 /// this function is called recursively for each span record object in the otel traces event
-fn flatten_span_record(span_record: &Span) -> Vec<BTreeMap<String, Value>> {
+fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     let mut span_records_json = Vec::new();
 
-    let mut span_record_json = BTreeMap::new();
+    let mut span_record_json = Map::new();
     span_record_json.insert(
         "span_trace_id".to_string(),
         Value::String(hex::encode(&span_record.trace_id)),

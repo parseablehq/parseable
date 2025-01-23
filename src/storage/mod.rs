@@ -56,7 +56,6 @@ pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
 pub const SCHEMA_FILE_NAME: &str = ".schema";
 pub const ALERT_FILE_NAME: &str = ".alert.json";
 pub const MANIFEST_FILE: &str = "manifest.json";
-pub const CORRELATIONS_ROOT_DIRECTORY: &str = ".correlations";
 
 /// local sync interval to move data.records to /tmp dir of that stream.
 /// 60 sec is a reasonable value.
@@ -145,11 +144,21 @@ pub struct StreamInfo {
     pub log_source: LogSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum StreamType {
     #[default]
     UserDefined,
     Internal,
+}
+
+impl From<&str> for StreamType {
+    fn from(stream_type: &str) -> Self {
+        match stream_type {
+            "UserDefined" => Self::UserDefined,
+            "Internal" => Self::Internal,
+            t => panic!("Unexpected stream type: {t}"),
+        }
+    }
 }
 
 impl std::fmt::Display for StreamType {
