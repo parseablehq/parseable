@@ -18,48 +18,23 @@
  */
 
 use crate::{
-    cli::Options,
-    event::DEFAULT_TIMESTAMP_KEY,
-    handlers::http::modal::{ingest_server::INGESTOR_META, IngestorMetadata, DEFAULT_VERSION},
-    metrics,
-    option::{Config, Mode},
-    storage::OBJECT_STORE_DATA_GRANULARITY,
-    utils::{
-        arrow::merged_reader::MergedReverseRecordReader, get_ingestor_id, get_url, minute_to_slot,
-    },
+    handlers::http::modal::{IngestorMetadata, DEFAULT_VERSION},
+    option::Config,
+    utils::{get_ingestor_id, get_url},
 };
 use anyhow::anyhow;
-use arrow_schema::{ArrowError, Schema};
+use arrow_schema::ArrowError;
 use base64::Engine;
-use chrono::{NaiveDateTime, Timelike, Utc};
-use itertools::Itertools;
 use once_cell::sync::Lazy;
-use parquet::{
-    arrow::ArrowWriter,
-    basic::Encoding,
-    errors::ParquetError,
-    file::properties::{WriterProperties, WriterPropertiesBuilder},
-    format::SortingColumn,
-    schema::types::ColumnPath,
-};
-use rand::distributions::DistString;
+use parquet::errors::ParquetError;
 use serde_json::Value as JsonValue;
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    process,
-    sync::Arc,
-};
+pub use streams::convert_disk_files_to_parquet;
+pub use streams::{Stream, Streams};
 use tracing::{error, info};
 pub use writer::StreamWriterError;
-use writer::WriterTable;
 
+mod streams;
 mod writer;
-
-const ARROW_FILE_EXTENSION: &str = "data.arrows";
-
-pub static STREAM_WRITERS: Lazy<WriterTable> = Lazy::new(WriterTable::default);
 
 #[derive(Debug, thiserror::Error)]
 pub enum MoveDataError {
@@ -73,281 +48,13 @@ pub enum MoveDataError {
     Create,
 }
 
-#[derive(Debug)]
-pub struct Staging<'a> {
-    pub data_path: PathBuf,
-    pub options: &'a Options,
-}
-
-impl<'a> Staging<'a> {
-    pub fn new(options: &'a Options, stream_name: &str) -> Self {
-        Self {
-            data_path: options.local_stream_data_path(stream_name),
-            options,
-        }
-    }
-    pub fn path_by_current_time(
-        &self,
-        stream_hash: &str,
-        parsed_timestamp: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
-    ) -> PathBuf {
-        let mut hostname = hostname::get().unwrap().into_string().unwrap();
-        if self.options.mode == Mode::Ingest {
-            hostname.push_str(&INGESTOR_META.get_ingestor_id());
-        }
-        let filename = format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{hostname}.{ARROW_FILE_EXTENSION}",
-            Utc::now().format("%Y%m%dT%H%M"),
-            parsed_timestamp.date(),
-            parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
-            custom_partition_values
-                .iter()
-                .sorted_by_key(|v| v.0)
-                .map(|(key, value)| format!("{key}={value}"))
-                .join(".")
-        );
-        self.data_path.join(filename)
-    }
-
-    pub fn arrow_files(&self) -> Vec<PathBuf> {
-        let Ok(dir) = self.data_path.read_dir() else {
-            return vec![];
-        };
-
-        let paths = dir
-            .flatten()
-            .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("arrows")))
-            .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
-            .collect();
-
-        paths
-    }
-
-    #[allow(dead_code)]
-    pub fn arrow_files_grouped_by_time(&self) -> HashMap<PathBuf, Vec<PathBuf>> {
-        // hashmap <time, vec[paths]>
-        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-        let arrow_files = self.arrow_files();
-        for arrow_file_path in arrow_files {
-            let key = Self::arrow_path_to_parquet(&arrow_file_path, "");
-            grouped_arrow_file
-                .entry(key)
-                .or_default()
-                .push(arrow_file_path);
-        }
-
-        grouped_arrow_file
-    }
-
-    pub fn arrow_files_grouped_exclude_time(
-        &self,
-        exclude: NaiveDateTime,
-        stream: &str,
-        shutdown_signal: bool,
-    ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-        let mut arrow_files = self.arrow_files();
-
-        if !shutdown_signal {
-            arrow_files.retain(|path| {
-                !path
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with(&exclude.format("%Y%m%dT%H%M").to_string())
-            });
-        }
-
-        let random_string =
-            rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
-        for arrow_file_path in arrow_files {
-            if arrow_file_path.metadata().unwrap().len() == 0 {
-                error!(
-                    "Invalid arrow file {:?} detected for stream {}, removing it",
-                    &arrow_file_path, stream
-                );
-                fs::remove_file(&arrow_file_path).unwrap();
-            } else {
-                let key = Self::arrow_path_to_parquet(&arrow_file_path, &random_string);
-                grouped_arrow_file
-                    .entry(key)
-                    .or_default()
-                    .push(arrow_file_path);
-            }
-        }
-        grouped_arrow_file
-    }
-
-    pub fn parquet_files(&self) -> Vec<PathBuf> {
-        let Ok(dir) = self.data_path.read_dir() else {
-            return vec![];
-        };
-
-        dir.flatten()
-            .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("parquet")))
-            .collect()
-    }
-
-    fn arrow_path_to_parquet(path: &Path, random_string: &str) -> PathBuf {
-        let filename = path.file_stem().unwrap().to_str().unwrap();
-        let (_, filename) = filename.split_once('.').unwrap();
-        assert!(filename.contains('.'), "contains the delim `.`");
-        let filename_with_random_number = format!("{filename}.{random_string}.arrows");
-        let mut parquet_path = path.to_owned();
-        parquet_path.set_file_name(filename_with_random_number);
-        parquet_path.set_extension("parquet");
-        parquet_path
-    }
-}
-
-pub fn convert_disk_files_to_parquet(
-    stream: &str,
-    dir: &Staging,
-    time_partition: Option<String>,
-    custom_partition: Option<String>,
-    shutdown_signal: bool,
-) -> Result<Option<Schema>, MoveDataError> {
-    let mut schemas = Vec::new();
-
-    let time = chrono::Utc::now().naive_utc();
-    let staging_files = dir.arrow_files_grouped_exclude_time(time, stream, shutdown_signal);
-    if staging_files.is_empty() {
-        metrics::STAGING_FILES.with_label_values(&[stream]).set(0);
-        metrics::STORAGE_SIZE
-            .with_label_values(&["staging", stream, "arrows"])
-            .set(0);
-        metrics::STORAGE_SIZE
-            .with_label_values(&["staging", stream, "parquet"])
-            .set(0);
-    }
-
-    // warn!("staging files-\n{staging_files:?}\n");
-    for (parquet_path, files) in staging_files {
-        metrics::STAGING_FILES
-            .with_label_values(&[stream])
-            .set(files.len() as i64);
-
-        for file in &files {
-            let file_size = file.metadata().unwrap().len();
-            let file_type = file.extension().unwrap().to_str().unwrap();
-
-            metrics::STORAGE_SIZE
-                .with_label_values(&["staging", stream, file_type])
-                .add(file_size as i64);
-        }
-
-        let record_reader = MergedReverseRecordReader::try_new(&files);
-        if record_reader.readers.is_empty() {
-            continue;
-        }
-        let merged_schema = record_reader.merged_schema();
-        let mut index_time_partition: usize = 0;
-        if let Some(time_partition) = time_partition.as_ref() {
-            index_time_partition = merged_schema.index_of(time_partition).unwrap();
-        }
-        let mut custom_partition_fields: HashMap<String, usize> = HashMap::new();
-        if let Some(custom_partition) = custom_partition.as_ref() {
-            for custom_partition_field in custom_partition.split(',') {
-                let index = merged_schema.index_of(custom_partition_field).unwrap();
-                custom_partition_fields.insert(custom_partition_field.to_string(), index);
-            }
-        }
-        let props = parquet_writer_props(
-            dir.options,
-            time_partition.clone(),
-            index_time_partition,
-            custom_partition_fields,
-        )
-        .build();
-        schemas.push(merged_schema.clone());
-        let schema = Arc::new(merged_schema);
-        let parquet_file = fs::File::create(&parquet_path).map_err(|_| MoveDataError::Create)?;
-        let mut writer = ArrowWriter::try_new(&parquet_file, schema.clone(), Some(props))?;
-        for ref record in record_reader.merged_iter(schema, time_partition.clone()) {
-            writer.write(record)?;
-        }
-
-        writer.close()?;
-        if parquet_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
-            error!(
-                "Invalid parquet file {:?} detected for stream {}, removing it",
-                &parquet_path, stream
-            );
-            fs::remove_file(parquet_path).unwrap();
-        } else {
-            for file in files {
-                // warn!("file-\n{file:?}\n");
-                let file_size = file.metadata().unwrap().len();
-                let file_type = file.extension().unwrap().to_str().unwrap();
-                if fs::remove_file(file.clone()).is_err() {
-                    error!("Failed to delete file. Unstable state");
-                    process::abort()
-                }
-                metrics::STORAGE_SIZE
-                    .with_label_values(&["staging", stream, file_type])
-                    .sub(file_size as i64);
-            }
-        }
-    }
-
-    if !schemas.is_empty() {
-        Ok(Some(Schema::try_merge(schemas).unwrap()))
-    } else {
-        Ok(None)
-    }
-}
-
-pub fn parquet_writer_props(
-    options: &Options,
-    time_partition: Option<String>,
-    index_time_partition: usize,
-    custom_partition_fields: HashMap<String, usize>,
-) -> WriterPropertiesBuilder {
-    let index_time_partition: i32 = index_time_partition as i32;
-    let mut time_partition_field = DEFAULT_TIMESTAMP_KEY.to_string();
-    if let Some(time_partition) = time_partition {
-        time_partition_field = time_partition;
-    }
-    let mut sorting_column_vec: Vec<SortingColumn> = Vec::new();
-    sorting_column_vec.push(SortingColumn {
-        column_idx: index_time_partition,
-        descending: true,
-        nulls_first: true,
-    });
-    let mut props = WriterProperties::builder()
-        .set_max_row_group_size(options.row_group_size)
-        .set_compression(options.parquet_compression.into())
-        .set_column_encoding(
-            ColumnPath::new(vec![time_partition_field]),
-            Encoding::DELTA_BINARY_PACKED,
-        );
-
-    for (field, index) in custom_partition_fields {
-        let field = ColumnPath::new(vec![field]);
-        let encoding = Encoding::DELTA_BYTE_ARRAY;
-        props = props.set_column_encoding(field, encoding);
-        let sorting_column = SortingColumn {
-            column_idx: index as i32,
-            descending: true,
-            nulls_first: true,
-        };
-        sorting_column_vec.push(sorting_column);
-    }
-    props = props.set_sorting_columns(Some(sorting_column_vec));
-
-    props
-}
+/// Staging is made up of multiple streams, each stream's context is housed in a single `Stream` object.
+/// `STAGING` is a globally shared mapping of `Streams` that are in staging.
+pub static STAGING: Lazy<Streams> = Lazy::new(Streams::default);
 
 pub fn get_ingestor_info(config: &Config) -> anyhow::Result<IngestorMetadata> {
-    let path = PathBuf::from(&config.options.local_staging_path);
-
     // all the files should be in the staging directory root
-    let entries = std::fs::read_dir(path)?;
+    let entries = std::fs::read_dir(&config.options.local_staging_path)?;
     let url = get_url();
     let port = url.port().unwrap_or(80).to_string();
     let url = url.to_string();
@@ -439,119 +146,10 @@ pub fn get_ingestor_info(config: &Config) -> anyhow::Result<IngestorMetadata> {
 ///
 /// * `ingestor_info`: The ingestor info to be stored.
 pub fn put_ingestor_info(config: &Config, info: IngestorMetadata) -> anyhow::Result<()> {
-    let path = PathBuf::from(&config.options.local_staging_path);
     let file_name = format!("ingestor.{}.json", info.ingestor_id);
-    let file_path = path.join(file_name);
+    let file_path = config.options.local_staging_path.join(file_name);
 
     std::fs::write(file_path, serde_json::to_vec(&info)?)?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use chrono::NaiveDate;
-    use temp_dir::TempDir;
-
-    use super::*;
-
-    #[test]
-    fn test_storage_dir_new_with_valid_stream() {
-        let stream_name = "test_stream";
-
-        let options = Options::default();
-        let storage_dir = Staging::new(&options, stream_name);
-
-        assert_eq!(
-            storage_dir.data_path,
-            options.local_stream_data_path(stream_name)
-        );
-    }
-
-    #[test]
-    fn test_storage_dir_with_special_characters() {
-        let stream_name = "test_stream_!@#$%^&*()";
-
-        let options = Options::default();
-        let storage_dir = Staging::new(&options, stream_name);
-
-        assert_eq!(
-            storage_dir.data_path,
-            options.local_stream_data_path(stream_name)
-        );
-    }
-
-    #[test]
-    fn test_storage_dir_data_path_initialization() {
-        let stream_name = "example_stream";
-
-        let options = Options::default();
-        let storage_dir = Staging::new(&options, stream_name);
-
-        assert_eq!(
-            storage_dir.data_path,
-            options.local_stream_data_path(stream_name)
-        );
-    }
-
-    #[test]
-    fn test_storage_dir_with_alphanumeric_stream_name() {
-        let stream_name = "test123stream";
-
-        let options = Options::default();
-        let storage_dir = Staging::new(&options, stream_name);
-
-        assert_eq!(
-            storage_dir.data_path,
-            options.local_stream_data_path(stream_name)
-        );
-    }
-
-    #[test]
-    fn test_arrow_files_empty_directory() {
-        let temp_dir = TempDir::new().unwrap();
-
-        let options = Options {
-            local_staging_path: temp_dir.path().to_path_buf(),
-            ..Default::default()
-        };
-        let storage_dir = Staging::new(&options, "test_stream");
-
-        let files = storage_dir.arrow_files();
-
-        assert!(files.is_empty());
-    }
-
-    #[test]
-    fn generate_correct_path_with_current_time_and_valid_parameters() {
-        let stream_name = "test_stream";
-        let stream_hash = "abc123";
-        let parsed_timestamp = NaiveDate::from_ymd_opt(2023, 10, 1)
-            .unwrap()
-            .and_hms_opt(12, 30, 0)
-            .unwrap();
-        let mut custom_partition_values = HashMap::new();
-        custom_partition_values.insert("key1".to_string(), "value1".to_string());
-        custom_partition_values.insert("key2".to_string(), "value2".to_string());
-
-        let options = Options::default();
-        let storage_dir = Staging::new(&options, stream_name);
-
-        let expected_path = storage_dir.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.arrows",
-            Utc::now().format("%Y%m%dT%H%M"),
-            parsed_timestamp.date(),
-            parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
-            hostname::get().unwrap().into_string().unwrap()
-        ));
-
-        let generated_path = storage_dir.path_by_current_time(
-            stream_hash,
-            parsed_timestamp,
-            &custom_partition_values,
-        );
-
-        assert_eq!(generated_path, expected_path);
-    }
 }

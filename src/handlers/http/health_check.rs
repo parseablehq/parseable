@@ -17,7 +17,7 @@
  */
 
 use crate::option::CONFIG;
-use crate::staging::STREAM_WRITERS;
+use crate::staging::STAGING;
 use actix_web::body::MessageBody;
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::error::ErrorServiceUnavailable;
@@ -58,7 +58,7 @@ pub async fn shutdown() {
     *shutdown_flag = true;
 
     // Sync staging
-    STREAM_WRITERS.unset_all();
+    STAGING.unset_all();
 }
 
 pub async fn readiness() -> HttpResponse {

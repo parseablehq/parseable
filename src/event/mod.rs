@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tracing::error;
 
 use self::error::EventError;
-use crate::{metadata, staging::STREAM_WRITERS, storage::StreamType};
+use crate::{metadata, staging::STAGING, storage::StreamType};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
@@ -64,13 +64,13 @@ impl Event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        STREAM_WRITERS.append_to_local(
+        STAGING.append_to_local(
             &self.stream_name,
             &key,
             &self.rb,
             self.parsed_timestamp,
             &self.custom_partition_values,
-            &self.stream_type,
+            self.stream_type,
         )?;
 
         metadata::STREAM_INFO.update_stats(
@@ -96,20 +96,20 @@ impl Event {
     pub fn process_unchecked(&self) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        STREAM_WRITERS.append_to_local(
+        STAGING.append_to_local(
             &self.stream_name,
             &key,
             &self.rb,
             self.parsed_timestamp,
             &self.custom_partition_values,
-            &self.stream_type,
+            self.stream_type,
         )?;
 
         Ok(())
     }
 
     pub fn clear(&self, stream_name: &str) {
-        STREAM_WRITERS.clear(stream_name);
+        STAGING.clear(stream_name);
     }
 }
 

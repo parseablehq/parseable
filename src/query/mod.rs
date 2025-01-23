@@ -56,7 +56,7 @@ use crate::event;
 use crate::handlers::http::query::QueryError;
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
-use crate::staging::Staging;
+use crate::staging::Stream;
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
 pub static QUERY_SESSION: Lazy<SessionContext> =
@@ -570,7 +570,7 @@ fn get_staging_prefixes(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) -> HashMap<PathBuf, Vec<PathBuf>> {
-    let dir = Staging::new(&CONFIG.options, stream_name);
+    let dir = Stream::new(&CONFIG.options, stream_name);
     let mut files = dir.arrow_files_grouped_by_time();
     files.retain(|k, _| path_intersects_query(k, start, end));
     files

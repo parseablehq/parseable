@@ -19,7 +19,7 @@
 use crate::catalog::manifest::File;
 use crate::hottier::HotTierManager;
 use crate::option::Mode;
-use crate::staging::STREAM_WRITERS;
+use crate::staging::STAGING;
 use crate::{
     catalog::snapshot::{self, Snapshot},
     storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
@@ -441,7 +441,7 @@ impl TableProvider for StandardTableProvider {
         }
 
         if include_now(filters, &time_partition) {
-            if let Some(records) = STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema) {
+            if let Some(records) = STAGING.recordbatches_cloned(&self.stream, &self.schema) {
                 let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
 
                 let memory_exec = reversed_mem_table

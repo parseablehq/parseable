@@ -34,7 +34,7 @@ use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STO
 use crate::option::{Mode, CONFIG};
 use crate::rbac::role::Action;
 use crate::rbac::Users;
-use crate::staging::{Staging, STREAM_WRITERS};
+use crate::staging::{Stream, STAGING};
 use crate::stats;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::retention::Retention;
@@ -69,7 +69,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     let objectstore = CONFIG.storage().get_object_store();
 
     objectstore.delete_stream(&stream_name).await?;
-    let stream_dir = Staging::new(&CONFIG.options, &stream_name);
+    let stream_dir = Stream::new(&CONFIG.options, &stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
         warn!(
             "failed to delete local data for stream {}. Clean {} manually",
@@ -85,7 +85,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
-    STREAM_WRITERS.delete_stream(&stream_name);
+    STAGING.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 

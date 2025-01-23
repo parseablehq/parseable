@@ -14,16 +14,36 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
+ *
  */
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    sync::Arc,
+};
 
 use arrow_array::RecordBatch;
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
 
 use crate::utils::arrow::adapt_batch;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StreamWriterError {
+    #[error("Arrow writer failed: {0}")]
+    Writer(#[from] arrow_schema::ArrowError),
+    #[error("Io Error when creating new file: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+#[derive(Default)]
+pub struct Writer {
+    pub mem: MemWriter<16384>,
+    pub disk: HashMap<String, StreamWriter<File>>,
+}
 
 /// Structure to keep recordbatches in memory.
 ///
