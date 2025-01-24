@@ -512,7 +512,7 @@ mod tests {
         let staging = Stream::new(&options, stream_name);
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
