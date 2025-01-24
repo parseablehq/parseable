@@ -58,7 +58,7 @@ pub async fn shutdown() {
     *shutdown_flag = true;
 
     // Sync staging
-    STAGING.unset_all();
+    STAGING.flush_all();
 }
 
 pub async fn readiness() -> HttpResponse {

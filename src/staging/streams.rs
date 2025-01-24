@@ -223,9 +223,9 @@ impl<'a> Stream<'a> {
         self.writer.lock().unwrap().mem.clear();
     }
 
-    fn unset(self) {
-        let writer = self.writer.into_inner().unwrap();
-        for mut writer in writer.disk.into_values() {
+    fn flush(&self) {
+        let mut writer = self.writer.lock().unwrap();
+        for writer in writer.disk.values_mut() {
             _ = writer.finish();
         }
     }
@@ -419,12 +419,11 @@ impl Streams {
         self.write().unwrap().remove(stream_name);
     }
 
-    pub fn unset_all(&self) {
-        let mut table = self.write().unwrap();
-        let map = std::mem::take(&mut *table);
-        drop(table);
-        for staging in map.into_values() {
-            staging.unset()
+    pub fn flush_all(&self) {
+        let streams = self.read().unwrap();
+
+        for staging in streams.values() {
+            staging.flush()
         }
     }
 
