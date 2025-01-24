@@ -447,53 +447,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_storage_dir_new_with_valid_stream() {
+    fn test_staging_new_with_valid_stream() {
         let stream_name = "test_stream";
 
         let options = Options::default();
-        let storage_dir = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name);
 
         assert_eq!(
-            storage_dir.data_path,
+            staging.data_path,
             options.local_stream_data_path(stream_name)
         );
     }
 
     #[test]
-    fn test_storage_dir_with_special_characters() {
+    fn test_staging_with_special_characters() {
         let stream_name = "test_stream_!@#$%^&*()";
 
         let options = Options::default();
-        let storage_dir = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name);
 
         assert_eq!(
-            storage_dir.data_path,
+            staging.data_path,
             options.local_stream_data_path(stream_name)
         );
     }
 
     #[test]
-    fn test_storage_dir_data_path_initialization() {
+    fn test_staging_data_path_initialization() {
         let stream_name = "example_stream";
 
         let options = Options::default();
-        let storage_dir = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name);
 
         assert_eq!(
-            storage_dir.data_path,
+            staging.data_path,
             options.local_stream_data_path(stream_name)
         );
     }
 
     #[test]
-    fn test_storage_dir_with_alphanumeric_stream_name() {
+    fn test_staging_with_alphanumeric_stream_name() {
         let stream_name = "test123stream";
 
         let options = Options::default();
-        let storage_dir = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name);
 
         assert_eq!(
-            storage_dir.data_path,
+            staging.data_path,
             options.local_stream_data_path(stream_name)
         );
     }
@@ -506,9 +506,9 @@ mod tests {
             local_staging_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
-        let storage_dir = Stream::new(&options, "test_stream");
+        let staging = Stream::new(&options, "test_stream");
 
-        let files = storage_dir.arrow_files();
+        let files = staging.arrow_files();
 
         assert!(files.is_empty());
     }
@@ -526,9 +526,9 @@ mod tests {
         custom_partition_values.insert("key2".to_string(), "value2".to_string());
 
         let options = Options::default();
-        let storage_dir = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name);
 
-        let expected_path = storage_dir.data_path.join(format!(
+        let expected_path = staging.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
@@ -537,25 +537,22 @@ mod tests {
             hostname::get().unwrap().into_string().unwrap()
         ));
 
-        let generated_path = storage_dir.path_by_current_time(
-            stream_hash,
-            parsed_timestamp,
-            &custom_partition_values,
-        );
+        let generated_path =
+            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
 
         assert_eq!(generated_path, expected_path);
     }
 
     #[test]
-    fn test_convert_files_with_empty_staging() -> Result<(), MoveDataError> {
+    fn test_convert_to_parquet_with_empty_staging() -> Result<(), MoveDataError> {
         let temp_dir = TempDir::new()?;
         let options = Options {
             local_staging_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
         let stream = "test_stream".to_string();
-        let storage_dir = Stream::new(&options, &stream);
-        let result = convert_disk_files_to_parquet(&stream, &storage_dir, None, None, false)?;
+        let staging = Stream::new(&options, &stream);
+        let result = convert_disk_files_to_parquet(&stream, &staging, None, None, false)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
