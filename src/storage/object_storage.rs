@@ -553,7 +553,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let staging = STAGING.get_or_create_stream(stream);
             let schema = convert_disk_files_to_parquet(
-                stream,
                 &staging,
                 time_partition,
                 custom_partition.clone(),

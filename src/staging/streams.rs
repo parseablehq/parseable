@@ -59,15 +59,20 @@ pub type StreamRef<'a> = Arc<Stream<'a>>;
 
 /// State of staging associated with a single stream of data in parseable.
 pub struct Stream<'a> {
+    pub stream_name: String,
     pub data_path: PathBuf,
     pub options: &'a Options,
     pub writer: Mutex<Writer>,
 }
 
 impl<'a> Stream<'a> {
-    pub fn new(options: &'a Options, stream_name: &str) -> StreamRef<'a> {
+    pub fn new(options: &'a Options, stream_name: impl Into<String>) -> StreamRef<'a> {
+        let stream_name = stream_name.into();
+        let data_path = options.local_stream_data_path(&stream_name);
+
         Arc::new(Self {
-            data_path: options.local_stream_data_path(stream_name),
+            stream_name,
+            data_path,
             options,
             writer: Mutex::new(Writer::default()),
         })
@@ -160,7 +165,6 @@ impl<'a> Stream<'a> {
     pub fn arrow_files_grouped_exclude_time(
         &self,
         exclude: NaiveDateTime,
-        stream: &str,
         shutdown_signal: bool,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
@@ -183,7 +187,7 @@ impl<'a> Stream<'a> {
             if arrow_file_path.metadata().unwrap().len() == 0 {
                 error!(
                     "Invalid arrow file {:?} detected for stream {}, removing it",
-                    &arrow_file_path, stream
+                    &arrow_file_path, self.stream_name
                 );
                 remove_file(&arrow_file_path).unwrap();
             } else {
@@ -235,9 +239,8 @@ impl<'a> Stream<'a> {
     }
 }
 
-pub fn convert_disk_files_to_parquet(
-    stream: &str,
-    dir: &Stream,
+pub fn convert_disk_files_to_parquet<'a>(
+    staging: &StreamRef<'a>,
     time_partition: Option<String>,
     custom_partition: Option<String>,
     shutdown_signal: bool,
@@ -245,21 +248,23 @@ pub fn convert_disk_files_to_parquet(
     let mut schemas = Vec::new();
 
     let time = chrono::Utc::now().naive_utc();
-    let staging_files = dir.arrow_files_grouped_exclude_time(time, stream, shutdown_signal);
+    let staging_files = staging.arrow_files_grouped_exclude_time(time, shutdown_signal);
     if staging_files.is_empty() {
-        metrics::STAGING_FILES.with_label_values(&[stream]).set(0);
-        metrics::STORAGE_SIZE
-            .with_label_values(&["staging", stream, "arrows"])
+        metrics::STAGING_FILES
+            .with_label_values(&[&staging.stream_name])
             .set(0);
         metrics::STORAGE_SIZE
-            .with_label_values(&["staging", stream, "parquet"])
+            .with_label_values(&["staging", &staging.stream_name, "arrows"])
+            .set(0);
+        metrics::STORAGE_SIZE
+            .with_label_values(&["staging", &staging.stream_name, "parquet"])
             .set(0);
     }
 
     // warn!("staging files-\n{staging_files:?}\n");
     for (parquet_path, files) in staging_files {
         metrics::STAGING_FILES
-            .with_label_values(&[stream])
+            .with_label_values(&[&staging.stream_name])
             .set(files.len() as i64);
 
         for file in &files {
@@ -267,7 +272,7 @@ pub fn convert_disk_files_to_parquet(
             let file_type = file.extension().unwrap().to_str().unwrap();
 
             metrics::STORAGE_SIZE
-                .with_label_values(&["staging", stream, file_type])
+                .with_label_values(&["staging", &staging.stream_name, file_type])
                 .add(file_size as i64);
         }
 
@@ -288,7 +293,7 @@ pub fn convert_disk_files_to_parquet(
             }
         }
         let props = parquet_writer_props(
-            dir.options,
+            staging.options,
             time_partition.clone(),
             index_time_partition,
             custom_partition_fields,
@@ -310,7 +315,7 @@ pub fn convert_disk_files_to_parquet(
         if parquet_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
             error!(
                 "Invalid parquet file {:?} detected for stream {}, removing it",
-                &parquet_path, stream
+                &parquet_path, &staging.stream_name
             );
             remove_file(parquet_path).unwrap();
         } else {
@@ -323,7 +328,7 @@ pub fn convert_disk_files_to_parquet(
                     process::abort()
                 }
                 metrics::STORAGE_SIZE
-                    .with_label_values(&["staging", stream, file_type])
+                    .with_label_values(&["staging", &staging.stream_name, file_type])
                     .sub(file_size as i64);
             }
         }
@@ -534,7 +539,7 @@ mod tests {
         };
         let stream = "test_stream".to_string();
         let staging = Stream::new(&options, &stream);
-        let result = convert_disk_files_to_parquet(&stream, &staging, None, None, false)?;
+        let result = convert_disk_files_to_parquet(&staging, None, None, false)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();

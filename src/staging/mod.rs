@@ -28,8 +28,7 @@ use base64::Engine;
 use once_cell::sync::Lazy;
 use parquet::errors::ParquetError;
 use serde_json::Value as JsonValue;
-pub use streams::convert_disk_files_to_parquet;
-pub use streams::{Stream, Streams};
+pub use streams::{convert_disk_files_to_parquet, Stream, Streams};
 use tracing::{error, info};
 pub use writer::StreamWriterError;
 
