@@ -33,7 +33,6 @@ use crate::{
     query::PartialTimeFilter,
     storage::{object_storage::manifest_path, ObjectStorage, ObjectStorageError},
 };
-use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveTime, Utc};
 use relative_path::RelativePathBuf;
 use std::io::Error as IOError;
@@ -412,13 +411,11 @@ pub async fn get_first_event(
                     base_path_without_preceding_slash(),
                     stream_name
                 );
-                // Convert dates vector to Bytes object
-                let dates_bytes = Bytes::from(serde_json::to_vec(&dates).unwrap());
                 let ingestor_first_event_at =
                     handlers::http::cluster::send_retention_cleanup_request(
                         &url,
                         ingestor.clone(),
-                        dates_bytes,
+                        &dates,
                     )
                     .await?;
                 if !ingestor_first_event_at.is_empty() {

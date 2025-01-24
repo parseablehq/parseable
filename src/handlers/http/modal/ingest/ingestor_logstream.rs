@@ -20,7 +20,6 @@ use actix_web::{
     web::{Json, Path},
     HttpRequest, Responder,
 };
-use bytes::Bytes;
 use http::StatusCode;
 use tracing::warn;
 
@@ -40,10 +39,10 @@ use crate::{
 };
 
 pub async fn retention_cleanup(
-    req: HttpRequest,
-    body: Bytes,
+    stream_name: Path<String>,
+    Json(date_list): Json<Vec<String>>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+    let stream_name = stream_name.into_inner();
     let storage = CONFIG.storage().get_object_store();
     // if the stream not found in memory map,
     //check if it exists in the storage
@@ -56,15 +55,14 @@ pub async fn retention_cleanup(
         return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
 
-    let date_list: Vec<String> = serde_json::from_slice(&body).unwrap();
     let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
     let first_event_at: Option<String> = res.unwrap_or_default();
 
     Ok((first_event_at, StatusCode::OK))
 }
 
-pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
@@ -90,7 +88,12 @@ pub async fn put_stream(
     static_schema: Option<Json<StaticSchema>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    create_update_stream(&req, static_schema.as_ref().map(|Json(s)| s), &stream_name).await?;
+    create_update_stream(
+        req.headers(),
+        static_schema.as_ref().map(|Json(s)| s),
+        &stream_name,
+    )
+    .await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }

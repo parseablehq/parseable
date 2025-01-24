@@ -18,7 +18,9 @@ metadata:
   name: {{ include "parseable.fullname" . }}-ingestor
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "parseable.ingestorLabels" . | nindent 4 }}
+    {{- with .Values.parseable.highAvailability.ingestor.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   selector:
     matchLabels:
@@ -32,6 +34,10 @@ spec:
         {{- .Values.parseable.highAvailability.ingestor.labels | toYaml | nindent 8 }}
         {{- include "parseable.ingestorLabelsSelector" . | nindent 8 }}
     spec:
+      {{- with .Values.parseable.highAvailability.ingestor.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       initContainers:
         - name: wait-for-query-service
           image: curlimages/curl:latest # Lightweight image with curl

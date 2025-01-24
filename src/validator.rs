@@ -77,7 +77,10 @@ pub fn alert(alerts: &Alerts) -> Result<(), AlertValidationError> {
     Ok(())
 }
 
-pub fn stream_name(stream_name: &str, stream_type: &str) -> Result<(), StreamNameValidationError> {
+pub fn stream_name(
+    stream_name: &str,
+    stream_type: StreamType,
+) -> Result<(), StreamNameValidationError> {
     if stream_name.is_empty() {
         return Err(StreamNameValidationError::EmptyName);
     }
@@ -102,7 +105,7 @@ pub fn stream_name(stream_name: &str, stream_type: &str) -> Result<(), StreamNam
         ));
     }
 
-    if stream_type == StreamType::Internal.to_string() {
+    if stream_type == StreamType::Internal {
         return Err(StreamNameValidationError::InternalStream(
             stream_name.to_owned(),
         ));

@@ -18,7 +18,7 @@
 
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 
-use actix_web::{http::header::HeaderMap, HttpRequest};
+use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
 use http::StatusCode;
 
@@ -37,11 +37,11 @@ use crate::{
 };
 
 pub async fn create_update_stream(
-    req: &HttpRequest,
+    headers: &HeaderMap,
     static_schema: Option<&StaticSchema>,
     stream_name: &str,
 ) -> Result<HeaderMap, StreamError> {
-    let (
+    let PutStreamHeaders {
         time_partition,
         time_partition_limit,
         custom_partition,
@@ -49,7 +49,7 @@ pub async fn create_update_stream(
         update_stream_flag,
         stream_type,
         log_source,
-    ) = fetch_headers_from_put_stream_request(req);
+    } = headers.into();
 
     if metadata::STREAM_INFO.stream_exists(stream_name) && !update_stream_flag {
         return Err(StreamError::Custom {
@@ -74,7 +74,7 @@ pub async fn create_update_stream(
 
     if update_stream_flag {
         return update_stream(
-            req,
+            headers,
             stream_name,
             &time_partition,
             static_schema_flag,
@@ -113,16 +113,16 @@ pub async fn create_update_stream(
         &custom_partition,
         static_schema_flag,
         schema,
-        &stream_type,
+        stream_type,
         log_source,
     )
     .await?;
 
-    Ok(req.headers().clone())
+    Ok(headers.clone())
 }
 
 async fn update_stream(
-    req: &HttpRequest,
+    headers: &HeaderMap,
     stream_name: &str,
     time_partition: &str,
     static_schema_flag: bool,
@@ -147,11 +147,11 @@ async fn update_stream(
     if !time_partition_limit.is_empty() {
         let time_partition_days = validate_time_partition_limit(time_partition_limit)?;
         update_time_partition_limit_in_stream(stream_name.to_string(), time_partition_days).await?;
-        return Ok(req.headers().clone());
+        return Ok(headers.clone());
     }
     validate_and_update_custom_partition(stream_name, custom_partition).await?;
 
-    Ok(req.headers().clone())
+    Ok(headers.clone())
 }
 
 async fn validate_and_update_custom_partition(
@@ -167,49 +167,47 @@ async fn validate_and_update_custom_partition(
     Ok(())
 }
 
-pub fn fetch_headers_from_put_stream_request(
-    req: &HttpRequest,
-) -> (String, String, String, bool, bool, String, LogSource) {
-    let mut time_partition = String::default();
-    let mut time_partition_limit = String::default();
-    let mut custom_partition = String::default();
-    let mut static_schema_flag = false;
-    let mut update_stream_flag = false;
-    let mut stream_type = StreamType::UserDefined.to_string();
-    let mut log_source = LogSource::default();
-    req.headers().iter().for_each(|(key, value)| {
-        if key == TIME_PARTITION_KEY {
-            time_partition = value.to_str().unwrap().to_string();
-        }
-        if key == TIME_PARTITION_LIMIT_KEY {
-            time_partition_limit = value.to_str().unwrap().to_string();
-        }
-        if key == CUSTOM_PARTITION_KEY {
-            custom_partition = value.to_str().unwrap().to_string();
-        }
-        if key == STATIC_SCHEMA_FLAG && value.to_str().unwrap() == "true" {
-            static_schema_flag = true;
-        }
-        if key == UPDATE_STREAM_KEY && value.to_str().unwrap() == "true" {
-            update_stream_flag = true;
-        }
-        if key == STREAM_TYPE_KEY {
-            stream_type = value.to_str().unwrap().to_string();
-        }
-        if key == LOG_SOURCE_KEY {
-            log_source = LogSource::from(value.to_str().unwrap());
-        }
-    });
+#[derive(Debug, Default)]
+pub struct PutStreamHeaders {
+    pub time_partition: String,
+    pub time_partition_limit: String,
+    pub custom_partition: String,
+    pub static_schema_flag: bool,
+    pub update_stream_flag: bool,
+    pub stream_type: StreamType,
+    pub log_source: LogSource,
+}
 
-    (
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        static_schema_flag,
-        update_stream_flag,
-        stream_type,
-        log_source,
-    )
+impl From<&HeaderMap> for PutStreamHeaders {
+    fn from(headers: &HeaderMap) -> Self {
+        PutStreamHeaders {
+            time_partition: headers
+                .get(TIME_PARTITION_KEY)
+                .map_or("", |v| v.to_str().unwrap())
+                .to_string(),
+            time_partition_limit: headers
+                .get(TIME_PARTITION_LIMIT_KEY)
+                .map_or("", |v| v.to_str().unwrap())
+                .to_string(),
+            custom_partition: headers
+                .get(CUSTOM_PARTITION_KEY)
+                .map_or("", |v| v.to_str().unwrap())
+                .to_string(),
+            static_schema_flag: headers
+                .get(STATIC_SCHEMA_FLAG)
+                .is_some_and(|v| v.to_str().unwrap() == "true"),
+            update_stream_flag: headers
+                .get(UPDATE_STREAM_KEY)
+                .is_some_and(|v| v.to_str().unwrap() == "true"),
+            stream_type: headers
+                .get(STREAM_TYPE_KEY)
+                .map(|v| StreamType::from(v.to_str().unwrap()))
+                .unwrap_or_default(),
+            log_source: headers
+                .get(LOG_SOURCE_KEY)
+                .map_or(LogSource::default(), |v| v.to_str().unwrap().into()),
+        }
+    }
 }
 
 pub fn validate_time_partition_limit(
@@ -390,11 +388,11 @@ pub async fn create_stream(
     custom_partition: &str,
     static_schema_flag: bool,
     schema: Arc<Schema>,
-    stream_type: &str,
+    stream_type: StreamType,
     log_source: LogSource,
 ) -> Result<(), CreateStreamError> {
     // fail to proceed if invalid stream name
-    if stream_type != StreamType::Internal.to_string() {
+    if stream_type != StreamType::Internal {
         validator::stream_name(&stream_name, stream_type)?;
     }
     // Proceed to create log stream if it doesn't exist
@@ -482,7 +480,10 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             .and_then(|limit| limit.parse().ok());
         let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
         let static_schema_flag = stream_metadata.static_schema_flag;
-        let stream_type = stream_metadata.stream_type.as_deref().unwrap_or("");
+        let stream_type = stream_metadata
+            .stream_type
+            .map(|s| StreamType::from(s.as_str()))
+            .unwrap_or_default();
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
         metadata::STREAM_INFO.add_stream(

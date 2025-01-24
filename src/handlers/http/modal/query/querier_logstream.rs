@@ -20,7 +20,7 @@ use core::str;
 use std::fs;
 
 use actix_web::{
-    web::{self, Json, Path},
+    web::{Json, Path},
     HttpRequest, Responder,
 };
 use chrono::Utc;
@@ -52,8 +52,8 @@ use crate::{
     storage::{StorageDir, StreamType},
 };
 
-pub async fn delete(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
 
     // if the stream not found in memory map,
     //check if it exists in the storage
@@ -115,18 +115,20 @@ pub async fn put_stream(
     static_schema: Option<Json<StaticSchema>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    let static_schema = static_schema.map(|Json(s)| s);
     let _ = CREATE_STREAM_LOCK.lock().await;
-    let headers = create_update_stream(&req, static_schema.as_ref(), &stream_name).await?;
+    let static_schema = static_schema.map(|Json(s)| s);
+    let headers = create_update_stream(req.headers(), static_schema.as_ref(), &stream_name).await?;
 
     sync_streams_with_ingestors(headers, static_schema, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
 
-pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
-
+pub async fn get_stats(
+    req: HttpRequest,
+    stream_name: Path<String>,
+) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
@@ -159,7 +161,7 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
             };
             let stats = serde_json::to_value(total_stats)?;
 
-            return Ok((web::Json(stats), StatusCode::OK));
+            return Ok((Json(stats), StatusCode::OK));
         }
     }
 
@@ -231,5 +233,5 @@ pub async fn get_stats(req: HttpRequest) -> Result<impl Responder, StreamError> 
 
     let stats = serde_json::to_value(stats)?;
 
-    Ok((web::Json(stats), StatusCode::OK))
+    Ok((Json(stats), StatusCode::OK))
 }
