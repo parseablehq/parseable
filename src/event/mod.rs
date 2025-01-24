@@ -105,10 +105,6 @@ impl Event {
 
         Ok(())
     }
-
-    pub fn clear(&self, stream_name: &str) {
-        STAGING.clear(stream_name);
-    }
 }
 
 pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
