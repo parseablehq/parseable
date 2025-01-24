@@ -24,8 +24,6 @@ use super::modal::utils::logstream_utils::{
     create_stream_and_schema_from_storage, create_update_stream, update_first_event_at,
 };
 use super::query::update_schema_when_distributed;
-use crate::alerts::Alerts;
-use crate::catalog::get_first_event;
 use crate::event::format::{override_data_type, LogSource};
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};

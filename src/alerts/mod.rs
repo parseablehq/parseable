@@ -80,6 +80,13 @@ impl From<&str> for AlertVerison {
     }
 }
 
+pub struct AggregateResult {
+    result: bool,
+    message: Option<String>,
+    config: AggregateConfig,
+    value: f64,
+}
+
 #[async_trait]
 pub trait CallableTarget {
     async fn call(&self, payload: &Context);
