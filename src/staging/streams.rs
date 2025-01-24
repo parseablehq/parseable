@@ -237,149 +237,145 @@ impl<'a> Stream<'a> {
             _ = writer.finish();
         }
     }
-}
 
-pub fn convert_disk_files_to_parquet<'a>(
-    staging: &StreamRef<'a>,
-    time_partition: Option<String>,
-    custom_partition: Option<String>,
-    shutdown_signal: bool,
-) -> Result<Option<Schema>, MoveDataError> {
-    let mut schemas = Vec::new();
+    pub fn convert_disk_files_to_parquet(
+        &self,
+        time_partition: Option<&String>,
+        custom_partition: Option<&String>,
+        shutdown_signal: bool,
+    ) -> Result<Option<Schema>, MoveDataError> {
+        let mut schemas = Vec::new();
 
-    let time = chrono::Utc::now().naive_utc();
-    let staging_files = staging.arrow_files_grouped_exclude_time(time, shutdown_signal);
-    if staging_files.is_empty() {
-        metrics::STAGING_FILES
-            .with_label_values(&[&staging.stream_name])
-            .set(0);
-        metrics::STORAGE_SIZE
-            .with_label_values(&["staging", &staging.stream_name, "arrows"])
-            .set(0);
-        metrics::STORAGE_SIZE
-            .with_label_values(&["staging", &staging.stream_name, "parquet"])
-            .set(0);
-    }
-
-    // warn!("staging files-\n{staging_files:?}\n");
-    for (parquet_path, files) in staging_files {
-        metrics::STAGING_FILES
-            .with_label_values(&[&staging.stream_name])
-            .set(files.len() as i64);
-
-        for file in &files {
-            let file_size = file.metadata().unwrap().len();
-            let file_type = file.extension().unwrap().to_str().unwrap();
-
+        let time = chrono::Utc::now().naive_utc();
+        let staging_files = self.arrow_files_grouped_exclude_time(time, shutdown_signal);
+        if staging_files.is_empty() {
+            metrics::STAGING_FILES
+                .with_label_values(&[&self.stream_name])
+                .set(0);
             metrics::STORAGE_SIZE
-                .with_label_values(&["staging", &staging.stream_name, file_type])
-                .add(file_size as i64);
+                .with_label_values(&["staging", &self.stream_name, "arrows"])
+                .set(0);
+            metrics::STORAGE_SIZE
+                .with_label_values(&["staging", &self.stream_name, "parquet"])
+                .set(0);
         }
 
-        let record_reader = MergedReverseRecordReader::try_new(&files);
-        if record_reader.readers.is_empty() {
-            continue;
-        }
-        let merged_schema = record_reader.merged_schema();
-        let mut index_time_partition: usize = 0;
-        if let Some(time_partition) = time_partition.as_ref() {
-            index_time_partition = merged_schema.index_of(time_partition).unwrap();
-        }
-        let mut custom_partition_fields: HashMap<String, usize> = HashMap::new();
-        if let Some(custom_partition) = custom_partition.as_ref() {
-            for custom_partition_field in custom_partition.split(',') {
-                let index = merged_schema.index_of(custom_partition_field).unwrap();
-                custom_partition_fields.insert(custom_partition_field.to_string(), index);
-            }
-        }
-        let props = parquet_writer_props(
-            staging.options,
-            time_partition.clone(),
-            index_time_partition,
-            custom_partition_fields,
-        )
-        .build();
-        schemas.push(merged_schema.clone());
-        let schema = Arc::new(merged_schema);
-        let parquet_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&parquet_path)
-            .map_err(|_| MoveDataError::Create)?;
-        let mut writer = ArrowWriter::try_new(&parquet_file, schema.clone(), Some(props))?;
-        for ref record in record_reader.merged_iter(schema, time_partition.clone()) {
-            writer.write(record)?;
-        }
+        // warn!("staging files-\n{staging_files:?}\n");
+        for (parquet_path, files) in staging_files {
+            metrics::STAGING_FILES
+                .with_label_values(&[&self.stream_name])
+                .set(files.len() as i64);
 
-        writer.close()?;
-        if parquet_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
-            error!(
-                "Invalid parquet file {:?} detected for stream {}, removing it",
-                &parquet_path, &staging.stream_name
-            );
-            remove_file(parquet_path).unwrap();
-        } else {
-            for file in files {
-                // warn!("file-\n{file:?}\n");
+            for file in &files {
                 let file_size = file.metadata().unwrap().len();
                 let file_type = file.extension().unwrap().to_str().unwrap();
-                if remove_file(file.clone()).is_err() {
-                    error!("Failed to delete file. Unstable state");
-                    process::abort()
-                }
+
                 metrics::STORAGE_SIZE
-                    .with_label_values(&["staging", &staging.stream_name, file_type])
-                    .sub(file_size as i64);
+                    .with_label_values(&["staging", &self.stream_name, file_type])
+                    .add(file_size as i64);
+            }
+
+            let record_reader = MergedReverseRecordReader::try_new(&files);
+            if record_reader.readers.is_empty() {
+                continue;
+            }
+            let merged_schema = record_reader.merged_schema();
+
+            let props = parquet_writer_props(
+                self.options,
+                &merged_schema,
+                time_partition,
+                custom_partition,
+            )
+            .build();
+            schemas.push(merged_schema.clone());
+            let schema = Arc::new(merged_schema);
+            let parquet_file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&parquet_path)
+                .map_err(|_| MoveDataError::Create)?;
+            let mut writer = ArrowWriter::try_new(&parquet_file, schema.clone(), Some(props))?;
+            for ref record in record_reader.merged_iter(schema, time_partition.cloned()) {
+                writer.write(record)?;
+            }
+
+            writer.close()?;
+            if parquet_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
+                error!(
+                    "Invalid parquet file {:?} detected for stream {}, removing it",
+                    &parquet_path, &self.stream_name
+                );
+                remove_file(parquet_path).unwrap();
+            } else {
+                for file in files {
+                    // warn!("file-\n{file:?}\n");
+                    let file_size = file.metadata().unwrap().len();
+                    let file_type = file.extension().unwrap().to_str().unwrap();
+                    if remove_file(file.clone()).is_err() {
+                        error!("Failed to delete file. Unstable state");
+                        process::abort()
+                    }
+                    metrics::STORAGE_SIZE
+                        .with_label_values(&["staging", &self.stream_name, file_type])
+                        .sub(file_size as i64);
+                }
             }
         }
-    }
 
-    if !schemas.is_empty() {
+        if schemas.is_empty() {
+            return Ok(None);
+        }
+
         Ok(Some(Schema::try_merge(schemas).unwrap()))
-    } else {
-        Ok(None)
     }
 }
 
 fn parquet_writer_props(
     options: &Options,
-    time_partition: Option<String>,
-    index_time_partition: usize,
-    custom_partition_fields: HashMap<String, usize>,
+    merged_schema: &Schema,
+    time_partition: Option<&String>,
+    custom_partition: Option<&String>,
 ) -> WriterPropertiesBuilder {
-    let index_time_partition: i32 = index_time_partition as i32;
-    let mut time_partition_field = DEFAULT_TIMESTAMP_KEY.to_string();
-    if let Some(time_partition) = time_partition {
-        time_partition_field = time_partition;
-    }
-    let mut sorting_column_vec: Vec<SortingColumn> = Vec::new();
-    sorting_column_vec.push(SortingColumn {
-        column_idx: index_time_partition,
-        descending: true,
-        nulls_first: true,
-    });
+    // Determine time partition field
+    let time_partition_field = time_partition.map_or(DEFAULT_TIMESTAMP_KEY, |tp| tp.as_str());
+
+    // Find time partition index
+    let time_partition_idx = merged_schema.index_of(time_partition_field).unwrap_or(0);
+
     let mut props = WriterProperties::builder()
         .set_max_row_group_size(options.row_group_size)
         .set_compression(options.parquet_compression.into())
         .set_column_encoding(
-            ColumnPath::new(vec![time_partition_field]),
+            ColumnPath::new(vec![time_partition_field.to_string()]),
             Encoding::DELTA_BINARY_PACKED,
         );
 
-    for (field, index) in custom_partition_fields {
-        let field = ColumnPath::new(vec![field]);
-        let encoding = Encoding::DELTA_BYTE_ARRAY;
-        props = props.set_column_encoding(field, encoding);
-        let sorting_column = SortingColumn {
-            column_idx: index as i32,
-            descending: true,
-            nulls_first: true,
-        };
-        sorting_column_vec.push(sorting_column);
-    }
-    props = props.set_sorting_columns(Some(sorting_column_vec));
+    // Create sorting columns
+    let mut sorting_column_vec = vec![SortingColumn {
+        column_idx: time_partition_idx as i32,
+        descending: true,
+        nulls_first: true,
+    }];
 
-    props
+    // Describe custom partition column encodings and sorting
+    if let Some(custom_partition) = custom_partition {
+        for partition in custom_partition.split(',') {
+            if let Ok(idx) = merged_schema.index_of(partition) {
+                let column_path = ColumnPath::new(vec![partition.to_string()]);
+                props = props.set_column_encoding(column_path, Encoding::DELTA_BYTE_ARRAY);
+
+                sorting_column_vec.push(SortingColumn {
+                    column_idx: idx as i32,
+                    descending: true,
+                    nulls_first: true,
+                });
+            }
+        }
+    }
+
+    // Set sorting columns
+    props.set_sorting_columns(Some(sorting_column_vec))
 }
 
 #[derive(Deref, DerefMut, Default)]
@@ -538,8 +534,8 @@ mod tests {
             ..Default::default()
         };
         let stream = "test_stream".to_string();
-        let staging = Stream::new(&options, &stream);
-        let result = convert_disk_files_to_parquet(&staging, None, None, false)?;
+        let result =
+            Stream::new(&options, &stream).convert_disk_files_to_parquet(None, None, false)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();

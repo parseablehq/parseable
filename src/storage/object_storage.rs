@@ -31,7 +31,7 @@ use crate::handlers::http::users::{CORRELATION_DIR, DASHBOARDS_DIR, FILTER_DIR, 
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
-use crate::staging::{convert_disk_files_to_parquet, STAGING};
+use crate::staging::STAGING;
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
@@ -552,13 +552,13 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .get_custom_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let staging = STAGING.get_or_create_stream(stream);
-            let schema = convert_disk_files_to_parquet(
-                &staging,
-                time_partition,
-                custom_partition.clone(),
-                shutdown_signal,
-            )
-            .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+            let schema = staging
+                .convert_disk_files_to_parquet(
+                    time_partition.as_ref(),
+                    custom_partition.as_ref(),
+                    shutdown_signal,
+                )
+                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {
                 let static_schema_flag = STREAM_INFO
