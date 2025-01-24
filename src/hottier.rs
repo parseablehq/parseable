@@ -58,10 +58,11 @@ pub struct StreamHotTier {
     pub version: Option<String>,
     #[serde(with = "crate::utils::human_size")]
     pub size: u64,
-    #[serde(with = "crate::utils::human_size")]
+    #[serde(default, with = "crate::utils::human_size")]
     pub used_size: u64,
-    #[serde(with = "crate::utils::human_size")]
+    #[serde(default, with = "crate::utils::human_size")]
     pub available_size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub oldest_date_time_entry: Option<String>,
 }
 
