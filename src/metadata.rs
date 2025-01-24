@@ -224,8 +224,9 @@ impl StreamInfo {
 
     /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
     ///
-    /// This function acquires a write lock, retrieves the LogStreamMetadata for the given stream,
-    /// and removes the `first_event_at` timestamp if it exists.
+    /// This function is called during the retention task, when the parquet files along with the manifest files are deleted from the storage.
+    /// The manifest path is removed from the snapshot in the stream.json
+    /// and the first_event_at value in the stream.json is removed.
     ///
     /// # Arguments
     ///
@@ -235,11 +236,6 @@ impl StreamInfo {
     ///
     /// * `Result<(), MetadataError>` - Returns `Ok(())` if the `first_event_at` timestamp is successfully removed,
     ///   or a `MetadataError` if the stream metadata is not found.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if:
-    /// * The stream metadata cannot be found.
     ///
     /// # Examples
     /// ```ignore

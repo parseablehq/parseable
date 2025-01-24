@@ -450,11 +450,6 @@ pub async fn get_first_event(
 ///   first event timestamp if found, `Ok(None)` if no timestamps are found, or an `ObjectStorageError`
 ///   if an error occurs.
 ///
-/// # Errors
-///
-/// This function will return an error if:
-/// * The stream metadata cannot be retrieved from the storage.
-///
 /// # Examples
 /// ```ignore
 /// ```rust
@@ -462,7 +457,7 @@ pub async fn get_first_event(
 /// match result {
 ///     Ok(Some(first_event)) => println!("first-event-at: {}", first_event),
 ///     Ok(None) => println!("first-event-at not found"),
-///     Err(e) => eprintln!("Error retrieving first-event-at from storage: {}", e),
+///     Err(err) => println!("Error: {:?}", err),
 /// }
 /// ```
 pub async fn get_first_event_from_storage(
