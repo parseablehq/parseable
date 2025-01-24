@@ -30,6 +30,7 @@ use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::DisAllowRootUser;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::role;
+use crate::handlers::http::MAX_EVENT_PAYLOAD_SIZE;
 use crate::metrics;
 use crate::migration;
 use crate::migration::metadata_migration::migrate_ingester_metadata;
@@ -249,7 +250,8 @@ impl IngestServer {
                             web::put()
                                 .to(ingestor_logstream::put_stream)
                                 .authorize_for_stream(Action::CreateStream),
-                        ),
+                        )
+                        .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)), // Required to restrict `PUT /logstream/{logstream}`
                 )
                 .service(
                     // GET "/logstream/{logstream}/info" ==> Get info for given log stream
