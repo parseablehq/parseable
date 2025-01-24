@@ -31,7 +31,7 @@ use crate::handlers::http::users::{CORRELATION_DIR, DASHBOARDS_DIR, FILTER_DIR, 
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
-use crate::staging::{convert_disk_files_to_parquet, Stream};
+use crate::staging::{convert_disk_files_to_parquet, STAGING};
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
@@ -551,10 +551,10 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             let custom_partition = STREAM_INFO
                 .get_custom_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let dir = Stream::new(&CONFIG.options, stream);
+            let staging = STAGING.get_or_create_stream(stream);
             let schema = convert_disk_files_to_parquet(
                 stream,
-                &dir,
+                &staging,
                 time_partition,
                 custom_partition.clone(),
                 shutdown_signal,
@@ -570,8 +570,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 }
             }
 
-            let parquet_files = dir.parquet_files();
-            for file in parquet_files {
+            for file in staging.parquet_files() {
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")
