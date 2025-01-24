@@ -27,7 +27,6 @@ use crate::option::{Mode, CONFIG};
 use crate::stats::{
     event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats,
 };
-use crate::storage::object_storage::get_stream_meta_from_storage;
 use crate::{
     catalog::manifest::Manifest,
     event::DEFAULT_TIMESTAMP_KEY,
@@ -432,53 +431,6 @@ pub async fn get_first_event(
         }
     }
 
-    Ok(Some(first_event_at))
-}
-
-/// Retrieves the earliest first-event-at from the storage for the specified stream.
-///
-/// This function fetches the object-store format from all the stream.json files for the given stream from the storage,
-/// extracts the `first_event_at` timestamps, and returns the earliest `first_event_at`.
-///
-/// # Arguments
-///
-/// * `stream_name` - The name of the stream for which `first_event_at` is to be retrieved.
-///
-/// # Returns
-///
-/// * `Result<Option<String>, ObjectStorageError>` - Returns `Ok(Some(String))` with the earliest
-///   first event timestamp if found, `Ok(None)` if no timestamps are found, or an `ObjectStorageError`
-///   if an error occurs.
-///
-/// # Examples
-/// ```ignore
-/// ```rust
-/// let result = get_first_event_from_storage("my_stream").await;
-/// match result {
-///     Ok(Some(first_event)) => println!("first-event-at: {}", first_event),
-///     Ok(None) => println!("first-event-at not found"),
-///     Err(err) => println!("Error: {:?}", err),
-/// }
-/// ```
-pub async fn get_first_event_from_storage(
-    stream_name: &str,
-) -> Result<Option<String>, ObjectStorageError> {
-    let mut all_first_events = vec![];
-    let stream_metas = get_stream_meta_from_storage(stream_name).await;
-    if let Ok(stream_metas) = stream_metas {
-        for stream_meta in stream_metas.iter() {
-            if let Some(first_event) = &stream_meta.first_event_at {
-                let first_event = DateTime::parse_from_rfc3339(first_event).unwrap();
-                let first_event = first_event.with_timezone(&Utc);
-                all_first_events.push(first_event);
-            }
-        }
-    }
-
-    if all_first_events.is_empty() {
-        return Ok(None);
-    }
-    let first_event_at = all_first_events.iter().min().unwrap().to_rfc3339();
     Ok(Some(first_event_at))
 }
 

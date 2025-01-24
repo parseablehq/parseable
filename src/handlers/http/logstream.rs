@@ -25,7 +25,6 @@ use super::modal::utils::logstream_utils::{
 };
 use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
-use crate::catalog::get_first_event_from_storage;
 use crate::event::format::{override_data_type, LogSource};
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
@@ -550,13 +549,15 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
             return Err(StreamError::StreamNotFound(stream_name));
         }
     }
-
+    let storage = CONFIG.storage().get_object_store();
     // if first_event_at is not found in memory map, check if it exists in the storage
     // if it exists in the storage, update the first_event_at in memory map
     let stream_first_event_at =
         if let Ok(Some(first_event_at)) = STREAM_INFO.get_first_event(&stream_name) {
             Some(first_event_at)
-        } else if let Ok(Some(first_event_at)) = get_first_event_from_storage(&stream_name).await {
+        } else if let Ok(Some(first_event_at)) =
+            storage.get_first_event_from_storage(&stream_name).await
+        {
             update_first_event_at(&stream_name, &first_event_at).await
         } else {
             None

@@ -44,7 +44,7 @@ use actix_web_prometheus::PrometheusMetrics;
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
@@ -659,6 +659,78 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(())
     }
 
+    async fn get_stream_meta_from_storage(
+        &self,
+        stream_name: &str,
+    ) -> Result<Vec<ObjectStoreFormat>, ObjectStorageError> {
+        let mut stream_metas = vec![];
+        let stream_meta_bytes = self
+            .get_objects(
+                Some(&RelativePathBuf::from_iter([
+                    stream_name,
+                    STREAM_ROOT_DIRECTORY,
+                ])),
+                Box::new(|file_name| file_name.ends_with("stream.json")),
+            )
+            .await;
+        if let Ok(stream_meta_bytes) = stream_meta_bytes {
+            for stream_meta in stream_meta_bytes {
+                let stream_meta_ob = serde_json::from_slice::<ObjectStoreFormat>(&stream_meta)?;
+                stream_metas.push(stream_meta_ob);
+            }
+        }
+
+        Ok(stream_metas)
+    }
+
+    /// Retrieves the earliest first-event-at from the storage for the specified stream.
+    ///
+    /// This function fetches the object-store format from all the stream.json files for the given stream from the storage,
+    /// extracts the `first_event_at` timestamps, and returns the earliest `first_event_at`.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream for which `first_event_at` is to be retrieved.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Option<String>, ObjectStorageError>` - Returns `Ok(Some(String))` with the earliest
+    ///   first event timestamp if found, `Ok(None)` if no timestamps are found, or an `ObjectStorageError`
+    ///   if an error occurs.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// ```rust
+    /// let result = get_first_event_from_storage("my_stream").await;
+    /// match result {
+    ///     Ok(Some(first_event)) => println!("first-event-at: {}", first_event),
+    ///     Ok(None) => println!("first-event-at not found"),
+    ///     Err(err) => println!("Error: {:?}", err),
+    /// }
+    /// ```
+    async fn get_first_event_from_storage(
+        &self,
+        stream_name: &str,
+    ) -> Result<Option<String>, ObjectStorageError> {
+        let mut all_first_events = vec![];
+        let stream_metas = self.get_stream_meta_from_storage(stream_name).await;
+        if let Ok(stream_metas) = stream_metas {
+            for stream_meta in stream_metas.iter() {
+                if let Some(first_event) = &stream_meta.first_event_at {
+                    let first_event = DateTime::parse_from_rfc3339(first_event).unwrap();
+                    let first_event = first_event.with_timezone(&Utc);
+                    all_first_events.push(first_event);
+                }
+            }
+        }
+
+        if all_first_events.is_empty() {
+            return Ok(None);
+        }
+        let first_event_at = all_first_events.iter().min().unwrap().to_rfc3339();
+        Ok(Some(first_event_at))
+    }
+
     // pick a better name
     fn get_bucket_name(&self) -> String;
 }
@@ -782,28 +854,4 @@ pub fn ingestor_metadata_path(id: Option<&str>) -> RelativePathBuf {
         PARSEABLE_ROOT_DIRECTORY,
         &format!("ingestor.{}.json", INGESTOR_META.get_ingestor_id()),
     ])
-}
-
-pub async fn get_stream_meta_from_storage(
-    stream_name: &str,
-) -> Result<Vec<ObjectStoreFormat>, ObjectStorageError> {
-    let storage = CONFIG.storage().get_object_store();
-    let mut stream_metas = vec![];
-    let stream_meta_bytes = storage
-        .get_objects(
-            Some(&RelativePathBuf::from_iter([
-                stream_name,
-                STREAM_ROOT_DIRECTORY,
-            ])),
-            Box::new(|file_name| file_name.ends_with("stream.json")),
-        )
-        .await;
-    if let Ok(stream_meta_bytes) = stream_meta_bytes {
-        for stream_meta in stream_meta_bytes {
-            let stream_meta_ob = serde_json::from_slice::<ObjectStoreFormat>(&stream_meta)?;
-            stream_metas.push(stream_meta_ob);
-        }
-    }
-
-    Ok(stream_metas)
 }
