@@ -55,6 +55,9 @@ use super::{writer::Writer, MoveDataError, StreamWriterError};
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
+pub type StreamRef<'a> = Arc<Stream<'a>>;
+
+/// State of staging associated with a single stream of data in parseable.
 pub struct Stream<'a> {
     pub data_path: PathBuf,
     pub options: &'a Options,
@@ -62,15 +65,16 @@ pub struct Stream<'a> {
 }
 
 impl<'a> Stream<'a> {
-    pub fn new(options: &'a Options, stream_name: &str) -> Self {
-        Self {
+    pub fn new(options: &'a Options, stream_name: &str) -> StreamRef<'a> {
+        Arc::new(Self {
             data_path: options.local_stream_data_path(stream_name),
             options,
             writer: Mutex::new(Writer::default()),
-        }
+        })
     }
 
-    fn push(
+    // Concatenates record batches and puts them in memory store for each event.
+    pub fn push(
         &self,
         schema_key: &str,
         record: &RecordBatch,
@@ -215,7 +219,7 @@ impl<'a> Stream<'a> {
         parquet_path
     }
 
-    fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
+    pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
         self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
     }
 
@@ -374,39 +378,28 @@ fn parquet_writer_props(
 }
 
 #[derive(Deref, DerefMut, Default)]
-pub struct Streams(RwLock<HashMap<String, Stream<'static>>>);
+pub struct Streams(RwLock<HashMap<String, StreamRef<'static>>>);
 
 impl Streams {
-    // Concatenates record batches and puts them in memory store for each event.
-    pub fn append_to_local(
-        &self,
-        stream_name: &str,
-        schema_key: &str,
-        record: &RecordBatch,
-        parsed_timestamp: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
-        stream_type: StreamType,
-    ) -> Result<(), StreamWriterError> {
-        if !self.read().unwrap().contains_key(stream_name) {
-            // Gets write privileges only for inserting a writer
-            self.write().unwrap().insert(
-                stream_name.to_owned(),
-                Stream::new(&CONFIG.options, stream_name),
-            );
+    /// Try to get the handle of a stream in staging, if it doesn't exist return `None`.
+    pub fn get_stream(&self, stream_name: &str) -> Option<StreamRef<'static>> {
+        self.read().unwrap().get(stream_name).cloned()
+    }
+
+    /// Get the handle to a stream in staging, create one if it doesn't exist
+    pub fn get_or_create_stream(&self, stream_name: &str) -> StreamRef<'static> {
+        if let Some(staging) = self.get_stream(stream_name) {
+            return staging;
         }
 
-        // Updates the writer with only read privileges
-        self.read()
+        let staging = Stream::new(&CONFIG.options, stream_name);
+
+        // Gets write privileges only for creating the stream when it doesn't already exist.
+        self.write()
             .unwrap()
-            .get(stream_name)
-            .expect("Stream exists")
-            .push(
-                schema_key,
-                record,
-                parsed_timestamp,
-                custom_partition_values,
-                stream_type,
-            )
+            .insert(stream_name.to_owned(), staging.clone());
+
+        staging
     }
 
     pub fn clear(&self, stream_name: &str) {
@@ -425,17 +418,6 @@ impl Streams {
         for staging in streams.values() {
             staging.flush()
         }
-    }
-
-    pub fn recordbatches_cloned(
-        &self,
-        stream_name: &str,
-        schema: &Arc<Schema>,
-    ) -> Option<Vec<RecordBatch>> {
-        self.read()
-            .unwrap()
-            .get(stream_name)
-            .map(|staging| staging.recordbatches_cloned(schema))
     }
 }
 

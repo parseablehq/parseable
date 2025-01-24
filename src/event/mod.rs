@@ -64,8 +64,7 @@ impl Event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        STAGING.append_to_local(
-            &self.stream_name,
+        STAGING.get_or_create_stream(&self.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -96,8 +95,7 @@ impl Event {
     pub fn process_unchecked(&self) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        STAGING.append_to_local(
-            &self.stream_name,
+        STAGING.get_or_create_stream(&self.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
