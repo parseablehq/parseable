@@ -462,7 +462,12 @@ fn process_object_value(
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::json::flatten::{flatten_array_objects, generic_flattening, FlattenContext};
+    use std::vec;
+
+    use crate::utils::json::flatten::{
+        create_nested_key, flatten_array_objects, generic_flattening, process_array_value,
+        process_json_array, process_json_object, FlattenContext,
+    };
 
     use super::{flatten, JsonFlattenError};
     use serde_json::{json, Map, Value};
@@ -763,5 +768,108 @@ mod tests {
             generic_flattening(&mut value, &context, None).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn test_process_json_array() {
+        let context = FlattenContext {
+            current_level: 1,
+            separator: "_",
+            time_partition: None,
+            time_partition_limit: None,
+            custom_partition: None,
+            flatten_depth_limit: 3,
+        };
+
+        let mut input = json!([
+            {"name": "John", "age": 30, "address": {"city": "New York", "state": "NY"}},
+            {"name": "Jane", "age": 25, "address": {"city": "New York", "state": "NY"}}
+        ]);
+
+        let input_arr = input.as_array_mut().unwrap();
+
+        let expected = vec![
+            json!({"name": "John", "age": 30, "address_city": "New York", "address_state": "NY"}),
+            json!({"name": "Jane", "age": 25, "address_city": "New York", "address_state": "NY"}),
+        ];
+
+        assert_eq!(
+            process_json_array(input_arr, &context, None).unwrap(),
+            expected
+        );
+
+        let mut input = json!([
+            {"name": "John", "age": 30, "address": {"city": "New York", "state": "NY"}, "phone": ["123", "456"]},
+            {"name": "Jane", "age": 25, "address": {"city": "New York", "state": "NY"}, "phone": ["789", "101"]}
+        ]);
+        let input_arr = input.as_array_mut().unwrap();
+
+        let expected = vec![
+            json!({"name": "John", "age": 30, "address_city": "New York", "address_state": "NY", "phone": "123"}),
+            json!({"name": "John", "age": 30, "address_city": "New York", "address_state": "NY", "phone": "456"}),
+            json!({"name": "Jane", "age": 25, "address_city": "New York", "address_state": "NY", "phone": "789"}),
+            json!({"name": "Jane", "age": 25, "address_city": "New York", "address_state": "NY", "phone": "101"}),
+        ];
+
+        assert_eq!(
+            process_json_array(input_arr, &context, None).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_process_json_object() {
+        let context = FlattenContext {
+            current_level: 1,
+            separator: "_",
+            time_partition: None,
+            time_partition_limit: None,
+            custom_partition: None,
+            flatten_depth_limit: 3,
+        };
+
+        let mut input = json!(
+            {"name": "Jane", "age": 25, "address": {"city": "New York", "state": "NY"}}
+        );
+
+        let input_map = input.as_object_mut().unwrap();
+
+        let expected = vec![
+            json!({"name": "Jane", "age": 25, "address_city": "New York", "address_state": "NY"}),
+        ];
+
+        assert_eq!(
+            process_json_object(input_map, &context, None).unwrap(),
+            expected
+        );
+
+        let mut input = json!(
+            {"name": "Jane", "age": 25, "address": {"city": "New York", "state": "NY"}, "phone": ["123", "456"]}
+        );
+
+        let input_map = input.as_object_mut().unwrap();
+
+        let expected = vec![
+            json!({"name": "Jane", "age": 25, "address_city": "New York", "address_state": "NY", "phone":"123"}),
+            json!({"name": "Jane", "age": 25, "address_city": "New York", "address_state": "NY", "phone":"456"}),
+        ];
+
+        assert_eq!(
+            process_json_object(input_map, &context, None).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_create_nested_key() {
+        let parent_key = Some("a");
+        let key = "b";
+        let separator = "_";
+        assert_eq!(create_nested_key(parent_key, key, separator), "a_b");
+
+        let parent_key = None;
+        let key = "b";
+        let separator = "_";
+        assert_eq!(create_nested_key(parent_key, key, separator), "b");
     }
 }
