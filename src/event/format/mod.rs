@@ -112,11 +112,8 @@ pub trait EventFormat: Sized {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first) = self.to_data(
-            storage_schema,
-            time_partition,
-            schema_version,
-        )?;
+        let (data, mut schema, is_first) =
+            self.to_data(storage_schema, time_partition, schema_version)?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
