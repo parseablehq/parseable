@@ -249,7 +249,7 @@ impl IngestServer {
                             web::put()
                                 .to(ingestor_logstream::put_stream)
                                 .authorize_for_stream(Action::CreateStream),
-                        ),
+                        )
                 )
                 .service(
                     // GET "/logstream/{logstream}/info" ==> Get info for given log stream
