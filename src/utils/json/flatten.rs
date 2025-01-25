@@ -465,8 +465,8 @@ mod tests {
     use std::vec;
 
     use crate::utils::json::flatten::{
-        create_nested_key, flatten_array_objects, generic_flattening, process_array_value,
-        process_json_array, process_json_object, FlattenContext,
+        create_nested_key, flatten_array_objects, generic_flattening, process_json_array,
+        process_json_object, FlattenContext,
     };
 
     use super::{flatten, JsonFlattenError};
