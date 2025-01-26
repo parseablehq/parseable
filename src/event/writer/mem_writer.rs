@@ -50,7 +50,7 @@ impl<const N: usize> Default for MemWriter<N> {
 }
 
 impl<const N: usize> MemWriter<N> {
-    pub fn push(&mut self, schema_key: &str, rb: RecordBatch) {
+    pub fn push(&mut self, schema_key: &str, rb: &RecordBatch) {
         if !self.schema_map.contains(schema_key) {
             self.schema_map.insert(schema_key.to_owned());
             self.schema = Schema::try_merge([self.schema.clone(), (*rb.schema()).clone()]).unwrap();
@@ -97,7 +97,7 @@ pub struct MutableBuffer<const N: usize> {
 }
 
 impl<const N: usize> MutableBuffer<N> {
-    fn push(&mut self, rb: RecordBatch) -> Option<Vec<RecordBatch>> {
+    fn push(&mut self, rb: &RecordBatch) -> Option<Vec<RecordBatch>> {
         if self.rows + rb.num_rows() >= N {
             let left = N - self.rows;
             let right = rb.num_rows() - left;
@@ -121,7 +121,7 @@ impl<const N: usize> MutableBuffer<N> {
             Some(inner)
         } else {
             self.rows += rb.num_rows();
-            self.inner.push(rb);
+            self.inner.push(rb.clone());
             None
         }
     }

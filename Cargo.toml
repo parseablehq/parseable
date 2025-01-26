@@ -27,6 +27,7 @@ actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 http = "0.2.7"
 http-auth-basic = "0.3.3"
+mime = "0.3.17"
 tonic = { version = "0.12.3", features = ["tls", "transport", "gzip", "zstd"] }
 tonic-web = "0.12.3"
 tower-http = { version = "0.6.1", features = ["cors"] }
@@ -78,11 +79,9 @@ humantime = "2.1.0"
 humantime-serde = "1.1"
 
 # File System and I/O
-bzip2 = { version = "*", features = ["static"] }
 fs_extra = "1.3"
 path-clean = "1.0.1"
 relative-path = { version = "1.7", features = ["serde"] }
-xz2 = { version = "*", features = ["static"] }
 
 # CLI and System
 clap = { version = "4.5", default-features = false, features = [

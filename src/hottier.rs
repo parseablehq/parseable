@@ -57,7 +57,9 @@ pub const CURRENT_HOT_TIER_VERSION: &str = "v2";
 pub struct StreamHotTier {
     pub version: Option<String>,
     pub size: String,
+    #[serde(default)]
     pub used_size: String,
+    #[serde(default)]
     pub available_size: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oldest_date_time_entry: Option<String>,
@@ -395,24 +397,6 @@ impl HotTierManager {
         fs::create_dir_all(manifest_path.parent().unwrap()).await?;
         fs::write(manifest_path, serde_json::to_vec(&hot_tier_manifest)?).await?;
         Ok(file_processed)
-    }
-
-    #[allow(dead_code)]
-    ///delete the files for the date range given from the hot tier directory for the stream
-    /// update the used and available size in the hot tier metadata
-    pub async fn delete_files_from_hot_tier(
-        &self,
-        stream: &str,
-        dates: &[NaiveDate],
-    ) -> Result<(), HotTierError> {
-        for date in dates.iter() {
-            let path = self.hot_tier_path.join(format!("{}/date={}", stream, date));
-            if path.exists() {
-                fs::remove_dir_all(path.clone()).await?;
-            }
-        }
-
-        Ok(())
     }
 
     ///fetch the list of dates available in the hot tier directory for the stream and sort them

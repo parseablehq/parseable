@@ -322,7 +322,7 @@ impl Server {
                                     .to(logstream::delete)
                                     .authorize_for_stream(Action::DeleteStream),
                             )
-                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
                     .service(
                         // GET "/logstream/{logstream}/info" ==> Get info for given log stream
@@ -408,7 +408,7 @@ impl Server {
                     .to(ingest::ingest)
                     .authorize_for_stream(Action::Ingest),
             )
-            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
+            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
     }
 
     // /v1/logs endpoint to be used for OTEL log ingestion only
@@ -421,7 +421,7 @@ impl Server {
                             .to(ingest::handle_otel_logs_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             .service(
                 web::resource("/metrics")
@@ -430,7 +430,7 @@ impl Server {
                             .to(ingest::handle_otel_metrics_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             .service(
                 web::resource("/traces")
@@ -439,7 +439,7 @@ impl Server {
                             .to(ingest::handle_otel_traces_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
     }
 

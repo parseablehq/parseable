@@ -279,7 +279,7 @@ impl QueryServer {
                                     .to(querier_logstream::delete)
                                     .authorize_for_stream(Action::DeleteStream),
                             )
-                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
                     .service(
                         // GET "/logstream/{logstream}/info" ==> Get info for given log stream

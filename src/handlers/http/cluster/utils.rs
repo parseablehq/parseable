@@ -16,17 +16,10 @@
  *
  */
 
-use crate::{
-    handlers::http::{
-        base_path_without_preceding_slash, logstream::error::StreamError, modal::IngestorMetadata,
-    },
-    HTTP_CLIENT,
-};
+use crate::{handlers::http::base_path_without_preceding_slash, HTTP_CLIENT};
 use actix_web::http::header;
 use chrono::{DateTime, Utc};
-use http::StatusCode;
 use itertools::Itertools;
-use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 use url::Url;
@@ -245,65 +238,6 @@ pub async fn check_liveness(domain_name: &str) -> bool {
         .await;
 
     req.is_ok()
-}
-
-/// send a request to the ingestor to fetch its stats
-/// dead for now
-#[allow(dead_code)]
-pub async fn send_stats_request(
-    url: &str,
-    ingestor: IngestorMetadata,
-) -> Result<Option<Response>, StreamError> {
-    if !check_liveness(&ingestor.domain_name).await {
-        return Ok(None);
-    }
-
-    let res = HTTP_CLIENT
-        .get(url)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::AUTHORIZATION, ingestor.token)
-        .send()
-        .await
-        .map_err(|err| {
-            error!(
-                "Fatal: failed to fetch stats from ingestor: {}\n Error: {:?}",
-                ingestor.domain_name, err
-            );
-
-            StreamError::Network(err)
-        })?;
-
-    if !res.status().is_success() {
-        error!(
-            "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
-            ingestor.domain_name, res
-        );
-        return Err(StreamError::Custom {
-            msg: format!(
-                "failed to forward create stream request to ingestor: {}\nResponse Returned: {:?}",
-                ingestor.domain_name,
-                res.text().await.unwrap_or_default()
-            ),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-        });
-    }
-
-    Ok(Some(res))
-}
-
-/// domain_name needs to be http://ip:port
-/// dead code for now
-#[allow(dead_code)]
-pub fn ingestor_meta_filename(domain_name: &str) -> String {
-    if domain_name.starts_with("http://") | domain_name.starts_with("https://") {
-        let url = Url::parse(domain_name).unwrap();
-        return format!(
-            "ingestor.{}.{}.json",
-            url.host_str().unwrap(),
-            url.port().unwrap()
-        );
-    }
-    format!("ingestor.{}.json", domain_name)
 }
 
 pub fn to_url_string(str: String) -> String {

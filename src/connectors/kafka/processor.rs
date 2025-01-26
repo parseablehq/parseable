@@ -45,12 +45,8 @@ impl ParseableSinkProcessor {
     ) -> anyhow::Result<Option<ParseableEvent>> {
         let stream_name = consumer_record.topic.as_str();
 
-        create_stream_if_not_exists(
-            stream_name,
-            &StreamType::UserDefined.to_string(),
-            LogSource::default(),
-        )
-        .await?;
+        create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::default())
+            .await?;
         let schema = STREAM_INFO.schema_raw(stream_name)?;
 
         match &consumer_record.payload {
