@@ -20,54 +20,54 @@ jobs:
         target:
           - aarch64-unknown-linux-gnu # linux(arm)
           - x86_64-unknown-linux-gnu # linux(64 bit)
-        include:
-          - target: aarch64-unknown-linux-gnu
-            openssl_package: libssl-dev:arm64
-          - target: x86_64-unknown-linux-gnu
-            openssl_package: libssl-dev
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: Install OpenSSL development packages
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Configure Cross.toml
         run: |
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.openssl_package }}
+          cat > Cross.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          pre-build = [
+            "apt-get update && apt-get install -y --no-install-recommends libssl-dev"
+          ]
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          target: ${{ matrix.target }}
-          override: true
+          [target.x86_64-unknown-linux-gnu]
+          pre-build = [
+            "apt-get update && apt-get install -y --no-install-recommends libssl-dev"
+          ]
+          EOF
 
-      - uses: actions-rs/cargo@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          use-cross: true
-          command: build
-          args: --target ${{matrix.target}} --features "rdkafka-ssl,rdkafka-sasl"
+          targets: ${{ matrix.target }}
+
+      - name: Build with cross
+        run: cross build --target ${{ matrix.target }} --features "rdkafka-ssl,rdkafka-sasl"
 
   build-windows:
     name: Build for windows
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
 
       - name: Install OpenSSL
         run: |
           vcpkg install openssl:x64-windows-static
-          echo "OPENSSL_DIR=C:/vcpkg/installed/x64-windows-static" >> $GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-        shell: bash
+          echo "OPENSSL_DIR=$env:VCPKG_ROOT/installed/x64-windows-static" >> $env:GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
+        shell: pwsh
 
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          profile: minimal # minimal component installation (ie, no documentation)
-          default: true
-          override: true
+          targets: x86_64-pc-windows-msvc
 
       - name: Build on windows
         run: cargo build --target x86_64-pc-windows-msvc --features "rdkafka-ssl,rdkafka-sasl"
@@ -82,7 +82,7 @@ jobs:
           - x86_64-apple-darwin # macos(intel 64 bit)
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install OpenSSL
         run: brew install openssl@3
@@ -90,13 +90,12 @@ jobs:
       - name: Set OpenSSL Environment Variables
         run: |
           echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
 
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          profile: minimal
-          target: ${{ matrix.target }}
-          override: true
+          targets: ${{ matrix.target }}
 
       - name: Build on ${{ matrix.target }}
         run: cargo build --target ${{ matrix.target }} --features "rdkafka-ssl,rdkafka-sasl"
