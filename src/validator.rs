@@ -135,16 +135,16 @@ pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
 }
 
 pub fn hot_tier(size: &str) -> Result<(), HotTierValidationError> {
-    if let Ok(size) = size.parse::<u64>() {
-        if size < MIN_STREAM_HOT_TIER_SIZE_BYTES {
-            return Err(HotTierValidationError::Size(bytes_to_human_size(
-                MIN_STREAM_HOT_TIER_SIZE_BYTES,
-            )));
-        }
-        Ok(())
-    } else {
-        Err(HotTierValidationError::InvalidFormat)
+    let Ok(size) = size.parse::<u64>() else {
+        return Err(HotTierValidationError::InvalidFormat);
+    };
+    if size < MIN_STREAM_HOT_TIER_SIZE_BYTES {
+        return Err(HotTierValidationError::Size(bytes_to_human_size(
+            MIN_STREAM_HOT_TIER_SIZE_BYTES,
+        )));
     }
+
+    Ok(())
 }
 pub mod error {
 
