@@ -214,12 +214,12 @@ type UserId = String;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorrelationConfig {
-    #[serde(skip_deserializing)]
+    #[serde(default)]
     pub version: CorrelationVersion,
     pub title: String,
-    #[serde(skip_deserializing)]
+    #[serde(default)]
     pub id: CorrelationId,
-    #[serde(skip_deserializing)]
+    #[serde(default)]
     pub user_id: UserId,
     pub table_configs: Vec<TableConfig>,
     pub join_config: JoinConfig,
