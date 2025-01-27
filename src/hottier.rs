@@ -167,11 +167,9 @@ impl HotTierManager {
     ///get the hot tier metadata file for the stream
     pub async fn get_hot_tier(&self, stream: &str) -> Result<StreamHotTier, HotTierError> {
         if !self.check_stream_hot_tier_exists(stream) {
-            return Err(HotTierError::HotTierValidationError(
-                HotTierValidationError::NotFound(stream.to_owned()),
-            ));
+            return Err(HotTierValidationError::NotFound(stream.to_owned()).into());
         }
-        let path = hot_tier_file_path(self.hot_tier_path, stream)?;
+        let path = self.hot_tier_file_path(stream)?;
         let bytes = self
             .filesystem
             .get(&path)
@@ -179,22 +177,19 @@ impl HotTierManager {
             .await?;
 
         let mut stream_hot_tier: StreamHotTier = serde_json::from_slice(&bytes)?;
-        let oldest_date_time_entry = self.get_oldest_date_time_entry(stream).await?;
-        stream_hot_tier.oldest_date_time_entry = oldest_date_time_entry;
+        stream_hot_tier.oldest_date_time_entry = self.get_oldest_date_time_entry(stream).await?;
 
         Ok(stream_hot_tier)
     }
 
     pub async fn delete_hot_tier(&self, stream: &str) -> Result<(), HotTierError> {
-        if self.check_stream_hot_tier_exists(stream) {
-            let path = self.hot_tier_path.join(stream);
-            fs::remove_dir_all(path).await?;
-            Ok(())
-        } else {
-            Err(HotTierError::HotTierValidationError(
-                HotTierValidationError::NotFound(stream.to_owned()),
-            ))
+        if !self.check_stream_hot_tier_exists(stream) {
+            return Err(HotTierValidationError::NotFound(stream.to_owned()).into());
         }
+        let path = self.hot_tier_path.join(stream);
+        fs::remove_dir_all(path).await?;
+
+        Ok(())
     }
 
     ///put the hot tier metadata file for the stream
@@ -204,10 +199,24 @@ impl HotTierManager {
         stream: &str,
         hot_tier: &mut StreamHotTier,
     ) -> Result<(), HotTierError> {
-        let path = hot_tier_file_path(self.hot_tier_path, stream)?;
+        let path = self.hot_tier_file_path(stream)?;
         let bytes = serde_json::to_vec(&hot_tier)?.into();
         self.filesystem.put(&path, bytes).await?;
         Ok(())
+    }
+
+    /// get the hot tier file path for the stream
+    pub fn hot_tier_file_path(
+        &self,
+        stream: &str,
+    ) -> Result<object_store::path::Path, HotTierError> {
+        let path = self
+            .hot_tier_path
+            .join(stream)
+            .join(STREAM_HOT_TIER_FILENAME);
+        let path = object_store::path::Path::from_absolute_path(path)?;
+
+        Ok(path)
     }
 
     ///schedule the download of the hot tier files from S3 every minute
@@ -584,7 +593,10 @@ impl HotTierManager {
                         fs::write(manifest_file.path(), serde_json::to_vec(&manifest)?).await?;
 
                         fs::remove_dir_all(path_to_delete.parent().unwrap()).await?;
-                        delete_empty_directory_hot_tier(path_to_delete.parent().unwrap()).await?;
+                        delete_empty_directory_hot_tier(
+                            path_to_delete.parent().unwrap().to_path_buf(),
+                        )
+                        .await?;
 
                         stream_hot_tier.used_size -= file_size;
                         stream_hot_tier.available_size += file_size;
@@ -721,48 +733,35 @@ impl HotTierManager {
     }
 }
 
-/// get the hot tier file path for the stream
-pub fn hot_tier_file_path(
-    root: impl AsRef<std::path::Path>,
-    stream: &str,
-) -> Result<object_store::path::Path, object_store::path::Error> {
-    let path = root.as_ref().join(stream).join(STREAM_HOT_TIER_FILENAME);
-    object_store::path::Path::from_absolute_path(path)
-}
-
 struct DiskUtil {
     total_space: u64,
     available_space: u64,
     used_space: u64,
 }
 
-async fn delete_empty_directory_hot_tier(path: &Path) -> io::Result<()> {
+async fn delete_empty_directory_hot_tier(path: PathBuf) -> io::Result<()> {
     if !path.is_dir() {
         return Ok(());
     }
-    let mut read_dir = fs::read_dir(path).await?;
-    let mut subdirs = vec![];
+    let mut read_dir = fs::read_dir(&path).await?;
 
+    let mut tasks = vec![];
     while let Some(entry) = read_dir.next_entry().await? {
         let entry_path = entry.path();
         if entry_path.is_dir() {
-            subdirs.push(entry_path);
+            tasks.push(delete_empty_directory_hot_tier(entry_path));
         }
     }
 
-    let mut tasks = vec![];
-    for subdir in &subdirs {
-        tasks.push(delete_empty_directory_hot_tier(subdir));
-    }
     futures::stream::iter(tasks)
         .buffer_unordered(10)
         .try_collect::<Vec<_>>()
         .await?;
 
     // Re-check the directory after deleting its subdirectories
-    let mut read_dir = fs::read_dir(path).await?;
+    let mut read_dir = fs::read_dir(&path).await?;
     if read_dir.next_entry().await?.is_none() {
-        fs::remove_dir(path).await?;
+        fs::remove_dir(&path).await?;
     }
 
     Ok(())
