@@ -171,7 +171,7 @@ impl HotTierManager {
                 HotTierValidationError::NotFound(stream.to_owned()),
             ));
         }
-        let path = hot_tier_file_path(&self.hot_tier_path, stream)?;
+        let path = hot_tier_file_path(self.hot_tier_path, stream)?;
         let bytes = self
             .filesystem
             .get(&path)
@@ -204,7 +204,7 @@ impl HotTierManager {
         stream: &str,
         hot_tier: &mut StreamHotTier,
     ) -> Result<(), HotTierError> {
-        let path = hot_tier_file_path(&self.hot_tier_path, stream)?;
+        let path = hot_tier_file_path(self.hot_tier_path, stream)?;
         let bytes = serde_json::to_vec(&hot_tier)?.into();
         self.filesystem.put(&path, bytes).await?;
         Ok(())
