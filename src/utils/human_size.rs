@@ -5,6 +5,10 @@ use serde::{de, Deserialize, Deserializer, Serializer};
 
 // Function to convert human-readable size to bytes (already provided)
 pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
+    if let Ok(size) = s.parse() {
+        return Ok(size);
+    }
+
     fn parse_and_map<T: human_size::Multiple>(s: &str) -> Result<u64, human_size::ParsingError> {
         SpecificSize::<T>::from_str(s).map(|x| x.to_bytes())
     }
