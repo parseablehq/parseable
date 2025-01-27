@@ -4,6 +4,7 @@ use human_size::{multiples, SpecificSize};
 use serde::{de, Deserialize, Deserializer, Serializer};
 
 // Function to convert human-readable size to bytes (already provided)
+// NOTE: consider number values as byte count, e.g. "1234" is 1234 bytes.
 pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
     if let Ok(size) = s.parse() {
         return Ok(size);
