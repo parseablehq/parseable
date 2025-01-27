@@ -212,13 +212,46 @@ impl StreamInfo {
     pub fn set_first_event_at(
         &self,
         stream_name: &str,
-        first_event_at: Option<String>,
+        first_event_at: &str,
     ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
-                metadata.first_event_at = first_event_at;
+                metadata.first_event_at = Some(first_event_at.to_owned());
+            })
+    }
+
+    /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
+    ///
+    /// This function is called during the retention task, when the parquet files along with the manifest files are deleted from the storage.
+    /// The manifest path is removed from the snapshot in the stream.json
+    /// and the first_event_at value in the stream.json is removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream for which the `first_event_at` timestamp is to be removed.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), MetadataError>` - Returns `Ok(())` if the `first_event_at` timestamp is successfully removed,
+    ///   or a `MetadataError` if the stream metadata is not found.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// ```rust
+    /// let result = metadata.remove_first_event_at("my_stream");
+    /// match result {
+    ///     Ok(()) => println!("first-event-at removed successfully"),
+    ///     Err(e) => eprintln!("Error removing first-event-at from STREAM_INFO: {}", e),
+    /// }
+    /// ```
+    pub fn reset_first_event_at(&self, stream_name: &str) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        map.get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.first_event_at.take();
             })
     }
 

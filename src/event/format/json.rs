@@ -94,8 +94,8 @@ impl EventFormat for Event {
         };
 
         if value_arr
-                .iter()
-                .any(|value| fields_mismatch(&schema, value, schema_version))
+            .iter()
+            .any(|value| fields_mismatch(&schema, value, schema_version))
         {
             return Err(anyhow!(
                 "Could not process this event due to mismatch in datatype"
