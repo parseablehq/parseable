@@ -67,6 +67,7 @@ jobs:
           ]
           EOF
 
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -77,23 +78,28 @@ jobs:
   build-windows:
     name: Build for windows
     runs-on: windows-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: '5e0cab206a5ea620130caf672fce3e4a6b5666a1'
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          cd vcpkg
+          ./bootstrap-vcpkg.bat
+          ./vcpkg integrate install
 
       - name: Install dependencies
+        shell: pwsh
         run: |
-          vcpkg install openssl:x64-windows-static cyrus-sasl:x64-windows-static
+          $env:VCPKG_ROOT/vcpkg install openssl:x64-windows-static cyrus-sasl:x64-windows-static
           echo "OPENSSL_DIR=$env:VCPKG_ROOT/installed/x64-windows-static" >> $env:GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
           echo "SASL2_DIR=$env:VCPKG_ROOT/installed/x64-windows-static" >> $env:GITHUB_ENV
           echo "SASL2_STATIC=1" >> $env:GITHUB_ENV
-        shell: pwsh
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -105,6 +111,8 @@ jobs:
   build-macos:
     name: Build for ${{matrix.target}}
     runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"  # Updated minimum target
     strategy:
       matrix:
         target:
@@ -116,18 +124,39 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install openssl@3 cyrus-sasl
+          brew install openssl@3 cyrus-sasl pkg-config
 
       - name: Set environment variables
         run: |
+          # OpenSSL configuration
           echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
           echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix cyrus-sasl)/lib/pkgconfig" >> $GITHUB_ENV
+          
+          # SASL configuration
           echo "SASL2_DIR=$(brew --prefix cyrus-sasl)" >> $GITHUB_ENV
+          echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib -L$(brew --prefix cyrus-sasl)/lib" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include -I$(brew --prefix cyrus-sasl)/include" >> $GITHUB_ENV
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
+      - name: Create .cargo/config.toml
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [target.'cfg(target_os = "macos")']
+          rustflags = [
+            "-C", "link-arg=-L/usr/local/lib",
+            "-C", "link-arg=-L$(brew --prefix openssl@3)/lib",
+            "-C", "link-arg=-L$(brew --prefix cyrus-sasl)/lib"
+          ]
+          EOF
+
       - name: Build on ${{ matrix.target }}
-        run: cargo build --target ${{ matrix.target }} --features "rdkafka-ssl,rdkafka-sasl"
+        run: |
+          # Ensure all dynamic libraries are findable
+          export DYLD_LIBRARY_PATH="$(brew --prefix openssl@3)/lib:$(brew --prefix cyrus-sasl)/lib:$DYLD_LIBRARY_PATH"
+          cargo build --target ${{ matrix.target }} --features "rdkafka-ssl,rdkafka-sasl"
