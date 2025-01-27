@@ -589,7 +589,7 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
 
 pub async fn put_stream_hot_tier(
     stream_name: Path<String>,
-    Json(json): Json<Value>,
+    Json(mut hottier): Json<StreamHotTier>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     if !STREAM_INFO.stream_exists(&stream_name) {
@@ -615,11 +615,6 @@ pub async fn put_stream_hot_tier(
     if CONFIG.options.hot_tier_storage_path.is_none() {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     }
-
-    let mut hottier: StreamHotTier = match serde_json::from_value(json) {
-        Ok(hottier) => hottier,
-        Err(err) => return Err(StreamError::InvalidHotTierConfig(err)),
-    };
 
     validator::hot_tier(&hottier.size.to_string())?;
 
@@ -836,8 +831,6 @@ pub mod error {
             "Hot tier is not enabled at the server config, cannot enable hot tier for stream {0}"
         )]
         HotTierNotEnabled(String),
-        #[error("failed to enable hottier due to err: {0}")]
-        InvalidHotTierConfig(serde_json::Error),
         #[error("Hot tier validation failed: {0}")]
         HotTierValidation(#[from] HotTierValidationError),
         #[error("{0}")]
@@ -875,7 +868,6 @@ pub mod error {
                     err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
                 }
                 StreamError::HotTierNotEnabled(_) => StatusCode::BAD_REQUEST,
-                StreamError::InvalidHotTierConfig(_) => StatusCode::BAD_REQUEST,
                 StreamError::HotTierValidation(_) => StatusCode::BAD_REQUEST,
                 StreamError::HotTierError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             }
