@@ -1,12 +1,16 @@
 use std::str::FromStr;
 
-use human_size::{multiples, SpecificSize};
+use human_size::{Any, SpecificSize};
 use serde::{de, Deserialize, Deserializer, Serializer};
 
 // Function to convert human-readable size to bytes (already provided)
 // NOTE: consider number values as byte count, e.g. "1234" is 1234 bytes.
 pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
-    if let Ok(size) = s.parse() {
+    let s = s.trim();
+    if let Some(s) = s.strip_suffix("Bytes") {
+        let size = s.trim().parse().expect("Suffix bytes implies byte count");
+        return Ok(size);
+    } else if let Ok(size) = s.parse() {
         return Ok(size);
     }
 
@@ -14,13 +18,8 @@ pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
         SpecificSize::<T>::from_str(s).map(|x| x.to_bytes())
     }
 
-    let size = parse_and_map::<multiples::Mebibyte>(s)
-        .or(parse_and_map::<multiples::Megabyte>(s))
-        .or(parse_and_map::<multiples::Gigibyte>(s))
-        .or(parse_and_map::<multiples::Gigabyte>(s))
-        .or(parse_and_map::<multiples::Tebibyte>(s))
-        .or(parse_and_map::<multiples::Terabyte>(s))
-        .map_err(|_| "Could not parse given size".to_string())?;
+    let size = parse_and_map::<Any>(s).map_err(|_| "Could not parse given size".to_string())?;
+
     Ok(size)
 }
 
@@ -63,4 +62,37 @@ where
 {
     let s = String::deserialize(deserializer)?;
     human_size_to_bytes(&s).map_err(de::Error::custom)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::utils::human_size::human_size_to_bytes;
+
+    #[test]
+    fn parse_numeric_input_without_unit() {
+        assert_eq!(human_size_to_bytes("1234"), Ok(1234));
+    }
+
+    #[test]
+    fn parse_bytes_string_to_bytes() {
+        assert_eq!(human_size_to_bytes("1234 Bytes"), Ok(1234));
+    }
+
+    #[test]
+    fn handle_empty_string_input() {
+        assert_eq!(
+            human_size_to_bytes(""),
+            Err("Could not parse given size".to_string())
+        );
+    }
+
+    #[test]
+    fn convert_mebibyte_string_to_bytes() {
+        assert_eq!(human_size_to_bytes("1 MiB"), Ok(1048576));
+    }
+
+    #[test]
+    fn parse_gigabyte_string_input() {
+        assert_eq!(human_size_to_bytes("1 GB"), Ok(1_000_000_000));
+    }
 }
