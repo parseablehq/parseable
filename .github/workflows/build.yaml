@@ -30,14 +30,40 @@ jobs:
       - name: Configure Cross.toml
         run: |
           cat > Cross.toml << 'EOF'
+          [build.env]
+          passthrough = [
+            "RUST_BACKTRACE",
+            "RUST_LOG",
+            "OPENSSL_DIR",
+            "OPENSSL_LIB_DIR",
+            "OPENSSL_INCLUDE_DIR",
+            "SASL2_DIR",
+            "PKG_CONFIG_PATH",
+            "PKG_CONFIG_ALLOW_CROSS"
+          ]
+
           [target.aarch64-unknown-linux-gnu]
           pre-build = [
-            "apt-get update && apt-get install -y --no-install-recommends libssl-dev"
+            "dpkg --add-architecture arm64",
+            "apt-get update",
+            "apt-get install -y --no-install-recommends pkg-config libssl-dev:arm64 gcc-aarch64-linux-gnu libc6-dev-arm64-cross libsasl2-dev:arm64",
+            "export OPENSSL_DIR=/usr",
+            "export OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu",
+            "export OPENSSL_INCLUDE_DIR=/usr/include",
+            "export SASL2_DIR=/usr",
+            "export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig",
+            "export PKG_CONFIG_ALLOW_CROSS=1"
           ]
 
           [target.x86_64-unknown-linux-gnu]
           pre-build = [
-            "apt-get update && apt-get install -y --no-install-recommends libssl-dev"
+            "apt-get update",
+            "apt-get install -y --no-install-recommends pkg-config libssl-dev libsasl2-dev",
+            "export OPENSSL_DIR=/usr",
+            "export OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu",
+            "export OPENSSL_INCLUDE_DIR=/usr/include",
+            "export SASL2_DIR=/usr",
+            "export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig"
           ]
           EOF
 
@@ -57,12 +83,16 @@ jobs:
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '5e0cab206a5ea620130caf672fce3e4a6b5666a1'
 
-      - name: Install OpenSSL
+      - name: Install dependencies
         run: |
-          vcpkg install openssl:x64-windows-static
+          vcpkg install openssl:x64-windows-static cyrus-sasl:x64-windows-static
           echo "OPENSSL_DIR=$env:VCPKG_ROOT/installed/x64-windows-static" >> $env:GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
+          echo "SASL2_DIR=$env:VCPKG_ROOT/installed/x64-windows-static" >> $env:GITHUB_ENV
+          echo "SASL2_STATIC=1" >> $env:GITHUB_ENV
         shell: pwsh
 
       - uses: dtolnay/rust-toolchain@stable
@@ -84,14 +114,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install OpenSSL
-        run: brew install openssl@3
+      - name: Install dependencies
+        run: |
+          brew install openssl@3 cyrus-sasl
 
-      - name: Set OpenSSL Environment Variables
+      - name: Set environment variables
         run: |
           echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
           echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
           echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "SASL2_DIR=$(brew --prefix cyrus-sasl)" >> $GITHUB_ENV
 
       - uses: dtolnay/rust-toolchain@stable
         with:
