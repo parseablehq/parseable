@@ -857,7 +857,7 @@ pub mod error {
                 StreamError::Network(err) => {
                     err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
                 }
-                StreamError::HotTierNotEnabled(_) => StatusCode::BAD_REQUEST,
+                StreamError::HotTierNotEnabled(_) => StatusCode::FORBIDDEN,
                 StreamError::HotTierValidation(_) => StatusCode::BAD_REQUEST,
                 StreamError::HotTierError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             }
