@@ -33,61 +33,67 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 #[derive(Default, Debug, Clone)]
 pub struct ParseableSinkProcessor;
 
 impl ParseableSinkProcessor {
-    async fn deserialize(
+    async fn build_event_from_chunk(
         &self,
-        consumer_record: &ConsumerRecord,
-    ) -> anyhow::Result<Option<ParseableEvent>> {
-        let stream_name = consumer_record.topic.as_str();
+        records: &[ConsumerRecord],
+    ) -> anyhow::Result<ParseableEvent> {
+        let stream_name = records
+            .first()
+            .map(|r| r.topic.as_str())
+            .unwrap_or_default();
 
-        create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::default())
-            .await?;
+        create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::Json).await?;
+
         let schema = STREAM_INFO.schema_raw(stream_name)?;
+        let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
+        let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
+        let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
 
-        match &consumer_record.payload {
-            None => {
-                warn!(
-                    "Skipping tombstone or empty payload in partition {} key {}",
-                    consumer_record.partition,
-                    consumer_record.key_str()
-                );
-                Ok(None)
-            }
-            Some(payload) => {
-                let data: Value = serde_json::from_slice(payload.as_ref())?;
-                let json_event = format::json::Event { data };
+        let (json_vec, total_payload_size) = Self::json_vec(records);
+        let batch_json_event = format::json::Event {
+            data: Value::Array(json_vec.to_vec()),
+        };
 
-                let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
-                let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
-                let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
+        let (rb, is_first) = batch_json_event.into_recordbatch(
+            &schema,
+            static_schema_flag,
+            time_partition.as_ref(),
+            schema_version,
+        )?;
 
-                let (rb, is_first) = json_event.into_recordbatch(
-                    &schema,
-                    static_schema_flag,
-                    time_partition.as_ref(),
-                    schema_version,
-                )?;
+        let p_event = ParseableEvent {
+            rb,
+            stream_name: stream_name.to_string(),
+            origin_format: "json",
+            origin_size: total_payload_size,
+            is_first_event: is_first,
+            parsed_timestamp: Utc::now().naive_utc(),
+            time_partition: None,
+            custom_partition_values: HashMap::new(),
+            stream_type: StreamType::UserDefined,
+        };
 
-                let p_event = ParseableEvent {
-                    rb,
-                    stream_name: stream_name.to_string(),
-                    origin_format: "json",
-                    origin_size: payload.len() as u64,
-                    is_first_event: is_first,
-                    parsed_timestamp: Utc::now().naive_utc(),
-                    time_partition: None,
-                    custom_partition_values: HashMap::new(),
-                    stream_type: StreamType::UserDefined,
-                };
+        Ok(p_event)
+    }
 
-                Ok(Some(p_event))
+    fn json_vec(records: &[ConsumerRecord]) -> (Vec<Value>, u64) {
+        let mut json_vec = Vec::with_capacity(records.len());
+        let mut total_payload_size = 0u64;
+
+        for record in records.iter().filter_map(|r| r.payload.as_ref()) {
+            total_payload_size += record.len() as u64;
+            if let Ok(value) = serde_json::from_slice::<Value>(record) {
+                json_vec.push(value);
             }
         }
+
+        (json_vec, total_payload_size)
     }
 }
 
@@ -97,11 +103,10 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
         let len = records.len();
         debug!("Processing {} records", len);
 
-        for cr in records {
-            if let Some(event) = self.deserialize(&cr).await? {
-                event.process().await?;
-            }
-        }
+        self.build_event_from_chunk(&records)
+            .await?
+            .process()
+            .await?;
 
         debug!("Processed {} records", len);
         Ok(())

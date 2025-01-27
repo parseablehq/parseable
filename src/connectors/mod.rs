@@ -16,7 +16,6 @@
  *
  */
 
-use crate::connectors::common::config::Connectors;
 use crate::connectors::common::processor::Processor;
 use crate::connectors::common::shutdown::Shutdown;
 use crate::connectors::kafka::config::KafkaConfig;
@@ -39,11 +38,12 @@ pub mod kafka;
 
 pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
     if matches!(CONFIG.options.mode, Mode::Ingest | Mode::All) {
-        match CONFIG.options.connector.clone() {
-            None => {
-                warn!("Kafka connector configuration is missing. Skipping Kafka pipeline.");
+        match CONFIG.kafka_config.validate() {
+            Err(e) => {
+                warn!("Kafka connector configuration invalid. {}", e);
             }
-            Some(connectors) => {
+            Ok(_) => {
+                let config = CONFIG.kafka_config.clone();
                 let shutdown_handle = Shutdown::default();
                 let registry = prometheus.registry.clone();
                 let processor = ParseableSinkProcessor;
@@ -56,11 +56,7 @@ pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
                     }
                 });
 
-                match connectors.connectors {
-                    Connectors::KafkaSink(config) => {
-                        run_kafka2parseable(config, registry, processor, shutdown_handle).await?
-                    }
-                }
+                run_kafka2parseable(config, registry, processor, shutdown_handle).await?;
             }
         }
     }

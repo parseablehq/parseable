@@ -26,7 +26,7 @@ use url::Url;
     feature = "rdkafka-ssl-vendored",
     feature = "rdkafka-sasl"
 ))]
-use crate::connectors::common::config::ConnectorConfig;
+use crate::connectors::kafka::config::KafkaConfig;
 
 use crate::{
     oidc::{self, OpenidConfig},
@@ -91,6 +91,13 @@ pub struct LocalStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: FSConfig,
+    #[cfg(any(
+        feature = "rdkafka-ssl",
+        feature = "rdkafka-ssl-vendored",
+        feature = "rdkafka-sasl"
+    ))]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser)]
@@ -99,6 +106,13 @@ pub struct S3StoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: S3Config,
+    #[cfg(any(
+        feature = "rdkafka-ssl",
+        feature = "rdkafka-ssl-vendored",
+        feature = "rdkafka-sasl"
+    ))]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser)]
@@ -107,6 +121,13 @@ pub struct BlobStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: AzureBlobConfig,
+    #[cfg(any(
+        feature = "rdkafka-ssl",
+        feature = "rdkafka-ssl-vendored",
+        feature = "rdkafka-sasl"
+    ))]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser, Debug)]
@@ -309,14 +330,6 @@ pub struct Options {
 
     #[arg(long, env = "P_MS_CLARITY_TAG", help = "Tag for MS Clarity")]
     pub ms_clarity_tag: Option<String>,
-
-    #[cfg(any(
-        feature = "rdkafka-ssl",
-        feature = "rdkafka-ssl-vendored",
-        feature = "rdkafka-sasl"
-    ))]
-    #[command(flatten)]
-    pub connector: Option<ConnectorConfig>,
 }
 
 #[derive(Parser, Debug)]

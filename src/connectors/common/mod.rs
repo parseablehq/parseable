@@ -15,12 +15,14 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+
+use clap::ValueEnum;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
+use std::str::FromStr;
 use thiserror::Error;
 use tokio::runtime;
 use tokio::runtime::Builder;
 
-pub mod config;
 pub mod processor;
 pub mod shutdown;
 
@@ -74,6 +76,27 @@ impl ConnectorError {
             self,
             ConnectorError::Fatal(_) | ConnectorError::Auth(_) | ConnectorError::State(_)
         )
+    }
+}
+
+#[derive(ValueEnum, Default, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BadData {
+    #[default]
+    Fail,
+    Drop,
+    Dlt, //TODO: Implement Dead Letter Topic support when needed
+}
+
+impl FromStr for BadData {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "drop" => Ok(BadData::Drop),
+            "fail" => Ok(BadData::Fail),
+            "dlt" => Ok(BadData::Dlt),
+            _ => Err(format!("Invalid bad data policy: {}", s)),
+        }
     }
 }
 

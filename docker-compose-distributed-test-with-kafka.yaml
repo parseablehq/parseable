@@ -95,7 +95,7 @@ services:
       context: .
       dockerfile: Dockerfile.kafka
     platform: linux/amd64
-    command: [ "parseable", "s3-store", "connectors", "kafka-sink" ]
+    command: [ "parseable", "s3-store", ]
     expose:
       - "8000"
     environment:
@@ -141,7 +141,7 @@ services:
       context: .
       dockerfile: Dockerfile.kafka
     platform: linux/amd64
-    command: [ "parseable", "s3-store", "connectors", "kafka-sink" ]
+    command: [ "parseable", "s3-store", ]
     expose:
       - "8000"
     environment:

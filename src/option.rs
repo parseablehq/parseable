@@ -17,6 +17,12 @@
  */
 
 use crate::cli::{Cli, Options, StorageOptions, DEFAULT_PASSWORD, DEFAULT_USERNAME};
+#[cfg(any(
+    feature = "rdkafka-ssl",
+    feature = "rdkafka-ssl-vendored",
+    feature = "rdkafka-sasl"
+))]
+use crate::connectors::kafka::config::KafkaConfig;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::{ObjectStorageError, ObjectStorageProvider};
 use bytes::Bytes;
@@ -37,6 +43,12 @@ pub struct Config {
     pub options: Options,
     storage: Arc<dyn ObjectStorageProvider>,
     pub storage_name: &'static str,
+    #[cfg(any(
+        feature = "rdkafka-ssl",
+        feature = "rdkafka-ssl-vendored",
+        feature = "rdkafka-sasl"
+    ))]
+    pub kafka_config: KafkaConfig,
 }
 
 impl Config {
@@ -63,17 +75,35 @@ impl Config {
                     options: args.options,
                     storage: Arc::new(args.storage),
                     storage_name: "drive",
+                    #[cfg(any(
+                        feature = "rdkafka-ssl",
+                        feature = "rdkafka-ssl-vendored",
+                        feature = "rdkafka-sasl"
+                    ))]
+                    kafka_config: args.kafka,
                 }
             }
             StorageOptions::S3(args) => Config {
                 options: args.options,
                 storage: Arc::new(args.storage),
                 storage_name: "s3",
+                #[cfg(any(
+                    feature = "rdkafka-ssl",
+                    feature = "rdkafka-ssl-vendored",
+                    feature = "rdkafka-sasl"
+                ))]
+                kafka_config: args.kafka,
             },
             StorageOptions::Blob(args) => Config {
                 options: args.options,
                 storage: Arc::new(args.storage),
                 storage_name: "blob_store",
+                #[cfg(any(
+                    feature = "rdkafka-ssl",
+                    feature = "rdkafka-ssl-vendored",
+                    feature = "rdkafka-sasl"
+                ))]
+                kafka_config: args.kafka,
             },
         }
     }

@@ -49,7 +49,7 @@ impl RebalanceListener {
         let shutdown_handle = self.shutdown_handle.clone();
         let tokio_runtime_handle = Handle::current();
 
-        std::thread::spawn(move || {
+        std::thread::Builder::new().name("rebalance-listener-thread".to_string()).spawn(move || {
             tokio_runtime_handle.block_on(async move {
                 loop {
                     tokio::select! {
@@ -82,6 +82,6 @@ impl RebalanceListener {
                     }
                 }
             })
-        });
+        }).expect("Failed to start rebalance listener thread");
     }
 }

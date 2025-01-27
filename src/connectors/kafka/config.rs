@@ -1,38 +1,20 @@
-use clap::{Args, ValueEnum};
+use crate::connectors::common::BadData;
+use clap::{Args, Parser, ValueEnum};
 use rdkafka::{ClientConfig, Offset};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
-#[derive(ValueEnum, Debug, Clone)]
-pub enum SourceOffset {
-    Earliest,
-    Latest,
-    Group,
-}
-
-impl SourceOffset {
-    pub fn get_offset(&self) -> Offset {
-        match self {
-            SourceOffset::Earliest => Offset::Beginning,
-            SourceOffset::Latest => Offset::End,
-            SourceOffset::Group => Offset::Stored,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Args)]
-#[command(name = "kafka-config", about = "Configure Kafka connector settings")]
-#[group(id = "kafka")]
+#[derive(Debug, Clone, Parser)]
 pub struct KafkaConfig {
     #[arg(
         long = "bootstrap-servers",
         env = "P_KAFKA_BOOTSTRAP_SERVERS",
         value_name = "bootstrap-servers",
-        required = true,
+        required = false,
         help = "Comma-separated list of Kafka bootstrap servers"
     )]
-    pub bootstrap_servers: String,
+    pub bootstrap_servers: Option<String>,
 
     #[arg(
         long = "client-id",
@@ -49,22 +31,29 @@ pub struct KafkaConfig {
         env = "P_KAFKA_PARTITION_LISTENER_CONCURRENCY",
         value_name = "concurrency",
         required = false,
-        default_value_t = 1,
+        default_value_t = 2,
         help = "Number of parallel threads for Kafka partition listeners. Each partition gets processed on a dedicated thread."
     )]
     pub partition_listener_concurrency: usize,
 
     #[command(flatten)]
-    #[group(id = "consumer", required = false)]
     pub consumer: Option<ConsumerConfig>,
 
     #[command(flatten)]
-    #[group(id = "producer", required = false)]
     pub producer: Option<ProducerConfig>,
 
     #[command(flatten)]
-    #[group(id = "security", required = false)]
     pub security: Option<SecurityConfig>,
+
+    #[arg(
+        value_enum,
+        long = "bad-data-policy",
+        required = false,
+        default_value_t = BadData::Fail,
+        env = "P_CONNECTOR_BAD_DATA_POLICY",
+        help = "Policy for handling bad data"
+    )]
+    pub bad_data: BadData,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -73,7 +62,7 @@ pub struct ConsumerConfig {
         long = "consumer-topics",
         env = "P_KAFKA_CONSUMER_TOPICS",
         value_name = "consumer-topics",
-        required = true,
+        required = false,
         value_delimiter = ',',
         help = "Comma-separated list of topics"
     )]
@@ -537,7 +526,12 @@ impl KafkaConfig {
 
         // Basic configuration
         config
-            .set("bootstrap.servers", &self.bootstrap_servers)
+            .set(
+                "bootstrap.servers",
+                self.bootstrap_servers
+                    .as_ref()
+                    .expect("Bootstrap servers must not be empty"),
+            )
             .set("client.id", &self.client_id);
 
         // Consumer configuration
@@ -560,7 +554,12 @@ impl KafkaConfig {
 
         // Basic configuration
         config
-            .set("bootstrap.servers", &self.bootstrap_servers)
+            .set(
+                "bootstrap.servers",
+                self.bootstrap_servers
+                    .as_ref()
+                    .expect("Bootstrap servers must not be empty"),
+            )
             .set("client.id", &self.client_id);
 
         // Producer configuration
@@ -591,7 +590,7 @@ impl KafkaConfig {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.bootstrap_servers.is_empty() {
+        if self.bootstrap_servers.is_none() {
             anyhow::bail!("Bootstrap servers must not be empty");
         }
 
@@ -854,15 +853,16 @@ impl Default for KafkaConfig {
     fn default() -> Self {
         Self {
             // Common configuration with standard broker port
-            bootstrap_servers: "localhost:9092".to_string(),
+            bootstrap_servers: Some("localhost:9092".to_string()),
             client_id: "parseable-connect".to_string(),
-            // Single threaded listener for all assigned partitions
-            partition_listener_concurrency: 1,
+            // Listener for all assigned partitions
+            partition_listener_concurrency: 2,
             // Component-specific configurations with production-ready defaults
             consumer: Some(ConsumerConfig::default()),
             producer: Some(ProducerConfig::default()),
             // Security configuration with plaintext protocol
             security: Some(SecurityConfig::default()),
+            bad_data: BadData::default(),
         }
     }
 }
@@ -983,6 +983,23 @@ impl std::str::FromStr for Acks {
             "1" => Ok(Acks::Leader),
             "all" => Ok(Acks::All),
             _ => Err(format!("Invalid acks value: {}", s)),
+        }
+    }
+}
+
+#[derive(ValueEnum, Debug, Clone)]
+pub enum SourceOffset {
+    Earliest,
+    Latest,
+    Group,
+}
+
+impl SourceOffset {
+    pub fn get_offset(&self) -> Offset {
+        match self {
+            SourceOffset::Earliest => Offset::Beginning,
+            SourceOffset::Latest => Offset::End,
+            SourceOffset::Group => Offset::Stored,
         }
     }
 }

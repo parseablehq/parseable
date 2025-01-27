@@ -29,7 +29,7 @@ services:
       context: .
       dockerfile: Dockerfile.kafka
     platform: linux/amd64
-    command: [ "parseable", "s3-store", "connectors", "kafka-sink" ]
+    command: [ "parseable", "s3-store", ]
     ports:
       - "8000:8000"
     environment:

@@ -66,7 +66,6 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let prometheus = metrics::build_metrics_handler();
-    let parseable_server = server.init(&prometheus, shutdown_rx);
 
     #[cfg(any(
         feature = "rdkafka-ssl",
@@ -74,13 +73,10 @@ async fn main() -> anyhow::Result<()> {
         feature = "rdkafka-sasl"
     ))]
     {
-        // load kafka server
-        if CONFIG.options.mode != Mode::Query {
-            let connectors_task = connectors::init(&prometheus);
-            tokio::try_join!(parseable_server, connectors_task)?;
-        } else {
-            parseable_server.await?;
-        }
+        let parseable_server = server.init(&prometheus, shutdown_rx);
+        let connectors = connectors::init(&prometheus);
+
+        tokio::try_join!(parseable_server, connectors)?;
     }
 
     #[cfg(not(any(
@@ -89,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         feature = "rdkafka-sasl"
     )))]
     {
+        let parseable_server = server.init(&prometheus, shutdown_rx);
         parseable_server.await?;
     }
 
