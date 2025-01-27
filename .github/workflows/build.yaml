@@ -35,7 +35,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --target ${{matrix.target}}
+          args: --target ${{matrix.target}} --features "rdkafka-ssl,rdkafka-sasl"
 
   build-windows:
     name: Build for windows
@@ -52,7 +52,7 @@ jobs:
           override: true
 
       - name: Build on windows
-        run: cargo build --target x86_64-pc-windows-msvc
+        run: cargo build --target x86_64-pc-windows-msvc --features "rdkafka-ssl,rdkafka-sasl"
 
   build-macos:
     name: Build for ${{matrix.target}}
@@ -73,4 +73,4 @@ jobs:
           override: true
 
       - name: Build on ${{ matrix.target }}
-        run: cargo build --target ${{ matrix.target }}
+        run: cargo build --target ${{ matrix.target }} --features "rdkafka-ssl,rdkafka-sasl"

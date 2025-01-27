@@ -43,6 +43,7 @@ services:
       - P_PASSWORD=parseableadmin
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
+      - RUST_LOG=info
     depends_on:
       - minio
     healthcheck:

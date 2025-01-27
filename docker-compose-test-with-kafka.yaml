@@ -45,6 +45,7 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_KAFKA_CONSUMER_TOPICS=test-logs-stream
       - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092
+      - RUST_LOG=info
       # additional settings like security, tuning, etc.
     depends_on:
       - minio
@@ -147,7 +148,7 @@ services:
     environment:
       - KAFKA_BROKERS=kafka-0:9092
       - KAFKA_TOPIC=test-logs-stream
-      - LOG_RATE=1000
+      - LOG_RATE=5000
       - TOTAL_LOGS=500_000
     depends_on:
       - kafka-0
