@@ -20,14 +20,25 @@ jobs:
         target:
           - aarch64-unknown-linux-gnu # linux(arm)
           - x86_64-unknown-linux-gnu # linux(64 bit)
+        include:
+          - target: aarch64-unknown-linux-gnu
+            openssl_package: libssl-dev:arm64
+          - target: x86_64-unknown-linux-gnu
+            openssl_package: libssl-dev
 
     steps:
       - uses: actions/checkout@v2
 
+      - name: Install OpenSSL development packages
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.openssl_package }}
+
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          profile: minimal # minimal component installation (ie, no documentation)
+          profile: minimal
           target: ${{ matrix.target }}
           override: true
 
@@ -43,6 +54,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+
+      - name: Install OpenSSL
+        run: |
+          vcpkg install openssl:x64-windows-static
+          echo "OPENSSL_DIR=C:/vcpkg/installed/x64-windows-static" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+        shell: bash
 
       - uses: actions-rs/toolchain@v1
         with:
@@ -65,6 +83,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+
+      - name: Install OpenSSL
+        run: brew install openssl@3
+
+      - name: Set OpenSSL Environment Variables
+        run: |
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
