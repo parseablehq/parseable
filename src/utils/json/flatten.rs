@@ -268,7 +268,6 @@ pub fn flatten_array_objects(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub struct FlattenContext<'a> {
     pub current_level: usize,
     pub separator: &'a str,
