@@ -68,26 +68,27 @@ pub struct StreamHotTier {
 
 pub struct HotTierManager {
     filesystem: LocalFileSystem,
-    hot_tier_path: PathBuf,
+    hot_tier_path: &'static Path,
 }
 
 impl HotTierManager {
+    pub fn new(hot_tier_path: &'static Path) -> Self {
+        std::fs::create_dir_all(hot_tier_path).unwrap();
+        HotTierManager {
+            filesystem: LocalFileSystem::new(),
+            hot_tier_path,
+        }
+    }
+
+    /// Get a global
     pub fn global() -> Option<&'static HotTierManager> {
         static INSTANCE: OnceCell<HotTierManager> = OnceCell::new();
 
         CONFIG
             .options
             .hot_tier_storage_path
-            .clone()
-            .map(|hot_tier_path| {
-                INSTANCE.get_or_init(|| {
-                    std::fs::create_dir_all(&hot_tier_path).unwrap();
-                    HotTierManager {
-                        filesystem: LocalFileSystem::new(),
-                        hot_tier_path,
-                    }
-                })
-            })
+            .as_ref()
+            .map(|hot_tier_path| INSTANCE.get_or_init(|| HotTierManager::new(hot_tier_path)))
     }
 
     ///get the total hot tier size for all streams
