@@ -3,12 +3,20 @@ use std::str::FromStr;
 use human_size::{Any, SpecificSize};
 use serde::{de, Deserialize, Deserializer, Serializer};
 
+#[derive(Debug, thiserror::Error)]
+enum ParsingError {
+    #[error("Expected 'X' | 'X Bytes', but error: {0}")]
+    Int(#[from] std::num::ParseIntError),
+    #[error("Could not parse given string as human size, erro: {0}")]
+    HumanSize(#[from] human_size::ParsingError),
+}
+
 // Function to convert human-readable size to bytes (already provided)
 // NOTE: consider number values as byte count, e.g. "1234" is 1234 bytes.
-pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
+fn human_size_to_bytes(s: &str) -> Result<u64, ParsingError> {
     let s = s.trim();
     if let Some(s) = s.strip_suffix("Bytes") {
-        let size = s.trim().parse().expect("Suffix bytes implies byte count");
+        let size: u64 = s.trim().parse()?;
         return Ok(size);
     } else if let Ok(size) = s.parse() {
         return Ok(size);
@@ -17,8 +25,7 @@ pub fn human_size_to_bytes(s: &str) -> Result<u64, String> {
     fn parse_and_map<T: human_size::Multiple>(s: &str) -> Result<u64, human_size::ParsingError> {
         SpecificSize::<T>::from_str(s).map(|x| x.to_bytes())
     }
-
-    let size = parse_and_map::<Any>(s).map_err(|_| "Could not parse given size".to_string())?;
+    let size = parse_and_map::<Any>(s)?;
 
     Ok(size)
 }
@@ -66,33 +73,41 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::human_size::human_size_to_bytes;
+    use super::*;
 
     #[test]
     fn parse_numeric_input_without_unit() {
-        assert_eq!(human_size_to_bytes("1234"), Ok(1234));
+        assert_eq!(human_size_to_bytes("1234").unwrap(), 1234);
     }
 
     #[test]
     fn parse_bytes_string_to_bytes() {
-        assert_eq!(human_size_to_bytes("1234 Bytes"), Ok(1234));
+        assert_eq!(human_size_to_bytes("1234 Bytes").unwrap(), 1234);
     }
 
     #[test]
     fn handle_empty_string_input() {
-        assert_eq!(
+        assert!(matches!(
             human_size_to_bytes(""),
-            Err("Could not parse given size".to_string())
-        );
+            Err(ParsingError::HumanSize(_))
+        ));
+    }
+
+    #[test]
+    fn handle_byte_string_input_without_value() {
+        assert!(matches!(
+            human_size_to_bytes("Bytes"),
+            Err(ParsingError::Int(_))
+        ));
     }
 
     #[test]
     fn convert_mebibyte_string_to_bytes() {
-        assert_eq!(human_size_to_bytes("1 MiB"), Ok(1048576));
+        assert_eq!(human_size_to_bytes("1 MiB").unwrap(), 1048576);
     }
 
     #[test]
     fn parse_gigabyte_string_input() {
-        assert_eq!(human_size_to_bytes("1 GB"), Ok(1_000_000_000));
+        assert_eq!(human_size_to_bytes("1 GB").unwrap(), 1_000_000_000);
     }
 }
