@@ -282,6 +282,14 @@ pub struct Options {
     )]
     pub ingestor_endpoint: String,
 
+    #[arg(
+        long,
+        env = "P_JSON_FLATTEN_DEPTH_LIMIT",
+        default_value = "3",
+        help = "Set the depth limit for flattening nested JSON"
+    )]
+    pub json_flatten_depth_limit: usize,
+
     #[command(flatten)]
     oidc: Option<OidcConfig>,
 

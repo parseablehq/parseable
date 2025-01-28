@@ -19,7 +19,7 @@
 use std::fmt;
 use std::num::NonZeroU32;
 
-use flatten::{convert_to_array, generic_flattening, has_more_than_four_levels};
+use flatten::{generic_flattening, FlattenContext};
 use serde::de::Visitor;
 use serde_json;
 use serde_json::Value;
@@ -38,55 +38,36 @@ pub fn flatten_json_body(
     time_partition_limit: Option<NonZeroU32>,
     custom_partition: Option<&String>,
     schema_version: SchemaVersion,
-    validation_required: bool,
     log_source: &LogSource,
-) -> Result<Value, anyhow::Error> {
+    json_flatten_depth_limit: usize,
+) -> Result<Vec<Value>, anyhow::Error> {
     // Flatten the json body only if new schema and has less than 4 levels of nesting
-    let mut nested_value = if schema_version == SchemaVersion::V1
-        && !has_more_than_four_levels(&body, 1)
+    let mut body = body.clone();
+    let nested_value = if schema_version == SchemaVersion::V1
         && matches!(
             log_source,
             LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis
         ) {
-        let flattened_json = generic_flattening(&body)?;
-        convert_to_array(flattened_json)?
+        let flatten_context = FlattenContext {
+            current_level: 1,
+            separator: "_",
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+            flatten_depth_limit: json_flatten_depth_limit,
+        };
+        generic_flattening(&mut body, &flatten_context, None)?
     } else {
-        body
+        flatten::flatten(
+            &mut body,
+            "_",
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+        )?;
+        vec![body]
     };
-    flatten::flatten(
-        &mut nested_value,
-        "_",
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        validation_required,
-    )?;
     Ok(nested_value)
-}
-
-pub fn convert_array_to_object(
-    body: Value,
-    time_partition: Option<&String>,
-    time_partition_limit: Option<NonZeroU32>,
-    custom_partition: Option<&String>,
-    schema_version: SchemaVersion,
-    log_source: &LogSource,
-) -> Result<Vec<Value>, anyhow::Error> {
-    let data = flatten_json_body(
-        body,
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        schema_version,
-        true,
-        log_source,
-    )?;
-    let value_arr = match data {
-        Value::Array(arr) => arr,
-        value @ Value::Object(_) => vec![value],
-        _ => unreachable!("flatten would have failed beforehand"),
-    };
-    Ok(value_arr)
 }
 
 pub fn convert_to_string(value: &Value) -> Value {
@@ -173,7 +154,7 @@ mod tests {
     #[test]
     fn hierarchical_json_flattening_success() {
         let value = json!({"a":{"b":{"e":["a","b"]}}});
-        let expected = json!([{"a_b_e": "a"}, {"a_b_e": "b"}]);
+        let expected = vec![json!({"a_b_e": "a"}), json!({"a_b_e": "b"})];
         assert_eq!(
             flatten_json_body(
                 value,
@@ -181,8 +162,8 @@ mod tests {
                 None,
                 None,
                 crate::metadata::SchemaVersion::V1,
-                false,
-                &LogSource::default()
+                &LogSource::default(),
+                3
             )
             .unwrap(),
             expected
@@ -192,20 +173,16 @@ mod tests {
     #[test]
     fn hierarchical_json_flattening_failure() {
         let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
-        let expected = json!({"a_b_c_d_e": ["a","b"]});
-        assert_eq!(
-            flatten_json_body(
-                value,
-                None,
-                None,
-                None,
-                crate::metadata::SchemaVersion::V1,
-                false,
-                &LogSource::default()
-            )
-            .unwrap(),
-            expected
-        );
+        assert!(flatten_json_body(
+            value,
+            None,
+            None,
+            None,
+            crate::metadata::SchemaVersion::V1,
+            &LogSource::default(),
+            3
+        )
+        .is_err());
     }
 
     #[derive(Serialize, Deserialize)]

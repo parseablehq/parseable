@@ -32,8 +32,9 @@ use crate::{
         kinesis::{flatten_kinesis_logs, Message},
     },
     metadata::{SchemaVersion, STREAM_INFO},
+    option::CONFIG,
     storage::StreamType,
-    utils::json::{convert_array_to_object, flatten::convert_to_array},
+    utils::json::flatten_json_body,
 };
 
 pub async fn flatten_and_push_logs(
@@ -69,25 +70,27 @@ pub async fn push_logs(
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
     let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
     let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
-
+    let json_flatten_depth_limit = CONFIG.options.json_flatten_depth_limit;
     let data = if time_partition.is_some() || custom_partition.is_some() {
-        convert_array_to_object(
+        flatten_json_body(
             json,
             time_partition.as_ref(),
             time_partition_limit,
             custom_partition.as_ref(),
             schema_version,
             log_source,
+            json_flatten_depth_limit,
         )?
     } else {
-        vec![convert_to_array(convert_array_to_object(
+        vec![Value::Array(flatten_json_body(
             json,
-            None,
-            None,
-            None,
+            time_partition.as_ref(),
+            time_partition_limit,
+            custom_partition.as_ref(),
             schema_version,
             log_source,
-        )?)?]
+            json_flatten_depth_limit,
+        )?)]
     };
 
     for value in data {
