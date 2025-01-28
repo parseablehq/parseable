@@ -71,7 +71,7 @@ pub struct LogStreamMetadata {
     pub time_partition_limit: Option<NonZeroU32>,
     pub custom_partition: Option<String>,
     pub static_schema_flag: bool,
-    pub hot_tier_enabled: Option<bool>,
+    pub hot_tier_enabled: bool,
     pub stream_type: Option<String>,
     pub log_source: LogSource,
 }
@@ -257,7 +257,7 @@ impl StreamInfo {
         let stream = map
             .get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?;
-        stream.hot_tier_enabled = Some(enable);
+        stream.hot_tier_enabled = enable;
         Ok(())
     }
 

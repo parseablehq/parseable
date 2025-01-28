@@ -28,7 +28,7 @@ use super::{
 use crate::alerts::AlertConfig;
 use crate::event::format::LogSource;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
-use crate::handlers::http::users::{CORRELATION_DIR, DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
+use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
@@ -798,15 +798,6 @@ pub fn filter_path(user_id: &str, stream_name: &str, filter_file_name: &str) -> 
         FILTER_DIR,
         stream_name,
         filter_file_name,
-    ])
-}
-
-pub fn correlation_path(user_id: &str, correlation_file_name: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([
-        USERS_ROOT_DIR,
-        user_id,
-        CORRELATION_DIR,
-        correlation_file_name,
     ])
 }
 
