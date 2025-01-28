@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake clang librdkafka-dev libsasl2-dev libssl-dev
+          sudo apt-get install -y cmake clang librdkafka-dev libsasl2-dev libssl-dev pkg-config
 
       - uses: actions-rs/toolchain@v1
         with:
@@ -37,7 +37,8 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
-      - uses: actions-rs/cargo@v1
+      - name: Build with Kafka feature
+        uses: actions-rs/cargo@v1
         with:
           use-cross: true
           command: build
@@ -79,7 +80,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install cmake llvm librdkafka openssl
+          brew install cmake llvm librdkafka openssl cyrus-sasl pkg-config
 
       - uses: actions-rs/toolchain@v1
         with:
