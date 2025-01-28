@@ -50,7 +50,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderName, HeaderValue};
 use itertools::Itertools;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::num::NonZeroU32;
@@ -658,24 +658,9 @@ pub async fn get_stream_hot_tier(stream_name: Path<String>) -> Result<impl Respo
     let Some(hot_tier_manager) = HotTierManager::global() else {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     };
-    let StreamHotTier {
-        version,
-        size,
-        used_size,
-        available_size,
-        oldest_date_time_entry,
-    } = hot_tier_manager.get_hot_tier(&stream_name).await?;
-    let mut json = json!({
-        "version": version,
-        "size": format!("{size} Bytes"),
-        "used_size": format!("{used_size} Bytes"),
-        "available_size": format!("{available_size} Bytes"),
-    });
-    if let Some(entry) = oldest_date_time_entry {
-        json["oldest_date_time_entry"] = serde_json::Value::String(entry);
-    }
+    let meta = hot_tier_manager.get_hot_tier(&stream_name).await?;
 
-    Ok((web::Json(json), StatusCode::OK))
+    Ok((web::Json(meta), StatusCode::OK))
 }
 
 pub async fn delete_stream_hot_tier(
