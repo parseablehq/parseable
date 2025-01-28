@@ -1,7 +1,7 @@
 parseable:
   image:
     repository: containers.parseable.com/parseable/parseable
-    tag: "v1.7.2"
+    tag: "v1.7.3"
     pullPolicy: Always
   ## object store can be local-store, s3-store, blob-store or gcs-store.
   store: local-store
@@ -10,7 +10,17 @@ parseable:
   highAvailability:
     enabled: false
     ingestor: 
+      affinity: {}
+        # podAntiAffinity:
+        #   requiredDuringSchedulingIgnoredDuringExecution:
+        #   - labelSelector:
+        #       matchLabels:
+        #         app: parseable
+        #         component: ingestor
+        #     topologyKey: kubernetes.io/hostname
       port: 8000
+      extraLabels:
+        app: parseable
       podAnnotations: {}
       nodeSelector: {}
       tolerations: []
@@ -61,7 +71,7 @@ parseable:
   ## Note that Data directory is needed only for local mode
   persistence:
     staging:
-      enabled: false
+      enabled: true
       storageClass: ""
       accessMode: ReadWriteOnce
       size: 5Gi
@@ -146,6 +156,7 @@ parseable:
     create: true
     name: "parseable"
     annotations: {}
+  nodeSelector: {}
   service:
     type: ClusterIP
     port: 80

@@ -33,7 +33,6 @@ use crate::{
     query::PartialTimeFilter,
     storage::{object_storage::manifest_path, ObjectStorage, ObjectStorageError},
 };
-use bytes::Bytes;
 use chrono::{DateTime, Local, NaiveTime, Utc};
 use relative_path::RelativePathBuf;
 use std::io::Error as IOError;
@@ -280,7 +279,9 @@ async fn create_manifest(
                 }
             };
             first_event_at = Some(lower_bound.with_timezone(&Local).to_rfc3339());
-            if let Err(err) = STREAM_INFO.set_first_event_at(stream_name, first_event_at.clone()) {
+            if let Err(err) =
+                STREAM_INFO.set_first_event_at(stream_name, first_event_at.as_ref().unwrap())
+            {
                 error!(
                     "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
                     stream_name
@@ -331,8 +332,8 @@ pub async fn remove_manifest_from_snapshot(
         let manifests = &mut meta.snapshot.manifest_list;
         // Filter out items whose manifest_path contains any of the dates_to_delete
         manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
+        STREAM_INFO.reset_first_event_at(stream_name)?;
         meta.first_event_at = None;
-        STREAM_INFO.set_first_event_at(stream_name, None)?;
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
     match CONFIG.options.mode {
@@ -392,7 +393,7 @@ pub async fn get_first_event(
                     first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
                     meta.first_event_at = Some(first_event_at.clone());
                     storage.put_stream_manifest(stream_name, &meta).await?;
-                    STREAM_INFO.set_first_event_at(stream_name, Some(first_event_at.clone()))?;
+                    STREAM_INFO.set_first_event_at(stream_name, &first_event_at)?;
                 }
             }
         }
@@ -412,13 +413,11 @@ pub async fn get_first_event(
                     base_path_without_preceding_slash(),
                     stream_name
                 );
-                // Convert dates vector to Bytes object
-                let dates_bytes = Bytes::from(serde_json::to_vec(&dates).unwrap());
                 let ingestor_first_event_at =
                     handlers::http::cluster::send_retention_cleanup_request(
                         &url,
                         ingestor.clone(),
-                        dates_bytes,
+                        &dates,
                     )
                     .await?;
                 if !ingestor_first_event_at.is_empty() {

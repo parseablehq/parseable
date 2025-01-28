@@ -113,8 +113,8 @@ pub struct ObjectStoreFormat {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub static_schema_flag: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hot_tier_enabled: Option<bool>,
+    #[serde(default)]
+    pub hot_tier_enabled: bool,
     pub stream_type: Option<String>,
     #[serde(default)]
     pub log_source: LogSource,
@@ -144,11 +144,21 @@ pub struct StreamInfo {
     pub log_source: LogSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum StreamType {
     #[default]
     UserDefined,
     Internal,
+}
+
+impl From<&str> for StreamType {
+    fn from(stream_type: &str) -> Self {
+        match stream_type {
+            "UserDefined" => Self::UserDefined,
+            "Internal" => Self::Internal,
+            t => panic!("Unexpected stream type: {t}"),
+        }
+    }
 }
 
 impl std::fmt::Display for StreamType {
@@ -207,7 +217,7 @@ impl Default for ObjectStoreFormat {
             time_partition_limit: None,
             custom_partition: None,
             static_schema_flag: false,
-            hot_tier_enabled: None,
+            hot_tier_enabled: false,
             log_source: LogSource::default(),
         }
     }
@@ -248,8 +258,4 @@ pub enum ObjectStorageError {
     PathError(relative_path::FromPathError),
     #[error("Error: {0}")]
     MetadataError(#[from] MetadataError),
-
-    #[allow(dead_code)]
-    #[error("Authentication Error: {0}")]
-    AuthenticationError(Box<dyn std::error::Error + Send + Sync + 'static>),
 }

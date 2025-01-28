@@ -18,11 +18,11 @@
 
 use chrono::DateTime;
 use opentelemetry_proto::tonic::common::v1::{any_value::Value as OtelValue, AnyValue, KeyValue};
-use serde_json::Value;
-use std::collections::BTreeMap;
+use serde_json::{Map, Value};
+
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
-pub fn collect_json_from_value(key: &String, value: OtelValue) -> BTreeMap<String, Value> {
-    let mut value_json: BTreeMap<String, Value> = BTreeMap::new();
+pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Value> {
+    let mut value_json: Map<String, Value> = Map::new();
     match value {
         OtelValue::StringValue(str_val) => {
             value_json.insert(key.to_string(), Value::String(str_val));
@@ -86,16 +86,13 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> BTreeMap<Strin
     value_json
 }
 
-pub fn collect_json_from_anyvalue(key: &String, value: AnyValue) -> BTreeMap<String, Value> {
+pub fn collect_json_from_anyvalue(key: &String, value: AnyValue) -> Map<String, Value> {
     collect_json_from_value(key, value.value.unwrap())
 }
 
 //traverse through Value by calling function ollect_json_from_any_value
-pub fn collect_json_from_values(
-    values: &Option<AnyValue>,
-    key: &String,
-) -> BTreeMap<String, Value> {
-    let mut value_json: BTreeMap<String, Value> = BTreeMap::new();
+pub fn collect_json_from_values(values: &Option<AnyValue>, key: &String) -> Map<String, Value> {
+    let mut value_json: Map<String, Value> = Map::new();
 
     for value in values.iter() {
         value_json = collect_json_from_anyvalue(key, value.clone());
@@ -112,8 +109,8 @@ pub fn value_to_string(value: serde_json::Value) -> String {
     }
 }
 
-pub fn flatten_attributes(attributes: &Vec<KeyValue>) -> BTreeMap<String, Value> {
-    let mut attributes_json: BTreeMap<String, Value> = BTreeMap::new();
+pub fn flatten_attributes(attributes: &Vec<KeyValue>) -> Map<String, Value> {
+    let mut attributes_json: Map<String, Value> = Map::new();
     for attribute in attributes {
         let key = &attribute.key;
         let value = &attribute.value;
@@ -125,17 +122,13 @@ pub fn flatten_attributes(attributes: &Vec<KeyValue>) -> BTreeMap<String, Value>
     attributes_json
 }
 
-pub fn insert_if_some<T: ToString>(
-    map: &mut BTreeMap<String, Value>,
-    key: &str,
-    option: &Option<T>,
-) {
+pub fn insert_if_some<T: ToString>(map: &mut Map<String, Value>, key: &str, option: &Option<T>) {
     if let Some(value) = option {
         map.insert(key.to_string(), Value::String(value.to_string()));
     }
 }
 
-pub fn insert_number_if_some(map: &mut BTreeMap<String, Value>, key: &str, option: &Option<f64>) {
+pub fn insert_number_if_some(map: &mut Map<String, Value>, key: &str, option: &Option<f64>) {
     if let Some(value) = option {
         if let Some(number) = serde_json::Number::from_f64(*value) {
             map.insert(key.to_string(), Value::Number(number));
@@ -143,13 +136,13 @@ pub fn insert_number_if_some(map: &mut BTreeMap<String, Value>, key: &str, optio
     }
 }
 
-pub fn insert_bool_if_some(map: &mut BTreeMap<String, Value>, key: &str, option: &Option<bool>) {
+pub fn insert_bool_if_some(map: &mut Map<String, Value>, key: &str, option: &Option<bool>) {
     if let Some(value) = option {
         map.insert(key.to_string(), Value::Bool(*value));
     }
 }
 
-pub fn insert_attributes(map: &mut BTreeMap<String, Value>, attributes: &Vec<KeyValue>) {
+pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &Vec<KeyValue>) {
     let attributes_json = flatten_attributes(attributes);
     for (key, value) in attributes_json {
         map.insert(key, value);
