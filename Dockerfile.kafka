@@ -36,7 +36,7 @@ WORKDIR /parseable
 COPY . .
 
 # Build with kafka feature
-RUN cargo build --release --features "rdkafka-ssl,rdkafka-sasl"
+RUN cargo build --release --features kafka
 
 # final stage
 FROM gcr.io/distroless/cc-debian12:latest

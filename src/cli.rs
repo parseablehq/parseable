@@ -21,11 +21,7 @@ use std::path::PathBuf;
 
 use url::Url;
 
-#[cfg(any(
-    feature = "rdkafka-ssl",
-    feature = "rdkafka-ssl-vendored",
-    feature = "rdkafka-sasl"
-))]
+#[cfg(feature = "kafka")]
 use crate::connectors::kafka::config::KafkaConfig;
 
 use crate::{
@@ -91,11 +87,7 @@ pub struct LocalStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: FSConfig,
-    #[cfg(any(
-        feature = "rdkafka-ssl",
-        feature = "rdkafka-ssl-vendored",
-        feature = "rdkafka-sasl"
-    ))]
+    #[cfg(feature = "kafka")]
     #[command(flatten)]
     pub kafka: KafkaConfig,
 }
@@ -106,11 +98,7 @@ pub struct S3StoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: S3Config,
-    #[cfg(any(
-        feature = "rdkafka-ssl",
-        feature = "rdkafka-ssl-vendored",
-        feature = "rdkafka-sasl"
-    ))]
+    #[cfg(feature = "kafka")]
     #[command(flatten)]
     pub kafka: KafkaConfig,
 }
@@ -121,11 +109,7 @@ pub struct BlobStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: AzureBlobConfig,
-    #[cfg(any(
-        feature = "rdkafka-ssl",
-        feature = "rdkafka-ssl-vendored",
-        feature = "rdkafka-sasl"
-    ))]
+    #[cfg(feature = "kafka")]
     #[command(flatten)]
     pub kafka: KafkaConfig,
 }

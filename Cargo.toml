@@ -27,7 +27,6 @@ actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 http = "0.2.7"
 http-auth-basic = "0.3.3"
-mime = "0.3.17"
 tonic = { version = "0.12.3", features = ["tls", "transport", "gzip", "zstd"] }
 tonic-web = "0.12.3"
 tower-http = { version = "0.6.1", features = ["cors"] }
@@ -144,10 +143,7 @@ assets-sha1 = "4516db38c8e556707b29b33569f9b1e53d5165f2"
 
 [features]
 debug = []
-
-rdkafka-ssl-vendored = ["rdkafka", "rdkafka/ssl-vendored"]
-rdkafka-ssl = ["rdkafka", "rdkafka/ssl"]
-rdkafka-sasl = ["rdkafka", "rdkafka/sasl"]
+kafka = ["rdkafka", "rdkafka/ssl-vendored", "rdkafka/ssl", "rdkafka/sasl"]
 
 [profile.release-lto]
 inherits = "release"

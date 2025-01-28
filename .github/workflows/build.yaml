@@ -1,3 +1,5 @@
+name: Ensure parseable builds on all release targets with Kafka feature
+
 on:
   pull_request:
     paths-ignore:
@@ -9,7 +11,6 @@ on:
     branches:
       - main
 
-name: Ensure parseable builds on all release targets
 jobs:
   build-linux:
     name: Build for ${{matrix.target}}
@@ -24,95 +25,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Configure Cross.toml
+      - name: Install dependencies
         run: |
-          cat > Cross.toml << 'EOF'
-          [build.env]
-          passthrough = [
-            "RUST_BACKTRACE",
-            "RUST_LOG",
-            "OPENSSL_DIR",
-            "OPENSSL_LIB_DIR",
-            "OPENSSL_INCLUDE_DIR",
-            "SASL2_DIR",
-            "PKG_CONFIG_PATH",
-            "PKG_CONFIG_ALLOW_CROSS"
-          ]
+          sudo apt-get update
+          sudo apt-get install -y cmake clang librdkafka-dev libsasl2-dev libssl-dev
 
-          [target.aarch64-unknown-linux-gnu]
-          pre-build = [
-            "dpkg --add-architecture arm64",
-            "apt-get update",
-            "apt-get install -y --no-install-recommends pkg-config libssl-dev:arm64 gcc-aarch64-linux-gnu libc6-dev-arm64-cross libsasl2-dev:arm64",
-            "export OPENSSL_DIR=/usr",
-            "export OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu",
-            "export OPENSSL_INCLUDE_DIR=/usr/include",
-            "export SASL2_DIR=/usr",
-            "export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig",
-            "export PKG_CONFIG_ALLOW_CROSS=1"
-          ]
-
-          [target.x86_64-unknown-linux-gnu]
-          pre-build = [
-            "apt-get update",
-            "apt-get install -y --no-install-recommends pkg-config libssl-dev libsasl2-dev",
-            "export OPENSSL_DIR=/usr",
-            "export OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu",
-            "export OPENSSL_INCLUDE_DIR=/usr/include",
-            "export SASL2_DIR=/usr",
-            "export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig"
-          ]
-          EOF
-
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rs/toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          toolchain: stable
+          profile: minimal # minimal component installation (ie, no documentation)
+          target: ${{ matrix.target }}
+          override: true
 
-      - name: Build with cross
-        run: cross build --target ${{ matrix.target }} --features "rdkafka-ssl,rdkafka-sasl"
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --target ${{matrix.target}} --features kafka
 
   build-windows:
     name: Build for windows
     runs-on: windows-latest
-    env:
-      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup vcpkg
-        shell: bash
-        run: |
-          git clone https://github.com/microsoft/vcpkg.git
-          cd vcpkg
-          ./bootstrap-vcpkg.bat
-          ./vcpkg integrate install
-
       - name: Install dependencies
-        shell: pwsh
         run: |
-          $env:VCPKG_ROOT/vcpkg install openssl:x64-windows-static cyrus-sasl:x64-windows-static
-          echo "OPENSSL_DIR=$env:VCPKG_ROOT/installed/x64-windows-static" >> $env:GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
-          echo "SASL2_DIR=$env:VCPKG_ROOT/installed/x64-windows-static" >> $env:GITHUB_ENV
-          echo "SASL2_STATIC=1" >> $env:GITHUB_ENV
+          choco install cmake -y
+          choco install llvm -y
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rs/toolchain@v1
         with:
-          targets: x86_64-pc-windows-msvc
+          toolchain: stable
+          profile: minimal # minimal component installation (ie, no documentation)
+          default: true
+          override: true
 
       - name: Build on windows
-        run: cargo build --target x86_64-pc-windows-msvc --features "rdkafka-ssl,rdkafka-sasl"
+        run: cargo build --target x86_64-pc-windows-msvc --features kafka
 
   build-macos:
     name: Build for ${{matrix.target}}
     runs-on: macos-latest
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "11.0"  # Updated minimum target
     strategy:
       matrix:
         target:
@@ -124,39 +79,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install openssl@3 cyrus-sasl pkg-config
+          brew install cmake llvm librdkafka openssl
 
-      - name: Set environment variables
-        run: |
-          # OpenSSL configuration
-          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix cyrus-sasl)/lib/pkgconfig" >> $GITHUB_ENV
-          
-          # SASL configuration
-          echo "SASL2_DIR=$(brew --prefix cyrus-sasl)" >> $GITHUB_ENV
-          echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib -L$(brew --prefix cyrus-sasl)/lib" >> $GITHUB_ENV
-          echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include -I$(brew --prefix cyrus-sasl)/include" >> $GITHUB_ENV
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rs/toolchain@v1
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Create .cargo/config.toml
-        run: |
-          mkdir -p .cargo
-          cat > .cargo/config.toml << 'EOF'
-          [target.'cfg(target_os = "macos")']
-          rustflags = [
-            "-C", "link-arg=-L/usr/local/lib",
-            "-C", "link-arg=-L$(brew --prefix openssl@3)/lib",
-            "-C", "link-arg=-L$(brew --prefix cyrus-sasl)/lib"
-          ]
-          EOF
+          toolchain: stable
+          profile: minimal
+          target: ${{ matrix.target }}
+          override: true
 
       - name: Build on ${{ matrix.target }}
-        run: |
-          # Ensure all dynamic libraries are findable
-          export DYLD_LIBRARY_PATH="$(brew --prefix openssl@3)/lib:$(brew --prefix cyrus-sasl)/lib:$DYLD_LIBRARY_PATH"
-          cargo build --target ${{ matrix.target }} --features "rdkafka-ssl,rdkafka-sasl"
+        run: cargo build --target ${{ matrix.target }} --features kafka

@@ -15,12 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
-#[cfg(any(
-    feature = "rdkafka-ssl",
-    feature = "rdkafka-ssl-vendored",
-    feature = "rdkafka-sasl"
-))]
+#[cfg(feature = "kafka")]
 use parseable::connectors;
 use parseable::{
     banner, metrics,
@@ -29,8 +24,8 @@ use parseable::{
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
-use tracing::info;
 use tracing::level_filters::LevelFilter;
+use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter, Registry};
@@ -61,17 +56,13 @@ async fn main() -> anyhow::Result<()> {
         block_until_shutdown_signal().await;
 
         // Trigger graceful shutdown
-        println!("Received shutdown signal, notifying server to shut down...");
+        warn!("Received shutdown signal, notifying server to shut down...");
         shutdown_trigger.send(()).unwrap();
     });
 
     let prometheus = metrics::build_metrics_handler();
-
-    #[cfg(any(
-        feature = "rdkafka-ssl",
-        feature = "rdkafka-ssl-vendored",
-        feature = "rdkafka-sasl"
-    ))]
+    // Start servers
+    #[cfg(feature = "kafka")]
     {
         let parseable_server = server.init(&prometheus, shutdown_rx);
         let connectors = connectors::init(&prometheus);
@@ -79,11 +70,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::try_join!(parseable_server, connectors)?;
     }
 
-    #[cfg(not(any(
-        feature = "rdkafka-ssl",
-        feature = "rdkafka-ssl-vendored",
-        feature = "rdkafka-sasl"
-    )))]
+    #[cfg(not(feature = "kafka"))]
     {
         let parseable_server = server.init(&prometheus, shutdown_rx);
         parseable_server.await?;
@@ -101,6 +88,7 @@ pub fn init_logger(default_level: LevelFilter) {
         .with_thread_ids(true)
         .with_line_number(true)
         .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+        .with_target(true)
         .compact();
 
     Registry::default()

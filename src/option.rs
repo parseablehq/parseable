@@ -17,11 +17,7 @@
  */
 
 use crate::cli::{Cli, Options, StorageOptions, DEFAULT_PASSWORD, DEFAULT_USERNAME};
-#[cfg(any(
-    feature = "rdkafka-ssl",
-    feature = "rdkafka-ssl-vendored",
-    feature = "rdkafka-sasl"
-))]
+#[cfg(feature = "kafka")]
 use crate::connectors::kafka::config::KafkaConfig;
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::{ObjectStorageError, ObjectStorageProvider};
@@ -43,11 +39,7 @@ pub struct Config {
     pub options: Options,
     storage: Arc<dyn ObjectStorageProvider>,
     pub storage_name: &'static str,
-    #[cfg(any(
-        feature = "rdkafka-ssl",
-        feature = "rdkafka-ssl-vendored",
-        feature = "rdkafka-sasl"
-    ))]
+    #[cfg(feature = "kafka")]
     pub kafka_config: KafkaConfig,
 }
 
@@ -75,11 +67,7 @@ impl Config {
                     options: args.options,
                     storage: Arc::new(args.storage),
                     storage_name: "drive",
-                    #[cfg(any(
-                        feature = "rdkafka-ssl",
-                        feature = "rdkafka-ssl-vendored",
-                        feature = "rdkafka-sasl"
-                    ))]
+                    #[cfg(feature = "kafka")]
                     kafka_config: args.kafka,
                 }
             }
@@ -87,22 +75,14 @@ impl Config {
                 options: args.options,
                 storage: Arc::new(args.storage),
                 storage_name: "s3",
-                #[cfg(any(
-                    feature = "rdkafka-ssl",
-                    feature = "rdkafka-ssl-vendored",
-                    feature = "rdkafka-sasl"
-                ))]
+                #[cfg(feature = "kafka")]
                 kafka_config: args.kafka,
             },
             StorageOptions::Blob(args) => Config {
                 options: args.options,
                 storage: Arc::new(args.storage),
                 storage_name: "blob_store",
-                #[cfg(any(
-                    feature = "rdkafka-ssl",
-                    feature = "rdkafka-ssl-vendored",
-                    feature = "rdkafka-sasl"
-                ))]
+                #[cfg(feature = "kafka")]
                 kafka_config: args.kafka,
             },
         }
