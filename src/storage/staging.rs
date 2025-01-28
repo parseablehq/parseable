@@ -50,7 +50,7 @@ use std::{
     process,
     sync::Arc,
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 // const PARQUET_FILE_EXTENSION: &str = "data.parquet";
@@ -136,6 +136,27 @@ impl StorageDir {
         paths
     }
 
+    #[allow(dead_code)]
+    pub fn arrow_files_grouped_by_time(&self) -> HashMap<PathBuf, Vec<PathBuf>> {
+        // hashmap <time, vec[paths]>
+        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        let arrow_files = self.arrow_files();
+        for arrow_file_path in arrow_files {
+            let key = Self::arrow_path_to_parquet(&arrow_file_path, String::default());
+            grouped_arrow_file
+                .entry(key)
+                .or_default()
+                .push(arrow_file_path);
+        }
+
+        grouped_arrow_file
+    }
+
+    /// Groups arrow files which are to be included in one parquet
+    /// 
+    /// Excludes the arrow file being written for the current minute (data is still being written to that one)
+    /// 
+    /// Only includes ones starting from the previous minute
     pub fn arrow_files_grouped_exclude_time(
         &self,
         exclude: NaiveDateTime,
@@ -145,6 +166,8 @@ impl StorageDir {
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let mut arrow_files = self.arrow_files();
 
+        // if the shutdown signal is false i.e. normal condition
+        // don't keep the ones for the current minute
         if !shutdown_signal {
             arrow_files.retain(|path| {
                 !path
@@ -176,15 +199,37 @@ impl StorageDir {
         grouped_arrow_file
     }
 
-    pub fn parquet_files(&self) -> Vec<PathBuf> {
+    pub fn parquet_and_schema_files(&self) -> Vec<PathBuf> {
         let Ok(dir) = self.data_path.read_dir() else {
             return vec![];
         };
 
         dir.flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("parquet")))
+            .filter(|file| file.extension().is_some_and(|ext| ext.eq("parquet") || ext.eq("schema")))
             .collect()
+    }
+
+    pub fn get_schemas_if_present(&self) -> Option<Vec<Schema>> {
+        let Ok(dir) = self.data_path.read_dir() else {
+            return None;
+        };
+
+        let mut schemas: Vec<Schema> = Vec::new();
+
+        for file in dir.flatten() {
+            if let Some(ext) = file.path().extension() {
+                if ext.eq("schema") {
+                    let schema = match serde_json::from_slice(&std::fs::read(file.path()).unwrap()) {
+                        Ok(schema) => schema,
+                        Err(_) => continue,
+                    };
+                    schemas.push(schema);
+                }
+            }
+        }
+        
+        Some(schemas)
     }
 
     fn arrow_path_to_parquet(path: &Path, random_string: String) -> PathBuf {
@@ -207,6 +252,9 @@ impl StorageDir {
 //     data_path.join(dir)
 // }
 
+/// This function reads arrow files, groups their schemas
+/// 
+/// converts them into parquet files and returns a merged schema
 pub fn convert_disk_files_to_parquet(
     stream: &str,
     dir: &StorageDir,
@@ -229,12 +277,13 @@ pub fn convert_disk_files_to_parquet(
     }
 
     // warn!("staging files-\n{staging_files:?}\n");
-    for (parquet_path, files) in staging_files {
+    for (parquet_path, arrow_files) in staging_files {
+        warn!("parquet_path-\n{parquet_path:?}");
         metrics::STAGING_FILES
             .with_label_values(&[stream])
-            .set(files.len() as i64);
+            .set(arrow_files.len() as i64);
 
-        for file in &files {
+        for file in &arrow_files {
             let file_size = file.metadata().unwrap().len();
             let file_type = file.extension().unwrap().to_str().unwrap();
 
@@ -243,7 +292,7 @@ pub fn convert_disk_files_to_parquet(
                 .add(file_size as i64);
         }
 
-        let record_reader = MergedReverseRecordReader::try_new(&files).unwrap();
+        let record_reader = MergedReverseRecordReader::try_new(&arrow_files).unwrap();
         if record_reader.readers.is_empty() {
             continue;
         }
@@ -281,7 +330,7 @@ pub fn convert_disk_files_to_parquet(
             );
             fs::remove_file(parquet_path).unwrap();
         } else {
-            for file in files {
+            for file in arrow_files {
                 // warn!("file-\n{file:?}\n");
                 let file_size = file.metadata().unwrap().len();
                 let file_type = file.extension().unwrap().to_str().unwrap();

@@ -25,7 +25,7 @@ use tracing::{error, info, warn};
 
 use crate::alerts::{alerts_utils, AlertConfig, AlertError};
 use crate::option::CONFIG;
-use crate::{storage, STORAGE_UPLOAD_INTERVAL};
+use crate::{storage, STORAGE_CONVERSION_INTERVAL, STORAGE_UPLOAD_INTERVAL};
 
 pub async fn object_store_sync() -> (
     task::JoinHandle<()>,
@@ -40,10 +40,64 @@ pub async fn object_store_sync() -> (
             let mut scheduler = AsyncScheduler::new();
             scheduler
                 .every(STORAGE_UPLOAD_INTERVAL.seconds())
+                // .plus(5u32.seconds())
+                .run(|| async {
+                    if let Err(e) = CONFIG.storage().get_object_store().upload_files_from_staging().await {
+                        warn!("failed to upload local data with object store. {:?}", e);
+                    }
+                });
+
+            let mut inbox_rx = AssertUnwindSafe(inbox_rx);
+            let mut check_interval = interval(Duration::from_secs(1));
+
+            loop {
+                check_interval.tick().await;
+                scheduler.run_pending().await;
+
+                match inbox_rx.try_recv() {
+                    Ok(_) => break,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        warn!("Inbox channel closed unexpectedly");
+                        break;
+                    }
+                }
+            }
+        }));
+
+        match result {
+            Ok(future) => {
+                future.await;
+            }
+            Err(panic_error) => {
+                error!("Panic in object store sync task: {:?}", panic_error);
+                let _ = outbox_tx.send(());
+            }
+        }
+
+        info!("Object store sync task ended");
+    });
+
+    (handle, outbox_rx, inbox_tx)
+}
+
+pub async fn arrow_conversion() -> (
+    task::JoinHandle<()>,
+    oneshot::Receiver<()>,
+    oneshot::Sender<()>,
+) {
+    let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
+    let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
+
+    let handle = task::spawn(async move {
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
+            let mut scheduler = AsyncScheduler::new();
+            scheduler
+                .every(STORAGE_CONVERSION_INTERVAL.seconds())
                 .plus(5u32.seconds())
                 .run(|| async {
-                    if let Err(e) = CONFIG.storage().get_object_store().sync(false).await {
-                        warn!("failed to sync local data with object store. {:?}", e);
+                    if let Err(e) = CONFIG.storage().get_object_store().conversion(false).await {
+                        warn!("failed to convert local arrow data to parquet. {:?}", e);
                     }
                 });
 

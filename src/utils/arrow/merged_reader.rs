@@ -112,6 +112,7 @@ impl MergedReverseRecordReader {
         .map(move |batch| adapt_batch(&schema, &batch))
     }
 
+    /// Tries to merge the schemas present in self.readers
     pub fn merged_schema(&self) -> Schema {
         Schema::try_merge(
             self.readers

@@ -134,7 +134,14 @@ pub trait ParseableServer {
 
             // Perform S3 sync and wait for completion
             info!("Starting data sync to S3...");
-            if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
+            
+            if let Err(e) = CONFIG.storage().get_object_store().conversion(true).await {
+                warn!("Failed to convert arrow files to parquet. {:?}", e);
+            } else {
+                info!("Successfully converted arrow files to parquet.");
+            }
+
+            if let Err(e) = CONFIG.storage().get_object_store().upload_files_from_staging().await {
                 warn!("Failed to sync local data with object store. {:?}", e);
             } else {
                 info!("Successfully synced all data to S3.");
