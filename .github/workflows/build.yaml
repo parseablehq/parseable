@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake clang librdkafka-dev libsasl2-dev libsasl2 libssl-dev pkg-config ca-certificates build-essential
+          sudo apt-get install -y cmake clang librdkafka-dev libsasl2-dev libsasl2-2 libssl-dev pkg-config ca-certificates build-essential
 
       - uses: actions-rs/toolchain@v1
         with:
