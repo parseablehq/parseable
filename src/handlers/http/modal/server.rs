@@ -40,6 +40,7 @@ use actix_web::Scope;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::oneshot;
 use tracing::error;
 
 use crate::{
@@ -79,6 +80,7 @@ impl ParseableServer for Server {
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
+                    .service(Self::get_counts_webscope())
                     .service(Self::get_metrics_webscope()),
             )
             .service(Self::get_ingest_otel_factory())
@@ -94,7 +96,7 @@ impl ParseableServer for Server {
     }
 
     // configure the server and start an instance of the single server setup
-    async fn init(&self) -> anyhow::Result<()> {
+    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -117,14 +119,14 @@ impl ParseableServer for Server {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
 
-        if CONFIG.parseable.send_analytics {
+        if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
 
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+        let app = self.start(shutdown_rx, prometheus, CONFIG.options.openid());
 
         tokio::pin!(app);
 
@@ -265,6 +267,9 @@ impl Server {
                     ),
             )
     }
+    pub fn get_counts_webscope() -> Resource {
+        web::resource("/counts").route(web::post().to(query::get_counts).authorize(Action::Query))
+    }
 
     // get the query factory
     // POST "/query" ==> Get results of the SQL query passed in request body
@@ -313,7 +318,7 @@ impl Server {
                                     .to(logstream::delete)
                                     .authorize_for_stream(Action::DeleteStream),
                             )
-                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
                     .service(
                         // GET "/logstream/{logstream}/info" ==> Get info for given log stream
@@ -399,7 +404,7 @@ impl Server {
                     .to(ingest::ingest)
                     .authorize_for_stream(Action::Ingest),
             )
-            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
+            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
     }
 
     // /v1/logs endpoint to be used for OTEL log ingestion only
@@ -412,7 +417,7 @@ impl Server {
                             .to(ingest::handle_otel_logs_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             .service(
                 web::resource("/metrics")
@@ -421,7 +426,7 @@ impl Server {
                             .to(ingest::handle_otel_metrics_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             .service(
                 web::resource("/traces")
@@ -430,7 +435,7 @@ impl Server {
                             .to(ingest::handle_otel_traces_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
     }
 

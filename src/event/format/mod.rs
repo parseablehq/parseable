@@ -19,6 +19,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Display,
     sync::Arc,
 };
 
@@ -26,9 +27,13 @@ use anyhow::{anyhow, Error as AnyError};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::DateTime;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{metadata::SchemaVersion, utils::arrow::get_field};
+use crate::{
+    metadata::SchemaVersion,
+    utils::arrow::{get_field, get_timestamp_array, replace_columns},
+};
 
 use super::DEFAULT_TIMESTAMP_KEY;
 
@@ -38,7 +43,7 @@ static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LogSource {
     // AWS Kinesis sends logs in the format of a json array
     Kinesis,
@@ -51,6 +56,8 @@ pub enum LogSource {
     // OpenTelemetry sends traces according to the specification as explained here
     // https://github.com/open-telemetry/opentelemetry-proto/tree/v1.0.0/opentelemetry/proto/metrics/v1
     OtelTraces,
+    // Internal Stream format
+    Pmeta,
     #[default]
     // Json object or array
     Json,
@@ -64,8 +71,23 @@ impl From<&str> for LogSource {
             "otel-logs" => LogSource::OtelLogs,
             "otel-metrics" => LogSource::OtelMetrics,
             "otel-traces" => LogSource::OtelTraces,
-            custom => LogSource::Custom(custom.to_owned()),
+            "pmeta" => LogSource::Pmeta,
+            _ => LogSource::Json,
         }
+    }
+}
+
+impl Display for LogSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            LogSource::Kinesis => "kinesis",
+            LogSource::OtelLogs => "otel-logs",
+            LogSource::OtelMetrics => "otel-metrics",
+            LogSource::OtelTraces => "otel-traces",
+            LogSource::Json => "json",
+            LogSource::Pmeta => "pmeta",
+            LogSource::Custom(custom) => custom,
+        })
     }
 }
 
@@ -77,7 +99,6 @@ pub trait EventFormat: Sized {
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
@@ -91,12 +112,8 @@ pub trait EventFormat: Sized {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first) = self.to_data(
-            storage_schema,
-            static_schema_flag,
-            time_partition,
-            schema_version,
-        )?;
+        let (data, mut schema, is_first) =
+            self.to_data(storage_schema, time_partition, schema_version)?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
@@ -122,7 +139,14 @@ pub trait EventFormat: Sized {
         }
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
-        let rb = Self::decode(data, new_schema.clone())?;
+
+        let mut rb = Self::decode(data, new_schema.clone())?;
+        rb = replace_columns(
+            rb.schema(),
+            &rb,
+            &[0],
+            &[Arc::new(get_timestamp_array(rb.num_rows()))],
+        );
 
         Ok((rb, is_first))
     }

@@ -19,10 +19,12 @@
 pub mod actix;
 pub mod arrow;
 pub mod header_parsing;
+pub mod human_size;
 pub mod json;
 pub mod time;
 pub mod uid;
 pub mod update;
+
 use crate::handlers::http::rbac::RBACError;
 use crate::option::CONFIG;
 use crate::rbac::role::{Action, Permission};
@@ -37,12 +39,6 @@ use std::collections::HashMap;
 use std::env;
 use tracing::debug;
 use url::Url;
-#[allow(dead_code)]
-pub fn hostname() -> Option<String> {
-    hostname::get()
-        .ok()
-        .and_then(|hostname| hostname.into_string().ok())
-}
 
 pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
@@ -95,7 +91,6 @@ pub struct TimePeriod {
     data_granularity: u32,
 }
 
-#[allow(dead_code)]
 impl TimePeriod {
     pub fn new(start: DateTime<Utc>, end: DateTime<Utc>, data_granularity: u32) -> Self {
         Self {
@@ -238,18 +233,18 @@ impl TimePeriod {
 }
 
 pub fn get_url() -> Url {
-    if CONFIG.parseable.ingestor_endpoint.is_empty() {
+    if CONFIG.options.ingestor_endpoint.is_empty() {
         return format!(
             "{}://{}",
-            CONFIG.parseable.get_scheme(),
-            CONFIG.parseable.address
+            CONFIG.options.get_scheme(),
+            CONFIG.options.address
         )
         .parse::<Url>() // if the value was improperly set, this will panic before hand
         .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-            err, CONFIG.parseable.address));
+            err, CONFIG.options.address));
     }
 
-    let ingestor_endpoint = &CONFIG.parseable.ingestor_endpoint;
+    let ingestor_endpoint = &CONFIG.options.ingestor_endpoint;
 
     if ingestor_endpoint.starts_with("http") {
         panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", ingestor_endpoint);
@@ -276,7 +271,7 @@ pub fn get_url() -> Url {
         if hostname.starts_with("http") {
             panic!("Invalid value `{}`, please set the environement variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", hostname, var_hostname);
         } else {
-            hostname = format!("{}://{}", CONFIG.parseable.get_scheme(), hostname);
+            hostname = format!("{}://{}", CONFIG.options.get_scheme(), hostname);
         }
     }
 
@@ -292,7 +287,7 @@ pub fn get_url() -> Url {
         }
     }
 
-    format!("{}://{}:{}", CONFIG.parseable.get_scheme(), hostname, port)
+    format!("{}://{}:{}", CONFIG.options.get_scheme(), hostname, port)
         .parse::<Url>()
         .expect("Valid URL")
 }

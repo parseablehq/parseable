@@ -218,9 +218,9 @@ mod action {
                     return;
                 }
             }
-            if let Ok(first_event_at) = res_remove_manifest {
+            if let Ok(Some(first_event_at)) = res_remove_manifest {
                 if let Err(err) =
-                    metadata::STREAM_INFO.set_first_event_at(&stream_name, first_event_at)
+                    metadata::STREAM_INFO.set_first_event_at(&stream_name, &first_event_at)
                 {
                     error!(
                         "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",

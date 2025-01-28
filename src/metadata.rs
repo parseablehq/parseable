@@ -30,6 +30,7 @@ use std::sync::{Arc, RwLock};
 use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
 use crate::alerts::Alerts;
 use crate::catalog::snapshot::ManifestItem;
+use crate::event::format::LogSource;
 use crate::metrics::{
     fetch_stats_from_storage, EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE,
     EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED,
@@ -73,8 +74,9 @@ pub struct LogStreamMetadata {
     pub time_partition_limit: Option<NonZeroU32>,
     pub custom_partition: Option<String>,
     pub static_schema_flag: bool,
-    pub hot_tier_enabled: Option<bool>,
+    pub hot_tier_enabled: bool,
     pub stream_type: Option<String>,
+    pub log_source: LogSource,
 }
 
 // It is very unlikely that panic will occur when dealing with metadata.
@@ -210,13 +212,46 @@ impl StreamInfo {
     pub fn set_first_event_at(
         &self,
         stream_name: &str,
-        first_event_at: Option<String>,
+        first_event_at: &str,
     ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
-                metadata.first_event_at = first_event_at;
+                metadata.first_event_at = Some(first_event_at.to_owned());
+            })
+    }
+
+    /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
+    ///
+    /// This function is called during the retention task, when the parquet files along with the manifest files are deleted from the storage.
+    /// The manifest path is removed from the snapshot in the stream.json
+    /// and the first_event_at value in the stream.json is removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream for which the `first_event_at` timestamp is to be removed.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), MetadataError>` - Returns `Ok(())` if the `first_event_at` timestamp is successfully removed,
+    ///   or a `MetadataError` if the stream metadata is not found.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// ```rust
+    /// let result = metadata.remove_first_event_at("my_stream");
+    /// match result {
+    ///     Ok(()) => println!("first-event-at removed successfully"),
+    ///     Err(e) => eprintln!("Error removing first-event-at from STREAM_INFO: {}", e),
+    /// }
+    /// ```
+    pub fn reset_first_event_at(&self, stream_name: &str) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        map.get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.first_event_at.take();
             })
     }
 
@@ -255,7 +290,7 @@ impl StreamInfo {
         let stream = map
             .get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?;
-        stream.hot_tier_enabled = Some(enable);
+        stream.hot_tier_enabled = enable;
         Ok(())
     }
 
@@ -269,8 +304,9 @@ impl StreamInfo {
         custom_partition: String,
         static_schema_flag: bool,
         static_schema: HashMap<String, Arc<Field>>,
-        stream_type: &str,
+        stream_type: StreamType,
         schema_version: SchemaVersion,
+        log_source: LogSource,
     ) {
         let mut map = self.write().expect(LOCK_EXPECT);
         let metadata = LogStreamMetadata {
@@ -298,6 +334,7 @@ impl StreamInfo {
             },
             stream_type: Some(stream_type.to_string()),
             schema_version,
+            log_source,
             ..Default::default()
         };
         map.insert(stream_name, metadata);
@@ -430,6 +467,7 @@ pub async fn load_stream_metadata_on_server_start(
         static_schema_flag,
         hot_tier_enabled,
         stream_type,
+        log_source,
         ..
     } = if !stream_metadata_value.is_null() {
         serde_json::from_slice(&serde_json::to_vec(&stream_metadata_value).unwrap()).unwrap()
@@ -466,6 +504,7 @@ pub async fn load_stream_metadata_on_server_start(
         static_schema_flag,
         hot_tier_enabled,
         stream_type,
+        log_source,
     };
 
     let mut map = STREAM_INFO.write().expect(LOCK_EXPECT);

@@ -20,33 +20,42 @@ mod filter_optimizer;
 mod listing_table_builder;
 pub mod stream_schema_provider;
 
-use chrono::{DateTime, Utc};
-use chrono::{NaiveDateTime, TimeZone};
+use chrono::NaiveDateTime;
+use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::logical_expr::{Explain, Filter, LogicalPlan, PlanType, ToStringifiedPlan};
+use datafusion::logical_expr::expr::Alias;
+use datafusion::logical_expr::{
+    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
+};
 use datafusion::prelude::*;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use relative_path::RelativePathBuf;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::ops::Bound;
 use std::sync::Arc;
+use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
+use crate::catalog::column::{Int64Type, TypedStatistics};
+use crate::catalog::manifest::Manifest;
+use crate::catalog::snapshot::Snapshot;
+use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::event;
+use crate::handlers::http::query::QueryError;
 use crate::metadata::STREAM_INFO;
-use crate::option::CONFIG;
-use crate::storage::{ObjectStorageProvider, StorageDir};
+use crate::option::{Mode, CONFIG};
+use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
-
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(CONFIG.storage()));
 
@@ -65,7 +74,7 @@ impl Query {
             .get_datafusion_runtime()
             .with_disk_manager(DiskManagerConfig::NewOs);
 
-        let (pool_size, fraction) = match CONFIG.parseable.query_memory_pool_size {
+        let (pool_size, fraction) = match CONFIG.options.query_memory_pool_size {
             Some(size) => (size, 1.),
             None => {
                 let mut system = System::new();
@@ -193,6 +202,187 @@ impl Query {
         let _ = self.raw_logical_plan.visit(&mut visitor);
         visitor.into_inner().pop()
     }
+
+    /// Evaluates to Some("count(*)") | Some("column_name") if the logical plan is a Projection: SELECT COUNT(*) | SELECT COUNT(*) as column_name
+    pub fn is_logical_plan_count_without_filters(&self) -> Option<&String> {
+        // Check if the raw logical plan is a Projection: SELECT
+        let LogicalPlan::Projection(Projection { input, expr, .. }) = &self.raw_logical_plan else {
+            return None;
+        };
+        // Check if the input of the Projection is an Aggregate: COUNT(*)
+        let LogicalPlan::Aggregate(Aggregate { input, .. }) = &**input else {
+            return None;
+        };
+
+        // Ensure the input of the Aggregate is a TableScan and there is exactly one expression: SELECT COUNT(*)
+        if !matches!(&**input, LogicalPlan::TableScan { .. }) || expr.len() != 1 {
+            return None;
+        }
+
+        // Check if the expression is a column or an alias for COUNT(*)
+        match &expr[0] {
+            // Direct column check
+            Expr::Column(Column { name, .. }) if name.to_lowercase() == "count(*)" => Some(name),
+            // Alias for COUNT(*)
+            Expr::Alias(Alias {
+                expr: inner_expr,
+                name: alias_name,
+                ..
+            }) => {
+                if let Expr::Column(Column { name, .. }) = &**inner_expr {
+                    if name.to_lowercase() == "count(*)" {
+                        return Some(alias_name);
+                    }
+                }
+                None
+            }
+            // Unsupported expression type
+            _ => None,
+        }
+    }
+}
+
+/// Record of counts for a given time bin.
+#[derive(Debug, Serialize, Clone)]
+pub struct CountsRecord {
+    /// Start time of the bin
+    pub start_time: String,
+    /// End time of the bin
+    pub end_time: String,
+    /// Number of logs in the bin
+    pub count: u64,
+}
+
+struct TimeBounds {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+}
+
+/// Request for counts, received from API/SQL query.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CountsRequest {
+    /// Name of the stream to get counts for
+    pub stream: String,
+    /// Included start time for counts query
+    pub start_time: String,
+    /// Excluded end time for counts query
+    pub end_time: String,
+    /// Number of bins to divide the time range into
+    pub num_bins: u64,
+}
+
+impl CountsRequest {
+    /// This function is supposed to read maninfest files for the given stream,
+    /// get the sum of `num_rows` between the `startTime` and `endTime`,
+    /// divide that by number of bins and return in a manner acceptable for the console
+    pub async fn get_bin_density(&self) -> Result<Vec<CountsRecord>, QueryError> {
+        let time_partition = STREAM_INFO
+            .get_time_partition(&self.stream.clone())
+            .map_err(|err| anyhow::Error::msg(err.to_string()))?
+            .unwrap_or_else(|| event::DEFAULT_TIMESTAMP_KEY.to_owned());
+
+        // get time range
+        let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
+        let all_manifest_files = get_manifest_list(&self.stream, &time_range).await?;
+        // get bounds
+        let counts = self.get_bounds(&time_range);
+
+        // we have start and end times for each bin
+        // we also have all the manifest files for the given time range
+        // now we iterate over start and end times for each bin
+        // then we iterate over the manifest files which are within that time range
+        // we sum up the num_rows
+        let mut counts_records = Vec::new();
+
+        for bin in counts {
+            // extract start and end time to compare
+            // Sum up the number of rows that fall within the bin
+            let count: u64 = all_manifest_files
+                .iter()
+                .flat_map(|m| &m.files)
+                .filter_map(|f| {
+                    if f.columns.iter().any(|c| {
+                        c.name == time_partition
+                            && c.stats.as_ref().is_some_and(|stats| match stats {
+                                TypedStatistics::Int(Int64Type { min, .. }) => {
+                                    let min = DateTime::from_timestamp_millis(*min).unwrap();
+                                    bin.start <= min && bin.end >= min // Determines if a column matches the bin's time range.
+                                }
+                                _ => false,
+                            })
+                    }) {
+                        Some(f.num_rows)
+                    } else {
+                        None
+                    }
+                })
+                .sum();
+
+            counts_records.push(CountsRecord {
+                start_time: bin.start.to_rfc3339(),
+                end_time: bin.end.to_rfc3339(),
+                count,
+            });
+        }
+        Ok(counts_records)
+    }
+
+    /// Calculate the end time for each bin based on the number of bins
+    fn get_bounds(&self, time_range: &TimeRange) -> Vec<TimeBounds> {
+        let total_minutes = time_range
+            .end
+            .signed_duration_since(time_range.start)
+            .num_minutes() as u64;
+
+        // divide minutes by num bins to get minutes per bin
+        let quotient = total_minutes / self.num_bins;
+        let remainder = total_minutes % self.num_bins;
+        let have_remainder = remainder > 0;
+
+        // now create multiple bounds [startTime, endTime)
+        // Should we exclude the last one???
+        let mut bounds = vec![];
+
+        let mut start = time_range.start;
+
+        let loop_end = if have_remainder {
+            self.num_bins
+        } else {
+            self.num_bins - 1
+        };
+
+        // Create bins for all but the last date
+        for _ in 0..loop_end {
+            let end = start + Duration::minutes(quotient as i64);
+            bounds.push(TimeBounds { start, end });
+            start = end;
+        }
+
+        // Add the last bin, accounting for any remainder, should we include it?
+        if have_remainder {
+            bounds.push(TimeBounds {
+                start,
+                end: start + Duration::minutes(remainder as i64),
+            });
+        } else {
+            bounds.push(TimeBounds {
+                start,
+                end: start + Duration::minutes(quotient as i64),
+            });
+        }
+
+        bounds
+    }
+}
+
+/// Response for the counts API
+#[derive(Debug, Serialize, Clone)]
+pub struct CountsResponse {
+    /// Fields in the log stream
+    pub fields: Vec<String>,
+    /// Records in the response
+    pub records: Vec<CountsRecord>,
 }
 
 #[derive(Debug, Default)]
@@ -203,10 +393,6 @@ pub(crate) struct TableScanVisitor {
 impl TableScanVisitor {
     pub fn into_inner(self) -> Vec<String> {
         self.tables
-    }
-    #[allow(dead_code)]
-    pub fn top(&self) -> Option<&str> {
-        self.tables.first().map(|s| s.as_ref())
     }
 }
 
@@ -222,6 +408,72 @@ impl TreeNodeVisitor<'_> for TableScanVisitor {
             _ => Ok(TreeNodeRecursion::Continue),
         }
     }
+}
+
+pub async fn get_manifest_list(
+    stream_name: &str,
+    time_range: &TimeRange,
+) -> Result<Vec<Manifest>, QueryError> {
+    let glob_storage = CONFIG.storage().get_object_store();
+
+    let object_store = QUERY_SESSION
+        .state()
+        .runtime_env()
+        .object_store_registry
+        .get_store(&glob_storage.store_url())
+        .unwrap();
+
+    // get object store
+    let object_store_format = glob_storage
+        .get_object_store_format(stream_name)
+        .await
+        .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+
+    // all the manifests will go here
+    let mut merged_snapshot: Snapshot = Snapshot::default();
+
+    // get a list of manifests
+    if CONFIG.options.mode == Mode::Query {
+        let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
+        let obs = glob_storage
+            .get_objects(
+                Some(&path),
+                Box::new(|file_name| file_name.ends_with("stream.json")),
+            )
+            .await;
+        if let Ok(obs) = obs {
+            for ob in obs {
+                if let Ok(object_store_format) = serde_json::from_slice::<ObjectStoreFormat>(&ob) {
+                    let snapshot = object_store_format.snapshot;
+                    for manifest in snapshot.manifest_list {
+                        merged_snapshot.manifest_list.push(manifest);
+                    }
+                }
+            }
+        }
+    } else {
+        merged_snapshot = object_store_format.snapshot;
+    }
+
+    // Download all the manifest files
+    let time_filter = [
+        PartialTimeFilter::Low(Bound::Included(time_range.start.naive_utc())),
+        PartialTimeFilter::High(Bound::Included(time_range.end.naive_utc())),
+    ];
+
+    let all_manifest_files = collect_manifest_files(
+        object_store,
+        merged_snapshot
+            .manifests(&time_filter)
+            .into_iter()
+            .sorted_by_key(|file| file.time_lower_bound)
+            .map(|item| item.manifest_path)
+            .collect(),
+    )
+    .await
+    .map_err(|err| anyhow::Error::msg(err.to_string()))?;
+
+    Ok(all_manifest_files)
 }
 
 fn transform(
@@ -305,47 +557,6 @@ fn table_contains_any_time_filters(
         })
 }
 
-#[allow(dead_code)]
-fn get_staging_prefixes(
-    stream_name: &str,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-) -> HashMap<PathBuf, Vec<PathBuf>> {
-    let dir = StorageDir::new(stream_name);
-    let mut files = dir.arrow_files_grouped_by_time();
-    files.retain(|k, _| path_intersects_query(k, start, end));
-    files
-}
-
-fn path_intersects_query(path: &Path, starttime: DateTime<Utc>, endtime: DateTime<Utc>) -> bool {
-    let time = time_from_path(path);
-    starttime <= time && time <= endtime
-}
-
-fn time_from_path(path: &Path) -> DateTime<Utc> {
-    let prefix = path
-        .file_name()
-        .expect("all given path are file")
-        .to_str()
-        .expect("filename is valid");
-
-    // Next three in order will be date, hour and minute
-    let mut components = prefix.splitn(3, '.');
-
-    let date = components.next().expect("date=xxxx-xx-xx");
-    let hour = components.next().expect("hour=xx");
-    let minute = components.next().expect("minute=xx");
-
-    let year = date[5..9].parse().unwrap();
-    let month = date[10..12].parse().unwrap();
-    let day = date[13..15].parse().unwrap();
-    let hour = hour[5..7].parse().unwrap();
-    let minute = minute[7..9].parse().unwrap();
-
-    Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
-        .unwrap()
-}
-
 /// unused for now might need it later
 #[allow(unused)]
 pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
@@ -412,16 +623,6 @@ mod tests {
     use serde_json::json;
 
     use crate::query::flatten_objects_for_count;
-
-    use super::time_from_path;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_time_from_parquet_path() {
-        let path = PathBuf::from("date=2022-01-01.hour=00.minute=00.hostname.data.parquet");
-        let time = time_from_path(path.as_path());
-        assert_eq!(time.timestamp(), 1640995200);
-    }
 
     #[test]
     fn test_flat_simple() {

@@ -16,19 +16,19 @@
  *
  */
 
-use std::{fs::File, sync::Arc};
+use std::fs::File;
 
 use tokio::{
     fs::OpenOptions,
     io::AsyncWriteExt,
     select,
-    sync::{mpsc::channel, oneshot, Mutex},
+    sync::{mpsc::channel, oneshot},
     time::interval,
 };
 use tracing::{error, info, warn};
 use url::Url;
 
-use crate::{handlers::http::health_check, option::CONFIG, HTTP_CLIENT};
+use crate::{option::CONFIG, HTTP_CLIENT};
 
 use super::{AuditLog, AUDIT_LOG_TX};
 
@@ -48,7 +48,7 @@ impl Default for AuditLogger {
     fn default() -> Self {
         let mut logger = AuditLogger {
             log_endpoint: None,
-            batch: Vec::with_capacity(CONFIG.parseable.audit_batch_size),
+            batch: Vec::with_capacity(CONFIG.options.audit_batch_size),
             next_log_file_id: 0,
             oldest_log_file_id: 0,
         };
@@ -56,7 +56,7 @@ impl Default for AuditLogger {
         // Try to construct the log endpoint URL by joining the base URL
         // with the ingest path, This can fail if the URL is not valid,
         // when the base URL is not set or the ingest path is not valid
-        let Some(url) = CONFIG.parseable.audit_logger.as_ref() else {
+        let Some(url) = CONFIG.options.audit_logger.as_ref() else {
             return logger;
         };
 
@@ -66,11 +66,11 @@ impl Default for AuditLogger {
             .ok();
 
         // Created directory for audit logs if it doesn't exist
-        std::fs::create_dir_all(&CONFIG.parseable.audit_log_dir)
+        std::fs::create_dir_all(&CONFIG.options.audit_log_dir)
             .expect("Failed to create audit log directory");
 
         // Figure out the latest and oldest log file in directory
-        let files = std::fs::read_dir(&CONFIG.parseable.audit_log_dir)
+        let files = std::fs::read_dir(&CONFIG.options.audit_log_dir)
             .expect("Failed to read audit log directory");
         let (oldest_log_file_id, latest_log_file_id) =
             files.fold((usize::MAX, 0), |(oldest, latest), r| {
@@ -106,7 +106,7 @@ impl AuditLogger {
         }
 
         // swap the old batch with a new empty one
-        let mut logs_to_send = Vec::with_capacity(CONFIG.parseable.audit_batch_size);
+        let mut logs_to_send = Vec::with_capacity(CONFIG.options.audit_batch_size);
         std::mem::swap(&mut self.batch, &mut logs_to_send);
 
         // send the logs to the remote logging system, if no backlog, else write to disk
@@ -118,7 +118,7 @@ impl AuditLogger {
 
         // write the logs to the next log file
         let log_file_path = CONFIG
-            .parseable
+            .options
             .audit_log_dir
             .join(format!("{}.json", self.next_log_file_id));
         let mut log_file = OpenOptions::new()
@@ -141,7 +141,7 @@ impl AuditLogger {
         self.batch.push(log);
 
         // Flush if batch size exceeds threshold
-        if self.batch.len() >= CONFIG.parseable.audit_batch_size {
+        if self.batch.len() >= CONFIG.options.audit_batch_size {
             self.flush().await
         }
     }
@@ -155,7 +155,7 @@ impl AuditLogger {
 
         // read the oldest log file
         let oldest_file_path = CONFIG
-            .parseable
+            .options
             .audit_log_dir
             .join(format!("{}.json", self.oldest_log_file_id));
         let mut oldest_file = File::open(&oldest_file_path)?;
@@ -180,8 +180,8 @@ impl AuditLogger {
             .header("x-p-stream", "audit_log");
 
         // Use basic auth if credentials are configured
-        if let Some(username) = CONFIG.parseable.audit_username.as_ref() {
-            req = req.basic_auth(username, CONFIG.parseable.audit_password.as_ref())
+        if let Some(username) = CONFIG.options.audit_username.as_ref() {
+            req = req.basic_auth(username, CONFIG.options.audit_password.as_ref())
         }
 
         // Send batched logs to the audit logging backend
@@ -191,7 +191,7 @@ impl AuditLogger {
     }
 
     /// Spawns a background task for periodic flushing of audit logs, if configured
-    pub async fn spawn_batcher(mut self) {
+    pub async fn spawn_batcher(mut self, mut shutdown_rx: oneshot::Receiver<()>) {
         if self.log_endpoint.is_none() {
             return;
         }
@@ -202,16 +202,9 @@ impl AuditLogger {
             .set(audit_log_tx)
             .expect("Failed to set audit logger tx");
 
-        // to handle shutdown signal
-        let (shutdown_trigger, mut shutdown_rx) = oneshot::channel();
-        tokio::spawn(async move {
-            health_check::handle_signals(Arc::new(Mutex::new(Some(shutdown_trigger)))).await;
-            println!("Received shutdown signal, shutting down audit logger...");
-        });
-
         // spawn the batcher
         tokio::spawn(async move {
-            let mut interval = interval(CONFIG.parseable.audit_flush_interval);
+            let mut interval = interval(CONFIG.options.audit_flush_interval);
             loop {
                 select! {
                     _ = interval.tick() => {

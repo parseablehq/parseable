@@ -23,7 +23,11 @@ use crate::{
     users::filters::{Filter, CURRENT_FILTER_VERSION, FILTERS},
     utils::{get_hash, get_user_from_request},
 };
-use actix_web::{http::header::ContentType, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{
+    http::header::ContentType,
+    web::{self, Json, Path},
+    HttpRequest, HttpResponse, Responder,
+};
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
@@ -35,24 +39,26 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     Ok((web::Json(filters), StatusCode::OK))
 }
 
-pub async fn get(req: HttpRequest) -> Result<impl Responder, FiltersError> {
+pub async fn get(
+    req: HttpRequest,
+    filter_id: Path<String>,
+) -> Result<impl Responder, FiltersError> {
     let user_id = get_user_from_request(&req)?;
-    let filter_id = req
-        .match_info()
-        .get("filter_id")
-        .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
+    let filter_id = filter_id.into_inner();
 
-    if let Some(filter) = FILTERS.get_filter(filter_id, &get_hash(&user_id)) {
+    if let Some(filter) = FILTERS.get_filter(&filter_id, &get_hash(&user_id)) {
         return Ok((web::Json(filter), StatusCode::OK));
     }
 
     Err(FiltersError::Metadata("Filter does not exist"))
 }
 
-pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, FiltersError> {
+pub async fn post(
+    req: HttpRequest,
+    Json(mut filter): Json<Filter>,
+) -> Result<impl Responder, FiltersError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let mut filter: Filter = serde_json::from_slice(&body)?;
     let filter_id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
@@ -72,18 +78,18 @@ pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, Filte
     Ok((web::Json(filter), StatusCode::OK))
 }
 
-pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, FiltersError> {
+pub async fn update(
+    req: HttpRequest,
+    filter_id: Path<String>,
+    Json(mut filter): Json<Filter>,
+) -> Result<impl Responder, FiltersError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let filter_id = req
-        .match_info()
-        .get("filter_id")
-        .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
-    if FILTERS.get_filter(filter_id, &user_id).is_none() {
+    let filter_id = filter_id.into_inner();
+    if FILTERS.get_filter(&filter_id, &user_id).is_none() {
         return Err(FiltersError::Metadata("Filter does not exist"));
     }
-    let mut filter: Filter = serde_json::from_slice(&body)?;
-    filter.filter_id = Some(filter_id.to_string());
+    filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
     FILTERS.update(&filter);
@@ -101,15 +107,15 @@ pub async fn update(req: HttpRequest, body: Bytes) -> Result<impl Responder, Fil
     Ok((web::Json(filter), StatusCode::OK))
 }
 
-pub async fn delete(req: HttpRequest) -> Result<HttpResponse, FiltersError> {
+pub async fn delete(
+    req: HttpRequest,
+    filter_id: Path<String>,
+) -> Result<HttpResponse, FiltersError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let filter_id = req
-        .match_info()
-        .get("filter_id")
-        .ok_or(FiltersError::Metadata("No Filter Id Provided"))?;
+    let filter_id = filter_id.into_inner();
     let filter = FILTERS
-        .get_filter(filter_id, &user_id)
+        .get_filter(&filter_id, &user_id)
         .ok_or(FiltersError::Metadata("Filter does not exist"))?;
 
     let path = filter_path(
@@ -120,7 +126,7 @@ pub async fn delete(req: HttpRequest) -> Result<HttpResponse, FiltersError> {
     let store = CONFIG.storage().get_object_store();
     store.delete_object(&path).await?;
 
-    FILTERS.delete_filter(filter_id);
+    FILTERS.delete_filter(&filter_id);
 
     Ok(HttpResponse::Ok().finish())
 }

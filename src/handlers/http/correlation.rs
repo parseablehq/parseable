@@ -16,41 +16,35 @@
  *
  */
 
-use actix_web::{web, HttpRequest, Responder};
-use bytes::Bytes;
+use actix_web::web::{Json, Path};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use anyhow::Error;
 use itertools::Itertools;
-use relative_path::RelativePathBuf;
 
 use crate::rbac::Users;
-use crate::utils::user_auth_for_query;
-use crate::{
-    option::CONFIG, storage::CORRELATIONS_ROOT_DIRECTORY,
-    utils::actix::extract_session_key_from_req,
-};
+use crate::utils::actix::extract_session_key_from_req;
+use crate::utils::{get_hash, get_user_from_request, user_auth_for_query};
 
-use crate::correlation::{CorrelationConfig, CorrelationError, CorrelationRequest, CORRELATIONS};
+use crate::correlation::{CorrelationConfig, CorrelationError, CORRELATIONS};
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
-        .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
+        .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    let correlations = CORRELATIONS
-        .list_correlations_for_user(&session_key)
-        .await?;
+    let correlations = CORRELATIONS.list_correlations(&session_key).await?;
 
     Ok(web::Json(correlations))
 }
 
-pub async fn get(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
+pub async fn get(
+    req: HttpRequest,
+    correlation_id: Path<String>,
+) -> Result<impl Responder, CorrelationError> {
+    let correlation_id = correlation_id.into_inner();
     let session_key = extract_session_key_from_req(&req)
-        .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
+        .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    let correlation_id = req
-        .match_info()
-        .get("correlation_id")
-        .ok_or(CorrelationError::Metadata("No correlation ID Provided"))?;
-
-    let correlation = CORRELATIONS.get_correlation_by_id(correlation_id).await?;
+    let correlation = CORRELATIONS.get_correlation(&correlation_id).await?;
 
     let permissions = Users.get_permissions(&session_key);
 
@@ -65,91 +59,50 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
     Ok(web::Json(correlation))
 }
 
-pub async fn post(req: HttpRequest, body: Bytes) -> Result<impl Responder, CorrelationError> {
+pub async fn post(
+    req: HttpRequest,
+    Json(mut correlation): Json<CorrelationConfig>,
+) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
+    let user_id = get_user_from_request(&req)
+        .map(|s| get_hash(&s.to_string()))
+        .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
+    correlation.user_id = user_id;
 
-    let correlation_request: CorrelationRequest = serde_json::from_slice(&body)?;
+    let correlation = CORRELATIONS.create(correlation, &session_key).await?;
 
-    correlation_request.validate(&session_key).await?;
-
-    let correlation: CorrelationConfig = correlation_request.into();
-
-    // Save to disk
-    let store = CONFIG.storage().get_object_store();
-    store.put_correlation(&correlation).await?;
-
-    // Save to memory
-    CORRELATIONS.update(&correlation).await?;
-
-    Ok(format!("Saved correlation with ID- {}", correlation.id))
+    Ok(web::Json(correlation))
 }
 
-pub async fn modify(req: HttpRequest, body: Bytes) -> Result<impl Responder, CorrelationError> {
+pub async fn modify(
+    req: HttpRequest,
+    correlation_id: Path<String>,
+    Json(mut correlation): Json<CorrelationConfig>,
+) -> Result<impl Responder, CorrelationError> {
+    correlation.id = correlation_id.into_inner();
+    correlation.user_id = get_user_from_request(&req)
+        .map(|s| get_hash(&s.to_string()))
+        .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
+
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
 
-    let correlation_id = req
-        .match_info()
-        .get("correlation_id")
-        .ok_or(CorrelationError::Metadata("No correlation ID Provided"))?;
+    let correlation = CORRELATIONS.update(correlation, &session_key).await?;
 
-    // validate whether user has access to this correlation object or not
-    let correlation = CORRELATIONS.get_correlation_by_id(correlation_id).await?;
-    let permissions = Users.get_permissions(&session_key);
-    let tables = &correlation
-        .table_configs
-        .iter()
-        .map(|t| t.table_name.clone())
-        .collect_vec();
-
-    user_auth_for_query(&permissions, tables)?;
-
-    let correlation_request: CorrelationRequest = serde_json::from_slice(&body)?;
-    correlation_request.validate(&session_key).await?;
-
-    let correlation = correlation_request.generate_correlation_config(correlation_id.to_owned());
-
-    // Save to disk
-    let store = CONFIG.storage().get_object_store();
-    store.put_correlation(&correlation).await?;
-
-    // Save to memory
-    CORRELATIONS.update(&correlation).await?;
-
-    Ok(format!("Modified correlation with ID- {}", correlation.id))
+    Ok(web::Json(correlation))
 }
 
-pub async fn delete(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
-    let session_key = extract_session_key_from_req(&req)
-        .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
+pub async fn delete(
+    req: HttpRequest,
+    correlation_id: Path<String>,
+) -> Result<impl Responder, CorrelationError> {
+    let correlation_id = correlation_id.into_inner();
+    let user_id = get_user_from_request(&req)
+        .map(|s| get_hash(&s.to_string()))
+        .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    let correlation_id = req
-        .match_info()
-        .get("correlation_id")
-        .ok_or(CorrelationError::Metadata("No correlation ID Provided"))?;
+    CORRELATIONS.delete(&correlation_id, &user_id).await?;
 
-    let correlation = CORRELATIONS.get_correlation_by_id(correlation_id).await?;
-
-    // validate user's query auth
-    let permissions = Users.get_permissions(&session_key);
-    let tables = &correlation
-        .table_configs
-        .iter()
-        .map(|t| t.table_name.clone())
-        .collect_vec();
-
-    user_auth_for_query(&permissions, tables)?;
-
-    // Delete from disk
-    let store = CONFIG.storage().get_object_store();
-    let path = RelativePathBuf::from_iter([
-        CORRELATIONS_ROOT_DIRECTORY,
-        &format!("{}.json", correlation_id),
-    ]);
-    store.delete_object(&path).await?;
-
-    // Delete from memory
-    CORRELATIONS.delete(correlation_id).await?;
-    Ok(format!("Deleted correlation with ID- {correlation_id}"))
+    Ok(HttpResponse::Ok().finish())
 }

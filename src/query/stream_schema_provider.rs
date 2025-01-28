@@ -193,7 +193,7 @@ impl StandardTableProvider {
             .into_iter()
             .map(|mut file| {
                 let path = CONFIG
-                    .parseable
+                    .options
                     .hot_tier_storage_path
                     .as_ref()
                     .unwrap()
@@ -452,7 +452,7 @@ impl TableProvider for StandardTableProvider {
             }
         };
         let mut merged_snapshot: snapshot::Snapshot = Snapshot::default();
-        if CONFIG.parseable.mode == Mode::Query {
+        if CONFIG.options.mode == Mode::Query {
             let path = RelativePathBuf::from_iter([&self.stream, STREAM_ROOT_DIRECTORY]);
             let obs = glob_storage
                 .get_objects(
@@ -679,6 +679,10 @@ fn return_listing_time_filters(
     manifest_list: &[ManifestItem],
     time_filters: &mut Vec<PartialTimeFilter>,
 ) -> Option<Vec<PartialTimeFilter>> {
+    if manifest_list.is_empty() {
+        return Some(time_filters.clone());
+    }
+
     // vec to hold timestamps for listing
     let mut vec_listing_timestamps = Vec::new();
 
@@ -799,7 +803,7 @@ fn extract_timestamp_bound(
     }
 }
 
-async fn collect_manifest_files(
+pub async fn collect_manifest_files(
     storage: Arc<dyn ObjectStore>,
     manifest_urls: Vec<String>,
 ) -> Result<Vec<Manifest>, object_store::Error> {

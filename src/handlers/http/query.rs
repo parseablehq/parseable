@@ -18,13 +18,15 @@
 
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, Responder};
+use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use futures_util::Future;
 use http::StatusCode;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -39,7 +41,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::Query as LogicalQuery;
+use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -52,7 +54,7 @@ use crate::utils::user_auth_for_query;
 use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
 /// Query Request through http endpoint.
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     pub query: String,
@@ -66,7 +68,7 @@ pub struct Query {
     pub filter_tags: Option<Vec<String>>,
 }
 
-pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Responder, QueryError> {
+pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
     let session_state = QUERY_SESSION.state();
     let raw_logical_plan = match session_state
         .create_logical_plan(&query_request.query)
@@ -81,11 +83,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
                 .await?
         }
     };
-
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
 
-    // create a visitor to extract the table names present in query
+    // Create a visitor to extract the table names present in query
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
 
@@ -103,6 +104,34 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     user_auth_for_query(&permissions, &tables)?;
 
     let time = Instant::now();
+    // Intercept `count(*)`` queries and use the counts API
+    if let Some(column_name) = query.is_logical_plan_count_without_filters() {
+        let counts_req = CountsRequest {
+            stream: table_name.clone(),
+            start_time: query_request.start_time.clone(),
+            end_time: query_request.end_time.clone(),
+            num_bins: 1,
+        };
+        let count_records = counts_req.get_bin_density().await?;
+        // NOTE: this should not panic, since there is atleast one bin, always
+        let count = count_records[0].count;
+        let response = if query_request.fields {
+            json!({
+                "fields": [&column_name],
+                "records": [json!({column_name: count})]
+            })
+        } else {
+            Value::Array(vec![json!({column_name: count})])
+        };
+
+        let time = time.elapsed().as_secs_f64();
+
+        QUERY_EXECUTE_TIME
+            .with_label_values(&[&table_name])
+            .observe(time);
+
+        return Ok(HttpResponse::Ok().json(response));
+    }
     let (records, fields) = query.execute(table_name.clone()).await?;
 
     let response = QueryResponse {
@@ -122,8 +151,26 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<impl Respon
     Ok(response)
 }
 
+pub async fn get_counts(
+    req: HttpRequest,
+    counts_request: Json<CountsRequest>,
+) -> Result<impl Responder, QueryError> {
+    let creds = extract_session_key_from_req(&req)?;
+    let permissions = Users.get_permissions(&creds);
+
+    // does user have access to table?
+    user_auth_for_query(&permissions, &[counts_request.stream.clone()])?;
+
+    let records = counts_request.get_bin_density().await?;
+
+    Ok(web::Json(CountsResponse {
+        fields: vec!["start_time".into(), "end_time".into(), "count".into()],
+        records,
+    }))
+}
+
 pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), QueryError> {
-    if CONFIG.parseable.mode == Mode::Query {
+    if CONFIG.options.mode == Mode::Query {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
                 // commit schema merges the schema internally and updates the schema in storage.

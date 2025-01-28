@@ -137,8 +137,8 @@ pub struct PassCode {
 }
 
 pub fn get_admin_user() -> User {
-    let username = CONFIG.parseable.username.clone();
-    let password = CONFIG.parseable.password.clone();
+    let username = CONFIG.options.username.clone();
+    let password = CONFIG.options.password.clone();
     let hashcode = gen_hash(&password);
 
     User {

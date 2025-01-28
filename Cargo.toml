@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "1.7.2"
+version = "1.7.3"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2021"
 rust-version = "1.83.0"
@@ -27,7 +27,6 @@ actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 http = "0.2.7"
 http-auth-basic = "0.3.3"
-mime = "0.3.17"
 tonic = { version = "0.12.3", features = ["tls", "transport", "gzip", "zstd"] }
 tonic-web = "0.12.3"
 tower-http = { version = "0.6.1", features = ["cors"] }
@@ -45,7 +44,6 @@ sha2 = "0.10.8"
 
 # Serialization and Data Formats
 byteorder = "1.4.3"
-prost = "0.13.3"
 serde = { version = "1.0", features = ["rc", "derive"] }
 serde_json = "1.0"
 serde_repr = "0.1.17"
@@ -75,11 +73,9 @@ humantime = "2.1.0"
 humantime-serde = "1.1"
 
 # File System and I/O
-bzip2 = { version = "*", features = ["static"] }
 fs_extra = "1.3"
 path-clean = "1.0.1"
 relative-path = { version = "1.7", features = ["serde"] }
-xz2 = { version = "*", features = ["static"] }
 
 # CLI and System
 clap = { version = "4.1", default-features = false, features = [
@@ -96,7 +92,6 @@ hostname = "0.4.0"
 human-size = "0.4"
 num_cpus = "1.15"
 sysinfo = "0.31.4"
-thread-priority = "1.0.0"
 uptime_lib = "0.3.0"
 
 # Utility Libraries
@@ -104,7 +99,6 @@ anyhow = { version = "1.0", features = ["backtrace"] }
 bytes = "1.4"
 clokwerk = "0.4"
 derive_more = "0.99.18"
-hashlru = { version = "0.11.0", features = ["serde"] }
 itertools = "0.13.0"
 lazy_static = "1.4"
 nom = "7.1.3"
@@ -125,7 +119,6 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [build-dependencies]
 cargo_toml = "0.20.1"
-prost-build = "0.13.3"
 sha1_smol = { version = "1.0", features = ["std"] }
 static-files = "0.2"
 ureq = "2.6"
@@ -134,16 +127,12 @@ vergen = { version = "8.1", features = ["build", "git", "cargo", "gitcl"] }
 zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-maplit = "1.0"
 rstest = "0.23.0"
 arrow = "53.0.0"
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.16/build.zip"
-assets-sha1 = "cb9af17fc1af07e590e839fc0ef4db18c323fc48"
-
-[features]
-debug = []
+assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.18/build.zip"
+assets-sha1 = "4516db38c8e556707b29b33569f9b1e53d5165f2"
 
 [profile.release-lto]
 inherits = "release"

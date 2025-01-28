@@ -16,18 +16,11 @@
  *
  */
 
-use crate::{
-    handlers::http::query::QueryError,
-    utils::arrow::{
-        flight::{into_flight_data, DoGetStream},
-        record_batches_to_json,
-    },
-};
-use actix_web::{web, Responder};
+use crate::{handlers::http::query::QueryError, utils::arrow::record_batches_to_json};
+use actix_web::HttpResponse;
 use datafusion::arrow::record_batch::RecordBatch;
 use itertools::Itertools;
 use serde_json::{json, Value};
-use tonic::{Response, Status};
 use tracing::info;
 
 pub struct QueryResponse {
@@ -38,7 +31,7 @@ pub struct QueryResponse {
 }
 
 impl QueryResponse {
-    pub fn to_http(&self) -> Result<impl Responder, QueryError> {
+    pub fn to_http(&self) -> Result<HttpResponse, QueryError> {
         info!("{}", "Returning query results");
         let records: Vec<&RecordBatch> = self.records.iter().collect();
         let mut json_records = record_batches_to_json(&records)?;
@@ -63,11 +56,6 @@ impl QueryResponse {
             Value::Array(values)
         };
 
-        Ok(web::Json(response))
-    }
-
-    #[allow(dead_code)]
-    pub fn into_flight(self) -> Result<Response<DoGetStream>, Status> {
-        into_flight_data(self.records)
+        Ok(HttpResponse::Ok().json(response))
     }
 }

@@ -34,6 +34,7 @@ use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::oneshot;
 use tracing::{error, info};
 
 use crate::{option::CONFIG, ParseableServer};
@@ -63,6 +64,7 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
+                    .service(Server::get_counts_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
@@ -85,7 +87,7 @@ impl ParseableServer for QueryServer {
     }
 
     /// initialize the server, run migrations as needed and start an instance
-    async fn init(&self) -> anyhow::Result<()> {
+    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
         CONFIG.storage().register_store_metrics(&prometheus);
 
@@ -104,7 +106,7 @@ impl ParseableServer for QueryServer {
 
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
-        if CONFIG.parseable.send_analytics {
+        if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
@@ -121,7 +123,7 @@ impl ParseableServer for QueryServer {
             sync::object_store_sync().await;
 
         tokio::spawn(airplane::server());
-        let app = self.start(prometheus, CONFIG.parseable.openid.clone());
+        let app = self.start(shutdown_rx, prometheus, CONFIG.options.openid());
 
         tokio::pin!(app);
         loop {
@@ -273,7 +275,7 @@ impl QueryServer {
                                     .to(querier_logstream::delete)
                                     .authorize_for_stream(Action::DeleteStream),
                             )
-                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
                     .service(
                         // GET "/logstream/{logstream}/info" ==> Get info for given log stream
