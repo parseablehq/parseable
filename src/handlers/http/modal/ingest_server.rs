@@ -108,8 +108,11 @@ impl ParseableServer for IngestServer {
             sync::run_local_sync().await;
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
-        let (mut remote_conversion_handler, mut remote_conversion_outbox, mut remote_conversion_inbox) =
-            sync::arrow_conversion().await;
+        let (
+            mut remote_conversion_handler,
+            mut remote_conversion_outbox,
+            mut remote_conversion_inbox,
+        ) = sync::arrow_conversion().await;
 
         tokio::spawn(airplane::server());
 

@@ -748,10 +748,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         &self,
         correlation: &CorrelationConfig,
     ) -> Result<(), ObjectStorageError> {
-        let path = RelativePathBuf::from_iter([
-            CORRELATION_DIR,
-            &format!("{}.json", correlation.id),
-        ]);
+        let path =
+            RelativePathBuf::from_iter([CORRELATION_DIR, &format!("{}.json", correlation.id)]);
         self.put_object(&path, to_bytes(correlation)).await?;
         Ok(())
     }
@@ -772,7 +770,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         if !Path::new(&CONFIG.staging_dir()).exists() {
             return Ok(());
         }
-    
+
         // get all streams
         let streams = STREAM_INFO.list_streams();
 
@@ -780,9 +778,9 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             info!("Starting upload job for stream- {stream}");
 
             let custom_partition = STREAM_INFO
-            .get_custom_partition(&stream)
-            .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-    
+                .get_custom_partition(&stream)
+                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+
             let dir = StorageDir::new(&stream);
             let parquet_and_schema_files = dir.parquet_and_schema_files();
             for file in parquet_and_schema_files {
@@ -806,67 +804,59 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                         .with_label_values(&["data", &stream, "parquet"])
                         .add(compressed_size as i64);
                     let mut file_suffix = str::replacen(filename, ".", "/", 3);
-            
+
                     let custom_partition_clone = custom_partition.clone();
                     if custom_partition_clone.is_some() {
                         let custom_partition_fields = custom_partition_clone.unwrap();
                         let custom_partition_list =
                             custom_partition_fields.split(',').collect::<Vec<&str>>();
-                        file_suffix = str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
+                        file_suffix =
+                            str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
                     }
-            
+
                     let stream_relative_path = format!("{stream}/{file_suffix}");
-            
+
                     // Try uploading the file, handle potential errors without breaking the loop
                     if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
                         error!("Failed to upload file {}: {:?}", filename, e);
                         continue; // Skip to the next file
                     }
-            
+
                     let absolute_path = self
                         .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
                         .to_string();
                     let store = CONFIG.storage().get_object_store();
-                    let manifest = catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
+                    let manifest =
+                        catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
                     catalog::update_snapshot(store, &stream, manifest).await?;
                 } else {
-                    let schema: Schema = serde_json::from_slice(
-                        &fs::read(file.clone())?
-                    )?;
+                    let schema: Schema = serde_json::from_slice(&fs::read(file.clone())?)?;
                     commit_schema_to_storage(&stream, schema).await?;
                 }
 
                 let _ = fs::remove_file(file);
             }
         }
-        
+
         Ok(())
     }
 
-    async fn conversion(
-        &self,
-        shutdown_signal: bool
-    ) -> Result<(), ObjectStorageError> {
+    async fn conversion(&self, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
         if !Path::new(&CONFIG.staging_dir()).exists() {
             return Ok(());
         }
-    
+
         // get all streams
         let streams = STREAM_INFO.list_streams();
-    
+
         for stream in &streams {
             conversion_for_stream(stream, shutdown_signal)?;
         }
         Ok(())
     }
-
 }
 
-fn conversion_for_stream(
-    stream: &str,
-    shutdown_signal: bool
-) -> Result<(), ObjectStorageError> {
-    
+fn conversion_for_stream(stream: &str, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
     info!("Starting conversion job for stream- {stream}");
 
     let time_partition = STREAM_INFO
@@ -902,28 +892,26 @@ fn conversion_for_stream(
             // schema is dynamic, read from staging and merge if present
 
             // need to add something before .schema to make the file have an extension of type `schema`
-            let path = RelativePathBuf::from_iter([format!("{stream}.schema")]).to_path(&dir.data_path);
-            
+            let path =
+                RelativePathBuf::from_iter([format!("{stream}.schema")]).to_path(&dir.data_path);
+
             let staging_schemas = dir.get_schemas_if_present();
             if let Some(mut staging_schemas) = staging_schemas {
-                warn!("Found {} schemas in staging for stream- {stream}", staging_schemas.len());
+                warn!(
+                    "Found {} schemas in staging for stream- {stream}",
+                    staging_schemas.len()
+                );
                 staging_schemas.push(schema);
                 let merged_schema = Schema::try_merge(staging_schemas)
-                    .map_err(|e|ObjectStorageError::Custom(e.to_string()))?;
-                
+                    .map_err(|e| ObjectStorageError::Custom(e.to_string()))?;
+
                 warn!("writing merged schema to path- {path:?}");
                 // save the merged schema on staging disk
                 // the path should be stream/.ingestor.id.schema
-                fs::write(
-                    path,
-                    to_bytes(&merged_schema)
-                )?;
+                fs::write(path, to_bytes(&merged_schema))?;
             } else {
                 info!("writing single schema to path- {path:?}");
-                fs::write(
-                    path,
-                    to_bytes(&schema)
-                )?;
+                fs::write(path, to_bytes(&schema))?;
             }
         }
     }

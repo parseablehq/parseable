@@ -42,7 +42,12 @@ pub async fn object_store_sync() -> (
                 .every(STORAGE_UPLOAD_INTERVAL.seconds())
                 // .plus(5u32.seconds())
                 .run(|| async {
-                    if let Err(e) = CONFIG.storage().get_object_store().upload_files_from_staging().await {
+                    if let Err(e) = CONFIG
+                        .storage()
+                        .get_object_store()
+                        .upload_files_from_staging()
+                        .await
+                    {
                         warn!("failed to upload local data with object store. {:?}", e);
                     }
                 });

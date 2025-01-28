@@ -153,9 +153,9 @@ impl StorageDir {
     }
 
     /// Groups arrow files which are to be included in one parquet
-    /// 
+    ///
     /// Excludes the arrow file being written for the current minute (data is still being written to that one)
-    /// 
+    ///
     /// Only includes ones starting from the previous minute
     pub fn arrow_files_grouped_exclude_time(
         &self,
@@ -206,7 +206,10 @@ impl StorageDir {
 
         dir.flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("parquet") || ext.eq("schema")))
+            .filter(|file| {
+                file.extension()
+                    .is_some_and(|ext| ext.eq("parquet") || ext.eq("schema"))
+            })
             .collect()
     }
 
@@ -220,7 +223,8 @@ impl StorageDir {
         for file in dir.flatten() {
             if let Some(ext) = file.path().extension() {
                 if ext.eq("schema") {
-                    let schema = match serde_json::from_slice(&std::fs::read(file.path()).unwrap()) {
+                    let schema = match serde_json::from_slice(&std::fs::read(file.path()).unwrap())
+                    {
                         Ok(schema) => schema,
                         Err(_) => continue,
                     };
@@ -228,7 +232,7 @@ impl StorageDir {
                 }
             }
         }
-        
+
         Some(schemas)
     }
 
@@ -253,7 +257,7 @@ impl StorageDir {
 // }
 
 /// This function reads arrow files, groups their schemas
-/// 
+///
 /// converts them into parquet files and returns a merged schema
 pub fn convert_disk_files_to_parquet(
     stream: &str,
