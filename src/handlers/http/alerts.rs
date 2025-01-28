@@ -17,14 +17,15 @@
  */
 
 use crate::{
-    option::CONFIG,
-    storage::{object_storage::alert_json_path, ALERTS_ROOT_DIRECTORY},
-    sync::schedule_alert_task,
+    option::CONFIG, storage::object_storage::alert_json_path, sync::schedule_alert_task,
     utils::actix::extract_session_key_from_req,
 };
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{
+    web::{self, Json, Path},
+    HttpRequest, Responder,
+};
 use bytes::Bytes;
-use relative_path::RelativePathBuf;
+use ulid::Ulid;
 
 use crate::alerts::{
     alerts_utils::user_auth_for_query, AlertConfig, AlertError, AlertRequest, AlertState, ALERTS,
@@ -41,7 +42,10 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
 }
 
 // POST /alerts
-pub async fn post(req: HttpRequest, alert: AlertRequest) -> Result<impl Responder, AlertError> {
+pub async fn post(
+    req: HttpRequest,
+    Json(alert): Json<AlertRequest>,
+) -> Result<impl Responder, AlertError> {
     let alert: AlertConfig = alert.into();
     alert.validate().await?;
 
@@ -57,26 +61,23 @@ pub async fn post(req: HttpRequest, alert: AlertRequest) -> Result<impl Responde
     // move on to saving the alert in ObjectStore
     ALERTS.update(&alert).await;
 
-    let path = alert_json_path(&alert.id.to_string());
+    let path = alert_json_path(alert.id);
 
     let store = CONFIG.storage().get_object_store();
     let alert_bytes = serde_json::to_vec(&alert)?;
     store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
-    ALERTS.update_task(&alert.id, handle, rx, tx).await;
+    ALERTS.update_task(alert.id, handle, rx, tx).await;
 
     Ok(web::Json(alert))
 }
 
 // GET /alerts/{alert_id}
-pub async fn get(req: HttpRequest) -> Result<impl Responder, AlertError> {
+pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
-    let id = req
-        .match_info()
-        .get("alert_id")
-        .ok_or(AlertError::Metadata("No alert ID Provided"))?;
+    let alert_id = alert_id.into_inner();
 
-    let alert = ALERTS.get_alert_by_id(id).await?;
+    let alert = ALERTS.get_alert_by_id(alert_id).await?;
     // validate that the user has access to the tables mentioned
     user_auth_for_query(&session_key, &alert.query).await?;
 
@@ -85,12 +86,9 @@ pub async fn get(req: HttpRequest) -> Result<impl Responder, AlertError> {
 
 // DELETE /alerts/{alert_id}
 /// Deletion should happen from disk, sheduled tasks, then memory
-pub async fn delete(req: HttpRequest) -> Result<impl Responder, AlertError> {
+pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
-    let alert_id = req
-        .match_info()
-        .get("alert_id")
-        .ok_or(AlertError::Metadata("No alert ID Provided"))?;
+    let alert_id = alert_id.into_inner();
 
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
 
@@ -118,57 +116,51 @@ pub async fn delete(req: HttpRequest) -> Result<impl Responder, AlertError> {
 // PUT /alerts/{alert_id}
 /// first save on disk, then in memory
 /// then modify scheduled task
-pub async fn modify(req: HttpRequest, alert: AlertRequest) -> Result<impl Responder, AlertError> {
+pub async fn modify(
+    req: HttpRequest,
+    alert_id: Path<Ulid>,
+    Json(alert_request): Json<AlertRequest>,
+) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
-    let alert_id = req
-        .match_info()
-        .get("alert_id")
-        .ok_or(AlertError::Metadata("No alert ID Provided"))?;
+    let alert_id = alert_id.into_inner();
 
     // check if alert id exists in map
-    let old_alert = ALERTS.get_alert_by_id(alert_id).await?;
+    let mut alert = ALERTS.get_alert_by_id(alert_id).await?;
 
     // validate that the user has access to the tables mentioned
     // in the old as well as the modified alert
-    user_auth_for_query(&session_key, &old_alert.query).await?;
     user_auth_for_query(&session_key, &alert.query).await?;
+    user_auth_for_query(&session_key, &alert_request.query).await?;
 
-    let store = CONFIG.storage().get_object_store();
-
-    // fetch the alert object for the relevant ID
-    let old_alert_config: AlertConfig = serde_json::from_slice(
-        &store
-            .get_object(&RelativePathBuf::from_iter([
-                ALERTS_ROOT_DIRECTORY,
-                &format!("{alert_id}.json"),
-            ]))
-            .await?,
-    )?;
-
-    let alert = alert.modify(old_alert_config);
+    alert.modify(alert_request);
     alert.validate().await?;
 
     // modify task
     let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
 
     // modify on disk
-    store.put_alert(&alert.id.to_string(), &alert).await?;
+    CONFIG
+        .storage()
+        .get_object_store()
+        .put_alert(alert.id, &alert)
+        .await?;
 
     // modify in memory
     ALERTS.update(&alert).await;
 
-    ALERTS.update_task(&alert.id, handle, rx, tx).await;
+    ALERTS.update_task(alert.id, handle, rx, tx).await;
 
     Ok(web::Json(alert))
 }
 
 // PUT /alerts/{alert_id}/update_state
-pub async fn update_state(req: HttpRequest, state: String) -> Result<impl Responder, AlertError> {
+pub async fn update_state(
+    req: HttpRequest,
+    alert_id: Path<Ulid>,
+    state: String,
+) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
-    let alert_id = req
-        .match_info()
-        .get("alert_id")
-        .ok_or(AlertError::Metadata("No alert ID Provided"))?;
+    let alert_id = alert_id.into_inner();
 
     // check if alert id exists in map
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
