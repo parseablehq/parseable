@@ -23,8 +23,8 @@ use crate::alerts::rule::base::{NumericRule, StringRule};
 use crate::alerts::rule::{ColumnRule, ConsecutiveNumericRule, ConsecutiveStringRule};
 use crate::alerts::{Alerts, Rule};
 use crate::hottier::MIN_STREAM_HOT_TIER_SIZE_BYTES;
-use crate::option::validation::bytes_to_human_size;
 use crate::storage::StreamType;
+use crate::utils::human_size::bytes_to_human_size;
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
@@ -135,16 +135,16 @@ pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
 }
 
 pub fn hot_tier(size: &str) -> Result<(), HotTierValidationError> {
-    if let Ok(size) = size.parse::<u64>() {
-        if size < MIN_STREAM_HOT_TIER_SIZE_BYTES {
-            return Err(HotTierValidationError::Size(bytes_to_human_size(
-                MIN_STREAM_HOT_TIER_SIZE_BYTES,
-            )));
-        }
-        Ok(())
-    } else {
-        Err(HotTierValidationError::InvalidFormat)
+    let Ok(size) = size.parse::<u64>() else {
+        return Err(HotTierValidationError::InvalidFormat);
+    };
+    if size < MIN_STREAM_HOT_TIER_SIZE_BYTES {
+        return Err(HotTierValidationError::Size(bytes_to_human_size(
+            MIN_STREAM_HOT_TIER_SIZE_BYTES,
+        )));
     }
+
+    Ok(())
 }
 pub mod error {
 
