@@ -55,7 +55,6 @@ pub enum SslProtocol {
     SaslSsl,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaError {
     #[error("Please set env var {0} (To use Kafka integration env vars P_KAFKA_TOPICS, P_KAFKA_HOST, and P_KAFKA_GROUP are mandatory)")]

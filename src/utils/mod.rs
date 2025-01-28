@@ -19,10 +19,12 @@
 pub mod actix;
 pub mod arrow;
 pub mod header_parsing;
+pub mod human_size;
 pub mod json;
 pub mod time;
 pub mod uid;
 pub mod update;
+
 use crate::handlers::http::rbac::RBACError;
 use crate::option::CONFIG;
 use crate::rbac::role::{Action, Permission};
@@ -37,12 +39,6 @@ use std::collections::HashMap;
 use std::env;
 use tracing::debug;
 use url::Url;
-#[allow(dead_code)]
-pub fn hostname() -> Option<String> {
-    hostname::get()
-        .ok()
-        .and_then(|hostname| hostname.into_string().ok())
-}
 
 pub fn hostname_unchecked() -> String {
     hostname::get().unwrap().into_string().unwrap()
@@ -95,7 +91,6 @@ pub struct TimePeriod {
     data_granularity: u32,
 }
 
-#[allow(dead_code)]
 impl TimePeriod {
     pub fn new(start: DateTime<Utc>, end: DateTime<Utc>, data_granularity: u32) -> Self {
         Self {

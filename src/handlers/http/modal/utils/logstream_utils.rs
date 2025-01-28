@@ -36,6 +36,7 @@ use crate::{
     storage::{ObjectStoreFormat, StreamType},
     validator,
 };
+use tracing::error;
 
 pub async fn create_update_stream(
     headers: &HeaderMap,
@@ -505,4 +506,57 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
     }
 
     Ok(true)
+}
+
+/// Updates the first-event-at in storage and logstream metadata for the specified stream.
+///
+/// This function updates the `first-event-at` in both the object store and the stream info metadata.
+/// If either update fails, an error is logged, but the function will still return the `first-event-at`.
+///
+/// # Arguments
+///
+/// * `stream_name` - The name of the stream to update.
+/// * `first_event_at` - The value of first-event-at.
+///
+/// # Returns
+///
+/// * `Option<String>` - Returns `Some(String)` with the provided timestamp if the update is successful,
+///   or `None` if an error occurs.
+///
+/// # Errors
+///
+/// This function logs an error if:
+/// * The `first-event-at` cannot be updated in the object store.
+/// * The `first-event-at` cannot be updated in the stream info.
+///
+/// # Examples
+///```ignore
+/// ```rust
+/// use parseable::handlers::http::modal::utils::logstream_utils::update_first_event_at;
+/// let result = update_first_event_at("my_stream", "2023-01-01T00:00:00Z").await;
+/// match result {
+///     Some(timestamp) => println!("first-event-at: {}", timestamp),
+///     None => eprintln!("Failed to update first-event-at"),
+/// }
+/// ```
+pub async fn update_first_event_at(stream_name: &str, first_event_at: &str) -> Option<String> {
+    let storage = CONFIG.storage().get_object_store();
+    if let Err(err) = storage
+        .update_first_event_in_stream(stream_name, first_event_at)
+        .await
+    {
+        error!(
+            "Failed to update first_event_at in storage for stream {:?}: {err:?}",
+            stream_name
+        );
+    }
+
+    if let Err(err) = metadata::STREAM_INFO.set_first_event_at(stream_name, first_event_at) {
+        error!(
+            "Failed to update first_event_at in stream info for stream {:?}: {err:?}",
+            stream_name
+        );
+    }
+
+    Some(first_event_at.to_string())
 }
