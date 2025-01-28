@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake clang librdkafka-dev libsasl2-dev libssl-dev pkg-config
+          sudo apt-get install -y cmake clang librdkafka-dev libsasl2-dev libsasl2 libssl-dev pkg-config ca-certificates build-essential
 
       - uses: actions-rs/toolchain@v1
         with:
@@ -51,11 +51,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          choco install cmake -y
-          choco install llvm -y
-
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
@@ -64,7 +59,7 @@ jobs:
           override: true
 
       - name: Build on windows
-        run: cargo build --target x86_64-pc-windows-msvc --features kafka
+        run: cargo build --target x86_64-pc-windows-msvc
 
   build-macos:
     name: Build for ${{matrix.target}}
@@ -80,7 +75,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install cmake llvm librdkafka openssl cyrus-sasl pkg-config
+          brew install cmake llvm librdkafka openssl cyrus-sasl pkg-config ca-certificates build-essential
 
       - uses: actions-rs/toolchain@v1
         with:
