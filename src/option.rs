@@ -16,12 +16,13 @@
  *
  */
 
-use crate::cli::{Cli, Options, StorageOptions, DEFAULT_PASSWORD, DEFAULT_USERNAME};
+use crate::cli::StorageOptionsEnum;
+use crate::cli::{Cli, Options, DEFAULT_PASSWORD, DEFAULT_USERNAME};
 use crate::storage::object_storage::parseable_json_path;
 use crate::storage::{ObjectStorageError, ObjectStorageProvider};
 use bytes::Bytes;
-use clap::error::ErrorKind;
-use clap::Parser;
+use clap::CommandFactory;
+use clap::{error::ErrorKind, Parser};
 use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use serde::{Deserialize, Serialize};
@@ -41,40 +42,53 @@ pub struct Config {
 
 impl Config {
     fn new() -> Self {
-        match Cli::parse().storage {
-            StorageOptions::Local(args) => {
-                if args.options.local_staging_path == args.storage.root {
-                    clap::Error::raw(
-                        ErrorKind::ValueValidation,
-                        "Cannot use same path for storage and staging",
-                    )
-                    .exit();
-                }
+        let result = Cli::parse();
+        match result {
+            Cli::Storage(storage_opts) => match storage_opts.storage {
+                StorageOptionsEnum::Local(args) => {
+                    if args.options.local_staging_path == args.storage.root {
+                        clap::Error::raw(
+                            ErrorKind::ValueValidation,
+                            "Cannot use same path for storage and staging",
+                        )
+                        .exit();
+                    }
 
-                if args.options.hot_tier_storage_path.is_some() {
-                    clap::Error::raw(
-                        ErrorKind::ValueValidation,
-                        "Cannot use hot tier with local-store subcommand.",
-                    )
-                    .exit();
-                }
+                    if args.options.hot_tier_storage_path.is_some() {
+                        clap::Error::raw(
+                            ErrorKind::ValueValidation,
+                            "Cannot use hot tier with local-store subcommand.",
+                        )
+                        .exit();
+                    }
 
-                Config {
+                    Config {
+                        options: args.options,
+                        storage: Arc::new(args.storage),
+                        storage_name: "drive",
+                    }
+                }
+                StorageOptionsEnum::S3(args) => Config {
                     options: args.options,
                     storage: Arc::new(args.storage),
-                    storage_name: "drive",
-                }
+                    storage_name: "s3",
+                },
+                StorageOptionsEnum::Blob(args) => Config {
+                    options: args.options,
+                    storage: Arc::new(args.storage),
+                    storage_name: "blob_store",
+                },
+            },
+            Cli::Completion(completion_opts) => {
+                let shell = completion_opts
+                    .shell
+                    .unwrap_or(crate::cli::ShellCompletion::Bash);
+                let mut cmd = Cli::command();
+                let output = shell.generate(&mut cmd);
+                println!("{}", String::from_utf8_lossy(&output));
+                std::process::exit(0);
+                unreachable!()
             }
-            StorageOptions::S3(args) => Config {
-                options: args.options,
-                storage: Arc::new(args.storage),
-                storage_name: "s3",
-            },
-            StorageOptions::Blob(args) => Config {
-                options: args.options,
-                storage: Arc::new(args.storage),
-                storage_name: "blob_store",
-            },
         }
     }
 
