@@ -485,7 +485,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             .and_then(|limit| limit.parse().ok());
         let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
         let static_schema_flag = stream_metadata.static_schema_flag;
-        let stream_type = stream_metadata.stream_type.unwrap_or_default();
+        let stream_type = stream_metadata.stream_type;
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
         metadata::STREAM_INFO.add_stream(

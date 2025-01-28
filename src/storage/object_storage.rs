@@ -162,7 +162,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let format = ObjectStoreFormat {
             created_at: Local::now().to_rfc3339(),
             permissions: vec![Permisssion::new(CONFIG.options.username.clone())],
-            stream_type: Some(stream_type),
+            stream_type,
             time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
             time_partition_limit: time_partition_limit.map(|limit| limit.to_string()),
             custom_partition: (!custom_partition.is_empty()).then(|| custom_partition.to_string()),
