@@ -303,10 +303,10 @@ impl ObjectStorage for LocalFS {
             .into_iter()
             .map(|entry| dir_with_stream(entry, ignore_dir));
 
-        let logstreams: Vec<Option<String>> = FuturesUnordered::from_iter(entries)
-            .flatten()
-            .try_collect()
-            .await?;
+        let logstream_dirs: Vec<Option<String>> =
+            FuturesUnordered::from_iter(entries).try_collect().await?;
+
+        let logstreams = logstream_dirs.into_iter().flatten().collect();
 
         Ok(logstreams)
     }
