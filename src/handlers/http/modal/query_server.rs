@@ -117,6 +117,8 @@ impl ParseableServer for QueryServer {
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
 
+        metrics::init_system_metrics_scheduler().await?;
+        cluster::init_cluster_metrics_scheduler().await?;
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
         if PARSEABLE.options.send_analytics {
