@@ -109,34 +109,9 @@ jobs:
             pkg-config \
             zstd \
             lz4 \
-            openssl@3.4.0 \
+            openssl@3.0 \
             cyrus-sasl \
             python3
-
-      # OpenSSL setup for Linux
-      - name: Setup OpenSSL on Linux
-        if: runner.os == 'Linux'
-        run: |
-          curl -O https://www.openssl.org/source/openssl-3.4.0.tar.gz
-          tar xf openssl-3.4.0.tar.gz
-          cd openssl-3.4.0
-          ./config --prefix=/usr/local/ssl --openssldir=/usr/local/ssl shared zlib
-          make -j$(nproc)
-          sudo make install
-          echo "OPENSSL_ROOT_DIR=/usr/local/ssl" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/local/ssl/include" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/local/ssl/lib" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/usr/local/ssl/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/local/ssl/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
-
-      # OpenSSL setup for macOS
-      - name: Setup OpenSSL on macOS
-        if: runner.os == 'macOS'
-        run: |
-          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3.4.0)" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3.4.0)/include" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3.4.0)/lib" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3.4.0)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
