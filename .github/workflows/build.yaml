@@ -98,6 +98,18 @@ jobs:
             python3 \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu
+          
+          # Install cross-compilation specific packages
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y \
+              gcc-aarch64-linux-gnu \
+              g++-aarch64-linux-gnu \
+              libc6-dev-arm64-cross \
+              libsasl2-dev:arm64 \
+              libssl-dev:arm64 \
+              pkg-config-aarch64-linux-gnu
+          fi
+
 
       # macOS-specific dependencies
       - name: Install macOS dependencies
@@ -135,3 +147,10 @@ jobs:
           args: --target ${{ matrix.target }} --features kafka --release
         env:
           LIBRDKAFKA_SSL_VENDORED: 1
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: "/usr/lib/aarch64-linux-gnu/pkgconfig"
+          SASL2_DIR: "/usr/lib/aarch64-linux-gnu"
+          OPENSSL_DIR: "/usr/lib/aarch64-linux-gnu"
+          OPENSSL_ROOT_DIR: "/usr/lib/aarch64-linux-gnu"
+          OPENSSL_STATIC: "1"
+          SASL2_STATIC: "0"
