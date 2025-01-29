@@ -55,6 +55,9 @@ pub fn minute_to_slot(minute: u32, data_granularity: u32) -> Option<String> {
     Some(format!("{block_start:02}-{block_end:02}"))
 }
 
+type Prefix = String;
+
+/// Representation of a time period using which files can be retreived from object storage
 pub struct TimePeriod {
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -70,7 +73,7 @@ impl TimePeriod {
         }
     }
 
-    pub fn generate_prefixes(&self) -> Vec<String> {
+    pub fn generate_prefixes(self) -> Vec<Prefix> {
         let mut prefixes = vec![];
         self.generate_date_prefixes(&mut prefixes);
 
@@ -101,7 +104,7 @@ impl TimePeriod {
             return;
         }
 
-        let push_prefix = |block: u32, prefixes: &mut Vec<_>| {
+        let mut push_prefix = |block: u32| {
             if let Some(minute_slot) =
                 minute_to_slot(block * self.data_granularity, self.data_granularity)
             {
@@ -111,13 +114,13 @@ impl TimePeriod {
         };
 
         for block in start_block..end_block {
-            push_prefix(block, prefixes);
+            push_prefix(block);
         }
 
         // NOTE: for block sizes larger than a minute ensure
         // ensure last block is considered
         if self.data_granularity > 1 {
-            push_prefix(end_block, prefixes);
+            push_prefix(end_block);
         }
     }
 
