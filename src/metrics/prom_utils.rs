@@ -307,57 +307,81 @@ impl Metrics {
         sample: PromSample,
     ) {
         match metric_type {
-            MetricType::SimpleGauge(metric_name) => match metric_name.as_str() {
-                "parseable_events_ingested" => metrics.parseable_events_ingested += val,
-                "parseable_events_ingested_size" => metrics.parseable_events_ingested_size += val,
-                "parseable_lifetime_events_ingested" => {
-                    metrics.parseable_lifetime_events_ingested += val
-                }
-                "parseable_lifetime_events_ingested_size" => {
-                    metrics.parseable_lifetime_events_ingested_size += val
-                }
-                "parseable_events_deleted" => metrics.parseable_deleted_events_ingested += val,
-                "parseable_events_deleted_size" => {
-                    metrics.parseable_deleted_events_ingested_size += val
-                }
-                "parseable_staging_files" => metrics.parseable_staging_files += val,
-                "process_resident_memory_bytes" => metrics.process_resident_memory_bytes += val,
-                _ => {}
-            },
-            MetricType::StorageSize(storage_type) => match storage_type.as_str() {
-                "staging" => metrics.parseable_storage_size.staging += val,
-                "data" => metrics.parseable_storage_size.data += val,
-                _ => {}
-            },
+            MetricType::SimpleGauge(metric_name) => {
+                Self::process_simple_gauge(metrics, &metric_name, val)
+            }
+            MetricType::StorageSize(storage_type) => {
+                Self::process_storage_size(metrics, &storage_type, val)
+            }
             MetricType::DiskUsage(volume_type) => {
-                let disk_usage = match volume_type.as_str() {
-                    "data" => &mut metrics.parseable_data_disk_usage,
-                    "staging" => &mut metrics.parseable_staging_disk_usage,
-                    "hot_tier" => &mut metrics.parseable_hot_tier_disk_usage,
-                    _ => return,
-                };
+                Self::process_disk_usage(metrics, &volume_type, val, metric_name)
+            }
+            MetricType::MemoryUsage(memory_type) => {
+                Self::process_memory_usage(metrics, &memory_type, val)
+            }
+            MetricType::CpuUsage => Self::process_cpu_usage(metrics, val, sample),
+        }
+    }
 
-                match metric_name {
-                    "parseable_total_disk" => disk_usage.total = val as u64,
-                    "parseable_used_disk" => disk_usage.used = val as u64,
-                    "parseable_available_disk" => disk_usage.available = val as u64,
-                    _ => {}
-                }
+    fn process_simple_gauge(metrics: &mut Metrics, metric_name: &str, val: f64) {
+        match metric_name {
+            "parseable_events_ingested" => metrics.parseable_events_ingested += val,
+            "parseable_events_ingested_size" => metrics.parseable_events_ingested_size += val,
+            "parseable_lifetime_events_ingested" => {
+                metrics.parseable_lifetime_events_ingested += val
             }
-            MetricType::MemoryUsage(memory_type) => match memory_type.as_str() {
-                "total_memory" => metrics.parseable_memory_usage.total = val as u64,
-                "used_memory" => metrics.parseable_memory_usage.used = val as u64,
-                "total_swap" => metrics.parseable_memory_usage.total_swap = val as u64,
-                "used_swap" => metrics.parseable_memory_usage.used_swap = val as u64,
-                _ => {}
-            },
-            MetricType::CpuUsage => {
-                if let Some(cpu_name) = sample.labels.get("cpu_usage") {
-                    metrics
-                        .parseable_cpu_usage
-                        .insert(cpu_name.to_string(), val);
-                }
+            "parseable_lifetime_events_ingested_size" => {
+                metrics.parseable_lifetime_events_ingested_size += val
             }
+            "parseable_events_deleted" => metrics.parseable_deleted_events_ingested += val,
+            "parseable_events_deleted_size" => {
+                metrics.parseable_deleted_events_ingested_size += val
+            }
+            "parseable_staging_files" => metrics.parseable_staging_files += val,
+            "process_resident_memory_bytes" => metrics.process_resident_memory_bytes += val,
+            _ => {}
+        }
+    }
+
+    fn process_storage_size(metrics: &mut Metrics, storage_type: &str, val: f64) {
+        match storage_type {
+            "staging" => metrics.parseable_storage_size.staging += val,
+            "data" => metrics.parseable_storage_size.data += val,
+            _ => {}
+        }
+    }
+
+    fn process_disk_usage(metrics: &mut Metrics, volume_type: &str, val: f64, metric_name: &str) {
+        let disk_usage = match volume_type {
+            "data" => &mut metrics.parseable_data_disk_usage,
+            "staging" => &mut metrics.parseable_staging_disk_usage,
+            "hot_tier" => &mut metrics.parseable_hot_tier_disk_usage,
+            _ => return,
+        };
+
+        match metric_name {
+            "parseable_total_disk" => disk_usage.total = val as u64,
+            "parseable_used_disk" => disk_usage.used = val as u64,
+            "parseable_available_disk" => disk_usage.available = val as u64,
+            _ => {}
+        }
+    }
+
+    fn process_memory_usage(metrics: &mut Metrics, memory_type: &str, val: f64) {
+        match memory_type {
+            "total_memory" => metrics.parseable_memory_usage.total = val as u64,
+            "used_memory" => metrics.parseable_memory_usage.used = val as u64,
+            "total_swap" => metrics.parseable_memory_usage.total_swap = val as u64,
+            "used_swap" => metrics.parseable_memory_usage.used_swap = val as u64,
+            _ => {}
+        }
+    }
+
+    fn process_cpu_usage(metrics: &mut Metrics, val: f64, sample: PromSample) {
+        if let Some(cpu_name) = sample.labels.get("cpu_usage") {
+            metrics
+                .parseable_cpu_usage
+                .insert(cpu_name.to_string(), val);
         }
     }
 
