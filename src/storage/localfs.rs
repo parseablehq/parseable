@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -39,8 +39,8 @@ use crate::{
 };
 
 use super::{
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
-    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    object_storage::LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
+    PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -295,7 +295,7 @@ impl ObjectStorage for LocalFS {
         Ok(fs::remove_file(path).await?)
     }
 
-    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+    async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY, USERS_ROOT_DIR];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
@@ -303,19 +303,15 @@ impl ObjectStorage for LocalFS {
             .into_iter()
             .map(|entry| dir_with_stream(entry, ignore_dir));
 
-        let logstream_dirs: Vec<Option<String>> =
-            FuturesUnordered::from_iter(entries).try_collect().await?;
-
-        let logstreams = logstream_dirs
-            .into_iter()
+        let logstreams: Vec<Option<String>> = FuturesUnordered::from_iter(entries)
             .flatten()
-            .map(|name| LogStream { name })
-            .collect();
+            .try_collect()
+            .await?;
 
         Ok(logstreams)
     }
 
-    async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+    async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let ignore_dir = &["lost+found", PARSEABLE_ROOT_DIRECTORY];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
@@ -326,11 +322,7 @@ impl ObjectStorage for LocalFS {
         let logstream_dirs: Vec<Option<String>> =
             FuturesUnordered::from_iter(entries).try_collect().await?;
 
-        let logstreams = logstream_dirs
-            .into_iter()
-            .flatten()
-            .map(|name| LogStream { name })
-            .collect();
+        let logstreams = logstream_dirs.into_iter().flatten().collect();
 
         Ok(logstreams)
     }

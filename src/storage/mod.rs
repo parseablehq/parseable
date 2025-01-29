@@ -223,11 +223,6 @@ impl Default for ObjectStoreFormat {
     }
 }
 
-#[derive(serde::Serialize, Debug)]
-pub struct LogStream {
-    pub name: String,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum ObjectStorageError {
     // no such key inside the object storage

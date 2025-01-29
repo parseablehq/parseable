@@ -454,7 +454,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
     let streams = storage.list_streams().await?;
-    if streams.iter().any(|stream| stream.name == stream_name) {
+    if streams.contains(stream_name) {
         let mut stream_metadata = ObjectStoreFormat::default();
         let stream_metadata_bytes = storage.create_stream_from_ingestor(stream_name).await?;
         if !stream_metadata_bytes.is_empty() {

@@ -17,7 +17,7 @@
  */
 
 use super::{
-    retention::Retention, staging::convert_disk_files_to_parquet, LogStream, ObjectStorageError,
+    retention::Retention, staging::convert_disk_files_to_parquet, ObjectStorageError,
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
@@ -51,7 +51,7 @@ use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use tracing::error;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::num::NonZeroU32;
 use std::{
@@ -74,6 +74,8 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
     fn register_store_metrics(&self, handler: &PrometheusMetrics);
 }
 
+pub type LogStream = String;
+
 #[async_trait]
 pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
@@ -91,8 +93,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError>;
     async fn check(&self) -> Result<(), ObjectStorageError>;
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
-    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
-    async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
+    async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
+    async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError>;
     async fn get_all_saved_filters(
         &self,
