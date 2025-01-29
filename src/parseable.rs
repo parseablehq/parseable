@@ -59,20 +59,20 @@ impl Parseable {
                     options: args.options,
                     storage: Arc::new(args.storage),
                     storage_name: "drive",
-                    streams: Default::default(),
+                    streams: StreamInfo::default(),
                 }
             }
             StorageOptions::S3(args) => Self {
                 options: args.options,
                 storage: Arc::new(args.storage),
                 storage_name: "s3",
-                streams: Default::default(),
+                streams: StreamInfo::default(),
             },
             StorageOptions::Blob(args) => Self {
                 options: args.options,
                 storage: Arc::new(args.storage),
                 storage_name: "blob_store",
-                streams: Default::default(),
+                streams: StreamInfo::default(),
             },
         }
     }
