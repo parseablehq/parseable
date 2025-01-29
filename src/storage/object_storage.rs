@@ -49,7 +49,8 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use tracing::error;
+use tracing::{error, warn};
+use ulid::Ulid;
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -255,7 +256,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
     async fn put_alert(
         &self,
-        alert_id: &str,
+        alert_id: Ulid,
         alert: &AlertConfig,
     ) -> Result<(), ObjectStorageError> {
         self.put_object(&alert_json_path(alert_id), to_bytes(alert))
@@ -335,16 +336,23 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(serde_json::from_slice(&schema_map)?)
     }
 
-    async fn get_alerts(&self) -> Result<Vec<Bytes>, ObjectStorageError> {
+    async fn get_alerts(&self) -> Result<Vec<AlertConfig>, ObjectStorageError> {
         let alerts_path = RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY]);
-        let alerts_bytes = self
+        let alerts = self
             .get_objects(
                 Some(&alerts_path),
                 Box::new(|file_name| file_name.ends_with(".json")),
             )
-            .await?;
+            .await?
+            .iter()
+            .filter_map(|bytes| {
+                serde_json::from_slice(bytes)
+                    .inspect_err(|err| warn!("Expected compatible json, error = {err}"))
+                    .ok()
+            })
+            .collect();
 
-        Ok(alerts_bytes)
+        Ok(alerts)
     }
 
     async fn upsert_stream_metadata(
@@ -809,7 +817,7 @@ pub fn parseable_json_path() -> RelativePathBuf {
 
 /// TODO: Needs to be updated for distributed mode
 #[inline(always)]
-pub fn alert_json_path(alert_id: &str) -> RelativePathBuf {
+pub fn alert_json_path(alert_id: Ulid) -> RelativePathBuf {
     RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, &format!("{alert_id}.json")])
 }
 

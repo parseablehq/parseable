@@ -104,7 +104,7 @@ impl Target {
         let retry = target_timeout.times;
         let timeout = target_timeout.interval;
         let target = self.target.clone();
-        let alert_id = alert_context.alert_info.alert_id.clone();
+        let alert_id = alert_context.alert_info.alert_id;
 
         let sleep_and_check_if_call =
             move |timeout_state: Arc<Mutex<TimeoutState>>, current_state: AlertState| {
@@ -128,7 +128,7 @@ impl Target {
         tokio::spawn(async move {
             match retry {
                 Retry::Infinite => loop {
-                    let current_state = if let Ok(state) = ALERTS.get_state(&alert_id).await {
+                    let current_state = if let Ok(state) = ALERTS.get_state(alert_id).await {
                         state
                     } else {
                         *state.lock().unwrap() = TimeoutState::default();
@@ -144,7 +144,7 @@ impl Target {
                 },
                 Retry::Finite(times) => {
                     for _ in 0..(times - 1) {
-                        let current_state = if let Ok(state) = ALERTS.get_state(&alert_id).await {
+                        let current_state = if let Ok(state) = ALERTS.get_state(alert_id).await {
                             state
                         } else {
                             *state.lock().unwrap() = TimeoutState::default();

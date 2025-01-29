@@ -229,19 +229,15 @@ async fn update_alert_state(
         trace!("ALERT!!!!!!");
         let message = format_alert_message(agg_results);
         ALERTS
-            .update_state(&alert.id.to_string(), AlertState::Triggered, Some(message))
+            .update_state(alert.id, AlertState::Triggered, Some(message))
             .await
-    } else if ALERTS
-        .get_state(&alert.id)
-        .await?
-        .eq(&AlertState::Triggered)
-    {
+    } else if ALERTS.get_state(alert.id).await?.eq(&AlertState::Triggered) {
         ALERTS
-            .update_state(&alert.id.to_string(), AlertState::Resolved, Some("".into()))
+            .update_state(alert.id, AlertState::Resolved, Some("".into()))
             .await
     } else {
         ALERTS
-            .update_state(&alert.id.to_string(), AlertState::Resolved, None)
+            .update_state(alert.id, AlertState::Resolved, None)
             .await
     }
 }
