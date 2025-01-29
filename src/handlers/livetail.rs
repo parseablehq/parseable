@@ -40,8 +40,7 @@ use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
 use crate::livetail::{Message, LIVETAIL};
-use crate::metadata::STREAM_INFO;
-use crate::option::CONFIG;
+use crate::parseable::PARSEABLE;
 use crate::rbac::map::SessionKey;
 use crate::rbac::{self, Users};
 use crate::utils;
@@ -116,7 +115,8 @@ impl FlightService for FlightServiceImpl {
             }
         }
 
-        let schema = STREAM_INFO
+        let schema = PARSEABLE
+            .streams
             .schema(stream)
             .map_err(|err| Status::failed_precondition(err.to_string()))?;
 
@@ -172,12 +172,12 @@ impl FlightService for FlightServiceImpl {
 }
 
 pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send {
-    let mut addr: SocketAddr = CONFIG
+    let mut addr: SocketAddr = PARSEABLE
         .options
         .address
         .parse()
         .expect("valid socket address");
-    addr.set_port(CONFIG.options.grpc_port);
+    addr.set_port(PARSEABLE.options.grpc_port);
 
     let service = FlightServiceImpl {};
 
@@ -185,7 +185,10 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
 
     let cors = cross_origin_config();
 
-    let identity = match (&CONFIG.options.tls_cert_path, &CONFIG.options.tls_key_path) {
+    let identity = match (
+        &PARSEABLE.options.tls_cert_path,
+        &PARSEABLE.options.tls_key_path,
+    ) {
         (Some(cert), Some(key)) => {
             match (std::fs::read_to_string(cert), std::fs::read_to_string(key)) {
                 (Ok(cert_file), Ok(key_file)) => {

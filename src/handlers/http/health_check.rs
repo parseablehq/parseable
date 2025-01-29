@@ -16,19 +16,23 @@
  *
  */
 
-use crate::option::CONFIG;
-use actix_web::body::MessageBody;
-use actix_web::dev::{ServiceRequest, ServiceResponse};
-use actix_web::error::ErrorServiceUnavailable;
-use actix_web::http::StatusCode;
-use actix_web::middleware::Next;
-use actix_web::{Error, HttpResponse};
-use lazy_static::lazy_static;
 use std::sync::Arc;
+
+use actix_web::{
+    body::MessageBody,
+    dev::{ServiceRequest, ServiceResponse},
+    error::Error,
+    error::ErrorServiceUnavailable,
+    middleware::Next,
+    HttpResponse,
+};
+use http::StatusCode;
 use tokio::sync::Mutex;
 
+use crate::parseable::PARSEABLE;
+
 // Create a global variable to store signal status
-lazy_static! {
+lazy_static::lazy_static! {
     pub static ref SIGNAL_RECEIVED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
 }
 
@@ -62,7 +66,7 @@ pub async fn shutdown() {
 
 pub async fn readiness() -> HttpResponse {
     // Check the object store connection
-    if CONFIG.storage().get_object_store().check().await.is_ok() {
+    if PARSEABLE.storage().get_object_store().check().await.is_ok() {
         HttpResponse::new(StatusCode::OK)
     } else {
         HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE)

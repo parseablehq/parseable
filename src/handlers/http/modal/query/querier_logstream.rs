@@ -44,8 +44,6 @@ use crate::{
         modal::utils::logstream_utils::create_update_stream,
     },
     hottier::HotTierManager,
-    metadata::{self, STREAM_INFO},
-    option::CONFIG,
     parseable::PARSEABLE,
     stats::{self, Stats},
     storage::{StorageDir, StreamType},
@@ -57,7 +55,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !metadata::STREAM_INFO.stream_exists(&stream_name)
+    if !PARSEABLE.streams.stream_exists(&stream_name)
         && !PARSEABLE
             .create_stream_and_schema_from_storage(&stream_name)
             .await
@@ -66,7 +64,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
         return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
 
-    let objectstore = CONFIG.storage().get_object_store();
+    let objectstore = PARSEABLE.storage().get_object_store();
 
     objectstore.delete_stream(&stream_name).await?;
     let stream_dir = StorageDir::new(&stream_name);
@@ -101,7 +99,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
         cluster::send_stream_delete_request(&url, ingestor.clone()).await?;
     }
 
-    metadata::STREAM_INFO.delete_stream(&stream_name);
+    PARSEABLE.streams.delete_stream(&stream_name);
     event::STREAM_WRITERS.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
@@ -131,7 +129,7 @@ pub async fn get_stats(
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !metadata::STREAM_INFO.stream_exists(&stream_name)
+    if !PARSEABLE.streams.stream_exists(&stream_name)
         && !PARSEABLE
             .create_stream_and_schema_from_storage(&stream_name)
             .await
@@ -168,7 +166,7 @@ pub async fn get_stats(
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats = if STREAM_INFO.stream_type(&stream_name).unwrap()
+    let ingestor_stats = if PARSEABLE.streams.stream_type(&stream_name).unwrap()
         == Some(StreamType::UserDefined.to_string())
     {
         Some(fetch_stats_from_ingestors(&stream_name).await?)
@@ -176,7 +174,7 @@ pub async fn get_stats(
         None
     };
 
-    let hash_map = STREAM_INFO.read().expect("Readable");
+    let hash_map = PARSEABLE.streams.read().expect("Readable");
     let stream_meta = &hash_map
         .get(&stream_name)
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;

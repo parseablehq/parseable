@@ -49,7 +49,7 @@ use crate::{
         middleware::{DisAllowRootUser, RouteExt},
         oidc, role, MAX_EVENT_PAYLOAD_SIZE,
     },
-    option::CONFIG,
+    parseable::PARSEABLE,
     rbac::role::Action,
 };
 
@@ -88,9 +88,9 @@ impl ParseableServer for Server {
     }
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
-        migration::run_file_migration(&CONFIG).await?;
-        let parseable_json = CONFIG.validate_storage().await?;
-        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+        migration::run_file_migration(&PARSEABLE).await?;
+        let parseable_json = PARSEABLE.validate_storage().await?;
+        migration::run_metadata_migration(&PARSEABLE, &parseable_json).await?;
 
         Ok(parseable_json)
     }
@@ -98,9 +98,9 @@ impl ParseableServer for Server {
     // configure the server and start an instance of the single server setup
     async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
+        PARSEABLE.storage().register_store_metrics(&prometheus);
 
-        migration::run_migration(&CONFIG).await?;
+        migration::run_migration(&PARSEABLE).await?;
 
         if let Err(e) = CORRELATIONS.load().await {
             error!("{e}");
@@ -119,14 +119,14 @@ impl ParseableServer for Server {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
 
-        if CONFIG.options.send_analytics {
+        if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
 
-        let app = self.start(shutdown_rx, prometheus, CONFIG.options.openid());
+        let app = self.start(shutdown_rx, prometheus, PARSEABLE.options.openid());
 
         tokio::pin!(app);
 

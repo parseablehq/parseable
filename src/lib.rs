@@ -39,7 +39,7 @@ pub mod migration;
 mod oidc;
 pub mod option;
 pub mod otel;
-mod parseable;
+pub mod parseable;
 mod query;
 pub mod rbac;
 mod response;

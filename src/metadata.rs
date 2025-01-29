@@ -20,31 +20,25 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{Local, NaiveDateTime};
 use itertools::Itertools;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 
-use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
+use self::error::stream_info::{CheckAlertError, MetadataError};
 use crate::alerts::Alerts;
 use crate::catalog::snapshot::ManifestItem;
 use crate::event::format::LogSource;
 use crate::metrics::{
-    fetch_stats_from_storage, EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE,
-    EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED,
-    LIFETIME_EVENTS_INGESTED_SIZE,
+    EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
+    EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
 use crate::storage::retention::Retention;
-use crate::storage::{ObjectStorage, ObjectStoreFormat, StorageDir, StreamType};
+use crate::storage::{ObjectStorage, StorageDir, StreamType};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
 
-// TODO: make return type be of 'static lifetime instead of cloning
 // A read-write lock to allow multiple reads while and isolated write
-pub static STREAM_INFO: Lazy<StreamInfo> = Lazy::new(StreamInfo::default);
-
 #[derive(Debug, Deref, DerefMut, Default)]
 pub struct StreamInfo(RwLock<HashMap<String, LogStreamMetadata>>);
 
@@ -82,7 +76,7 @@ pub struct LogStreamMetadata {
 // It is very unlikely that panic will occur when dealing with metadata.
 pub const LOCK_EXPECT: &str = "no method in metadata should panic while holding a lock";
 
-// STREAM_INFO should be updated
+// PARSEABLE.streams should be updated
 // 1. During server start up
 // 2. When a new stream is created (make a new entry in the map)
 // 3. When a stream is deleted (remove the entry from the map)
@@ -243,7 +237,7 @@ impl StreamInfo {
     /// let result = metadata.remove_first_event_at("my_stream");
     /// match result {
     ///     Ok(()) => println!("first-event-at removed successfully"),
-    ///     Err(e) => eprintln!("Error removing first-event-at from STREAM_INFO: {}", e),
+    ///     Err(e) => eprintln!("Error removing first-event-at from PARSEABLE.streams: {}", e),
     /// }
     /// ```
     pub fn reset_first_event_at(&self, stream_name: &str) -> Result<(), MetadataError> {
@@ -400,7 +394,7 @@ impl StreamInfo {
     }
 }
 
-fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Schema {
+pub fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Schema {
     let staging_files = StorageDir::new(stream_name).arrow_files();
     let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
     if record_reader.readers.is_empty() {
@@ -448,73 +442,7 @@ pub async fn update_data_type_time_partition(
     Ok(schema)
 }
 
-pub async fn load_stream_metadata_on_server_start(
-    storage: &(impl ObjectStorage + ?Sized),
-    stream_name: &str,
-    schema: Schema,
-    stream_metadata_value: Value,
-) -> Result<(), LoadError> {
-    let ObjectStoreFormat {
-        schema_version,
-        created_at,
-        first_event_at,
-        retention,
-        snapshot,
-        stats,
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        static_schema_flag,
-        hot_tier_enabled,
-        stream_type,
-        log_source,
-        ..
-    } = if !stream_metadata_value.is_null() {
-        serde_json::from_slice(&serde_json::to_vec(&stream_metadata_value).unwrap()).unwrap()
-    } else {
-        ObjectStoreFormat::default()
-    };
-    let schema =
-        update_data_type_time_partition(storage, stream_name, schema, time_partition.as_ref())
-            .await?;
-    storage.put_schema(stream_name, &schema).await?;
-    //load stats from storage
-    fetch_stats_from_storage(stream_name, stats).await;
-    load_daily_metrics(&snapshot.manifest_list, stream_name);
-
-    let alerts = storage.get_alerts(stream_name).await?;
-    let schema = update_schema_from_staging(stream_name, schema);
-    let schema = HashMap::from_iter(
-        schema
-            .fields
-            .iter()
-            .map(|v| (v.name().to_owned(), v.clone())),
-    );
-
-    let metadata = LogStreamMetadata {
-        schema_version,
-        schema,
-        alerts,
-        retention,
-        created_at,
-        first_event_at,
-        time_partition,
-        time_partition_limit: time_partition_limit.and_then(|limit| limit.parse().ok()),
-        custom_partition,
-        static_schema_flag,
-        hot_tier_enabled,
-        stream_type,
-        log_source,
-    };
-
-    let mut map = STREAM_INFO.write().expect(LOCK_EXPECT);
-
-    map.insert(stream_name.to_string(), metadata);
-
-    Ok(())
-}
-
-fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {
+pub fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {
     for manifest in manifests {
         let manifest_date = manifest.time_lower_bound.date_naive().to_string();
         let events_ingested = manifest.events_ingested;

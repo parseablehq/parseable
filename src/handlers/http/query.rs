@@ -35,11 +35,10 @@ use tracing::error;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
-use crate::metadata::STREAM_INFO;
 
 use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::option::{Mode, CONFIG};
+use crate::option::Mode;
 use crate::parseable::PARSEABLE;
 use crate::query::error::ExecuteError;
 use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
@@ -169,7 +168,7 @@ pub async fn get_counts(
 }
 
 pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), QueryError> {
-    if CONFIG.options.mode == Mode::Query {
+    if PARSEABLE.options.mode == Mode::Query {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
                 // commit schema merges the schema internally and updates the schema in storage.
@@ -187,8 +186,8 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
 /// get list of streams from memory and storage
 /// create streams for memory from storage if they do not exist
 pub async fn create_streams_for_querier() {
-    let querier_streams = STREAM_INFO.list_streams();
-    let store = CONFIG.storage().get_object_store();
+    let querier_streams = PARSEABLE.streams.list_streams();
+    let store = PARSEABLE.storage().get_object_store();
     let storage_streams = store.list_streams().await.unwrap();
     for stream in storage_streams {
         let stream_name = stream.name;

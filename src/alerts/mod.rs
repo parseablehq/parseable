@@ -31,7 +31,7 @@ pub mod rule;
 pub mod target;
 
 use crate::metrics::ALERTS_STATES;
-use crate::option::CONFIG;
+use crate::parseable::PARSEABLE;
 use crate::utils::arrow::get_field;
 use crate::utils::uid;
 use crate::{storage, utils};
@@ -103,8 +103,8 @@ impl Alert {
     ) -> Context {
         let deployment_instance = format!(
             "{}://{}",
-            CONFIG.options.get_scheme(),
-            CONFIG.options.address
+            PARSEABLE.options.get_scheme(),
+            PARSEABLE.options.address
         );
         let deployment_id = storage::StorageMetadata::global().deployment_id;
         let deployment_mode = storage::StorageMetadata::global().mode.to_string();

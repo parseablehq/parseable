@@ -18,27 +18,15 @@
 
 pub mod utils;
 
-use crate::handlers::http::cluster::utils::{
-    check_liveness, to_url_string, IngestionStats, QueriedStats,
-};
-use crate::handlers::http::ingest::{ingest_internal_stream, PostError};
-use crate::handlers::http::logstream::error::StreamError;
-use crate::handlers::http::role::RoleError;
-use crate::option::CONFIG;
+use std::collections::HashSet;
+use std::time::Duration;
 
-use crate::metrics::prom_utils::Metrics;
-use crate::rbac::role::model::DefaultPrivilege;
-use crate::rbac::user::User;
-use crate::stats::Stats;
-use crate::storage::object_storage::ingestor_metadata_path;
-use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
-use crate::storage::{ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY};
-use crate::HTTP_CLIENT;
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::web::Path;
 use actix_web::Responder;
 use bytes::Bytes;
 use chrono::Utc;
+use clokwerk::{AsyncScheduler, Interval};
 use http::{header as http_header, StatusCode};
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
@@ -47,17 +35,29 @@ use serde_json::error::Error as SerdeError;
 use serde_json::{to_vec, Value as JsonValue};
 use tracing::{error, info, warn};
 use url::Url;
-type IngestorMetadataArr = Vec<IngestorMetadata>;
+use utils::{check_liveness, to_url_string, IngestionStats, QueriedStats, StorageStats};
 
-use self::utils::StorageStats;
+use crate::handlers::http::ingest::ingest_internal_stream;
+use crate::metrics::prom_utils::Metrics;
+use crate::parseable::PARSEABLE;
+use crate::rbac::role::model::DefaultPrivilege;
+use crate::rbac::user::User;
+use crate::stats::Stats;
+use crate::storage::object_storage::ingestor_metadata_path;
+use crate::storage::{
+    ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
+};
+use crate::HTTP_CLIENT;
 
 use super::base_path_without_preceding_slash;
-use super::rbac::RBACError;
-use std::collections::HashSet;
-use std::time::Duration;
-
+use super::ingest::PostError;
+use super::logstream::error::StreamError;
 use super::modal::IngestorMetadata;
-use clokwerk::{AsyncScheduler, Interval};
+use super::rbac::RBACError;
+use super::role::RoleError;
+
+type IngestorMetadataArr = Vec<IngestorMetadata>;
+
 pub const INTERNAL_STREAM_NAME: &str = "pmeta";
 
 const CLUSTER_METRICS_INTERVAL_SECONDS: Interval = clokwerk::Interval::Minutes(1);
@@ -435,7 +435,7 @@ pub async fn fetch_stats_from_ingestors(
     stream_name: &str,
 ) -> Result<Vec<utils::QueriedStats>, StreamError> {
     let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
-    let obs = CONFIG
+    let obs = PARSEABLE
         .storage()
         .get_object_store()
         .get_objects(
@@ -634,7 +634,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
             &ingestor.domain_name,
             reachable,
             staging_path,
-            CONFIG.storage().get_endpoint(),
+            PARSEABLE.storage().get_endpoint(),
             error,
             status,
         ));
@@ -654,7 +654,7 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
 
 // update the .query.json file and return the new ingestorMetadataArr
 pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
-    let store = CONFIG.storage().get_object_store();
+    let store = PARSEABLE.storage().get_object_store();
 
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let arr = store
@@ -679,7 +679,7 @@ pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, P
             "The ingestor is currently live and cannot be removed"
         )));
     }
-    let object_store = CONFIG.storage().get_object_store();
+    let object_store = PARSEABLE.storage().get_object_store();
 
     let ingestor_metadatas = object_store
         .get_objects(

@@ -417,4 +417,8 @@ impl Options {
             origin,
         })
     }
+
+    pub fn is_default_creds(&self) -> bool {
+        self.username == DEFAULT_USERNAME && self.password == DEFAULT_PASSWORD
+    }
 }

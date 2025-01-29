@@ -16,32 +16,6 @@
  *
  */
 
-use super::ingest::ingestor_logstream;
-use super::ingest::ingestor_rbac;
-use super::ingest::ingestor_role;
-use super::server::Server;
-use super::IngestorMetadata;
-use super::OpenIdClient;
-use super::ParseableServer;
-use crate::analytics;
-use crate::handlers::airplane;
-use crate::handlers::http::ingest;
-use crate::handlers::http::logstream;
-use crate::handlers::http::middleware::DisAllowRootUser;
-use crate::handlers::http::middleware::RouteExt;
-use crate::handlers::http::role;
-use crate::metrics;
-use crate::migration;
-use crate::migration::metadata_migration::migrate_ingester_metadata;
-use crate::rbac::role::Action;
-use crate::storage::object_storage::ingestor_metadata_path;
-use crate::storage::object_storage::parseable_json_path;
-use crate::storage::staging;
-use crate::storage::ObjectStorageError;
-use crate::storage::PARSEABLE_ROOT_DIRECTORY;
-use crate::sync;
-
-use crate::{handlers::http::base_path, option::CONFIG};
 use actix_web::web;
 use actix_web::web::resource;
 use actix_web::Scope;
@@ -53,6 +27,32 @@ use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::oneshot;
 use tracing::error;
+
+use crate::{
+    analytics,
+    handlers::{
+        airplane,
+        http::{
+            base_path, ingest, logstream,
+            middleware::{DisAllowRootUser, RouteExt},
+            role,
+        },
+    },
+    metrics,
+    migration::{self, metadata_migration::migrate_ingester_metadata},
+    parseable::PARSEABLE,
+    rbac::role::Action,
+    storage::{
+        object_storage::{ingestor_metadata_path, parseable_json_path},
+        staging, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY,
+    },
+    sync, Server,
+};
+
+use super::{
+    ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
+    IngestorMetadata, OpenIdClient, ParseableServer,
+};
 
 /// ! have to use a guard before using it
 pub static INGESTOR_META: Lazy<IngestorMetadata> =
@@ -83,7 +83,7 @@ impl ParseableServer for IngestServer {
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
         // parseable can't use local storage for persistence when running a distributed setup
-        if CONFIG.get_storage_mode_string() == "Local drive" {
+        if PARSEABLE.storage_name == "drive" {
             return Err(anyhow::Error::msg(
                  "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
              ));
@@ -100,9 +100,9 @@ impl ParseableServer for IngestServer {
     /// configure the server and start an instance to ingest data
     async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
+        PARSEABLE.storage().register_store_metrics(&prometheus);
 
-        migration::run_migration(&CONFIG).await?;
+        migration::run_migration(&PARSEABLE).await?;
 
         let (localsync_handler, mut localsync_outbox, localsync_inbox) =
             sync::run_local_sync().await;
@@ -283,7 +283,7 @@ impl IngestServer {
 // create the ingestor metadata and put the .ingestor.json file in the object store
 pub async fn set_ingestor_metadata() -> anyhow::Result<()> {
     let storage_ingestor_metadata = migrate_ingester_metadata().await?;
-    let store = CONFIG.storage().get_object_store();
+    let store = PARSEABLE.storage().get_object_store();
 
     // find the meta file in staging if not generate new metadata
     let resource = INGESTOR_META.clone();
@@ -319,7 +319,7 @@ async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageErr
     // how do we check for querier state?
     // based on the work flow of the system, the querier will always need to start first
     // i.e the querier will create the `.parseable.json` file
-    let parseable_json = CONFIG
+    let parseable_json = PARSEABLE
         .storage()
         .get_object_store()
         .get_object(&parseable_json_path())
@@ -336,7 +336,7 @@ async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageErr
 
 async fn validate_credentials() -> anyhow::Result<()> {
     // check if your creds match with others
-    let store = CONFIG.storage().get_object_store();
+    let store = PARSEABLE.storage().get_object_store();
     let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let ingestor_metadata = store
         .get_objects(
@@ -355,7 +355,7 @@ async fn validate_credentials() -> anyhow::Result<()> {
 
         let token = base64::prelude::BASE64_STANDARD.encode(format!(
             "{}:{}",
-            CONFIG.options.username, CONFIG.options.password
+            PARSEABLE.options.username, PARSEABLE.options.password
         ));
 
         let token = format!("Basic {}", token);

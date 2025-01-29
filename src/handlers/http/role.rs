@@ -24,7 +24,7 @@ use actix_web::{
 use http::StatusCode;
 
 use crate::{
-    option::CONFIG,
+    parseable::PARSEABLE,
     rbac::{
         map::{mut_roles, DEFAULT_ROLE},
         role::model::DefaultPrivilege,
@@ -102,7 +102,7 @@ pub async fn get_default() -> Result<impl Responder, RoleError> {
 }
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
-    let metadata = CONFIG
+    let metadata = PARSEABLE
         .storage()
         .get_object_store()
         .get_metadata()

@@ -24,8 +24,8 @@ mod stream_metadata_migration;
 use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{
-    metadata::load_stream_metadata_on_server_start,
-    option::{Config, Mode, CONFIG},
+    option::Mode,
+    parseable::{Parseable, PARSEABLE},
     storage::{
         object_storage::{parseable_json_path, schema_path, stream_json_path},
         ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
@@ -43,7 +43,7 @@ use tracing::error;
 /// Migrate the metdata from v1 or v2 to v3
 /// This is a one time migration
 pub async fn run_metadata_migration(
-    config: &Config,
+    config: &Parseable,
     parseable_json: &Option<Bytes>,
 ) -> anyhow::Result<()> {
     let object_store = config.storage().get_object_store();
@@ -131,7 +131,7 @@ pub async fn run_metadata_migration(
 }
 
 /// run the migration for all streams
-pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
+pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
     let storage = config.storage().get_object_store();
     let streams = storage.list_streams().await?;
     for stream in streams {
@@ -188,7 +188,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
 
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
-        if CONFIG.options.mode != Mode::Ingest {
+        if PARSEABLE.options.mode != Mode::Ingest {
             return Ok(());
         }
         stream_meta_found = false;
@@ -253,9 +253,9 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         arrow_schema = serde_json::from_slice(&schema)?;
     }
 
-    if let Err(err) =
-        load_stream_metadata_on_server_start(storage, stream, arrow_schema, stream_metadata_value)
-            .await
+    if let Err(err) = PARSEABLE
+        .load_stream_metadata_on_server_start(stream, arrow_schema, stream_metadata_value)
+        .await
     {
         error!("could not populate local metadata. {:?}", err);
         return Err(err.into());
@@ -271,7 +271,7 @@ pub fn to_bytes(any: &(impl ?Sized + Serialize)) -> Bytes {
         .expect("serialize cannot fail")
 }
 
-pub fn get_staging_metadata(config: &Config) -> anyhow::Result<Option<serde_json::Value>> {
+pub fn get_staging_metadata(config: &Parseable) -> anyhow::Result<Option<serde_json::Value>> {
     let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME).to_path(config.staging_dir());
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -294,7 +294,10 @@ pub async fn put_remote_metadata(
     Ok(storage.put_object(&path, metadata).await?)
 }
 
-pub fn put_staging_metadata(config: &Config, metadata: &serde_json::Value) -> anyhow::Result<()> {
+pub fn put_staging_metadata(
+    config: &Parseable,
+    metadata: &serde_json::Value,
+) -> anyhow::Result<()> {
     let path = config.staging_dir().join(".parseable.json");
     let mut file = OpenOptions::new()
         .create(true)
@@ -305,7 +308,7 @@ pub fn put_staging_metadata(config: &Config, metadata: &serde_json::Value) -> an
     Ok(())
 }
 
-pub async fn run_file_migration(config: &Config) -> anyhow::Result<()> {
+pub async fn run_file_migration(config: &Parseable) -> anyhow::Result<()> {
     let object_store = config.storage().get_object_store();
 
     let old_meta_file_path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);

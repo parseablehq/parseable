@@ -37,7 +37,7 @@ use crate::handlers::http::cluster::get_ingestor_info;
 use crate::handlers::http::query::{into_query, update_schema_when_distributed};
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::option::CONFIG;
+use crate::parseable::PARSEABLE;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
@@ -55,7 +55,6 @@ use futures::stream;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::handlers::livetail::extract_session_key;
-use crate::metadata::STREAM_INFO;
 use crate::rbac;
 use crate::rbac::Users;
 
@@ -112,7 +111,8 @@ impl FlightService for AirServiceImpl {
         let table_name = request.into_inner().path;
         let table_name = table_name[0].clone();
 
-        let schema = STREAM_INFO
+        let schema = PARSEABLE
+            .streams
             .schema(&table_name)
             .map_err(|err| Status::failed_precondition(err.to_string()))?;
 
@@ -283,13 +283,12 @@ impl FlightService for AirServiceImpl {
 }
 
 pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send {
-    let mut addr: SocketAddr = CONFIG
+    let mut addr: SocketAddr = PARSEABLE
         .options
         .address
         .parse()
-        .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as a socket address. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-CONFIG.options.address, err));
-    addr.set_port(CONFIG.options.flight_port);
+        .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as a socket address. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", PARSEABLE.options.address, err));
+    addr.set_port(PARSEABLE.options.flight_port);
 
     let service = AirServiceImpl {};
 
@@ -301,7 +300,10 @@ CONFIG.options.address, err));
 
     let cors = cross_origin_config();
 
-    let identity = match (&CONFIG.options.tls_cert_path, &CONFIG.options.tls_key_path) {
+    let identity = match (
+        &PARSEABLE.options.tls_cert_path,
+        &PARSEABLE.options.tls_key_path,
+    ) {
         (Some(cert), Some(key)) => {
             match (std::fs::read_to_string(cert), std::fs::read_to_string(key)) {
                 (Ok(cert_file), Ok(key_file)) => {

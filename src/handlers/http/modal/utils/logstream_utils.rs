@@ -30,8 +30,8 @@ use crate::{
         CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
         TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
     },
-    metadata::{self, SchemaVersion, STREAM_INFO},
-    option::{Mode, CONFIG},
+    metadata::SchemaVersion,
+    option::Mode,
     parseable::PARSEABLE,
     static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
     storage::StreamType,
@@ -54,7 +54,7 @@ pub async fn create_update_stream(
         log_source,
     } = headers.into();
 
-    if metadata::STREAM_INFO.stream_exists(stream_name) && !update_stream_flag {
+    if PARSEABLE.streams.stream_exists(stream_name) && !update_stream_flag {
         return Err(StreamError::Custom {
             msg: format!(
                 "Logstream {stream_name} already exists, please create a new log stream with unique name"
@@ -63,8 +63,8 @@ pub async fn create_update_stream(
         });
     }
 
-    if !metadata::STREAM_INFO.stream_exists(stream_name)
-        && CONFIG.options.mode == Mode::Query
+    if !PARSEABLE.streams.stream_exists(stream_name)
+        && PARSEABLE.options.mode == Mode::Query
         && PARSEABLE
             .create_stream_and_schema_from_storage(stream_name)
             .await?
@@ -134,7 +134,7 @@ async fn update_stream(
     time_partition_limit: &str,
     custom_partition: &str,
 ) -> Result<HeaderMap, StreamError> {
-    if !STREAM_INFO.stream_exists(stream_name) {
+    if !PARSEABLE.streams.stream_exists(stream_name) {
         return Err(StreamError::StreamNotFound(stream_name.to_string()));
     }
     if !time_partition.is_empty() {
@@ -300,7 +300,7 @@ pub async fn update_time_partition_limit_in_stream(
     stream_name: String,
     time_partition_limit: NonZeroU32,
 ) -> Result<(), CreateStreamError> {
-    let storage = CONFIG.storage().get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
     if let Err(err) = storage
         .update_time_partition_limit_in_stream(&stream_name, time_partition_limit)
         .await
@@ -308,7 +308,8 @@ pub async fn update_time_partition_limit_in_stream(
         return Err(CreateStreamError::Storage { stream_name, err });
     }
 
-    if metadata::STREAM_INFO
+    if PARSEABLE
+        .streams
         .update_time_partition_limit(&stream_name, time_partition_limit)
         .is_err()
     {
@@ -325,10 +326,13 @@ pub async fn update_custom_partition_in_stream(
     stream_name: String,
     custom_partition: &str,
 ) -> Result<(), CreateStreamError> {
-    let static_schema_flag = STREAM_INFO.get_static_schema_flag(&stream_name).unwrap();
-    let time_partition = STREAM_INFO.get_time_partition(&stream_name).unwrap();
+    let static_schema_flag = PARSEABLE
+        .streams
+        .get_static_schema_flag(&stream_name)
+        .unwrap();
+    let time_partition = PARSEABLE.streams.get_time_partition(&stream_name).unwrap();
     if static_schema_flag {
-        let schema = STREAM_INFO.schema(&stream_name).unwrap();
+        let schema = PARSEABLE.streams.schema(&stream_name).unwrap();
 
         if !custom_partition.is_empty() {
             let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
@@ -367,7 +371,7 @@ pub async fn update_custom_partition_in_stream(
             }
         }
     }
-    let storage = CONFIG.storage().get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
     if let Err(err) = storage
         .update_custom_partition_in_stream(&stream_name, custom_partition)
         .await
@@ -375,7 +379,8 @@ pub async fn update_custom_partition_in_stream(
         return Err(CreateStreamError::Storage { stream_name, err });
     }
 
-    if metadata::STREAM_INFO
+    if PARSEABLE
+        .streams
         .update_custom_partition(&stream_name, custom_partition.to_string())
         .is_err()
     {
@@ -404,7 +409,7 @@ pub async fn create_stream(
         validator::stream_name(&stream_name, stream_type)?;
     }
     // Proceed to create log stream if it doesn't exist
-    let storage = CONFIG.storage().get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
 
     match storage
         .create_stream(
@@ -430,7 +435,7 @@ pub async fn create_stream(
                 static_schema.insert(field_name, field);
             }
 
-            metadata::STREAM_INFO.add_stream(
+            PARSEABLE.streams.add_stream(
                 stream_name.to_string(),
                 created_at,
                 time_partition.to_string(),
@@ -482,7 +487,7 @@ pub async fn create_stream(
 /// }
 /// ```
 pub async fn update_first_event_at(stream_name: &str, first_event_at: &str) -> Option<String> {
-    let storage = CONFIG.storage().get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
     if let Err(err) = storage
         .update_first_event_in_stream(stream_name, first_event_at)
         .await
@@ -493,7 +498,10 @@ pub async fn update_first_event_at(stream_name: &str, first_event_at: &str) -> O
         );
     }
 
-    if let Err(err) = metadata::STREAM_INFO.set_first_event_at(stream_name, first_event_at) {
+    if let Err(err) = PARSEABLE
+        .streams
+        .set_first_event_at(stream_name, first_event_at)
+    {
         error!(
             "Failed to update first_event_at in stream info for stream {:?}: {err:?}",
             stream_name

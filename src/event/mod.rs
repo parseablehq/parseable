@@ -28,7 +28,7 @@ use tracing::error;
 
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
-use crate::{metadata, storage::StreamType};
+use crate::{parseable::PARSEABLE, storage::StreamType};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
@@ -78,7 +78,7 @@ impl Event {
             &self.stream_type,
         )?;
 
-        metadata::STREAM_INFO.update_stats(
+        PARSEABLE.streams.update_stats(
             &self.stream_name,
             self.origin_format,
             self.origin_size,
@@ -88,7 +88,8 @@ impl Event {
 
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
 
-        if let Err(e) = metadata::STREAM_INFO
+        if let Err(e) = PARSEABLE
+            .streams
             .check_alerts(&self.stream_name, &self.rb)
             .await
         {
@@ -129,7 +130,7 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
 }
 
 pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), EventError> {
-    let mut stream_metadata = metadata::STREAM_INFO.write().expect("lock poisoned");
+    let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
 
     let map = &mut stream_metadata
         .get_mut(stream_name)

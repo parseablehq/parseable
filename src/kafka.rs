@@ -35,7 +35,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::audit::AuditLogBuilder;
 use crate::event::format::LogSource;
-use crate::option::CONFIG;
+use crate::parseable::PARSEABLE;
 use crate::{
     event::{
         self,
@@ -43,7 +43,7 @@ use crate::{
         format::{self, EventFormat},
     },
     handlers::http::ingest::{create_stream_if_not_exists, PostError},
-    metadata::{error::stream_info::MetadataError, STREAM_INFO},
+    metadata::error::stream_info::MetadataError,
     storage::StreamType,
 };
 
@@ -92,18 +92,18 @@ pub enum KafkaError {
 }
 
 fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
-    if let Some(topics) = &CONFIG.options.kafka_topics {
+    if let Some(topics) = &PARSEABLE.options.kafka_topics {
         // topics can be a comma separated list of topics to subscribe to
         let topics = topics.split(',').map(|v| v.to_owned()).collect_vec();
 
-        let host = if CONFIG.options.kafka_host.is_some() {
-            CONFIG.options.kafka_host.as_ref()
+        let host = if PARSEABLE.options.kafka_host.is_some() {
+            PARSEABLE.options.kafka_host.as_ref()
         } else {
             return Err(KafkaError::NoVarError("P_KAKFA_HOST"));
         };
 
-        let group = if CONFIG.options.kafka_group.is_some() {
-            CONFIG.options.kafka_group.as_ref()
+        let group = if PARSEABLE.options.kafka_group.is_some() {
+            PARSEABLE.options.kafka_group.as_ref()
         } else {
             return Err(KafkaError::NoVarError("P_KAKFA_GROUP"));
         };
@@ -112,18 +112,18 @@ fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
         conf.set("bootstrap.servers", host.unwrap());
         conf.set("group.id", group.unwrap());
 
-        if let Some(val) = CONFIG.options.kafka_client_id.as_ref() {
+        if let Some(val) = PARSEABLE.options.kafka_client_id.as_ref() {
             conf.set("client.id", val);
         }
 
-        if let Some(ssl_protocol) = CONFIG.options.kafka_security_protocol.as_ref() {
+        if let Some(ssl_protocol) = PARSEABLE.options.kafka_security_protocol.as_ref() {
             conf.set("security.protocol", serde_json::to_string(&ssl_protocol)?);
         }
 
         let consumer: StreamConsumer = conf.create()?;
         consumer.subscribe(&topics.iter().map(|v| v.as_str()).collect_vec())?;
 
-        if let Some(vals_raw) = CONFIG.options.kafka_partitions.as_ref() {
+        if let Some(vals_raw) = PARSEABLE.options.kafka_partitions.as_ref() {
             // partitions is a comma separated pairs of topic:partitions
             let mut topic_partition_pairs = Vec::new();
             let mut set = true;
@@ -163,7 +163,7 @@ fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
 }
 
 fn resolve_schema(stream_name: &str) -> Result<HashMap<String, Arc<Field>>, KafkaError> {
-    let hash_map = STREAM_INFO.read().unwrap();
+    let hash_map = PARSEABLE.streams.read().unwrap();
     let raw = hash_map
         .get(stream_name)
         .ok_or_else(|| KafkaError::StreamNotFound(stream_name.to_owned()))?;
@@ -187,9 +187,9 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
         data: serde_json::from_slice(payload)?,
     };
 
-    let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
-    let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
-    let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
+    let time_partition = PARSEABLE.streams.get_time_partition(stream_name)?;
+    let static_schema_flag = PARSEABLE.streams.get_static_schema_flag(stream_name)?;
+    let schema_version = PARSEABLE.streams.get_schema_version(stream_name)?;
 
     let (rb, is_first) = event
         .into_recordbatch(
@@ -239,7 +239,7 @@ pub async fn setup_integration() {
     while let Ok(curr) = stream.next().await.unwrap() {
         // TODO: maybe we should not constructs an audit log for each kafka message, but do so at the batch level
         let log_builder = AuditLogBuilder::default()
-            .with_host(CONFIG.options.kafka_host.as_deref().unwrap_or(""))
+            .with_host(PARSEABLE.options.kafka_host.as_deref().unwrap_or(""))
             .with_user_agent("Kafka Client")
             .with_protocol("Kafka")
             .with_stream(curr.topic());

@@ -47,7 +47,7 @@ use super::API_BASE_PATH;
 use super::API_VERSION;
 use crate::handlers::http::health_check;
 use crate::oidc;
-use crate::option::CONFIG;
+use crate::parseable::PARSEABLE;
 
 pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
 
@@ -92,9 +92,9 @@ pub trait ParseableServer {
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
-            &CONFIG.options.tls_cert_path,
-            &CONFIG.options.tls_key_path,
-            &CONFIG.options.trusted_ca_certs_path,
+            &PARSEABLE.options.tls_cert_path,
+            &PARSEABLE.options.tls_key_path,
+            &PARSEABLE.options.trusted_ca_certs_path,
         )?;
 
         // fn that creates the app
@@ -117,10 +117,10 @@ pub trait ParseableServer {
         // Start the server with or without TLS
         let srv = if let Some(config) = ssl {
             http_server
-                .bind_rustls_0_22(&CONFIG.options.address, config)?
+                .bind_rustls_0_22(&PARSEABLE.options.address, config)?
                 .run()
         } else {
-            http_server.bind(&CONFIG.options.address)?.run()
+            http_server.bind(&PARSEABLE.options.address)?.run()
         };
 
         // Graceful shutdown handling
@@ -134,7 +134,7 @@ pub trait ParseableServer {
 
             // Perform S3 sync and wait for completion
             info!("Starting data sync to S3...");
-            if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
+            if let Err(e) = PARSEABLE.storage().get_object_store().sync(true).await {
                 warn!("Failed to sync local data with object store. {:?}", e);
             } else {
                 info!("Successfully synced all data to S3.");

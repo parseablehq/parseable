@@ -16,10 +16,9 @@
  *
  */
 
+use parseable::parseable::PARSEABLE;
 use parseable::{
-    banner,
-    option::{Mode, CONFIG},
-    rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
+    banner, option::Mode, rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
@@ -40,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // these are empty ptrs so mem footprint should be minimal
-    let server: Box<dyn ParseableServer> = match CONFIG.options.mode {
+    let server: Box<dyn ParseableServer> = match PARSEABLE.options.mode {
         Mode::Query => Box::new(QueryServer),
         Mode::Ingest => Box::new(IngestServer),
         Mode::All => Box::new(Server),
@@ -49,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     // load metadata from persistence
     let parseable_json = server.load_metadata().await?;
     let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
-    banner::print(&CONFIG, &metadata).await;
+    banner::print(&PARSEABLE, &metadata).await;
     // initialize the rbac map
     rbac::map::init(&metadata);
     // keep metadata info in mem
@@ -60,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
         all(target_os = "macos", target_arch = "aarch64")
     ))]
     // load kafka server
-    if CONFIG.options.mode != Mode::Query {
+    if PARSEABLE.options.mode != Mode::Query {
         tokio::task::spawn(kafka::setup_integration());
     }
 

@@ -34,7 +34,7 @@ use url::Url;
 use crate::{
     handlers::{COOKIE_AGE_DAYS, OIDC_SCOPE, SESSION_COOKIE_NAME, USER_COOKIE_NAME},
     oidc::{Claims, DiscoveredClient},
-    option::CONFIG,
+    parseable::PARSEABLE,
     rbac::{
         self,
         map::{SessionKey, DEFAULT_ROLE},
@@ -197,7 +197,7 @@ pub async fn reply_login(
     let redirect_url = login_query
         .state
         .clone()
-        .unwrap_or_else(|| CONFIG.options.address.to_string());
+        .unwrap_or_else(|| PARSEABLE.options.address.to_string());
 
     Ok(redirect_to_client(
         &redirect_url,
@@ -351,7 +351,7 @@ async fn update_user_if_changed(
 }
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
-    let metadata = CONFIG
+    let metadata = PARSEABLE
         .storage()
         .get_object_store()
         .get_metadata()

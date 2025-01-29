@@ -29,7 +29,8 @@ use std::io;
 
 use crate::{
     metadata::error::stream_info::MetadataError,
-    option::{Mode, CONFIG, JOIN_COMMUNITY},
+    option::Mode,
+    parseable::{JOIN_COMMUNITY, PARSEABLE},
     rbac::{role::model::DefaultPrivilege, user::User},
     storage::ObjectStorageError,
     utils::uid,
@@ -69,11 +70,11 @@ impl Default for StorageMetadata {
     fn default() -> Self {
         Self {
             version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
-            mode: CONFIG.storage_name.to_owned(),
-            staging: CONFIG.staging_dir().to_path_buf(),
-            storage: CONFIG.storage().get_endpoint(),
+            mode: PARSEABLE.storage_name.to_owned(),
+            staging: PARSEABLE.staging_dir().to_path_buf(),
+            storage: PARSEABLE.storage().get_endpoint(),
             deployment_id: uid::gen(),
-            server_mode: CONFIG.options.mode,
+            server_mode: PARSEABLE.options.mode,
             users: Vec::new(),
             streams: Vec::new(),
             roles: HashMap::default(),
@@ -120,7 +121,7 @@ pub async fn resolve_parseable_metadata(
         EnvChange::None(metadata) => {
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
-            if CONFIG.options.mode ==  Mode::All {
+            if PARSEABLE.options.mode ==  Mode::All {
                 standalone_after_distributed(metadata.server_mode)?;
             }
             Ok(metadata)
@@ -131,16 +132,16 @@ pub async fn resolve_parseable_metadata(
         EnvChange::NewStaging(mut metadata) => {
             // if server is started in ingest mode,we need to make sure that query mode has been started
             // i.e the metadata is updated to reflect the server mode = Query
-            if metadata.server_mode== Mode::All && CONFIG.options.mode == Mode::Ingest {
+            if metadata.server_mode== Mode::All && PARSEABLE.options.mode == Mode::Ingest {
                 Err("Starting Ingest Mode is not allowed, Since Query Server has not been started yet")
             } else {
-                create_dir_all(CONFIG.staging_dir())?;
-                metadata.staging = CONFIG.staging_dir().canonicalize()?;
+                create_dir_all(PARSEABLE.staging_dir())?;
+                metadata.staging = PARSEABLE.staging_dir().canonicalize()?;
                 // this flag is set to true so that metadata is copied to staging
                 overwrite_staging = true;
                 // overwrite remote in all and query mode
                 // because staging dir has changed.
-                match CONFIG.options.mode {
+                match PARSEABLE.options.mode {
                     Mode::All => {
                         standalone_after_distributed(metadata.server_mode)
                             .map_err(|err| {
@@ -150,25 +151,25 @@ pub async fn resolve_parseable_metadata(
                     },
                     Mode::Query => {
                         overwrite_remote = true;
-                        metadata.server_mode = CONFIG.options.mode;
-                        metadata.staging = CONFIG.staging_dir().to_path_buf();
+                        metadata.server_mode = PARSEABLE.options.mode;
+                        metadata.staging = PARSEABLE.staging_dir().to_path_buf();
                     },
                     Mode::Ingest => {
                         // if ingest server is started fetch the metadata from remote
                         // update the server mode for local metadata
-                        metadata.server_mode = CONFIG.options.mode;
-                        metadata.staging = CONFIG.staging_dir().to_path_buf();
+                        metadata.server_mode = PARSEABLE.options.mode;
+                        metadata.staging = PARSEABLE.staging_dir().to_path_buf();
                       },
                 }
                 Ok(metadata)
             }
         }
         EnvChange::CreateBoth => {
-            create_dir_all(CONFIG.staging_dir())?;
+            create_dir_all(PARSEABLE.staging_dir())?;
             let metadata = StorageMetadata::default();
             // new metadata needs to be set
             // if mode is query or all then both staging and remote
-            match CONFIG.options.mode {
+            match PARSEABLE.options.mode {
                 Mode::All | Mode::Query => overwrite_remote = true,
                 _ => (),
             }
@@ -184,7 +185,7 @@ pub async fn resolve_parseable_metadata(
         ObjectStorageError::UnhandledError(err)
     })?;
 
-    metadata.server_mode = CONFIG.options.mode;
+    metadata.server_mode = PARSEABLE.options.mode;
     if overwrite_remote {
         put_remote_metadata(&metadata).await?;
     }
@@ -205,7 +206,7 @@ fn determine_environment(
             // if both staging and remote have same deployment id but different server modes
             if staging.deployment_id == remote.deployment_id
                 && remote.server_mode == Mode::All
-                && (CONFIG.options.mode == Mode::Query || CONFIG.options.mode == Mode::Ingest)
+                && (PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Ingest)
             {
                 EnvChange::NewStaging(remote)
             } else if staging.deployment_id != remote.deployment_id {
@@ -247,7 +248,7 @@ fn standalone_after_distributed(remote_server_mode: Mode) -> Result<(), Metadata
 }
 
 pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
-    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME).to_path(CONFIG.staging_dir());
+    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME).to_path(PARSEABLE.staging_dir());
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {
@@ -262,15 +263,15 @@ pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
 }
 
 pub async fn put_remote_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
-    let client = CONFIG.storage().get_object_store();
+    let client = PARSEABLE.storage().get_object_store();
     client.put_metadata(metadata).await
 }
 
 pub fn put_staging_metadata(meta: &StorageMetadata) -> io::Result<()> {
     let mut staging_metadata = meta.clone();
-    staging_metadata.server_mode = CONFIG.options.mode;
-    staging_metadata.staging = CONFIG.staging_dir().to_path_buf();
-    let path = CONFIG.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
+    staging_metadata.server_mode = PARSEABLE.options.mode;
+    staging_metadata.staging = PARSEABLE.staging_dir().to_path_buf();
+    let path = PARSEABLE.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)

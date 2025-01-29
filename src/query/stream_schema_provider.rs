@@ -64,9 +64,8 @@ use crate::{
         self, column::TypedStatistics, manifest::Manifest, snapshot::ManifestItem, ManifestFile,
     },
     event::{self, DEFAULT_TIMESTAMP_KEY},
-    metadata::STREAM_INFO,
     metrics::QUERY_CACHE_HIT,
-    option::CONFIG,
+    parseable::PARSEABLE,
     storage::ObjectStorage,
 };
 
@@ -86,13 +85,13 @@ impl SchemaProvider for GlobalSchemaProvider {
     }
 
     fn table_names(&self) -> Vec<String> {
-        STREAM_INFO.list_streams()
+        PARSEABLE.streams.list_streams()
     }
 
     async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         if self.table_exist(name) {
             Ok(Some(Arc::new(StandardTableProvider {
-                schema: STREAM_INFO.schema(name).unwrap(),
+                schema: PARSEABLE.streams.schema(name).unwrap(),
                 stream: name.to_owned(),
                 url: self.storage.store_url(),
             })))
@@ -102,7 +101,7 @@ impl SchemaProvider for GlobalSchemaProvider {
     }
 
     fn table_exist(&self, name: &str) -> bool {
-        STREAM_INFO.stream_exists(name)
+        PARSEABLE.streams.stream_exists(name)
     }
 }
 
@@ -192,7 +191,7 @@ impl StandardTableProvider {
         let hot_tier_files = hot_tier_files
             .into_iter()
             .map(|mut file| {
-                let path = CONFIG
+                let path = PARSEABLE
                     .options
                     .hot_tier_storage_path
                     .as_ref()
@@ -302,7 +301,7 @@ impl StandardTableProvider {
             // TODO: figure out an elegant solution to this
             #[cfg(windows)]
             {
-                if CONFIG.storage_name.eq("drive") {
+                if PARSEABLE.storage_name.eq("drive") {
                     file_path = object_store::path::Path::from_absolute_path(file_path)
                         .unwrap()
                         .to_string();
@@ -427,7 +426,7 @@ impl TableProvider for StandardTableProvider {
             .object_store_registry
             .get_store(&self.url)
             .unwrap();
-        let glob_storage = CONFIG.storage().get_object_store();
+        let glob_storage = PARSEABLE.storage().get_object_store();
 
         let object_store_format = glob_storage
             .get_object_store_format(&self.stream)
@@ -452,7 +451,7 @@ impl TableProvider for StandardTableProvider {
             }
         };
         let mut merged_snapshot: snapshot::Snapshot = Snapshot::default();
-        if CONFIG.options.mode == Mode::Query {
+        if PARSEABLE.options.mode == Mode::Query {
             let path = RelativePathBuf::from_iter([&self.stream, STREAM_ROOT_DIRECTORY]);
             let obs = glob_storage
                 .get_objects(

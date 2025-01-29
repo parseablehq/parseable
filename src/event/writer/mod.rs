@@ -25,10 +25,7 @@ use std::{
     sync::{Arc, Mutex, RwLock},
 };
 
-use crate::{
-    option::{Mode, CONFIG},
-    storage::StreamType,
-};
+use crate::{option::Mode, parseable::PARSEABLE, storage::StreamType};
 
 use self::{errors::StreamWriterError, file_writer::FileWriter, mem_writer::MemWriter};
 use arrow_array::RecordBatch;
@@ -121,7 +118,7 @@ impl WriterTable {
             .expect("Stream exists")
             .lock()
             .unwrap();
-        if CONFIG.options.mode != Mode::Query || *stream_type == StreamType::Internal {
+        if PARSEABLE.options.mode != Mode::Query || *stream_type == StreamType::Internal {
             writer.push(
                 stream_name,
                 schema_key,

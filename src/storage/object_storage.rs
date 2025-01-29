@@ -34,9 +34,8 @@ use crate::option::Mode;
 use crate::{
     alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
-    metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
-    option::CONFIG,
+    parseable::PARSEABLE,
     stats::FullStats,
 };
 
@@ -161,7 +160,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<String, ObjectStorageError> {
         let format = ObjectStoreFormat {
             created_at: Local::now().to_rfc3339(),
-            permissions: vec![Permisssion::new(CONFIG.options.username.clone())],
+            permissions: vec![Permisssion::new(PARSEABLE.options.username.clone())],
             stream_type: Some(stream_type.to_string()),
             time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
             time_partition_limit: time_partition_limit.map(|limit| limit.to_string()),
@@ -169,8 +168,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             static_schema_flag,
             schema_version: SchemaVersion::V1, // NOTE: Newly created streams are all V1
             owner: Owner {
-                id: CONFIG.options.username.clone(),
-                group: CONFIG.options.username.clone(),
+                id: PARSEABLE.options.username.clone(),
+                group: PARSEABLE.options.username.clone(),
             },
             log_source,
             ..Default::default()
@@ -371,7 +370,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 let mut config = serde_json::from_slice::<ObjectStoreFormat>(&bytes)
                     .expect("parseable config is valid json");
 
-                if CONFIG.options.mode == Mode::Ingest {
+                if PARSEABLE.options.mode == Mode::Ingest {
                     config.stats = FullStats::default();
                     config.snapshot.manifest_list = vec![];
                 }
@@ -573,17 +572,19 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn sync(&self, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
-        if !Path::new(&CONFIG.staging_dir()).exists() {
+        if !Path::new(&PARSEABLE.staging_dir()).exists() {
             return Ok(());
         }
 
-        let streams = STREAM_INFO.list_streams();
+        let streams = PARSEABLE.streams.list_streams();
 
         for stream in &streams {
-            let time_partition = STREAM_INFO
+            let time_partition = PARSEABLE
+                .streams
                 .get_time_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let custom_partition = STREAM_INFO
+            let custom_partition = PARSEABLE
+                .streams
                 .get_custom_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
             let dir = StorageDir::new(stream);
@@ -597,7 +598,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {
-                let static_schema_flag = STREAM_INFO
+                let static_schema_flag = PARSEABLE
+                    .streams
                     .get_static_schema_flag(stream)
                     .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
                 if !static_schema_flag {
@@ -647,9 +649,10 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 let absolute_path = self
                     .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
                     .to_string();
-                let store = CONFIG.storage().get_object_store();
+                let store = PARSEABLE.storage().get_object_store();
                 let manifest =
-                    catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
+                    catalog::manifest::create_from_parquet_file(absolute_path.clone(), &file)
+                        .unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
 
                 let _ = fs::remove_file(file);
@@ -739,7 +742,7 @@ pub async fn commit_schema_to_storage(
     stream_name: &str,
     schema: Schema,
 ) -> Result<(), ObjectStorageError> {
-    let storage = CONFIG.storage().get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
     let stream_schema = storage.get_schema(stream_name).await?;
     let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
     storage.put_schema(stream_name, &new_schema).await
@@ -753,7 +756,7 @@ pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
 }
 
 pub fn schema_path(stream_name: &str) -> RelativePathBuf {
-    match CONFIG.options.mode {
+    match PARSEABLE.options.mode {
         Mode::Ingest => {
             let file_name = format!(
                 ".ingestor.{}{}",
@@ -771,7 +774,7 @@ pub fn schema_path(stream_name: &str) -> RelativePathBuf {
 
 #[inline(always)]
 pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
-    match &CONFIG.options.mode {
+    match &PARSEABLE.options.mode {
         Mode::Ingest => {
             let file_name = format!(
                 ".ingestor.{}{}",
@@ -820,7 +823,7 @@ fn alert_json_path(stream_name: &str) -> RelativePathBuf {
 
 #[inline(always)]
 pub fn manifest_path(prefix: &str) -> RelativePathBuf {
-    if CONFIG.options.mode == Mode::Ingest {
+    if PARSEABLE.options.mode == Mode::Ingest {
         let manifest_file_name = format!(
             "ingestor.{}.{}",
             INGESTOR_META.get_ingestor_id(),

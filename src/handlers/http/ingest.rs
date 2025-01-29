@@ -16,27 +16,9 @@
  *
  */
 
-use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
-use super::users::dashboards::DashboardError;
-use super::users::filters::FiltersError;
-use crate::event::format::LogSource;
-use crate::event::{
-    self,
-    error::EventError,
-    format::{self, EventFormat},
-};
-use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
-use crate::metadata::error::stream_info::MetadataError;
-use crate::metadata::{SchemaVersion, STREAM_INFO};
-use crate::option::{Mode, CONFIG};
-use crate::otel::logs::flatten_otel_logs;
-use crate::otel::metrics::flatten_otel_metrics;
-use crate::otel::traces::flatten_otel_traces;
-use crate::parseable::PARSEABLE;
-use crate::storage::{ObjectStorageError, StreamType};
-use crate::utils::header_parsing::ParseHeaderError;
-use crate::utils::json::flatten::JsonFlattenError;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use actix_web::web::{Json, Path};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
@@ -48,8 +30,26 @@ use opentelemetry_proto::tonic::logs::v1::LogsData;
 use opentelemetry_proto::tonic::metrics::v1::MetricsData;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
+
+use crate::event;
+use crate::event::error::EventError;
+use crate::event::format::{self, EventFormat, LogSource};
+use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
+use crate::metadata::error::stream_info::MetadataError;
+use crate::metadata::SchemaVersion;
+use crate::option::Mode;
+use crate::otel::logs::flatten_otel_logs;
+use crate::otel::metrics::flatten_otel_metrics;
+use crate::otel::traces::flatten_otel_traces;
+use crate::parseable::PARSEABLE;
+use crate::storage::{ObjectStorageError, StreamType};
+use crate::utils::header_parsing::ParseHeaderError;
+use crate::utils::json::flatten::JsonFlattenError;
+
+use super::logstream::error::{CreateStreamError, StreamError};
+use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
+use super::users::dashboards::DashboardError;
+use super::users::filters::FiltersError;
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
@@ -60,7 +60,7 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     };
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    let internal_stream_names = STREAM_INFO.list_internal_streams();
+    let internal_stream_names = PARSEABLE.streams.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
@@ -82,7 +82,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
     let parsed_timestamp = Utc::now().naive_utc();
     let (rb, is_first) = {
         let body_val: Value = serde_json::from_slice(&body)?;
-        let hash_map = STREAM_INFO.read().unwrap();
+        let hash_map = PARSEABLE.streams.read().unwrap();
         let schema = hash_map
             .get(&stream_name)
             .ok_or(PostError::StreamNotFound(stream_name.clone()))?
@@ -214,15 +214,15 @@ pub async fn post_event(
 ) -> Result<HttpResponse, PostError> {
     let stream_name = stream_name.into_inner();
 
-    let internal_stream_names = STREAM_INFO.list_internal_streams();
+    let internal_stream_names = PARSEABLE.streams.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    if !STREAM_INFO.stream_exists(&stream_name) {
+    if !PARSEABLE.streams.stream_exists(&stream_name) {
         // For distributed deployments, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.options.mode != Mode::All {
+        if PARSEABLE.options.mode != Mode::All {
             match PARSEABLE
                 .create_stream_and_schema_from_storage(&stream_name)
                 .await
@@ -272,7 +272,7 @@ pub async fn create_stream_if_not_exists(
     log_source: LogSource,
 ) -> Result<bool, PostError> {
     let mut stream_exists = false;
-    if STREAM_INFO.stream_exists(stream_name) {
+    if PARSEABLE.streams.stream_exists(stream_name) {
         stream_exists = true;
         return Ok(stream_exists);
     }
@@ -280,7 +280,7 @@ pub async fn create_stream_if_not_exists(
     // For distributed deployments, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if CONFIG.options.mode != Mode::All
+    if PARSEABLE.options.mode != Mode::All
         && PARSEABLE
             .create_stream_and_schema_from_storage(stream_name)
             .await?
