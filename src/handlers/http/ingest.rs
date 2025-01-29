@@ -26,7 +26,6 @@ use crate::event::{
     error::EventError,
     format::{self, EventFormat},
 };
-use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{SchemaVersion, STREAM_INFO};
@@ -34,6 +33,7 @@ use crate::option::{Mode, CONFIG};
 use crate::otel::logs::flatten_otel_logs;
 use crate::otel::metrics::flatten_otel_metrics;
 use crate::otel::traces::flatten_otel_traces;
+use crate::parseable::PARSEABLE;
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
@@ -213,6 +213,7 @@ pub async fn post_event(
     Json(json): Json<Value>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name = stream_name.into_inner();
+
     let internal_stream_names = STREAM_INFO.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
@@ -222,7 +223,10 @@ pub async fn post_event(
         //check if it exists in the storage
         //create stream and schema from storage
         if CONFIG.options.mode != Mode::All {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(PostError::StreamNotFound(stream_name.clone())),
             }
@@ -277,7 +281,9 @@ pub async fn create_stream_if_not_exists(
     //check if it exists in the storage
     //create stream and schema from storage
     if CONFIG.options.mode != Mode::All
-        && create_stream_and_schema_from_storage(stream_name).await?
+        && PARSEABLE
+            .create_stream_and_schema_from_storage(stream_name)
+            .await?
     {
         return Ok(stream_exists);
     }

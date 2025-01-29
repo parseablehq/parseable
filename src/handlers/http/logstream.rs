@@ -20,9 +20,7 @@ use self::error::{CreateStreamError, StreamError};
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::ingest::create_stream_if_not_exists;
-use super::modal::utils::logstream_utils::{
-    create_stream_and_schema_from_storage, create_update_stream, update_first_event_at,
-};
+use super::modal::utils::logstream_utils::{create_update_stream, update_first_event_at};
 use super::query::update_schema_when_distributed;
 use crate::alerts::Alerts;
 use crate::event::format::{override_data_type, LogSource};
@@ -31,6 +29,7 @@ use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
+use crate::parseable::PARSEABLE;
 use crate::rbac::role::Action;
 use crate::rbac::Users;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
@@ -138,7 +137,10 @@ pub async fn schema(stream_name: Path<String>) -> Result<impl Responder, StreamE
     match STREAM_INFO.schema(&stream_name) {
         Ok(_) => {}
         Err(_) if CONFIG.options.mode == Mode::Query => {
-            if !create_stream_and_schema_from_storage(&stream_name).await? {
+            if !PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await?
+            {
                 return Err(StreamError::StreamNotFound(stream_name.clone()));
             }
         }
@@ -225,7 +227,10 @@ pub async fn put_alert(
         //check if it exists in the storage
         //create stream and schema from storage
         if CONFIG.options.mode == Mode::Query {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
             }
@@ -273,7 +278,10 @@ pub async fn get_retention(stream_name: Path<String>) -> Result<impl Responder, 
         //check if it exists in the storage
         //create stream and schema from storage
         if CONFIG.options.mode == Mode::Query {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
             }
@@ -306,7 +314,10 @@ pub async fn put_retention(
         //check if it exists in the storage
         //create stream and schema from storage
         if CONFIG.options.mode == Mode::Query {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
             }
@@ -371,7 +382,10 @@ pub async fn get_stats(
         //check if it exists in the storage
         //create stream and schema from storage
         if cfg!(not(test)) && CONFIG.options.mode == Mode::Query {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
             }
@@ -541,7 +555,10 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
     let stream_name = stream_name.into_inner();
     if !STREAM_INFO.stream_exists(&stream_name) {
         if CONFIG.options.mode == Mode::Query {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
             }
@@ -594,7 +611,10 @@ pub async fn put_stream_hot_tier(
         //check if it exists in the storage
         //create stream and schema from storage
         if CONFIG.options.mode == Mode::Query {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
             }
@@ -646,7 +666,10 @@ pub async fn get_stream_hot_tier(stream_name: Path<String>) -> Result<impl Respo
         //check if it exists in the storage
         //create stream and schema from storage
         if CONFIG.options.mode == Mode::Query {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
             }
@@ -673,7 +696,10 @@ pub async fn delete_stream_hot_tier(
         //check if it exists in the storage
         //create stream and schema from storage
         if CONFIG.options.mode == Mode::Query {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
             }

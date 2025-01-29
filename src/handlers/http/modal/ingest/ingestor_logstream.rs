@@ -28,13 +28,11 @@ use crate::{
     catalog::remove_manifest_from_snapshot,
     event,
     handlers::http::{
-        logstream::error::StreamError,
-        modal::utils::logstream_utils::{
-            create_stream_and_schema_from_storage, create_update_stream,
-        },
+        logstream::error::StreamError, modal::utils::logstream_utils::create_update_stream,
     },
     metadata,
     option::CONFIG,
+    parseable::PARSEABLE,
     stats,
 };
 
@@ -48,7 +46,8 @@ pub async fn retention_cleanup(
     //check if it exists in the storage
     //create stream and schema from storage
     if !metadata::STREAM_INFO.stream_exists(&stream_name)
-        && !create_stream_and_schema_from_storage(&stream_name)
+        && !PARSEABLE
+            .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {
@@ -67,7 +66,8 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     //check if it exists in the storage
     //create stream and schema from storage
     if !metadata::STREAM_INFO.stream_exists(&stream_name)
-        && !create_stream_and_schema_from_storage(&stream_name)
+        && !PARSEABLE
+            .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {

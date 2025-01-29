@@ -40,6 +40,7 @@ use crate::metadata::STREAM_INFO;
 use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
+use crate::parseable::PARSEABLE;
 use crate::query::error::ExecuteError;
 use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
@@ -50,8 +51,6 @@ use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
 use crate::utils::user_auth_for_query;
-
-use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
 /// Query Request through http endpoint.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -195,7 +194,9 @@ pub async fn create_streams_for_querier() {
         let stream_name = stream.name;
 
         if !querier_streams.contains(&stream_name) {
-            let _ = create_stream_and_schema_from_storage(&stream_name).await;
+            let _ = PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await;
         }
     }
 }

@@ -41,13 +41,12 @@ use crate::{
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
         logstream::{error::StreamError, get_stats_date},
-        modal::utils::logstream_utils::{
-            create_stream_and_schema_from_storage, create_update_stream,
-        },
+        modal::utils::logstream_utils::create_update_stream,
     },
     hottier::HotTierManager,
     metadata::{self, STREAM_INFO},
     option::CONFIG,
+    parseable::PARSEABLE,
     stats::{self, Stats},
     storage::{StorageDir, StreamType},
 };
@@ -59,7 +58,8 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     //check if it exists in the storage
     //create stream and schema from storage
     if !metadata::STREAM_INFO.stream_exists(&stream_name)
-        && !create_stream_and_schema_from_storage(&stream_name)
+        && !PARSEABLE
+            .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {
@@ -132,7 +132,8 @@ pub async fn get_stats(
     //check if it exists in the storage
     //create stream and schema from storage
     if !metadata::STREAM_INFO.stream_exists(&stream_name)
-        && !create_stream_and_schema_from_storage(&stream_name)
+        && !PARSEABLE
+            .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {
