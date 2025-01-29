@@ -75,7 +75,7 @@ pub struct LogStreamMetadata {
     pub custom_partition: Option<String>,
     pub static_schema_flag: bool,
     pub hot_tier_enabled: bool,
-    pub stream_type: Option<String>,
+    pub stream_type: StreamType,
     pub log_source: LogSource,
 }
 
@@ -332,7 +332,7 @@ impl StreamInfo {
             } else {
                 static_schema
             },
-            stream_type: Some(stream_type.to_string()),
+            stream_type,
             schema_version,
             log_source,
             ..Default::default()
@@ -357,16 +357,17 @@ impl StreamInfo {
         self.read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|(_, v)| v.stream_type.clone().unwrap() == StreamType::Internal.to_string())
+            .filter(|(_, v)| v.stream_type == StreamType::Internal)
             .map(|(k, _)| k.clone())
             .collect()
     }
 
-    pub fn stream_type(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        map.get(stream_name)
+    pub fn stream_type(&self, stream_name: &str) -> Result<StreamType, MetadataError> {
+        self.read()
+            .expect(LOCK_EXPECT)
+            .get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.stream_type.clone())
+            .map(|metadata| metadata.stream_type)
     }
 
     pub fn update_stats(
