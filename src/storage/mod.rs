@@ -113,7 +113,8 @@ pub struct ObjectStoreFormat {
     pub static_schema_flag: bool,
     #[serde(default)]
     pub hot_tier_enabled: bool,
-    pub stream_type: Option<String>,
+    #[serde(default)]
+    pub stream_type: StreamType,
     #[serde(default)]
     pub log_source: LogSource,
 }
@@ -138,7 +139,8 @@ pub struct StreamInfo {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub static_schema_flag: bool,
-    pub stream_type: Option<String>,
+    #[serde(default)]
+    pub stream_type: StreamType,
     pub log_source: LogSource,
 }
 
@@ -203,7 +205,7 @@ impl Default for ObjectStoreFormat {
             version: CURRENT_SCHEMA_VERSION.to_string(),
             schema_version: SchemaVersion::V1, // Newly created streams should be v1
             objectstore_format: CURRENT_OBJECT_STORE_VERSION.to_string(),
-            stream_type: Some(StreamType::UserDefined.to_string()),
+            stream_type: StreamType::UserDefined,
             created_at: Local::now().to_rfc3339(),
             first_event_at: None,
             owner: Owner::new("".to_string(), "".to_string()),
