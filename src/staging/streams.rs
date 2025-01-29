@@ -233,7 +233,7 @@ impl<'a> Stream<'a> {
 
     fn flush(&self) {
         let mut writer = self.writer.lock().unwrap();
-        for writer in writer.disk.values_mut() {
+        for (_, mut writer) in writer.disk.drain() {
             _ = writer.finish();
         }
     }
