@@ -17,7 +17,7 @@ use crate::{
     option::Mode,
     storage::{
         object_storage::parseable_json_path, LogStream, ObjectStorageError, ObjectStorageProvider,
-        ObjectStoreFormat, StreamType,
+        ObjectStoreFormat,
     },
 };
 
@@ -190,10 +190,7 @@ impl Parseable {
             .and_then(|limit| limit.parse().ok());
         let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
         let static_schema_flag = stream_metadata.static_schema_flag;
-        let stream_type = stream_metadata
-            .stream_type
-            .map(|s| StreamType::from(s.as_str()))
-            .unwrap_or_default();
+        let stream_type = stream_metadata.stream_type;
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
         self.streams.add_stream(
