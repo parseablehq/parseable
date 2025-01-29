@@ -135,13 +135,13 @@ pub mod error {
     use arrow_schema::ArrowError;
 
     use crate::metadata::error::stream_info::MetadataError;
-    use crate::staging::StreamWriterError;
+    use crate::staging::StagingError;
     use crate::storage::ObjectStorageError;
 
     #[derive(Debug, thiserror::Error)]
     pub enum EventError {
         #[error("Stream Writer Failed: {0}")]
-        StreamWriter(#[from] StreamWriterError),
+        StreamWriter(#[from] StagingError),
         #[error("Metadata Error: {0}")]
         Metadata(#[from] MetadataError),
         #[error("Stream Writer Failed: {0}")]

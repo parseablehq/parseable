@@ -31,14 +31,6 @@ use itertools::Itertools;
 
 use crate::utils::arrow::adapt_batch;
 
-#[derive(Debug, thiserror::Error)]
-pub enum StreamWriterError {
-    #[error("Arrow writer failed: {0}")]
-    Writer(#[from] arrow_schema::ArrowError),
-    #[error("Io Error when creating new file: {0}")]
-    Io(#[from] std::io::Error),
-}
-
 #[derive(Default)]
 pub struct Writer {
     pub mem: MemWriter<16384>,

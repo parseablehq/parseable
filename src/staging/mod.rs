@@ -17,22 +17,18 @@
  *
  */
 
-use arrow_schema::ArrowError;
 use once_cell::sync::Lazy;
-use parquet::errors::ParquetError;
 pub use streams::{Stream, Streams};
-use tracing::error;
-pub use writer::StreamWriterError;
 
 mod streams;
 mod writer;
 
 #[derive(Debug, thiserror::Error)]
-pub enum MoveDataError {
+pub enum StagingError {
     #[error("Unable to create recordbatch stream")]
-    Arrow(#[from] ArrowError),
+    Arrow(#[from] arrow_schema::ArrowError),
     #[error("Could not generate parquet file")]
-    Parquet(#[from] ParquetError),
+    Parquet(#[from] parquet::errors::ParquetError),
     #[error("IO Error {0}")]
     ObjectStorage(#[from] std::io::Error),
     #[error("Could not generate parquet file")]

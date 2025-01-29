@@ -51,7 +51,7 @@ use crate::{
     utils::{arrow::merged_reader::MergedReverseRecordReader, minute_to_slot},
 };
 
-use super::{writer::Writer, MoveDataError, StreamWriterError};
+use super::{writer::Writer, StagingError};
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
@@ -86,7 +86,7 @@ impl<'a> Stream<'a> {
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
-    ) -> Result<(), StreamWriterError> {
+    ) -> Result<(), StagingError> {
         let mut guard = self.writer.lock().unwrap();
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             match guard.disk.get_mut(schema_key) {
@@ -243,7 +243,7 @@ impl<'a> Stream<'a> {
         time_partition: Option<&String>,
         custom_partition: Option<&String>,
         shutdown_signal: bool,
-    ) -> Result<Option<Schema>, MoveDataError> {
+    ) -> Result<Option<Schema>, StagingError> {
         let mut schemas = Vec::new();
 
         let time = chrono::Utc::now().naive_utc();
@@ -294,7 +294,7 @@ impl<'a> Stream<'a> {
                 .create(true)
                 .append(true)
                 .open(&parquet_path)
-                .map_err(|_| MoveDataError::Create)?;
+                .map_err(|_| StagingError::Create)?;
             let mut writer = ArrowWriter::try_new(&parquet_file, schema.clone(), Some(props))?;
             for ref record in record_reader.merged_iter(schema, time_partition.cloned()) {
                 writer.write(record)?;
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_to_parquet_with_empty_staging() -> Result<(), MoveDataError> {
+    fn test_convert_to_parquet_with_empty_staging() -> Result<(), StagingError> {
         let temp_dir = TempDir::new()?;
         let options = Options {
             local_staging_path: temp_dir.path().to_path_buf(),
