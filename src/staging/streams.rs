@@ -578,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_multiple_arrow_files_to_parquet() {
+    fn different_minutes_multiple_arrow_files_to_parquet() {
         let temp_dir = TempDir::new().unwrap();
         let stream_name = "test_stream";
         let options = Options {
@@ -640,6 +640,72 @@ mod tests {
 
         // Verify parquet files were created and the arrow files deleted
         assert_eq!(staging.parquet_files().len(), 3);
+        assert_eq!(staging.arrow_files().len(), 0);
+    }
+
+    #[test]
+    fn same_minute_multiple_arrow_files_to_parquet() {
+        let temp_dir = TempDir::new().unwrap();
+        let stream_name = "test_stream";
+        let options = Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            row_group_size: 1048576,
+            ..Default::default()
+        };
+        let staging: Arc<Stream<'_>> = Stream::new(&options, stream_name);
+
+        // Create test arrow files
+        let schema = Schema::new(vec![
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]);
+
+        let past = Utc::now()
+            .checked_sub_signed(TimeDelta::minutes(10))
+            .unwrap()
+            .naive_utc();
+        for _ in 0..3 {
+            let batch = RecordBatch::try_new(
+                Arc::new(schema.clone()),
+                vec![
+                    Arc::new(TimestampMillisecondArray::from(vec![1, 2, 3])),
+                    Arc::new(Int32Array::from(vec![1, 2, 3])),
+                    Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                ],
+            )
+            .unwrap();
+            staging
+                .push(
+                    "abc",
+                    &batch,
+                    past,
+                    &HashMap::new(),
+                    StreamType::UserDefined,
+                )
+                .unwrap();
+            staging.flush();
+        }
+        // verify the arrow files exist in staging
+        assert_eq!(staging.arrow_files().len(), 1);
+        drop(staging);
+
+        // Start with a fresh staging
+        let staging: Arc<Stream<'_>> = Stream::new(&options, stream_name);
+        let result = staging
+            .convert_disk_files_to_parquet(None, None, true)
+            .unwrap();
+
+        assert!(result.is_some());
+        let result_schema = result.unwrap();
+        assert_eq!(result_schema.fields().len(), 3);
+
+        // Verify parquet files were created and the arrow files deleted
+        assert_eq!(staging.parquet_files().len(), 1);
         assert_eq!(staging.arrow_files().len(), 0);
     }
 }
