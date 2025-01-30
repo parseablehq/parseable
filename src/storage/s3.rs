@@ -41,9 +41,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::metrics_layer::MetricLayer;
-use super::object_storage::{parseable_json_path, LogStream};
+use super::object_storage::parseable_json_path;
 use super::{
-    ObjectStorageProvider, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    LogStream, ObjectStorageProvider, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME,
+    STREAM_ROOT_DIRECTORY,
 };
 use crate::handlers::http::users::USERS_ROOT_DIR;
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
