@@ -118,10 +118,9 @@ impl<'a> Stream<'a> {
                     guard.disk.insert(schema_key.to_owned(), writer);
                 }
             };
-            guard.mem.push(schema_key, record);
-        } else {
-            guard.mem.push(schema_key, record);
         }
+
+        guard.mem.push(schema_key, record);
 
         Ok(())
     }
@@ -753,7 +752,7 @@ mod tests {
         write_log(&staging, &schema, 0);
 
         // verify the arrow files exist in staging
-        assert_eq!(staging.arrow_files().len(), 2);
+        assert_eq!(staging.arrow_files().len(), 3);
         drop(staging);
 
         // Start with a fresh staging
