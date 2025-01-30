@@ -161,20 +161,12 @@ pub trait EventFormat: Sized {
         }
         for field in new_schema.fields() {
             let Some(storage_field) = storage_schema.get(field.name()) else {
-                println!("field not found in storage schema");
-                println!("field: {:?}", field);
                 return false;
             };
             if field.name() != storage_field.name() {
-                println!("field name mismatch");
-                println!("storage field: {:?}", storage_field);
-                println!("field: {:?}", field);
                 return false;
             }
             if field.data_type() != storage_field.data_type() {
-                println!("data type mismatch");
-                println!("storage field: {:?}", storage_field);
-                println!("field: {:?}", field);
                 return false;
             }
         }
