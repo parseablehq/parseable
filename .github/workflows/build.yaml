@@ -7,9 +7,6 @@ on:
       - "helm/**"
       - "assets/**"
       - "**.md"
-  push:
-    branches:
-      - main
 
 jobs:
   # Default build without Kafka
