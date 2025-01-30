@@ -129,10 +129,9 @@ impl Correlations {
             .await?;
 
         // Update in memory
-        self.write().await.insert(
-            correlation.id.to_owned(),
-            correlation.clone(),
-        );
+        self.write()
+            .await
+            .insert(correlation.id.to_owned(), correlation.clone());
 
         Ok(correlation)
     }
