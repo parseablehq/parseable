@@ -448,10 +448,13 @@ impl Streams {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use arrow_array::{Int32Array, StringArray, TimestampMillisecondArray};
     use arrow_schema::{DataType, Field, TimeUnit};
     use chrono::{NaiveDate, TimeDelta};
     use temp_dir::TempDir;
+    use tokio::time::sleep;
 
     use super::*;
 
@@ -605,6 +608,32 @@ mod tests {
         Ok(())
     }
 
+    fn write_log(staging: &StreamRef, schema: &Schema, mins: i64) {
+        let time: NaiveDateTime = Utc::now()
+            .checked_sub_signed(TimeDelta::minutes(mins))
+            .unwrap()
+            .naive_utc();
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![1, 2, 3])),
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        staging
+            .push(
+                "abc",
+                &batch,
+                time,
+                &HashMap::new(),
+                StreamType::UserDefined,
+            )
+            .unwrap();
+        staging.flush();
+    }
+
     #[test]
     fn different_minutes_multiple_arrow_files_to_parquet() {
         let temp_dir = TempDir::new().unwrap();
@@ -628,29 +657,7 @@ mod tests {
         ]);
 
         for i in 0..3 {
-            let past = Utc::now()
-                .checked_sub_signed(TimeDelta::minutes(10 - i))
-                .unwrap()
-                .naive_utc();
-            let batch = RecordBatch::try_new(
-                Arc::new(schema.clone()),
-                vec![
-                    Arc::new(TimestampMillisecondArray::from(vec![1, 2, 3])),
-                    Arc::new(Int32Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec!["a", "b", "c"])),
-                ],
-            )
-            .unwrap();
-            staging
-                .push(
-                    "abc",
-                    &batch,
-                    past,
-                    &HashMap::new(),
-                    StreamType::UserDefined,
-                )
-                .unwrap();
-            staging.flush();
+            write_log(&staging, &schema, i);
         }
         // verify the arrow files exist in staging
         assert_eq!(staging.arrow_files().len(), 3);
@@ -693,30 +700,8 @@ mod tests {
             Field::new("value", DataType::Utf8, false),
         ]);
 
-        let past = Utc::now()
-            .checked_sub_signed(TimeDelta::minutes(10))
-            .unwrap()
-            .naive_utc();
         for _ in 0..3 {
-            let batch = RecordBatch::try_new(
-                Arc::new(schema.clone()),
-                vec![
-                    Arc::new(TimestampMillisecondArray::from(vec![1, 2, 3])),
-                    Arc::new(Int32Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec!["a", "b", "c"])),
-                ],
-            )
-            .unwrap();
-            staging
-                .push(
-                    "abc",
-                    &batch,
-                    past,
-                    &HashMap::new(),
-                    StreamType::UserDefined,
-                )
-                .unwrap();
-            staging.flush();
+            write_log(&staging, &schema, 0);
         }
         // verify the arrow files exist in staging
         assert_eq!(staging.arrow_files().len(), 1);
@@ -735,5 +720,54 @@ mod tests {
         // Verify parquet files were created and the arrow files deleted
         assert_eq!(staging.parquet_files().len(), 1);
         assert_eq!(staging.arrow_files().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn miss_current_arrow_file_when_converting_to_parquet() {
+        let temp_dir = TempDir::new().unwrap();
+        let stream_name = "test_stream";
+        let options = Options {
+            local_staging_path: temp_dir.path().to_path_buf(),
+            row_group_size: 1048576,
+            ..Default::default()
+        };
+        let staging = Stream::new(&options, stream_name);
+
+        // Create test arrow files
+        let schema = Schema::new(vec![
+            Field::new(
+                DEFAULT_TIMESTAMP_KEY,
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]);
+
+        // 2 logs in the previous minutes
+        for i in 0..2 {
+            write_log(&staging, &schema, i);
+        }
+        sleep(Duration::from_secs(60)).await;
+
+        write_log(&staging, &schema, 0);
+
+        // verify the arrow files exist in staging
+        assert_eq!(staging.arrow_files().len(), 2);
+        drop(staging);
+
+        // Start with a fresh staging
+        let staging = Stream::new(&options, stream_name);
+        let result = staging
+            .convert_disk_files_to_parquet(None, None, false)
+            .unwrap();
+
+        assert!(result.is_some());
+        let result_schema = result.unwrap();
+        assert_eq!(result_schema.fields().len(), 3);
+
+        // Verify parquet files were created and the arrow file left
+        assert_eq!(staging.parquet_files().len(), 2);
+        assert_eq!(staging.arrow_files().len(), 1);
     }
 }
