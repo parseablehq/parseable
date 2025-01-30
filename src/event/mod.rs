@@ -23,7 +23,6 @@ use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
 use itertools::Itertools;
 use std::sync::Arc;
-use tracing::error;
 
 use self::error::EventError;
 use crate::{metadata, staging::STAGING, storage::StreamType};
@@ -81,13 +80,6 @@ impl Event {
         )?;
 
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
-
-        if let Err(e) = metadata::STREAM_INFO
-            .check_alerts(&self.stream_name, &self.rb)
-            .await
-        {
-            error!("Error checking for alerts. {:?}", e);
-        }
 
         Ok(())
     }
