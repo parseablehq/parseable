@@ -178,7 +178,9 @@ fn valid_type(data_type: &DataType, value: &Value, schema_version: SchemaVersion
         DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => value.is_u64(),
         DataType::Float16 | DataType::Float32 => value.is_f64(),
         // All numbers can be cast as Float64 from schema version v1
-        DataType::Float64 if schema_version == SchemaVersion::V1 => value.is_number(),
+        DataType::Float64 if schema_version == SchemaVersion::V1 => {
+            value.is_number() || is_parsable_as_number(value)
+        }
         DataType::Float64 if schema_version != SchemaVersion::V1 => value.is_f64(),
         DataType::Utf8 => value.is_string(),
         DataType::List(field) => {
@@ -224,4 +226,11 @@ fn valid_type(data_type: &DataType, value: &Value, schema_version: SchemaVersion
             unreachable!()
         }
     }
+}
+
+pub fn is_parsable_as_number(value: &Value) -> bool {
+    let Value::String(s) = value else {
+        return false;
+    };
+    s.parse::<f64>().is_ok()
 }

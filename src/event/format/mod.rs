@@ -161,12 +161,20 @@ pub trait EventFormat: Sized {
         }
         for field in new_schema.fields() {
             let Some(storage_field) = storage_schema.get(field.name()) else {
+                println!("field not found in storage schema");
+                println!("field: {:?}", field);
                 return false;
             };
             if field.name() != storage_field.name() {
+                println!("field name mismatch");
+                println!("storage field: {:?}", storage_field);
+                println!("field: {:?}", field);
                 return false;
             }
             if field.data_type() != storage_field.data_type() {
+                println!("data type mismatch");
+                println!("storage field: {:?}", storage_field);
+                println!("field: {:?}", field);
                 return false;
             }
         }
@@ -242,8 +250,12 @@ pub fn update_field_type_in_schema(
 
     if let Some(log_records) = log_records {
         for log_record in log_records {
-            updated_schema =
-                override_data_type(updated_schema.clone(), log_record.clone(), schema_version);
+            updated_schema = override_data_type(
+                updated_schema.clone(),
+                log_record.clone(),
+                schema_version,
+                existing_schema,
+            );
         }
     }
 
@@ -276,6 +288,7 @@ pub fn override_data_type(
     inferred_schema: Arc<Schema>,
     log_record: Value,
     schema_version: SchemaVersion,
+    existing_schema: Option<&HashMap<String, Arc<Field>>>,
 ) -> Arc<Schema> {
     let Value::Object(map) = log_record else {
         return inferred_schema;
@@ -304,6 +317,23 @@ pub fn override_data_type(
                         true,
                     )
                 }
+                (SchemaVersion::V1, Some(Value::String(s)))
+                    if existing_schema.is_none()
+                        || (existing_schema.is_some()
+                            && existing_schema.unwrap().get(field_name).is_some()
+                            && existing_schema
+                                .unwrap()
+                                .get(field_name)
+                                .unwrap()
+                                .data_type()
+                                == &DataType::Float64
+                            && field.data_type() == &DataType::Utf8
+                            && s.parse::<f64>().is_ok()) =>
+                {
+                    // Update the field's data type to Float64
+                    Field::new(field_name, DataType::Float64, true)
+                }
+
                 // in V1 for new fields in json with inferred type number, cast as float64.
                 (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_numeric() => {
                     // Update the field's data type to Float64
@@ -314,6 +344,5 @@ pub fn override_data_type(
             }
         })
         .collect();
-
     Arc::new(Schema::new(updated_schema))
 }
