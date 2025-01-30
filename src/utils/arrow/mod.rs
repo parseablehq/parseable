@@ -54,7 +54,6 @@ pub mod reverse_reader;
 
 use anyhow::Result;
 pub use batch_adapter::adapt_batch;
-pub use merged_reader::MergedRecordReader;
 use serde_json::{Map, Value};
 
 /// Replaces columns in a record batch with new arrays.

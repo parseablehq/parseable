@@ -48,7 +48,10 @@ use crate::{
     metrics,
     option::{Mode, CONFIG},
     storage::{StreamType, OBJECT_STORE_DATA_GRANULARITY},
-    utils::{arrow::merged_reader::MergedReverseRecordReader, minute_to_slot},
+    utils::{
+        arrow::merged_reader::{MergedRecordReader, MergedReverseRecordReader},
+        minute_to_slot,
+    },
 };
 
 use super::{writer::Writer, StagingError};
@@ -336,6 +339,18 @@ impl<'a> Stream<'a> {
         }
 
         Ok(Some(Schema::try_merge(schemas).unwrap()))
+    }
+
+    pub fn updated_schema(&self, current_schema: Schema) -> Schema {
+        let staging_files = self.arrow_files();
+        let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
+        if record_reader.readers.is_empty() {
+            return current_schema;
+        }
+
+        let schema = record_reader.merged_schema();
+
+        Schema::try_merge(vec![schema, current_schema]).unwrap()
     }
 }
 
