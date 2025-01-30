@@ -178,8 +178,9 @@ pub enum Compression {
     Gzip,
     Lzo,
     Brotli,
-    #[default]
     Lz4,
+    #[default]
+    Lz4Raw,
     Zstd,
 }
 
@@ -192,6 +193,7 @@ impl From<Compression> for parquet::basic::Compression {
             Compression::Lzo => parquet::basic::Compression::LZO,
             Compression::Brotli => parquet::basic::Compression::BROTLI(BrotliLevel::default()),
             Compression::Lz4 => parquet::basic::Compression::LZ4,
+            Compression::Lz4Raw => parquet::basic::Compression::LZ4_RAW,
             Compression::Zstd => parquet::basic::Compression::ZSTD(ZstdLevel::default()),
         }
     }
@@ -267,6 +269,7 @@ pub mod validation {
             "lzo" => Ok(Compression::Lzo),
             "brotli" => Ok(Compression::Brotli),
             "lz4" => Ok(Compression::Lz4),
+            "lz4_raw" => Ok(Compression::Lz4Raw),
             "zstd" => Ok(Compression::Zstd),
             _ => Err("Invalid COMPRESSION provided".to_string()),
         }

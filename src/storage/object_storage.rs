@@ -21,10 +21,11 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    Owner, StreamType, ALERT_FILE_NAME, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
+    Owner, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
     PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
+use crate::alerts::AlertConfig;
 use crate::event::format::LogSource;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
@@ -32,7 +33,6 @@ use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
 use crate::{
-    alerts::Alerts,
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
     metadata::STREAM_INFO,
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
@@ -49,7 +49,8 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use tracing::error;
+use tracing::{error, warn};
+use ulid::Ulid;
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -253,12 +254,12 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(())
     }
 
-    async fn put_alerts(
+    async fn put_alert(
         &self,
-        stream_name: &str,
-        alerts: &Alerts,
+        alert_id: Ulid,
+        alert: &AlertConfig,
     ) -> Result<(), ObjectStorageError> {
-        self.put_object(&alert_json_path(stream_name), to_bytes(alerts))
+        self.put_object(&alert_json_path(alert_id), to_bytes(alert))
             .await
     }
 
@@ -335,21 +336,23 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(serde_json::from_slice(&schema_map)?)
     }
 
-    async fn get_alerts(&self, stream_name: &str) -> Result<Alerts, ObjectStorageError> {
-        match self.get_object(&alert_json_path(stream_name)).await {
-            Ok(alerts) => {
-                if let Ok(alerts) = serde_json::from_slice(&alerts) {
-                    Ok(alerts)
-                } else {
-                    error!("Incompatible alerts found for stream - {stream_name}. Refer https://www.parseable.io/docs/alerts for correct alert config.");
-                    Ok(Alerts::default())
-                }
-            }
-            Err(e) => match e {
-                ObjectStorageError::NoSuchKey(_) => Ok(Alerts::default()),
-                e => Err(e),
-            },
-        }
+    async fn get_alerts(&self) -> Result<Vec<AlertConfig>, ObjectStorageError> {
+        let alerts_path = RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY]);
+        let alerts = self
+            .get_objects(
+                Some(&alerts_path),
+                Box::new(|file_name| file_name.ends_with(".json")),
+            )
+            .await?
+            .iter()
+            .filter_map(|bytes| {
+                serde_json::from_slice(bytes)
+                    .inspect_err(|err| warn!("Expected compatible json, error = {err}"))
+                    .ok()
+            })
+            .collect();
+
+        Ok(alerts)
     }
 
     async fn upsert_stream_metadata(
@@ -814,8 +817,8 @@ pub fn parseable_json_path() -> RelativePathBuf {
 
 /// TODO: Needs to be updated for distributed mode
 #[inline(always)]
-fn alert_json_path(stream_name: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, ALERT_FILE_NAME])
+pub fn alert_json_path(alert_id: Ulid) -> RelativePathBuf {
+    RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, &format!("{alert_id}.json")])
 }
 
 #[inline(always)]
