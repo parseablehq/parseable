@@ -83,7 +83,7 @@ impl<const N: usize> MemWriter<N> {
 
     pub fn recordbatch_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
         let mut read_buffer = self.read_buffer.clone();
-        if self.mutable_buffer.inner.len() > 0 {
+        if !self.mutable_buffer.inner.is_empty() {
             let rb = concat_records(schema, &self.mutable_buffer.inner);
             read_buffer.push(rb)
         }
