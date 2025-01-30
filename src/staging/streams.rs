@@ -137,7 +137,7 @@ impl<'a> Stream<'a> {
             hostname.push_str(&INGESTOR_META.get_ingestor_id());
         }
         let filename = format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{hostname}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -145,8 +145,8 @@ impl<'a> Stream<'a> {
             custom_partition_values
                 .iter()
                 .sorted_by_key(|v| v.0)
-                .map(|(key, value)| format!("{key}={value}"))
-                .join(".")
+                .map(|(key, value)| format!("{key}={value}."))
+                .join("")
         );
         self.data_path.join(filename)
     }
@@ -523,7 +523,35 @@ mod tests {
     }
 
     #[test]
-    fn generate_correct_path_with_current_time_and_valid_parameters() {
+    fn generate_correct_path_with_current_time_and_no_custom_partitioning() {
+        let stream_name = "test_stream";
+        let stream_hash = "abc123";
+        let parsed_timestamp = NaiveDate::from_ymd_opt(2023, 10, 1)
+            .unwrap()
+            .and_hms_opt(12, 30, 0)
+            .unwrap();
+        let custom_partition_values = HashMap::new();
+
+        let options = Options::default();
+        let staging = Stream::new(&options, stream_name);
+
+        let expected_path = staging.data_path.join(format!(
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
+            Utc::now().format("%Y%m%dT%H%M"),
+            parsed_timestamp.date(),
+            parsed_timestamp.hour(),
+            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            hostname::get().unwrap().into_string().unwrap()
+        ));
+
+        let generated_path =
+            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+
+        assert_eq!(generated_path, expected_path);
+    }
+
+    #[test]
+    fn generate_correct_path_with_current_time_and_custom_partitioning() {
         let stream_name = "test_stream";
         let stream_hash = "abc123";
         let parsed_timestamp = NaiveDate::from_ymd_opt(2023, 10, 1)
@@ -586,7 +614,7 @@ mod tests {
             row_group_size: 1048576,
             ..Default::default()
         };
-        let staging: Arc<Stream<'_>> = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name);
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -629,7 +657,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging: Arc<Stream<'_>> = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name);
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
@@ -695,7 +723,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging: Arc<Stream<'_>> = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name);
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
