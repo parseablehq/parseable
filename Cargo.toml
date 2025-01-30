@@ -34,6 +34,7 @@ url = "2.4.0"
 
 # Connectors dependencies
 rdkafka = { version = "0.37", optional = true, features = ["cmake-build", "tracing", "libz-static"] }
+sasl2-sys = { version = "0.1.22", optional = true, features = ["vendored"] }
 
 # Authentication and Security
 argon2 = "0.5.0"
@@ -107,7 +108,7 @@ derive_more = { version = "1", features = ["full"] }
 itertools = "0.14"
 lazy_static = "1.4"
 nom = "7.1.3"
-once_cell = "1.17.1"
+once_cell = "1.20"
 rand = "0.8.5"
 regex = "1.7.3"
 reqwest = { version = "0.11.27", default-features = false, features = [
@@ -143,7 +144,7 @@ assets-sha1 = "4516db38c8e556707b29b33569f9b1e53d5165f2"
 
 [features]
 debug = []
-kafka = ["rdkafka", "rdkafka/ssl-vendored", "rdkafka/ssl", "rdkafka/sasl"]
+kafka = ["rdkafka", "sasl2-sys", "sasl2-sys/vendored", "rdkafka/ssl-vendored", "rdkafka/ssl", "rdkafka/sasl"]
 
 [profile.release-lto]
 inherits = "release"

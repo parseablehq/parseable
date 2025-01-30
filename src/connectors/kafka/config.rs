@@ -615,6 +615,9 @@ impl ConsumerConfig {
         if self.group_id.is_empty() {
             anyhow::bail!("Consumer group ID must not be empty");
         }
+        if self.topics.is_empty() {
+            anyhow::bail!("At least one topic must be specified");
+        }
         Ok(())
     }
 
