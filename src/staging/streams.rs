@@ -48,13 +48,14 @@ use crate::{
     metrics,
     option::{Mode, CONFIG},
     storage::{StreamType, OBJECT_STORE_DATA_GRANULARITY},
-    utils::{
-        arrow::merged_reader::{MergedRecordReader, MergedReverseRecordReader},
-        minute_to_slot,
-    },
+    utils::minute_to_slot,
 };
 
-use super::{writer::Writer, StagingError};
+use super::{
+    reader::{MergedRecordReader, MergedReverseRecordReader},
+    writer::Writer,
+    StagingError,
+};
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 

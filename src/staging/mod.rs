@@ -20,6 +20,7 @@
 use once_cell::sync::Lazy;
 pub use streams::{Stream, Streams};
 
+mod reader;
 mod streams;
 mod writer;
 

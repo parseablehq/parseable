@@ -581,7 +581,7 @@ fn reversed_mem_table(
     records[..].reverse();
     records
         .iter_mut()
-        .for_each(|batch| *batch = crate::utils::arrow::reverse_reader::reverse(batch));
+        .for_each(|batch| *batch = crate::utils::arrow::reverse(batch));
     MemTable::try_new(schema, vec![records])
 }
 
