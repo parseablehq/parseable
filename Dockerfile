@@ -25,7 +25,7 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0"
 WORKDIR /parseable
 
 # Cache dependencies
-COPY Cargo.toml Cargo.lock build.rs .git ./
+COPY Cargo.toml Cargo.lock build.rs ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
 
 # Build the actual binary

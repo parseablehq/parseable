@@ -33,9 +33,17 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /parseable
-COPY . .
+COPY Cargo.toml Cargo.lock build.rs ./
 
-# Build with kafka feature
+# Create a dummy main.rs to pre-cache dependencies
+RUN mkdir src && echo "fn main() {}" > src/main.rs && \
+    cargo build --release --features kafka && \
+    rm -rf src
+
+# Copy the actual source code
+COPY src ./src
+
+# Build the actual binary with kafka feature
 RUN cargo build --release --features kafka
 
 # final stage
