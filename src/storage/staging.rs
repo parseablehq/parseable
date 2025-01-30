@@ -50,7 +50,7 @@ use std::{
     process,
     sync::Arc,
 };
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 // const PARQUET_FILE_EXTENSION: &str = "data.parquet";
@@ -233,7 +233,12 @@ impl StorageDir {
             }
         }
 
-        Some(schemas)
+        if schemas.len() > 0 {
+            Some(schemas)
+        } else {
+            None
+        }
+        
     }
 
     fn arrow_path_to_parquet(path: &Path, random_string: String) -> PathBuf {
@@ -282,7 +287,6 @@ pub fn convert_disk_files_to_parquet(
 
     // warn!("staging files-\n{staging_files:?}\n");
     for (parquet_path, arrow_files) in staging_files {
-        warn!("parquet_path-\n{parquet_path:?}");
         metrics::STAGING_FILES
             .with_label_values(&[stream])
             .set(arrow_files.len() as i64);
