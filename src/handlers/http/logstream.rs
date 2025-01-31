@@ -238,38 +238,40 @@ pub async fn put_retention(
     ))
 }
 
-pub async fn get_stats_date(stream_name: &str, date: &str) -> Result<Stats, StreamError> {
-    let event_labels = event_labels_date(stream_name, "json", date);
-    let storage_size_labels = storage_size_labels_date(stream_name, date);
-    let events_ingested = EVENTS_INGESTED_DATE
-        .get_metric_with_label_values(&event_labels)
-        .unwrap()
-        .get() as u64;
-    let ingestion_size = EVENTS_INGESTED_SIZE_DATE
-        .get_metric_with_label_values(&event_labels)
-        .unwrap()
-        .get() as u64;
-    let storage_size = EVENTS_STORAGE_SIZE_DATE
-        .get_metric_with_label_values(&storage_size_labels)
-        .unwrap()
-        .get() as u64;
-
-    let stats = Stats {
-        events: events_ingested,
-        ingestion: ingestion_size,
-        storage: storage_size,
-    };
-    Ok(stats)
-}
-
 #[derive(Debug, Deserialize)]
 pub struct StatsParams {
-    date: Option<String>,
+    date: String,
+}
+
+impl StatsParams {
+    pub async fn get_stats(&self, stream_name: &str) -> Result<Stats, StreamError> {
+        let event_labels = event_labels_date(stream_name, "json", &self.date);
+        let storage_size_labels = storage_size_labels_date(stream_name, &self.date);
+        let events_ingested = EVENTS_INGESTED_DATE
+            .get_metric_with_label_values(&event_labels)
+            .unwrap()
+            .get() as u64;
+        let ingestion_size = EVENTS_INGESTED_SIZE_DATE
+            .get_metric_with_label_values(&event_labels)
+            .unwrap()
+            .get() as u64;
+        let storage_size = EVENTS_STORAGE_SIZE_DATE
+            .get_metric_with_label_values(&storage_size_labels)
+            .unwrap()
+            .get() as u64;
+
+        let stats = Stats {
+            events: events_ingested,
+            ingestion: ingestion_size,
+            storage: storage_size,
+        };
+        Ok(stats)
+    }
 }
 
 pub async fn get_stats(
     stream_name: Path<String>,
-    Query(StatsParams { date }): Query<StatsParams>,
+    params: Option<Query<StatsParams>>,
 ) -> Result<HttpResponse, StreamError> {
     let stream_name = stream_name.into_inner();
 
@@ -287,8 +289,8 @@ pub async fn get_stats(
         }
     }
 
-    if let Some(date) = date {
-        let stats = get_stats_date(&stream_name, &date).await?;
+    if let Some(params) = params {
+        let stats = params.get_stats(&stream_name).await?;
         return Ok(HttpResponse::build(StatusCode::OK).json(stats));
     }
 
@@ -351,8 +353,6 @@ pub async fn get_stats(
     } else {
         stats
     };
-
-    let stats = serde_json::to_value(stats)?;
 
     Ok(HttpResponse::build(StatusCode::OK).json(stats))
 }
@@ -759,10 +759,8 @@ mod tests {
     use crate::handlers::http::logstream::get_stats;
     use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
     use actix_web::test::TestRequest;
-    use actix_web::web::{self, Query};
+    use actix_web::web;
     use anyhow::bail;
-
-    use super::StatsParams;
 
     // TODO: Fix this test with routes
     // #[actix_web::test]
@@ -774,12 +772,7 @@ mod tests {
 
     #[actix_web::test]
     async fn get_stats_stream_not_found_error_for_unknown_logstream() -> anyhow::Result<()> {
-        match get_stats(
-            web::Path::from("test".to_string()),
-            Query(StatsParams { date: None }),
-        )
-        .await
-        {
+        match get_stats(web::Path::from("test".to_string()), None).await {
             Err(StreamError::StreamNotFound(_)) => Ok(()),
             _ => bail!("expected StreamNotFound error"),
         }

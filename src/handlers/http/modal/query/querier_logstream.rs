@@ -15,13 +15,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
-use core::str;
 use std::fs;
 
 use actix_web::{
-    web::{self, Path},
-    HttpRequest, Responder,
+    web::{Path, Query},
+    HttpRequest, HttpResponse, Responder,
 };
 use bytes::Bytes;
 use chrono::Utc;
@@ -36,11 +34,10 @@ use crate::{
     handlers::http::{
         base_path_without_preceding_slash,
         cluster::{
-            self, fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors,
-            sync_streams_with_ingestors,
+            self, fetch_stats_from_ingestors, sync_streams_with_ingestors,
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
-        logstream::{error::StreamError, get_stats_date},
+        logstream::{error::StreamError, StatsParams},
         modal::utils::logstream_utils::{
             create_stream_and_schema_from_storage, create_update_stream,
         },
@@ -48,7 +45,7 @@ use crate::{
     hottier::HotTierManager,
     metadata::{self, STREAM_INFO},
     option::CONFIG,
-    stats::{self, Stats},
+    stats,
     storage::{StorageDir, StreamType},
 };
 
@@ -124,9 +121,9 @@ pub async fn put_stream(
 }
 
 pub async fn get_stats(
-    req: HttpRequest,
     stream_name: Path<String>,
-) -> Result<impl Responder, StreamError> {
+    params: Option<Query<StatsParams>>,
+) -> Result<HttpResponse, StreamError> {
     let stream_name = stream_name.into_inner();
     // if the stream not found in memory map,
     //check if it exists in the storage
@@ -139,29 +136,9 @@ pub async fn get_stats(
         return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
 
-    let query_string = req.query_string();
-    if !query_string.is_empty() {
-        let date_key = query_string.split('=').collect::<Vec<&str>>()[0];
-        let date_value = query_string.split('=').collect::<Vec<&str>>()[1];
-        if date_key != "date" {
-            return Err(StreamError::Custom {
-                msg: "Invalid query parameter".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
-
-        if !date_value.is_empty() {
-            let querier_stats = get_stats_date(&stream_name, date_value).await?;
-            let ingestor_stats = fetch_daily_stats_from_ingestors(&stream_name, date_value).await?;
-            let total_stats = Stats {
-                events: querier_stats.events + ingestor_stats.events,
-                ingestion: querier_stats.ingestion + ingestor_stats.ingestion,
-                storage: querier_stats.storage + ingestor_stats.storage,
-            };
-            let stats = serde_json::to_value(total_stats)?;
-
-            return Ok((web::Json(stats), StatusCode::OK));
-        }
+    if let Some(params) = params {
+        let stats = params.get_stats(&stream_name).await?;
+        return Ok(HttpResponse::build(StatusCode::OK).json(stats));
     }
 
     let stats = stats::get_current_stats(&stream_name, "json")
@@ -231,7 +208,5 @@ pub async fn get_stats(
         stats
     };
 
-    let stats = serde_json::to_value(stats)?;
-
-    Ok((web::Json(stats), StatusCode::OK))
+    Ok(HttpResponse::build(StatusCode::OK).json(stats))
 }
