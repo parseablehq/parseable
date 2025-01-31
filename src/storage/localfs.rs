@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -295,7 +295,7 @@ impl ObjectStorage for LocalFS {
         Ok(fs::remove_file(path).await?)
     }
 
-    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+    async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let ignore_dir = &[
             "lost+found",
             PARSEABLE_ROOT_DIRECTORY,
@@ -311,16 +311,12 @@ impl ObjectStorage for LocalFS {
         let logstream_dirs: Vec<Option<String>> =
             FuturesUnordered::from_iter(entries).try_collect().await?;
 
-        let logstreams = logstream_dirs
-            .into_iter()
-            .flatten()
-            .map(|name| LogStream { name })
-            .collect();
+        let logstreams = logstream_dirs.into_iter().flatten().collect();
 
         Ok(logstreams)
     }
 
-    async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+    async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let ignore_dir = &[
             "lost+found",
             PARSEABLE_ROOT_DIRECTORY,
@@ -335,11 +331,7 @@ impl ObjectStorage for LocalFS {
         let logstream_dirs: Vec<Option<String>> =
             FuturesUnordered::from_iter(entries).try_collect().await?;
 
-        let logstreams = logstream_dirs
-            .into_iter()
-            .flatten()
-            .map(|name| LogStream { name })
-            .collect();
+        let logstreams = logstream_dirs.into_iter().flatten().collect();
 
         Ok(logstreams)
     }
