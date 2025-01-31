@@ -50,7 +50,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderName, HeaderValue};
 use itertools::Itertools;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::num::NonZeroU32;
@@ -105,9 +105,10 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
         .filter(|logstream| {
             warn!("logstream-\n{logstream:?}");
 
-            Users.authorize(key.clone(), Action::ListStream, Some(&logstream.name), None)
+            Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
                 == crate::rbac::Response::Authorized
         })
+        .map(|name| json!({"name": name}))
         .collect_vec();
 
     Ok(web::Json(res))
