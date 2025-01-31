@@ -1,6 +1,3 @@
-use serde::Deserialize;
-use tracing::warn;
-
 /*
  * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
@@ -18,24 +15,31 @@ use tracing::warn;
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-use crate::metrics::{
-    DELETED_EVENTS_STORAGE_SIZE, EVENTS_DELETED, EVENTS_DELETED_SIZE, EVENTS_INGESTED,
-    EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
-    EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
-    LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
-};
-use crate::storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat};
+
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+use tracing::warn;
+
+use crate::{
+    metrics::{
+        DELETED_EVENTS_STORAGE_SIZE, EVENTS_DELETED, EVENTS_DELETED_SIZE, EVENTS_INGESTED,
+        EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
+        EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
+        LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
+    },
+    storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat},
+};
+
 /// Helper struct type created by copying stats values from metadata
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
     pub events: u64,
     pub ingestion: u64,
     pub storage: u64,
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct FullStats {
     pub lifetime_stats: Stats,
     pub current_stats: Stats,
