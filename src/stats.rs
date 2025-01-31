@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use tracing::warn;
 
 /*
@@ -201,4 +202,34 @@ pub fn event_labels_date<'a>(
 
 pub fn storage_size_labels_date<'a>(stream_name: &'a str, date: &'a str) -> [&'a str; 4] {
     ["data", stream_name, "parquet", date]
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StatsParams {
+    date: String,
+}
+
+impl StatsParams {
+    pub fn get_stats(&self, stream_name: &str) -> Stats {
+        let event_labels = event_labels_date(stream_name, "json", &self.date);
+        let storage_size_labels = storage_size_labels_date(stream_name, &self.date);
+        let events_ingested = EVENTS_INGESTED_DATE
+            .get_metric_with_label_values(&event_labels)
+            .unwrap()
+            .get() as u64;
+        let ingestion_size = EVENTS_INGESTED_SIZE_DATE
+            .get_metric_with_label_values(&event_labels)
+            .unwrap()
+            .get() as u64;
+        let storage_size = EVENTS_STORAGE_SIZE_DATE
+            .get_metric_with_label_values(&storage_size_labels)
+            .unwrap()
+            .get() as u64;
+
+        Stats {
+            events: events_ingested,
+            ingestion: ingestion_size,
+            storage: storage_size,
+        }
+    }
 }

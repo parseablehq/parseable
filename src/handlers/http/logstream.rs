@@ -18,7 +18,9 @@
 
 use self::error::{CreateStreamError, StreamError};
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
-use super::cluster::{fetch_stats_from_ingestors, sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
+use super::cluster::{
+    fetch_stats_from_ingestors, sync_streams_with_ingestors, INTERNAL_STREAM_NAME,
+};
 use super::ingest::create_stream_if_not_exists;
 use super::modal::utils::logstream_utils::{
     create_stream_and_schema_from_storage, create_update_stream, update_first_event_at,
@@ -28,11 +30,10 @@ use crate::event::format::{override_data_type, LogSource};
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::{SchemaVersion, STREAM_INFO};
-use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::option::{Mode, CONFIG};
 use crate::rbac::role::Action;
 use crate::rbac::Users;
-use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
+use crate::stats::StatsParams;
 use crate::storage::{retention::Retention, StorageDir};
 use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
@@ -49,7 +50,6 @@ use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderName, HeaderValue};
 use itertools::Itertools;
-use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -238,37 +238,6 @@ pub async fn put_retention(
     ))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct StatsParams {
-    date: String,
-}
-
-impl StatsParams {
-    pub async fn get_stats(&self, stream_name: &str) -> Result<Stats, StreamError> {
-        let event_labels = event_labels_date(stream_name, "json", &self.date);
-        let storage_size_labels = storage_size_labels_date(stream_name, &self.date);
-        let events_ingested = EVENTS_INGESTED_DATE
-            .get_metric_with_label_values(&event_labels)
-            .unwrap()
-            .get() as u64;
-        let ingestion_size = EVENTS_INGESTED_SIZE_DATE
-            .get_metric_with_label_values(&event_labels)
-            .unwrap()
-            .get() as u64;
-        let storage_size = EVENTS_STORAGE_SIZE_DATE
-            .get_metric_with_label_values(&storage_size_labels)
-            .unwrap()
-            .get() as u64;
-
-        let stats = Stats {
-            events: events_ingested,
-            ingestion: ingestion_size,
-            storage: storage_size,
-        };
-        Ok(stats)
-    }
-}
-
 pub async fn get_stats(
     stream_name: Path<String>,
     params: Option<Query<StatsParams>>,
@@ -289,17 +258,18 @@ pub async fn get_stats(
         }
     }
 
-    if let Some(params) = params {
-        let stats = params.get_stats(&stream_name).await?;
+    if let Some(Query(params)) = params {
+        let stats = params.get_stats(&stream_name);
         return Ok(HttpResponse::build(StatusCode::OK).json(stats));
     }
 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats = if CONFIG.options.mode == Mode::Query && STREAM_INFO
-        .stream_type(&stream_name)
-        .is_ok_and(|t| t == StreamType::Internal)
+    let ingestor_stats = if CONFIG.options.mode == Mode::Query
+        && STREAM_INFO
+            .stream_type(&stream_name)
+            .is_ok_and(|t| t == StreamType::Internal)
     {
         Some(fetch_stats_from_ingestors(&stream_name).await?)
     } else {
