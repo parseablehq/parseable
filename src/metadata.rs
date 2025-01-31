@@ -16,7 +16,6 @@
  *
  */
 
-use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{Local, NaiveDateTime};
 use itertools::Itertools;
@@ -27,8 +26,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 
-use self::error::stream_info::{CheckAlertError, LoadError, MetadataError};
-use crate::alerts::Alerts;
+use self::error::stream_info::{LoadError, MetadataError};
 use crate::catalog::snapshot::ManifestItem;
 use crate::event::format::LogSource;
 use crate::metrics::{
@@ -66,7 +64,6 @@ pub enum SchemaVersion {
 pub struct LogStreamMetadata {
     pub schema_version: SchemaVersion,
     pub schema: HashMap<String, Arc<Field>>,
-    pub alerts: Alerts,
     pub retention: Option<Retention>,
     pub created_at: String,
     pub first_event_at: Option<String>,
@@ -74,8 +71,8 @@ pub struct LogStreamMetadata {
     pub time_partition_limit: Option<NonZeroU32>,
     pub custom_partition: Option<String>,
     pub static_schema_flag: bool,
-    pub hot_tier_enabled: Option<bool>,
-    pub stream_type: Option<String>,
+    pub hot_tier_enabled: bool,
+    pub stream_type: StreamType,
     pub log_source: LogSource,
 }
 
@@ -89,30 +86,9 @@ pub const LOCK_EXPECT: &str = "no method in metadata should panic while holding 
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
 impl StreamInfo {
-    pub async fn check_alerts(
-        &self,
-        stream_name: &str,
-        rb: &RecordBatch,
-    ) -> Result<(), CheckAlertError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let meta = map
-            .get(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))?;
-
-        for alert in &meta.alerts.alerts {
-            alert.check_alert(stream_name, rb.clone())
-        }
-
-        Ok(())
-    }
-
     pub fn stream_exists(&self, stream_name: &str) -> bool {
         let map = self.read().expect(LOCK_EXPECT);
         map.contains_key(stream_name)
-    }
-
-    pub fn stream_initialized(&self, stream_name: &str) -> Result<bool, MetadataError> {
-        Ok(!self.schema(stream_name)?.fields.is_empty())
     }
 
     pub fn get_first_event(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
@@ -187,15 +163,6 @@ impl StreamInfo {
         Ok(Arc::new(schema))
     }
 
-    pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {
-        let mut map = self.write().expect(LOCK_EXPECT);
-        map.get_mut(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| {
-                metadata.alerts = alerts;
-            })
-    }
-
     pub fn set_retention(
         &self,
         stream_name: &str,
@@ -212,13 +179,46 @@ impl StreamInfo {
     pub fn set_first_event_at(
         &self,
         stream_name: &str,
-        first_event_at: Option<String>,
+        first_event_at: &str,
     ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
-                metadata.first_event_at = first_event_at;
+                metadata.first_event_at = Some(first_event_at.to_owned());
+            })
+    }
+
+    /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
+    ///
+    /// This function is called during the retention task, when the parquet files along with the manifest files are deleted from the storage.
+    /// The manifest path is removed from the snapshot in the stream.json
+    /// and the first_event_at value in the stream.json is removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream for which the `first_event_at` timestamp is to be removed.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), MetadataError>` - Returns `Ok(())` if the `first_event_at` timestamp is successfully removed,
+    ///   or a `MetadataError` if the stream metadata is not found.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// ```rust
+    /// let result = metadata.remove_first_event_at("my_stream");
+    /// match result {
+    ///     Ok(()) => println!("first-event-at removed successfully"),
+    ///     Err(e) => eprintln!("Error removing first-event-at from STREAM_INFO: {}", e),
+    /// }
+    /// ```
+    pub fn reset_first_event_at(&self, stream_name: &str) -> Result<(), MetadataError> {
+        let mut map = self.write().expect(LOCK_EXPECT);
+        map.get_mut(stream_name)
+            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
+            .map(|metadata| {
+                metadata.first_event_at.take();
             })
     }
 
@@ -257,7 +257,7 @@ impl StreamInfo {
         let stream = map
             .get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))?;
-        stream.hot_tier_enabled = Some(enable);
+        stream.hot_tier_enabled = enable;
         Ok(())
     }
 
@@ -271,7 +271,7 @@ impl StreamInfo {
         custom_partition: String,
         static_schema_flag: bool,
         static_schema: HashMap<String, Arc<Field>>,
-        stream_type: &str,
+        stream_type: StreamType,
         schema_version: SchemaVersion,
         log_source: LogSource,
     ) {
@@ -299,7 +299,7 @@ impl StreamInfo {
             } else {
                 static_schema
             },
-            stream_type: Some(stream_type.to_string()),
+            stream_type,
             schema_version,
             log_source,
             ..Default::default()
@@ -324,16 +324,17 @@ impl StreamInfo {
         self.read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|(_, v)| v.stream_type.clone().unwrap() == StreamType::Internal.to_string())
+            .filter(|(_, v)| v.stream_type == StreamType::Internal)
             .map(|(k, _)| k.clone())
             .collect()
     }
 
-    pub fn stream_type(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        map.get(stream_name)
+    pub fn stream_type(&self, stream_name: &str) -> Result<StreamType, MetadataError> {
+        self.read()
+            .expect(LOCK_EXPECT)
+            .get(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| metadata.stream_type.clone())
+            .map(|metadata| metadata.stream_type)
     }
 
     pub fn update_stats(
@@ -449,7 +450,6 @@ pub async fn load_stream_metadata_on_server_start(
     fetch_stats_from_storage(stream_name, stats).await;
     load_daily_metrics(&snapshot.manifest_list, stream_name);
 
-    let alerts = storage.get_alerts(stream_name).await?;
     let schema = update_schema_from_staging(stream_name, schema);
     let schema = HashMap::from_iter(
         schema
@@ -461,7 +461,6 @@ pub async fn load_stream_metadata_on_server_start(
     let metadata = LogStreamMetadata {
         schema_version,
         schema,
-        alerts,
         retention,
         created_at,
         first_event_at,
@@ -502,14 +501,6 @@ fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {
 pub mod error {
     pub mod stream_info {
         use crate::storage::ObjectStorageError;
-
-        #[derive(Debug, thiserror::Error)]
-        pub enum CheckAlertError {
-            #[error("Serde Json Error: {0}")]
-            Serde(#[from] serde_json::Error),
-            #[error("Metadata Error: {0}")]
-            Metadata(#[from] MetadataError),
-        }
 
         #[derive(Debug, thiserror::Error)]
         pub enum MetadataError {

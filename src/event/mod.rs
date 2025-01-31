@@ -24,11 +24,10 @@ use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
 use itertools::Itertools;
 use std::sync::Arc;
-use tracing::error;
 
 use self::error::EventError;
 pub use self::writer::STREAM_WRITERS;
-use crate::{handlers::http::ingest::PostError, metadata, storage::StreamType};
+use crate::{metadata, storage::StreamType};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
@@ -49,7 +48,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub async fn process(&self) -> Result<(), EventError> {
+    pub async fn process(self) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
@@ -69,10 +68,10 @@ impl Event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        Self::process_event(
+        STREAM_WRITERS.append_to_local(
             &self.stream_name,
             &key,
-            self.rb.clone(),
+            &self.rb,
             self.parsed_timestamp,
             &self.custom_partition_values,
             &self.stream_type,
@@ -88,53 +87,26 @@ impl Event {
 
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
 
-        if let Err(e) = metadata::STREAM_INFO
-            .check_alerts(&self.stream_name, &self.rb)
-            .await
-        {
-            error!("Error checking for alerts. {:?}", e);
-        }
-
         Ok(())
     }
 
-    pub fn process_unchecked(&self) -> Result<(), PostError> {
+    pub fn process_unchecked(&self) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        Self::process_event(
+        STREAM_WRITERS.append_to_local(
             &self.stream_name,
             &key,
-            self.rb.clone(),
+            &self.rb,
             self.parsed_timestamp,
             &self.custom_partition_values,
             &self.stream_type,
-        )
-        .map_err(PostError::Event)
+        )?;
+
+        Ok(())
     }
 
     pub fn clear(&self, stream_name: &str) {
         STREAM_WRITERS.clear(stream_name);
-    }
-
-    // event process all events after the 1st event. Concatenates record batches
-    // and puts them in memory store for each event.
-    fn process_event(
-        stream_name: &str,
-        schema_key: &str,
-        rb: RecordBatch,
-        parsed_timestamp: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
-        stream_type: &StreamType,
-    ) -> Result<(), EventError> {
-        STREAM_WRITERS.append_to_local(
-            stream_name,
-            schema_key,
-            rb,
-            parsed_timestamp,
-            custom_partition_values.clone(),
-            stream_type,
-        )?;
-        Ok(())
     }
 }
 

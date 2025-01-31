@@ -136,22 +136,6 @@ impl StorageDir {
         paths
     }
 
-    #[allow(dead_code)]
-    pub fn arrow_files_grouped_by_time(&self) -> HashMap<PathBuf, Vec<PathBuf>> {
-        // hashmap <time, vec[paths]>
-        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-        let arrow_files = self.arrow_files();
-        for arrow_file_path in arrow_files {
-            let key = Self::arrow_path_to_parquet(&arrow_file_path, String::default());
-            grouped_arrow_file
-                .entry(key)
-                .or_default()
-                .push(arrow_file_path);
-        }
-
-        grouped_arrow_file
-    }
-
     pub fn arrow_files_grouped_exclude_time(
         &self,
         exclude: NaiveDateTime,

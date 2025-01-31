@@ -16,10 +16,12 @@
  *
  */
 
+use crate::alerts::ALERTS;
 use crate::analytics;
 use crate::correlation::CORRELATIONS;
 use crate::handlers;
 use crate::handlers::http::about;
+use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
@@ -81,6 +83,7 @@ impl ParseableServer for Server {
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_counts_webscope())
+                    .service(Self::get_alerts_webscope())
                     .service(Self::get_metrics_webscope()),
             )
             .service(Self::get_ingest_otel_factory())
@@ -105,8 +108,17 @@ impl ParseableServer for Server {
         if let Err(e) = CORRELATIONS.load().await {
             error!("{e}");
         }
-        FILTERS.load().await?;
-        DASHBOARDS.load().await?;
+        if let Err(err) = FILTERS.load().await {
+            error!("{err}")
+        };
+
+        if let Err(err) = DASHBOARDS.load().await {
+            error!("{err}")
+        };
+
+        if let Err(err) = ALERTS.load().await {
+            error!("{err}")
+        };
 
         storage::retention::load_retention_from_global();
 
@@ -201,6 +213,32 @@ impl Server {
                             .to(http::correlation::delete)
                             .authorize(Action::DeleteCorrelation),
                     ),
+            )
+    }
+
+    pub fn get_alerts_webscope() -> Scope {
+        web::scope("/alerts")
+            .service(
+                web::resource("")
+                    .route(web::get().to(alerts::list).authorize(Action::GetAlert))
+                    .route(web::post().to(alerts::post).authorize(Action::PutAlert)),
+            )
+            .service(
+                web::resource("/{alert_id}")
+                    .route(web::get().to(alerts::get).authorize(Action::GetAlert))
+                    .route(web::put().to(alerts::modify).authorize(Action::PutAlert))
+                    .route(
+                        web::delete()
+                            .to(alerts::delete)
+                            .authorize(Action::DeleteAlert),
+                    ),
+            )
+            .service(
+                web::resource("/{alert_id}/update_state").route(
+                    web::put()
+                        .to(alerts::update_state)
+                        .authorize(Action::PutAlert),
+                ),
             )
     }
 
@@ -318,7 +356,7 @@ impl Server {
                                     .to(logstream::delete)
                                     .authorize_for_stream(Action::DeleteStream),
                             )
-                            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
                     .service(
                         // GET "/logstream/{logstream}/info" ==> Get info for given log stream
@@ -327,21 +365,6 @@ impl Server {
                                 .to(logstream::get_stream_info)
                                 .authorize_for_stream(Action::GetStreamInfo),
                         ),
-                    )
-                    .service(
-                        web::resource("/alert")
-                            // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
-                            .route(
-                                web::put()
-                                    .to(logstream::put_alert)
-                                    .authorize_for_stream(Action::PutAlert),
-                            )
-                            // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
-                            .route(
-                                web::get()
-                                    .to(logstream::get_alert)
-                                    .authorize_for_stream(Action::GetAlert),
-                            ),
                     )
                     .service(
                         // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
@@ -404,7 +427,7 @@ impl Server {
                     .to(ingest::ingest)
                     .authorize_for_stream(Action::Ingest),
             )
-            .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
+            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
     }
 
     // /v1/logs endpoint to be used for OTEL log ingestion only
@@ -417,7 +440,7 @@ impl Server {
                             .to(ingest::handle_otel_logs_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             .service(
                 web::resource("/metrics")
@@ -426,7 +449,7 @@ impl Server {
                             .to(ingest::handle_otel_metrics_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
             .service(
                 web::resource("/traces")
@@ -435,7 +458,7 @@ impl Server {
                             .to(ingest::handle_otel_traces_ingestion)
                             .authorize_for_stream(Action::Ingest),
                     )
-                    .app_data(web::PayloadConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
     }
 

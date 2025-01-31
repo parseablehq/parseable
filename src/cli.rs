@@ -27,18 +27,6 @@ use crate::{
     storage::{AzureBlobConfig, FSConfig, S3Config},
 };
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-use crate::kafka::SslProtocol as KafkaSslProtocol;
-
-#[cfg(not(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-)))]
-use std::string::String as KafkaSslProtocol;
-
 /// Default username and password for Parseable server, used by default for local mode.
 /// NOTE: obviously not recommended for production
 pub const DEFAULT_USERNAME: &str = "admin";
@@ -272,7 +260,7 @@ pub struct Options {
     #[arg(
         long = "compression-algo",
         env = "P_PARQUET_COMPRESSION_ALGO",
-        default_value = "lz4",
+        default_value = "lz4_raw",
         value_parser = validation::compression,
         help = "Parquet compression algorithm"
     )]
@@ -336,7 +324,7 @@ pub struct Options {
         value_parser = validation::kafka_security_protocol,
         help = "Kafka security protocol"
     )]
-    pub kafka_security_protocol: Option<KafkaSslProtocol>,
+    pub kafka_security_protocol: Option<crate::kafka::SslProtocol>,
 
     #[cfg(any(
         all(target_os = "linux", target_arch = "x86_64"),
@@ -367,7 +355,8 @@ pub struct Options {
 #[derive(Parser, Debug)]
 pub struct OidcConfig {
     #[arg(
-        long = "oidc-client-id",
+        long = "oidc-client",
+        name = "oidc-client",
         env = "P_OIDC_CLIENT_ID",
         required = false,
         help = "Client id for OIDC provider"
@@ -376,6 +365,7 @@ pub struct OidcConfig {
 
     #[arg(
         long = "oidc-client-secret",
+        name = "oidc-client-secret",
         env = "P_OIDC_CLIENT_SECRET",
         required = false,
         help = "Client secret for OIDC provider"
@@ -384,6 +374,7 @@ pub struct OidcConfig {
 
     #[arg(
         long = "oidc-issuer",
+        name = "oidc-issuer",
         env = "P_OIDC_ISSUER",
         required = false,
         value_parser = validation::url,

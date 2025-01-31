@@ -320,11 +320,4 @@ pub mod error {
                 .body(self.to_string())
         }
     }
-
-    #[allow(dead_code)]
-    fn construct_custom_error() {
-        let error =
-            MetricsError::Custom("Some error".to_string(), StatusCode::INTERNAL_SERVER_ERROR);
-        println!("{:?}", error);
-    }
 }

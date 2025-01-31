@@ -24,9 +24,8 @@ mod stream_metadata_migration;
 use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{
-    hottier::{HotTierManager, CURRENT_HOT_TIER_VERSION},
     metadata::load_stream_metadata_on_server_start,
-    option::{validation::human_size_to_bytes, Config, Mode, CONFIG},
+    option::{Config, Mode, CONFIG},
     storage::{
         object_storage::{parseable_json_path, schema_path, stream_json_path},
         ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
@@ -35,7 +34,6 @@ use crate::{
 };
 use arrow_schema::Schema;
 use bytes::Bytes;
-use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
 use serde_json::Value;
@@ -134,40 +132,10 @@ pub async fn run_metadata_migration(
 /// run the migration for all streams
 pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
     let storage = config.storage().get_object_store();
-    let streams = storage.list_streams().await?;
-    for stream in streams {
-        migration_stream(&stream.name, &*storage).await?;
-        if CONFIG.options.hot_tier_storage_path.is_some() {
-            migration_hot_tier(&stream.name).await?;
-        }
+    for stream_name in storage.list_streams().await? {
+        migration_stream(&stream_name, &*storage).await?;
     }
 
-    Ok(())
-}
-
-/// run the migration for hot tier
-async fn migration_hot_tier(stream: &str) -> anyhow::Result<()> {
-    if let Some(hot_tier_manager) = HotTierManager::global() {
-        if hot_tier_manager.check_stream_hot_tier_exists(stream) {
-            let mut stream_hot_tier = hot_tier_manager.get_hot_tier(stream).await?;
-            if stream_hot_tier.version.is_none() {
-                stream_hot_tier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
-                stream_hot_tier.size = human_size_to_bytes(&stream_hot_tier.size)
-                    .unwrap()
-                    .to_string();
-                stream_hot_tier.available_size =
-                    human_size_to_bytes(&stream_hot_tier.available_size)
-                        .unwrap()
-                        .to_string();
-                stream_hot_tier.used_size = human_size_to_bytes(&stream_hot_tier.used_size)
-                    .unwrap()
-                    .to_string();
-                hot_tier_manager
-                    .put_hot_tier(stream, &mut stream_hot_tier)
-                    .await?;
-            }
-        }
-    }
     Ok(())
 }
 
@@ -387,12 +355,7 @@ async fn run_meta_file_migration(
 }
 
 async fn run_stream_files_migration(object_store: &Arc<dyn ObjectStorage>) -> anyhow::Result<()> {
-    let streams = object_store
-        .list_old_streams()
-        .await?
-        .into_iter()
-        .map(|stream| stream.name)
-        .collect_vec();
+    let streams = object_store.list_old_streams().await?;
 
     for stream in streams {
         let paths = object_store.get_stream_file_paths(&stream).await?;

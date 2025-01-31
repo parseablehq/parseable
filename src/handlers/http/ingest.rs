@@ -37,13 +37,13 @@ use crate::otel::traces::flatten_otel_traces;
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
+use actix_web::web::{Json, Path};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
-use nom::AsBytes;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
 use opentelemetry_proto::tonic::metrics::v1::MetricsData;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
@@ -54,32 +54,27 @@ use std::sync::Arc;
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn ingest(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
-    if let Some((_, stream_name)) = req
-        .headers()
-        .iter()
-        .find(|&(key, _)| key == STREAM_NAME_HEADER_KEY)
-    {
-        let stream_name = stream_name.to_str().unwrap().to_owned();
-        let internal_stream_names = STREAM_INFO.list_internal_streams();
-        if internal_stream_names.contains(&stream_name) {
-            return Err(PostError::Invalid(anyhow::anyhow!(
-                "The stream {} is reserved for internal use and cannot be ingested into",
-                stream_name
-            )));
-        }
-        create_stream_if_not_exists(
-            &stream_name,
-            &StreamType::UserDefined.to_string(),
-            LogSource::default(),
-        )
+pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpResponse, PostError> {
+    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
+        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
+    };
+
+    let stream_name = stream_name.to_str().unwrap().to_owned();
+    let internal_stream_names = STREAM_INFO.list_internal_streams();
+    if internal_stream_names.contains(&stream_name) {
+        return Err(PostError::InternalStream(stream_name));
+    }
+    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
         .await?;
 
-        flatten_and_push_logs(req, body, &stream_name).await?;
-        Ok(HttpResponse::Ok().finish())
-    } else {
-        Err(PostError::Header(ParseHeaderError::MissingStreamName))
-    }
+    let log_source = req
+        .headers()
+        .get(LOG_SOURCE_KEY)
+        .and_then(|h| h.to_str().ok())
+        .map_or(LogSource::default(), LogSource::from);
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+
+    Ok(HttpResponse::Ok().finish())
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
@@ -118,7 +113,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
 // creates if stream does not exist
 pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
-    body: Bytes,
+    Json(json): Json<Value>,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -129,25 +124,16 @@ pub async fn handle_otel_logs_ingestion(
     };
     let log_source = LogSource::from(log_source.to_str().unwrap());
     if log_source != LogSource::OtelLogs {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Please use x-p-log-source: otel-logs for ingesting otel logs"
-        )));
+        return Err(PostError::IncorrectLogSource(LogSource::OtelLogs));
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(
-        &stream_name,
-        &StreamType::UserDefined.to_string(),
-        LogSource::OtelLogs,
-    )
-    .await?;
+    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs).await?;
 
     //custom flattening required for otel logs
-    let logs: LogsData = serde_json::from_slice(body.as_bytes())?;
-    let mut json = flatten_otel_logs(&logs);
-    for record in json.iter_mut() {
-        let body: Bytes = serde_json::to_vec(record).unwrap().into();
-        push_logs(&stream_name, &body, &log_source).await?;
+    let logs: LogsData = serde_json::from_value(json)?;
+    for record in flatten_otel_logs(&logs) {
+        push_logs(&stream_name, record, &log_source).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -158,7 +144,7 @@ pub async fn handle_otel_logs_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
-    body: Bytes,
+    Json(json): Json<Value>,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -168,24 +154,20 @@ pub async fn handle_otel_metrics_ingestion(
     };
     let log_source = LogSource::from(log_source.to_str().unwrap());
     if log_source != LogSource::OtelMetrics {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Please use x-p-log-source: otel-metrics for ingesting otel metrics"
-        )));
+        return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
     create_stream_if_not_exists(
         &stream_name,
-        &StreamType::UserDefined.to_string(),
+        StreamType::UserDefined,
         LogSource::OtelMetrics,
     )
     .await?;
 
     //custom flattening required for otel metrics
-    let metrics: MetricsData = serde_json::from_slice(body.as_bytes())?;
-    let mut json = flatten_otel_metrics(metrics);
-    for record in json.iter_mut() {
-        let body: Bytes = serde_json::to_vec(record).unwrap().into();
-        push_logs(&stream_name, &body, &log_source).await?;
+    let metrics: MetricsData = serde_json::from_value(json)?;
+    for record in flatten_otel_metrics(metrics) {
+        push_logs(&stream_name, record, &log_source).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -196,7 +178,7 @@ pub async fn handle_otel_metrics_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
-    body: Bytes,
+    Json(json): Json<Value>,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -207,24 +189,16 @@ pub async fn handle_otel_traces_ingestion(
     };
     let log_source = LogSource::from(log_source.to_str().unwrap());
     if log_source != LogSource::OtelTraces {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Please use x-p-log-source: otel-traces for ingesting otel traces"
-        )));
+        return Err(PostError::IncorrectLogSource(LogSource::OtelTraces));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(
-        &stream_name,
-        &StreamType::UserDefined.to_string(),
-        LogSource::OtelTraces,
-    )
-    .await?;
+    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
+        .await?;
 
     //custom flattening required for otel traces
-    let traces: TracesData = serde_json::from_slice(body.as_bytes())?;
-    let mut json = flatten_otel_traces(&traces);
-    for record in json.iter_mut() {
-        let body: Bytes = serde_json::to_vec(record).unwrap().into();
-        push_logs(&stream_name, &body, &log_source).await?;
+    let traces: TracesData = serde_json::from_value(json)?;
+    for record in flatten_otel_traces(&traces) {
+        push_logs(&stream_name, record, &log_source).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -233,14 +207,15 @@ pub async fn handle_otel_traces_ingestion(
 // Handler for POST /api/v1/logstream/{logstream}
 // only ingests events into the specified logstream
 // fails if the logstream does not exist
-pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, PostError> {
-    let stream_name: String = req.match_info().get("logstream").unwrap().parse().unwrap();
+pub async fn post_event(
+    req: HttpRequest,
+    stream_name: Path<String>,
+    Json(json): Json<Value>,
+) -> Result<HttpResponse, PostError> {
+    let stream_name = stream_name.into_inner();
     let internal_stream_names = STREAM_INFO.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Stream {} is an internal stream and cannot be ingested into",
-            stream_name
-        )));
+        return Err(PostError::InternalStream(stream_name));
     }
     if !STREAM_INFO.stream_exists(&stream_name) {
         // For distributed deployments, if the stream not found in memory map,
@@ -256,7 +231,13 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
         }
     }
 
-    flatten_and_push_logs(req, body, &stream_name).await?;
+    let log_source = req
+        .headers()
+        .get(LOG_SOURCE_KEY)
+        .and_then(|h| h.to_str().ok())
+        .map_or(LogSource::default(), LogSource::from);
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -283,7 +264,7 @@ pub async fn push_logs_unchecked(
 // Check if the stream exists and create a new stream if doesn't exist
 pub async fn create_stream_if_not_exists(
     stream_name: &str,
-    stream_type: &str,
+    stream_type: StreamType,
     log_source: LogSource,
 ) -> Result<bool, PostError> {
     let mut stream_exists = false;
@@ -347,6 +328,18 @@ pub enum PostError {
     StreamError(#[from] StreamError),
     #[error("Error: {0}")]
     JsonFlattenError(#[from] JsonFlattenError),
+    #[error(
+        "Use the endpoints `/v1/logs` for otel logs, `/v1/metrics` for otel metrics and `/v1/traces` for otel traces"
+    )]
+    OtelNotSupported,
+    #[error("The stream {0} is reserved for internal use and cannot be ingested into")]
+    InternalStream(String),
+    #[error(r#"Please use "x-p-log-source: {0}" for ingesting otel logs"#)]
+    IncorrectLogSource(LogSource),
+    #[error("Ingestion is not allowed in Query mode")]
+    IngestionNotAllowed,
+    #[error("Missing field for time partition in json: {0}")]
+    MissingTimePartition(String),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -369,6 +362,11 @@ impl actix_web::ResponseError for PostError {
             PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::JsonFlattenError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PostError::OtelNotSupported => StatusCode::BAD_REQUEST,
+            PostError::InternalStream(_) => StatusCode::BAD_REQUEST,
+            PostError::IncorrectLogSource(_) => StatusCode::BAD_REQUEST,
+            PostError::IngestionNotAllowed => StatusCode::BAD_REQUEST,
+            PostError::MissingTimePartition(_) => StatusCode::BAD_REQUEST,
         }
     }
 
@@ -427,7 +425,7 @@ mod tests {
         });
 
         let (rb, _) =
-            into_event_batch(&json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 4);
@@ -454,7 +452,7 @@ mod tests {
         });
 
         let (rb, _) =
-            into_event_batch(&json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -484,7 +482,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(&json, schema, false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = into_event_batch(json, schema, false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -514,7 +512,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(&json, schema, false, None, SchemaVersion::V0,).is_err());
+        assert!(into_event_batch(json, schema, false, None, SchemaVersion::V0,).is_err());
     }
 
     #[test]
@@ -530,7 +528,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(&json, schema, false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = into_event_batch(json, schema, false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 1);
@@ -570,7 +568,7 @@ mod tests {
         ]);
 
         let (rb, _) =
-            into_event_batch(&json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -617,7 +615,7 @@ mod tests {
         ]);
 
         let (rb, _) =
-            into_event_batch(&json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -664,7 +662,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(&json, schema, false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = into_event_batch(json, schema, false, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -711,7 +709,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(&json, schema, false, None, SchemaVersion::V0,).is_err());
+        assert!(into_event_batch(json, schema, false, None, SchemaVersion::V0,).is_err());
     }
 
     #[test]
@@ -750,7 +748,7 @@ mod tests {
         .unwrap();
 
         let (rb, _) = into_event_batch(
-            &flattened_json,
+            flattened_json,
             HashMap::default(),
             false,
             None,
@@ -838,7 +836,7 @@ mod tests {
         .unwrap();
 
         let (rb, _) = into_event_batch(
-            &flattened_json,
+            flattened_json,
             HashMap::default(),
             false,
             None,

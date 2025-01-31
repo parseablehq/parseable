@@ -25,7 +25,13 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0"
 RUN apk add --no-cache build-base git bash
 
 WORKDIR /parseable
-COPY . .
+
+# Cache dependencies
+COPY Cargo.toml Cargo.lock build.rs .git ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
+
+# Build the actual binary
+COPY src ./src
 RUN cargo build --release
 
 # Final stage with a minimal runtime image
@@ -33,7 +39,7 @@ FROM alpine:latest
 
 WORKDIR /parseable
 
-# Copy the static shell into base image.
+# Copy the static binary into the final image
 COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
 
 CMD ["/usr/bin/parseable"]

@@ -28,6 +28,7 @@ use crate::{option::CONFIG, storage::STREAM_ROOT_DIRECTORY, HTTP_CLIENT};
 use self::{cluster::get_ingestor_info, query::Query};
 
 pub mod about;
+pub mod alerts;
 mod audit;
 pub mod cluster;
 pub mod correlation;
@@ -56,7 +57,7 @@ pub fn metrics_path() -> String {
 }
 
 pub(crate) fn cross_origin_config() -> Cors {
-    if !CONFIG.options.cors || cfg!(feature = "debug") {
+    if !CONFIG.options.cors || cfg!(debug_assertions) {
         Cors::permissive().block_on_origin_mismatch(false)
     } else {
         Cors::default().block_on_origin_mismatch(false)
