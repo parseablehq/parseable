@@ -18,7 +18,7 @@
 
 use self::error::{CreateStreamError, StreamError};
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
-use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
+use super::cluster::{fetch_stats_from_ingestors, sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::ingest::create_stream_if_not_exists;
 use super::modal::utils::logstream_utils::{
     create_stream_and_schema_from_storage, create_update_stream, update_first_event_at,
@@ -276,9 +276,9 @@ pub async fn get_stats(
     let stream_name = stream_name.into_inner();
 
     if !STREAM_INFO.stream_exists(&stream_name) {
-        // For query mode, if the stream not found in memory map,
-        //check if it exists in the storage
-        //create stream and schema from storage
+        // Only for query mode, if the stream not found in memory map,
+        // check if it exists in the storage
+        // create stream and schema from storage
         if cfg!(not(test)) && CONFIG.options.mode == Mode::Query {
             match create_stream_and_schema_from_storage(&stream_name).await {
                 Ok(true) => {}
@@ -297,7 +297,14 @@ pub async fn get_stats(
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats: Option<Vec<QueriedStats>> = None;
+    let ingestor_stats = if CONFIG.options.mode == Mode::Query && STREAM_INFO
+        .stream_type(&stream_name)
+        .is_ok_and(|t| t == StreamType::Internal)
+    {
+        Some(fetch_stats_from_ingestors(&stream_name).await?)
+    } else {
+        None
+    };
 
     let hash_map = STREAM_INFO.read().expect("Readable");
     let stream_meta = &hash_map

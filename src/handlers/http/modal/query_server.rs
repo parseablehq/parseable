@@ -309,7 +309,7 @@ impl QueryServer {
                         // GET "/logstream/{logstream}/stats" ==> Get stats for given log stream
                         web::resource("/stats").route(
                             web::get()
-                                .to(querier_logstream::get_stats)
+                                .to(logstream::get_stats)
                                 .authorize_for_stream(Action::GetStats),
                         ),
                     )

@@ -17,12 +17,8 @@
  */
 use std::fs;
 
-use actix_web::{
-    web::{Path, Query},
-    HttpRequest, HttpResponse, Responder,
-};
+use actix_web::{web::Path, HttpRequest, Responder};
 use bytes::Bytes;
-use chrono::Utc;
 use http::StatusCode;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
@@ -33,20 +29,17 @@ use crate::{
     event,
     handlers::http::{
         base_path_without_preceding_slash,
-        cluster::{
-            self, fetch_stats_from_ingestors, sync_streams_with_ingestors,
-            utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
-        },
-        logstream::{error::StreamError, StatsParams},
+        cluster::{self, sync_streams_with_ingestors},
+        logstream::error::StreamError,
         modal::utils::logstream_utils::{
             create_stream_and_schema_from_storage, create_update_stream,
         },
     },
     hottier::HotTierManager,
-    metadata::{self, STREAM_INFO},
+    metadata,
     option::CONFIG,
     stats,
-    storage::{StorageDir, StreamType},
+    storage::StorageDir,
 };
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -118,95 +111,4 @@ pub async fn put_stream(
     sync_streams_with_ingestors(headers, body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
-}
-
-pub async fn get_stats(
-    stream_name: Path<String>,
-    params: Option<Query<StatsParams>>,
-) -> Result<HttpResponse, StreamError> {
-    let stream_name = stream_name.into_inner();
-    // if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
-    if !metadata::STREAM_INFO.stream_exists(&stream_name)
-        && !create_stream_and_schema_from_storage(&stream_name)
-            .await
-            .unwrap_or(false)
-    {
-        return Err(StreamError::StreamNotFound(stream_name.clone()));
-    }
-
-    if let Some(params) = params {
-        let stats = params.get_stats(&stream_name).await?;
-        return Ok(HttpResponse::build(StatusCode::OK).json(stats));
-    }
-
-    let stats = stats::get_current_stats(&stream_name, "json")
-        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
-
-    let ingestor_stats = if STREAM_INFO
-        .stream_type(&stream_name)
-        .is_ok_and(|t| t == StreamType::Internal)
-    {
-        Some(fetch_stats_from_ingestors(&stream_name).await?)
-    } else {
-        None
-    };
-
-    let hash_map = STREAM_INFO.read().expect("Readable");
-    let stream_meta = &hash_map
-        .get(&stream_name)
-        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
-
-    let time = Utc::now();
-
-    let stats = match &stream_meta.first_event_at {
-        Some(_) => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
-
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
-
-        None => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
-
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
-    };
-    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
-        ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
-    } else {
-        stats
-    };
-
-    Ok(HttpResponse::build(StatusCode::OK).json(stats))
 }
