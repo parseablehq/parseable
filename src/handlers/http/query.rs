@@ -39,7 +39,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
+use crate::query::{CountsRequest, CountsResponse, Query, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::rbac::Users;
@@ -117,7 +117,7 @@ impl QueryRequest {
 
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
 
-        Ok(crate::query::Query {
+        Ok(Query {
             plan,
             time_range,
             filter_tag: self.filter_tags.clone(),
@@ -222,16 +222,13 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
 /// create streams for memory from storage if they do not exist
 pub async fn create_streams_for_querier() {
     let querier_streams = STREAM_INFO.list_streams();
-
-    for stream in CONFIG
+    for stream_name in CONFIG
         .storage()
         .get_object_store()
         .list_streams()
         .await
         .unwrap()
     {
-        let stream_name = stream.name;
-
         if !querier_streams.contains(&stream_name) {
             let _ = create_stream_and_schema_from_storage(&stream_name).await;
         }
