@@ -16,30 +16,13 @@
  *
  */
 
-use super::{
-    retention::Retention, staging::convert_disk_files_to_parquet, ObjectStorageError,
-    ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
-};
-use super::{
-    LogStream, Owner, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
-    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
-};
-
-use crate::alerts::AlertConfig;
-use crate::event::format::LogSource;
-use crate::handlers::http::modal::ingest_server::INGESTOR_META;
-use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
-use crate::metadata::SchemaVersion;
-use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
-use crate::option::Mode;
-use crate::{
-    catalog::{self, manifest::Manifest, snapshot::Snapshot},
-    metadata::STREAM_INFO,
-    metrics::{storage::StorageMetrics, STORAGE_SIZE},
-    option::CONFIG,
-    stats::FullStats,
-};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Debug;
+use std::fs::remove_file;
+use std::num::NonZeroU32;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use actix_web_prometheus::PrometheusMetrics;
 use arrow_schema::Schema;
@@ -53,15 +36,26 @@ use relative_path::RelativePathBuf;
 use tracing::{error, warn};
 use ulid::Ulid;
 
-use std::collections::{BTreeMap, HashSet};
-use std::fmt::Debug;
-use std::num::NonZeroU32;
-use std::{
-    collections::HashMap,
-    fs,
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
+use crate::alerts::AlertConfig;
+use crate::catalog;
+use crate::catalog::manifest::Manifest;
+use crate::catalog::snapshot::Snapshot;
+use crate::event::format::LogSource;
+use crate::handlers::http::modal::ingest_server::INGESTOR_META;
+use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
+use crate::metadata::{SchemaVersion, STREAM_INFO};
+use crate::metrics::storage::StorageMetrics;
+use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE};
+use crate::option::{Mode, CONFIG};
+use crate::stats::FullStats;
+
+use super::retention::Retention;
+use super::staging::{convert_disk_files_to_parquet, StorageDir};
+use super::{
+    LogStream, ObjectStorageError, ObjectStoreFormat, Owner, Permisssion,
+    StorageMetadata, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
+    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
@@ -729,7 +723,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
 
-                let _ = fs::remove_file(file);
+                let _ = remove_file(file);
             }
         }
 

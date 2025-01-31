@@ -32,10 +32,9 @@ use relative_path::{RelativePath, RelativePathBuf};
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
-use crate::option::validation;
 use crate::{
-    handlers::http::users::USERS_ROOT_DIR,
-    metrics::storage::{localfs::REQUEST_RESPONSE_TIME, StorageMetrics},
+    handlers::http::users::USERS_ROOT_DIR, metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
+    option::validation,
 };
 
 use super::{

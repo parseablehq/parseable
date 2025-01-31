@@ -16,6 +16,20 @@
  *
  */
 
+pub use azure_blob::AzureBlobConfig;
+use chrono::Local;
+pub use localfs::FSConfig;
+pub use object_storage::{ObjectStorage, ObjectStorageProvider};
+use object_store::path::Path;
+use relative_path::RelativePath;
+use retention::Retention;
+pub use s3::S3Config;
+use serde::{Deserialize, Serialize};
+pub use staging::StorageDir;
+pub use store_metadata::{
+    put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
+};
+
 use crate::{
     catalog::snapshot::Snapshot,
     event::format::LogSource,
@@ -24,31 +38,14 @@ use crate::{
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
 
-use chrono::Local;
-use object_store::path::Path;
-use relative_path::RelativePath;
-use serde::{Deserialize, Serialize};
-
-use std::fmt::Debug;
-
 mod azure_blob;
 mod localfs;
 mod metrics_layer;
-pub(crate) mod object_storage;
+pub mod object_storage;
 pub mod retention;
 mod s3;
 pub mod staging;
 mod store_metadata;
-
-use self::retention::Retention;
-pub use self::staging::StorageDir;
-pub use azure_blob::AzureBlobConfig;
-pub use localfs::FSConfig;
-pub use object_storage::{ObjectStorage, ObjectStorageProvider};
-pub use s3::S3Config;
-pub use store_metadata::{
-    put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
-};
 
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
@@ -83,6 +80,9 @@ const ACCESS_ALL: &str = "all";
 
 pub const CURRENT_OBJECT_STORE_VERSION: &str = "v5";
 pub const CURRENT_SCHEMA_VERSION: &str = "v5";
+
+const CONNECT_TIMEOUT_SECS: u64 = 5;
+const REQUEST_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {

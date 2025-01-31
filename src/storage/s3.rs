@@ -16,44 +16,45 @@
  *
  */
 
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt::Display,
+    path::Path,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
 use async_trait::async_trait;
 use bytes::Bytes;
-use datafusion::datasource::listing::ListingTableUrl;
-use datafusion::datasource::object_store::{
-    DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
+use datafusion::{
+    datasource::listing::ListingTableUrl,
+    execution::{
+        object_store::{DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl},
+        runtime_env::RuntimeEnvBuilder,
+    },
 };
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use futures::stream::FuturesUnordered;
-use futures::{StreamExt, TryStreamExt};
-use object_store::aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum};
-use object_store::limit::LimitStore;
-use object_store::path::Path as StorePath;
-use object_store::{BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig};
+use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
+use object_store::{
+    aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum},
+    limit::LimitStore,
+    path::Path as StorePath,
+    BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig,
+};
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::{error, info};
 
-use std::collections::{BTreeMap, HashSet};
-use std::fmt::Display;
-use std::iter::Iterator;
-use std::path::Path as StdPath;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use super::metrics_layer::MetricLayer;
-use super::object_storage::parseable_json_path;
-use super::{
-    to_object_store_path, LogStream, ObjectStorageProvider, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+use crate::{
+    handlers::http::users::USERS_ROOT_DIR,
+    metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
 };
-use crate::handlers::http::users::USERS_ROOT_DIR;
-use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
-use crate::storage::{ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
+
+use super::{
+    metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, CONNECT_TIMEOUT_SECS, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY
+};
 
 // in bytes
 // const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
-const CONNECT_TIMEOUT_SECS: u64 = 5;
-const REQUEST_TIMEOUT_SECS: u64 = 300;
 const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
 
 #[derive(Debug, Clone, clap::Args)]
@@ -291,7 +292,7 @@ impl ObjectStorageProvider for S3Config {
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
         let s3 = MetricLayer::new(s3);
 
-        let object_store_registry: DefaultObjectStoreRegistry = DefaultObjectStoreRegistry::new();
+        let object_store_registry = DefaultObjectStoreRegistry::new();
         let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(s3));
 
@@ -474,7 +475,7 @@ impl S3 {
         }
         Ok(result_file_list)
     }
-    async fn _upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+    async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
 
         // // TODO: Uncomment this when multipart is fixed
@@ -503,7 +504,7 @@ impl S3 {
     }
 
     // TODO: introduce parallel, multipart-uploads if required
-    // async fn _upload_multipart(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+    // async fn _upload_multipart(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
     //     let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
     //     let mut file = OpenOptions::new().read(true).open(path).await?;
 
@@ -750,7 +751,7 @@ impl ObjectStorage for S3 {
         Ok(files)
     }
 
-    async fn upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+    async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         self._upload_file(key, path).await?;
 
         Ok(())
