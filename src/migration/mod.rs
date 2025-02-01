@@ -138,13 +138,22 @@ pub async fn run_metadata_migration(
 pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
     let storage = config.storage.get_object_store();
     for stream_name in storage.list_streams().await? {
-        migration_stream(&stream_name, &*storage).await?;
+        let Some(metadata) = migration_stream(&stream_name, &*storage).await? else {
+            continue;
+        };
+        if let Err(err) = PARSEABLE.set_stream_meta(&stream_name, metadata).await {
+            error!("could not populate local metadata. {:?}", err);
+            return Err(err.into());
+        }
     }
 
     Ok(())
 }
 
-async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
+async fn migration_stream(
+    stream: &str,
+    storage: &dyn ObjectStorage,
+) -> anyhow::Result<Option<LogStreamMetadata>> {
     let mut arrow_schema: Schema = Schema::empty();
 
     //check if schema exists for the node
@@ -192,7 +201,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
         if PARSEABLE.options.mode != Mode::Ingest {
-            return Ok(());
+            return Ok(None);
         }
         stream_meta_found = false;
     }
@@ -306,12 +315,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         log_source,
     };
 
-    if let Err(err) = PARSEABLE.set_stream_meta(stream, metadata).await {
-        error!("could not populate local metadata. {:?}", err);
-        return Err(err.into());
-    }
-
-    Ok(())
+    Ok(Some(metadata))
 }
 
 #[inline(always)]
