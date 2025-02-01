@@ -32,7 +32,7 @@ use crate::metrics::{
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
 use crate::storage::retention::Retention;
-use crate::storage::{LogStream, ObjectStorage, StorageDir, StreamType};
+use crate::storage::{LogStream, StorageDir, StreamType};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
 
@@ -386,12 +386,9 @@ pub fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> 
 /// required only when migrating from version 1.2.0 and below
 /// this function will be removed in the future
 pub async fn update_data_type_time_partition(
-    storage: &(impl ObjectStorage + ?Sized),
-    stream_name: &str,
-    schema: Schema,
+    schema: &mut Schema,
     time_partition: Option<&String>,
-) -> anyhow::Result<Schema> {
-    let mut schema = schema.clone();
+) -> anyhow::Result<()> {
     if let Some(time_partition) = time_partition {
         if let Ok(time_partition_field) = schema.field_with_name(time_partition) {
             if time_partition_field.data_type() != &DataType::Timestamp(TimeUnit::Millisecond, None)
@@ -408,12 +405,12 @@ pub async fn update_data_type_time_partition(
                     true,
                 ));
                 fields.push(time_partition_field);
-                schema = Schema::new(fields);
-                storage.put_schema(stream_name, &schema).await?;
+                *schema = Schema::new(fields);
             }
         }
     }
-    Ok(schema)
+
+    Ok(())
 }
 
 pub fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {

@@ -256,6 +256,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         arrow_schema = serde_json::from_slice(&schema)?;
     }
 
+    // Setup logstream meta on startup
     let ObjectStoreFormat {
         schema_version,
         created_at,
@@ -273,15 +274,14 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         ..
     } = serde_json::from_value(stream_metadata_value).unwrap_or_default();
     let storage = PARSEABLE.storage().get_object_store();
-    let schema =
-        update_data_type_time_partition(&*storage, stream, arrow_schema, time_partition.as_ref())
-            .await?;
-    storage.put_schema(stream, &schema).await?;
+
+    update_data_type_time_partition(&mut arrow_schema, time_partition.as_ref()).await?;
+    storage.put_schema(stream, &arrow_schema).await?;
     //load stats from storage
     fetch_stats_from_storage(stream, stats).await;
     load_daily_metrics(&snapshot.manifest_list, stream);
 
-    let schema = update_schema_from_staging(stream, schema);
+    let schema = update_schema_from_staging(stream, arrow_schema);
     let schema = HashMap::from_iter(
         schema
             .fields
