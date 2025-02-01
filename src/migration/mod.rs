@@ -21,15 +21,20 @@ pub mod metadata_migration;
 mod schema_migration;
 mod stream_metadata_migration;
 
-use std::{fs::OpenOptions, sync::Arc};
+use std::{collections::HashMap, fs::OpenOptions, sync::Arc};
 
 use crate::{
+    metadata::{
+        load_daily_metrics, update_data_type_time_partition, update_schema_from_staging,
+        LogStreamMetadata,
+    },
+    metrics::fetch_stats_from_storage,
     option::Mode,
     parseable::{Parseable, PARSEABLE},
     storage::{
         object_storage::{parseable_json_path, schema_path, stream_json_path},
-        ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-        STREAM_ROOT_DIRECTORY,
+        ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
+        PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
     },
 };
 use arrow_schema::Schema;
@@ -251,10 +256,55 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         arrow_schema = serde_json::from_slice(&schema)?;
     }
 
-    if let Err(err) = PARSEABLE
-        .load_stream_metadata_on_server_start(stream, arrow_schema, stream_metadata_value)
-        .await
-    {
+    let ObjectStoreFormat {
+        schema_version,
+        created_at,
+        first_event_at,
+        retention,
+        snapshot,
+        stats,
+        time_partition,
+        time_partition_limit,
+        custom_partition,
+        static_schema_flag,
+        hot_tier_enabled,
+        stream_type,
+        log_source,
+        ..
+    } = serde_json::from_value(stream_metadata_value).unwrap_or_default();
+    let storage = PARSEABLE.storage().get_object_store();
+    let schema =
+        update_data_type_time_partition(&*storage, stream, arrow_schema, time_partition.as_ref())
+            .await?;
+    storage.put_schema(stream, &schema).await?;
+    //load stats from storage
+    fetch_stats_from_storage(stream, stats).await;
+    load_daily_metrics(&snapshot.manifest_list, stream);
+
+    let schema = update_schema_from_staging(stream, schema);
+    let schema = HashMap::from_iter(
+        schema
+            .fields
+            .iter()
+            .map(|v| (v.name().to_owned(), v.clone())),
+    );
+
+    let metadata = LogStreamMetadata {
+        schema_version,
+        schema,
+        retention,
+        created_at,
+        first_event_at,
+        time_partition,
+        time_partition_limit: time_partition_limit.and_then(|limit| limit.parse().ok()),
+        custom_partition,
+        static_schema_flag,
+        hot_tier_enabled,
+        stream_type,
+        log_source,
+    };
+
+    if let Err(err) = PARSEABLE.set_stream_meta(stream, metadata).await {
         error!("could not populate local metadata. {:?}", err);
         return Err(err.into());
     }

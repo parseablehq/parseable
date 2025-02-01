@@ -4,16 +4,11 @@ use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use clap::{error::ErrorKind, Parser};
 use once_cell::sync::Lazy;
-use serde_json::Value;
 
 use crate::{
     cli::{Cli, Options, StorageOptions},
     handlers::http::logstream::error::StreamError,
-    metadata::{
-        error::stream_info::LoadError, load_daily_metrics, update_data_type_time_partition,
-        update_schema_from_staging, LogStreamMetadata, StreamInfo, LOCK_EXPECT,
-    },
-    metrics::fetch_stats_from_storage,
+    metadata::{error::stream_info::LoadError, LogStreamMetadata, StreamInfo, LOCK_EXPECT},
     option::Mode,
     storage::{
         object_storage::parseable_json_path, ObjectStorageError, ObjectStorageProvider,
@@ -207,68 +202,12 @@ impl Parseable {
         Ok(true)
     }
 
-    pub async fn load_stream_metadata_on_server_start(
+    /// Stores the provided stream metadata in memory mapping
+    pub async fn set_stream_meta(
         &self,
         stream_name: &str,
-        schema: Schema,
-        stream_metadata_value: Value,
+        metadata: LogStreamMetadata,
     ) -> Result<(), LoadError> {
-        let ObjectStoreFormat {
-            schema_version,
-            created_at,
-            first_event_at,
-            retention,
-            snapshot,
-            stats,
-            time_partition,
-            time_partition_limit,
-            custom_partition,
-            static_schema_flag,
-            hot_tier_enabled,
-            stream_type,
-            log_source,
-            ..
-        } = if !stream_metadata_value.is_null() {
-            serde_json::from_slice(&serde_json::to_vec(&stream_metadata_value).unwrap()).unwrap()
-        } else {
-            ObjectStoreFormat::default()
-        };
-        let storage = self.storage.get_object_store();
-        let schema = update_data_type_time_partition(
-            &*storage,
-            stream_name,
-            schema,
-            time_partition.as_ref(),
-        )
-        .await?;
-        storage.put_schema(stream_name, &schema).await?;
-        //load stats from storage
-        fetch_stats_from_storage(stream_name, stats).await;
-        load_daily_metrics(&snapshot.manifest_list, stream_name);
-
-        let schema = update_schema_from_staging(stream_name, schema);
-        let schema = HashMap::from_iter(
-            schema
-                .fields
-                .iter()
-                .map(|v| (v.name().to_owned(), v.clone())),
-        );
-
-        let metadata = LogStreamMetadata {
-            schema_version,
-            schema,
-            retention,
-            created_at,
-            first_event_at,
-            time_partition,
-            time_partition_limit: time_partition_limit.and_then(|limit| limit.parse().ok()),
-            custom_partition,
-            static_schema_flag,
-            hot_tier_enabled,
-            stream_type,
-            log_source,
-        };
-
         let mut map = self.streams.write().expect(LOCK_EXPECT);
 
         map.insert(stream_name.to_string(), metadata);
