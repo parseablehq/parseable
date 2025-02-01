@@ -53,9 +53,13 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
 
 /// All state related to parseable, in one place.
 pub struct Parseable {
+    /// Configuration variables for parseable
     pub options: Options,
+    /// Storage engine backing parseable
     storage: Arc<dyn ObjectStorageProvider>,
+    /// Either "drive"/"s3"/"blob-store"
     pub storage_name: &'static str,
+    /// Metadata relating to logstreams
     pub streams: StreamInfo,
 }
 
