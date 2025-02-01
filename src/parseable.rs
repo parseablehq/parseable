@@ -526,37 +526,31 @@ impl Parseable {
 
             if let Some(custom_partition) = custom_partition {
                 let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-                let custom_partition_exists: HashMap<_, _> = custom_partition_list
-                    .iter()
-                    .map(|&partition| {
-                        (
-                            partition.to_string(),
-                            schema
-                                .fields()
-                                .iter()
-                                .any(|field| field.name() == partition),
-                        )
-                    })
-                    .collect();
-
-                for partition in &custom_partition_list {
-                    if !custom_partition_exists[*partition] {
+                for partition in custom_partition_list.iter() {
+                    if !schema
+                        .fields()
+                        .iter()
+                        .any(|field| field.name() == partition)
+                    {
                         return Err(CreateStreamError::Custom {
-                            msg: format!("custom partition field {} does not exist in the schema for the stream {}", partition, stream_name),
+                        msg: format!("custom partition field {partition} does not exist in the schema for the stream {stream_name}"),
+                        status: StatusCode::BAD_REQUEST,
+                    });
+                    }
+                }
+
+                for partition in custom_partition_list {
+                    if time_partition
+                        .as_ref()
+                        .is_some_and(|time| time == partition)
+                    {
+                        return Err(CreateStreamError::Custom {
+                            msg: format!(
+                                "time partition {} cannot be set as custom partition",
+                                partition
+                            ),
                             status: StatusCode::BAD_REQUEST,
                         });
-                    }
-
-                    if let Some(time_partition) = time_partition.clone() {
-                        if time_partition == *partition {
-                            return Err(CreateStreamError::Custom {
-                                msg: format!(
-                                    "time partition {} cannot be set as custom partition",
-                                    partition
-                                ),
-                                status: StatusCode::BAD_REQUEST,
-                            });
-                        }
                     }
                 }
             }
