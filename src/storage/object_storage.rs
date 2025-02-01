@@ -126,7 +126,29 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
     async fn get_all_dashboards(
         &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
+        
+        let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
+        for user in self.list_dirs_relative(&users_dir).await? {
+            let user_dashboard_path =
+                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/dashboards"));
+            let dashboards_path = RelativePathBuf::from(&user_dashboard_path);
+            let dashboard_bytes = self
+                .get_objects(
+                    Some(&dashboards_path),
+                    Box::new(|file_name| file_name.ends_with(".json")),
+                )
+                .await?;
+
+            dashboards
+                .entry(dashboards_path)
+                .or_default()
+                .extend(dashboard_bytes);
+        }
+        Ok(dashboards)
+    }
+
     async fn get_all_correlations(
         &self,
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;

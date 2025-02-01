@@ -374,36 +374,6 @@ impl ObjectStorage for LocalFS {
         Ok(dirs)
     }
 
-    async fn get_all_dashboards(
-        &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-        let users_root_path = self.root.join(USERS_ROOT_DIR);
-        let directories = ReadDirStream::new(fs::read_dir(&users_root_path).await?);
-        let users: Vec<DirEntry> = directories.try_collect().await?;
-        for user in users {
-            if !user.path().is_dir() {
-                continue;
-            }
-            let dashboards_path = users_root_path.join(user.path()).join("dashboards");
-            let directories = ReadDirStream::new(fs::read_dir(&dashboards_path).await?);
-            let dashboards_files: Vec<DirEntry> = directories.try_collect().await?;
-            for dashboard in dashboards_files {
-                let dashboard_absolute_path = dashboard.path();
-                let file = fs::read(dashboard_absolute_path.clone()).await?;
-                let dashboard_relative_path = dashboard_absolute_path
-                    .strip_prefix(self.root.as_path())
-                    .unwrap();
-
-                dashboards
-                    .entry(RelativePathBuf::from_path(dashboard_relative_path).unwrap())
-                    .or_default()
-                    .push(file.into());
-            }
-        }
-        Ok(dashboards)
-    }
-
     ///fetch all correlations stored in disk
     /// return the correlation file path and all correlation json bytes for each file path
     async fn get_all_correlations(
