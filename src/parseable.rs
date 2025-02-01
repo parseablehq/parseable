@@ -167,15 +167,11 @@ impl Parseable {
             schema = serde_json::from_slice::<Arc<Schema>>(&schema_bytes)?;
         }
 
-        let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
-
-        for (field_name, field) in schema
-            .fields()
-            .iter()
+        let static_schema: HashMap<String, Arc<Field>> = schema
+            .fields
+            .into_iter()
             .map(|field| (field.name().to_string(), field.clone()))
-        {
-            static_schema.insert(field_name, field);
-        }
+            .collect();
 
         let time_partition = stream_metadata.time_partition.as_deref().unwrap_or("");
         let time_partition_limit = stream_metadata

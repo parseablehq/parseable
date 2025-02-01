@@ -275,6 +275,8 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
     } = serde_json::from_value(stream_metadata_value).unwrap_or_default();
     let storage = PARSEABLE.storage().get_object_store();
 
+    // update the schema and store it back
+    // NOTE: write could be saved, but the cost is cheap, given the low possibilities of being called multiple times
     update_data_type_time_partition(&mut arrow_schema, time_partition.as_ref()).await?;
     storage.put_schema(stream, &arrow_schema).await?;
     //load stats from storage
