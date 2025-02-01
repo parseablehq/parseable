@@ -23,6 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{
     datasource::listing::ListingTableUrl,
@@ -39,7 +40,6 @@ use object_store::{
     BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig,
 };
 use relative_path::{RelativePath, RelativePathBuf};
-use tonic::async_trait;
 use tracing::{error, info};
 use url::Url;
 
