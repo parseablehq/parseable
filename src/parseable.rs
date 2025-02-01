@@ -25,7 +25,31 @@ pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
 
 /// Shared state of the Parseable server.
-pub static PARSEABLE: Lazy<Parseable> = Lazy::new(Parseable::new);
+pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage {
+    StorageOptions::Local(args) => {
+        if args.options.local_staging_path == args.storage.root {
+            clap::Error::raw(
+                ErrorKind::ValueValidation,
+                "Cannot use same path for storage and staging",
+            )
+            .exit();
+        }
+
+        if args.options.hot_tier_storage_path.is_some() {
+            clap::Error::raw(
+                ErrorKind::ValueValidation,
+                "Cannot use hot tier with local-store subcommand.",
+            )
+            .exit();
+        }
+
+        Parseable::new(args.options, Arc::new(args.storage), "drive")
+    }
+    StorageOptions::S3(args) => Parseable::new(args.options, Arc::new(args.storage), "s3"),
+    StorageOptions::Blob(args) => {
+        Parseable::new(args.options, Arc::new(args.storage), "blob-store")
+    }
+});
 
 /// All state related to parseable, in one place.
 pub struct Parseable {
@@ -36,44 +60,16 @@ pub struct Parseable {
 }
 
 impl Parseable {
-    fn new() -> Self {
-        match Cli::parse().storage {
-            StorageOptions::Local(args) => {
-                if args.options.local_staging_path == args.storage.root {
-                    clap::Error::raw(
-                        ErrorKind::ValueValidation,
-                        "Cannot use same path for storage and staging",
-                    )
-                    .exit();
-                }
-
-                if args.options.hot_tier_storage_path.is_some() {
-                    clap::Error::raw(
-                        ErrorKind::ValueValidation,
-                        "Cannot use hot tier with local-store subcommand.",
-                    )
-                    .exit();
-                }
-
-                Self {
-                    options: args.options,
-                    storage: Arc::new(args.storage),
-                    storage_name: "drive",
-                    streams: StreamInfo::default(),
-                }
-            }
-            StorageOptions::S3(args) => Self {
-                options: args.options,
-                storage: Arc::new(args.storage),
-                storage_name: "s3",
-                streams: StreamInfo::default(),
-            },
-            StorageOptions::Blob(args) => Self {
-                options: args.options,
-                storage: Arc::new(args.storage),
-                storage_name: "blob_store",
-                streams: StreamInfo::default(),
-            },
+    pub fn new(
+        options: Options,
+        storage: Arc<dyn ObjectStorageProvider>,
+        storage_name: &'static str,
+    ) -> Self {
+        Parseable {
+            options,
+            storage,
+            storage_name,
+            streams: StreamInfo::default(),
         }
     }
 
