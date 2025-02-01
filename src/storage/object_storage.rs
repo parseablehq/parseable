@@ -21,7 +21,9 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    LogStream, Owner, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY
+    LogStream, Owner, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
+    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 use crate::alerts::AlertConfig;
@@ -128,7 +130,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         &self,
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
         let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-        
+
         let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
         for user in self.list_dirs_relative(&users_dir).await? {
             let user_dashboard_path =
@@ -149,9 +151,33 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(dashboards)
     }
 
+    ///fetch all correlations stored in object store
+    /// return the correlation file path and all correlation json bytes for each file path
     async fn get_all_correlations(
         &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
+
+        let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
+        for user in self.list_dirs_relative(&users_dir).await? {
+            let user_correlation_path =
+                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/correlations",));
+            let correlations_path = RelativePathBuf::from(&user_correlation_path);
+            let correlation_bytes = self
+                .get_objects(
+                    Some(&correlations_path),
+                    Box::new(|file_name| file_name.ends_with(".json")),
+                )
+                .await?;
+
+            correlations
+                .entry(correlations_path)
+                .or_default()
+                .extend(correlation_bytes);
+        }
+        Ok(correlations)
+    }
+
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn list_manifest_files(
         &self,

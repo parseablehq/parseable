@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
-use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
+use futures::{stream::FuturesUnordered, TryStreamExt};
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
@@ -372,37 +372,6 @@ impl ObjectStorage for LocalFS {
             .collect::<Vec<_>>();
 
         Ok(dirs)
-    }
-
-    ///fetch all correlations stored in disk
-    /// return the correlation file path and all correlation json bytes for each file path
-    async fn get_all_correlations(
-        &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-        let users_root_path = self.root.join(USERS_ROOT_DIR);
-        let mut directories = ReadDirStream::new(fs::read_dir(&users_root_path).await?);
-        while let Some(user) = directories.next().await {
-            let user = user?;
-            if !user.path().is_dir() {
-                continue;
-            }
-            let correlations_path = users_root_path.join(user.path()).join("correlations");
-            let mut files = ReadDirStream::new(fs::read_dir(&correlations_path).await?);
-            while let Some(correlation) = files.next().await {
-                let correlation_absolute_path = correlation?.path();
-                let file = fs::read(correlation_absolute_path.clone()).await?;
-                let correlation_relative_path = correlation_absolute_path
-                    .strip_prefix(self.root.as_path())
-                    .unwrap();
-
-                correlations
-                    .entry(RelativePathBuf::from_path(correlation_relative_path).unwrap())
-                    .or_default()
-                    .push(file.into());
-            }
-        }
-        Ok(correlations)
     }
 
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
