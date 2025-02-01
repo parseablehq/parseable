@@ -16,7 +16,6 @@
  *
  */
 
-use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{Local, NaiveDateTime};
 use itertools::Itertools;
@@ -25,8 +24,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::{Arc, RwLock};
 
-use self::error::stream_info::{CheckAlertError, MetadataError};
-use crate::alerts::Alerts;
+use self::error::stream_info::MetadataError;
 use crate::catalog::snapshot::ManifestItem;
 use crate::event::format::LogSource;
 use crate::metrics::{
@@ -60,7 +58,6 @@ pub enum SchemaVersion {
 pub struct LogStreamMetadata {
     pub schema_version: SchemaVersion,
     pub schema: HashMap<String, Arc<Field>>,
-    pub alerts: Alerts,
     pub retention: Option<Retention>,
     pub created_at: String,
     pub first_event_at: Option<String>,
@@ -83,30 +80,9 @@ pub const LOCK_EXPECT: &str = "no method in metadata should panic while holding 
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
 impl StreamInfo {
-    pub async fn check_alerts(
-        &self,
-        stream_name: &str,
-        rb: &RecordBatch,
-    ) -> Result<(), CheckAlertError> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let meta = map
-            .get(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_owned()))?;
-
-        for alert in &meta.alerts.alerts {
-            alert.check_alert(stream_name, rb.clone())
-        }
-
-        Ok(())
-    }
-
     pub fn stream_exists(&self, stream_name: &str) -> bool {
         let map = self.read().expect(LOCK_EXPECT);
         map.contains_key(stream_name)
-    }
-
-    pub fn stream_initialized(&self, stream_name: &str) -> Result<bool, MetadataError> {
-        Ok(!self.schema(stream_name)?.fields.is_empty())
     }
 
     pub fn get_first_event(&self, stream_name: &str) -> Result<Option<String>, MetadataError> {
@@ -179,15 +155,6 @@ impl StreamInfo {
         let schema = Schema::new(fields);
 
         Ok(Arc::new(schema))
-    }
-
-    pub fn set_alert(&self, stream_name: &str, alerts: Alerts) -> Result<(), MetadataError> {
-        let mut map = self.write().expect(LOCK_EXPECT);
-        map.get_mut(stream_name)
-            .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
-            .map(|metadata| {
-                metadata.alerts = alerts;
-            })
     }
 
     pub fn set_retention(
@@ -464,14 +431,6 @@ pub fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {
 pub mod error {
     pub mod stream_info {
         use crate::storage::ObjectStorageError;
-
-        #[derive(Debug, thiserror::Error)]
-        pub enum CheckAlertError {
-            #[error("Serde Json Error: {0}")]
-            Serde(#[from] serde_json::Error),
-            #[error("Metadata Error: {0}")]
-            Metadata(#[from] MetadataError),
-        }
 
         #[derive(Debug, thiserror::Error)]
         pub enum MetadataError {

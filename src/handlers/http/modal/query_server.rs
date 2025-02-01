@@ -16,6 +16,21 @@
  *
  */
 
+use crate::alerts::ALERTS;
+use crate::correlation::CORRELATIONS;
+use crate::handlers::airplane;
+use crate::handlers::http::base_path;
+use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
+use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
+use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
+use crate::handlers::http::{rbac, role};
+use crate::hottier::HotTierManager;
+use crate::rbac::role::Action;
+use crate::sync;
+use crate::users::dashboards::DASHBOARDS;
+use crate::users::filters::FILTERS;
+use crate::{analytics, metrics, migration, storage};
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use async_trait::async_trait;
@@ -23,18 +38,8 @@ use bytes::Bytes;
 use tokio::sync::oneshot;
 use tracing::{error, info};
 
-use crate::correlation::CORRELATIONS;
-use crate::handlers::airplane;
-use crate::handlers::http::cluster::init_cluster_metrics_schedular;
-use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
-use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
-use crate::handlers::http::{base_path, cluster, logstream, rbac, role, MAX_EVENT_PAYLOAD_SIZE};
-use crate::hottier::HotTierManager;
 use crate::parseable::PARSEABLE;
-use crate::rbac::role::Action;
-use crate::users::dashboards::DASHBOARDS;
-use crate::users::filters::FILTERS;
-use crate::{analytics, metrics, migration, storage, sync, Server};
+use crate::Server;
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
 use super::{OpenIdClient, ParseableServer};
@@ -62,6 +67,7 @@ impl ParseableServer for QueryServer {
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_counts_webscope())
                     .service(Server::get_metrics_webscope())
+                    .service(Server::get_alerts_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
             .service(Server::get_generated());
@@ -95,8 +101,18 @@ impl ParseableServer for QueryServer {
         if let Err(e) = CORRELATIONS.load().await {
             error!("{e}");
         }
-        FILTERS.load().await?;
-        DASHBOARDS.load().await?;
+        if let Err(err) = FILTERS.load().await {
+            error!("{err}")
+        };
+
+        if let Err(err) = DASHBOARDS.load().await {
+            error!("{err}")
+        };
+
+        if let Err(err) = ALERTS.load().await {
+            error!("{err}")
+        };
+
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
 
@@ -276,21 +292,6 @@ impl QueryServer {
                                 .to(logstream::get_stream_info)
                                 .authorize_for_stream(Action::GetStreamInfo),
                         ),
-                    )
-                    .service(
-                        web::resource("/alert")
-                            // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
-                            .route(
-                                web::put()
-                                    .to(logstream::put_alert)
-                                    .authorize_for_stream(Action::PutAlert),
-                            )
-                            // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
-                            .route(
-                                web::get()
-                                    .to(logstream::get_alert)
-                                    .authorize_for_stream(Action::GetAlert),
-                            ),
                     )
                     .service(
                         // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream

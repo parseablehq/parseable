@@ -16,7 +16,7 @@ use crate::{
     metrics::fetch_stats_from_storage,
     option::Mode,
     storage::{
-        object_storage::parseable_json_path, LogStream, ObjectStorageError, ObjectStorageProvider,
+        object_storage::parseable_json_path, ObjectStorageError, ObjectStorageProvider,
         ObjectStoreFormat,
     },
 };
@@ -156,9 +156,7 @@ impl Parseable {
         // Proceed to create log stream if it doesn't exist
         let storage = self.storage.get_object_store();
         let streams = storage.list_streams().await?;
-        if !streams.contains(&LogStream {
-            name: stream_name.to_owned(),
-        }) {
+        if !streams.contains(stream_name) {
             return Ok(false);
         }
 
@@ -248,7 +246,6 @@ impl Parseable {
         fetch_stats_from_storage(stream_name, stats).await;
         load_daily_metrics(&snapshot.manifest_list, stream_name);
 
-        let alerts = storage.get_alerts(stream_name).await?;
         let schema = update_schema_from_staging(stream_name, schema);
         let schema = HashMap::from_iter(
             schema
@@ -260,7 +257,6 @@ impl Parseable {
         let metadata = LogStreamMetadata {
             schema_version,
             schema,
-            alerts,
             retention,
             created_at,
             first_event_at,

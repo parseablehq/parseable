@@ -169,7 +169,7 @@ pub async fn get_stats(
     let ingestor_stats = if PARSEABLE
         .streams
         .stream_type(&stream_name)
-        .is_ok_and(|t| t == StreamType::Internal)
+        .is_ok_and(|t| t == StreamType::UserDefined)
     {
         Some(fetch_stats_from_ingestors(&stream_name).await?)
     } else {

@@ -48,13 +48,17 @@ pub use store_metadata::{
     put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
 };
 
+/// Name of a Stream
+/// NOTE: this used to be a struct, flattened out for simplicity
+pub type LogStream = String;
+
 // metadata file names in a Stream prefix
 pub const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
 pub const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 pub const STREAM_ROOT_DIRECTORY: &str = ".stream";
 pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
 pub const SCHEMA_FILE_NAME: &str = ".schema";
-pub const ALERT_FILE_NAME: &str = ".alert.json";
+pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
 /// local sync interval to move data.records to /tmp dir of that stream.
@@ -223,11 +227,6 @@ impl Default for ObjectStoreFormat {
             log_source: LogSource::default(),
         }
     }
-}
-
-#[derive(serde::Serialize, PartialEq, Debug)]
-pub struct LogStream {
-    pub name: String,
 }
 
 #[derive(Debug, thiserror::Error)]

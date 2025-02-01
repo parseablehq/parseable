@@ -34,7 +34,6 @@ use crate::{
 };
 use arrow_schema::Schema;
 use bytes::Bytes;
-use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
 use serde_json::Value;
@@ -133,9 +132,8 @@ pub async fn run_metadata_migration(
 /// run the migration for all streams
 pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
     let storage = config.storage().get_object_store();
-    let streams = storage.list_streams().await?;
-    for stream in streams {
-        migration_stream(&stream.name, &*storage).await?;
+    for stream_name in storage.list_streams().await? {
+        migration_stream(&stream_name, &*storage).await?;
     }
 
     Ok(())
@@ -360,12 +358,7 @@ async fn run_meta_file_migration(
 }
 
 async fn run_stream_files_migration(object_store: &Arc<dyn ObjectStorage>) -> anyhow::Result<()> {
-    let streams = object_store
-        .list_old_streams()
-        .await?
-        .into_iter()
-        .map(|stream| stream.name)
-        .collect_vec();
+    let streams = object_store.list_old_streams().await?;
 
     for stream in streams {
         let paths = object_store.get_stream_file_paths(&stream).await?;

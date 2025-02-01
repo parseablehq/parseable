@@ -16,32 +16,13 @@
  *
  */
 
-use std::collections::HashMap;
-use std::fs;
-use std::num::NonZeroU32;
-use std::str::FromStr;
-use std::sync::Arc;
-
-use actix_web::http::header::{self, HeaderMap};
-use actix_web::http::StatusCode;
-use actix_web::web::{Json, Path};
-use actix_web::{web, HttpRequest, Responder};
-use arrow_json::reader::infer_json_schema_from_iterator;
-use arrow_schema::{Field, Schema};
-use bytes::Bytes;
-use chrono::Utc;
-use http::{HeaderName, HeaderValue};
-use itertools::Itertools;
-use serde_json::Value;
-use tracing::warn;
-
 use self::error::{CreateStreamError, StreamError};
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::ingest::create_stream_if_not_exists;
-use super::modal::utils::logstream_utils::{create_update_stream, update_first_event_at};
+use super::modal::utils::logstream_utils::{ create_update_stream, update_first_event_at,
+};
 use super::query::update_schema_when_distributed;
-use crate::alerts::Alerts;
 use crate::event::format::{override_data_type, LogSource};
 use crate::handlers::STREAM_TYPE_KEY;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
@@ -55,7 +36,25 @@ use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::{retention::Retention, StorageDir};
 use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
-use crate::{event, metadata, stats, validator};
+use crate::{event, stats, validator};
+
+use actix_web::http::header::{self, HeaderMap};
+use actix_web::http::StatusCode;
+use actix_web::web::{Json, Path};
+use actix_web::{web, HttpRequest, Responder};
+use arrow_json::reader::infer_json_schema_from_iterator;
+use arrow_schema::{Field, Schema};
+use bytes::Bytes;
+use chrono::Utc;
+use http::{HeaderName, HeaderValue};
+use itertools::Itertools;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::fs;
+use std::num::NonZeroU32;
+use std::str::FromStr;
+use std::sync::Arc;
+use tracing::warn;
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
@@ -104,9 +103,10 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
         .filter(|logstream| {
             warn!("logstream-\n{logstream:?}");
 
-            Users.authorize(key.clone(), Action::ListStream, Some(&logstream.name), None)
+            Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
                 == crate::rbac::Response::Authorized
         })
+        .map(|name| json!({"name": name}))
         .collect_vec();
 
     Ok(web::Json(res))
@@ -158,40 +158,6 @@ pub async fn schema(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 }
 
-pub async fn get_alert(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
-
-    let alerts = PARSEABLE
-        .streams
-        .read()
-        .expect(metadata::LOCK_EXPECT)
-        .get(&stream_name)
-        .map(|metadata| {
-            serde_json::to_value(&metadata.alerts).expect("alerts can serialize to valid json")
-        });
-
-    let mut alerts = match alerts {
-        Some(alerts) => alerts,
-        None => {
-            let alerts = PARSEABLE
-                .storage()
-                .get_object_store()
-                .get_alerts(&stream_name)
-                .await?;
-
-            if alerts.alerts.is_empty() {
-                return Err(StreamError::NoAlertsSet);
-            }
-
-            serde_json::to_value(alerts).expect("alerts can serialize to valid json")
-        }
-    };
-
-    remove_id_from_alerts(&mut alerts);
-
-    Ok((web::Json(alerts), StatusCode::OK))
-}
-
 pub async fn put_stream(
     req: HttpRequest,
     stream_name: Path<String>,
@@ -202,75 +168,6 @@ pub async fn put_stream(
     create_update_stream(req.headers(), &body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
-}
-
-pub async fn put_alert(
-    stream_name: Path<String>,
-    Json(mut json): Json<Value>,
-) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
-
-    remove_id_from_alerts(&mut json);
-    let alerts: Alerts = match serde_json::from_value(json) {
-        Ok(alerts) => alerts,
-        Err(err) => {
-            return Err(StreamError::BadAlertJson {
-                stream: stream_name,
-                err,
-            })
-        }
-    };
-
-    validator::alert(&alerts)?;
-
-    if !PARSEABLE.streams.stream_initialized(&stream_name)? {
-        // For query mode, if the stream not found in memory map,
-        //check if it exists in the storage
-        //create stream and schema from storage
-        if PARSEABLE.options.mode == Mode::Query {
-            match PARSEABLE
-                .create_stream_and_schema_from_storage(&stream_name)
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) | Err(_) => return Err(StreamError::StreamNotFound(stream_name.clone())),
-            }
-        } else {
-            return Err(StreamError::UninitializedLogstream);
-        }
-    }
-
-    let schema = PARSEABLE.streams.schema(&stream_name)?;
-    for alert in &alerts.alerts {
-        for column in alert.message.extract_column_names() {
-            let is_valid = alert.message.valid(&schema, column);
-            if !is_valid {
-                return Err(StreamError::InvalidAlertMessage(
-                    alert.name.to_owned(),
-                    column.to_string(),
-                ));
-            }
-            if !alert.rule.valid_for_schema(&schema) {
-                return Err(StreamError::InvalidAlert(alert.name.to_owned()));
-            }
-        }
-    }
-
-    PARSEABLE
-        .storage()
-        .get_object_store()
-        .put_alerts(&stream_name, &alerts)
-        .await?;
-
-    PARSEABLE
-        .streams
-        .set_alert(&stream_name, alerts)
-        .expect("alerts set on existing stream");
-
-    Ok((
-        format!("set alert configuration for log stream {stream_name}"),
-        StatusCode::OK,
-    ))
 }
 
 pub async fn get_retention(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -479,17 +376,6 @@ pub async fn get_stats(
     let stats = serde_json::to_value(stats)?;
 
     Ok((web::Json(stats), StatusCode::OK))
-}
-
-fn remove_id_from_alerts(value: &mut Value) {
-    if let Some(Value::Array(alerts)) = value.get_mut("alerts") {
-        alerts
-            .iter_mut()
-            .map_while(|alert| alert.as_object_mut())
-            .for_each(|map| {
-                map.remove("id");
-            });
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
