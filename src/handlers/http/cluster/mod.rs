@@ -436,7 +436,7 @@ pub async fn fetch_stats_from_ingestors(
 ) -> Result<Vec<utils::QueriedStats>, StreamError> {
     let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
     let obs = PARSEABLE
-        .storage()
+        .storage
         .get_object_store()
         .get_objects(
             Some(&path),
@@ -634,7 +634,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
             &ingestor.domain_name,
             reachable,
             staging_path,
-            PARSEABLE.storage().get_endpoint(),
+            PARSEABLE.storage.get_endpoint(),
             error,
             status,
         ));
@@ -654,7 +654,7 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
 
 // update the .query.json file and return the new ingestorMetadataArr
 pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
 
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let arr = store
@@ -679,7 +679,7 @@ pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, P
             "The ingestor is currently live and cannot be removed"
         )));
     }
-    let object_store = PARSEABLE.storage().get_object_store();
+    let object_store = PARSEABLE.storage.get_object_store();
 
     let ingestor_metadatas = object_store
         .get_objects(

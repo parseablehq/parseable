@@ -426,7 +426,7 @@ pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,
 ) -> Result<Vec<Manifest>, QueryError> {
-    let glob_storage = PARSEABLE.storage().get_object_store();
+    let glob_storage = PARSEABLE.storage.get_object_store();
 
     let object_store = QUERY_SESSION
         .state()

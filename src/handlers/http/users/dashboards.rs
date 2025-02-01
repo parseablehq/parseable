@@ -81,7 +81,7 @@ pub async fn post(
 
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
 
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let dashboard_bytes = serde_json::to_vec(&dashboard)?;
     store
         .put_object(&path, Bytes::from(dashboard_bytes))
@@ -114,7 +114,7 @@ pub async fn update(
 
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
 
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let dashboard_bytes = serde_json::to_vec(&dashboard)?;
     store
         .put_object(&path, Bytes::from(dashboard_bytes))
@@ -134,7 +134,7 @@ pub async fn delete(
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     store.delete_object(&path).await?;
 
     DASHBOARDS.delete_dashboard(&dashboard_id);

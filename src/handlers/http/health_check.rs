@@ -66,7 +66,7 @@ pub async fn shutdown() {
 
 pub async fn readiness() -> HttpResponse {
     // Check the object store connection
-    if PARSEABLE.storage().get_object_store().check().await.is_ok() {
+    if PARSEABLE.storage.get_object_store().check().await.is_ok() {
         HttpResponse::new(StatusCode::OK)
     } else {
         HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE)

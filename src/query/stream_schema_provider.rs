@@ -426,7 +426,7 @@ impl TableProvider for StandardTableProvider {
             .object_store_registry
             .get_store(&self.url)
             .unwrap();
-        let glob_storage = PARSEABLE.storage().get_object_store();
+        let glob_storage = PARSEABLE.storage.get_object_store();
 
         let object_store_format = glob_storage
             .get_object_store_format(&self.stream)

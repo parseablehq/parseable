@@ -653,7 +653,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 let absolute_path = self
                     .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
                     .to_string();
-                let store = PARSEABLE.storage().get_object_store();
+                let store = PARSEABLE.storage.get_object_store();
                 let manifest =
                     catalog::manifest::create_from_parquet_file(absolute_path.clone(), &file)
                         .unwrap();
@@ -746,7 +746,7 @@ pub async fn commit_schema_to_storage(
     stream_name: &str,
     schema: Schema,
 ) -> Result<(), ObjectStorageError> {
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
     let stream_schema = storage.get_schema(stream_name).await?;
     let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
     storage.put_schema(stream_name, &new_schema).await

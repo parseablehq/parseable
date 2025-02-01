@@ -100,7 +100,7 @@ impl ParseableServer for IngestServer {
     /// configure the server and start an instance to ingest data
     async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
-        PARSEABLE.storage().register_store_metrics(&prometheus);
+        PARSEABLE.storage.register_store_metrics(&prometheus);
 
         migration::run_migration(&PARSEABLE).await?;
 
@@ -283,7 +283,7 @@ impl IngestServer {
 // create the ingestor metadata and put the .ingestor.json file in the object store
 pub async fn set_ingestor_metadata() -> anyhow::Result<()> {
     let storage_ingestor_metadata = migrate_ingester_metadata().await?;
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
 
     // find the meta file in staging if not generate new metadata
     let resource = INGESTOR_META.clone();
@@ -320,7 +320,7 @@ async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageErr
     // based on the work flow of the system, the querier will always need to start first
     // i.e the querier will create the `.parseable.json` file
     let parseable_json = PARSEABLE
-        .storage()
+        .storage
         .get_object_store()
         .get_object(&parseable_json_path())
         .await
@@ -336,7 +336,7 @@ async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageErr
 
 async fn validate_credentials() -> anyhow::Result<()> {
     // check if your creds match with others
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let ingestor_metadata = store
         .get_objects(

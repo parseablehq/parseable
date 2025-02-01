@@ -91,7 +91,7 @@ impl ParseableServer for QueryServer {
     /// initialize the server, run migrations as needed and start an instance
     async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
-        PARSEABLE.storage().register_store_metrics(&prometheus);
+        PARSEABLE.storage.register_store_metrics(&prometheus);
 
         migration::run_migration(&PARSEABLE).await?;
 

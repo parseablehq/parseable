@@ -267,7 +267,7 @@ impl HotTierManager {
         let stream_hot_tier = self.get_hot_tier(&stream).await?;
         let mut parquet_file_size = stream_hot_tier.used_size;
 
-        let object_store = PARSEABLE.storage().get_object_store();
+        let object_store = PARSEABLE.storage.get_object_store();
         let mut s3_manifest_file_list = object_store.list_manifest_files(&stream).await?;
         self.process_manifest(
             &stream,
@@ -376,7 +376,7 @@ impl HotTierManager {
         fs::create_dir_all(parquet_path.parent().unwrap()).await?;
         let mut file = fs::File::create(parquet_path.clone()).await?;
         let parquet_data = PARSEABLE
-            .storage()
+            .storage
             .get_object_store()
             .get_object(&parquet_file_path)
             .await?;

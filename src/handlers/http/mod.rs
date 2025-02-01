@@ -80,7 +80,7 @@ pub fn base_path_without_preceding_slash() -> String {
 pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
     let path_prefix =
         relative_path::RelativePathBuf::from(format!("{}/{}", stream_name, STREAM_ROOT_DIRECTORY));
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let res: Vec<Schema> = store
         .get_objects(
             Some(&path_prefix),

@@ -53,7 +53,7 @@ pub struct Correlations(RwLock<CorrelationMap>);
 impl Correlations {
     // Load correlations from storage
     pub async fn load(&self) -> anyhow::Result<()> {
-        let store = PARSEABLE.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
         let all_correlations = store.get_all_correlations().await.unwrap_or_default();
 
         for correlations_bytes in all_correlations.values().flatten() {
@@ -123,7 +123,7 @@ impl Correlations {
         let correlation_bytes = serde_json::to_vec(&correlation)?.into();
         let path = correlation.path();
         PARSEABLE
-            .storage()
+            .storage
             .get_object_store()
             .put_object(&path, correlation_bytes)
             .await?;
@@ -158,7 +158,7 @@ impl Correlations {
         let correlation_bytes = serde_json::to_vec(&updated_correlation)?.into();
         let path = updated_correlation.path();
         PARSEABLE
-            .storage()
+            .storage
             .get_object_store()
             .put_object(&path, correlation_bytes)
             .await?;
@@ -191,7 +191,7 @@ impl Correlations {
         // Delete from storage
         let path = correlation.path();
         PARSEABLE
-            .storage()
+            .storage
             .get_object_store()
             .delete_object(&path)
             .await?;

@@ -176,12 +176,7 @@ pub fn remove_querier_metadata(mut storage_metadata: JsonValue) -> JsonValue {
 
 pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetadata>> {
     let imp = ingestor_metadata_path(None);
-    let bytes = match PARSEABLE
-        .storage()
-        .get_object_store()
-        .get_object(&imp)
-        .await
-    {
+    let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
         Ok(bytes) => bytes,
         Err(_) => {
             return Ok(None);
@@ -205,7 +200,7 @@ pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetada
     staging::put_ingestor_info(resource.clone())?;
 
     PARSEABLE
-        .storage()
+        .storage
         .get_object_store()
         .put_object(&imp, bytes)
         .await?;

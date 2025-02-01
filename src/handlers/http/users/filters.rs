@@ -71,7 +71,7 @@ pub async fn post(
         &format!("{}.json", filter_id),
     );
 
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let filter_bytes = serde_json::to_vec(&filter)?;
     store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
@@ -100,7 +100,7 @@ pub async fn update(
         &format!("{}.json", filter_id),
     );
 
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let filter_bytes = serde_json::to_vec(&filter)?;
     store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
@@ -123,7 +123,7 @@ pub async fn delete(
         &filter.stream_name,
         &format!("{}.json", filter_id),
     );
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     store.delete_object(&path).await?;
 
     FILTERS.delete_filter(&filter_id);

@@ -61,7 +61,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
         return Err(StreamError::StreamNotFound(stream_name));
     }
 
-    let objectstore = PARSEABLE.storage().get_object_store();
+    let objectstore = PARSEABLE.storage.get_object_store();
 
     objectstore.delete_stream(&stream_name).await?;
     let stream_dir = StorageDir::new(&stream_name);
@@ -93,7 +93,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     // list all streams from storage
     let res = PARSEABLE
-        .storage()
+        .storage
         .get_object_store()
         .list_streams()
         .await
@@ -230,7 +230,7 @@ pub async fn put_retention(
     };
 
     PARSEABLE
-        .storage()
+        .storage
         .get_object_store()
         .put_retention(&stream_name, &retention)
         .await?;
@@ -393,7 +393,7 @@ pub async fn create_stream(
         validator::stream_name(&stream_name, stream_type)?;
     }
     // Proceed to create log stream if it doesn't exist
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
 
     match storage
         .create_stream(
@@ -454,7 +454,7 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
             return Err(StreamError::StreamNotFound(stream_name));
         }
     }
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
     // if first_event_at is not found in memory map, check if it exists in the storage
     // if it exists in the storage, update the first_event_at in memory map
     let stream_first_event_at =
@@ -537,7 +537,7 @@ pub async fn put_stream_hot_tier(
     hot_tier_manager
         .put_hot_tier(&stream_name, &mut hottier)
         .await?;
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
     let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
     stream_metadata.hot_tier_enabled = true;
     storage

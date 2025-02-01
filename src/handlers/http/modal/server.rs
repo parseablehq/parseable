@@ -101,7 +101,7 @@ impl ParseableServer for Server {
     // configure the server and start an instance of the single server setup
     async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let prometheus = metrics::build_metrics_handler();
-        PARSEABLE.storage().register_store_metrics(&prometheus);
+        PARSEABLE.storage.register_store_metrics(&prometheus);
 
         migration::run_migration(&PARSEABLE).await?;
 

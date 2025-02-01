@@ -181,7 +181,7 @@ mod action {
 
     pub(super) async fn delete(stream_name: String, days: u32) {
         info!("running retention task - delete for stream={stream_name}");
-        let store = PARSEABLE.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
 
         let retain_until = get_retain_until(Utc::now().date_naive(), days as u64);
 
@@ -203,7 +203,7 @@ mod action {
                 let path = RelativePathBuf::from_iter([&stream_name, &date]);
                 delete_tasks.push(async move {
                     PARSEABLE
-                        .storage()
+                        .storage
                         .get_object_store()
                         .delete_prefix(&path)
                         .await

@@ -70,7 +70,7 @@ pub async fn about() -> Json<Value> {
     };
     let grpc_port = PARSEABLE.options.grpc_port;
 
-    let store_endpoint = PARSEABLE.storage().get_endpoint();
+    let store_endpoint = PARSEABLE.storage.get_endpoint();
     let is_llm_active = &PARSEABLE.options.open_ai_key.is_some();
     let llm_provider = is_llm_active.then_some("OpenAI");
     let is_oidc_active = PARSEABLE.options.openid().is_some();

@@ -417,7 +417,7 @@ pub fn get_ingestor_info() -> anyhow::Result<IngestorMetadata> {
         }
     }
 
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let out = IngestorMetadata::new(
         port,
         url,

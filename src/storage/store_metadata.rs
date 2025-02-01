@@ -72,7 +72,7 @@ impl Default for StorageMetadata {
             version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
             mode: PARSEABLE.storage_name.to_owned(),
             staging: PARSEABLE.staging_dir().to_path_buf(),
-            storage: PARSEABLE.storage().get_endpoint(),
+            storage: PARSEABLE.storage.get_endpoint(),
             deployment_id: uid::gen(),
             server_mode: PARSEABLE.options.mode,
             users: Vec::new(),
@@ -263,7 +263,7 @@ pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
 }
 
 pub async fn put_remote_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
-    let client = PARSEABLE.storage().get_object_store();
+    let client = PARSEABLE.storage.get_object_store();
     client.put_metadata(metadata).await
 }
 

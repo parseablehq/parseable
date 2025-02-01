@@ -352,7 +352,7 @@ async fn update_user_if_changed(
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
     let metadata = PARSEABLE
-        .storage()
+        .storage
         .get_object_store()
         .get_metadata()
         .await?

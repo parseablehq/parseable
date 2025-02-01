@@ -50,7 +50,7 @@ pub async fn run_metadata_migration(
     config: &Parseable,
     parseable_json: &Option<Bytes>,
 ) -> anyhow::Result<()> {
-    let object_store = config.storage().get_object_store();
+    let object_store = config.storage.get_object_store();
     let mut storage_metadata: Option<Value> = None;
     if parseable_json.is_some() {
         storage_metadata = serde_json::from_slice(parseable_json.as_ref().unwrap())
@@ -136,7 +136,7 @@ pub async fn run_metadata_migration(
 
 /// run the migration for all streams
 pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
-    let storage = config.storage().get_object_store();
+    let storage = config.storage.get_object_store();
     for stream_name in storage.list_streams().await? {
         migration_stream(&stream_name, &*storage).await?;
     }
@@ -273,7 +273,7 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         log_source,
         ..
     } = serde_json::from_value(stream_metadata_value).unwrap_or_default();
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
 
     // update the schema and store it back
     // NOTE: write could be saved, but the cost is cheap, given the low possibilities of being called multiple times
@@ -359,7 +359,7 @@ pub fn put_staging_metadata(
 }
 
 pub async fn run_file_migration(config: &Parseable) -> anyhow::Result<()> {
-    let object_store = config.storage().get_object_store();
+    let object_store = config.storage.get_object_store();
 
     let old_meta_file_path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
 

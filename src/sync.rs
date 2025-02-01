@@ -42,7 +42,7 @@ pub async fn object_store_sync() -> (
                 .every(STORAGE_UPLOAD_INTERVAL.seconds())
                 .plus(5u32.seconds())
                 .run(|| async {
-                    if let Err(e) = PARSEABLE.storage().get_object_store().sync(false).await {
+                    if let Err(e) = PARSEABLE.storage.get_object_store().sync(false).await {
                         warn!("failed to sync local data with object store. {:?}", e);
                     }
                 });

@@ -730,7 +730,7 @@ impl Alerts {
     /// Loads alerts from disk, blocks
     pub async fn load(&self) -> Result<(), AlertError> {
         let mut map = self.alerts.write().await;
-        let store = PARSEABLE.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
 
         for alert in store.get_alerts().await.unwrap_or_default() {
             let (handle, rx, tx) =
@@ -785,7 +785,7 @@ impl Alerts {
         new_state: AlertState,
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError> {
-        let store = PARSEABLE.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
 
         // read and modify alert
         let mut alert = self.get_alert_by_id(alert_id).await?;

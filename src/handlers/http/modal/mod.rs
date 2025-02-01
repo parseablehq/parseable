@@ -134,7 +134,7 @@ pub trait ParseableServer {
 
             // Perform S3 sync and wait for completion
             info!("Starting data sync to S3...");
-            if let Err(e) = PARSEABLE.storage().get_object_store().sync(true).await {
+            if let Err(e) = PARSEABLE.storage.get_object_store().sync(true).await {
                 warn!("Failed to sync local data with object store. {:?}", e);
             } else {
                 info!("Successfully synced all data to S3.");

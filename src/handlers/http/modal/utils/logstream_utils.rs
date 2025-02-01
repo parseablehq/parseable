@@ -300,7 +300,7 @@ pub async fn update_time_partition_limit_in_stream(
     stream_name: String,
     time_partition_limit: NonZeroU32,
 ) -> Result<(), CreateStreamError> {
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
     if let Err(err) = storage
         .update_time_partition_limit_in_stream(&stream_name, time_partition_limit)
         .await
@@ -371,7 +371,7 @@ pub async fn update_custom_partition_in_stream(
             }
         }
     }
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
     if let Err(err) = storage
         .update_custom_partition_in_stream(&stream_name, custom_partition)
         .await
@@ -409,7 +409,7 @@ pub async fn create_stream(
         validator::stream_name(&stream_name, stream_type)?;
     }
     // Proceed to create log stream if it doesn't exist
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
 
     match storage
         .create_stream(
@@ -460,7 +460,7 @@ pub async fn create_stream(
 /// and add it to the memory map
 pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<bool, StreamError> {
     // Proceed to create log stream if it doesn't exist
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
     let streams = storage.list_streams().await?;
     if streams.contains(stream_name) {
         let mut stream_metadata = ObjectStoreFormat::default();
@@ -545,7 +545,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
 /// }
 /// ```
 pub async fn update_first_event_at(stream_name: &str, first_event_at: &str) -> Option<String> {
-    let storage = PARSEABLE.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
     if let Err(err) = storage
         .update_first_event_in_stream(stream_name, first_event_at)
         .await

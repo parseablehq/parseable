@@ -64,7 +64,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
         return Err(StreamError::StreamNotFound(stream_name.clone()));
     }
 
-    let objectstore = PARSEABLE.storage().get_object_store();
+    let objectstore = PARSEABLE.storage.get_object_store();
 
     objectstore.delete_stream(&stream_name).await?;
     let stream_dir = StorageDir::new(&stream_name);

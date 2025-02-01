@@ -63,7 +63,7 @@ pub async fn post(
 
     let path = alert_json_path(alert.id);
 
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let alert_bytes = serde_json::to_vec(&alert)?;
     store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
@@ -95,7 +95,7 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     // validate that the user has access to the tables mentioned
     user_auth_for_query(&session_key, &alert.query).await?;
 
-    let store = PARSEABLE.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let alert_path = alert_json_path(alert_id);
 
     // delete from disk
@@ -140,7 +140,7 @@ pub async fn modify(
 
     // modify on disk
     PARSEABLE
-        .storage()
+        .storage
         .get_object_store()
         .put_alert(alert.id, &alert)
         .await?;
