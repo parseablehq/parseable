@@ -232,17 +232,13 @@ impl StreamInfo {
     pub fn update_custom_partition(
         &self,
         stream_name: &str,
-        custom_partition: String,
+        custom_partition: Option<&String>,
     ) -> Result<(), MetadataError> {
         let mut map = self.write().expect(LOCK_EXPECT);
         map.get_mut(stream_name)
             .ok_or(MetadataError::StreamMetaNotFound(stream_name.to_string()))
             .map(|metadata| {
-                if custom_partition.is_empty() {
-                    metadata.custom_partition = None;
-                    return;
-                }
-                metadata.custom_partition = Some(custom_partition);
+                metadata.custom_partition = custom_partition.cloned();
             })
     }
 
@@ -262,7 +258,7 @@ impl StreamInfo {
         created_at: String,
         time_partition: String,
         time_partition_limit: Option<NonZeroU32>,
-        custom_partition: String,
+        custom_partition: Option<String>,
         static_schema_flag: bool,
         static_schema: HashMap<String, Arc<Field>>,
         stream_type: StreamType,
@@ -282,11 +278,7 @@ impl StreamInfo {
                 Some(time_partition)
             },
             time_partition_limit,
-            custom_partition: if custom_partition.is_empty() {
-                None
-            } else {
-                Some(custom_partition)
-            },
+            custom_partition,
             static_schema_flag,
             schema: if static_schema.is_empty() {
                 HashMap::new()

@@ -208,7 +208,7 @@ impl Parseable {
         let time_partition_limit = stream_metadata
             .time_partition_limit
             .and_then(|limit| limit.parse().ok());
-        let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
+        let custom_partition = stream_metadata.custom_partition;
         let static_schema_flag = stream_metadata.static_schema_flag;
         let stream_type = stream_metadata.stream_type;
         let schema_version = stream_metadata.schema_version;
@@ -218,7 +218,7 @@ impl Parseable {
             stream_metadata.created_at,
             time_partition.to_string(),
             time_partition_limit,
-            custom_partition.to_string(),
+            custom_partition,
             static_schema_flag,
             static_schema,
             stream_type,
@@ -257,7 +257,7 @@ impl Parseable {
             stream_name.to_string(),
             "",
             None,
-            "",
+            None,
             false,
             Arc::new(Schema::empty()),
             stream_type,
@@ -315,7 +315,7 @@ impl Parseable {
                     &time_partition,
                     static_schema_flag,
                     &time_partition_limit,
-                    &custom_partition,
+                    custom_partition.as_ref(),
                 )
                 .await;
         }
@@ -326,19 +326,33 @@ impl Parseable {
             None
         };
 
-        if !custom_partition.is_empty() {
-            validate_custom_partition(&custom_partition)?;
+        if let Some(custom_partition) = &custom_partition {
+            validate_custom_partition(custom_partition)?;
         }
 
-        if !time_partition.is_empty() && !custom_partition.is_empty() {
-            validate_time_with_custom_partition(&time_partition, &custom_partition)?;
+        if !time_partition.is_empty() && custom_partition.is_some() {
+            let custom_partition_list = custom_partition
+                .as_ref()
+                .unwrap()
+                .split(',')
+                .collect::<Vec<&str>>();
+            if custom_partition_list.contains(&time_partition.as_str()) {
+                return Err(CreateStreamError::Custom {
+                    msg: format!(
+                        "time partition {} cannot be set as custom partition",
+                        time_partition
+                    ),
+                    status: StatusCode::BAD_REQUEST,
+                }
+                .into());
+            }
         }
 
         let schema = validate_static_schema(
             body,
             stream_name,
             &time_partition,
-            &custom_partition,
+            custom_partition.as_ref(),
             static_schema_flag,
         )?;
 
@@ -346,7 +360,7 @@ impl Parseable {
             stream_name.to_string(),
             &time_partition,
             time_partition_in_days,
-            &custom_partition,
+            custom_partition.as_ref(),
             static_schema_flag,
             schema,
             stream_type,
@@ -364,7 +378,7 @@ impl Parseable {
         time_partition: &str,
         static_schema_flag: bool,
         time_partition_limit: &str,
-        custom_partition: &str,
+        custom_partition: Option<&String>,
     ) -> Result<HeaderMap, StreamError> {
         if !self.streams.stream_exists(stream_name) {
             return Err(StreamError::StreamNotFound(stream_name.to_string()));
@@ -402,7 +416,7 @@ impl Parseable {
         stream_name: String,
         time_partition: &str,
         time_partition_limit: Option<NonZeroU32>,
-        custom_partition: &str,
+        custom_partition: Option<&String>,
         static_schema_flag: bool,
         schema: Arc<Schema>,
         stream_type: StreamType,
@@ -420,7 +434,7 @@ impl Parseable {
                 &stream_name,
                 time_partition,
                 time_partition_limit,
-                custom_partition,
+                custom_partition.cloned(),
                 static_schema_flag,
                 schema.clone(),
                 stream_type,
@@ -444,7 +458,7 @@ impl Parseable {
                     created_at,
                     time_partition.to_string(),
                     time_partition_limit,
-                    custom_partition.to_string(),
+                    custom_partition.cloned(),
                     static_schema_flag,
                     static_schema,
                     stream_type,
@@ -462,16 +476,14 @@ impl Parseable {
     async fn validate_and_update_custom_partition(
         &self,
         stream_name: &str,
-        custom_partition: &str,
+        custom_partition: Option<&String>,
     ) -> Result<(), StreamError> {
-        if !custom_partition.is_empty() {
+        if let Some(custom_partition) = custom_partition {
             validate_custom_partition(custom_partition)?;
-            self.update_custom_partition_in_stream(stream_name.to_string(), custom_partition)
-                .await?;
-        } else {
-            self.update_custom_partition_in_stream(stream_name.to_string(), "")
-                .await?;
         }
+        self.update_custom_partition_in_stream(stream_name.to_string(), custom_partition)
+            .await?;
+
         Ok(())
     }
 
@@ -505,14 +517,14 @@ impl Parseable {
     pub async fn update_custom_partition_in_stream(
         &self,
         stream_name: String,
-        custom_partition: &str,
+        custom_partition: Option<&String>,
     ) -> Result<(), CreateStreamError> {
         let static_schema_flag = self.streams.get_static_schema_flag(&stream_name).unwrap();
         let time_partition = self.streams.get_time_partition(&stream_name).unwrap();
         if static_schema_flag {
             let schema = self.streams.schema(&stream_name).unwrap();
 
-            if !custom_partition.is_empty() {
+            if let Some(custom_partition) = custom_partition {
                 let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
                 let custom_partition_exists: HashMap<_, _> = custom_partition_list
                     .iter()
@@ -559,7 +571,7 @@ impl Parseable {
 
         if self
             .streams
-            .update_custom_partition(&stream_name, custom_partition.to_string())
+            .update_custom_partition(&stream_name, custom_partition)
             .is_err()
         {
             return Err(CreateStreamError::Custom {
@@ -646,7 +658,7 @@ pub fn validate_static_schema(
     body: &Bytes,
     stream_name: &str,
     time_partition: &str,
-    custom_partition: &str,
+    custom_partition: Option<&String>,
     static_schema_flag: bool,
 ) -> Result<Arc<Schema>, CreateStreamError> {
     if static_schema_flag {
@@ -698,23 +710,6 @@ pub fn validate_custom_partition(custom_partition: &str) -> Result<(), CreateStr
     if custom_partition_list.len() > 3 {
         return Err(CreateStreamError::Custom {
             msg: "Maximum 3 custom partition keys are supported".to_string(),
-            status: StatusCode::BAD_REQUEST,
-        });
-    }
-    Ok(())
-}
-
-pub fn validate_time_with_custom_partition(
-    time_partition: &str,
-    custom_partition: &str,
-) -> Result<(), CreateStreamError> {
-    let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-    if custom_partition_list.contains(&time_partition) {
-        return Err(CreateStreamError::Custom {
-            msg: format!(
-                "time partition {} cannot be set as custom partition",
-                time_partition
-            ),
             status: StatusCode::BAD_REQUEST,
         });
     }

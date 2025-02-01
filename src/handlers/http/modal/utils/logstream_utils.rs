@@ -31,7 +31,7 @@ use crate::{
 pub struct PutStreamHeaders {
     pub time_partition: String,
     pub time_partition_limit: String,
-    pub custom_partition: String,
+    pub custom_partition: Option<String>,
     pub static_schema_flag: bool,
     pub update_stream_flag: bool,
     pub stream_type: StreamType,
@@ -51,8 +51,7 @@ impl From<&HeaderMap> for PutStreamHeaders {
                 .to_string(),
             custom_partition: headers
                 .get(CUSTOM_PARTITION_KEY)
-                .map_or("", |v| v.to_str().unwrap())
-                .to_string(),
+                .map(|v| v.to_str().unwrap().to_string()),
             static_schema_flag: headers
                 .get(STATIC_SCHEMA_FLAG)
                 .is_some_and(|v| v.to_str().unwrap() == "true"),

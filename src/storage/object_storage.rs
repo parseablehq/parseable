@@ -154,7 +154,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         time_partition: &str,
         time_partition_limit: Option<NonZeroU32>,
-        custom_partition: &str,
+        custom_partition: Option<String>,
         static_schema_flag: bool,
         schema: Arc<Schema>,
         stream_type: StreamType,
@@ -166,7 +166,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             stream_type,
             time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
             time_partition_limit: time_partition_limit.map(|limit| limit.to_string()),
-            custom_partition: (!custom_partition.is_empty()).then(|| custom_partition.to_string()),
+            custom_partition,
             static_schema_flag,
             schema_version: SchemaVersion::V1, // NOTE: Newly created streams are all V1
             owner: Owner {
@@ -203,14 +203,10 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn update_custom_partition_in_stream(
         &self,
         stream_name: &str,
-        custom_partition: &str,
+        custom_partition: Option<&String>,
     ) -> Result<(), ObjectStorageError> {
         let mut format = self.get_object_store_format(stream_name).await?;
-        if custom_partition.is_empty() {
-            format.custom_partition = None;
-        } else {
-            format.custom_partition = Some(custom_partition.to_string());
-        }
+        format.custom_partition = custom_partition.cloned();
         let format_json = to_bytes(&format);
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
