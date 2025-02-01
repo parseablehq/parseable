@@ -20,8 +20,7 @@ use self::error::{CreateStreamError, StreamError};
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::ingest::create_stream_if_not_exists;
-use super::modal::utils::logstream_utils::{ create_update_stream, update_first_event_at,
-};
+use super::modal::utils::logstream_utils::{create_update_stream, update_first_event_at};
 use super::query::update_schema_when_distributed;
 use crate::event::format::{override_data_type, LogSource};
 use crate::handlers::STREAM_TYPE_KEY;

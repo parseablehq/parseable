@@ -98,7 +98,7 @@ impl HotTierManager {
     ) -> Result<(u64, u64), HotTierError> {
         let mut total_hot_tier_size = 0;
         let mut total_hot_tier_used_size = 0;
-        for stream in PARSEABLE.streams.list_streams() {
+        for stream in PARSEABLE.streams.list() {
             if self.check_stream_hot_tier_exists(&stream) && stream != current_stream {
                 let stream_hot_tier = self.get_hot_tier(&stream).await?;
                 total_hot_tier_size += &stream_hot_tier.size;
@@ -246,7 +246,7 @@ impl HotTierManager {
     ///sync the hot tier files from S3 to the hot tier directory for all streams
     async fn sync_hot_tier(&self) -> Result<(), HotTierError> {
         let mut sync_hot_tier_tasks = FuturesUnordered::new();
-        for stream in PARSEABLE.streams.list_streams() {
+        for stream in PARSEABLE.streams.list() {
             if self.check_stream_hot_tier_exists(&stream) {
                 sync_hot_tier_tasks.push(self.process_stream(stream));
             }

@@ -21,7 +21,9 @@ use super::{
     ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
 };
 use super::{
-    LogStream, Owner, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY
+    LogStream, Owner, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
+    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 use crate::alerts::AlertConfig;
@@ -578,7 +580,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             return Ok(());
         }
 
-        let streams = PARSEABLE.streams.list_streams();
+        let streams = PARSEABLE.streams.list();
 
         for stream in &streams {
             let time_partition = PARSEABLE

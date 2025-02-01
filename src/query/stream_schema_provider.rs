@@ -85,7 +85,7 @@ impl SchemaProvider for GlobalSchemaProvider {
     }
 
     fn table_names(&self) -> Vec<String> {
-        PARSEABLE.streams.list_streams()
+        PARSEABLE.streams.list()
     }
 
     async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {

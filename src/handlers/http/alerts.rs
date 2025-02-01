@@ -17,7 +17,8 @@
  */
 
 use crate::{
-    parseable::PARSEABLE, storage::object_storage::alert_json_path, sync::schedule_alert_task, utils::actix::extract_session_key_from_req
+    parseable::PARSEABLE, storage::object_storage::alert_json_path, sync::schedule_alert_task,
+    utils::actix::extract_session_key_from_req,
 };
 use actix_web::{
     web::{self, Json, Path},

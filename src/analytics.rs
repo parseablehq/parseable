@@ -153,7 +153,7 @@ pub async fn get_analytics(_: HttpRequest) -> impl Responder {
 }
 
 fn total_streams() -> usize {
-    PARSEABLE.streams.list_streams().len()
+    PARSEABLE.streams.len()
 }
 
 fn total_event_stats() -> (Stats, Stats, Stats) {
@@ -169,7 +169,7 @@ fn total_event_stats() -> (Stats, Stats, Stats) {
     let mut deleted_parquet_bytes: u64 = 0;
     let mut deleted_json_bytes: u64 = 0;
 
-    for stream in PARSEABLE.streams.list_streams() {
+    for stream in PARSEABLE.streams.list() {
         let Some(stats) = stats::get_current_stats(&stream, "json") else {
             continue;
         };

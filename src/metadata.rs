@@ -32,7 +32,7 @@ use crate::metrics::{
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
 use crate::storage::retention::Retention;
-use crate::storage::{ObjectStorage, StorageDir, StreamType};
+use crate::storage::{LogStream, ObjectStorage, StorageDir, StreamType};
 use crate::utils::arrow::MergedRecordReader;
 use derive_more::{Deref, DerefMut};
 
@@ -306,7 +306,13 @@ impl StreamInfo {
         map.remove(stream_name);
     }
 
-    pub fn list_streams(&self) -> Vec<String> {
+    /// Returns the number of logstreams that parseable is aware of
+    pub fn len(&self) -> usize {
+        self.read().expect(LOCK_EXPECT).len()
+    }
+
+    /// Listing of logstream names that parseable is aware of
+    pub fn list(&self) -> Vec<LogStream> {
         self.read()
             .expect(LOCK_EXPECT)
             .keys()

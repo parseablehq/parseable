@@ -45,7 +45,7 @@ pub fn init_scheduler() {
     let mut scheduler = AsyncScheduler::new();
     let func = move || async {
         //get retention every day at 12 am
-        for stream in PARSEABLE.streams.list_streams() {
+        for stream in PARSEABLE.streams.list() {
             let retention = PARSEABLE.streams.get_retention(&stream);
 
             match retention {

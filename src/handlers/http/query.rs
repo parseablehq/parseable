@@ -186,7 +186,7 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
 /// get list of streams from memory and storage
 /// create streams for memory from storage if they do not exist
 pub async fn create_streams_for_querier() {
-    let querier_streams = PARSEABLE.streams.list_streams();
+    let querier_streams = PARSEABLE.streams.list();
     let store = PARSEABLE.storage().get_object_store();
     let storage_streams = store.list_streams().await.unwrap();
     for stream_name in storage_streams {
