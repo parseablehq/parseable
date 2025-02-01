@@ -25,13 +25,8 @@ use http::StatusCode;
 use tracing::warn;
 
 use crate::{
-    catalog::remove_manifest_from_snapshot,
-    event,
-    handlers::http::{
-        logstream::error::StreamError, modal::utils::logstream_utils::create_update_stream,
-    },
-    parseable::PARSEABLE,
-    stats,
+    catalog::remove_manifest_from_snapshot, event, handlers::http::logstream::error::StreamError,
+    parseable::PARSEABLE, stats,
 };
 
 pub async fn retention_cleanup(
@@ -86,7 +81,9 @@ pub async fn put_stream(
     body: Bytes,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    create_update_stream(req.headers(), &body, &stream_name).await?;
+    PARSEABLE
+        .create_update_stream(req.headers(), &body, &stream_name)
+        .await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }

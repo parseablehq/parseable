@@ -42,7 +42,7 @@ use crate::{
         error::EventError,
         format::{self, EventFormat},
     },
-    handlers::http::ingest::{create_stream_if_not_exists, PostError},
+    handlers::http::ingest::PostError,
     metadata::error::stream_info::MetadataError,
     storage::StreamType,
 };
@@ -180,7 +180,9 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
     let stream_name = msg.topic();
 
     // stream should get created only if there is an incoming event, not before that
-    create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::default()).await?;
+    PARSEABLE
+        .create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::default())
+        .await?;
 
     let schema = resolve_schema(stream_name)?;
     let event = format::json::Event {

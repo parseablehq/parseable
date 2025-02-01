@@ -17,12 +17,10 @@
  */
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use actix_web::web::{Json, Path};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
-use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
@@ -64,7 +62,8 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
+    PARSEABLE
+        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
         .await?;
 
     let log_source = req
@@ -128,7 +127,9 @@ pub async fn handle_otel_logs_ingestion(
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs).await?;
+    PARSEABLE
+        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs)
+        .await?;
 
     //custom flattening required for otel logs
     let logs: LogsData = serde_json::from_value(json)?;
@@ -157,12 +158,13 @@ pub async fn handle_otel_metrics_ingestion(
         return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(
-        &stream_name,
-        StreamType::UserDefined,
-        LogSource::OtelMetrics,
-    )
-    .await?;
+    PARSEABLE
+        .create_stream_if_not_exists(
+            &stream_name,
+            StreamType::UserDefined,
+            LogSource::OtelMetrics,
+        )
+        .await?;
 
     //custom flattening required for otel metrics
     let metrics: MetricsData = serde_json::from_value(json)?;
@@ -192,7 +194,8 @@ pub async fn handle_otel_traces_ingestion(
         return Err(PostError::IncorrectLogSource(LogSource::OtelTraces));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
+    PARSEABLE
+        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
         .await?;
 
     //custom flattening required for otel traces
@@ -263,44 +266,6 @@ pub async fn push_logs_unchecked(
     unchecked_event.process_unchecked()?;
 
     Ok(unchecked_event)
-}
-
-// Check if the stream exists and create a new stream if doesn't exist
-pub async fn create_stream_if_not_exists(
-    stream_name: &str,
-    stream_type: StreamType,
-    log_source: LogSource,
-) -> Result<bool, PostError> {
-    let mut stream_exists = false;
-    if PARSEABLE.streams.stream_exists(stream_name) {
-        stream_exists = true;
-        return Ok(stream_exists);
-    }
-
-    // For distributed deployments, if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
-    if PARSEABLE.options.mode != Mode::All
-        && PARSEABLE
-            .create_stream_and_schema_from_storage(stream_name)
-            .await?
-    {
-        return Ok(stream_exists);
-    }
-
-    super::logstream::create_stream(
-        stream_name.to_string(),
-        "",
-        None,
-        "",
-        false,
-        Arc::new(Schema::empty()),
-        stream_type,
-        log_source,
-    )
-    .await?;
-
-    Ok(stream_exists)
 }
 
 #[derive(Debug, thiserror::Error)]

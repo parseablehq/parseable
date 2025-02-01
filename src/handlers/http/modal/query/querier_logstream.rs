@@ -41,7 +41,6 @@ use crate::{
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
         logstream::{error::StreamError, get_stats_date},
-        modal::utils::logstream_utils::create_update_stream,
     },
     hottier::HotTierManager,
     parseable::PARSEABLE,
@@ -114,7 +113,9 @@ pub async fn put_stream(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let _ = CREATE_STREAM_LOCK.lock().await;
-    let headers = create_update_stream(req.headers(), &body, &stream_name).await?;
+    let headers = PARSEABLE
+        .create_update_stream(req.headers(), &body, &stream_name)
+        .await?;
 
     sync_streams_with_ingestors(headers, body, &stream_name).await?;
 

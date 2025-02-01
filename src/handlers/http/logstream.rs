@@ -16,11 +16,9 @@
  *
  */
 
-use self::error::{CreateStreamError, StreamError};
+use self::error::StreamError;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
 use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
-use super::ingest::create_stream_if_not_exists;
-use super::modal::utils::logstream_utils::{create_update_stream, update_first_event_at};
 use super::query::update_schema_when_distributed;
 use crate::event::format::{override_data_type, LogSource};
 use crate::handlers::STREAM_TYPE_KEY;
@@ -42,15 +40,12 @@ use actix_web::http::StatusCode;
 use actix_web::web::{Json, Path};
 use actix_web::{web, HttpRequest, Responder};
 use arrow_json::reader::infer_json_schema_from_iterator;
-use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderName, HeaderValue};
 use itertools::Itertools;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::fs;
-use std::num::NonZeroU32;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::warn;
@@ -164,7 +159,9 @@ pub async fn put_stream(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
 
-    create_update_stream(req.headers(), &body, &stream_name).await?;
+    PARSEABLE
+        .create_update_stream(req.headers(), &body, &stream_name)
+        .await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
@@ -377,68 +374,6 @@ pub async fn get_stats(
     Ok((web::Json(stats), StatusCode::OK))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn create_stream(
-    stream_name: String,
-    time_partition: &str,
-    time_partition_limit: Option<NonZeroU32>,
-    custom_partition: &str,
-    static_schema_flag: bool,
-    schema: Arc<Schema>,
-    stream_type: StreamType,
-    log_source: LogSource,
-) -> Result<(), CreateStreamError> {
-    // fail to proceed if invalid stream name
-    if stream_type != StreamType::Internal {
-        validator::stream_name(&stream_name, stream_type)?;
-    }
-    // Proceed to create log stream if it doesn't exist
-    let storage = PARSEABLE.storage.get_object_store();
-
-    match storage
-        .create_stream(
-            &stream_name,
-            time_partition,
-            time_partition_limit,
-            custom_partition,
-            static_schema_flag,
-            schema.clone(),
-            stream_type,
-            log_source.clone(),
-        )
-        .await
-    {
-        Ok(created_at) => {
-            let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
-
-            for (field_name, field) in schema
-                .fields()
-                .iter()
-                .map(|field| (field.name().to_string(), field.clone()))
-            {
-                static_schema.insert(field_name, field);
-            }
-
-            PARSEABLE.streams.add_stream(
-                stream_name.to_string(),
-                created_at,
-                time_partition.to_string(),
-                time_partition_limit,
-                custom_partition.to_string(),
-                static_schema_flag,
-                static_schema,
-                stream_type,
-                SchemaVersion::V1, // New stream
-                log_source,
-            );
-        }
-        Err(err) => {
-            return Err(CreateStreamError::Storage { stream_name, err });
-        }
-    }
-    Ok(())
-}
-
 pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     if !PARSEABLE.streams.stream_exists(&stream_name) {
@@ -463,7 +398,9 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         } else if let Ok(Some(first_event_at)) =
             storage.get_first_event_from_storage(&stream_name).await
         {
-            update_first_event_at(&stream_name, &first_event_at).await
+            PARSEABLE
+                .update_first_event_at(&stream_name, &first_event_at)
+                .await
         } else {
             None
         };
@@ -624,9 +561,9 @@ pub async fn delete_stream_hot_tier(
 }
 
 pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
-    if let Ok(stream_exists) =
-        create_stream_if_not_exists(INTERNAL_STREAM_NAME, StreamType::Internal, LogSource::Pmeta)
-            .await
+    if let Ok(stream_exists) = PARSEABLE
+        .create_stream_if_not_exists(INTERNAL_STREAM_NAME, StreamType::Internal, LogSource::Pmeta)
+        .await
     {
         if stream_exists {
             return Ok(());
