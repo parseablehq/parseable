@@ -353,6 +353,25 @@ impl ObjectStorage for LocalFS {
         Ok(dirs)
     }
 
+    
+    async fn list_dirs_relative(&self, relative_path: &RelativePath) -> Result<Vec<String>, ObjectStorageError> {
+        let root = self.root.join(relative_path.as_str());
+        let dirs = ReadDirStream::new(fs::read_dir(root).await?)
+            .try_collect::<Vec<DirEntry>>()
+            .await?
+            .into_iter()
+            .map(dir_name);
+
+        let dirs = FuturesUnordered::from_iter(dirs)
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        
+        Ok(dirs)
+    }
+
     async fn get_all_dashboards(
         &self,
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {

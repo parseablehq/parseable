@@ -786,6 +786,18 @@ impl ObjectStorage for S3 {
             .collect::<Vec<_>>())
     }
 
+    async fn list_dirs_relative(&self, relative_path: &RelativePath) -> Result<Vec<String>, ObjectStorageError> {
+        let prefix = object_store::path::Path::from(relative_path.as_str());
+        let resp = self.client.list_with_delimiter(Some(&prefix)).await?;
+
+        Ok(resp
+            .common_prefixes
+            .iter()
+            .flat_map(|path| path.parts())
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>())
+    }
+
     async fn get_all_dashboards(
         &self,
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
