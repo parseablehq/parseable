@@ -15,9 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
 use clap::Parser;
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use url::Url;
 
@@ -347,6 +346,30 @@ pub struct Options {
 
     #[arg(long, env = "P_AUDIT_PASSWORD", help = "Audit logger password")]
     pub audit_password: Option<String>,
+
+    #[arg(
+        long,
+        env = "P_AUDIT_BATCH_SIZE",
+        default_value = "100",
+        help = "Audit log batch size"
+    )]
+    pub audit_batch_size: usize,
+
+    #[arg(
+        long,
+        env = "P_AUDIT_FLUSH_INTERVAL",
+        value_parser = validation::duration,
+        help = "Interval to flush into persistence"
+    )]
+    pub audit_flush_interval: Duration,
+
+    #[arg(
+        long,
+        env = "P_AUDIT_LOG_DIR",
+        default_value = "./auditlogs",
+        help = "Path for audit log persistence"
+    )]
+    pub audit_log_dir: PathBuf,
 
     #[arg(long, env = "P_MS_CLARITY_TAG", help = "Tag for MS Clarity")]
     pub ms_clarity_tag: Option<String>,

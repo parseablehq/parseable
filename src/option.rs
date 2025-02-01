@@ -194,6 +194,7 @@ pub mod validation {
         env, io,
         net::ToSocketAddrs,
         path::{Path, PathBuf},
+        time::Duration,
     };
 
     use path_clean::PathClean;
@@ -269,6 +270,14 @@ pub mod validation {
             "all" => Ok(Mode::All),
             _ => Err("Invalid MODE provided".to_string()),
         }
+    }
+
+    pub fn duration(secs: &str) -> Result<Duration, String> {
+        let Ok(secs) = secs.parse() else {
+            return Err("Couldn't pass as a number".to_string());
+        };
+
+        Ok(Duration::from_secs(secs))
     }
 
     pub fn compression(s: &str) -> Result<Compression, String> {

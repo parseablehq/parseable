@@ -19,7 +19,7 @@
 use parseable::{
     banner,
     option::{Mode, CONFIG},
-    rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
+    rbac, storage, AuditLogger, IngestServer, ParseableServer, QueryServer, Server,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
@@ -38,6 +38,10 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .compact()
         .init();
+
+    // spawn audit log batcher
+    let (logger_shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
+    AuditLogger::default().spawn_batcher(shutdown_rx).await;
 
     // these are empty ptrs so mem footprint should be minimal
     let server: Box<dyn ParseableServer> = match CONFIG.options.mode {
@@ -65,13 +69,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Spawn a task to trigger graceful shutdown on appropriate signal
-    let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
+    let (server_shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
         block_until_shutdown_signal().await;
 
         // Trigger graceful shutdown
         println!("Received shutdown signal, notifying server to shut down...");
-        shutdown_trigger.send(()).unwrap();
+        server_shutdown_trigger.send(()).unwrap();
+        logger_shutdown_trigger.send(()).unwrap();
     });
 
     server.init(shutdown_rx).await?;
