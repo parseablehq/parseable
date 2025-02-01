@@ -94,10 +94,36 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError>;
-    async fn list_dirs_relative(&self, relative_path: &RelativePath) -> Result<Vec<String>, ObjectStorageError>;
+    async fn list_dirs_relative(
+        &self,
+        relative_path: &RelativePath,
+    ) -> Result<Vec<String>, ObjectStorageError>;
+
     async fn get_all_saved_filters(
         &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut filters: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
+
+        let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
+        for user in self.list_dirs_relative(&users_dir).await? {
+            let stream_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR, &user]);
+            for stream in self.list_dirs_relative(&stream_dir).await? {
+                let filters_path = RelativePathBuf::from(&stream);
+                let filter_bytes = self
+                    .get_objects(
+                        Some(&filters_path),
+                        Box::new(|file_name| file_name.ends_with(".json")),
+                    )
+                    .await?;
+                filters
+                    .entry(filters_path)
+                    .or_default()
+                    .extend(filter_bytes);
+            }
+        }
+        Ok(filters)
+    }
+
     async fn get_all_dashboards(
         &self,
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;

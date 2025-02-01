@@ -353,8 +353,10 @@ impl ObjectStorage for LocalFS {
         Ok(dirs)
     }
 
-    
-    async fn list_dirs_relative(&self, relative_path: &RelativePath) -> Result<Vec<String>, ObjectStorageError> {
+    async fn list_dirs_relative(
+        &self,
+        relative_path: &RelativePath,
+    ) -> Result<Vec<String>, ObjectStorageError> {
         let root = self.root.join(relative_path.as_str());
         let dirs = ReadDirStream::new(fs::read_dir(root).await?)
             .try_collect::<Vec<DirEntry>>()
@@ -368,7 +370,7 @@ impl ObjectStorage for LocalFS {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        
+
         Ok(dirs)
     }
 
@@ -400,47 +402,6 @@ impl ObjectStorage for LocalFS {
             }
         }
         Ok(dashboards)
-    }
-
-    async fn get_all_saved_filters(
-        &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut filters: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-        let users_root_path = self.root.join(USERS_ROOT_DIR);
-        let directories = ReadDirStream::new(fs::read_dir(&users_root_path).await?);
-        let users: Vec<DirEntry> = directories.try_collect().await?;
-        for user in users {
-            if !user.path().is_dir() {
-                continue;
-            }
-            let stream_root_path = users_root_path.join(user.path()).join("filters");
-            let directories = ReadDirStream::new(fs::read_dir(&stream_root_path).await?);
-            let streams: Vec<DirEntry> = directories.try_collect().await?;
-            for stream in streams {
-                if !stream.path().is_dir() {
-                    continue;
-                }
-                let filters_path = users_root_path
-                    .join(user.path())
-                    .join("filters")
-                    .join(stream.path());
-                let directories = ReadDirStream::new(fs::read_dir(&filters_path).await?);
-                let filters_files: Vec<DirEntry> = directories.try_collect().await?;
-                for filter in filters_files {
-                    let filter_absolute_path = filter.path();
-                    let file = fs::read(filter_absolute_path.clone()).await?;
-                    let filter_relative_path = filter_absolute_path
-                        .strip_prefix(self.root.as_path())
-                        .unwrap();
-
-                    filters
-                        .entry(RelativePathBuf::from_path(filter_relative_path).unwrap())
-                        .or_default()
-                        .push(file.into());
-                }
-            }
-        }
-        Ok(filters)
     }
 
     ///fetch all correlations stored in disk
