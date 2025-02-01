@@ -191,9 +191,7 @@ pub async fn create_streams_for_querier() {
     let querier_streams = STREAM_INFO.list_streams();
     let store = CONFIG.storage().get_object_store();
     let storage_streams = store.list_streams().await.unwrap();
-    for stream in storage_streams {
-        let stream_name = stream.name;
-
+    for stream_name in storage_streams {
         if !querier_streams.contains(&stream_name) {
             let _ = create_stream_and_schema_from_storage(&stream_name).await;
         }

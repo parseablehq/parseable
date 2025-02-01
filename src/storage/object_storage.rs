@@ -17,12 +17,10 @@
  */
 
 use super::{
-    retention::Retention, LogStream, ObjectStorageError, ObjectStoreFormat, Permisssion,
-    StorageMetadata,
-};
-use super::{
-    Owner, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
-    PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    retention::Retention, LogStream, ObjectStorageError, ObjectStoreFormat, Owner, Permisssion,
+    StorageMetadata, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
+    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 use crate::alerts::AlertConfig;
@@ -53,7 +51,7 @@ use relative_path::RelativePathBuf;
 use tracing::{error, warn};
 use ulid::Ulid;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::num::NonZeroU32;
 use std::{
@@ -93,8 +91,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError>;
     async fn check(&self) -> Result<(), ObjectStorageError>;
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
-    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
-    async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError>;
+    async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
+    async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError>;
     async fn get_all_saved_filters(
         &self,
