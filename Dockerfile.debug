@@ -22,7 +22,13 @@ LABEL org.opencontainers.image.vendor="Parseable Inc"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
 WORKDIR /parseable
-COPY . .
+
+# Cache dependencies
+COPY Cargo.toml Cargo.lock build.rs .git ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build && rm -rf src
+
+# Build the actual binary
+COPY src ./src
 RUN cargo build
 
 # final stage
@@ -30,6 +36,7 @@ FROM docker.io/debian:bookworm-slim
 
 WORKDIR /parseable
 
+# Copy the static binary into the final image
 COPY --from=builder /parseable/target/debug/parseable /usr/bin/parseable
 
 CMD ["/usr/bin/parseable"]

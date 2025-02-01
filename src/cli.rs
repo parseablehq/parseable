@@ -259,7 +259,7 @@ pub struct Options {
     #[arg(
         long = "compression-algo",
         env = "P_PARQUET_COMPRESSION_ALGO",
-        default_value = "lz4",
+        default_value = "lz4_raw",
         value_parser = validation::compression,
         help = "Parquet compression algorithm"
     )]

@@ -33,7 +33,7 @@ use crate::{
     metadata::{self, SchemaVersion, STREAM_INFO},
     option::{Mode, CONFIG},
     static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
-    storage::{LogStream, ObjectStoreFormat, StreamType},
+    storage::{ObjectStoreFormat, StreamType},
     validator,
 };
 use tracing::error;
@@ -454,9 +454,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
     // Proceed to create log stream if it doesn't exist
     let storage = CONFIG.storage().get_object_store();
     let streams = storage.list_streams().await?;
-    if streams.contains(&LogStream {
-        name: stream_name.to_owned(),
-    }) {
+    if streams.contains(stream_name) {
         let mut stream_metadata = ObjectStoreFormat::default();
         let stream_metadata_bytes = storage.create_stream_from_ingestor(stream_name).await?;
         if !stream_metadata_bytes.is_empty() {
@@ -485,10 +483,7 @@ pub async fn create_stream_and_schema_from_storage(stream_name: &str) -> Result<
             .and_then(|limit| limit.parse().ok());
         let custom_partition = stream_metadata.custom_partition.as_deref().unwrap_or("");
         let static_schema_flag = stream_metadata.static_schema_flag;
-        let stream_type = stream_metadata
-            .stream_type
-            .map(|s| StreamType::from(s.as_str()))
-            .unwrap_or_default();
+        let stream_type = stream_metadata.stream_type;
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
         metadata::STREAM_INFO.add_stream(

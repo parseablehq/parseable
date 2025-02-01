@@ -167,8 +167,9 @@ pub async fn get_stats(
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats = if STREAM_INFO.stream_type(&stream_name).unwrap()
-        == Some(StreamType::UserDefined.to_string())
+    let ingestor_stats = if STREAM_INFO
+        .stream_type(&stream_name)
+        .is_ok_and(|t| t == StreamType::UserDefined)
     {
         Some(fetch_stats_from_ingestors(&stream_name).await?)
     } else {

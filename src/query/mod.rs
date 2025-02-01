@@ -160,6 +160,16 @@ impl Query {
         Ok((results, fields))
     }
 
+    pub async fn get_dataframe(&self, stream_name: String) -> Result<DataFrame, ExecuteError> {
+        let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
+
+        let df = QUERY_SESSION
+            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .await?;
+
+        Ok(df)
+    }
+
     /// return logical plan with all time filters applied through
     fn final_logical_plan(&self, time_partition: &Option<String>) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
@@ -386,7 +396,7 @@ pub struct CountsResponse {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct TableScanVisitor {
+pub struct TableScanVisitor {
     tables: Vec<String>,
 }
 
