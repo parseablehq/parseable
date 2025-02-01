@@ -25,6 +25,8 @@ use crate::{
 };
 
 use chrono::Local;
+use object_store::path::Path;
+use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
 
 use std::fmt::Debug;
@@ -259,4 +261,8 @@ pub enum ObjectStorageError {
     PathError(relative_path::FromPathError),
     #[error("Error: {0}")]
     MetadataError(#[from] MetadataError),
+}
+
+pub fn to_object_store_path(path: &RelativePath) -> Path {
+    Path::from(path.as_str())
 }

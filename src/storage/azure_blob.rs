@@ -17,8 +17,7 @@
  */
 use super::object_storage::parseable_json_path;
 use super::{
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
-    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    to_object_store_path, LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -183,10 +182,6 @@ impl ObjectStorageProvider for AzureBlobConfig {
     fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
         self.register_metrics(handler)
     }
-}
-
-pub fn to_object_store_path(path: &RelativePath) -> StorePath {
-    StorePath::from(path.as_str())
 }
 
 // ObjStoreClient is generic client to enable interactions with different cloudprovider's
