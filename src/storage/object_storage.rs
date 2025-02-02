@@ -46,6 +46,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Local, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
@@ -575,100 +577,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(Bytes::new())
     }
 
-    // sync only takes care of uploads
-    async fn sync(&self, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
-        if !Path::new(&CONFIG.staging_dir()).exists() {
-            return Ok(());
-        }
-
-        // get all streams
-        let streams = STREAM_INFO.list_streams();
-
-        // start the sync loop for a stream
-        // parallelize this
-        for stream in &streams {
-            let time_partition = STREAM_INFO
-                .get_time_partition(stream)
-                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let custom_partition = STREAM_INFO
-                .get_custom_partition(stream)
-                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let dir = StorageDir::new(stream);
-
-            // read arrow files on disk
-            // convert them to parquet
-            let schema = convert_disk_files_to_parquet(
-                stream,
-                &dir,
-                time_partition,
-                custom_partition.clone(),
-                shutdown_signal,
-            )
-            .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-
-            if let Some(schema) = schema {
-                let static_schema_flag = STREAM_INFO
-                    .get_static_schema_flag(stream)
-                    .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-                if !static_schema_flag {
-                    commit_schema_to_storage(stream, schema).await?;
-                }
-            }
-
-            let parquet_and_schema_files = dir.parquet_and_schema_files();
-            for file in parquet_and_schema_files {
-                let filename = file
-                    .file_name()
-                    .expect("only parquet files are returned by iterator")
-                    .to_str()
-                    .expect("filename is valid string");
-
-                let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
-                file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
-                let compressed_size = file.metadata().map_or(0, |meta| meta.len());
-                STORAGE_SIZE
-                    .with_label_values(&["data", stream, "parquet"])
-                    .add(compressed_size as i64);
-                EVENTS_STORAGE_SIZE_DATE
-                    .with_label_values(&["data", stream, "parquet", file_date_part])
-                    .add(compressed_size as i64);
-                LIFETIME_EVENTS_STORAGE_SIZE
-                    .with_label_values(&["data", stream, "parquet"])
-                    .add(compressed_size as i64);
-                let mut file_suffix = str::replacen(filename, ".", "/", 3);
-
-                let custom_partition_clone = custom_partition.clone();
-                if custom_partition_clone.is_some() {
-                    let custom_partition_fields = custom_partition_clone.unwrap();
-                    let custom_partition_list =
-                        custom_partition_fields.split(',').collect::<Vec<&str>>();
-                    file_suffix =
-                        str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
-                }
-
-                let stream_relative_path = format!("{stream}/{file_suffix}");
-
-                // Try uploading the file, handle potential errors without breaking the loop
-                if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
-                    error!("Failed to upload file {}: {:?}", filename, e);
-                    continue; // Skip to the next file
-                }
-
-                let absolute_path = self
-                    .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
-                    .to_string();
-                let store = CONFIG.storage().get_object_store();
-                let manifest =
-                    catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
-                catalog::update_snapshot(store, stream, manifest).await?;
-
-                let _ = fs::remove_file(file);
-            }
-        }
-
-        Ok(())
-    }
-
     async fn get_stream_meta_from_storage(
         &self,
         stream_name: &str,
@@ -846,31 +754,40 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             return Ok(());
         }
 
-        // get all streams
-        let streams = STREAM_INFO.list_streams();
-
-        for stream in &streams {
-            conversion_for_stream(stream, shutdown_signal)?;
+        let mut conversion_tasks = FuturesUnordered::new();
+        for stream in STREAM_INFO.list_streams() {
+            conversion_tasks.push(conversion_for_stream(stream, shutdown_signal));
         }
+
+        while let Some(res) = conversion_tasks.next().await {
+            if let Err(err) = res {
+                error!("Failed to run conversion task {err:?}");
+                return Err(err);
+            }
+        }
+
         Ok(())
     }
 }
 
-fn conversion_for_stream(stream: &str, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
+async fn conversion_for_stream(
+    stream: String,
+    shutdown_signal: bool,
+) -> Result<(), ObjectStorageError> {
     info!("Starting conversion job for stream- {stream}");
 
     let time_partition = STREAM_INFO
-        .get_time_partition(stream)
+        .get_time_partition(&stream)
         .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
     let custom_partition = STREAM_INFO
-        .get_custom_partition(stream)
+        .get_custom_partition(&stream)
         .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-    let dir = StorageDir::new(stream);
+    let dir = StorageDir::new(&stream);
 
     // read arrow files on disk
     // convert them to parquet
     let schema = convert_disk_files_to_parquet(
-        stream,
+        &stream,
         &dir,
         time_partition,
         custom_partition.clone(),
@@ -886,7 +803,7 @@ fn conversion_for_stream(stream: &str, shutdown_signal: bool) -> Result<(), Obje
 
     if let Some(schema) = schema {
         let static_schema_flag = STREAM_INFO
-            .get_static_schema_flag(stream)
+            .get_static_schema_flag(&stream)
             .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
         if !static_schema_flag {
             // schema is dynamic, read from staging and merge if present
