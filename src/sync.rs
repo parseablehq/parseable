@@ -18,14 +18,65 @@
 
 use clokwerk::{AsyncScheduler, Job, TimeUnits};
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use tokio::sync::oneshot;
-use tokio::task;
-use tokio::time::{interval, sleep, Duration};
+use tokio::time::{interval, sleep, Duration, Instant};
+use tokio::{select, task};
 use tracing::{error, info, warn};
 
 use crate::alerts::{alerts_utils, AlertConfig, AlertError};
 use crate::option::CONFIG;
 use crate::{storage, STORAGE_CONVERSION_INTERVAL, STORAGE_UPLOAD_INTERVAL};
+
+pub async fn monitor_task_duration<F, Fut, T>(task_name: &str, threshold: Duration, f: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let warning_issued = Arc::new(AtomicBool::new(false));
+    let warning_issued_clone = warning_issued.clone();
+    let warning_issued_clone_select = warning_issued.clone();
+    let start_time = Instant::now();
+
+    // create the main task future
+    let task_future = f();
+
+    // create the monitoring task future
+    let monitor_future = async move {
+        let mut check_interval = interval(Duration::from_millis(100));
+
+        loop {
+            check_interval.tick().await;
+            let elapsed = start_time.elapsed();
+
+            if elapsed > threshold
+                && !warning_issued_clone.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                warn!(
+                    "Task '{}' is taking longer than expected: (threshold: {:?})",
+                    task_name, threshold
+                );
+                warning_issued_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    };
+
+    // run both futures concurrently, but only take the result from the task future
+    select! {
+        task_result = task_future => {
+            if warning_issued_clone_select.load(std::sync::atomic::Ordering::Relaxed) {
+                let elapsed = start_time.elapsed();
+                warn!(
+                    "Task '{}' took longer than expected: {:?} (threshold: {:?})",
+                    task_name, elapsed, threshold
+                );
+            }
+            task_result
+        },
+        _ = monitor_future => unreachable!(), // monitor future never completes
+    }
+}
 
 pub async fn object_store_sync() -> (
     task::JoinHandle<()>,
@@ -42,11 +93,18 @@ pub async fn object_store_sync() -> (
                 .every(STORAGE_UPLOAD_INTERVAL.seconds())
                 // .plus(5u32.seconds())
                 .run(|| async {
-                    if let Err(e) = CONFIG
-                        .storage()
-                        .get_object_store()
-                        .upload_files_from_staging()
-                        .await
+                    if let Err(e) = monitor_task_duration(
+                        "object_store_sync",
+                        Duration::from_secs(15),
+                        || async {
+                            CONFIG
+                                .storage()
+                                .get_object_store()
+                                .upload_files_from_staging()
+                                .await
+                        },
+                    )
+                    .await
                     {
                         warn!("failed to upload local data with object store. {:?}", e);
                     }
@@ -101,7 +159,13 @@ pub async fn arrow_conversion() -> (
                 .every(STORAGE_CONVERSION_INTERVAL.seconds())
                 .plus(5u32.seconds())
                 .run(|| async {
-                    if let Err(e) = CONFIG.storage().get_object_store().conversion(false).await {
+                    if let Err(e) = monitor_task_duration(
+                        "arrow_conversion",
+                        Duration::from_secs(30),
+                        || async { CONFIG.storage().get_object_store().conversion(false).await },
+                    )
+                    .await
+                    {
                         warn!("failed to convert local arrow data to parquet. {:?}", e);
                     }
                 });
