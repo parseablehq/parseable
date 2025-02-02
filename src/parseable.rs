@@ -646,7 +646,7 @@ pub fn validate_static_schema(
     custom_partition: Option<&String>,
     static_schema_flag: bool,
 ) -> Result<Arc<Schema>, CreateStreamError> {
-    if static_schema_flag {
+    if !static_schema_flag {
         return Ok(Arc::new(Schema::empty()));
     }
 
