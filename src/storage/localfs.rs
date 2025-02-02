@@ -63,6 +63,10 @@ pub struct FSConfig {
 }
 
 impl ObjectStorageProvider for FSConfig {
+    fn name(&self) -> &'static str {
+        "drive"
+    }
+
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         RuntimeEnvBuilder::new()
     }

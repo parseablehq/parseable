@@ -285,6 +285,10 @@ impl S3Config {
 }
 
 impl ObjectStorageProvider for S3Config {
+    fn name(&self) -> &'static str {
+        "s3"
+    }
+
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let s3 = self.get_default_builder().build().unwrap();
 

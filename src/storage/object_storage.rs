@@ -73,6 +73,7 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
     }
     fn get_endpoint(&self) -> String;
     fn register_store_metrics(&self, handler: &PrometheusMetrics);
+    fn name(&self) -> &'static str;
 }
 
 #[async_trait]

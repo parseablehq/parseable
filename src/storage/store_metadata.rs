@@ -70,7 +70,7 @@ impl Default for StorageMetadata {
     fn default() -> Self {
         Self {
             version: CURRENT_STORAGE_METADATA_VERSION.to_string(),
-            mode: PARSEABLE.storage_name.to_owned(),
+            mode: PARSEABLE.storage.name().to_owned(),
             staging: PARSEABLE.staging_dir().to_path_buf(),
             storage: PARSEABLE.storage.get_endpoint(),
             deployment_id: uid::gen(),

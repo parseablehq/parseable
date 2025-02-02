@@ -69,12 +69,10 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
             .exit();
         }
 
-        Parseable::new(args.options, Arc::new(args.storage), "drive")
+        Parseable::new(args.options, Arc::new(args.storage))
     }
-    StorageOptions::S3(args) => Parseable::new(args.options, Arc::new(args.storage), "s3"),
-    StorageOptions::Blob(args) => {
-        Parseable::new(args.options, Arc::new(args.storage), "blob-store")
-    }
+    StorageOptions::S3(args) => Parseable::new(args.options, Arc::new(args.storage)),
+    StorageOptions::Blob(args) => Parseable::new(args.options, Arc::new(args.storage)),
 });
 
 /// All state related to parseable, in one place.
@@ -83,22 +81,15 @@ pub struct Parseable {
     pub options: Options,
     /// Storage engine backing parseable
     pub storage: Arc<dyn ObjectStorageProvider>,
-    /// Either "drive"/"s3"/"blob-store"
-    pub storage_name: &'static str,
     /// Metadata relating to logstreams
     pub streams: StreamInfo,
 }
 
 impl Parseable {
-    pub fn new(
-        options: Options,
-        storage: Arc<dyn ObjectStorageProvider>,
-        storage_name: &'static str,
-    ) -> Self {
+    pub fn new(options: Options, storage: Arc<dyn ObjectStorageProvider>) -> Self {
         Parseable {
             options,
             storage,
-            storage_name,
             streams: StreamInfo::default(),
         }
     }
@@ -129,7 +120,7 @@ impl Parseable {
             return Ok(Some(parseable_json_result.unwrap()));
         }
 
-        if self.storage_name == "drive" {
+        if self.storage.name() == "drive" {
             return Err(ObjectStorageError::Custom(format!("Could not start the server because directory '{}' contains stale data, please use an empty directory, and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)));
         }
 
@@ -154,11 +145,11 @@ impl Parseable {
     // s3 --> S3 bucket
     // azure_blob --> Azure Blob Storage
     pub fn get_storage_mode_string(&self) -> &str {
-        if self.storage_name == "drive" {
+        if self.storage.name() == "drive" {
             return "Local drive";
-        } else if self.storage_name == "s3" {
+        } else if self.storage.name() == "s3" {
             return "S3 bucket";
-        } else if self.storage_name == "blob_store" {
+        } else if self.storage.name() == "blob_store" {
             return "Azure Blob Storage";
         }
         "Unknown"

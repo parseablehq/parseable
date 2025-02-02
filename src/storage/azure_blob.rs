@@ -150,6 +150,10 @@ impl AzureBlobConfig {
 }
 
 impl ObjectStorageProvider for AzureBlobConfig {
+    fn name(&self) -> &'static str {
+        "blob-store"
+    }
+
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit

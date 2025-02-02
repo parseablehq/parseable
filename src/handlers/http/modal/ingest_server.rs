@@ -83,7 +83,7 @@ impl ParseableServer for IngestServer {
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
         // parseable can't use local storage for persistence when running a distributed setup
-        if PARSEABLE.storage_name == "drive" {
+        if PARSEABLE.storage.name() == "drive" {
             return Err(anyhow::Error::msg(
                  "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
              ));
