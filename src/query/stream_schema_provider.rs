@@ -301,7 +301,7 @@ impl StandardTableProvider {
             // TODO: figure out an elegant solution to this
             #[cfg(windows)]
             {
-                if PARSEABLE.storage_name.eq("drive") {
+                if PARSEABLE.storage.name() == "drive" {
                     file_path = object_store::path::Path::from_absolute_path(file_path)
                         .unwrap()
                         .to_string();
