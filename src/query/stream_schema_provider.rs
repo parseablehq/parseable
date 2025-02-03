@@ -19,6 +19,7 @@
 use crate::catalog::manifest::File;
 use crate::hottier::HotTierManager;
 use crate::option::Mode;
+use crate::staging::STAGING;
 use crate::{
     catalog::snapshot::{self, Snapshot},
     storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
@@ -63,7 +64,7 @@ use crate::{
     catalog::{
         self, column::TypedStatistics, manifest::Manifest, snapshot::ManifestItem, ManifestFile,
     },
-    event::{self, DEFAULT_TIMESTAMP_KEY},
+    event::DEFAULT_TIMESTAMP_KEY,
     metadata::STREAM_INFO,
     metrics::QUERY_CACHE_HIT,
     option::CONFIG,
@@ -440,9 +441,8 @@ impl TableProvider for StandardTableProvider {
         }
 
         if include_now(filters, &time_partition) {
-            if let Some(records) =
-                event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
-            {
+            if let Some(staging) = STAGING.get_stream(&self.stream) {
+                let records = staging.recordbatches_cloned(&self.schema);
                 let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
 
                 let memory_exec = reversed_mem_table
@@ -581,7 +581,7 @@ fn reversed_mem_table(
     records[..].reverse();
     records
         .iter_mut()
-        .for_each(|batch| *batch = crate::utils::arrow::reverse_reader::reverse(batch));
+        .for_each(|batch| *batch = crate::utils::arrow::reverse(batch));
     MemTable::try_new(schema, vec![records])
 }
 

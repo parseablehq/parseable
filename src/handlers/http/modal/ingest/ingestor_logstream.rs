@@ -26,7 +26,6 @@ use tracing::warn;
 
 use crate::{
     catalog::remove_manifest_from_snapshot,
-    event,
     handlers::http::{
         logstream::error::StreamError,
         modal::utils::logstream_utils::{
@@ -35,6 +34,7 @@ use crate::{
     },
     metadata,
     option::CONFIG,
+    staging::STAGING,
     stats,
 };
 
@@ -75,7 +75,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
-    event::STREAM_WRITERS.delete_stream(&stream_name);
+    STAGING.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 

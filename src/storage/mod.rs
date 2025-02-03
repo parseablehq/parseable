@@ -16,19 +16,10 @@
  *
  */
 
-pub use azure_blob::AzureBlobConfig;
 use chrono::Local;
-pub use localfs::FSConfig;
-pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 use object_store::path::Path;
 use relative_path::RelativePath;
-use retention::Retention;
-pub use s3::S3Config;
 use serde::{Deserialize, Serialize};
-pub use staging::StorageDir;
-pub use store_metadata::{
-    put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
-};
 
 use crate::{
     catalog::snapshot::Snapshot,
@@ -44,8 +35,16 @@ mod metrics_layer;
 pub mod object_storage;
 pub mod retention;
 mod s3;
-pub mod staging;
 mod store_metadata;
+
+use self::retention::Retention;
+pub use azure_blob::AzureBlobConfig;
+pub use localfs::FSConfig;
+pub use object_storage::{ObjectStorage, ObjectStorageProvider};
+pub use s3::S3Config;
+pub use store_metadata::{
+    put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
+};
 
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity

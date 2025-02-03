@@ -32,7 +32,6 @@ use tracing::{error, warn};
 static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 use crate::{
-    event,
     handlers::http::{
         base_path_without_preceding_slash,
         cluster::{
@@ -48,8 +47,9 @@ use crate::{
     hottier::HotTierManager,
     metadata::{self, STREAM_INFO},
     option::CONFIG,
+    staging::{Stream, STAGING},
     stats::{self, Stats},
-    storage::{StorageDir, StreamType},
+    storage::StreamType,
 };
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -69,7 +69,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     let objectstore = CONFIG.storage().get_object_store();
 
     objectstore.delete_stream(&stream_name).await?;
-    let stream_dir = StorageDir::new(&stream_name);
+    let stream_dir = Stream::new(&CONFIG.options, &stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
         warn!(
             "failed to delete local data for stream {}. Clean {} manually",
@@ -102,7 +102,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 
     metadata::STREAM_INFO.delete_stream(&stream_name);
-    event::STREAM_WRITERS.delete_stream(&stream_name);
+    STAGING.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 

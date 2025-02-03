@@ -33,7 +33,8 @@ use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 
 use crate::{
-    handlers::http::users::USERS_ROOT_DIR, metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
+    handlers::http::users::USERS_ROOT_DIR,
+    metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
     option::validation,
 };
 

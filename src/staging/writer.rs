@@ -14,16 +14,28 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
+ *
  */
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    sync::Arc,
+};
 
 use arrow_array::RecordBatch;
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
 
 use crate::utils::arrow::adapt_batch;
+
+#[derive(Default)]
+pub struct Writer {
+    pub mem: MemWriter<16384>,
+    pub disk: HashMap<String, StreamWriter<File>>,
+}
 
 /// Structure to keep recordbatches in memory.
 ///
@@ -67,12 +79,11 @@ impl<const N: usize> MemWriter<N> {
         self.schema_map.clear();
         self.read_buffer.clear();
         self.mutable_buffer.inner.clear();
-        self.mutable_buffer.rows = 0;
     }
 
     pub fn recordbatch_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
         let mut read_buffer = self.read_buffer.clone();
-        if self.mutable_buffer.rows > 0 {
+        if !self.mutable_buffer.inner.is_empty() {
             let rb = concat_records(schema, &self.mutable_buffer.inner);
             read_buffer.push(rb)
         }
@@ -93,13 +104,12 @@ fn concat_records(schema: &Arc<Schema>, record: &[RecordBatch]) -> RecordBatch {
 #[derive(Debug, Default)]
 pub struct MutableBuffer<const N: usize> {
     pub inner: Vec<RecordBatch>,
-    pub rows: usize,
 }
 
 impl<const N: usize> MutableBuffer<N> {
     fn push(&mut self, rb: &RecordBatch) -> Option<Vec<RecordBatch>> {
-        if self.rows + rb.num_rows() >= N {
-            let left = N - self.rows;
+        if self.inner.len() + rb.num_rows() >= N {
+            let left = N - self.inner.len();
             let right = rb.num_rows() - left;
             let left_slice = rb.slice(0, left);
             let right_slice = if left < rb.num_rows() {
@@ -111,16 +121,13 @@ impl<const N: usize> MutableBuffer<N> {
             // take all records
             let src = Vec::with_capacity(self.inner.len());
             let inner = std::mem::replace(&mut self.inner, src);
-            self.rows = 0;
 
             if let Some(right_slice) = right_slice {
-                self.rows = right_slice.num_rows();
                 self.inner.push(right_slice);
             }
 
             Some(inner)
         } else {
-            self.rows += rb.num_rows();
             self.inner.push(rb.clone());
             None
         }

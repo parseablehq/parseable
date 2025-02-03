@@ -16,13 +16,15 @@
  *
  */
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
-use std::fs::remove_file;
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 use actix_web_prometheus::PrometheusMetrics;
 use arrow_schema::Schema;
@@ -33,6 +35,7 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
+use tokio::fs::remove_file;
 use tracing::{error, warn};
 use ulid::Ulid;
 
@@ -47,15 +50,14 @@ use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::metrics::storage::StorageMetrics;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE};
 use crate::option::{Mode, CONFIG};
+use crate::staging::STAGING;
 use crate::stats::FullStats;
 
 use super::retention::Retention;
-use super::staging::{convert_disk_files_to_parquet, StorageDir};
 use super::{
-    LogStream, ObjectStorageError, ObjectStoreFormat, Owner, Permisssion,
-    StorageMetadata, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
-    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    LogStream, ObjectStorageError, ObjectStoreFormat, Owner, Permisssion, StorageMetadata,
+    StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME,
+    PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
@@ -657,15 +659,14 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             let custom_partition = STREAM_INFO
                 .get_custom_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let dir = StorageDir::new(stream);
-            let schema = convert_disk_files_to_parquet(
-                stream,
-                &dir,
-                time_partition,
-                custom_partition.clone(),
-                shutdown_signal,
-            )
-            .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+            let staging = STAGING.get_or_create_stream(stream);
+            let schema = staging
+                .convert_disk_files_to_parquet(
+                    time_partition.as_ref(),
+                    custom_partition.as_ref(),
+                    shutdown_signal,
+                )
+                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {
                 let static_schema_flag = STREAM_INFO
@@ -676,8 +677,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 }
             }
 
-            let parquet_files = dir.parquet_files();
-            for file in parquet_files {
+            for file in staging.parquet_files() {
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")
@@ -723,7 +723,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
                 catalog::update_snapshot(store, stream, manifest).await?;
 
-                let _ = remove_file(file);
+                _ = remove_file(file);
             }
         }
 
