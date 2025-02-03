@@ -102,8 +102,6 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
         .unwrap()
         .into_iter()
         .filter(|logstream| {
-            warn!("logstream-\n{logstream:?}");
-
             Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
                 == crate::rbac::Response::Authorized
         })

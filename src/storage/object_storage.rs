@@ -680,10 +680,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         }
 
         // get all streams
-        let streams = STREAM_INFO.list_streams();
-
-        for stream in streams {
-            info!("Starting upload job for stream- {stream}");
+        for stream in STREAM_INFO.list_streams() {
+            info!("Starting object_store_sync for stream- {stream}");
 
             let custom_partition = STREAM_INFO
                 .get_custom_partition(&stream)
@@ -774,7 +772,7 @@ async fn conversion_for_stream(
     stream: String,
     shutdown_signal: bool,
 ) -> Result<(), ObjectStorageError> {
-    info!("Starting conversion job for stream- {stream}");
+    info!("Starting arrow_conversion job for stream- {stream}");
 
     let time_partition = STREAM_INFO
         .get_time_partition(&stream)

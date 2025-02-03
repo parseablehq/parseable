@@ -54,7 +54,7 @@ where
                 && !warning_issued_clone.load(std::sync::atomic::Ordering::Relaxed)
             {
                 warn!(
-                    "Task '{}' is taking longer than expected: (threshold: {:?})",
+                    "Task '{}' started at: {start_time:?} is taking longer than expected: (threshold: {:?})",
                     task_name, threshold
                 );
                 warning_issued_clone.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -68,7 +68,7 @@ where
             if warning_issued_clone_select.load(std::sync::atomic::Ordering::Relaxed) {
                 let elapsed = start_time.elapsed();
                 warn!(
-                    "Task '{}' took longer than expected: {:?} (threshold: {:?})",
+                    "Task '{}' started at: {start_time:?} took longer than expected: {:?} (threshold: {:?})",
                     task_name, elapsed, threshold
                 );
             }
