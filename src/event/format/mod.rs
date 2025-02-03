@@ -318,18 +318,18 @@ pub fn override_data_type(
                                 .get(field_name)
                                 .unwrap()
                                 .data_type()
-                                == &DataType::Float64
+                                == &DataType::Int64
                             && field.data_type() == &DataType::Utf8
-                            && s.parse::<f64>().is_ok()) =>
+                            && s.parse::<i64>().is_ok()) =>
                 {
                     // Update the field's data type to Float64
-                    Field::new(field_name, DataType::Float64, true)
+                    Field::new(field_name, DataType::Int64, true)
                 }
 
                 // in V1 for new fields in json with inferred type number, cast as float64.
-                (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_numeric() => {
+                (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_integer() => {
                     // Update the field's data type to Float64
-                    Field::new(field_name, DataType::Float64, true)
+                    Field::new(field_name, DataType::Int64, true)
                 }
                 // Return the original field if no update is needed
                 _ => Field::new(field_name, field.data_type().clone(), true),

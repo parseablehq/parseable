@@ -174,14 +174,11 @@ fn fields_mismatch(schema: &[Arc<Field>], body: &Value, schema_version: SchemaVe
 fn valid_type(data_type: &DataType, value: &Value, schema_version: SchemaVersion) -> bool {
     match data_type {
         DataType::Boolean => value.is_boolean(),
-        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => value.is_i64(),
+        DataType::Int8 | DataType::Int16 | DataType::Int32 => value.is_i64(),
         DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => value.is_u64(),
-        DataType::Float16 | DataType::Float32 => value.is_f64(),
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => value.is_f64(),
         // All numbers can be cast as Float64 from schema version v1
-        DataType::Float64 if schema_version == SchemaVersion::V1 => {
-            value.is_number() || is_parsable_as_number(value)
-        }
-        DataType::Float64 if schema_version != SchemaVersion::V1 => value.is_f64(),
+        DataType::Int64 => value.is_i64() || is_parsable_as_number(value),
         DataType::Utf8 => value.is_string(),
         DataType::List(field) => {
             let data_type = field.data_type();
@@ -232,5 +229,5 @@ pub fn is_parsable_as_number(value: &Value) -> bool {
     let Value::String(s) = value else {
         return false;
     };
-    s.parse::<f64>().is_ok()
+    s.parse::<i64>().is_ok()
 }
