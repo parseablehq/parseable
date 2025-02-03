@@ -137,6 +137,7 @@ anyhow = "1.0"
 [dev-dependencies]
 rstest = "0.23.0"
 arrow = "53.0.0"
+temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.18/build.zip"

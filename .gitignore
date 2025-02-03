@@ -1,6 +1,6 @@
 target
 data*
-staging/
+staging/*
 limitcache
 examples
 cert.pem

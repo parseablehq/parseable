@@ -24,6 +24,7 @@ pub mod server;
 pub mod ssl_acceptor;
 pub mod utils;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use actix_web::middleware::from_fn;
@@ -206,6 +207,21 @@ impl IngestorMetadata {
 
     pub fn get_ingestor_id(&self) -> String {
         self.ingestor_id.clone()
+    }
+
+    /// Puts the ingestor info into the staging.
+    ///
+    /// This function takes the ingestor info as a parameter and stores it in staging.
+    /// # Parameters
+    ///
+    /// * `staging_path`: Staging root directory.
+    pub fn put_on_disk(&self, staging_path: &Path) -> anyhow::Result<()> {
+        let file_name = format!("ingestor.{}.json", self.ingestor_id);
+        let file_path = staging_path.join(file_name);
+
+        std::fs::write(file_path, serde_json::to_vec(&self)?)?;
+
+        Ok(())
     }
 }
 

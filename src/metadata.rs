@@ -34,9 +34,9 @@ use crate::metrics::{
     EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED,
     LIFETIME_EVENTS_INGESTED_SIZE,
 };
+use crate::staging::STAGING;
 use crate::storage::retention::Retention;
-use crate::storage::{ObjectStorage, ObjectStoreFormat, StorageDir, StreamType};
-use crate::utils::arrow::MergedRecordReader;
+use crate::storage::{ObjectStorage, ObjectStoreFormat, StreamType};
 use derive_more::{Deref, DerefMut};
 
 // TODO: make return type be of 'static lifetime instead of cloning
@@ -357,7 +357,7 @@ impl StreamInfo {
         stream_name: &str,
         origin: &'static str,
         size: u64,
-        num_rows: u64,
+        num_rows: usize,
         parsed_timestamp: NaiveDateTime,
     ) -> Result<(), MetadataError> {
         let parsed_date = parsed_timestamp.date().to_string();
@@ -381,18 +381,6 @@ impl StreamInfo {
             .add(size as i64);
         Ok(())
     }
-}
-
-fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Schema {
-    let staging_files = StorageDir::new(stream_name).arrow_files();
-    let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
-    if record_reader.readers.is_empty() {
-        return current_schema;
-    }
-
-    let schema = record_reader.merged_schema();
-
-    Schema::try_merge(vec![schema, current_schema]).unwrap()
 }
 
 ///this function updates the data type of time partition field
@@ -465,7 +453,9 @@ pub async fn load_stream_metadata_on_server_start(
     fetch_stats_from_storage(stream_name, stats).await;
     load_daily_metrics(&snapshot.manifest_list, stream_name);
 
-    let schema = update_schema_from_staging(stream_name, schema);
+    let schema = STAGING
+        .get_or_create_stream(stream_name)
+        .updated_schema(schema);
     let schema = HashMap::from_iter(
         schema
             .fields
