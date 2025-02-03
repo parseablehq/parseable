@@ -26,37 +26,121 @@ use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::oneshot;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::{
-    analytics,
-    handlers::{
+    analytics, cli::Options, handlers::{
         airplane,
         http::{
             base_path, ingest, logstream,
             middleware::{DisAllowRootUser, RouteExt},
             role,
         },
-    },
-    metrics,
-    migration::{self, metadata_migration::migrate_ingester_metadata},
-    parseable::PARSEABLE,
-    rbac::role::Action,
-    storage::{
+    }, metrics, migration::{self, metadata_migration::migrate_ingester_metadata}, parseable::PARSEABLE, rbac::role::Action, storage::{
         object_storage::{ingestor_metadata_path, parseable_json_path},
-        staging, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY,
-    },
-    sync, Server,
+        ObjectStorageError, PARSEABLE_ROOT_DIRECTORY,
+    }, sync, utils::{get_ingestor_id, get_url}, Server
 };
 
 use super::{
     ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
-    IngestorMetadata, OpenIdClient, ParseableServer,
+    IngestorMetadata, OpenIdClient, ParseableServer, DEFAULT_VERSION,
 };
 
-/// ! have to use a guard before using it
-pub static INGESTOR_META: Lazy<IngestorMetadata> =
-    Lazy::new(|| staging::get_ingestor_info().expect("Should Be valid Json"));
+/// Metadata associated with this ingestor server
+pub static INGESTOR_META: Lazy<IngestorMetadata> = Lazy::new(|| {
+    // all the files should be in the staging directory root
+    let entries =
+        std::fs::read_dir(&PARSEABLE.options.local_staging_path).expect("Couldn't read from file");
+    let url = get_url();
+    let port = url.port().unwrap_or(80).to_string();
+    let url = url.to_string();
+    let Options{username, password, ..} = &PARSEABLE.options;
+    let staging_path = PARSEABLE.staging_dir();
+
+    for entry in entries {
+        // cause the staging directory will have only one file with ingestor in the name
+        // so the JSON Parse should not error unless the file is corrupted
+        let path = entry.expect("Should be a directory entry").path();
+        let flag = path
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or_default()
+            .contains("ingestor");
+
+        if flag {
+            // get the ingestor metadata from staging
+            let text = std::fs::read(path).expect("File should be present");
+            let mut meta: Value = serde_json::from_slice(&text).expect("Valid JSON");
+
+            // migrate the staging meta
+            let obj = meta
+                .as_object_mut()
+                .expect("Could Not parse Ingestor Metadata Json");
+
+            if obj.get("flight_port").is_none() {
+                obj.insert(
+                    "flight_port".to_owned(),
+                    Value::String(PARSEABLE.options.flight_port.to_string()),
+                );
+            }
+
+            let mut meta: IngestorMetadata =
+                serde_json::from_value(meta).expect("Couldn't write to disk");
+
+            // compare url endpoint and port
+            if meta.domain_name != url {
+                info!(
+                    "Domain Name was Updated. Old: {} New: {}",
+                    meta.domain_name, url
+                );
+                meta.domain_name = url;
+            }
+
+            if meta.port != port {
+                info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                meta.port = port;
+            }
+
+            let token = base64::prelude::BASE64_STANDARD.encode(format!(
+                "{}:{}",
+                username, password
+            ));
+
+            let token = format!("Basic {}", token);
+
+            if meta.token != token {
+                // TODO: Update the message to be more informative with username and password
+                info!(
+                    "Credentials were Updated. Old: {} New: {}",
+                    meta.token, token
+                );
+                meta.token = token;
+            }
+
+            meta.put_on_disk(staging_path)
+                .expect("Couldn't write to disk");
+            return meta;
+        }
+    }
+
+    let store = PARSEABLE.storage().get_object_store();
+    let out = IngestorMetadata::new(
+        port,
+        url,
+        DEFAULT_VERSION.to_string(),
+        store.get_bucket_name(),
+        username,
+        password,
+        get_ingestor_id(),
+        PARSEABLE.options.flight_port.to_string(),
+    );
+
+    out.put_on_disk(staging_path)
+        .expect("Should Be valid Json");
+    out
+});
 
 pub struct IngestServer;
 

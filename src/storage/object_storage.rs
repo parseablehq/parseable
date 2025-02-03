@@ -17,11 +17,8 @@
  */
 
 use super::{
-    retention::Retention, staging::convert_disk_files_to_parquet, ObjectStorageError,
-    ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
-};
-use super::{
-    LogStream, Owner, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
+    retention::Retention, LogStream, ObjectStorageError, ObjectStoreFormat, Owner, Permisssion,
+    StorageMetadata, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
     PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
     STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
@@ -33,6 +30,7 @@ use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
+use crate::staging::STAGING;
 use crate::{
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
@@ -586,15 +584,14 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .streams
                 .get_custom_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let dir = StorageDir::new(stream);
-            let schema = convert_disk_files_to_parquet(
-                stream,
-                &dir,
-                time_partition,
-                custom_partition.clone(),
-                shutdown_signal,
-            )
-            .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+            let staging = STAGING.get_or_create_stream(stream);
+            let schema = staging
+                .convert_disk_files_to_parquet(
+                    time_partition.as_ref(),
+                    custom_partition.as_ref(),
+                    shutdown_signal,
+                )
+                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
             if let Some(schema) = schema {
                 let static_schema_flag = PARSEABLE
@@ -606,8 +603,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 }
             }
 
-            let parquet_files = dir.parquet_files();
-            for file in parquet_files {
+            for file in staging.parquet_files() {
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")

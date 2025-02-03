@@ -29,11 +29,12 @@ use crate::option::Mode;
 use crate::parseable::PARSEABLE;
 use crate::rbac::role::Action;
 use crate::rbac::Users;
+use crate::staging::{Stream, STAGING};
+use crate::{stats, validator};
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
-use crate::storage::{retention::Retention, StorageDir};
+use crate::storage::retention::Retention;
 use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
-use crate::{event, stats, validator};
 
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::http::StatusCode;
@@ -58,8 +59,9 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 
     let objectstore = PARSEABLE.storage.get_object_store();
 
+    // Delete from storage
     objectstore.delete_stream(&stream_name).await?;
-    let stream_dir = StorageDir::new(&stream_name);
+    let stream_dir = Stream::new(&PARSEABLE.options, &stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
         warn!(
             "failed to delete local data for stream {}. Clean {} manually",
@@ -74,8 +76,10 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
         }
     }
 
+    // Delete from memory
     PARSEABLE.streams.delete_stream(&stream_name);
-    event::STREAM_WRITERS.delete_stream(&stream_name);
+    // Delete from staging
+    STAGING.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 

@@ -32,8 +32,7 @@ use crate::metrics::{
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
 use crate::storage::retention::Retention;
-use crate::storage::{LogStream, StorageDir, StreamType};
-use crate::utils::arrow::MergedRecordReader;
+use crate::storage::{LogStream, StreamType};
 use derive_more::{Deref, DerefMut};
 
 // A read-write lock to allow multiple reads while and isolated write
@@ -334,7 +333,7 @@ impl StreamInfo {
         stream_name: &str,
         origin: &'static str,
         size: u64,
-        num_rows: u64,
+        num_rows: usize,
         parsed_timestamp: NaiveDateTime,
     ) -> Result<(), MetadataError> {
         let parsed_date = parsed_timestamp.date().to_string();
@@ -358,18 +357,6 @@ impl StreamInfo {
             .add(size as i64);
         Ok(())
     }
-}
-
-pub fn update_schema_from_staging(stream_name: &str, current_schema: Schema) -> Schema {
-    let staging_files = StorageDir::new(stream_name).arrow_files();
-    let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
-    if record_reader.readers.is_empty() {
-        return current_schema;
-    }
-
-    let schema = record_reader.merged_schema();
-
-    Schema::try_merge(vec![schema, current_schema]).unwrap()
 }
 
 ///this function updates the data type of time partition field

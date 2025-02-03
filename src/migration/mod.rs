@@ -24,13 +24,11 @@ mod stream_metadata_migration;
 use std::{collections::HashMap, fs::OpenOptions, sync::Arc};
 
 use crate::{
-    metadata::{
-        load_daily_metrics, update_data_type_time_partition, update_schema_from_staging,
-        LogStreamMetadata,
-    },
+    metadata::{load_daily_metrics, update_data_type_time_partition, LogStreamMetadata},
     metrics::fetch_stats_from_storage,
     option::Mode,
     parseable::{Parseable, PARSEABLE},
+    staging::STAGING,
     storage::{
         object_storage::{parseable_json_path, schema_path, stream_json_path},
         ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
@@ -292,7 +290,9 @@ async fn migration_stream(
     fetch_stats_from_storage(stream, stats).await;
     load_daily_metrics(&snapshot.manifest_list, stream);
 
-    let schema = update_schema_from_staging(stream, arrow_schema);
+    let schema = STAGING
+        .get_or_create_stream(stream)
+        .updated_schema(arrow_schema);
     let schema = HashMap::from_iter(
         schema
             .fields
