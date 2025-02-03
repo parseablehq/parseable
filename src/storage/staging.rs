@@ -343,7 +343,7 @@ pub fn parquet_writer_props(
     let url_column_path = ColumnPath::new(vec!["URL".to_string()]);
     let url_encoding = Encoding::DELTA_BYTE_ARRAY;
     props = props.set_column_encoding(url_column_path, url_encoding);
-    props = props.set_statistics_enabled(EnabledStatistics::Chunk);
+    props = props.set_statistics_enabled(EnabledStatistics::Page);
 
     props
 }
