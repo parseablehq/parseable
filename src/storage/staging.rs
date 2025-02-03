@@ -37,7 +37,7 @@ use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
     errors::ParquetError,
-    file::properties::{WriterProperties, WriterPropertiesBuilder},
+    file::properties::{EnabledStatistics, WriterProperties, WriterPropertiesBuilder},
     format::SortingColumn,
     schema::types::ColumnPath,
 };
@@ -339,6 +339,11 @@ pub fn parquet_writer_props(
         sorting_column_vec.push(sorting_column);
     }
     props = props.set_sorting_columns(Some(sorting_column_vec));
+
+    let url_column_path = ColumnPath::new(vec!["URL".to_string()]);
+    let url_encoding = Encoding::DELTA_BYTE_ARRAY;
+    props = props.set_column_encoding(url_column_path, url_encoding);
+    props = props.set_statistics_enabled(EnabledStatistics::Chunk);
 
     props
 }
