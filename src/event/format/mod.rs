@@ -242,8 +242,12 @@ pub fn update_field_type_in_schema(
 
     if let Some(log_records) = log_records {
         for log_record in log_records {
-            updated_schema =
-                override_data_type(updated_schema.clone(), log_record.clone(), schema_version);
+            updated_schema = override_data_type(
+                updated_schema.clone(),
+                log_record.clone(),
+                schema_version,
+                existing_schema,
+            );
         }
     }
 
@@ -276,6 +280,7 @@ pub fn override_data_type(
     inferred_schema: Arc<Schema>,
     log_record: Value,
     schema_version: SchemaVersion,
+    existing_schema: Option<&HashMap<String, Arc<Field>>>,
 ) -> Arc<Schema> {
     let Value::Object(map) = log_record else {
         return inferred_schema;
@@ -304,16 +309,32 @@ pub fn override_data_type(
                         true,
                     )
                 }
-                // in V1 for new fields in json with inferred type number, cast as float64.
-                (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_numeric() => {
+                (SchemaVersion::V1, Some(Value::String(s)))
+                    if existing_schema.is_none()
+                        || (existing_schema.is_some()
+                            && existing_schema.unwrap().get(field_name).is_some()
+                            && existing_schema
+                                .unwrap()
+                                .get(field_name)
+                                .unwrap()
+                                .data_type()
+                                == &DataType::Int64
+                            && field.data_type() == &DataType::Utf8
+                            && s.parse::<i64>().is_ok()) =>
+                {
                     // Update the field's data type to Float64
-                    Field::new(field_name, DataType::Float64, true)
+                    Field::new(field_name, DataType::Int64, true)
+                }
+
+                // in V1 for new fields in json with inferred type number, cast as float64.
+                (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_integer() => {
+                    // Update the field's data type to Float64
+                    Field::new(field_name, DataType::Int64, true)
                 }
                 // Return the original field if no update is needed
                 _ => Field::new(field_name, field.data_type().clone(), true),
             }
         })
         .collect();
-
     Arc::new(Schema::new(updated_schema))
 }
