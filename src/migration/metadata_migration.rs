@@ -21,9 +21,8 @@ use rand::distributions::DistString;
 use serde_json::{json, Map, Value as JsonValue};
 
 use crate::{
-    handlers::http::modal::IngestorMetadata,
-    option::CONFIG,
-    storage::{object_storage::ingestor_metadata_path, staging},
+    handlers::http::modal::IngestorMetadata, option::CONFIG,
+    storage::object_storage::ingestor_metadata_path,
 };
 
 /*
@@ -197,7 +196,7 @@ pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetada
     let bytes = Bytes::from(serde_json::to_vec(&json)?);
 
     let resource: IngestorMetadata = serde_json::from_value(json)?;
-    staging::put_ingestor_info(resource.clone())?;
+    resource.put_on_disk(CONFIG.staging_dir())?;
 
     CONFIG
         .storage()
