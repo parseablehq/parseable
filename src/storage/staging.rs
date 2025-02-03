@@ -321,7 +321,7 @@ pub fn parquet_writer_props(
     });
     let mut props = WriterProperties::builder()
         .set_max_row_group_size(CONFIG.options.row_group_size)
-        .set_compression(parquet::basic::Compression::SNAPPY)
+        .set_compression(CONFIG.options.parquet_compression.into())
         .set_column_encoding(
             ColumnPath::new(vec![time_partition_field]),
             Encoding::DELTA_BINARY_PACKED,
