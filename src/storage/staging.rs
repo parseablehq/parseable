@@ -233,12 +233,11 @@ impl StorageDir {
             }
         }
 
-        if schemas.len() > 0 {
+        if !schemas.is_empty() {
             Some(schemas)
         } else {
             None
         }
-        
     }
 
     fn arrow_path_to_parquet(path: &Path, random_string: String) -> PathBuf {
