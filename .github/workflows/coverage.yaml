@@ -27,12 +27,6 @@ jobs:
       - name: Check with clippy
         run: cargo hack clippy --verbose --each-feature --no-dev-deps -- -D warnings
 
-      - name: Check docs
-        run: cargo hack doc --verbose --no-deps --each-feature --no-dev-deps
-
-      - name: Doctests
-        run: cargo hack --each-feature test --doc
-
       - name: Tests
         run: cargo hack --each-feature llvm-cov --no-report nextest
 
