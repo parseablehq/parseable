@@ -45,7 +45,6 @@ services:
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=query
-      - RUST_LOG=info
     networks:
       - parseable-internal
     healthcheck:

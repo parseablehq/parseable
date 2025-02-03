@@ -45,7 +45,6 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_KAFKA_CONSUMER_TOPICS=test-logs-stream
       - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092
-      - RUST_LOG=info
       # additional settings like security, tuning, etc.
     depends_on:
       - minio
