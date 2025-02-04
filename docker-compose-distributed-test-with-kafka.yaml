@@ -114,7 +114,6 @@ services:
       - P_KAFKA_CONSUMER_TOPICS=dist-test-logs-stream
       - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
       - P_KAFKA_PARTITION_LISTENER_CONCURRENCY=3
-      - RUST_LOG=info
       # additional settings like security, tuning, etc.
     networks:
       - parseable-internal
@@ -161,7 +160,6 @@ services:
       - P_KAFKA_CONSUMER_TOPICS=dist-test-logs-stream
       - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
       - P_KAFKA_PARTITION_LISTENER_CONCURRENCY=3
-      - RUST_LOG=info
       # additional settings like security, tuning, etc.
     networks:
       - parseable-internal
