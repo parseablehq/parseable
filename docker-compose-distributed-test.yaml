@@ -81,7 +81,6 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
-      - RUST_LOG=info
     networks:
       - parseable-internal
     healthcheck:
