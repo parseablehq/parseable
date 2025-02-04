@@ -37,7 +37,7 @@ use crate::{
     handlers::http::{
         ingest::PostError,
         logstream::error::{CreateStreamError, StreamError},
-        modal::utils::logstream_utils::PutStreamHeaders,
+        modal::{utils::logstream_utils::PutStreamHeaders, IngestorMetadata},
     },
     metadata::{LogStreamMetadata, SchemaVersion},
     option::Mode,
@@ -90,17 +90,24 @@ pub struct Parseable {
     pub options: Arc<Options>,
     /// Storage engine backing parseable
     pub storage: Arc<dyn ObjectStorageProvider>,
-    /// Metadata relating to logstreams
+    /// Metadata and staging realting to each logstreams
     /// A globally shared mapping of `Streams` that parseable is aware of.
     pub streams: Streams,
+    /// Metadata associated only with an ingestor
+    pub ingestor_metadata: Option<Arc<IngestorMetadata>>,
 }
 
 impl Parseable {
     pub fn new(options: Options, storage: Arc<dyn ObjectStorageProvider>) -> Self {
+        let ingestor_metadata = match &options.mode {
+            Mode::Ingest => Some(IngestorMetadata::load()),
+            _ => None,
+        };
         Parseable {
             options: Arc::new(options),
             storage,
             streams: Streams::default(),
+            ingestor_metadata,
         }
     }
 
@@ -125,6 +132,9 @@ impl Parseable {
             self.options.clone(),
             stream_name.to_owned(),
             LogStreamMetadata::default(),
+            self.ingestor_metadata
+                .as_ref()
+                .map(|meta| meta.get_ingestor_id()),
         )
     }
 
@@ -149,7 +159,14 @@ impl Parseable {
                 drop(map);
                 self.streams.write().expect(LOCK_EXPECT).insert(
                     stream_name.to_owned(),
-                    Stream::new(self.options.clone(), stream_name, updated_metadata),
+                    Stream::new(
+                        self.options.clone(),
+                        stream_name,
+                        updated_metadata,
+                        self.ingestor_metadata
+                            .as_ref()
+                            .map(|meta| meta.get_ingestor_id()),
+                    ),
                 );
             }
         }
@@ -277,8 +294,14 @@ impl Parseable {
             schema_version,
             log_source,
         );
-        self.streams
-            .create(self.options.clone(), stream_name.to_string(), metadata);
+        self.streams.create(
+            self.options.clone(),
+            stream_name.to_string(),
+            metadata,
+            self.ingestor_metadata
+                .as_ref()
+                .map(|meta| meta.get_ingestor_id()),
+        );
 
         Ok(true)
     }
@@ -526,8 +549,14 @@ impl Parseable {
                     SchemaVersion::V1, // New stream
                     log_source,
                 );
-                self.streams
-                    .create(self.options.clone(), stream_name.to_string(), metadata);
+                self.streams.create(
+                    self.options.clone(),
+                    stream_name.to_string(),
+                    metadata,
+                    self.ingestor_metadata
+                        .as_ref()
+                        .map(|meta| meta.get_ingestor_id()),
+                );
             }
             Err(err) => {
                 return Err(CreateStreamError::Storage { stream_name, err });

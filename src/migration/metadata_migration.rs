@@ -16,14 +16,10 @@
  *
  */
 
-use bytes::Bytes;
 use rand::distributions::DistString;
 use serde_json::{json, Map, Value as JsonValue};
 
-use crate::{
-    handlers::http::modal::IngestorMetadata, parseable::PARSEABLE,
-    storage::object_storage::ingestor_metadata_path,
-};
+use crate::parseable::PARSEABLE;
 
 /*
 v1
@@ -171,38 +167,4 @@ pub fn remove_querier_metadata(mut storage_metadata: JsonValue) -> JsonValue {
     metadata.remove("querier_endpoint");
     metadata.remove("querier_auth_token");
     storage_metadata
-}
-
-pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetadata>> {
-    let imp = ingestor_metadata_path(None);
-    let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return Ok(None);
-        }
-    };
-    let mut json = serde_json::from_slice::<JsonValue>(&bytes)?;
-    let meta = json
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingester Metadata"))?;
-    let fp = meta.get("flight_port");
-
-    if fp.is_none() {
-        meta.insert(
-            "flight_port".to_owned(),
-            JsonValue::String(PARSEABLE.options.flight_port.to_string()),
-        );
-    }
-    let bytes = Bytes::from(serde_json::to_vec(&json)?);
-
-    let resource: IngestorMetadata = serde_json::from_value(json)?;
-    resource.put_on_disk(PARSEABLE.staging_dir())?;
-
-    PARSEABLE
-        .storage
-        .get_object_store()
-        .put_object(&imp, bytes)
-        .await?;
-
-    Ok(Some(resource))
 }

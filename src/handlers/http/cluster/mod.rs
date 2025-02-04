@@ -43,7 +43,6 @@ use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
 use crate::stats::Stats;
-use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::{
     ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
 };
@@ -698,8 +697,7 @@ pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, P
         .filter(|elem| elem.domain_name == domain_name)
         .collect_vec();
 
-    let ingestor_meta_filename =
-        ingestor_metadata_path(Some(&ingestor_metadata[0].ingestor_id)).to_string();
+    let ingestor_meta_filename = ingestor_metadata[0].file_path().to_string();
     let msg = match object_store
         .try_delete_ingestor_meta(ingestor_meta_filename)
         .await

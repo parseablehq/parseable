@@ -73,7 +73,7 @@ impl Default for StorageMetadata {
             staging: PARSEABLE.staging_dir().to_path_buf(),
             storage: PARSEABLE.storage.get_endpoint(),
             deployment_id: uid::gen(),
-            server_mode: PARSEABLE.options.mode,
+            server_mode: PARSEABLE.options.mode.clone(),
             users: Vec::new(),
             streams: Vec::new(),
             roles: HashMap::default(),
@@ -150,13 +150,13 @@ pub async fn resolve_parseable_metadata(
                     },
                     Mode::Query => {
                         overwrite_remote = true;
-                        metadata.server_mode = PARSEABLE.options.mode;
+                        metadata.server_mode = PARSEABLE.options.mode.clone();
                         metadata.staging = PARSEABLE.staging_dir().to_path_buf();
                     },
                     Mode::Ingest => {
                         // if ingest server is started fetch the metadata from remote
                         // update the server mode for local metadata
-                        metadata.server_mode = PARSEABLE.options.mode;
+                        metadata.server_mode = PARSEABLE.options.mode.clone();
                         metadata.staging = PARSEABLE.staging_dir().to_path_buf();
                       },
                 }
@@ -184,7 +184,7 @@ pub async fn resolve_parseable_metadata(
         ObjectStorageError::UnhandledError(err)
     })?;
 
-    metadata.server_mode = PARSEABLE.options.mode;
+    metadata.server_mode = PARSEABLE.options.mode.clone();
     if overwrite_remote {
         put_remote_metadata(&metadata).await?;
     }
@@ -205,7 +205,7 @@ fn determine_environment(
             // if both staging and remote have same deployment id but different server modes
             if staging.deployment_id == remote.deployment_id
                 && remote.server_mode == Mode::All
-                && (PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Ingest)
+                && matches!(PARSEABLE.options.mode, Mode::Query | Mode::Ingest)
             {
                 EnvChange::NewStaging(remote)
             } else if staging.deployment_id != remote.deployment_id {
@@ -258,7 +258,7 @@ pub async fn put_remote_metadata(metadata: &StorageMetadata) -> Result<(), Objec
 
 pub fn put_staging_metadata(meta: &StorageMetadata) -> io::Result<()> {
     let mut staging_metadata = meta.clone();
-    staging_metadata.server_mode = PARSEABLE.options.mode;
+    staging_metadata.server_mode = PARSEABLE.options.mode.clone();
     staging_metadata.staging = PARSEABLE.staging_dir().to_path_buf();
     let path = PARSEABLE.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
     let mut file = OpenOptions::new()

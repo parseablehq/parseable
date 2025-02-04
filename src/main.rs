@@ -16,6 +16,7 @@
  *
  */
 
+use parseable::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use parseable::parseable::PARSEABLE;
 use parseable::{
     banner, option::Mode, rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
@@ -39,9 +40,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // these are empty ptrs so mem footprint should be minimal
-    let server: Box<dyn ParseableServer> = match PARSEABLE.options.mode {
+    let server: Box<dyn ParseableServer> = match &PARSEABLE.options.mode {
         Mode::Query => Box::new(QueryServer),
-        Mode::Ingest => Box::new(IngestServer),
+        Mode::Ingest => Box::new(IngestServer(
+            PARSEABLE.ingestor_metadata.clone().expect(INGESTOR_EXPECT),
+        )),
         Mode::All => Box::new(Server),
     };
 

@@ -23,7 +23,7 @@ use super::{
 };
 
 use crate::alerts::AlertConfig;
-use crate::handlers::http::modal::ingest_server::INGESTOR_META;
+use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
@@ -726,13 +726,14 @@ pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
 }
 
 pub fn schema_path(stream_name: &str) -> RelativePathBuf {
-    match PARSEABLE.options.mode {
+    match &PARSEABLE.options.mode {
         Mode::Ingest => {
-            let file_name = format!(
-                ".ingestor.{}{}",
-                INGESTOR_META.ingestor_id.clone(),
-                SCHEMA_FILE_NAME
-            );
+            let id = PARSEABLE
+                .ingestor_metadata
+                .as_ref()
+                .expect(INGESTOR_EXPECT)
+                .get_ingestor_id();
+            let file_name = format!(".ingestor.{id}{SCHEMA_FILE_NAME}");
 
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
         }
@@ -746,11 +747,12 @@ pub fn schema_path(stream_name: &str) -> RelativePathBuf {
 pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
     match &PARSEABLE.options.mode {
         Mode::Ingest => {
-            let file_name = format!(
-                ".ingestor.{}{}",
-                INGESTOR_META.get_ingestor_id(),
-                STREAM_METADATA_FILE_NAME
-            );
+            let id = PARSEABLE
+                .ingestor_metadata
+                .as_ref()
+                .expect(INGESTOR_EXPECT)
+                .get_ingestor_id();
+            let file_name = format!(".ingestor.{id}{STREAM_METADATA_FILE_NAME}",);
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
         }
         Mode::Query | Mode::All => RelativePathBuf::from_iter([
@@ -793,29 +795,16 @@ pub fn alert_json_path(alert_id: Ulid) -> RelativePathBuf {
 
 #[inline(always)]
 pub fn manifest_path(prefix: &str) -> RelativePathBuf {
-    if PARSEABLE.options.mode == Mode::Ingest {
-        let manifest_file_name = format!(
-            "ingestor.{}.{}",
-            INGESTOR_META.get_ingestor_id(),
-            MANIFEST_FILE
-        );
-        RelativePathBuf::from_iter([prefix, &manifest_file_name])
-    } else {
-        RelativePathBuf::from_iter([prefix, MANIFEST_FILE])
+    match &PARSEABLE.options.mode {
+        Mode::Ingest => {
+            let id = PARSEABLE
+                .ingestor_metadata
+                .as_ref()
+                .expect(INGESTOR_EXPECT)
+                .get_ingestor_id();
+            let manifest_file_name = format!("ingestor.{id}.{MANIFEST_FILE}");
+            RelativePathBuf::from_iter([prefix, &manifest_file_name])
+        }
+        _ => RelativePathBuf::from_iter([prefix, MANIFEST_FILE]),
     }
-}
-
-#[inline(always)]
-pub fn ingestor_metadata_path(id: Option<&str>) -> RelativePathBuf {
-    if let Some(id) = id {
-        return RelativePathBuf::from_iter([
-            PARSEABLE_ROOT_DIRECTORY,
-            &format!("ingestor.{}.json", id),
-        ]);
-    }
-
-    RelativePathBuf::from_iter([
-        PARSEABLE_ROOT_DIRECTORY,
-        &format!("ingestor.{}.json", INGESTOR_META.get_ingestor_id()),
-    ])
 }

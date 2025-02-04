@@ -42,7 +42,6 @@ use tracing::error;
 use crate::{
     cli::Options,
     event::DEFAULT_TIMESTAMP_KEY,
-    handlers::http::modal::ingest_server::INGESTOR_META,
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
@@ -68,13 +67,14 @@ const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
 pub type StreamRef = Arc<Stream>;
 
-/// State of staging associated with a single stream of data in parseable.
+/// All state associated with a single logstream in Parseable.
 pub struct Stream {
     pub stream_name: String,
     pub metadata: RwLock<LogStreamMetadata>,
     pub data_path: PathBuf,
     pub options: Arc<Options>,
     pub writer: Mutex<Writer>,
+    pub ingestor_id: Option<String>,
 }
 
 impl Stream {
@@ -82,6 +82,7 @@ impl Stream {
         options: Arc<Options>,
         stream_name: impl Into<String>,
         metadata: LogStreamMetadata,
+        ingestor_id: Option<String>,
     ) -> StreamRef {
         let stream_name = stream_name.into();
         let data_path = options.local_stream_data_path(&stream_name);
@@ -92,6 +93,7 @@ impl Stream {
             data_path,
             options,
             writer: Mutex::new(Writer::default()),
+            ingestor_id,
         })
     }
 
@@ -145,8 +147,8 @@ impl Stream {
         custom_partition_values: &HashMap<String, String>,
     ) -> PathBuf {
         let mut hostname = hostname::get().unwrap().into_string().unwrap();
-        if self.options.mode == Mode::Ingest {
-            hostname.push_str(&INGESTOR_META.get_ingestor_id());
+        if let Some(id) = &self.ingestor_id {
+            hostname.push_str(id);
         }
         let filename = format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
@@ -431,8 +433,9 @@ impl Streams {
         options: Arc<Options>,
         stream_name: String,
         metadata: LogStreamMetadata,
+        ingestor_id: Option<String>,
     ) -> StreamRef {
-        let stream = Stream::new(options, &stream_name, metadata);
+        let stream = Stream::new(options, &stream_name, metadata, ingestor_id);
         self.write()
             .expect(LOCK_EXPECT)
             .insert(stream_name, stream.clone());
@@ -749,7 +752,12 @@ mod tests {
         let stream_name = "test_stream";
 
         let options = Arc::new(Options::default());
-        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         assert_eq!(
             staging.data_path,
@@ -762,7 +770,12 @@ mod tests {
         let stream_name = "test_stream_!@#$%^&*()";
 
         let options = Arc::new(Options::default());
-        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         assert_eq!(
             staging.data_path,
@@ -775,7 +788,12 @@ mod tests {
         let stream_name = "example_stream";
 
         let options = Arc::new(Options::default());
-        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         assert_eq!(
             staging.data_path,
@@ -788,7 +806,12 @@ mod tests {
         let stream_name = "test123stream";
 
         let options = Arc::new(Options::default());
-        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         assert_eq!(
             staging.data_path,
@@ -808,6 +831,7 @@ mod tests {
             Arc::new(options),
             "test_stream",
             LogStreamMetadata::default(),
+            None,
         );
 
         let files = staging.arrow_files();
@@ -826,7 +850,12 @@ mod tests {
         let custom_partition_values = HashMap::new();
 
         let options = Options::default();
-        let staging = Stream::new(Arc::new(options), stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(
+            Arc::new(options),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         let expected_path = staging.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
@@ -856,7 +885,12 @@ mod tests {
         custom_partition_values.insert("key2".to_string(), "value2".to_string());
 
         let options = Options::default();
-        let staging = Stream::new(Arc::new(options), stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(
+            Arc::new(options),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         let expected_path = staging.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
@@ -881,8 +915,13 @@ mod tests {
             ..Default::default()
         };
         let stream = "test_stream".to_string();
-        let result = Stream::new(Arc::new(options), &stream, LogStreamMetadata::default())
-            .convert_disk_files_to_parquet(None, None, false)?;
+        let result = Stream::new(
+            Arc::new(options),
+            &stream,
+            LogStreamMetadata::default(),
+            None,
+        )
+        .convert_disk_files_to_parquet(None, None, false)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
@@ -933,7 +972,12 @@ mod tests {
             row_group_size: 1048576,
             ..Default::default()
         });
-        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -954,7 +998,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(options, stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
@@ -977,7 +1021,12 @@ mod tests {
             row_group_size: 1048576,
             ..Default::default()
         });
-        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -998,7 +1047,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(options, stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
@@ -1021,7 +1070,12 @@ mod tests {
             row_group_size: 1048576,
             ..Default::default()
         });
-        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -1047,7 +1101,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(options, stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
             .convert_disk_files_to_parquet(None, None, false)
             .unwrap();
