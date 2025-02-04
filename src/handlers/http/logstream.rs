@@ -241,7 +241,7 @@ pub async fn put_retention(
 
 pub async fn get_stats(
     stream_name: Path<String>,
-    params: Option<Query<StatsParams>>,
+    Query(params): Query<StatsParams>,
 ) -> Result<HttpResponse, StreamError> {
     let stream_name = stream_name.into_inner();
 
@@ -259,8 +259,7 @@ pub async fn get_stats(
         }
     }
 
-    if let Some(Query(params)) = params {
-        let stats = params.get_stats(&stream_name);
+    if let Some(stats) = params.get_stats(&stream_name) {
         return Ok(HttpResponse::build(StatusCode::OK).json(stats));
     }
 
@@ -733,12 +732,12 @@ pub mod error {
 
 #[cfg(test)]
 mod tests {
-    use crate::handlers::http::logstream::error::StreamError;
-    use crate::handlers::http::logstream::get_stats;
-    use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
-    use actix_web::test::TestRequest;
-    use actix_web::web;
+    use actix_web::{test::TestRequest, web};
     use anyhow::bail;
+
+    use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
+
+    use super::*;
 
     // TODO: Fix this test with routes
     // #[actix_web::test]
@@ -750,7 +749,12 @@ mod tests {
 
     #[actix_web::test]
     async fn get_stats_stream_not_found_error_for_unknown_logstream() -> anyhow::Result<()> {
-        match get_stats(web::Path::from("test".to_string()), None).await {
+        match get_stats(
+            web::Path::from("test".to_string()),
+            Query(StatsParams { date: None }),
+        )
+        .await
+        {
             Err(StreamError::StreamNotFound(_)) => Ok(()),
             _ => bail!("expected StreamNotFound error"),
         }
