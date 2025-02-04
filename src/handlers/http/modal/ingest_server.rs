@@ -23,6 +23,7 @@ use super::server::Server;
 use super::IngestorMetadata;
 use super::OpenIdClient;
 use super::ParseableServer;
+use super::DEFAULT_VERSION;
 use crate::analytics;
 use crate::handlers::airplane;
 use crate::handlers::http::ingest;
@@ -30,21 +31,22 @@ use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::DisAllowRootUser;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::role;
-use crate::metrics;
 use crate::migration;
 use crate::migration::metadata_migration::migrate_ingester_metadata;
 use crate::rbac::role::Action;
 use crate::storage::object_storage::ingestor_metadata_path;
 use crate::storage::object_storage::parseable_json_path;
-use crate::storage::staging;
 use crate::storage::ObjectStorageError;
 use crate::storage::PARSEABLE_ROOT_DIRECTORY;
 use crate::sync;
 
+use crate::utils::get_ingestor_id;
+use crate::utils::get_url;
 use crate::{handlers::http::base_path, option::CONFIG};
+
 use actix_web::web;
-use actix_web::web::resource;
 use actix_web::Scope;
+use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
@@ -53,10 +55,100 @@ use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::oneshot;
 use tracing::error;
+use tracing::info;
 
-/// ! have to use a guard before using it
-pub static INGESTOR_META: Lazy<IngestorMetadata> =
-    Lazy::new(|| staging::get_ingestor_info().expect("Should Be valid Json"));
+/// Metadata associated with this ingestor server
+pub static INGESTOR_META: Lazy<IngestorMetadata> = Lazy::new(|| {
+    // all the files should be in the staging directory root
+    let entries =
+        std::fs::read_dir(&CONFIG.options.local_staging_path).expect("Couldn't read from file");
+    let url = get_url();
+    let port = url.port().unwrap_or(80).to_string();
+    let url = url.to_string();
+
+    for entry in entries {
+        // cause the staging directory will have only one file with ingestor in the name
+        // so the JSON Parse should not error unless the file is corrupted
+        let path = entry.expect("Should be a directory entry").path();
+        let flag = path
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or_default()
+            .contains("ingestor");
+
+        if flag {
+            // get the ingestor metadata from staging
+            let text = std::fs::read(path).expect("File should be present");
+            let mut meta: Value = serde_json::from_slice(&text).expect("Valid JSON");
+
+            // migrate the staging meta
+            let obj = meta
+                .as_object_mut()
+                .expect("Could Not parse Ingestor Metadata Json");
+
+            if obj.get("flight_port").is_none() {
+                obj.insert(
+                    "flight_port".to_owned(),
+                    Value::String(CONFIG.options.flight_port.to_string()),
+                );
+            }
+
+            let mut meta: IngestorMetadata =
+                serde_json::from_value(meta).expect("Couldn't write to disk");
+
+            // compare url endpoint and port
+            if meta.domain_name != url {
+                info!(
+                    "Domain Name was Updated. Old: {} New: {}",
+                    meta.domain_name, url
+                );
+                meta.domain_name = url;
+            }
+
+            if meta.port != port {
+                info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                meta.port = port;
+            }
+
+            let token = base64::prelude::BASE64_STANDARD.encode(format!(
+                "{}:{}",
+                CONFIG.options.username, CONFIG.options.password
+            ));
+
+            let token = format!("Basic {}", token);
+
+            if meta.token != token {
+                // TODO: Update the message to be more informative with username and password
+                info!(
+                    "Credentials were Updated. Old: {} New: {}",
+                    meta.token, token
+                );
+                meta.token = token;
+            }
+
+            meta.put_on_disk(CONFIG.staging_dir())
+                .expect("Couldn't write to disk");
+            return meta;
+        }
+    }
+
+    let store = CONFIG.storage().get_object_store();
+    let out = IngestorMetadata::new(
+        port,
+        url,
+        DEFAULT_VERSION.to_string(),
+        store.get_bucket_name(),
+        &CONFIG.options.username,
+        &CONFIG.options.password,
+        get_ingestor_id(),
+        CONFIG.options.flight_port.to_string(),
+    );
+
+    out.put_on_disk(CONFIG.staging_dir())
+        .expect("Should Be valid Json");
+    out
+});
 
 pub struct IngestServer;
 
@@ -85,8 +177,8 @@ impl ParseableServer for IngestServer {
         // parseable can't use local storage for persistence when running a distributed setup
         if CONFIG.get_storage_mode_string() == "Local drive" {
             return Err(anyhow::Error::msg(
-                 "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
-             ));
+                "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
+            ));
         }
 
         // check for querier state. Is it there, or was it there in the past
@@ -98,9 +190,12 @@ impl ParseableServer for IngestServer {
     }
 
     /// configure the server and start an instance to ingest data
-    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
-        let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
+        CONFIG.storage().register_store_metrics(prometheus);
 
         migration::run_migration(&CONFIG).await?;
 
@@ -120,7 +215,7 @@ impl ParseableServer for IngestServer {
         set_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
-        let app = self.start(shutdown_rx, prometheus, None);
+        let app = self.start(shutdown_rx, prometheus.clone(), None);
 
         tokio::pin!(app);
         loop {
@@ -161,7 +256,7 @@ impl ParseableServer for IngestServer {
                     (remote_conversion_handler, remote_conversion_outbox, remote_conversion_inbox) = sync::arrow_conversion().await;
                 }
 
-            };
+            }
         }
     }
 }
@@ -182,21 +277,21 @@ impl IngestServer {
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
             // GET Role List
-            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+            .service(web::resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
             .service(
                 // PUT and GET Default Role
-                resource("/default")
+                web::resource("/default")
                     .route(web::put().to(role::put_default).authorize(Action::PutRole))
                     .route(web::get().to(role::get_default).authorize(Action::GetRole)),
             )
             .service(
                 // PUT, GET, DELETE Roles
-                resource("/{name}")
+                web::resource("/{name}")
                     .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
             )
             .service(
-                resource("/{name}/sync")
+                web::resource("/{name}/sync")
                     .route(web::put().to(ingestor_role::put).authorize(Action::PutRole)),
             )
     }

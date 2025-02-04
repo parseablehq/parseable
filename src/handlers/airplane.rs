@@ -39,6 +39,7 @@ use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::CONFIG;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
+use crate::staging::STAGING;
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
     send_to_ingester,
@@ -231,10 +232,12 @@ impl FlightService for AirServiceImpl {
             .collect::<Vec<_>>();
         let schema = Schema::try_merge(schemas).map_err(|err| Status::internal(err.to_string()))?;
          */
+        // Taxi out airplane
         let out = into_flight_data(records);
 
-        if let Some(event) = event {
-            event.clear(&stream_name);
+        if event.is_some() {
+            // Clear staging of stream once airplane has taxied
+            STAGING.clear(&stream_name);
         }
 
         let time = time.elapsed().as_secs_f64();
@@ -242,6 +245,7 @@ impl FlightService for AirServiceImpl {
             .with_label_values(&[&format!("flight-query-{}", stream_name)])
             .observe(time);
 
+        // Airplane takes off 🛫
         out
     }
 

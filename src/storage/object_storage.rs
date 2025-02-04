@@ -17,11 +17,8 @@
  */
 
 use super::{
-    retention::Retention, staging::convert_disk_files_to_parquet, ObjectStorageError,
-    ObjectStoreFormat, Permisssion, StorageDir, StorageMetadata,
-};
-use super::{
-    LogStream, Owner, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
+    retention::Retention, LogStream, ObjectStorageError, ObjectStoreFormat, Owner, Permisssion,
+    StorageMetadata, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
     PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
     STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
@@ -34,6 +31,7 @@ use crate::handlers::http::users::{CORRELATION_DIR, DASHBOARDS_DIR, FILTER_DIR, 
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
+use crate::staging::STAGING;
 use crate::{
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
     metadata::STREAM_INFO,
@@ -58,6 +56,7 @@ use ulid::Ulid;
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
+use std::fs::File;
 use std::num::NonZeroU32;
 use std::{
     collections::HashMap,
@@ -689,60 +688,61 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .get_custom_partition(&stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
 
-            let dir = StorageDir::new(&stream);
-            let parquet_and_schema_files = dir.parquet_and_schema_files();
-            for file in parquet_and_schema_files {
+            let stage = STAGING.get_or_create_stream(&stream);
+            for file in stage.parquet_files() {
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")
                     .to_str()
                     .expect("filename is valid string");
 
-                if filename.ends_with("parquet") {
-                    let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
-                    file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
-                    let compressed_size = file.metadata().map_or(0, |meta| meta.len());
-                    STORAGE_SIZE
-                        .with_label_values(&["data", &stream, "parquet"])
-                        .add(compressed_size as i64);
-                    EVENTS_STORAGE_SIZE_DATE
-                        .with_label_values(&["data", &stream, "parquet", file_date_part])
-                        .add(compressed_size as i64);
-                    LIFETIME_EVENTS_STORAGE_SIZE
-                        .with_label_values(&["data", &stream, "parquet"])
-                        .add(compressed_size as i64);
-                    let mut file_suffix = str::replacen(filename, ".", "/", 3);
+                let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
+                file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
+                let compressed_size = file.metadata().map_or(0, |meta| meta.len());
+                STORAGE_SIZE
+                    .with_label_values(&["data", &stream, "parquet"])
+                    .add(compressed_size as i64);
+                EVENTS_STORAGE_SIZE_DATE
+                    .with_label_values(&["data", &stream, "parquet", file_date_part])
+                    .add(compressed_size as i64);
+                LIFETIME_EVENTS_STORAGE_SIZE
+                    .with_label_values(&["data", &stream, "parquet"])
+                    .add(compressed_size as i64);
+                let mut file_suffix = str::replacen(filename, ".", "/", 3);
 
-                    let custom_partition_clone = custom_partition.clone();
-                    if custom_partition_clone.is_some() {
-                        let custom_partition_fields = custom_partition_clone.unwrap();
-                        let custom_partition_list =
-                            custom_partition_fields.split(',').collect::<Vec<&str>>();
-                        file_suffix =
-                            str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
-                    }
-
-                    let stream_relative_path = format!("{stream}/{file_suffix}");
-
-                    // Try uploading the file, handle potential errors without breaking the loop
-                    if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
-                        error!("Failed to upload file {}: {:?}", filename, e);
-                        continue; // Skip to the next file
-                    }
-
-                    let absolute_path = self
-                        .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
-                        .to_string();
-                    let store = CONFIG.storage().get_object_store();
-                    let manifest =
-                        catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
-                    catalog::update_snapshot(store, &stream, manifest).await?;
-                } else {
-                    let schema: Schema = serde_json::from_slice(&fs::read(file.clone())?)?;
-                    commit_schema_to_storage(&stream, schema).await?;
+                let custom_partition_clone = custom_partition.clone();
+                if custom_partition_clone.is_some() {
+                    let custom_partition_fields = custom_partition_clone.unwrap();
+                    let custom_partition_list =
+                        custom_partition_fields.split(',').collect::<Vec<&str>>();
+                    file_suffix =
+                        str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
                 }
 
+                let stream_relative_path = format!("{stream}/{file_suffix}");
+
+                // Try uploading the file, handle potential errors without breaking the loop
+                if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
+                    error!("Failed to upload file {}: {:?}", filename, e);
+                    continue; // Skip to the next file
+                }
+
+                let absolute_path = self
+                    .absolute_url(RelativePath::from_path(&stream_relative_path).unwrap())
+                    .to_string();
+                let store = CONFIG.storage().get_object_store();
+                let manifest =
+                    catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
+                catalog::update_snapshot(store, &stream, manifest).await?;
+
                 let _ = fs::remove_file(file);
+            }
+
+            for path in stage.schema_files() {
+                let file = File::open(&path)?;
+                let schema: Schema = serde_json::from_reader(file)?;
+                commit_schema_to_storage(&stream, schema).await?;
+                let _ = fs::remove_file(path);
             }
         }
 
@@ -782,21 +782,20 @@ async fn conversion_for_stream(
     let custom_partition = STREAM_INFO
         .get_custom_partition(&stream)
         .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-    let dir = StorageDir::new(&stream);
+    let stage = STAGING.get_or_create_stream(&stream);
 
     // read arrow files on disk
     // convert them to parquet
-    let schema = convert_disk_files_to_parquet(
-        &stream,
-        &dir,
-        time_partition,
-        custom_partition.clone(),
-        shutdown_signal,
-    )
-    .map_err(|err| {
-        warn!("Error while converting arrow to parquet- {err:?}");
-        ObjectStorageError::UnhandledError(Box::new(err))
-    })?;
+    let schema = stage
+        .convert_disk_files_to_parquet(
+            time_partition.as_ref(),
+            custom_partition.as_ref(),
+            shutdown_signal,
+        )
+        .map_err(|err| {
+            warn!("Error while converting arrow to parquet- {err:?}");
+            ObjectStorageError::UnhandledError(Box::new(err))
+        })?;
 
     // check if there is already a schema file in staging pertaining to this stream
     // if yes, then merge them and save
@@ -810,9 +809,9 @@ async fn conversion_for_stream(
 
             // need to add something before .schema to make the file have an extension of type `schema`
             let path =
-                RelativePathBuf::from_iter([format!("{stream}.schema")]).to_path(&dir.data_path);
+                RelativePathBuf::from_iter([format!("{stream}.schema")]).to_path(&stage.data_path);
 
-            let staging_schemas = dir.get_schemas_if_present();
+            let staging_schemas = stage.get_schemas_if_present();
             if let Some(mut staging_schemas) = staging_schemas {
                 warn!(
                     "Found {} schemas in staging for stream- {stream}",

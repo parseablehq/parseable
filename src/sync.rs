@@ -27,6 +27,7 @@ use tracing::{error, info, warn};
 
 use crate::alerts::{alerts_utils, AlertConfig, AlertError};
 use crate::option::CONFIG;
+use crate::staging::STAGING;
 use crate::{storage, STORAGE_CONVERSION_INTERVAL, STORAGE_UPLOAD_INTERVAL};
 
 pub async fn monitor_task_duration<F, Fut, T>(task_name: &str, threshold: Duration, f: F) -> T
@@ -44,7 +45,7 @@ where
 
     // create the monitoring task future
     let monitor_future = async move {
-        let mut check_interval = interval(Duration::from_millis(100));
+        let mut check_interval = interval(threshold);
 
         loop {
             check_interval.tick().await;
@@ -221,7 +222,7 @@ pub async fn run_local_sync() -> (
             scheduler
                 .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
                 .run(|| async {
-                    crate::event::STREAM_WRITERS.unset_all();
+                    STAGING.flush_all();
                 });
 
             loop {
