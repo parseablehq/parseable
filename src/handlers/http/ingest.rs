@@ -29,20 +29,19 @@ use opentelemetry_proto::tonic::metrics::v1::MetricsData;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
 
-use crate::event;
 use crate::event::error::EventError;
 use crate::event::format::{self, EventFormat, LogSource};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
-use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
 use crate::otel::logs::flatten_otel_logs;
 use crate::otel::metrics::flatten_otel_metrics;
 use crate::otel::traces::flatten_otel_traces;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
+use crate::{event, LOCK_EXPECT};
 
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
@@ -84,7 +83,10 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
         let hash_map = PARSEABLE.streams.read().unwrap();
         let schema = hash_map
             .get(&stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.clone()))?
+            .ok_or_else(|| StreamNotFound(stream_name.clone()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT)
             .schema
             .clone();
         let event = format::json::Event { data: body_val };
@@ -221,7 +223,7 @@ pub async fn post_event(
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    if !PARSEABLE.streams.stream_exists(&stream_name) {
+    if !PARSEABLE.streams.contains(&stream_name) {
         // For distributed deployments, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
@@ -231,10 +233,10 @@ pub async fn post_event(
                 .await
             {
                 Ok(true) => {}
-                Ok(false) | Err(_) => return Err(PostError::StreamNotFound(stream_name.clone())),
+                Ok(false) | Err(_) => return Err(StreamNotFound(stream_name.clone()).into()),
             }
         } else {
-            return Err(PostError::StreamNotFound(stream_name.clone()));
+            return Err(StreamNotFound(stream_name.clone()).into());
         }
     }
 
@@ -270,8 +272,8 @@ pub async fn push_logs_unchecked(
 
 #[derive(Debug, thiserror::Error)]
 pub enum PostError {
-    #[error("Stream {0} not found")]
-    StreamNotFound(String),
+    #[error("{0}")]
+    StreamNotFound(#[from] StreamNotFound),
     #[error("Could not deserialize into JSON object, {0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Header Error: {0}")]
@@ -282,8 +284,6 @@ pub enum PostError {
     Invalid(#[from] anyhow::Error),
     #[error("{0}")]
     CreateStream(#[from] CreateStreamError),
-    #[error("Error: {0}")]
-    MetadataStreamError(#[from] MetadataError),
     #[allow(unused)]
     #[error("Error: {0}")]
     CustomError(String),
@@ -324,7 +324,6 @@ impl actix_web::ResponseError for PostError {
                 StatusCode::BAD_REQUEST
             }
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::MetadataStreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
             PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,

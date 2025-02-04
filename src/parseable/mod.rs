@@ -22,9 +22,11 @@ use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, sync::Arc};
 use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
+use chrono::Local;
 use clap::{error::ErrorKind, Parser};
 use http::StatusCode;
 use once_cell::sync::Lazy;
+pub use streams::{StreamNotFound, Streams};
 use tracing::error;
 
 use crate::{
@@ -35,17 +37,35 @@ use crate::{
         logstream::error::{CreateStreamError, StreamError},
         modal::utils::logstream_utils::PutStreamHeaders,
     },
-    metadata::{
-        error::stream_info::LoadError, LogStreamMetadata, SchemaVersion, StreamInfo, LOCK_EXPECT,
-    },
+    metadata::{LogStreamMetadata, SchemaVersion},
     option::Mode,
     static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
     storage::{
         object_storage::parseable_json_path, ObjectStorageError, ObjectStorageProvider,
-        ObjectStoreFormat, StreamType,
+        ObjectStoreFormat, Owner, Permisssion, StreamType,
     },
     validator,
 };
+
+mod reader;
+mod streams;
+mod writer;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StagingError {
+    #[error("Unable to create recordbatch stream")]
+    Arrow(#[from] arrow_schema::ArrowError),
+    #[error("Could not generate parquet file")]
+    Parquet(#[from] parquet::errors::ParquetError),
+    #[error("IO Error {0}")]
+    ObjectStorage(#[from] std::io::Error),
+    #[error("Could not generate parquet file")]
+    Create,
+}
+
+/// Name of a Stream
+/// NOTE: this used to be a struct, flattened out for simplicity
+pub type LogStream = String;
 
 pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
@@ -82,7 +102,8 @@ pub struct Parseable {
     /// Storage engine backing parseable
     pub storage: Arc<dyn ObjectStorageProvider>,
     /// Metadata relating to logstreams
-    pub streams: StreamInfo,
+    /// A globally shared mapping of `Streams` that parseable is aware of.
+    pub streams: Streams,
 }
 
 impl Parseable {
@@ -90,7 +111,7 @@ impl Parseable {
         Parseable {
             options,
             storage,
-            streams: StreamInfo::default(),
+            streams: Streams::default(),
         }
     }
 
@@ -195,7 +216,8 @@ impl Parseable {
             .map(|field| (field.name().to_string(), field.clone()))
             .collect();
 
-        let time_partition = stream_metadata.time_partition.as_deref().unwrap_or("");
+        let created_at = stream_metadata.created_at;
+        let time_partition = stream_metadata.time_partition.unwrap_or_default();
         let time_partition_limit = stream_metadata
             .time_partition_limit
             .and_then(|limit| limit.parse().ok());
@@ -204,10 +226,9 @@ impl Parseable {
         let stream_type = stream_metadata.stream_type;
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
-        self.streams.add_stream(
-            stream_name.to_string(),
-            stream_metadata.created_at,
-            time_partition.to_string(),
+        let metadata = LogStreamMetadata::new(
+            created_at,
+            time_partition,
             time_partition_limit,
             custom_partition,
             static_schema_flag,
@@ -216,6 +237,7 @@ impl Parseable {
             schema_version,
             log_source,
         );
+        self.streams.create(stream_name.to_string(), metadata);
 
         Ok(true)
     }
@@ -228,7 +250,7 @@ impl Parseable {
         log_source: LogSource,
     ) -> Result<bool, PostError> {
         let mut stream_exists = false;
-        if self.streams.stream_exists(stream_name) {
+        if self.streams.contains(stream_name) {
             stream_exists = true;
             return Ok(stream_exists);
         }
@@ -275,7 +297,7 @@ impl Parseable {
             log_source,
         } = headers.into();
 
-        if self.streams.stream_exists(stream_name) && !update_stream_flag {
+        if self.streams.contains(stream_name) && !update_stream_flag {
             return Err(StreamError::Custom {
                 msg: format!(
                     "Logstream {stream_name} already exists, please create a new log stream with unique name"
@@ -284,7 +306,7 @@ impl Parseable {
             });
         }
 
-        if !self.streams.stream_exists(stream_name)
+        if !self.streams.contains(stream_name)
             && self.options.mode == Mode::Query
             && self
                 .create_stream_and_schema_from_storage(stream_name)
@@ -371,8 +393,8 @@ impl Parseable {
         time_partition_limit: &str,
         custom_partition: Option<&String>,
     ) -> Result<HeaderMap, StreamError> {
-        if !self.streams.stream_exists(stream_name) {
-            return Err(StreamError::StreamNotFound(stream_name.to_string()));
+        if !self.streams.contains(stream_name) {
+            return Err(StreamNotFound(stream_name.to_string()).into());
         }
         if !time_partition.is_empty() {
             return Err(StreamError::Custom {
@@ -420,19 +442,24 @@ impl Parseable {
         // Proceed to create log stream if it doesn't exist
         let storage = self.storage.get_object_store();
 
-        match storage
-            .create_stream(
-                &stream_name,
-                time_partition,
-                time_partition_limit,
-                custom_partition.cloned(),
-                static_schema_flag,
-                schema.clone(),
-                stream_type,
-                log_source.clone(),
-            )
-            .await
-        {
+        let meta = ObjectStoreFormat {
+            created_at: Local::now().to_rfc3339(),
+            permissions: vec![Permisssion::new(PARSEABLE.options.username.clone())],
+            stream_type,
+            time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
+            time_partition_limit: time_partition_limit.map(|limit| limit.to_string()),
+            custom_partition: custom_partition.cloned(),
+            static_schema_flag,
+            schema_version: SchemaVersion::V1, // NOTE: Newly created streams are all V1
+            owner: Owner {
+                id: PARSEABLE.options.username.clone(),
+                group: PARSEABLE.options.username.clone(),
+            },
+            log_source: log_source.clone(),
+            ..Default::default()
+        };
+
+        match storage.create_stream(&stream_name, meta, schema.clone()).await {
             Ok(created_at) => {
                 let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
 
@@ -444,10 +471,9 @@ impl Parseable {
                     static_schema.insert(field_name, field);
                 }
 
-                self.streams.add_stream(
-                    stream_name.to_string(),
+                let metadata = LogStreamMetadata::new(
                     created_at,
-                    time_partition.to_string(),
+                    time_partition.to_owned(),
                     time_partition_limit,
                     custom_partition.cloned(),
                     static_schema_flag,
@@ -456,6 +482,7 @@ impl Parseable {
                     SchemaVersion::V1, // New stream
                     log_source,
                 );
+                self.streams.create(stream_name.to_string(), metadata);
             }
             Err(err) => {
                 return Err(CreateStreamError::Storage { stream_name, err });
@@ -623,19 +650,6 @@ impl Parseable {
         }
 
         Some(first_event_at.to_string())
-    }
-
-    /// Stores the provided stream metadata in memory mapping
-    pub async fn set_stream_meta(
-        &self,
-        stream_name: &str,
-        metadata: LogStreamMetadata,
-    ) -> Result<(), LoadError> {
-        let mut map = self.streams.write().expect(LOCK_EXPECT);
-
-        map.insert(stream_name.to_string(), metadata);
-
-        Ok(())
     }
 }
 

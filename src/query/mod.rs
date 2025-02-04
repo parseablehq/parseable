@@ -616,7 +616,7 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
 }
 
 pub mod error {
-    use crate::{metadata::error::stream_info::MetadataError, storage::ObjectStorageError};
+    use crate::{parseable::StreamNotFound, storage::ObjectStorageError};
     use datafusion::error::DataFusionError;
 
     #[derive(Debug, thiserror::Error)]
@@ -625,8 +625,8 @@ pub mod error {
         ObjectStorage(#[from] ObjectStorageError),
         #[error("Query Execution failed due to error in datafusion: {0}")]
         Datafusion(#[from] DataFusionError),
-        #[error("Query Execution failed due to error in fetching metadata: {0}")]
-        Metadata(#[from] MetadataError),
+        #[error("{0}")]
+        StreamNotFound(#[from] StreamNotFound),
     }
 }
 

@@ -16,7 +16,6 @@
  *
  */
 
-use arrow_schema::Field;
 use chrono::Utc;
 use futures_util::StreamExt;
 use itertools::Itertools;
@@ -29,13 +28,12 @@ use rdkafka::util::Timeout;
 use rdkafka::{Message, TopicPartitionList};
 use serde::{Deserialize, Serialize};
 use std::num::ParseIntError;
-use std::sync::Arc;
 use std::{collections::HashMap, fmt::Debug};
 use tracing::{debug, error, info, warn};
 
 use crate::audit::AuditLogBuilder;
 use crate::event::format::LogSource;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::{
     event::{
         self,
@@ -43,7 +41,6 @@ use crate::{
         format::{self, EventFormat},
     },
     handlers::http::ingest::PostError,
-    metadata::error::stream_info::MetadataError,
     storage::StreamType,
 };
 
@@ -69,13 +66,10 @@ pub enum KafkaError {
     ParseIntError(&'static str, ParseIntError),
     #[error("Error parsing duration int {1} for environment variable {0}")]
     ParseDurationError(&'static str, ParseIntError),
-
-    #[error("Stream not found: #{0}")]
-    StreamNotFound(String),
     #[error("Post error: #{0}")]
     PostError(#[from] PostError),
-    #[error("Metadata error: #{0}")]
-    MetadataError(#[from] MetadataError),
+    #[error("{0}")]
+    StreamNotFound(#[from] StreamNotFound),
     #[error("Event error: #{0}")]
     EventError(#[from] EventError),
     #[error("JSON error: #{0}")]
@@ -162,14 +156,6 @@ fn setup_consumer() -> Result<(StreamConsumer, Vec<String>), KafkaError> {
     }
 }
 
-fn resolve_schema(stream_name: &str) -> Result<HashMap<String, Arc<Field>>, KafkaError> {
-    let hash_map = PARSEABLE.streams.read().unwrap();
-    let raw = hash_map
-        .get(stream_name)
-        .ok_or_else(|| KafkaError::StreamNotFound(stream_name.to_owned()))?;
-    Ok(raw.schema.clone())
-}
-
 async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
     let Some(payload) = msg.payload() else {
         debug!("No payload received");
@@ -184,7 +170,7 @@ async fn ingest_message(msg: BorrowedMessage<'_>) -> Result<(), KafkaError> {
         .create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::default())
         .await?;
 
-    let schema = resolve_schema(stream_name)?;
+    let schema = PARSEABLE.streams.resolve_schema(stream_name)?;
     let event = format::json::Event {
         data: serde_json::from_slice(payload)?,
     };

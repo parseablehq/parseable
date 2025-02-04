@@ -28,7 +28,6 @@ use relative_path::RelativePathBuf;
 use std::io;
 
 use crate::{
-    metadata::error::stream_info::MetadataError,
     option::Mode,
     parseable::{JOIN_COMMUNITY, PARSEABLE},
     rbac::{role::model::DefaultPrivilege, user::User},
@@ -122,7 +121,7 @@ pub async fn resolve_parseable_metadata(
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
             if PARSEABLE.options.mode ==  Mode::All {
-                standalone_after_distributed(metadata.server_mode)?;
+                metadata.server_mode.standalone_after_distributed()?;
             }
             Ok(metadata)
         },
@@ -143,7 +142,7 @@ pub async fn resolve_parseable_metadata(
                 // because staging dir has changed.
                 match PARSEABLE.options.mode {
                     Mode::All => {
-                        standalone_after_distributed(metadata.server_mode)
+                        metadata.server_mode.standalone_after_distributed()
                             .map_err(|err| {
                                 ObjectStorageError::Custom(err.to_string())
                             })?;
@@ -235,16 +234,6 @@ pub enum EnvChange {
     NewStaging(StorageMetadata),
     /// Fresh remote and staging, hence create a new metadata file on both
     CreateBoth,
-}
-
-fn standalone_after_distributed(remote_server_mode: Mode) -> Result<(), MetadataError> {
-    // standalone -> query | ingest allowed
-    // but query | ingest -> standalone not allowed
-    if remote_server_mode == Mode::Query {
-        return Err(MetadataError::StandaloneWithDistributed("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.".to_string()));
-    }
-
-    Ok(())
 }
 
 pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {

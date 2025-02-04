@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    metadata::LOCK_EXPECT, migration::to_bytes, parseable::PARSEABLE,
-    storage::object_storage::dashboard_path, utils::get_hash,
+    migration::to_bytes, parseable::PARSEABLE, storage::object_storage::dashboard_path,
+    utils::get_hash, LOCK_EXPECT,
 };
 
 use super::TimeFilter;

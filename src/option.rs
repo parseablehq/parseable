@@ -26,6 +26,21 @@ pub enum Mode {
     All,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.")]
+pub struct StandaloneWithDistributed;
+
+impl Mode {
+    // An instance is not allowed
+    pub fn standalone_after_distributed(&self) -> Result<(), StandaloneWithDistributed> {
+        if *self == Mode::Query {
+            return Err(StandaloneWithDistributed);
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Compression {

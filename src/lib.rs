@@ -43,7 +43,6 @@ pub mod parseable;
 mod query;
 pub mod rbac;
 mod response;
-mod staging;
 mod static_schema;
 mod stats;
 pub mod storage;
@@ -59,6 +58,9 @@ pub use handlers::http::modal::{
 };
 use once_cell::sync::Lazy;
 use reqwest::{Client, ClientBuilder};
+
+// It is very unlikely that panic will occur when dealing with locks.
+pub const LOCK_EXPECT: &str = "Thread shouldn't panic while holding a lock";
 
 pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
 

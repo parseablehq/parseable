@@ -23,24 +23,23 @@ mod stream_metadata_migration;
 
 use std::{collections::HashMap, fs::OpenOptions, sync::Arc};
 
+use arrow_schema::Schema;
+use bytes::Bytes;
+use relative_path::RelativePathBuf;
+use serde::Serialize;
+use serde_json::Value;
+
 use crate::{
     metadata::{load_daily_metrics, update_data_type_time_partition, LogStreamMetadata},
     metrics::fetch_stats_from_storage,
     option::Mode,
     parseable::{Parseable, PARSEABLE},
-    staging::STAGING,
     storage::{
         object_storage::{parseable_json_path, schema_path, stream_json_path},
         ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
         PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
     },
 };
-use arrow_schema::Schema;
-use bytes::Bytes;
-use relative_path::RelativePathBuf;
-use serde::Serialize;
-use serde_json::Value;
-use tracing::error;
 
 /// Migrate the metdata from v1 or v2 to v3
 /// This is a one time migration
@@ -139,10 +138,7 @@ pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
         let Some(metadata) = migration_stream(&stream_name, &*storage).await? else {
             continue;
         };
-        if let Err(err) = PARSEABLE.set_stream_meta(&stream_name, metadata).await {
-            error!("could not populate local metadata. {:?}", err);
-            return Err(err.into());
-        }
+        PARSEABLE.streams.set_meta(&stream_name, metadata).await;
     }
 
     Ok(())
@@ -290,8 +286,9 @@ async fn migration_stream(
     fetch_stats_from_storage(stream, stats).await;
     load_daily_metrics(&snapshot.manifest_list, stream);
 
-    let schema = STAGING
-        .get_or_create_stream(stream)
+    let schema = PARSEABLE
+        .streams
+        .get_or_create(stream)
         .updated_schema(arrow_schema);
     let schema = HashMap::from_iter(
         schema

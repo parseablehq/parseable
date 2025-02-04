@@ -17,20 +17,17 @@
  */
 
 use super::{
-    retention::Retention, LogStream, ObjectStorageError, ObjectStoreFormat, Owner, Permisssion,
-    StorageMetadata, StreamType, ALERTS_ROOT_DIRECTORY, MANIFEST_FILE,
-    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    retention::Retention, ObjectStorageError, ObjectStoreFormat, StorageMetadata,
+    ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
+    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 use crate::alerts::AlertConfig;
-use crate::event::format::LogSource;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
-use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
 use crate::option::Mode;
-use crate::staging::STAGING;
+use crate::parseable::LogStream;
 use crate::{
     catalog::{self, manifest::Manifest, snapshot::Snapshot},
     metrics::{storage::StorageMetrics, STORAGE_SIZE},
@@ -42,7 +39,7 @@ use actix_web_prometheus::PrometheusMetrics;
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
@@ -147,42 +144,20 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn create_stream(
         &self,
         stream_name: &str,
-        time_partition: &str,
-        time_partition_limit: Option<NonZeroU32>,
-        custom_partition: Option<String>,
-        static_schema_flag: bool,
+        meta: ObjectStoreFormat,
         schema: Arc<Schema>,
-        stream_type: StreamType,
-        log_source: LogSource,
     ) -> Result<String, ObjectStorageError> {
-        let format = ObjectStoreFormat {
-            created_at: Local::now().to_rfc3339(),
-            permissions: vec![Permisssion::new(PARSEABLE.options.username.clone())],
-            stream_type,
-            time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
-            time_partition_limit: time_partition_limit.map(|limit| limit.to_string()),
-            custom_partition,
-            static_schema_flag,
-            schema_version: SchemaVersion::V1, // NOTE: Newly created streams are all V1
-            owner: Owner {
-                id: PARSEABLE.options.username.clone(),
-                group: PARSEABLE.options.username.clone(),
-            },
-            log_source,
-            ..Default::default()
-        };
-        let format_json = to_bytes(&format);
+        let format_json = to_bytes(&meta);
         self.put_object(&schema_path(stream_name), to_bytes(&schema))
             .await?;
 
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
 
-        Ok(format.created_at)
+        Ok(meta.created_at)
     }
 
     async fn update_time_partition_limit_in_stream(
@@ -584,7 +559,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .streams
                 .get_custom_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let staging = STAGING.get_or_create_stream(stream);
+            let staging = PARSEABLE.streams.get_or_create(stream);
             let schema = staging
                 .convert_disk_files_to_parquet(
                     time_partition.as_ref(),

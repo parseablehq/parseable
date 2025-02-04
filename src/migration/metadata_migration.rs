@@ -21,7 +21,8 @@ use rand::distributions::DistString;
 use serde_json::{json, Map, Value as JsonValue};
 
 use crate::{
-    handlers::http::modal::IngestorMetadata, parseable::PARSEABLE, storage::object_storage::ingestor_metadata_path
+    handlers::http::modal::IngestorMetadata, parseable::PARSEABLE,
+    storage::object_storage::ingestor_metadata_path,
 };
 
 /*

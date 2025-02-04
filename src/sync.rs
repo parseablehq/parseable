@@ -25,7 +25,6 @@ use tracing::{error, info, warn};
 
 use crate::alerts::{alerts_utils, AlertConfig, AlertError};
 use crate::parseable::PARSEABLE;
-use crate::staging::STAGING;
 use crate::{storage, STORAGE_UPLOAD_INTERVAL};
 
 pub async fn object_store_sync() -> (
@@ -99,7 +98,7 @@ pub async fn run_local_sync() -> (
             scheduler
                 .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
                 .run(|| async {
-                    STAGING.flush_all();
+                    PARSEABLE.streams.flush_all();
                 });
 
             loop {

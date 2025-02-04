@@ -19,7 +19,6 @@
 use crate::catalog::manifest::File;
 use crate::hottier::HotTierManager;
 use crate::option::Mode;
-use crate::staging::STAGING;
 use crate::{
     catalog::snapshot::{self, Snapshot},
     storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
@@ -102,7 +101,7 @@ impl SchemaProvider for GlobalSchemaProvider {
     }
 
     fn table_exist(&self, name: &str) -> bool {
-        PARSEABLE.streams.stream_exists(name)
+        PARSEABLE.streams.contains(name)
     }
 }
 
@@ -440,7 +439,7 @@ impl TableProvider for StandardTableProvider {
         }
 
         if include_now(filters, &time_partition) {
-            if let Some(staging) = STAGING.get_stream(&self.stream) {
+            if let Some(staging) = PARSEABLE.streams.get(&self.stream) {
                 let records = staging.recordbatches_cloned(&self.schema);
                 let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
 

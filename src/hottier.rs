@@ -26,7 +26,6 @@ use std::{
 use crate::{
     catalog::manifest::{File, Manifest},
     handlers::http::cluster::INTERNAL_STREAM_NAME,
-    metadata::error::stream_info::MetadataError,
     parseable::PARSEABLE,
     storage::{ObjectStorage, ObjectStorageError},
     utils::{extract_datetime, human_size::bytes_to_human_size},
@@ -783,8 +782,6 @@ pub enum HotTierError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("{0}")]
     ParquetError(#[from] ParquetError),
-    #[error("{0}")]
-    MetadataError(#[from] MetadataError),
     #[error("{0}")]
     HotTierValidationError(#[from] HotTierValidationError),
     #[error("{0}")]

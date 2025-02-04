@@ -22,7 +22,7 @@ use itertools::Itertools;
 use reqwest;
 use serde_json::{json, Value};
 
-use crate::{metadata::error::stream_info::MetadataError, parseable::PARSEABLE};
+use crate::{parseable::StreamNotFound, parseable::PARSEABLE};
 
 const OPEN_AI_URL: &str = "https://api.openai.com/v1/chat/completions";
 
@@ -143,7 +143,7 @@ pub enum LLMError {
     #[error("{0}")]
     APIError(String),
     #[error("{0}")]
-    StreamDoesNotExist(#[from] MetadataError),
+    StreamDoesNotExist(#[from] StreamNotFound),
 }
 
 impl actix_web::ResponseError for LLMError {

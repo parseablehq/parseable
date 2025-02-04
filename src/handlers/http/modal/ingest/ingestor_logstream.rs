@@ -25,8 +25,10 @@ use http::StatusCode;
 use tracing::warn;
 
 use crate::{
-    catalog::remove_manifest_from_snapshot, handlers::http::logstream::error::StreamError,
-    parseable::PARSEABLE, staging::STAGING, stats,
+    catalog::remove_manifest_from_snapshot,
+    handlers::http::logstream::error::StreamError,
+    parseable::{StreamNotFound, PARSEABLE},
+    stats,
 };
 
 pub async fn retention_cleanup(
@@ -38,13 +40,13 @@ pub async fn retention_cleanup(
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !PARSEABLE.streams.stream_exists(&stream_name)
+    if !PARSEABLE.streams.contains(&stream_name)
         && !PARSEABLE
             .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {
-        return Err(StreamError::StreamNotFound(stream_name.clone()));
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
 
     let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
@@ -58,19 +60,17 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !PARSEABLE.streams.stream_exists(&stream_name)
+    if !PARSEABLE.streams.contains(&stream_name)
         && !PARSEABLE
             .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {
-        return Err(StreamError::StreamNotFound(stream_name.clone()));
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
 
     // Delete from memory
     PARSEABLE.streams.delete_stream(&stream_name);
-    // Delete from staging
-    STAGING.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 

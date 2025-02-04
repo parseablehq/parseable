@@ -29,7 +29,7 @@ use actix_web::{
 use http::StatusCode;
 use tokio::sync::Mutex;
 
-use crate::{parseable::PARSEABLE, staging::STAGING};
+use crate::parseable::PARSEABLE;
 
 // Create a global variable to store signal status
 lazy_static::lazy_static! {
@@ -61,7 +61,7 @@ pub async fn shutdown() {
     *shutdown_flag = true;
 
     // Sync staging
-    STAGING.flush_all();
+    PARSEABLE.streams.flush_all();
 }
 
 pub async fn readiness() -> HttpResponse {

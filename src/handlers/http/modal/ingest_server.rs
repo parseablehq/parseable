@@ -29,17 +29,27 @@ use tokio::sync::oneshot;
 use tracing::{error, info};
 
 use crate::{
-    analytics, cli::Options, handlers::{
+    analytics,
+    cli::Options,
+    handlers::{
         airplane,
         http::{
             base_path, ingest, logstream,
             middleware::{DisAllowRootUser, RouteExt},
             role,
         },
-    }, metrics, migration::{self, metadata_migration::migrate_ingester_metadata}, parseable::PARSEABLE, rbac::role::Action, storage::{
+    },
+    metrics,
+    migration::{self, metadata_migration::migrate_ingester_metadata},
+    parseable::PARSEABLE,
+    rbac::role::Action,
+    storage::{
         object_storage::{ingestor_metadata_path, parseable_json_path},
         ObjectStorageError, PARSEABLE_ROOT_DIRECTORY,
-    }, sync, utils::{get_ingestor_id, get_url}, Server
+    },
+    sync,
+    utils::{get_ingestor_id, get_url},
+    Server,
 };
 
 use super::{
@@ -55,7 +65,9 @@ pub static INGESTOR_META: Lazy<IngestorMetadata> = Lazy::new(|| {
     let url = get_url();
     let port = url.port().unwrap_or(80).to_string();
     let url = url.to_string();
-    let Options{username, password, ..} = &PARSEABLE.options;
+    let Options {
+        username, password, ..
+    } = &PARSEABLE.options;
     let staging_path = PARSEABLE.staging_dir();
 
     for entry in entries {
@@ -103,10 +115,8 @@ pub static INGESTOR_META: Lazy<IngestorMetadata> = Lazy::new(|| {
                 meta.port = port;
             }
 
-            let token = base64::prelude::BASE64_STANDARD.encode(format!(
-                "{}:{}",
-                username, password
-            ));
+            let token =
+                base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
 
             let token = format!("Basic {}", token);
 
@@ -137,8 +147,7 @@ pub static INGESTOR_META: Lazy<IngestorMetadata> = Lazy::new(|| {
         PARSEABLE.options.flight_port.to_string(),
     );
 
-    out.put_on_disk(staging_path)
-        .expect("Should Be valid Json");
+    out.put_on_disk(staging_path).expect("Should Be valid Json");
     out
 });
 

@@ -39,7 +39,6 @@ use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::parseable::PARSEABLE;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::staging::STAGING;
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
     send_to_ingester,
@@ -237,7 +236,7 @@ impl FlightService for AirServiceImpl {
 
         if event.is_some() {
             // Clear staging of stream once airplane has taxied
-            STAGING.clear(&stream_name);
+            PARSEABLE.streams.clear(&stream_name);
         }
 
         let time = time.elapsed().as_secs_f64();

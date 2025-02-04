@@ -23,8 +23,8 @@ use std::sync::RwLock;
 
 use super::TimeFilter;
 use crate::{
-    metadata::LOCK_EXPECT, migration::to_bytes, parseable::PARSEABLE,
-    storage::object_storage::filter_path, utils::get_hash,
+    migration::to_bytes, parseable::PARSEABLE, storage::object_storage::filter_path,
+    utils::get_hash, LOCK_EXPECT,
 };
 
 pub static FILTERS: Lazy<Filters> = Lazy::new(Filters::default);

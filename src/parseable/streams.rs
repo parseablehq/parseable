@@ -20,6 +20,7 @@
 use std::{
     collections::HashMap,
     fs::{remove_file, OpenOptions},
+    num::NonZeroU32,
     path::{Path, PathBuf},
     process,
     sync::{Arc, Mutex, RwLock},
@@ -27,7 +28,7 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
-use arrow_schema::Schema;
+use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
@@ -42,7 +43,16 @@ use rand::distributions::DistString;
 use tracing::error;
 
 use crate::{
-    cli::Options, event::DEFAULT_TIMESTAMP_KEY, handlers::http::modal::ingest_server::INGESTOR_META, metrics, option::Mode, parseable::PARSEABLE, storage::{StreamType, OBJECT_STORE_DATA_GRANULARITY}, utils::minute_to_slot
+    cli::Options,
+    event::DEFAULT_TIMESTAMP_KEY,
+    handlers::http::modal::ingest_server::INGESTOR_META,
+    metadata::{LogStreamMetadata, SchemaVersion},
+    metrics,
+    option::Mode,
+    parseable::{LogStream, PARSEABLE},
+    storage::{retention::Retention, StreamType, OBJECT_STORE_DATA_GRANULARITY},
+    utils::minute_to_slot,
+    LOCK_EXPECT,
 };
 
 use super::{
@@ -51,6 +61,10 @@ use super::{
     StagingError,
 };
 
+#[derive(Debug, thiserror::Error)]
+#[error("Stream not found: {0}")]
+pub struct StreamNotFound(pub String);
+
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
 pub type StreamRef<'a> = Arc<Stream<'a>>;
@@ -58,18 +72,24 @@ pub type StreamRef<'a> = Arc<Stream<'a>>;
 /// State of staging associated with a single stream of data in parseable.
 pub struct Stream<'a> {
     pub stream_name: String,
+    pub metadata: RwLock<LogStreamMetadata>,
     pub data_path: PathBuf,
     pub options: &'a Options,
     pub writer: Mutex<Writer>,
 }
 
 impl<'a> Stream<'a> {
-    pub fn new(options: &'a Options, stream_name: impl Into<String>) -> StreamRef<'a> {
+    pub fn new(
+        options: &'a Options,
+        stream_name: impl Into<String>,
+        metadata: LogStreamMetadata,
+    ) -> StreamRef<'a> {
         let stream_name = stream_name.into();
         let data_path = options.local_stream_data_path(&stream_name);
 
         Arc::new(Self {
             stream_name,
+            metadata: RwLock::new(metadata),
             data_path,
             options,
             writer: Mutex::new(Writer::default()),
@@ -398,26 +418,35 @@ fn parquet_writer_props(
 #[derive(Deref, DerefMut, Default)]
 pub struct Streams(RwLock<HashMap<String, StreamRef<'static>>>);
 
+// PARSEABLE.streams should be updated
+// 1. During server start up
+// 2. When a new stream is created (make a new entry in the map)
+// 3. When a stream is deleted (remove the entry from the map)
+// 4. When first event is sent to stream (update the schema)
+// 5. When set alert API is called (update the alert)
 impl Streams {
+    pub fn create(&self, stream_name: String, metadata: LogStreamMetadata) -> StreamRef<'static> {
+        let stream = Stream::new(&PARSEABLE.options, &stream_name, metadata);
+        self.write()
+            .expect(LOCK_EXPECT)
+            .insert(stream_name, stream.clone());
+
+        stream
+    }
+
     /// Try to get the handle of a stream in staging, if it doesn't exist return `None`.
-    pub fn get_stream(&self, stream_name: &str) -> Option<StreamRef<'static>> {
+    pub fn get(&self, stream_name: &str) -> Option<StreamRef<'static>> {
         self.read().unwrap().get(stream_name).cloned()
     }
 
     /// Get the handle to a stream in staging, create one if it doesn't exist
-    pub fn get_or_create_stream(&self, stream_name: &str) -> StreamRef<'static> {
-        if let Some(staging) = self.get_stream(stream_name) {
+    pub fn get_or_create(&self, stream_name: &str) -> StreamRef<'static> {
+        if let Some(staging) = self.get(stream_name) {
             return staging;
         }
 
-        let staging = Stream::new(&PARSEABLE.options, stream_name);
-
         // Gets write privileges only for creating the stream when it doesn't already exist.
-        self.write()
-            .unwrap()
-            .insert(stream_name.to_owned(), staging.clone());
-
-        staging
+        self.create(stream_name.to_owned(), LogStreamMetadata::default())
     }
 
     pub fn clear(&self, stream_name: &str) {
@@ -436,6 +465,319 @@ impl Streams {
         for staging in streams.values() {
             staging.flush()
         }
+    }
+
+    pub fn contains(&self, stream_name: &str) -> bool {
+        self.read().expect(LOCK_EXPECT).contains_key(stream_name)
+    }
+
+    pub fn get_first_event(&self, stream_name: &str) -> Result<Option<String>, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        Ok(metadata.first_event_at.clone())
+    }
+
+    pub fn get_time_partition(&self, stream_name: &str) -> Result<Option<String>, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        Ok(metadata.time_partition.clone())
+    }
+
+    pub fn get_time_partition_limit(
+        &self,
+        stream_name: &str,
+    ) -> Result<Option<NonZeroU32>, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        Ok(metadata.time_partition_limit)
+    }
+
+    pub fn get_custom_partition(
+        &self,
+        stream_name: &str,
+    ) -> Result<Option<String>, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        Ok(metadata.custom_partition.clone())
+    }
+
+    pub fn get_static_schema_flag(&self, stream_name: &str) -> Result<bool, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        Ok(metadata.static_schema_flag)
+    }
+
+    pub fn get_retention(&self, stream_name: &str) -> Result<Option<Retention>, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        Ok(metadata.retention.clone())
+    }
+
+    pub fn get_schema_version(&self, stream_name: &str) -> Result<SchemaVersion, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        Ok(metadata.schema_version)
+    }
+
+    pub fn schema(&self, stream_name: &str) -> Result<Arc<Schema>, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        // sort fields on read from hashmap as order of fields can differ.
+        // This provides a stable output order if schema is same between calls to this function
+        let fields: Fields = metadata
+            .schema
+            .values()
+            .sorted_by_key(|field| field.name())
+            .cloned()
+            .collect();
+
+        let schema = Schema::new(fields);
+
+        Ok(Arc::new(schema))
+    }
+
+    pub fn set_retention(
+        &self,
+        stream_name: &str,
+        retention: Retention,
+    ) -> Result<(), StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let mut metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .write()
+            .expect(LOCK_EXPECT);
+
+        metadata.retention = Some(retention);
+
+        Ok(())
+    }
+
+    pub fn set_first_event_at(
+        &self,
+        stream_name: &str,
+        first_event_at: &str,
+    ) -> Result<(), StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let mut metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .write()
+            .expect(LOCK_EXPECT);
+
+        metadata.first_event_at = Some(first_event_at.to_owned());
+
+        Ok(())
+    }
+
+    /// Stores the provided stream metadata in memory mapping
+    pub async fn set_meta(&self, stream_name: &str, updated_metadata: LogStreamMetadata) {
+        let map = self.read().expect(LOCK_EXPECT);
+
+        match map.get(stream_name) {
+            Some(stream) => {
+                let mut metadata = stream.metadata.write().expect(LOCK_EXPECT);
+                *metadata = updated_metadata;
+            }
+            None => {
+                drop(map);
+                self.write().expect(LOCK_EXPECT).insert(
+                    stream_name.to_owned(),
+                    Stream::new(&PARSEABLE.options, stream_name, updated_metadata),
+                );
+            }
+        }
+    }
+
+    /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
+    ///
+    /// This function is called during the retention task, when the parquet files along with the manifest files are deleted from the storage.
+    /// The manifest path is removed from the snapshot in the stream.json
+    /// and the first_event_at value in the stream.json is removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream for which the `first_event_at` timestamp is to be removed.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), StreamNotFound>` - Returns `Ok(())` if the `first_event_at` timestamp is successfully removed,
+    ///   or a `StreamNotFound` if the stream metadata is not found.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// ```rust
+    /// let result = metadata.remove_first_event_at("my_stream");
+    /// match result {
+    ///     Ok(()) => println!("first-event-at removed successfully"),
+    ///     Err(e) => eprintln!("Error removing first-event-at from PARSEABLE.streams: {}", e),
+    /// }
+    /// ```
+    pub fn reset_first_event_at(&self, stream_name: &str) -> Result<(), StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let mut metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .write()
+            .expect(LOCK_EXPECT);
+
+        metadata.first_event_at.take();
+
+        Ok(())
+    }
+
+    pub fn update_time_partition_limit(
+        &self,
+        stream_name: &str,
+        time_partition_limit: NonZeroU32,
+    ) -> Result<(), StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let mut metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .write()
+            .expect(LOCK_EXPECT);
+
+        metadata.time_partition_limit = Some(time_partition_limit);
+
+        Ok(())
+    }
+
+    pub fn update_custom_partition(
+        &self,
+        stream_name: &str,
+        custom_partition: Option<&String>,
+    ) -> Result<(), StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let mut metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .write()
+            .expect(LOCK_EXPECT);
+
+        metadata.custom_partition = custom_partition.cloned();
+
+        Ok(())
+    }
+
+    pub fn set_hot_tier(&self, stream_name: &str, enable: bool) -> Result<(), StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let mut metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .write()
+            .expect(LOCK_EXPECT);
+
+        metadata.hot_tier_enabled = enable;
+
+        Ok(())
+    }
+
+    /// Returns the number of logstreams that parseable is aware of
+    pub fn len(&self) -> usize {
+        self.read().expect(LOCK_EXPECT).len()
+    }
+
+    /// Listing of logstream names that parseable is aware of
+    pub fn list(&self) -> Vec<LogStream> {
+        self.read()
+            .expect(LOCK_EXPECT)
+            .keys()
+            .map(String::clone)
+            .collect()
+    }
+
+    pub fn list_internal_streams(&self) -> Vec<String> {
+        let map = self.read().expect(LOCK_EXPECT);
+
+        map.iter()
+            .filter(|(_, stream)| {
+                let metadata = stream.metadata.read().expect(LOCK_EXPECT);
+                metadata.stream_type == StreamType::Internal
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    pub fn stream_type(&self, stream_name: &str) -> Result<StreamType, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        Ok(metadata.stream_type)
+    }
+
+    pub fn resolve_schema(
+        &self,
+        stream_name: &str,
+    ) -> Result<HashMap<String, Arc<Field>>, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+        let metadata = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT);
+
+        Ok(metadata.schema.clone())
     }
 }
 
@@ -456,7 +798,7 @@ mod tests {
         let stream_name = "test_stream";
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
 
         assert_eq!(
             staging.data_path,
@@ -469,7 +811,7 @@ mod tests {
         let stream_name = "test_stream_!@#$%^&*()";
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
 
         assert_eq!(
             staging.data_path,
@@ -482,7 +824,7 @@ mod tests {
         let stream_name = "example_stream";
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
 
         assert_eq!(
             staging.data_path,
@@ -495,7 +837,7 @@ mod tests {
         let stream_name = "test123stream";
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
 
         assert_eq!(
             staging.data_path,
@@ -511,7 +853,7 @@ mod tests {
             local_staging_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
-        let staging = Stream::new(&options, "test_stream");
+        let staging = Stream::new(&options, "test_stream", LogStreamMetadata::default());
 
         let files = staging.arrow_files();
 
@@ -529,7 +871,7 @@ mod tests {
         let custom_partition_values = HashMap::new();
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
 
         let expected_path = staging.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
@@ -559,7 +901,7 @@ mod tests {
         custom_partition_values.insert("key2".to_string(), "value2".to_string());
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
 
         let expected_path = staging.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
@@ -584,8 +926,8 @@ mod tests {
             ..Default::default()
         };
         let stream = "test_stream".to_string();
-        let result =
-            Stream::new(&options, &stream).convert_disk_files_to_parquet(None, None, false)?;
+        let result = Stream::new(&options, &stream, LogStreamMetadata::default())
+            .convert_disk_files_to_parquet(None, None, false)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
@@ -636,7 +978,7 @@ mod tests {
             row_group_size: 1048576,
             ..Default::default()
         };
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -657,7 +999,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
@@ -680,7 +1022,8 @@ mod tests {
             row_group_size: 1048576,
             ..Default::default()
         };
-        let staging: Arc<Stream<'_>> = Stream::new(&options, stream_name);
+        let staging: Arc<Stream<'_>> =
+            Stream::new(&options, stream_name, LogStreamMetadata::default());
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -701,7 +1044,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
@@ -724,7 +1067,7 @@ mod tests {
             row_group_size: 1048576,
             ..Default::default()
         };
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -750,7 +1093,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
         let result = staging
             .convert_disk_files_to_parquet(None, None, false)
             .unwrap();

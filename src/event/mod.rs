@@ -25,7 +25,7 @@ use itertools::Itertools;
 use std::sync::Arc;
 
 use self::error::EventError;
-use crate::{parseable::PARSEABLE, staging::STAGING, storage::StreamType};
+use crate::{metadata::update_stats, parseable::PARSEABLE, storage::StreamType, LOCK_EXPECT};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
@@ -63,7 +63,7 @@ impl Event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        STAGING.get_or_create_stream(&self.stream_name).push(
+        PARSEABLE.streams.get_or_create(&self.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -71,13 +71,13 @@ impl Event {
             self.stream_type,
         )?;
 
-        PARSEABLE.streams.update_stats(
+        update_stats(
             &self.stream_name,
             self.origin_format,
             self.origin_size,
             self.rb.num_rows(),
             self.parsed_timestamp,
-        )?;
+        );
 
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
 
@@ -87,7 +87,7 @@ impl Event {
     pub fn process_unchecked(&self) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        STAGING.get_or_create_stream(&self.stream_name).push(
+        PARSEABLE.streams.get_or_create(&self.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -115,6 +115,9 @@ pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), Event
     let map = &mut stream_metadata
         .get_mut(stream_name)
         .expect("map has entry for this stream name")
+        .metadata
+        .write()
+        .expect(LOCK_EXPECT)
         .schema;
     let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
     let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
@@ -126,16 +129,13 @@ pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), Event
 pub mod error {
     use arrow_schema::ArrowError;
 
-    use crate::metadata::error::stream_info::MetadataError;
-    use crate::staging::StagingError;
+    use crate::parseable::StagingError;
     use crate::storage::ObjectStorageError;
 
     #[derive(Debug, thiserror::Error)]
     pub enum EventError {
         #[error("Stream Writer Failed: {0}")]
         StreamWriter(#[from] StagingError),
-        #[error("Metadata Error: {0}")]
-        Metadata(#[from] MetadataError),
         #[error("Stream Writer Failed: {0}")]
         Arrow(#[from] ArrowError),
         #[error("ObjectStorage Error: {0}")]

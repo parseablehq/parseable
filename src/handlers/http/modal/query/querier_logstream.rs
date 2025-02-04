@@ -42,10 +42,10 @@ use crate::{
         logstream::{error::StreamError, get_stats_date},
     },
     hottier::HotTierManager,
-    parseable::PARSEABLE,
-    staging::STAGING,
+    parseable::{StreamNotFound, PARSEABLE},
     stats::{self, Stats},
     storage::StreamType,
+    LOCK_EXPECT,
 };
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -54,19 +54,19 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !PARSEABLE.streams.stream_exists(&stream_name)
+    if !PARSEABLE.streams.contains(&stream_name)
         && !PARSEABLE
             .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {
-        return Err(StreamError::StreamNotFound(stream_name.clone()));
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
 
     let objectstore = PARSEABLE.storage.get_object_store();
     // Delete from storage
     objectstore.delete_stream(&stream_name).await?;
-    let stream_dir = STAGING.get_or_create_stream(&stream_name);
+    let stream_dir = PARSEABLE.streams.get_or_create(&stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
         warn!(
             "failed to delete local data for stream {}. Clean {} manually",
@@ -83,7 +83,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 
     let ingestor_metadata = cluster::get_ingestor_info().await.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
-        StreamError::from(err)
+        err
     })?;
 
     for ingestor in ingestor_metadata {
@@ -100,8 +100,6 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 
     // Delete from memory
     PARSEABLE.streams.delete_stream(&stream_name);
-    // Delete from staging
-    STAGING.delete_stream(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 
@@ -132,13 +130,13 @@ pub async fn get_stats(
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !PARSEABLE.streams.stream_exists(&stream_name)
+    if !PARSEABLE.streams.contains(&stream_name)
         && !PARSEABLE
             .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {
-        return Err(StreamError::StreamNotFound(stream_name.clone()));
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
 
     let query_string = req.query_string();
@@ -167,7 +165,7 @@ pub async fn get_stats(
     }
 
     let stats = stats::get_current_stats(&stream_name, "json")
-        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
+        .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
 
     let ingestor_stats = if PARSEABLE
         .streams
@@ -179,10 +177,13 @@ pub async fn get_stats(
         None
     };
 
-    let hash_map = PARSEABLE.streams.read().expect("Readable");
-    let stream_meta = &hash_map
+    let hash_map = PARSEABLE.streams.read().expect(LOCK_EXPECT);
+    let stream_meta = hash_map
         .get(&stream_name)
-        .ok_or(StreamError::StreamNotFound(stream_name.clone()))?;
+        .ok_or_else(|| StreamNotFound(stream_name.clone()))?
+        .metadata
+        .read()
+        .expect(LOCK_EXPECT);
 
     let time = Utc::now();
 

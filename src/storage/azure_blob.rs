@@ -17,7 +17,7 @@
  */
 use super::object_storage::parseable_json_path;
 use super::{
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
+    ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
     SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 use async_trait::async_trait;
@@ -40,6 +40,7 @@ use super::metrics_layer::MetricLayer;
 use crate::handlers::http::users::USERS_ROOT_DIR;
 use crate::metrics::storage::azureblob::REQUEST_RESPONSE_TIME;
 use crate::metrics::storage::StorageMetrics;
+use crate::parseable::LogStream;
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
 use std::collections::{BTreeMap, HashMap, HashSet};
