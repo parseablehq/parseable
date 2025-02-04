@@ -398,7 +398,7 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
     // if first_event_at is not found in memory map, check if it exists in the storage
     // if it exists in the storage, update the first_event_at in memory map
     let stream_first_event_at =
-        if let Ok(Some(first_event_at)) = PARSEABLE.streams.get_first_event(&stream_name) {
+        if let Some(first_event_at) = PARSEABLE.get_stream(&stream_name)?.get_first_event() {
             Some(first_event_at)
         } else if let Ok(Some(first_event_at)) =
             storage.get_first_event_from_storage(&stream_name).await

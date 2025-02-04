@@ -263,7 +263,7 @@ async fn create_manifest(
         files: vec![change],
         ..Manifest::default()
     };
-    let mut first_event_at = PARSEABLE.streams.get_first_event(stream_name)?;
+    let mut first_event_at = PARSEABLE.get_stream(stream_name)?.get_first_event();
     if first_event_at.is_none() {
         if let Some(first_event) = manifest.files.first() {
             let time_partition = &meta.time_partition;
@@ -354,7 +354,7 @@ pub async fn get_first_event(
     match PARSEABLE.options.mode {
         Mode::All | Mode::Ingest => {
             // get current snapshot
-            let stream_first_event = PARSEABLE.streams.get_first_event(stream_name)?;
+            let stream_first_event = PARSEABLE.get_stream(stream_name)?.get_first_event();
             if stream_first_event.is_some() {
                 first_event_at = stream_first_event.unwrap();
             } else {

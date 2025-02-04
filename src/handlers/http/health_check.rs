@@ -61,7 +61,7 @@ pub async fn shutdown() {
     *shutdown_flag = true;
 
     // Sync staging
-    PARSEABLE.streams.flush_all();
+    PARSEABLE.flush_all_streams();
 }
 
 pub async fn readiness() -> HttpResponse {

@@ -98,7 +98,7 @@ pub async fn run_local_sync() -> (
             scheduler
                 .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
                 .run(|| async {
-                    PARSEABLE.streams.flush_all();
+                    PARSEABLE.flush_all_streams();
                 });
 
             loop {

@@ -105,13 +105,18 @@ impl Parseable {
     }
 
     /// Try to get the handle of a stream in staging, if it doesn't exist return `None`.
-    pub fn get_stream(&self, stream_name: &str) -> Option<StreamRef> {
-        self.streams.read().unwrap().get(stream_name).cloned()
+    pub fn get_stream(&self, stream_name: &str) -> Result<StreamRef, StreamNotFound> {
+        self.streams
+            .read()
+            .unwrap()
+            .get(stream_name)
+            .ok_or_else(|| StreamNotFound(stream_name.to_owned()))
+            .cloned()
     }
 
     /// Get the handle to a stream in staging, create one if it doesn't exist
     pub fn get_or_create_stream(&self, stream_name: &str) -> StreamRef {
-        if let Some(staging) = self.get_stream(stream_name) {
+        if let Ok(staging) = self.get_stream(stream_name) {
             return staging;
         }
 
@@ -121,6 +126,14 @@ impl Parseable {
             stream_name.to_owned(),
             LogStreamMetadata::default(),
         )
+    }
+
+    pub fn flush_all_streams(&self) {
+        let streams = self.streams.read().unwrap();
+
+        for staging in streams.values() {
+            staging.flush()
+        }
     }
 
     /// Stores the provided stream metadata in memory mapping

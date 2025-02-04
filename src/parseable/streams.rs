@@ -247,7 +247,7 @@ impl Stream {
         self.writer.lock().unwrap().mem.clear();
     }
 
-    fn flush(&self) {
+    pub fn flush(&self) {
         let mut disk_writers = {
             let mut writer = self.writer.lock().unwrap();
             // Flush memory
@@ -406,6 +406,14 @@ impl Stream {
 
         Schema::try_merge(vec![schema, current_schema]).unwrap()
     }
+
+    pub fn get_first_event(&self) -> Option<String> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .first_event_at
+            .clone()
+    }
 }
 
 #[derive(Deref, DerefMut, Default)]
@@ -432,38 +440,12 @@ impl Streams {
         stream
     }
 
-    pub fn clear(&self, stream_name: &str) {
-        if let Some(stream) = self.write().unwrap().get(stream_name) {
-            stream.clear();
-        }
-    }
-
     pub fn delete_stream(&self, stream_name: &str) {
         self.write().unwrap().remove(stream_name);
     }
 
-    pub fn flush_all(&self) {
-        let streams = self.read().unwrap();
-
-        for staging in streams.values() {
-            staging.flush()
-        }
-    }
-
     pub fn contains(&self, stream_name: &str) -> bool {
         self.read().expect(LOCK_EXPECT).contains_key(stream_name)
-    }
-
-    pub fn get_first_event(&self, stream_name: &str) -> Result<Option<String>, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        Ok(metadata.first_event_at.clone())
     }
 
     pub fn get_time_partition(&self, stream_name: &str) -> Result<Option<String>, StreamNotFound> {
