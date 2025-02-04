@@ -33,10 +33,7 @@ use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
-    arrow::ArrowWriter,
-    basic::Encoding,
-    file::properties::{WriterProperties, WriterPropertiesBuilder},
-    format::SortingColumn,
+    arrow::ArrowWriter, basic::Encoding, file::properties::WriterProperties, format::SortingColumn,
     schema::types::ColumnPath,
 };
 use rand::distributions::DistString;
@@ -265,6 +262,53 @@ impl Stream {
         }
     }
 
+    fn parquet_writer_props(
+        &self,
+        merged_schema: &Schema,
+        time_partition: Option<&String>,
+        custom_partition: Option<&String>,
+    ) -> WriterProperties {
+        // Determine time partition field
+        let time_partition_field = time_partition.map_or(DEFAULT_TIMESTAMP_KEY, |tp| tp.as_str());
+
+        // Find time partition index
+        let time_partition_idx = merged_schema.index_of(time_partition_field).unwrap_or(0);
+
+        let mut props = WriterProperties::builder()
+            .set_max_row_group_size(self.options.row_group_size)
+            .set_compression(self.options.parquet_compression.into())
+            .set_column_encoding(
+                ColumnPath::new(vec![time_partition_field.to_string()]),
+                Encoding::DELTA_BINARY_PACKED,
+            );
+
+        // Create sorting columns
+        let mut sorting_column_vec = vec![SortingColumn {
+            column_idx: time_partition_idx as i32,
+            descending: true,
+            nulls_first: true,
+        }];
+
+        // Describe custom partition column encodings and sorting
+        if let Some(custom_partition) = custom_partition {
+            for partition in custom_partition.split(',') {
+                if let Ok(idx) = merged_schema.index_of(partition) {
+                    let column_path = ColumnPath::new(vec![partition.to_string()]);
+                    props = props.set_column_encoding(column_path, Encoding::DELTA_BYTE_ARRAY);
+
+                    sorting_column_vec.push(SortingColumn {
+                        column_idx: idx as i32,
+                        descending: true,
+                        nulls_first: true,
+                    });
+                }
+            }
+        }
+
+        // Set sorting columns
+        props.set_sorting_columns(Some(sorting_column_vec)).build()
+    }
+
     pub fn convert_disk_files_to_parquet(
         &self,
         time_partition: Option<&String>,
@@ -308,13 +352,7 @@ impl Stream {
             }
             let merged_schema = record_reader.merged_schema();
 
-            let props = parquet_writer_props(
-                &self.options,
-                &merged_schema,
-                time_partition,
-                custom_partition,
-            )
-            .build();
+            let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
             schemas.push(merged_schema.clone());
             let schema = Arc::new(merged_schema);
             let parquet_file = OpenOptions::new()
@@ -368,53 +406,6 @@ impl Stream {
 
         Schema::try_merge(vec![schema, current_schema]).unwrap()
     }
-}
-
-fn parquet_writer_props(
-    options: &Options,
-    merged_schema: &Schema,
-    time_partition: Option<&String>,
-    custom_partition: Option<&String>,
-) -> WriterPropertiesBuilder {
-    // Determine time partition field
-    let time_partition_field = time_partition.map_or(DEFAULT_TIMESTAMP_KEY, |tp| tp.as_str());
-
-    // Find time partition index
-    let time_partition_idx = merged_schema.index_of(time_partition_field).unwrap_or(0);
-
-    let mut props = WriterProperties::builder()
-        .set_max_row_group_size(options.row_group_size)
-        .set_compression(options.parquet_compression.into())
-        .set_column_encoding(
-            ColumnPath::new(vec![time_partition_field.to_string()]),
-            Encoding::DELTA_BINARY_PACKED,
-        );
-
-    // Create sorting columns
-    let mut sorting_column_vec = vec![SortingColumn {
-        column_idx: time_partition_idx as i32,
-        descending: true,
-        nulls_first: true,
-    }];
-
-    // Describe custom partition column encodings and sorting
-    if let Some(custom_partition) = custom_partition {
-        for partition in custom_partition.split(',') {
-            if let Ok(idx) = merged_schema.index_of(partition) {
-                let column_path = ColumnPath::new(vec![partition.to_string()]);
-                props = props.set_column_encoding(column_path, Encoding::DELTA_BYTE_ARRAY);
-
-                sorting_column_vec.push(SortingColumn {
-                    column_idx: idx as i32,
-                    descending: true,
-                    nulls_first: true,
-                });
-            }
-        }
-    }
-
-    // Set sorting columns
-    props.set_sorting_columns(Some(sorting_column_vec))
 }
 
 #[derive(Deref, DerefMut, Default)]
