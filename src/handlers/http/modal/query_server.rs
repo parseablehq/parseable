@@ -30,9 +30,10 @@ use crate::rbac::role::Action;
 use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
-use crate::{analytics, metrics, migration, storage};
+use crate::{analytics, migration, storage};
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
+use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::oneshot;
@@ -89,9 +90,12 @@ impl ParseableServer for QueryServer {
     }
 
     /// initialize the server, run migrations as needed and start an instance
-    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
-        let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
+        CONFIG.storage().register_store_metrics(prometheus);
 
         migration::run_migration(&CONFIG).await?;
 
@@ -135,7 +139,7 @@ impl ParseableServer for QueryServer {
             sync::object_store_sync().await;
 
         tokio::spawn(airplane::server());
-        let app = self.start(shutdown_rx, prometheus, CONFIG.options.openid());
+        let app = self.start(shutdown_rx, prometheus.clone(), CONFIG.options.openid());
 
         tokio::pin!(app);
         loop {

@@ -14,20 +14,37 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # build stage
-FROM rust:1.84.0-bookworm AS builder
+FROM  rust:1.84.0-bookworm AS builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
 LABEL org.opencontainers.image.vendor="Parseable Inc"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
-WORKDIR /parseable
-COPY . .
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    cmake \
+    clang \
+    librdkafka-dev \
+    ca-certificates \
+    build-essential \
+    libsasl2-dev \
+    libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-## Ensure that you build the console assests https://github.com/parseablehq/console?tab=readme-ov-file#trophy-development-and-contributing
-## Then create a dist folder in the root of the this directory and copy the contents of the console/dist folder into the dist folder
-ENV LOCAL_ASSETS_PATH=/parseable/dist
-RUN cargo build --release
+WORKDIR /parseable
+COPY Cargo.toml Cargo.lock build.rs ./
+
+# Create a dummy main.rs to pre-cache dependencies
+RUN mkdir src && echo "fn main() {}" > src/main.rs && \
+    cargo build --release --features kafka && \
+    rm -rf src
+
+# Copy the actual source code
+COPY src ./src
+
+# Build the actual binary with kafka feature
+RUN cargo build --release --features kafka
 
 # final stage
 FROM gcr.io/distroless/cc-debian12:latest
@@ -36,5 +53,14 @@ WORKDIR /parseable
 
 # Copy the Parseable binary from builder
 COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
+
+# Copy only the libraries that binary needs since kafka is statically linked
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libsasl2.so.2 /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libssl.so.3   /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/lib/x86_64-linux-gnu/
+
+# Copy CA certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
 
 CMD ["/usr/bin/parseable"]

@@ -16,17 +16,21 @@
  *
  */
 
-use std::error::Error;
-use vergen::EmitBuilder;
+use anyhow::Result;
+use vergen_gitcl::{
+    BuildBuilder, CargoBuilder, Emitter, GitclBuilder, RustcBuilder, SysinfoBuilder,
+};
 
-fn main() -> Result<(), Box<dyn Error>> {
-    ui::setup().unwrap();
+pub fn main() -> Result<()> {
+    ui::setup()?;
 
     // Init vergen
-    EmitBuilder::builder()
-        .all_build()
-        .all_cargo()
-        .git_sha(true)
+    Emitter::default()
+        .add_instructions(&BuildBuilder::all_build()?)?
+        .add_instructions(&CargoBuilder::all_cargo()?)?
+        .add_instructions(&GitclBuilder::default().all().sha(true).build()?)?
+        .add_instructions(&RustcBuilder::all_rustc()?)?
+        .add_instructions(&SysinfoBuilder::all_sysinfo()?)?
         .emit()?;
 
     Ok(())
