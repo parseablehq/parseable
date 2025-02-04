@@ -122,13 +122,10 @@ fn get_from_env(var_to_fetch: &str) -> String {
 }
 
 pub fn get_ingestor_id() -> String {
-    let now = Utc::now().to_rfc3339().to_string();
-    let mut hasher = Sha256::new();
-    hasher.update(now);
-    let result = format!("{:x}", hasher.finalize());
-    let result = result.split_at(15).0.to_string();
-    debug!("Ingestor ID: {}", &result);
-    result
+    let now = Utc::now().to_rfc3339();
+    let id = get_hash(&now).to_string().split_at(15).0.to_string();
+    debug!("Ingestor ID: {id}");
+    id
 }
 
 pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
