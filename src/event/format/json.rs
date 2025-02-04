@@ -217,6 +217,7 @@ fn valid_type(data_type: &DataType, value: &Value, schema_version: SchemaVersion
                 false
             }
         }
+        DataType::Date32 => value.is_string() && is_parsable_as_date(value),
         DataType::Timestamp(_, _) => value.is_string() || value.is_number(),
         _ => {
             error!("Unsupported datatype {:?}, value {:?}", data_type, value);
@@ -230,4 +231,11 @@ pub fn is_parsable_as_number(value: &Value) -> bool {
         return false;
     };
     s.parse::<i64>().is_ok()
+}
+
+pub fn is_parsable_as_date(value: &Value) -> bool {
+    let Value::String(s) = value else {
+        return false;
+    };
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
 }

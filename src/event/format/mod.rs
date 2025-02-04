@@ -26,7 +26,7 @@ use std::{
 use anyhow::{anyhow, Error as AnyError};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::DateTime;
+use chrono::{DateTime, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -324,6 +324,16 @@ pub fn override_data_type(
                 {
                     // Update the field's data type to Float64
                     Field::new(field_name, DataType::Int64, true)
+                }
+                (SchemaVersion::V1, Some(Value::String(s)))
+                    if TIME_FIELD_NAME_PARTS
+                        .iter()
+                        .any(|part| field_name.to_lowercase().contains(part))
+                        && field.data_type() == &DataType::Utf8
+                        && NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok() =>
+                {
+                    // Update the field's data type to Timestamp
+                    Field::new(field_name, DataType::Date32, true)
                 }
 
                 // in V1 for new fields in json with inferred type number, cast as float64.

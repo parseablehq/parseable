@@ -325,7 +325,8 @@ pub fn parquet_writer_props(
         .set_column_encoding(
             ColumnPath::new(vec![time_partition_field]),
             Encoding::DELTA_BINARY_PACKED,
-        );
+        )
+        .set_data_page_size_limit(20 * 1024 * 1024);
 
     for (field, index) in custom_partition_fields {
         let field = ColumnPath::new(vec![field]);
