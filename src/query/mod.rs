@@ -89,28 +89,29 @@ impl Query {
 
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
-            .with_prefer_existing_sort(true)
+            //.with_prefer_existing_sort(true)
             .with_round_robin_repartition(true);
 
         // For more details refer https://datafusion.apache.org/user-guide/configs.html
 
         // Reduce the number of rows read (if possible)
-        config.options_mut().execution.parquet.enable_page_index = true;
+        //config.options_mut().execution.parquet.enable_page_index = true;
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
         config.options_mut().execution.parquet.pushdown_filters = true;
 
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
-        config.options_mut().execution.parquet.reorder_filters = true;
+       // config.options_mut().execution.parquet.reorder_filters = true;
 
         // Enable StringViewArray
         // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
-        config
-            .options_mut()
-            .execution
-            .parquet
-            .schema_force_view_types = true;
+        // config
+        //     .options_mut()
+        //     .execution
+        //     .parquet
+        //     .schema_force_view_types = true;
+        config.options_mut().execution.parquet.binary_as_string = true;
 
         let state = SessionStateBuilder::new()
             .with_default_features()
