@@ -17,6 +17,7 @@
  */
 
 use crate::option::CONFIG;
+use crate::staging::STAGING;
 use actix_web::body::MessageBody;
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::error::ErrorServiceUnavailable;
@@ -56,8 +57,8 @@ pub async fn shutdown() {
     let mut shutdown_flag = SIGNAL_RECEIVED.lock().await;
     *shutdown_flag = true;
 
-    // Sync to local
-    crate::event::STREAM_WRITERS.unset_all();
+    // Sync staging
+    STAGING.flush_all();
 }
 
 pub async fn readiness() -> HttpResponse {

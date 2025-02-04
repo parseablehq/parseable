@@ -42,19 +42,17 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, RecordBatch, TimestampMillisecondArray};
+use arrow_array::{Array, RecordBatch, TimestampMillisecondArray, UInt64Array};
 use arrow_schema::Schema;
+use arrow_select::take::take;
 use chrono::Utc;
 use itertools::Itertools;
 
 pub mod batch_adapter;
 pub mod flight;
-pub mod merged_reader;
-pub mod reverse_reader;
 
 use anyhow::Result;
 pub use batch_adapter::adapt_batch;
-pub use merged_reader::MergedRecordReader;
 use serde_json::{Map, Value};
 
 /// Replaces columns in a record batch with new arrays.
@@ -137,6 +135,16 @@ pub fn get_field<'a>(
 /// A column in arrow, containing the current timestamp in millis.
 pub fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
     TimestampMillisecondArray::from_value(Utc::now().timestamp_millis(), size)
+}
+
+pub fn reverse(rb: &RecordBatch) -> RecordBatch {
+    let indices = UInt64Array::from_iter_values((0..rb.num_rows()).rev().map(|x| x as u64));
+    let arrays = rb
+        .columns()
+        .iter()
+        .map(|col| take(&col, &indices, None).unwrap())
+        .collect();
+    RecordBatch::try_new(rb.schema(), arrays).unwrap()
 }
 
 #[cfg(test)]

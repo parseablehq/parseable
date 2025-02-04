@@ -32,17 +32,11 @@ use crate::rbac::Users;
 use actix::extract_session_key_from_req;
 use actix_web::HttpRequest;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use itertools::Itertools;
 use regex::Regex;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::env;
 use tracing::debug;
 use url::Url;
-
-pub fn hostname_unchecked() -> String {
-    hostname::get().unwrap().into_string().unwrap()
-}
 
 /// Convert minutes to a slot range
 /// e.g. given minute = 15 and OBJECT_STORE_DATA_GRANULARITY = 10 returns "10-19"
@@ -61,30 +55,6 @@ pub fn minute_to_slot(minute: u32, data_granularity: u32) -> Option<String> {
     Some(format!("{block_start:02}-{block_end:02}"))
 }
 
-pub fn date_to_prefix(date: NaiveDate) -> String {
-    let date = format!("date={date}/");
-    date.replace("UTC", "")
-}
-
-pub fn custom_partition_to_prefix(custom_partition: &HashMap<String, String>) -> String {
-    let mut prefix = String::default();
-    for (key, value) in custom_partition.iter().sorted_by_key(|v| v.0) {
-        prefix.push_str(&format!("{key}={value}/", key = key, value = value));
-    }
-    prefix
-}
-
-pub fn hour_to_prefix(hour: u32) -> String {
-    format!("hour={hour:02}/")
-}
-
-pub fn minute_to_prefix(minute: u32, data_granularity: u32) -> Option<String> {
-    Some(format!(
-        "minute={}/",
-        minute_to_slot(minute, data_granularity)?
-    ))
-}
-
 pub fn get_url() -> Url {
     if CONFIG.options.ingestor_endpoint.is_empty() {
         return format!(
@@ -93,8 +63,9 @@ pub fn get_url() -> Url {
             CONFIG.options.address
         )
         .parse::<Url>() // if the value was improperly set, this will panic before hand
-        .unwrap_or_else(|err| panic!("{}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-            err, CONFIG.options.address));
+        .unwrap_or_else(|err| {
+            panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", CONFIG.options.address)
+        });
     }
 
     let ingestor_endpoint = &CONFIG.options.ingestor_endpoint;

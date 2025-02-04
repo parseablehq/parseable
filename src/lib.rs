@@ -42,6 +42,7 @@ pub mod otel;
 mod query;
 pub mod rbac;
 mod response;
+mod staging;
 mod static_schema;
 mod stats;
 pub mod storage;

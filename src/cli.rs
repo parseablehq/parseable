@@ -102,7 +102,7 @@ pub struct BlobStoreArgs {
     pub storage: AzureBlobConfig,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 pub struct Options {
     // Authentication
     #[arg(long, env = "P_USERNAME", help = "Admin username to be set for this Parseable server", default_value = DEFAULT_USERNAME)]
@@ -283,7 +283,7 @@ pub struct Options {
     pub ingestor_endpoint: String,
 
     #[command(flatten)]
-    oidc: Option<OidcConfig>,
+    pub oidc: Option<OidcConfig>,
 
     // Kafka configuration (conditionally compiled)
     #[cfg(any(
