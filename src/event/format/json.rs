@@ -20,7 +20,7 @@
 #![allow(deprecated)]
 
 use anyhow::anyhow;
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, StringArray, StringViewArray};
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
 use arrow_schema::{DataType, Field, Fields, Schema};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
@@ -107,15 +107,52 @@ impl EventFormat for Event {
 
     // Convert the Data type (defined above) to arrow record batch
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, anyhow::Error> {
+        // First create a schema with Utf8 instead of Utf8View
+        let temp_schema = Schema::new(
+            schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    if matches!(field.data_type(), DataType::Utf8View) {
+                        Arc::new(Field::new(field.name(), DataType::Utf8, field.is_nullable()))
+                    } else {
+                        field.clone()
+                    }
+                })
+                .collect::<Vec<_>>(),
+        );
+    
         let array_capacity = round_upto_multiple_of_64(data.len());
-        let mut reader = ReaderBuilder::new(schema)
+        let mut reader = ReaderBuilder::new(Arc::new(temp_schema))
             .with_batch_size(array_capacity)
             .with_coerce_primitive(false)
+            .with_strict_mode(false)
             .build_decoder()?;
-
+    
         reader.serialize(&data)?;
+        
         match reader.flush() {
-            Ok(Some(recordbatch)) => Ok(recordbatch),
+            Ok(Some(temp_batch)) => {
+                // Convert Utf8 arrays to Utf8View arrays where needed
+                let new_columns: Vec<Arc<dyn arrow_array::Array>> = temp_batch
+                    .columns()
+                    .iter()
+                    .zip(schema.fields())
+                    .map(|(col, field)| {
+                        if matches!(field.data_type(), DataType::Utf8View) {
+                            let string_array = col
+                                .as_any()
+                                .downcast_ref::<StringArray>()
+                                .expect("Expected StringArray");
+                            Arc::new(StringViewArray::from(string_array.iter().map(|s| s.map(|s| s.to_string())).collect::<Vec<_>>()))
+                        } else {
+                            col.clone()
+                        }
+                    })
+                    .collect();
+    
+                Ok(RecordBatch::try_new(schema, new_columns)?)
+            }
             Err(err) => Err(anyhow!("Failed to create recordbatch due to {:?}", err)),
             Ok(None) => unreachable!("all records are added to one rb"),
         }
@@ -179,7 +216,7 @@ fn valid_type(data_type: &DataType, value: &Value, schema_version: SchemaVersion
         DataType::Float16 | DataType::Float32 | DataType::Float64 => value.is_f64(),
         // All numbers can be cast as Float64 from schema version v1
         DataType::Int64 => value.is_i64() || is_parsable_as_number(value),
-        DataType::Utf8 => value.is_string(),
+        DataType::Utf8View => value.is_string(),
         DataType::List(field) => {
             let data_type = field.data_type();
             if let Value::Array(arr) = value {

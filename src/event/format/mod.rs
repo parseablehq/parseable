@@ -262,7 +262,7 @@ pub fn update_field_type_in_schema(
             // time_partition field not present in existing schema with string type data as timestamp
             if field.name() == time_partition
                 && !existing_field_names.contains(field.name())
-                && field.data_type() == &DataType::Utf8
+                && field.data_type() == &DataType::Utf8View
             {
                 let new_data_type = DataType::Timestamp(TimeUnit::Millisecond, None);
                 Field::new(field.name(), new_data_type, true)
@@ -298,7 +298,7 @@ pub fn override_data_type(
                     if TIME_FIELD_NAME_PARTS
                         .iter()
                         .any(|part| field_name.to_lowercase().contains(part))
-                        && field.data_type() == &DataType::Utf8
+                        && field.data_type() == &DataType::Utf8View
                         && (DateTime::parse_from_rfc3339(s).is_ok()
                             || DateTime::parse_from_rfc2822(s).is_ok()) =>
                 {
@@ -319,7 +319,7 @@ pub fn override_data_type(
                                 .unwrap()
                                 .data_type()
                                 == &DataType::Int64
-                            && field.data_type() == &DataType::Utf8
+                            && field.data_type() == &DataType::Utf8View
                             && s.parse::<i64>().is_ok()) =>
                 {
                     // Update the field's data type to Float64
@@ -329,7 +329,7 @@ pub fn override_data_type(
                     if TIME_FIELD_NAME_PARTS
                         .iter()
                         .any(|part| field_name.to_lowercase().contains(part))
-                        && field.data_type() == &DataType::Utf8
+                        && field.data_type() == &DataType::Utf8View
                         && NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok() =>
                 {
                     // Update the field's data type to Timestamp

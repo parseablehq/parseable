@@ -796,7 +796,7 @@ fn extract_timestamp_bound(
             binexpr.op,
             DateTime::from_timestamp_nanos(*value).naive_utc(),
         )),
-        ScalarValue::Utf8(Some(str_value)) if is_time_partition => {
+        ScalarValue::Utf8View(Some(str_value)) if is_time_partition => {
             Some((binexpr.op, str_value.parse::<NaiveDateTime>().unwrap()))
         }
         _ => None,
@@ -919,7 +919,7 @@ fn cast_or_none(scalar: &ScalarValue) -> Option<CastRes<'_>> {
         ScalarValue::UInt16(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::UInt32(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::UInt64(val) => val.map(|val| CastRes::Int(val as i64)),
-        ScalarValue::Utf8(val) => val.as_ref().map(|val| CastRes::String(val)),
+        ScalarValue::Utf8View(val) => val.as_ref().map(|val| CastRes::String(val)),
         ScalarValue::TimestampMillisecond(val, _) => val.map(CastRes::Int),
         _ => None,
     }

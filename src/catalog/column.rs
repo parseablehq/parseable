@@ -41,7 +41,7 @@ pub struct Int64Type {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Utf8Type {
+pub struct Utf8ViewType {
     pub min: String,
     pub max: String,
 }
@@ -54,7 +54,7 @@ pub enum TypedStatistics {
     Bool(BoolType),
     Int(Int64Type),
     Float(Float64Type),
-    String(Utf8Type),
+    String(Utf8ViewType),
 }
 
 impl TypedStatistics {
@@ -79,7 +79,7 @@ impl TypedStatistics {
                 })
             }
             (TypedStatistics::String(this), TypedStatistics::String(other)) => {
-                TypedStatistics::String(Utf8Type {
+                TypedStatistics::String(Utf8ViewType {
                     min: min(this.min, other.min),
                     max: max(this.max, other.max),
                 })
@@ -110,9 +110,9 @@ impl TypedStatistics {
                 ScalarValue::Float64(Some(stats.min)),
                 ScalarValue::Float64(Some(stats.max)),
             ),
-            (TypedStatistics::String(stats), DataType::Utf8) => (
-                ScalarValue::Utf8(Some(stats.min)),
-                ScalarValue::Utf8(Some(stats.max)),
+            (TypedStatistics::String(stats), DataType::Utf8View) => (
+                ScalarValue::Utf8View(Some(stats.min)),
+                ScalarValue::Utf8View(Some(stats.max)),
             ),
             _ => {
                 return None;
@@ -167,7 +167,7 @@ impl TryFrom<&Statistics> for TypedStatistics {
                 min: *stats.min_opt().expect("Float64 stats min not set"),
                 max: *stats.max_opt().expect("Float64 stats max not set"),
             }),
-            Statistics::ByteArray(stats) => TypedStatistics::String(Utf8Type {
+            Statistics::ByteArray(stats) => TypedStatistics::String(Utf8ViewType {
                 min: stats
                     .min_opt()
                     .expect("Utf8 stats min not set")
@@ -179,7 +179,7 @@ impl TryFrom<&Statistics> for TypedStatistics {
                     .as_utf8()?
                     .to_owned(),
             }),
-            Statistics::FixedLenByteArray(stats) => TypedStatistics::String(Utf8Type {
+            Statistics::FixedLenByteArray(stats) => TypedStatistics::String(Utf8ViewType {
                 min: stats
                     .min_opt()
                     .expect("Utf8 stats min not set")

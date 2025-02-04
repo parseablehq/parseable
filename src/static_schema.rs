@@ -101,11 +101,11 @@ pub fn convert_static_schema_to_arrow_schema(
                     "int" => DataType::Int64,
                     "double" | "float" => DataType::Float64,
                     "boolean" => DataType::Boolean,
-                    "string" => DataType::Utf8,
+                    "string" => DataType::Utf8View,
                     "date" => DataType::Date32,
                     "datetime" => DataType::Timestamp(TimeUnit::Millisecond, None),
                     "string_list" => {
-                        DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
+                        DataType::List(Arc::new(Field::new("item", DataType::Utf8View, true)))
                     }
                     "int_list" => {
                         DataType::List(Arc::new(Field::new("item", DataType::Int64, true)))
