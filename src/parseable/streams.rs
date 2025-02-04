@@ -49,16 +49,18 @@ use crate::{
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
-    parseable::{LogStream, PARSEABLE},
     storage::{retention::Retention, StreamType, OBJECT_STORE_DATA_GRANULARITY},
     utils::minute_to_slot,
     LOCK_EXPECT,
 };
 
 use super::{
-    reader::{MergedRecordReader, MergedReverseRecordReader},
-    writer::Writer,
-    StagingError,
+    staging::{
+        reader::{MergedRecordReader, MergedReverseRecordReader},
+        writer::Writer,
+        StagingError,
+    },
+    LogStream,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -67,23 +69,23 @@ pub struct StreamNotFound(pub String);
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
-pub type StreamRef<'a> = Arc<Stream<'a>>;
+pub type StreamRef = Arc<Stream>;
 
 /// State of staging associated with a single stream of data in parseable.
-pub struct Stream<'a> {
+pub struct Stream {
     pub stream_name: String,
     pub metadata: RwLock<LogStreamMetadata>,
     pub data_path: PathBuf,
-    pub options: &'a Options,
+    pub options: Arc<Options>,
     pub writer: Mutex<Writer>,
 }
 
-impl<'a> Stream<'a> {
+impl Stream {
     pub fn new(
-        options: &'a Options,
+        options: Arc<Options>,
         stream_name: impl Into<String>,
         metadata: LogStreamMetadata,
-    ) -> StreamRef<'a> {
+    ) -> StreamRef {
         let stream_name = stream_name.into();
         let data_path = options.local_stream_data_path(&stream_name);
 
@@ -307,7 +309,7 @@ impl<'a> Stream<'a> {
             let merged_schema = record_reader.merged_schema();
 
             let props = parquet_writer_props(
-                self.options,
+                &self.options,
                 &merged_schema,
                 time_partition,
                 custom_partition,
@@ -416,7 +418,7 @@ fn parquet_writer_props(
 }
 
 #[derive(Deref, DerefMut, Default)]
-pub struct Streams(RwLock<HashMap<String, StreamRef<'static>>>);
+pub struct Streams(RwLock<HashMap<String, StreamRef>>);
 
 // PARSEABLE.streams should be updated
 // 1. During server start up
@@ -425,28 +427,18 @@ pub struct Streams(RwLock<HashMap<String, StreamRef<'static>>>);
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
 impl Streams {
-    pub fn create(&self, stream_name: String, metadata: LogStreamMetadata) -> StreamRef<'static> {
-        let stream = Stream::new(&PARSEABLE.options, &stream_name, metadata);
+    pub fn create(
+        &self,
+        options: Arc<Options>,
+        stream_name: String,
+        metadata: LogStreamMetadata,
+    ) -> StreamRef {
+        let stream = Stream::new(options, &stream_name, metadata);
         self.write()
             .expect(LOCK_EXPECT)
             .insert(stream_name, stream.clone());
 
         stream
-    }
-
-    /// Try to get the handle of a stream in staging, if it doesn't exist return `None`.
-    pub fn get(&self, stream_name: &str) -> Option<StreamRef<'static>> {
-        self.read().unwrap().get(stream_name).cloned()
-    }
-
-    /// Get the handle to a stream in staging, create one if it doesn't exist
-    pub fn get_or_create(&self, stream_name: &str) -> StreamRef<'static> {
-        if let Some(staging) = self.get(stream_name) {
-            return staging;
-        }
-
-        // Gets write privileges only for creating the stream when it doesn't already exist.
-        self.create(stream_name.to_owned(), LogStreamMetadata::default())
     }
 
     pub fn clear(&self, stream_name: &str) {
@@ -620,25 +612,6 @@ impl Streams {
         Ok(())
     }
 
-    /// Stores the provided stream metadata in memory mapping
-    pub async fn set_meta(&self, stream_name: &str, updated_metadata: LogStreamMetadata) {
-        let map = self.read().expect(LOCK_EXPECT);
-
-        match map.get(stream_name) {
-            Some(stream) => {
-                let mut metadata = stream.metadata.write().expect(LOCK_EXPECT);
-                *metadata = updated_metadata;
-            }
-            None => {
-                drop(map);
-                self.write().expect(LOCK_EXPECT).insert(
-                    stream_name.to_owned(),
-                    Stream::new(&PARSEABLE.options, stream_name, updated_metadata),
-                );
-            }
-        }
-    }
-
     /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
     ///
     /// This function is called during the retention task, when the parquet files along with the manifest files are deleted from the storage.
@@ -732,6 +705,11 @@ impl Streams {
         self.read().expect(LOCK_EXPECT).len()
     }
 
+    /// Returns true if parseable is not aware of any streams
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Listing of logstream names that parseable is aware of
     pub fn list(&self) -> Vec<LogStream> {
         self.read()
@@ -797,8 +775,8 @@ mod tests {
     fn test_staging_new_with_valid_stream() {
         let stream_name = "test_stream";
 
-        let options = Options::default();
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        let options = Arc::new(Options::default());
+        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
 
         assert_eq!(
             staging.data_path,
@@ -810,8 +788,8 @@ mod tests {
     fn test_staging_with_special_characters() {
         let stream_name = "test_stream_!@#$%^&*()";
 
-        let options = Options::default();
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        let options = Arc::new(Options::default());
+        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
 
         assert_eq!(
             staging.data_path,
@@ -823,8 +801,8 @@ mod tests {
     fn test_staging_data_path_initialization() {
         let stream_name = "example_stream";
 
-        let options = Options::default();
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        let options = Arc::new(Options::default());
+        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
 
         assert_eq!(
             staging.data_path,
@@ -836,8 +814,8 @@ mod tests {
     fn test_staging_with_alphanumeric_stream_name() {
         let stream_name = "test123stream";
 
-        let options = Options::default();
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        let options = Arc::new(Options::default());
+        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
 
         assert_eq!(
             staging.data_path,
@@ -853,7 +831,11 @@ mod tests {
             local_staging_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
-        let staging = Stream::new(&options, "test_stream", LogStreamMetadata::default());
+        let staging = Stream::new(
+            Arc::new(options),
+            "test_stream",
+            LogStreamMetadata::default(),
+        );
 
         let files = staging.arrow_files();
 
@@ -871,7 +853,7 @@ mod tests {
         let custom_partition_values = HashMap::new();
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(Arc::new(options), stream_name, LogStreamMetadata::default());
 
         let expected_path = staging.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
@@ -901,7 +883,7 @@ mod tests {
         custom_partition_values.insert("key2".to_string(), "value2".to_string());
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(Arc::new(options), stream_name, LogStreamMetadata::default());
 
         let expected_path = staging.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
@@ -926,7 +908,7 @@ mod tests {
             ..Default::default()
         };
         let stream = "test_stream".to_string();
-        let result = Stream::new(&options, &stream, LogStreamMetadata::default())
+        let result = Stream::new(Arc::new(options), &stream, LogStreamMetadata::default())
             .convert_disk_files_to_parquet(None, None, false)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
@@ -973,12 +955,12 @@ mod tests {
     fn different_minutes_multiple_arrow_files_to_parquet() {
         let temp_dir = TempDir::new().unwrap();
         let stream_name = "test_stream";
-        let options = Options {
+        let options = Arc::new(Options {
             local_staging_path: temp_dir.path().to_path_buf(),
             row_group_size: 1048576,
             ..Default::default()
-        };
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        });
+        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -999,7 +981,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(options, stream_name, LogStreamMetadata::default());
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
@@ -1017,13 +999,12 @@ mod tests {
     fn same_minute_multiple_arrow_files_to_parquet() {
         let temp_dir = TempDir::new().unwrap();
         let stream_name = "test_stream";
-        let options = Options {
+        let options = Arc::new(Options {
             local_staging_path: temp_dir.path().to_path_buf(),
             row_group_size: 1048576,
             ..Default::default()
-        };
-        let staging: Arc<Stream<'_>> =
-            Stream::new(&options, stream_name, LogStreamMetadata::default());
+        });
+        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -1044,7 +1025,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(options, stream_name, LogStreamMetadata::default());
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
@@ -1062,12 +1043,12 @@ mod tests {
     async fn miss_current_arrow_file_when_converting_to_parquet() {
         let temp_dir = TempDir::new().unwrap();
         let stream_name = "test_stream";
-        let options = Options {
+        let options = Arc::new(Options {
             local_staging_path: temp_dir.path().to_path_buf(),
             row_group_size: 1048576,
             ..Default::default()
-        };
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        });
+        let staging = Stream::new(options.clone(), stream_name, LogStreamMetadata::default());
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -1093,7 +1074,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(&options, stream_name, LogStreamMetadata::default());
+        let staging = Stream::new(options, stream_name, LogStreamMetadata::default());
         let result = staging
             .convert_disk_files_to_parquet(None, None, false)
             .unwrap();

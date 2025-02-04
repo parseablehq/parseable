@@ -138,7 +138,7 @@ pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
         let Some(metadata) = migration_stream(&stream_name, &*storage).await? else {
             continue;
         };
-        PARSEABLE.streams.set_meta(&stream_name, metadata).await;
+        PARSEABLE.set_stream_meta(&stream_name, metadata).await;
     }
 
     Ok(())
@@ -287,8 +287,7 @@ async fn migration_stream(
     load_daily_metrics(&snapshot.manifest_list, stream);
 
     let schema = PARSEABLE
-        .streams
-        .get_or_create(stream)
+        .get_or_create_stream(stream)
         .updated_schema(arrow_schema);
     let schema = HashMap::from_iter(
         schema

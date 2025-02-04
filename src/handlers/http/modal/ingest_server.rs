@@ -67,7 +67,7 @@ pub static INGESTOR_META: Lazy<IngestorMetadata> = Lazy::new(|| {
     let url = url.to_string();
     let Options {
         username, password, ..
-    } = &PARSEABLE.options;
+    } = PARSEABLE.options.as_ref();
     let staging_path = PARSEABLE.staging_dir();
 
     for entry in entries {

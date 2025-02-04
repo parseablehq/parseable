@@ -66,7 +66,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     let objectstore = PARSEABLE.storage.get_object_store();
     // Delete from storage
     objectstore.delete_stream(&stream_name).await?;
-    let stream_dir = PARSEABLE.streams.get_or_create(&stream_name);
+    let stream_dir = PARSEABLE.get_or_create_stream(&stream_name);
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
         warn!(
             "failed to delete local data for stream {}. Clean {} manually",

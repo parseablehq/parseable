@@ -559,7 +559,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .streams
                 .get_custom_partition(stream)
                 .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let staging = PARSEABLE.streams.get_or_create(stream);
+            let staging = PARSEABLE.get_or_create_stream(stream);
             let schema = staging
                 .convert_disk_files_to_parquet(
                     time_partition.as_ref(),

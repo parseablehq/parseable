@@ -63,7 +63,7 @@ impl Event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
-        PARSEABLE.streams.get_or_create(&self.stream_name).push(
+        PARSEABLE.get_or_create_stream(&self.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -87,7 +87,7 @@ impl Event {
     pub fn process_unchecked(&self) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        PARSEABLE.streams.get_or_create(&self.stream_name).push(
+        PARSEABLE.get_or_create_stream(&self.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -129,8 +129,7 @@ pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), Event
 pub mod error {
     use arrow_schema::ArrowError;
 
-    use crate::parseable::StagingError;
-    use crate::storage::ObjectStorageError;
+    use crate::{parseable::StagingError, storage::ObjectStorageError};
 
     #[derive(Debug, thiserror::Error)]
     pub enum EventError {

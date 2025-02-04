@@ -26,6 +26,8 @@ use chrono::Local;
 use clap::{error::ErrorKind, Parser};
 use http::StatusCode;
 use once_cell::sync::Lazy;
+pub use staging::StagingError;
+use streams::{Stream, StreamRef};
 pub use streams::{StreamNotFound, Streams};
 use tracing::error;
 
@@ -44,24 +46,11 @@ use crate::{
         object_storage::parseable_json_path, ObjectStorageError, ObjectStorageProvider,
         ObjectStoreFormat, Owner, Permisssion, StreamType,
     },
-    validator,
+    validator, LOCK_EXPECT,
 };
 
-mod reader;
+mod staging;
 mod streams;
-mod writer;
-
-#[derive(Debug, thiserror::Error)]
-pub enum StagingError {
-    #[error("Unable to create recordbatch stream")]
-    Arrow(#[from] arrow_schema::ArrowError),
-    #[error("Could not generate parquet file")]
-    Parquet(#[from] parquet::errors::ParquetError),
-    #[error("IO Error {0}")]
-    ObjectStorage(#[from] std::io::Error),
-    #[error("Could not generate parquet file")]
-    Create,
-}
 
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
@@ -98,7 +87,7 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
 /// All state related to parseable, in one place.
 pub struct Parseable {
     /// Configuration variables for parseable
-    pub options: Options,
+    pub options: Arc<Options>,
     /// Storage engine backing parseable
     pub storage: Arc<dyn ObjectStorageProvider>,
     /// Metadata relating to logstreams
@@ -109,9 +98,47 @@ pub struct Parseable {
 impl Parseable {
     pub fn new(options: Options, storage: Arc<dyn ObjectStorageProvider>) -> Self {
         Parseable {
-            options,
+            options: Arc::new(options),
             storage,
             streams: Streams::default(),
+        }
+    }
+
+    /// Try to get the handle of a stream in staging, if it doesn't exist return `None`.
+    pub fn get_stream(&self, stream_name: &str) -> Option<StreamRef> {
+        self.streams.read().unwrap().get(stream_name).cloned()
+    }
+
+    /// Get the handle to a stream in staging, create one if it doesn't exist
+    pub fn get_or_create_stream(&self, stream_name: &str) -> StreamRef {
+        if let Some(staging) = self.get_stream(stream_name) {
+            return staging;
+        }
+
+        // Gets write privileges only for creating the stream when it doesn't already exist.
+        self.streams.create(
+            self.options.clone(),
+            stream_name.to_owned(),
+            LogStreamMetadata::default(),
+        )
+    }
+
+    /// Stores the provided stream metadata in memory mapping
+    pub async fn set_stream_meta(&self, stream_name: &str, updated_metadata: LogStreamMetadata) {
+        let map = self.streams.read().expect(LOCK_EXPECT);
+
+        match map.get(stream_name) {
+            Some(stream) => {
+                let mut metadata = stream.metadata.write().expect(LOCK_EXPECT);
+                *metadata = updated_metadata;
+            }
+            None => {
+                drop(map);
+                self.streams.write().expect(LOCK_EXPECT).insert(
+                    stream_name.to_owned(),
+                    Stream::new(self.options.clone(), stream_name, updated_metadata),
+                );
+            }
         }
     }
 
@@ -237,7 +264,8 @@ impl Parseable {
             schema_version,
             log_source,
         );
-        self.streams.create(stream_name.to_string(), metadata);
+        self.streams
+            .create(self.options.clone(), stream_name.to_string(), metadata);
 
         Ok(true)
     }
@@ -459,7 +487,10 @@ impl Parseable {
             ..Default::default()
         };
 
-        match storage.create_stream(&stream_name, meta, schema.clone()).await {
+        match storage
+            .create_stream(&stream_name, meta, schema.clone())
+            .await
+        {
             Ok(created_at) => {
                 let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
 
@@ -482,7 +513,8 @@ impl Parseable {
                     SchemaVersion::V1, // New stream
                     log_source,
                 );
-                self.streams.create(stream_name.to_string(), metadata);
+                self.streams
+                    .create(self.options.clone(), stream_name.to_string(), metadata);
             }
             Err(err) => {
                 return Err(CreateStreamError::Storage { stream_name, err });
