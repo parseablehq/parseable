@@ -31,7 +31,6 @@ use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::DisAllowRootUser;
 use crate::handlers::http::middleware::RouteExt;
 use crate::handlers::http::role;
-use crate::metrics;
 use crate::migration;
 use crate::migration::metadata_migration::migrate_ingester_metadata;
 use crate::rbac::role::Action;
@@ -44,9 +43,10 @@ use crate::sync;
 use crate::utils::get_ingestor_id;
 use crate::utils::get_url;
 use crate::{handlers::http::base_path, option::CONFIG};
+
 use actix_web::web;
-use actix_web::web::resource;
 use actix_web::Scope;
+use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
@@ -177,8 +177,8 @@ impl ParseableServer for IngestServer {
         // parseable can't use local storage for persistence when running a distributed setup
         if CONFIG.get_storage_mode_string() == "Local drive" {
             return Err(anyhow::Error::msg(
-                 "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
-             ));
+                "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
+            ));
         }
 
         // check for querier state. Is it there, or was it there in the past
@@ -190,9 +190,12 @@ impl ParseableServer for IngestServer {
     }
 
     /// configure the server and start an instance to ingest data
-    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
-        let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
+        CONFIG.storage().register_store_metrics(prometheus);
 
         migration::run_migration(&CONFIG).await?;
 
@@ -207,7 +210,7 @@ impl ParseableServer for IngestServer {
         set_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
-        let app = self.start(shutdown_rx, prometheus, None);
+        let app = self.start(shutdown_rx, prometheus.clone(), None);
 
         tokio::pin!(app);
         loop {
@@ -237,7 +240,7 @@ impl ParseableServer for IngestServer {
                     (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
                 }
 
-            };
+            }
         }
     }
 }
@@ -258,21 +261,21 @@ impl IngestServer {
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
             // GET Role List
-            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+            .service(web::resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
             .service(
                 // PUT and GET Default Role
-                resource("/default")
+                web::resource("/default")
                     .route(web::put().to(role::put_default).authorize(Action::PutRole))
                     .route(web::get().to(role::get_default).authorize(Action::GetRole)),
             )
             .service(
                 // PUT, GET, DELETE Roles
-                resource("/{name}")
+                web::resource("/{name}")
                     .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
             )
             .service(
-                resource("/{name}/sync")
+                web::resource("/{name}/sync")
                     .route(web::put().to(ingestor_role::put).authorize(Action::PutRole)),
             )
     }
