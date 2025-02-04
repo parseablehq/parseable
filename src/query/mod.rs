@@ -494,7 +494,7 @@ fn transform(
 ) -> Transformed<LogicalPlan> {
     plan.transform(&|plan| match plan {
         LogicalPlan::TableScan(table) => {
-            let mut new_filters = vec![];
+            let new_filters = vec![];
             if !table_contains_any_time_filters(&table, time_partition) {
                 let mut _start_time_filter: Expr;
                 let mut _end_time_filter: Expr;
@@ -529,8 +529,8 @@ fn transform(
                     }
                 }
 
-                new_filters.push(_start_time_filter);
-                new_filters.push(_end_time_filter);
+                //new_filters.push(_start_time_filter);
+                //new_filters.push(_end_time_filter);
             }
             let new_filter = new_filters.into_iter().reduce(and);
             if let Some(new_filter) = new_filter {

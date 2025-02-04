@@ -435,9 +435,9 @@ impl TableProvider for StandardTableProvider {
             .map_err(|err| DataFusionError::Plan(err.to_string()))?;
         let time_partition = object_store_format.time_partition;
         let mut time_filters = extract_primary_filter(filters, &time_partition);
-        if time_filters.is_empty() {
-            return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
-        }
+        // if time_filters.is_empty() {
+        //     return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
+        // }
 
         if include_now(filters, &time_partition) {
             if let Some(records) =
