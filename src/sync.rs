@@ -16,19 +16,30 @@
  *
  */
 
-use clokwerk::{AsyncScheduler, Job, TimeUnits};
+use chrono::{TimeDelta, Timelike};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::time::Instant;
 use tokio::sync::oneshot;
-use tokio::time::{sleep, Duration};
+use tokio::time::{interval_at, sleep, Duration, Instant};
 use tokio::{select, task};
-use tracing::{error, info, warn};
+use tracing::{error, info, warn, trace};
 
 use crate::alerts::{alerts_utils, AlertConfig, AlertError};
 use crate::option::CONFIG;
 use crate::staging::STAGING;
 use crate::{storage, STORAGE_CONVERSION_INTERVAL, STORAGE_UPLOAD_INTERVAL};
+
+// Calculates the instant that is the start of the next minute
+fn next_minute() -> Instant {
+    let now = chrono::Utc::now();
+    let time_till = now
+        .with_second(0)
+        .expect("Start of the minute")
+        .signed_duration_since(now)
+        + TimeDelta::minutes(1);
+
+    Instant::now() + time_till.to_std().expect("Valid duration")
+}
 
 pub async fn monitor_task_duration<F, Fut, T>(task_name: &str, threshold: Duration, f: F) -> T
 where
@@ -71,33 +82,33 @@ pub async fn object_store_sync() -> (
 
     let handle = task::spawn(async move {
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
-            let mut scheduler = AsyncScheduler::new();
-            scheduler
-                .every(STORAGE_UPLOAD_INTERVAL.seconds())
-                // .plus(5u32.seconds())
-                .run(|| async {
-                    if let Err(e) = monitor_task_duration(
-                        "object_store_sync",
-                        Duration::from_secs(15),
-                        || async {
-                            CONFIG
-                                .storage()
-                                .get_object_store()
-                                .upload_files_from_staging()
-                                .await
-                        },
-                    )
-                    .await
-                    {
-                        warn!("failed to upload local data with object store. {e:?}");
-                    }
-                });
+            let mut sync_interval = interval_at(
+                next_minute(),
+                Duration::from_secs(STORAGE_UPLOAD_INTERVAL as u64),
+            );
 
             let mut inbox_rx = AssertUnwindSafe(inbox_rx);
 
             loop {
                 select! {
-                    _ = scheduler.run_pending() => {},
+                    _ = sync_interval.tick() => {
+                        trace!("Syncing Parquets to Object Store... ");
+                        if let Err(e) = monitor_task_duration(
+                            "object_store_sync",
+                            Duration::from_secs(15),
+                            || async {
+                                CONFIG
+                                    .storage()
+                                    .get_object_store()
+                                    .upload_files_from_staging()
+                                    .await
+                            },
+                        )
+                        .await
+                        {
+                            warn!("failed to upload local data with object store. {e:?}");
+                        }
+                    },
                     res = &mut inbox_rx => {match res{
                         Ok(_) => break,
                         Err(_) => {
@@ -135,27 +146,26 @@ pub async fn arrow_conversion() -> (
 
     let handle = task::spawn(async move {
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
-            let mut scheduler = AsyncScheduler::new();
-            scheduler
-                .every(STORAGE_CONVERSION_INTERVAL.seconds())
-                .plus(5u32.seconds())
-                .run(|| async {
-                    if let Err(e) = monitor_task_duration(
-                        "arrow_conversion",
-                        Duration::from_secs(30),
-                        || async { CONFIG.storage().get_object_store().conversion(false).await },
-                    )
-                    .await
-                    {
-                        warn!("failed to convert local arrow data to parquet. {e:?}");
-                    }
-                });
+            let mut sync_interval = interval_at(
+                next_minute() + Duration::from_secs(5), // 5 second delay
+                Duration::from_secs(STORAGE_CONVERSION_INTERVAL as u64),
+            );
 
             let mut inbox_rx = AssertUnwindSafe(inbox_rx);
 
             loop {
                 select! {
-                    _ = scheduler.run_pending() => {},
+                    _ = sync_interval.tick() => {
+                        trace!("Converting Arrow to Parquet... ");
+                        if let Err(e) = monitor_task_duration(
+                            "arrow_conversion",
+                            Duration::from_secs(30),
+                            || async { CONFIG.storage().get_object_store().conversion(false).await },
+                        ).await
+                        {
+                            warn!("failed to convert local arrow data to parquet. {e:?}");
+                        }
+                    },
                     res = &mut inbox_rx => {match res{
                         Ok(_) => break,
                         Err(_) => {
@@ -196,16 +206,17 @@ pub async fn run_local_sync() -> (
         let mut inbox_rx = inbox_rx;
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
-            let mut scheduler = AsyncScheduler::new();
-            scheduler
-                .every((storage::LOCAL_SYNC_INTERVAL as u32).seconds())
-                .run(|| async {
-                    STAGING.flush_all();
-                });
+            let mut sync_interval = interval_at(
+                next_minute(),
+                Duration::from_secs(storage::LOCAL_SYNC_INTERVAL),
+            );
 
             loop {
                 select! {
-                    _ = scheduler.run_pending() => {},
+                    _ = sync_interval.tick() => {
+                        trace!("Flushing Arrows to disk...");
+                        STAGING.flush_all();
+                    },
                     res = &mut inbox_rx => {match res{
                         Ok(_) => break,
                         Err(_) => {
@@ -234,7 +245,7 @@ pub async fn run_local_sync() -> (
 }
 
 pub async fn schedule_alert_task(
-    eval_frequency: u32,
+    eval_frequency: u64,
     alert: AlertConfig,
 ) -> Result<
     (
@@ -251,21 +262,19 @@ pub async fn schedule_alert_task(
         info!("new alert task started for {alert:?}");
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
-            let mut scheduler = AsyncScheduler::new();
-            scheduler.every((eval_frequency).minutes()).run(move || {
-                let alert_val = alert.clone();
-                async move {
-                    match alerts_utils::evaluate_alert(&alert_val).await {
-                        Ok(_) => {}
-                        Err(err) => error!("Error while evaluation- {err}"),
-                    }
-                }
-            });
+            let mut sync_interval =
+                interval_at(next_minute(), Duration::from_secs(eval_frequency * 60));
             let mut inbox_rx = AssertUnwindSafe(inbox_rx);
 
             loop {
                 select! {
-                    _ = scheduler.run_pending() => {},
+                    _ = sync_interval.tick() => {
+                        trace!("Flushing stage to disk...");
+                        match alerts_utils::evaluate_alert(&alert).await {
+                            Ok(_) => {}
+                            Err(err) => error!("Error while evaluation- {err}"),
+                        }
+                    },
                     res = &mut inbox_rx => {match res{
                         Ok(_) => break,
                         Err(_) => {
