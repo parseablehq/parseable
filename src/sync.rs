@@ -55,14 +55,14 @@ where
         select! {
             _ = sleep(threshold), if !warned_once => {
                 warn!(
-                    "Task '{task_name}' started at: {start_time:?} is taking longer than expected: (threshold: {threshold:?})",
+                    "Task '{task_name}' is taking longer than expected: (threshold: {threshold:?})",
                 );
                 warned_once = true;
             },
             res = &mut future => {
                 if warned_once {
                     warn!(
-                        "Task '{task_name}' started at: {start_time:?} took longer than expected: {:?} (threshold: {threshold:?})",
+                        "Task '{task_name}' took longer than expected: {:?} (threshold: {threshold:?})",
                         start_time.elapsed() - threshold
                     );
                 }
