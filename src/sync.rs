@@ -22,7 +22,7 @@ use std::panic::AssertUnwindSafe;
 use tokio::sync::oneshot;
 use tokio::time::{interval_at, sleep, Duration, Instant};
 use tokio::{select, task};
-use tracing::{error, info, warn, trace};
+use tracing::{error, info, trace, warn};
 
 use crate::alerts::{alerts_utils, AlertConfig, AlertError};
 use crate::option::CONFIG;
@@ -63,7 +63,7 @@ where
                 if warned_once {
                     warn!(
                         "Task '{task_name}' started at: {start_time:?} took longer than expected: {:?} (threshold: {threshold:?})",
-                        start_time.elapsed()
+                        start_time.elapsed() - threshold
                     );
                 }
                 break res.expect("Task handle shouldn't error");
