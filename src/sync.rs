@@ -17,11 +17,11 @@
  */
 
 use clokwerk::{AsyncScheduler, Job, TimeUnits};
+use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::oneshot;
-use tokio::time::{interval, sleep, Duration, Instant};
+use tokio::time::{sleep, Duration};
 use tokio::{select, task};
 use tracing::{error, info, warn};
 
@@ -32,50 +32,32 @@ use crate::{storage, STORAGE_CONVERSION_INTERVAL, STORAGE_UPLOAD_INTERVAL};
 
 pub async fn monitor_task_duration<F, Fut, T>(task_name: &str, threshold: Duration, f: F) -> T
 where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = T>,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = T> + Send,
+    T: Send + 'static,
 {
-    let warning_issued = Arc::new(AtomicBool::new(false));
-    let warning_issued_clone = warning_issued.clone();
-    let warning_issued_clone_select = warning_issued.clone();
+    let mut future = tokio::spawn(async move { f().await });
+    let mut warned_once = false;
     let start_time = Instant::now();
 
-    // create the main task future
-    let task_future = f();
-
-    // create the monitoring task future
-    let monitor_future = async move {
-        let mut check_interval = interval(threshold);
-
-        loop {
-            check_interval.tick().await;
-            let elapsed = start_time.elapsed();
-
-            if elapsed > threshold
-                && !warning_issued_clone.load(std::sync::atomic::Ordering::Relaxed)
-            {
+    loop {
+        select! {
+            _ = sleep(threshold), if !warned_once => {
                 warn!(
-                    "Task '{}' started at: {start_time:?} is taking longer than expected: (threshold: {:?})",
-                    task_name, threshold
+                    "Task '{task_name}' started at: {start_time:?} is taking longer than expected: (threshold: {threshold:?})",
                 );
-                warning_issued_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                warned_once = true;
+            },
+            res = &mut future => {
+                if warned_once {
+                    warn!(
+                        "Task '{task_name}' started at: {start_time:?} took longer than expected: {:?} (threshold: {threshold:?})",
+                        start_time.elapsed()
+                    );
+                }
+                break res.expect("Task handle shouldn't error");
             }
         }
-    };
-
-    // run both futures concurrently, but only take the result from the task future
-    select! {
-        task_result = task_future => {
-            if warning_issued_clone_select.load(std::sync::atomic::Ordering::Relaxed) {
-                let elapsed = start_time.elapsed();
-                warn!(
-                    "Task '{}' started at: {start_time:?} took longer than expected: {:?} (threshold: {:?})",
-                    task_name, elapsed, threshold
-                );
-            }
-            task_result
-        },
-        _ = monitor_future => unreachable!(), // monitor future never completes
     }
 }
 
@@ -107,23 +89,21 @@ pub async fn object_store_sync() -> (
                     )
                     .await
                     {
-                        warn!("failed to upload local data with object store. {:?}", e);
+                        warn!("failed to upload local data with object store. {e:?}");
                     }
                 });
 
             let mut inbox_rx = AssertUnwindSafe(inbox_rx);
-            let mut check_interval = interval(Duration::from_secs(1));
 
             loop {
-                check_interval.tick().await;
-                scheduler.run_pending().await;
-
-                match inbox_rx.try_recv() {
-                    Ok(_) => break,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        warn!("Inbox channel closed unexpectedly");
-                        break;
+                select! {
+                    _ = scheduler.run_pending() => {},
+                    res = &mut inbox_rx => {match res{
+                        Ok(_) => break,
+                        Err(_) => {
+                            warn!("Inbox channel closed unexpectedly");
+                            break;
+                        }}
                     }
                 }
             }
@@ -134,7 +114,7 @@ pub async fn object_store_sync() -> (
                 future.await;
             }
             Err(panic_error) => {
-                error!("Panic in object store sync task: {:?}", panic_error);
+                error!("Panic in object store sync task: {panic_error:?}");
                 let _ = outbox_tx.send(());
             }
         }
@@ -167,23 +147,21 @@ pub async fn arrow_conversion() -> (
                     )
                     .await
                     {
-                        warn!("failed to convert local arrow data to parquet. {:?}", e);
+                        warn!("failed to convert local arrow data to parquet. {e:?}");
                     }
                 });
 
             let mut inbox_rx = AssertUnwindSafe(inbox_rx);
-            let mut check_interval = interval(Duration::from_secs(1));
 
             loop {
-                check_interval.tick().await;
-                scheduler.run_pending().await;
-
-                match inbox_rx.try_recv() {
-                    Ok(_) => break,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        warn!("Inbox channel closed unexpectedly");
-                        break;
+                select! {
+                    _ = scheduler.run_pending() => {},
+                    res = &mut inbox_rx => {match res{
+                        Ok(_) => break,
+                        Err(_) => {
+                            warn!("Inbox channel closed unexpectedly");
+                            break;
+                        }}
                     }
                 }
             }
@@ -194,7 +172,7 @@ pub async fn arrow_conversion() -> (
                 future.await;
             }
             Err(panic_error) => {
-                error!("Panic in object store sync task: {:?}", panic_error);
+                error!("Panic in object store sync task: {panic_error:?}");
                 let _ = outbox_tx.send(());
             }
         }
@@ -226,19 +204,14 @@ pub async fn run_local_sync() -> (
                 });
 
             loop {
-                // Sleep for 50ms
-                sleep(Duration::from_millis(50)).await;
-
-                // Run any pending scheduled tasks
-                scheduler.run_pending().await;
-
-                // Check inbox
-                match inbox_rx.try_recv() {
-                    Ok(_) => break,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        warn!("Inbox channel closed unexpectedly");
-                        break;
+                select! {
+                    _ = scheduler.run_pending() => {},
+                    res = &mut inbox_rx => {match res{
+                        Ok(_) => break,
+                        Err(_) => {
+                            warn!("Inbox channel closed unexpectedly");
+                            break;
+                        }}
                     }
                 }
             }
@@ -289,20 +262,16 @@ pub async fn schedule_alert_task(
                 }
             });
             let mut inbox_rx = AssertUnwindSafe(inbox_rx);
-            let mut check_interval = interval(Duration::from_secs(1));
 
             loop {
-                // Run any pending scheduled tasks
-                check_interval.tick().await;
-                scheduler.run_pending().await;
-
-                // Check inbox
-                match inbox_rx.try_recv() {
-                    Ok(_) => break,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => continue,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        warn!("Inbox channel closed unexpectedly");
-                        break;
+                select! {
+                    _ = scheduler.run_pending() => {},
+                    res = &mut inbox_rx => {match res{
+                        Ok(_) => break,
+                        Err(_) => {
+                            warn!("Inbox channel closed unexpectedly");
+                            break;
+                        }}
                     }
                 }
             }
@@ -313,7 +282,7 @@ pub async fn schedule_alert_task(
                 future.await;
             }
             Err(panic_error) => {
-                error!("Panic in scheduled alert task: {:?}", panic_error);
+                error!("Panic in scheduled alert task: {panic_error:?}");
                 let _ = outbox_tx.send(());
             }
         }
