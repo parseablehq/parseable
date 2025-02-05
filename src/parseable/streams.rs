@@ -552,6 +552,21 @@ impl Streams {
         Ok(Arc::new(schema))
     }
 
+    pub fn get_schema_raw(
+        &self,
+        stream_name: &str,
+    ) -> Result<HashMap<String, Arc<Field>>, StreamNotFound> {
+        let map = self.read().expect(LOCK_EXPECT);
+
+        let stream = map
+            .get(stream_name)
+            .ok_or(StreamNotFound(stream_name.to_string()))?;
+
+        let schema = stream.metadata.read().expect(LOCK_EXPECT).schema.clone();
+
+        Ok(schema)
+    }
+
     pub fn set_retention(
         &self,
         stream_name: &str,

@@ -39,6 +39,7 @@ use actix_web::web;
 use actix_web::web::resource;
 use actix_web::Resource;
 use actix_web::Scope;
+use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -99,9 +100,12 @@ impl ParseableServer for Server {
     }
 
     // configure the server and start an instance of the single server setup
-    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
-        let prometheus = metrics::build_metrics_handler();
-        PARSEABLE.storage.register_store_metrics(&prometheus);
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
+        PARSEABLE.storage.register_store_metrics(prometheus);
 
         migration::run_migration(&PARSEABLE).await?;
 
@@ -138,7 +142,7 @@ impl ParseableServer for Server {
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
 
-        let app = self.start(shutdown_rx, prometheus, PARSEABLE.options.openid());
+        let app = self.start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid());
 
         tokio::pin!(app);
 

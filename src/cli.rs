@@ -21,6 +21,9 @@ use std::path::PathBuf;
 
 use url::Url;
 
+#[cfg(feature = "kafka")]
+use crate::connectors::kafka::config::KafkaConfig;
+
 use crate::{
     oidc::{self, OpenidConfig},
     option::{validation, Compression, Mode},
@@ -84,6 +87,9 @@ pub struct LocalStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: FSConfig,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser)]
@@ -92,6 +98,9 @@ pub struct S3StoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: S3Config,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser)]
@@ -100,6 +109,9 @@ pub struct BlobStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: AzureBlobConfig,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser, Debug, Default)]
@@ -284,54 +296,6 @@ pub struct Options {
 
     #[command(flatten)]
     pub oidc: Option<OidcConfig>,
-
-    // Kafka configuration (conditionally compiled)
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_TOPICS", help = "Kafka topics to subscribe to")]
-    pub kafka_topics: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_HOST", help = "Address and port for Kafka server")]
-    pub kafka_host: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_GROUP", help = "Kafka group")]
-    pub kafka_group: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_CLIENT_ID", help = "Kafka client id")]
-    pub kafka_client_id: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(
-        long,
-        env = "P_KAFKA_SECURITY_PROTOCOL",
-        value_parser = validation::kafka_security_protocol,
-        help = "Kafka security protocol"
-    )]
-    pub kafka_security_protocol: Option<crate::kafka::SslProtocol>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_PARTITIONS", help = "Kafka partitions")]
-    pub kafka_partitions: Option<String>,
 
     // Audit logging
     #[arg(

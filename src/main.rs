@@ -15,29 +15,23 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
-use parseable::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
-use parseable::parseable::PARSEABLE;
+#[cfg(feature = "kafka")]
+use parseable::connectors;
 use parseable::{
-    banner, option::Mode, rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
+    banner, handlers::http::modal::ingest_server::INGESTOR_EXPECT, metrics, option::Mode,
+    parseable::PARSEABLE, rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
-use tracing::info;
-use tracing_subscriber::EnvFilter;
-
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-use parseable::kafka;
+use tracing::Level;
+use tracing::{info, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{fmt, EnvFilter, Registry};
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .compact()
-        .init();
+    init_logger();
 
     // these are empty ptrs so mem footprint should be minimal
     let server: Box<dyn ParseableServer> = match &PARSEABLE.options.mode {
@@ -57,28 +51,57 @@ async fn main() -> anyhow::Result<()> {
     // keep metadata info in mem
     metadata.set_global();
 
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    // load kafka server
-    if PARSEABLE.options.mode != Mode::Query {
-        tokio::task::spawn(kafka::setup_integration());
-    }
-
     // Spawn a task to trigger graceful shutdown on appropriate signal
     let (shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
         block_until_shutdown_signal().await;
 
         // Trigger graceful shutdown
-        println!("Received shutdown signal, notifying server to shut down...");
+        warn!("Received shutdown signal, notifying server to shut down...");
         shutdown_trigger.send(()).unwrap();
     });
 
-    server.init(shutdown_rx).await?;
+    let prometheus = metrics::build_metrics_handler();
+    // Start servers
+    #[cfg(feature = "kafka")]
+    {
+        let parseable_server = server.init(&prometheus, shutdown_rx);
+        let connectors = connectors::init(&prometheus);
+
+        tokio::try_join!(parseable_server, connectors)?;
+    }
+
+    #[cfg(not(feature = "kafka"))]
+    {
+        let parseable_server = server.init(&prometheus, shutdown_rx);
+        parseable_server.await?;
+    }
 
     Ok(())
+}
+
+pub fn init_logger() {
+    let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        let default_level = if cfg!(debug_assertions) {
+            Level::DEBUG
+        } else {
+            Level::WARN
+        };
+        EnvFilter::new(default_level.to_string())
+    });
+
+    let fmt_layer = fmt::layer()
+        .with_thread_names(true)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+        .with_target(true)
+        .compact();
+
+    Registry::default()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
 }
 
 #[cfg(windows)]

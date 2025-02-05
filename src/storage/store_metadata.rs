@@ -73,7 +73,7 @@ impl Default for StorageMetadata {
             staging: PARSEABLE.staging_dir().to_path_buf(),
             storage: PARSEABLE.storage.get_endpoint(),
             deployment_id: uid::gen(),
-            server_mode: PARSEABLE.options.mode.clone(),
+            server_mode: PARSEABLE.options.mode,
             users: Vec::new(),
             streams: Vec::new(),
             roles: HashMap::default(),
@@ -150,13 +150,13 @@ pub async fn resolve_parseable_metadata(
                     },
                     Mode::Query => {
                         overwrite_remote = true;
-                        metadata.server_mode = PARSEABLE.options.mode.clone();
+                        metadata.server_mode = PARSEABLE.options.mode;
                         metadata.staging = PARSEABLE.staging_dir().to_path_buf();
                     },
                     Mode::Ingest => {
                         // if ingest server is started fetch the metadata from remote
                         // update the server mode for local metadata
-                        metadata.server_mode = PARSEABLE.options.mode.clone();
+                        metadata.server_mode = PARSEABLE.options.mode;
                         metadata.staging = PARSEABLE.staging_dir().to_path_buf();
                       },
                 }
@@ -184,7 +184,7 @@ pub async fn resolve_parseable_metadata(
         ObjectStorageError::UnhandledError(err)
     })?;
 
-    metadata.server_mode = PARSEABLE.options.mode.clone();
+    metadata.server_mode = PARSEABLE.options.mode;
     if overwrite_remote {
         put_remote_metadata(&metadata).await?;
     }
@@ -258,7 +258,7 @@ pub async fn put_remote_metadata(metadata: &StorageMetadata) -> Result<(), Objec
 
 pub fn put_staging_metadata(meta: &StorageMetadata) -> io::Result<()> {
     let mut staging_metadata = meta.clone();
-    staging_metadata.server_mode = PARSEABLE.options.mode.clone();
+    staging_metadata.server_mode = PARSEABLE.options.mode;
     staging_metadata.staging = PARSEABLE.staging_dir().to_path_buf();
     let path = PARSEABLE.staging_dir().join(PARSEABLE_METADATA_FILE_NAME);
     let mut file = OpenOptions::new()

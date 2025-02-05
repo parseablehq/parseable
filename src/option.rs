@@ -79,12 +79,6 @@ pub mod validation {
 
     use path_clean::PathClean;
 
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    use crate::kafka::SslProtocol;
-
     use super::{Compression, Mode};
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
@@ -127,20 +121,6 @@ pub mod validation {
 
     pub fn url(s: &str) -> Result<url::Url, String> {
         url::Url::parse(s).map_err(|_| "Invalid URL provided".to_string())
-    }
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    pub fn kafka_security_protocol(s: &str) -> Result<SslProtocol, String> {
-        match s {
-            "plaintext" => Ok(SslProtocol::Plaintext),
-            "ssl" => Ok(SslProtocol::Ssl),
-            "sasl_plaintext" => Ok(SslProtocol::SaslPlaintext),
-            "sasl_ssl" => Ok(SslProtocol::SaslSsl),
-            _ => Err("Invalid Kafka Security Protocol provided".to_string()),
-        }
     }
 
     pub fn mode(s: &str) -> Result<Mode, String> {

@@ -23,15 +23,12 @@ pub mod audit;
 pub mod banner;
 mod catalog;
 mod cli;
+#[cfg(feature = "kafka")]
+pub mod connectors;
 pub mod correlation;
 mod event;
 pub mod handlers;
 pub mod hottier;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-pub mod kafka;
 mod livetail;
 mod metadata;
 pub mod metrics;
