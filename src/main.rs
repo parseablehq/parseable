@@ -24,7 +24,7 @@ use parseable::{
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
-use tracing::level_filters::LevelFilter;
+use tracing::Level;
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -32,7 +32,7 @@ use tracing_subscriber::{fmt, EnvFilter, Registry};
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
-    init_logger(LevelFilter::DEBUG);
+    init_logger();
 
     // these are empty ptrs so mem footprint should be minimal
     let server: Box<dyn ParseableServer> = match CONFIG.options.mode {
@@ -79,9 +79,15 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn init_logger(default_level: LevelFilter) {
-    let filter_layer = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_level.to_string()));
+pub fn init_logger() {
+    let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        let default_level = if cfg!(debug_assertions) {
+            Level::DEBUG
+        } else {
+            Level::WARN
+        };
+        EnvFilter::new(default_level.to_string())
+    });
 
     let fmt_layer = fmt::layer()
         .with_thread_names(true)
