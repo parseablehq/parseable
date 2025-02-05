@@ -26,7 +26,7 @@ To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.pa
 ### Run Parseable
 
 <details>
-<summary><a href="https://www.parseable.com/docs/docker-quick-start">Docker Image</a></summary>
+<summary><a href="https://www.parseable.com/docs/server/get-started/docker-quick-start">Docker Image</a></summary>
 <p>
 
 Get started with Parseable Docker with a single command:
@@ -41,7 +41,7 @@ docker run -p 8000:8000 \
 </details>
 
 <details>
-<summary><a href="https://www.parseable.com/docs/docker-quick-start">Executable Binary</a></summary>
+<summary><a href="https://www.parseable.com/docs/server/get-started/binary-quick-start">Executable Binary</a></summary>
 <p>
 
 Download and run the Parseable binary on your laptop:
