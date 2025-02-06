@@ -782,21 +782,6 @@ impl Streams {
 
         Ok(metadata.stream_type)
     }
-
-    pub fn resolve_schema(
-        &self,
-        stream_name: &str,
-    ) -> Result<HashMap<String, Arc<Field>>, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        Ok(metadata.schema.clone())
-    }
 }
 
 #[cfg(test)]
