@@ -66,10 +66,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     };
 
     // Deleting Correlations, Dashboards, Filters created by user
-    CORRELATIONS
-        .delete_for_user(&username)
-        .await
-        .map_err(|err| RBACError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+    CORRELATIONS.delete_for_user(&username).await;
 
     DASHBOARDS.delete_for_user(&username);
     FILTERS.delete_for_user(&username);
