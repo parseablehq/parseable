@@ -142,8 +142,8 @@ impl Filters {
     }
 
     pub fn delete_for_user(&self, user_id: &str) {
-        let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|f| f.user_id != Some(user_id.to_string()));
+        let mut filters = self.0.write().expect(LOCK_EXPECT);
+        filters.retain(|f| f.user_id.as_ref().is_some_and(|id| id != user_id));
     }
 
     pub fn get_filter(&self, filter_id: &str, user_id: &str) -> Option<Filter> {

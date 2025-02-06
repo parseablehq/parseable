@@ -199,7 +199,7 @@ impl Correlations {
         Ok(())
     }
 
-    pub async fn delete_for_user(&self, user_id: &str) -> Result<(), CorrelationError> {
+    pub async fn delete_for_user(&self, user_id: &str) {
         // Cautious to avoid deadlock with read and write.
         let correlation_ids: Vec<String> = {
             let correlations = self.0.read().await;
@@ -214,7 +214,6 @@ impl Correlations {
         for id in correlation_ids.iter() {
             self.0.write().await.remove_entry(id);
         }
-        Ok(())
     }
 }
 
