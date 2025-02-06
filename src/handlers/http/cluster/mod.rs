@@ -35,7 +35,7 @@ use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
 use crate::storage::{ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY};
 use crate::HTTP_CLIENT;
 use actix_web::http::header::{self, HeaderMap};
-use actix_web::web::Path;
+use actix_web::web::{Json, Path};
 use actix_web::Responder;
 use bytes::Bytes;
 use chrono::Utc;
@@ -729,6 +729,9 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     let mut dresses = vec![];
 
     for ingestor in ingestor_metadata {
+        if !utils::check_liveness(&ingestor.domain_name).await {
+            continue;
+        }
         let uri = Url::parse(&format!(
             "{}{}/metrics",
             &ingestor.domain_name,
@@ -749,11 +752,10 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
             let text = res.text().await.map_err(PostError::NetworkError)?;
             let lines: Vec<Result<String, std::io::Error>> =
                 text.lines().map(|line| Ok(line.to_owned())).collect_vec();
-
             let sample = prometheus_parse::Scrape::parse(lines.into_iter())
                 .map_err(|err| PostError::CustomError(err.to_string()))?
                 .samples;
-            let ingestor_metrics = Metrics::from_prometheus_samples(sample, &ingestor)
+            let ingestor_metrics = Metrics::ingestor_prometheus_samples(sample, &ingestor)
                 .await
                 .map_err(|err| {
                     error!("Fatal: failed to get ingestor metrics: {:?}", err);
@@ -767,10 +769,11 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
             );
         }
     }
+    dresses.push(Metrics::querier_prometheus_metrics().await);
     Ok(dresses)
 }
 
-pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
+pub async fn init_cluster_metrics_scheduler() -> Result<(), PostError> {
     info!("Setting up schedular for cluster metrics ingestion");
     let mut scheduler = AsyncScheduler::new();
     scheduler
@@ -779,25 +782,12 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
             let result: Result<(), PostError> = async {
                 let cluster_metrics = fetch_cluster_metrics().await;
                 if let Ok(metrics) = cluster_metrics {
-                    if !metrics.is_empty() {
-                        info!("Cluster metrics fetched successfully from all ingestors");
-                        if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
-                            if matches!(
-                                ingest_internal_stream(
-                                    INTERNAL_STREAM_NAME.to_string(),
-                                    bytes::Bytes::from(metrics_bytes),
-                                )
-                                .await,
-                                Ok(())
-                            ) {
-                                info!("Cluster metrics successfully ingested into internal stream");
-                            } else {
-                                error!("Failed to ingest cluster metrics into internal stream");
-                            }
-                        } else {
-                            error!("Failed to serialize cluster metrics");
-                        }
-                    }
+                    let json_value = serde_json::to_value(metrics)
+                        .map_err(|e| anyhow::anyhow!("Failed to serialize metrics: {}", e))?;
+
+                    ingest_internal_stream(INTERNAL_STREAM_NAME.to_string(), Json(json_value))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to ingest metrics: {}", e))?;
                 }
                 Ok(())
             }

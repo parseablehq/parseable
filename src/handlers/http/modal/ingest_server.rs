@@ -208,6 +208,7 @@ impl ParseableServer for IngestServer {
 
         // set the ingestor metadata
         set_ingestor_metadata().await?;
+        metrics::init_system_metrics_scheduler().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
         let app = self.start(shutdown_rx, prometheus.clone(), None);

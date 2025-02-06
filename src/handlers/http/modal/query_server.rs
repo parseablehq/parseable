@@ -19,11 +19,10 @@
 use crate::alerts::ALERTS;
 use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
-use crate::handlers::http::base_path;
-use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{self, role};
+use crate::handlers::http::{base_path, cluster};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
@@ -37,7 +36,7 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::error;
 
 use crate::{option::CONFIG, ParseableServer};
 
@@ -120,15 +119,14 @@ impl ParseableServer for QueryServer {
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
 
+        metrics::init_system_metrics_scheduler().await?;
+        cluster::init_cluster_metrics_scheduler().await?;
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
         if CONFIG.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
-        if matches!(init_cluster_metrics_schedular(), Ok(())) {
-            info!("Cluster metrics scheduler started successfully");
-        }
         if let Some(hot_tier_manager) = HotTierManager::global() {
             hot_tier_manager.put_internal_stream_hot_tier().await?;
             hot_tier_manager.download_from_s3()?;

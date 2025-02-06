@@ -20,12 +20,8 @@ use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
-use crate::event::format::LogSource;
-use crate::event::{
-    self,
-    error::EventError,
-    format::{self, EventFormat},
-};
+use crate::event::format::{self, EventFormat, LogSource};
+use crate::event::{self, error::EventError};
 use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::error::stream_info::MetadataError;
@@ -36,12 +32,12 @@ use crate::otel::metrics::flatten_otel_metrics;
 use crate::otel::traces::flatten_otel_traces;
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
-use crate::utils::json::flatten::JsonFlattenError;
+use crate::utils::json::convert_array_to_object;
+use crate::utils::json::flatten::{convert_to_array, JsonFlattenError};
 use actix_web::web::{Json, Path};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
-use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
@@ -77,18 +73,29 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     Ok(HttpResponse::Ok().finish())
 }
 
-pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    let size: usize = body.len();
+pub async fn ingest_internal_stream(
+    stream_name: String,
+    Json(json): Json<Value>,
+) -> Result<(), PostError> {
+    let size = serde_json::to_vec(&json).unwrap().len() as u64;
+    let data = convert_to_array(convert_array_to_object(
+        json,
+        None,
+        None,
+        None,
+        SchemaVersion::V0,
+        &LogSource::default(),
+    )?)?;
+
     let parsed_timestamp = Utc::now().naive_utc();
     let (rb, is_first) = {
-        let body_val: Value = serde_json::from_slice(&body)?;
         let hash_map = STREAM_INFO.read().unwrap();
         let schema = hash_map
             .get(&stream_name)
             .ok_or(PostError::StreamNotFound(stream_name.clone()))?
             .schema
             .clone();
-        let event = format::json::Event { data: body_val };
+        let event = format::json::Event { data };
         // For internal streams, use old schema
         event.into_recordbatch(&schema, false, None, SchemaVersion::V0)?
     };
