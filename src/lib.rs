@@ -56,7 +56,8 @@ pub use handlers::http::modal::{
 use once_cell::sync::Lazy;
 use reqwest::{Client, ClientBuilder};
 
-pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
+pub const STORAGE_CONVERSION_INTERVAL: u32 = 60;
+pub const STORAGE_UPLOAD_INTERVAL: u32 = 30;
 
 // A single HTTP client for all outgoing HTTP requests from the parseable server
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
