@@ -38,6 +38,7 @@ use crate::{
         object_storage::manifest_path, ObjectStorage, ObjectStorageError, ObjectStoreFormat,
     },
 };
+pub use manifest::create_from_parquet_file;
 
 pub mod column;
 pub mod manifest;

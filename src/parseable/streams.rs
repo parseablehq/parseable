@@ -19,7 +19,7 @@
 
 use std::{
     collections::HashMap,
-    fs::{remove_file, OpenOptions},
+    fs::{remove_file, File, OpenOptions},
     num::NonZeroU32,
     path::{Path, PathBuf},
     process,
@@ -180,6 +180,11 @@ impl Stream {
         paths
     }
 
+    /// Groups arrow files which are to be included in one parquet
+    ///
+    /// Excludes the arrow file being written for the current minute (data is still being written to that one)
+    ///
+    /// Only includes ones starting from the previous minute
     pub fn arrow_files_grouped_exclude_time(
         &self,
         exclude: NaiveDateTime,
@@ -188,6 +193,8 @@ impl Stream {
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let mut arrow_files = self.arrow_files();
 
+        // if the shutdown signal is false i.e. normal condition
+        // don't keep the ones for the current minute
         if !shutdown_signal {
             arrow_files.retain(|path| {
                 !path
@@ -228,6 +235,45 @@ impl Stream {
             .map(|file| file.path())
             .filter(|file| file.extension().is_some_and(|ext| ext.eq("parquet")))
             .collect()
+    }
+
+    pub fn schema_files(&self) -> Vec<PathBuf> {
+        let Ok(dir) = self.data_path.read_dir() else {
+            return vec![];
+        };
+
+        dir.flatten()
+            .map(|file| file.path())
+            .filter(|file| file.extension().is_some_and(|ext| ext.eq("schema")))
+            .collect()
+    }
+
+    pub fn get_schemas_if_present(&self) -> Option<Vec<Schema>> {
+        let Ok(dir) = self.data_path.read_dir() else {
+            return None;
+        };
+
+        let mut schemas: Vec<Schema> = Vec::new();
+
+        for file in dir.flatten() {
+            if let Some(ext) = file.path().extension() {
+                if ext.eq("schema") {
+                    let file = File::open(file.path()).expect("Schema File should exist");
+
+                    let schema = match serde_json::from_reader(file) {
+                        Ok(schema) => schema,
+                        Err(_) => continue,
+                    };
+                    schemas.push(schema);
+                }
+            }
+        }
+
+        if !schemas.is_empty() {
+            Some(schemas)
+        } else {
+            None
+        }
     }
 
     fn arrow_path_to_parquet(path: &Path, random_string: &str) -> PathBuf {
@@ -311,6 +357,9 @@ impl Stream {
         props.set_sorting_columns(Some(sorting_column_vec)).build()
     }
 
+    /// This function reads arrow files, groups their schemas
+    ///
+    /// converts them into parquet files and returns a merged schema
     pub fn convert_disk_files_to_parquet(
         &self,
         time_partition: Option<&String>,
@@ -334,12 +383,12 @@ impl Stream {
         }
 
         // warn!("staging files-\n{staging_files:?}\n");
-        for (parquet_path, files) in staging_files {
+        for (parquet_path, arrow_files) in staging_files {
             metrics::STAGING_FILES
                 .with_label_values(&[&self.stream_name])
-                .set(files.len() as i64);
+                .set(arrow_files.len() as i64);
 
-            for file in &files {
+            for file in &arrow_files {
                 let file_size = file.metadata().unwrap().len();
                 let file_type = file.extension().unwrap().to_str().unwrap();
 
@@ -348,7 +397,7 @@ impl Stream {
                     .add(file_size as i64);
             }
 
-            let record_reader = MergedReverseRecordReader::try_new(&files);
+            let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
                 continue;
             }
@@ -375,7 +424,7 @@ impl Stream {
                 );
                 remove_file(parquet_path).unwrap();
             } else {
-                for file in files {
+                for file in arrow_files {
                     // warn!("file-\n{file:?}\n");
                     let file_size = file.metadata().unwrap().len();
                     let file_type = file.extension().unwrap().to_str().unwrap();

@@ -60,6 +60,7 @@ use reqwest::{Client, ClientBuilder};
 pub const LOCK_EXPECT: &str = "Thread shouldn't panic while holding a lock";
 
 pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
+pub const STORAGE_CONVERSION_INTERVAL: u32 = 60;
 
 // A single HTTP client for all outgoing HTTP requests from the parseable server
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {

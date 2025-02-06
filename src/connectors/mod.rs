@@ -20,7 +20,11 @@ use std::sync::Arc;
 
 use actix_web_prometheus::PrometheusMetrics;
 use common::{processor::Processor, shutdown::Shutdown};
-use kafka::{config::KafkaConfig, consumer::KafkaStreams, metrics::KafkaMetricsCollector, processor::ParseableSinkProcessor, rebalance_listener::RebalanceListener, sink::KafkaSinkConnector, state::StreamState, ConsumerRecord, KafkaContext};
+use kafka::{
+    config::KafkaConfig, consumer::KafkaStreams, metrics::KafkaMetricsCollector,
+    processor::ParseableSinkProcessor, rebalance_listener::RebalanceListener,
+    sink::KafkaSinkConnector, state::StreamState, ConsumerRecord, KafkaContext,
+};
 use prometheus::Registry;
 use tokio::sync::RwLock;
 use tracing::{info, warn};

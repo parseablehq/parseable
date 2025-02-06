@@ -27,10 +27,13 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
 
 use crate::{
-    connectors::common::processor::Processor, event::{
+    connectors::common::processor::Processor,
+    event::{
         format::{json, EventFormat, LogSource},
         Event as ParseableEvent,
-    }, parseable::PARSEABLE, storage::StreamType
+    },
+    parseable::PARSEABLE,
+    storage::StreamType,
 };
 
 use super::{config::BufferConfig, ConsumerRecord, StreamConsumer, TopicPartition};
