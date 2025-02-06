@@ -19,6 +19,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
+use arrow_schema::ArrowError;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
@@ -308,22 +309,22 @@ pub enum QueryError {
     EventError(#[from] EventError),
     #[error("Error: {0}")]
     MalformedQuery(&'static str),
-    #[allow(unused)]
-    #[error(
-        r#"Error: Failed to Parse Record Batch into Json
-Description: {0}"#
-    )]
-    JsonParse(String),
     #[error("Error: {0}")]
     ActixError(#[from] actix_web::Error),
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
+    #[error("Arrow Error: {0}")]
+    Arrow(#[from] ArrowError),
+    #[error("Error: Failed to Parse Record Batch into Json: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 impl actix_web::ResponseError for QueryError {
     fn status_code(&self) -> http::StatusCode {
         match self {
-            QueryError::Execute(_) | QueryError::JsonParse(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::Execute(_) | QueryError::Json(_) | QueryError::Arrow(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
             _ => StatusCode::BAD_REQUEST,
         }
     }

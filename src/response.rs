@@ -16,11 +16,10 @@
  *
  */
 
-use crate::{handlers::http::query::QueryError, utils::arrow::record_batches_to_json};
+use crate::handlers::http::query::QueryError;
 use actix_web::HttpResponse;
 use datafusion::arrow::record_batch::RecordBatch;
-use itertools::Itertools;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tracing::info;
 
 pub struct QueryResponse {
@@ -31,31 +30,198 @@ pub struct QueryResponse {
 }
 
 impl QueryResponse {
+    /// TODO: maybe this can be futher optimized by directly converting `arrow` to `serde_json` instead of serializing to bytes
     pub fn to_http(&self) -> Result<HttpResponse, QueryError> {
-        info!("{}", "Returning query results");
+        info!("Returning query results");
+        let response = self.to_json()?;
+
+        Ok(HttpResponse::Ok().json(response))
+    }
+
+    fn to_json(&self) -> Result<Value, QueryError> {
+        let buf = vec![];
+        let mut writer = arrow_json::ArrayWriter::new(buf);
         let records: Vec<&RecordBatch> = self.records.iter().collect();
-        let mut json_records = record_batches_to_json(&records)?;
+        writer.write_batches(&records)?;
+        writer.finish()?;
+
+        let mut json: Vec<Map<String, Value>> = serde_json::from_slice(&writer.into_inner())?;
 
         if self.fill_null {
-            for map in &mut json_records {
-                for field in &self.fields {
-                    if !map.contains_key(field) {
-                        map.insert(field.clone(), Value::Null);
-                    }
+            for object in json.iter_mut() {
+                for field in self.fields.iter() {
+                    object.entry(field).or_insert(Value::Null);
                 }
             }
         }
-        let values = json_records.into_iter().map(Value::Object).collect_vec();
 
-        let response = if self.with_fields {
+        let json = if self.with_fields {
             json!({
                 "fields": self.fields,
-                "records": values
+                "records": json
             })
         } else {
-            Value::Array(values)
+            json!(json)
         };
 
-        Ok(HttpResponse::Ok().json(response))
+        Ok(json)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Array, Float64Array, Int64Array, RecordBatch, StringArray};
+    use arrow_schema::Schema;
+    use serde_json::{json, Value};
+
+    use crate::response::QueryResponse;
+
+    #[test]
+    fn check_empty_record_batches_to_json() {
+        let response = QueryResponse {
+            records: vec![RecordBatch::new_empty(Arc::new(Schema::empty()))],
+            fields: vec![],
+            fill_null: false,
+            with_fields: false,
+        };
+
+        assert_eq!(response.to_json().unwrap(), Value::Array(vec![]));
+    }
+
+    #[test]
+    fn check_record_batches_to_json() {
+        let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..3));
+        let array2: Arc<dyn Array> = Arc::new(Float64Array::from_iter((0..3).map(|x| x as f64)));
+        let array3: Arc<dyn Array> = Arc::new(StringArray::from_iter(
+            (0..3).map(|x| Some(format!("str {x}"))),
+        ));
+
+        let record = RecordBatch::try_from_iter_with_nullable([
+            ("a", array1, true),
+            ("b", array2, true),
+            ("c", array3, true),
+        ])
+        .unwrap();
+        let response = QueryResponse {
+            records: vec![record],
+            fields: vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            fill_null: false,
+            with_fields: false,
+        };
+
+        assert_eq!(
+            response.to_json().unwrap(),
+            json!([
+                {"a": 0, "b": 0.0, "c": "str 0"},
+                {"a": 1, "b": 1.0, "c": "str 1"},
+                {"a": 2, "b": 2.0, "c": "str 2"}
+            ])
+        );
+    }
+
+    #[test]
+    fn check_record_batches_to_json_with_fields() {
+        let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..3));
+        let array2: Arc<dyn Array> = Arc::new(Float64Array::from_iter((0..3).map(|x| x as f64)));
+        let array3: Arc<dyn Array> = Arc::new(StringArray::from_iter(
+            (0..3).map(|x| Some(format!("str {x}"))),
+        ));
+
+        let record = RecordBatch::try_from_iter_with_nullable([
+            ("a", array1, true),
+            ("b", array2, true),
+            ("c", array3, true),
+        ])
+        .unwrap();
+        let response = QueryResponse {
+            records: vec![record],
+            fields: vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            fill_null: false,
+            with_fields: true,
+        };
+
+        assert_eq!(
+            response.to_json().unwrap(),
+            json!({
+                "fields": ["a", "b", "c"],
+                "records": [
+                    {"a": 0, "b": 0.0, "c": "str 0"},
+                    {"a": 1, "b": 1.0, "c": "str 1"},
+                    {"a": 2, "b": 2.0, "c": "str 2"}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn check_record_batches_to_json_without_nulls() {
+        let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..3));
+        let array2: Arc<dyn Array> = Arc::new(Float64Array::from_iter((0..3).map(|x| x as f64)));
+        let array3: Arc<dyn Array> = Arc::new(StringArray::from_iter((0..3).map(|x| {
+            if x == 1 {
+                Some(format!("str {x}"))
+            } else {
+                None
+            }
+        })));
+
+        let record = RecordBatch::try_from_iter_with_nullable([
+            ("a", array1, true),
+            ("b", array2, true),
+            ("c", array3, true),
+        ])
+        .unwrap();
+        let response = QueryResponse {
+            records: vec![record],
+            fields: vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            fill_null: false,
+            with_fields: false,
+        };
+
+        assert_eq!(
+            response.to_json().unwrap(),
+            json!([
+                {"a": 0, "b": 0.0},
+                {"a": 1, "b": 1.0, "c": "str 1"},
+                {"a": 2, "b": 2.0}
+            ])
+        );
+    }
+
+    #[test]
+    fn check_record_batches_to_json_with_nulls() {
+        let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..3));
+        let array2: Arc<dyn Array> = Arc::new(Float64Array::from_iter((0..3).map(|x| x as f64)));
+        let array3: Arc<dyn Array> = Arc::new(StringArray::from_iter((0..3).map(|x| {
+            if x == 1 {
+                Some(format!("str {x}"))
+            } else {
+                None
+            }
+        })));
+
+        let record = RecordBatch::try_from_iter_with_nullable([
+            ("a", array1, true),
+            ("b", array2, true),
+            ("c", array3, true),
+        ])
+        .unwrap();
+        let response = QueryResponse {
+            records: vec![record],
+            fields: vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            fill_null: true,
+            with_fields: false,
+        };
+
+        assert_eq!(
+            response.to_json().unwrap(),
+            json!([
+                {"a": 0, "b": 0.0, "c": null},
+                {"a": 1, "b": 1.0, "c": "str 1"},
+                {"a": 2, "b": 2.0, "c": null}
+            ])
+        );
     }
 }
