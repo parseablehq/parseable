@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 
-use actix_web::{web, Responder};
+use actix_web::{web, HttpRequest, Responder};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -31,6 +31,7 @@ use crate::{
         rbac::RBACError,
     },
     rbac::{user, Users},
+    utils::delete_correlations_filters_dashboards_for_user,
     validator,
 };
 
@@ -87,13 +88,22 @@ pub async fn post_user(
 }
 
 // Handler for DELETE /api/v1/user/delete/{username}
-pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
+pub async fn delete_user(
+    req: HttpRequest,
+    username: web::Path<String>,
+) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
+
+    // Deleting Correlations, Dashboards, Filters created by user
+    delete_correlations_filters_dashboards_for_user(&req)
+        .await
+        .map_err(|err| RBACError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
     metadata.users.retain(|user| user.username() != username);

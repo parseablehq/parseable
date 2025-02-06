@@ -198,6 +198,30 @@ impl Correlations {
 
         Ok(())
     }
+
+    pub async fn delete_correlations_for_user(
+        &self,
+        user_id: &str,
+        session_key: &SessionKey,
+    ) -> Result<(), CorrelationError> {
+        let user_correlations =
+            CORRELATIONS
+                .list_correlations(&session_key)
+                .await
+                .map_err(|error| {
+                    CorrelationError::AnyhowError(anyhow::Error::msg(error.to_string()))
+                })?;
+
+        for correlation in user_correlations.iter() {
+            CORRELATIONS
+                .delete(&correlation.id, &user_id)
+                .await
+                .map_err(|error| {
+                    CorrelationError::AnyhowError(anyhow::Error::msg(error.to_string()))
+                })?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
