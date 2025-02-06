@@ -164,6 +164,8 @@ impl Parseable {
         )
     }
 
+    /// Writes all streams in staging onto disk, awaiting conversion into parquet.
+    /// Deletes all in memory recordbatches, freeing up rows in mem-writer.
     pub fn flush_all_streams(&self) {
         let streams = self.streams.read().unwrap();
 
