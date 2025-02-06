@@ -77,7 +77,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 
     // Delete from memory
-    PARSEABLE.streams.delete_stream(&stream_name);
+    PARSEABLE.streams.delete(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 

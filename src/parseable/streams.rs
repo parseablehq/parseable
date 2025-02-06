@@ -492,8 +492,8 @@ impl Streams {
         stream
     }
 
-    pub fn delete_stream(&self, stream_name: &str) {
-        self.write().unwrap().remove(stream_name);
+    pub fn delete(&self, stream_name: &str) {
+        self.write().expect(LOCK_EXPECT).remove(stream_name);
     }
 
     pub fn contains(&self, stream_name: &str) -> bool {
