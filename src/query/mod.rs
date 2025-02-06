@@ -669,9 +669,13 @@ pub async fn run() -> Result<()> {
     let mut config = SessionConfig::new()
             .with_parquet_pruning(true)
             .with_target_partitions(num_cpus::get())
-            .with_round_robin_repartition(true);
+            .with_coalesce_batches(true)
+            .with_collect_statistics(true)
+            .with_parquet_page_index_pruning(true);
     config.options_mut().execution.parquet.binary_as_string = true;
     config.options_mut().execution.parquet.pushdown_filters = true;
+    config.options_mut().execution.parquet.reorder_filters = true;
+    config.options_mut().execution.use_row_number_estimates_to_optimize_partitioning = true;
     let ctx = SessionContext::new_with_config(config);
     register_hits(&ctx).await?;
 
@@ -695,7 +699,8 @@ async fn register_hits(ctx: &SessionContext) -> Result<()> {
         .iter()
         .map(|s| (s.to_string(), DataType::Utf8))
         .collect();
-    options.parquet_pruning = Some(true);
+    let schema = STREAM_INFO.schema("hits").unwrap();
+    options.schema = Some(&schema);
     let path: PathBuf = ["/home", "ubuntu", "parseable", "data", "hits"].iter().collect();
     let path = path.as_os_str().to_str().unwrap();
     println!("Registering 'hits' as {path}");
