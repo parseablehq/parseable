@@ -267,6 +267,38 @@ impl Parseable {
         }
     }
 
+    // create the ingestor metadata and put the .ingestor.json file in the object store
+    pub async fn store_ingestor_metadata(&self) -> anyhow::Result<()> {
+        let Some(meta) = self.ingestor_metadata.as_ref() else {
+            return Ok(());
+        };
+        let storage_ingestor_metadata = meta.migrate().await?;
+        let store = self.storage.get_object_store();
+
+        // use the id that was generated/found in the staging and
+        // generate the path for the object store
+        let path = meta.file_path();
+
+        // we are considering that we can always get from object store
+        if let Some(mut store_data) = storage_ingestor_metadata {
+            if store_data.domain_name != meta.domain_name {
+                store_data.domain_name.clone_from(&meta.domain_name);
+                store_data.port.clone_from(&meta.port);
+
+                let resource = Bytes::from(serde_json::to_vec(&store_data)?);
+
+                // if pushing to object store fails propagate the error
+                store.put_object(&path, resource).await?;
+            }
+        } else {
+            let resource = serde_json::to_vec(&meta)?.into();
+
+            store.put_object(&path, resource).await?;
+        }
+
+        Ok(())
+    }
+
     /// list all streams from storage
     /// if stream exists in storage, create stream and schema from storage
     /// and add it to the memory map

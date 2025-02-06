@@ -18,8 +18,8 @@
 #[cfg(feature = "kafka")]
 use parseable::connectors;
 use parseable::{
-    banner, handlers::http::modal::ingest_server::INGESTOR_EXPECT, metrics, option::Mode,
-    parseable::PARSEABLE, rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
+    banner, metrics, option::Mode, parseable::PARSEABLE, rbac, storage, IngestServer,
+    ParseableServer, QueryServer, Server,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
@@ -36,9 +36,7 @@ async fn main() -> anyhow::Result<()> {
     // these are empty ptrs so mem footprint should be minimal
     let server: Box<dyn ParseableServer> = match &PARSEABLE.options.mode {
         Mode::Query => Box::new(QueryServer),
-        Mode::Ingest => Box::new(IngestServer(
-            PARSEABLE.ingestor_metadata.clone().expect(INGESTOR_EXPECT),
-        )),
+        Mode::Ingest => Box::new(IngestServer),
         Mode::All => Box::new(Server),
     };
 

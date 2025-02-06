@@ -16,8 +16,6 @@
  *
  */
 
-use std::sync::Arc;
-
 use actix_web::web;
 use actix_web::Scope;
 use actix_web_prometheus::PrometheusMetrics;
@@ -48,12 +46,12 @@ use crate::{
 
 use super::{
     ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
-    IngestorMetadata, OpenIdClient, ParseableServer,
+    OpenIdClient, ParseableServer,
 };
 
 pub const INGESTOR_EXPECT: &str = "Ingestor Metadata should be set in ingestor mode";
 
-pub struct IngestServer(pub Arc<IngestorMetadata>);
+pub struct IngestServer;
 
 #[async_trait]
 impl ParseableServer for IngestServer {
@@ -114,8 +112,8 @@ impl ParseableServer for IngestServer {
 
         tokio::spawn(airplane::server());
 
-        // set the ingestor metadata
-        set_ingestor_metadata(self.0.clone()).await?;
+        // write the ingestor metadata to storage
+        PARSEABLE.store_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
         let app = self.start(shutdown_rx, prometheus.clone(), None);
@@ -292,35 +290,6 @@ impl IngestServer {
                 ),
         )
     }
-}
-
-// create the ingestor metadata and put the .ingestor.json file in the object store
-pub async fn set_ingestor_metadata(meta: Arc<IngestorMetadata>) -> anyhow::Result<()> {
-    let storage_ingestor_metadata = meta.migrate().await?;
-    let store = PARSEABLE.storage.get_object_store();
-
-    // use the id that was generated/found in the staging and
-    // generate the path for the object store
-    let path = meta.file_path();
-
-    // we are considering that we can always get from object store
-    if let Some(mut store_data) = storage_ingestor_metadata {
-        if store_data.domain_name != meta.domain_name {
-            store_data.domain_name.clone_from(&meta.domain_name);
-            store_data.port.clone_from(&meta.port);
-
-            let resource = Bytes::from(serde_json::to_vec(&store_data)?);
-
-            // if pushing to object store fails propagate the error
-            store.put_object(&path, resource).await?;
-        }
-    } else {
-        let resource = serde_json::to_vec(&meta)?.into();
-
-        store.put_object(&path, resource).await?;
-    }
-
-    Ok(())
 }
 
 // check for querier state. Is it there, or was it there in the past
