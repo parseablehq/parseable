@@ -55,10 +55,11 @@ impl ParseableSinkProcessor {
             .create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::Json)
             .await?;
 
-        let schema = PARSEABLE.streams.get_schema_raw(stream_name)?;
-        let time_partition = PARSEABLE.streams.get_time_partition(stream_name)?;
-        let static_schema_flag = PARSEABLE.streams.get_static_schema_flag(stream_name)?;
-        let schema_version = PARSEABLE.streams.get_schema_version(stream_name)?;
+        let stream = PARSEABLE.get_stream(stream_name)?;
+        let schema = stream.get_schema_raw();
+        let time_partition = stream.get_time_partition();
+        let static_schema_flag = stream.get_static_schema_flag();
+        let schema_version = stream.get_schema_version();
 
         let (json_vec, total_payload_size) = Self::json_vec(records);
         let batch_json_event = json::Event {

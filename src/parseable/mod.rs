@@ -60,6 +60,7 @@ pub type LogStream = String;
 
 pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
+pub const STREAM_EXISTS: &str = "Stream exists";
 
 /// Shared state of the Parseable server.
 pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage {
@@ -645,11 +646,9 @@ impl Parseable {
             return Err(CreateStreamError::Storage { stream_name, err });
         }
 
-        if self
-            .streams
-            .update_time_partition_limit(&stream_name, time_partition_limit)
-            .is_err()
-        {
+        if let Ok(stream) = self.get_stream(&stream_name) {
+            stream.set_time_partition_limit(time_partition_limit)
+        } else {
             return Err(CreateStreamError::Custom {
                 msg: "failed to update time partition limit in metadata".to_string(),
                 status: StatusCode::EXPECTATION_FAILED,
@@ -664,10 +663,11 @@ impl Parseable {
         stream_name: String,
         custom_partition: Option<&String>,
     ) -> Result<(), CreateStreamError> {
-        let static_schema_flag = self.streams.get_static_schema_flag(&stream_name).unwrap();
-        let time_partition = self.streams.get_time_partition(&stream_name).unwrap();
+        let stream = self.get_stream(&stream_name).expect(STREAM_EXISTS);
+        let static_schema_flag = stream.get_static_schema_flag();
+        let time_partition = stream.get_time_partition();
         if static_schema_flag {
-            let schema = self.streams.get_schema(&stream_name).unwrap();
+            let schema = stream.get_schema();
 
             if let Some(custom_partition) = custom_partition {
                 let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
@@ -708,16 +708,7 @@ impl Parseable {
             return Err(CreateStreamError::Storage { stream_name, err });
         }
 
-        if self
-            .streams
-            .update_custom_partition(&stream_name, custom_partition)
-            .is_err()
-        {
-            return Err(CreateStreamError::Custom {
-                msg: "failed to update custom partition in metadata".to_string(),
-                status: StatusCode::EXPECTATION_FAILED,
-            });
-        }
+        stream.set_custom_partition(custom_partition);
 
         Ok(())
     }
@@ -769,11 +760,12 @@ impl Parseable {
             );
         }
 
-        if let Err(err) = self.streams.set_first_event_at(stream_name, first_event_at) {
-            error!(
+        match self.get_stream(stream_name) {
+            Ok(stream) => stream.set_first_event_at(first_event_at),
+            Err(err) => error!(
                 "Failed to update first_event_at in stream info for stream {:?}: {err:?}",
                 stream_name
-            );
+            ),
         }
 
         Some(first_event_at.to_string())

@@ -116,9 +116,9 @@ impl FlightService for FlightServiceImpl {
         }
 
         let schema = PARSEABLE
-            .streams
-            .get_schema(stream)
-            .map_err(|err| Status::failed_precondition(err.to_string()))?;
+            .get_stream(stream)
+            .map_err(|err| Status::failed_precondition(err.to_string()))?
+            .get_schema();
 
         let rx = LIVETAIL.new_pipe(
             Alphanumeric.sample_string(&mut rand::thread_rng(), 32),

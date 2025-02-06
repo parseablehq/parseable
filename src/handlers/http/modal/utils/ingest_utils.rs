@@ -66,11 +66,14 @@ pub async fn push_logs(
     json: Value,
     log_source: &LogSource,
 ) -> Result<(), PostError> {
-    let time_partition = PARSEABLE.streams.get_time_partition(stream_name)?;
-    let time_partition_limit = PARSEABLE.streams.get_time_partition_limit(stream_name)?;
-    let static_schema_flag = PARSEABLE.streams.get_static_schema_flag(stream_name)?;
-    let custom_partition = PARSEABLE.streams.get_custom_partition(stream_name)?;
-    let schema_version = PARSEABLE.streams.get_schema_version(stream_name)?;
+    let stream = PARSEABLE.get_stream(stream_name)?;
+    let time_partition = stream.get_time_partition();
+    let time_partition_limit = PARSEABLE
+        .get_stream(stream_name)?
+        .get_time_partition_limit();
+    let static_schema_flag = stream.get_static_schema_flag();
+    let custom_partition = stream.get_custom_partition();
+    let schema_version = stream.get_schema_version();
 
     let data = if time_partition.is_some() || custom_partition.is_some() {
         convert_array_to_object(

@@ -139,7 +139,7 @@ impl Query {
         &self,
         stream_name: String,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let time_partition = PARSEABLE.streams.get_time_partition(&stream_name)?;
+        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
 
         let df = QUERY_SESSION
             .execute_logical_plan(self.final_logical_plan(&time_partition))
@@ -162,7 +162,7 @@ impl Query {
     }
 
     pub async fn get_dataframe(&self, stream_name: String) -> Result<DataFrame, ExecuteError> {
-        let time_partition = PARSEABLE.streams.get_time_partition(&stream_name)?;
+        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
 
         let df = QUERY_SESSION
             .execute_logical_plan(self.final_logical_plan(&time_partition))
@@ -289,9 +289,9 @@ impl CountsRequest {
     /// divide that by number of bins and return in a manner acceptable for the console
     pub async fn get_bin_density(&self) -> Result<Vec<CountsRecord>, QueryError> {
         let time_partition = PARSEABLE
-            .streams
-            .get_time_partition(&self.stream.clone())
+            .get_stream(&self.stream)
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
+            .get_time_partition()
             .unwrap_or_else(|| event::DEFAULT_TIMESTAMP_KEY.to_owned());
 
         // get time range

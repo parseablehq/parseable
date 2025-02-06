@@ -45,18 +45,16 @@ pub fn init_scheduler() {
     let mut scheduler = AsyncScheduler::new();
     let func = move || async {
         //get retention every day at 12 am
-        for stream in PARSEABLE.streams.list() {
-            let retention = PARSEABLE.streams.get_retention(&stream);
-
-            match retention {
-                Ok(config) => {
-                    if let Some(config) = config {
+        for stream_name in PARSEABLE.streams.list() {
+            match PARSEABLE.get_stream(&stream_name) {
+                Ok(stream) => {
+                    if let Some(config) = stream.get_retention() {
                         for Task { action, days, .. } in config.tasks.into_iter() {
                             match action {
                                 Action::Delete => {
-                                    let stream = stream.to_string();
+                                    let stream_name = stream_name.clone();
                                     tokio::spawn(async move {
-                                        action::delete(stream.clone(), u32::from(days)).await;
+                                        action::delete(stream_name, u32::from(days)).await;
                                     });
                                 }
                             };
@@ -64,7 +62,7 @@ pub fn init_scheduler() {
                     }
                 }
                 Err(err) => {
-                    warn!("failed to load retention config for {stream} due to {err:?}")
+                    warn!("failed to load retention config for {stream_name} due to {err:?}")
                 }
             };
         }
@@ -219,14 +217,12 @@ mod action {
                 }
             }
             if let Ok(Some(first_event_at)) = res_remove_manifest {
-                if let Err(err) = PARSEABLE
-                    .streams
-                    .set_first_event_at(&stream_name, &first_event_at)
-                {
-                    error!(
+                match PARSEABLE.get_stream(&stream_name) {
+                    Ok(stream) => stream.set_first_event_at(&first_event_at),
+                    Err(err) => error!(
                         "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
                         stream_name
-                    );
+                    ),
                 }
             }
         }

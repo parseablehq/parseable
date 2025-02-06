@@ -280,14 +280,11 @@ async fn create_manifest(
                 }
             };
             first_event_at = Some(lower_bound.with_timezone(&Local).to_rfc3339());
-            if let Err(err) = PARSEABLE
-                .streams
-                .set_first_event_at(stream_name, first_event_at.as_ref().unwrap())
-            {
-                error!(
-                    "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
-                    stream_name
-                );
+            match PARSEABLE.get_stream(stream_name) {
+                Ok(stream) => stream.set_first_event_at(first_event_at.as_ref().unwrap()),
+                Err(err) => error!(
+                    "Failed to update first_event_at in streaminfo for stream {stream_name:?}, error = {err:?}"
+                ),
             }
         }
     }
@@ -334,7 +331,7 @@ pub async fn remove_manifest_from_snapshot(
         let manifests = &mut meta.snapshot.manifest_list;
         // Filter out items whose manifest_path contains any of the dates_to_delete
         manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
-        PARSEABLE.streams.reset_first_event_at(stream_name)?;
+        PARSEABLE.get_stream(stream_name)?.reset_first_event_at();
         meta.first_event_at = None;
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
@@ -396,8 +393,8 @@ pub async fn get_first_event(
                     meta.first_event_at = Some(first_event_at.clone());
                     storage.put_stream_manifest(stream_name, &meta).await?;
                     PARSEABLE
-                        .streams
-                        .set_first_event_at(stream_name, &first_event_at)?;
+                        .get_stream(stream_name)?
+                        .set_first_event_at(&first_event_at);
                 }
             }
         }

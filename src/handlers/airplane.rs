@@ -112,9 +112,9 @@ impl FlightService for AirServiceImpl {
         let table_name = table_name[0].clone();
 
         let schema = PARSEABLE
-            .streams
-            .get_schema(&table_name)
-            .map_err(|err| Status::failed_precondition(err.to_string()))?;
+            .get_stream(&table_name)
+            .map_err(|err| Status::failed_precondition(err.to_string()))?
+            .get_schema();
 
         let options = IpcWriteOptions::default();
         let schema_result = SchemaAsIpc::new(&schema, &options)

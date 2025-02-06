@@ -168,9 +168,8 @@ pub async fn get_stats(
         .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
 
     let ingestor_stats = if PARSEABLE
-        .streams
-        .get_stream_type(&stream_name)
-        .is_ok_and(|t| t == StreamType::UserDefined)
+        .get_stream(&stream_name)
+        .is_ok_and(|stream| stream.get_stream_type() == StreamType::UserDefined)
     {
         Some(fetch_stats_from_ingestors(&stream_name).await?)
     } else {

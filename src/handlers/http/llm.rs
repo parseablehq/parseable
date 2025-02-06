@@ -90,7 +90,7 @@ pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse,
     };
 
     let stream_name = &body.stream;
-    let schema = PARSEABLE.streams.get_schema(stream_name)?;
+    let schema = PARSEABLE.get_stream(stream_name)?.get_schema();
     let filtered_schema = schema
         .flattened_fields()
         .into_iter()

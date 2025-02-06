@@ -554,35 +554,25 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             return Ok(());
         }
 
-        for stream in PARSEABLE.streams.list().iter() {
-            let time_partition = PARSEABLE
-                .streams
-                .get_time_partition(stream)
-                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let custom_partition = PARSEABLE
-                .streams
-                .get_custom_partition(stream)
-                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-            let staging = PARSEABLE.get_or_create_stream(stream);
-            let schema = staging
+        for stream_name in PARSEABLE.streams.list().iter() {
+            let stream = PARSEABLE.get_or_create_stream(stream_name);
+            let time_partition = stream.get_time_partition();
+            let custom_partition = stream.get_custom_partition();
+            if let Some(schema) = stream
                 .convert_disk_files_to_parquet(
                     time_partition.as_ref(),
                     custom_partition.as_ref(),
                     shutdown_signal,
                 )
-                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-
-            if let Some(schema) = schema {
-                let static_schema_flag = PARSEABLE
-                    .streams
-                    .get_static_schema_flag(stream)
-                    .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?
+            {
+                let static_schema_flag = stream.get_static_schema_flag();
                 if !static_schema_flag {
-                    commit_schema_to_storage(stream, schema).await?;
+                    commit_schema_to_storage(stream_name, schema).await?;
                 }
             }
 
-            for file in staging.parquet_files() {
+            for file in stream.parquet_files() {
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")
@@ -593,13 +583,13 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
                 let compressed_size = file.metadata().map_or(0, |meta| meta.len());
                 STORAGE_SIZE
-                    .with_label_values(&["data", stream, "parquet"])
+                    .with_label_values(&["data", stream_name, "parquet"])
                     .add(compressed_size as i64);
                 EVENTS_STORAGE_SIZE_DATE
-                    .with_label_values(&["data", stream, "parquet", file_date_part])
+                    .with_label_values(&["data", stream_name, "parquet", file_date_part])
                     .add(compressed_size as i64);
                 LIFETIME_EVENTS_STORAGE_SIZE
-                    .with_label_values(&["data", stream, "parquet"])
+                    .with_label_values(&["data", stream_name, "parquet"])
                     .add(compressed_size as i64);
                 let mut file_suffix = str::replacen(filename, ".", "/", 3);
 
@@ -612,7 +602,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                         str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
                 }
 
-                let stream_relative_path = format!("{stream}/{file_suffix}");
+                let stream_relative_path = format!("{stream_name}/{file_suffix}");
 
                 // Try uploading the file, handle potential errors without breaking the loop
                 if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
@@ -627,7 +617,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 let manifest =
                     catalog::manifest::create_from_parquet_file(absolute_path.clone(), &file)
                         .unwrap();
-                catalog::update_snapshot(store, stream, manifest).await?;
+                catalog::update_snapshot(store, stream_name, manifest).await?;
 
                 let _ = fs::remove_file(file);
             }
@@ -739,16 +729,12 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         }
 
         // get all streams
-        for stream in PARSEABLE.streams.list() {
-            info!("Starting object_store_sync for stream- {stream}");
+        for stream_name in PARSEABLE.streams.list() {
+            info!("Starting object_store_sync for stream- {stream_name}");
 
-            let custom_partition = PARSEABLE
-                .streams
-                .get_custom_partition(&stream)
-                .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-
-            let stage = PARSEABLE.get_or_create_stream(&stream);
-            for file in stage.parquet_files() {
+            let stream = PARSEABLE.get_or_create_stream(&stream_name);
+            let custom_partition = stream.get_custom_partition();
+            for file in stream.parquet_files() {
                 let filename = file
                     .file_name()
                     .expect("only parquet files are returned by iterator")
@@ -759,13 +745,13 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
                 let compressed_size = file.metadata().map_or(0, |meta| meta.len());
                 STORAGE_SIZE
-                    .with_label_values(&["data", &stream, "parquet"])
+                    .with_label_values(&["data", &stream_name, "parquet"])
                     .add(compressed_size as i64);
                 EVENTS_STORAGE_SIZE_DATE
-                    .with_label_values(&["data", &stream, "parquet", file_date_part])
+                    .with_label_values(&["data", &stream_name, "parquet", file_date_part])
                     .add(compressed_size as i64);
                 LIFETIME_EVENTS_STORAGE_SIZE
-                    .with_label_values(&["data", &stream, "parquet"])
+                    .with_label_values(&["data", &stream_name, "parquet"])
                     .add(compressed_size as i64);
                 let mut file_suffix = str::replacen(filename, ".", "/", 3);
 
@@ -778,7 +764,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                         str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
                 }
 
-                let stream_relative_path = format!("{stream}/{file_suffix}");
+                let stream_relative_path = format!("{stream_name}/{file_suffix}");
 
                 // Try uploading the file, handle potential errors without breaking the loop
                 if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
@@ -792,15 +778,15 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 let store = PARSEABLE.storage().get_object_store();
                 let manifest =
                     catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
-                catalog::update_snapshot(store, &stream, manifest).await?;
+                catalog::update_snapshot(store, &stream_name, manifest).await?;
 
                 let _ = fs::remove_file(file);
             }
 
-            for path in stage.schema_files() {
+            for path in stream.schema_files() {
                 let file = File::open(&path)?;
                 let schema: Schema = serde_json::from_reader(file)?;
-                commit_schema_to_storage(&stream, schema).await?;
+                commit_schema_to_storage(&stream_name, schema).await?;
                 let _ = fs::remove_file(path);
             }
         }
@@ -830,24 +816,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 }
 
 async fn conversion_for_stream(
-    stream: String,
+    stream_name: String,
     shutdown_signal: bool,
 ) -> Result<(), ObjectStorageError> {
-    info!("Starting arrow_conversion job for stream- {stream}");
+    info!("Starting arrow_conversion job for stream- {stream_name}");
 
-    let time_partition = PARSEABLE
-        .streams
-        .get_time_partition(&stream)
-        .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-    let custom_partition = PARSEABLE
-        .streams
-        .get_custom_partition(&stream)
-        .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-    let stage = PARSEABLE.get_or_create_stream(&stream);
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+    let time_partition = stream.get_time_partition();
+    let custom_partition = stream.get_custom_partition();
 
     // read arrow files on disk
     // convert them to parquet
-    let schema = stage
+    let schema = stream
         .convert_disk_files_to_parquet(
             time_partition.as_ref(),
             custom_partition.as_ref(),
@@ -862,21 +842,18 @@ async fn conversion_for_stream(
     // if yes, then merge them and save
 
     if let Some(schema) = schema {
-        let static_schema_flag = PARSEABLE
-            .streams
-            .get_static_schema_flag(&stream)
-            .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
+        let static_schema_flag = stream.get_static_schema_flag();
         if !static_schema_flag {
             // schema is dynamic, read from staging and merge if present
 
             // need to add something before .schema to make the file have an extension of type `schema`
-            let path =
-                RelativePathBuf::from_iter([format!("{stream}.schema")]).to_path(&stage.data_path);
+            let path = RelativePathBuf::from_iter([format!("{stream_name}.schema")])
+                .to_path(&stream.data_path);
 
-            let staging_schemas = stage.get_schemas_if_present();
+            let staging_schemas = stream.get_schemas_if_present();
             if let Some(mut staging_schemas) = staging_schemas {
                 warn!(
-                    "Found {} schemas in staging for stream- {stream}",
+                    "Found {} schemas in staging for stream- {stream_name}",
                     staging_schemas.len()
                 );
                 staging_schemas.push(schema);

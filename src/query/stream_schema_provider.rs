@@ -19,6 +19,7 @@
 use crate::catalog::manifest::File;
 use crate::hottier::HotTierManager;
 use crate::option::Mode;
+use crate::parseable::STREAM_EXISTS;
 use crate::{
     catalog::snapshot::{self, Snapshot},
     storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
@@ -91,7 +92,7 @@ impl SchemaProvider for GlobalSchemaProvider {
     async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         if self.table_exist(name) {
             Ok(Some(Arc::new(StandardTableProvider {
-                schema: PARSEABLE.streams.get_schema(name).unwrap(),
+                schema: PARSEABLE.get_stream(name).expect(STREAM_EXISTS).get_schema(),
                 stream: name.to_owned(),
                 url: self.storage.store_url(),
             })))

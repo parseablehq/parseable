@@ -465,6 +465,119 @@ impl Stream {
             .first_event_at
             .clone()
     }
+
+    pub fn get_time_partition(&self) -> Option<String> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .time_partition
+            .clone()
+    }
+
+    pub fn get_time_partition_limit(&self) -> Option<NonZeroU32> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .time_partition_limit
+    }
+
+    pub fn get_custom_partition(&self) -> Option<String> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .custom_partition
+            .clone()
+    }
+
+    pub fn get_static_schema_flag(&self) -> bool {
+        self.metadata.read().expect(LOCK_EXPECT).static_schema_flag
+    }
+
+    pub fn get_retention(&self) -> Option<Retention> {
+        self.metadata.read().expect(LOCK_EXPECT).retention.clone()
+    }
+
+    pub fn get_schema_version(&self) -> SchemaVersion {
+        self.metadata.read().expect(LOCK_EXPECT).schema_version
+    }
+
+    pub fn get_schema(&self) -> Arc<Schema> {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+
+        // sort fields on read from hashmap as order of fields can differ.
+        // This provides a stable output order if schema is same between calls to this function
+        let fields: Fields = metadata
+            .schema
+            .values()
+            .sorted_by_key(|field| field.name())
+            .cloned()
+            .collect();
+
+        Arc::new(Schema::new(fields))
+    }
+
+    pub fn get_schema_raw(&self) -> HashMap<String, Arc<Field>> {
+        self.metadata.read().expect(LOCK_EXPECT).schema.clone()
+    }
+
+    pub fn set_retention(&self, retention: Retention) {
+        self.metadata.write().expect(LOCK_EXPECT).retention = Some(retention);
+    }
+
+    pub fn set_first_event_at(&self, first_event_at: &str) {
+        self.metadata.write().expect(LOCK_EXPECT).first_event_at = Some(first_event_at.to_owned());
+    }
+
+    /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
+    ///
+    /// This function is called during the retention task, when the parquet files along with the manifest files are deleted from the storage.
+    /// The manifest path is removed from the snapshot in the stream.json
+    /// and the first_event_at value in the stream.json is removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream for which the `first_event_at` timestamp is to be removed.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), StreamNotFound>` - Returns `Ok(())` if the `first_event_at` timestamp is successfully removed,
+    ///   or a `StreamNotFound` if the stream metadata is not found.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// ```rust
+    /// let result = metadata.remove_first_event_at("my_stream");
+    /// match result {
+    ///     Ok(()) => println!("first-event-at removed successfully"),
+    ///     Err(e) => eprintln!("Error removing first-event-at from PARSEABLE.streams: {}", e),
+    /// }
+    /// ```
+    pub fn reset_first_event_at(&self) {
+        self.metadata
+            .write()
+            .expect(LOCK_EXPECT)
+            .first_event_at
+            .take();
+    }
+
+    pub fn set_time_partition_limit(&self, time_partition_limit: NonZeroU32) {
+        self.metadata
+            .write()
+            .expect(LOCK_EXPECT)
+            .time_partition_limit = Some(time_partition_limit);
+    }
+
+    pub fn set_custom_partition(&self, custom_partition: Option<&String>) {
+        self.metadata.write().expect(LOCK_EXPECT).custom_partition = custom_partition.cloned();
+    }
+
+    pub fn set_hot_tier(&self, enable: bool) {
+        self.metadata.write().expect(LOCK_EXPECT).hot_tier_enabled = enable;
+    }
+
+    pub fn get_stream_type(&self) -> StreamType {
+        self.metadata.read().expect(LOCK_EXPECT).stream_type
+    }
 }
 
 #[derive(Deref, DerefMut, Default)]
@@ -492,252 +605,13 @@ impl Streams {
         stream
     }
 
+    /// TODO: validate possibility of stream continuing to exist despite being deleted
     pub fn delete(&self, stream_name: &str) {
         self.write().expect(LOCK_EXPECT).remove(stream_name);
     }
 
     pub fn contains(&self, stream_name: &str) -> bool {
         self.read().expect(LOCK_EXPECT).contains_key(stream_name)
-    }
-
-    pub fn get_time_partition(&self, stream_name: &str) -> Result<Option<String>, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        Ok(metadata.time_partition.clone())
-    }
-
-    pub fn get_time_partition_limit(
-        &self,
-        stream_name: &str,
-    ) -> Result<Option<NonZeroU32>, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        Ok(metadata.time_partition_limit)
-    }
-
-    pub fn get_custom_partition(
-        &self,
-        stream_name: &str,
-    ) -> Result<Option<String>, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        Ok(metadata.custom_partition.clone())
-    }
-
-    pub fn get_static_schema_flag(&self, stream_name: &str) -> Result<bool, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        Ok(metadata.static_schema_flag)
-    }
-
-    pub fn get_retention(&self, stream_name: &str) -> Result<Option<Retention>, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        Ok(metadata.retention.clone())
-    }
-
-    pub fn get_schema_version(&self, stream_name: &str) -> Result<SchemaVersion, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        Ok(metadata.schema_version)
-    }
-
-    pub fn get_schema(&self, stream_name: &str) -> Result<Arc<Schema>, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        // sort fields on read from hashmap as order of fields can differ.
-        // This provides a stable output order if schema is same between calls to this function
-        let fields: Fields = metadata
-            .schema
-            .values()
-            .sorted_by_key(|field| field.name())
-            .cloned()
-            .collect();
-
-        let schema = Schema::new(fields);
-
-        Ok(Arc::new(schema))
-    }
-
-    pub fn get_schema_raw(
-        &self,
-        stream_name: &str,
-    ) -> Result<HashMap<String, Arc<Field>>, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-
-        let stream = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?;
-
-        let schema = stream.metadata.read().expect(LOCK_EXPECT).schema.clone();
-
-        Ok(schema)
-    }
-
-    pub fn set_retention(
-        &self,
-        stream_name: &str,
-        retention: Retention,
-    ) -> Result<(), StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let mut metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .write()
-            .expect(LOCK_EXPECT);
-
-        metadata.retention = Some(retention);
-
-        Ok(())
-    }
-
-    pub fn set_first_event_at(
-        &self,
-        stream_name: &str,
-        first_event_at: &str,
-    ) -> Result<(), StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let mut metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .write()
-            .expect(LOCK_EXPECT);
-
-        metadata.first_event_at = Some(first_event_at.to_owned());
-
-        Ok(())
-    }
-
-    /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
-    ///
-    /// This function is called during the retention task, when the parquet files along with the manifest files are deleted from the storage.
-    /// The manifest path is removed from the snapshot in the stream.json
-    /// and the first_event_at value in the stream.json is removed.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream_name` - The name of the stream for which the `first_event_at` timestamp is to be removed.
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), StreamNotFound>` - Returns `Ok(())` if the `first_event_at` timestamp is successfully removed,
-    ///   or a `StreamNotFound` if the stream metadata is not found.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// ```rust
-    /// let result = metadata.remove_first_event_at("my_stream");
-    /// match result {
-    ///     Ok(()) => println!("first-event-at removed successfully"),
-    ///     Err(e) => eprintln!("Error removing first-event-at from PARSEABLE.streams: {}", e),
-    /// }
-    /// ```
-    pub fn reset_first_event_at(&self, stream_name: &str) -> Result<(), StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let mut metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .write()
-            .expect(LOCK_EXPECT);
-
-        metadata.first_event_at.take();
-
-        Ok(())
-    }
-
-    pub fn update_time_partition_limit(
-        &self,
-        stream_name: &str,
-        time_partition_limit: NonZeroU32,
-    ) -> Result<(), StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let mut metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .write()
-            .expect(LOCK_EXPECT);
-
-        metadata.time_partition_limit = Some(time_partition_limit);
-
-        Ok(())
-    }
-
-    pub fn update_custom_partition(
-        &self,
-        stream_name: &str,
-        custom_partition: Option<&String>,
-    ) -> Result<(), StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let mut metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .write()
-            .expect(LOCK_EXPECT);
-
-        metadata.custom_partition = custom_partition.cloned();
-
-        Ok(())
-    }
-
-    pub fn set_hot_tier(&self, stream_name: &str, enable: bool) -> Result<(), StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let mut metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .write()
-            .expect(LOCK_EXPECT);
-
-        metadata.hot_tier_enabled = enable;
-
-        Ok(())
     }
 
     /// Returns the number of logstreams that parseable is aware of
@@ -764,23 +638,10 @@ impl Streams {
 
         map.iter()
             .filter(|(_, stream)| {
-                let metadata = stream.metadata.read().expect(LOCK_EXPECT);
-                metadata.stream_type == StreamType::Internal
+                stream.metadata.read().expect(LOCK_EXPECT).stream_type == StreamType::Internal
             })
             .map(|(k, _)| k.clone())
             .collect()
-    }
-
-    pub fn get_stream_type(&self, stream_name: &str) -> Result<StreamType, StreamNotFound> {
-        let map = self.read().expect(LOCK_EXPECT);
-        let metadata = map
-            .get(stream_name)
-            .ok_or(StreamNotFound(stream_name.to_string()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT);
-
-        Ok(metadata.stream_type)
     }
 }
 
