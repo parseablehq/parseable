@@ -203,6 +203,11 @@ impl ParseableServer for IngestServer {
             sync::run_local_sync().await;
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
+        let (
+            mut remote_conversion_handler,
+            mut remote_conversion_outbox,
+            mut remote_conversion_inbox,
+        ) = sync::arrow_conversion().await;
 
         tokio::spawn(airplane::server());
 
@@ -219,11 +224,15 @@ impl ParseableServer for IngestServer {
                     // actix server finished .. stop other threads and stop the server
                     remote_sync_inbox.send(()).unwrap_or(());
                     localsync_inbox.send(()).unwrap_or(());
+                    remote_conversion_inbox.send(()).unwrap_or(());
                     if let Err(e) = localsync_handler.await {
                         error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     if let Err(e) = remote_sync_handler.await {
                         error!("Error joining remote_sync_handler: {:?}", e);
+                    }
+                    if let Err(e) = remote_conversion_handler.await {
+                        error!("Error joining remote_conversion_handler: {:?}", e);
                     }
                     return e
                 },
@@ -238,6 +247,13 @@ impl ParseableServer for IngestServer {
                         error!("Error joining remote_sync_handler: {:?}", e);
                     }
                     (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
+                },
+                _ = &mut remote_conversion_outbox => {
+                    // remote_conversion failed, this is recoverable by just starting remote_conversion thread again
+                    if let Err(e) = remote_conversion_handler.await {
+                        error!("Error joining remote_conversion_handler: {:?}", e);
+                    }
+                    (remote_conversion_handler, remote_conversion_outbox, remote_conversion_inbox) = sync::arrow_conversion().await;
                 }
 
             }
