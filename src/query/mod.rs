@@ -659,7 +659,7 @@ impl AllQueries {
 
 pub async fn run() -> Result<()> {
     println!("Running benchmarks");
-    let queries_path: PathBuf = ["/home", "clickbench", "queries.sql"].iter().collect();
+    let queries_path: PathBuf = ["/home","ubuntu", "clickbench", "queries.sql"].iter().collect();
     let queries = AllQueries::try_new(queries_path.as_path())?;
     println!("queries loaded");
     println!("query no. 1: {:?}", queries.get_query(1)?);
@@ -667,9 +667,11 @@ pub async fn run() -> Result<()> {
     
     // configure parquet options
     let mut config = SessionConfig::new()
-            .with_target_partitions(num_cpus::get());
+            .with_parquet_pruning(true)
+            .with_target_partitions(num_cpus::get())
+            .with_round_robin_repartition(true);
     config.options_mut().execution.parquet.binary_as_string = true;
-
+    config.options_mut().execution.parquet.pushdown_filters = true;
     let ctx = SessionContext::new_with_config(config);
     register_hits(&ctx).await?;
 
@@ -693,7 +695,8 @@ async fn register_hits(ctx: &SessionContext) -> Result<()> {
         .iter()
         .map(|s| (s.to_string(), DataType::Utf8))
         .collect();
-    let path: PathBuf = ["/home", "ubuntu", "parseable", "hits"].iter().collect();
+    options.parquet_pruning = Some(true);
+    let path: PathBuf = ["/home", "ubuntu", "parseable", "data", "hits"].iter().collect();
     let path = path.as_os_str().to_str().unwrap();
     println!("Registering 'hits' as {path}");
     ctx.register_parquet("hits", path, options)
