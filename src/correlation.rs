@@ -200,16 +200,19 @@ impl Correlations {
     }
 
     pub async fn delete_for_user(&self, user_id: &str) -> Result<(), CorrelationError> {
-        let correlations = self.0.read().await;
-        // Finding all correlations for user_id
-        let user_correlations: Vec<_> = correlations
-            .iter()
-            .filter(|corr_map| (corr_map.1.user_id.as_str() == user_id))
-            .collect();
-
+        // Cautious to avoid deadlock with read and write.
+        let correlation_ids: Vec<String> = {
+            let correlations = self.0.read().await;
+            // Finding all correlations for user_id
+            correlations
+                .iter()
+                .filter(|corr_map| corr_map.1.user_id.as_str() == user_id)
+                .map(|x| x.0.clone())
+                .collect()
+        };
         // Removing them from the hashmap.
-        for correlation in user_correlations.iter() {
-            self.0.write().await.remove_entry(correlation.0);
+        for id in correlation_ids.iter() {
+            self.0.write().await.remove_entry(id);
         }
         Ok(())
     }
